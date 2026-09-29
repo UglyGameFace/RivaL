@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from parlay_bot.archive.models import HistoryArchiveBatch
+from parlay_bot.storage.hot import SQLiteHotStore
 
 
 def _slug(value: str) -> str:
@@ -25,6 +26,7 @@ class SQLiteArchiveQueue:
         return connection
 
     def initialize(self) -> None:
+        SQLiteHotStore(self.path).initialize()
         with self.connect() as connection:
             columns = {
                 str(row["name"])

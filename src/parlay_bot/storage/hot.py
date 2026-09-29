@@ -139,6 +139,12 @@ class SQLiteHotStore:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY (platform, user_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS runtime_state (
+                    state_key TEXT PRIMARY KEY,
+                    state_value TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
             self._ensure_column(connection, "current_odds", "market_name", "TEXT")
@@ -388,6 +394,31 @@ class SQLiteHotStore:
             current_rows_written=current_rows_written,
         )
 
+
+    def set_runtime_state(self, key: str, value: str) -> None:
+        if not key.strip():
+            raise ValueError("runtime state key is required")
+        self.initialize()
+        with self.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO runtime_state (state_key, state_value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(state_key) DO UPDATE SET
+                    state_value = excluded.state_value,
+                    updated_at = excluded.updated_at
+                """,
+                (key.strip(), value, _iso(datetime.now(UTC))),
+            )
+
+    def get_runtime_state(self, key: str) -> str | None:
+        self.initialize()
+        with self.connect() as connection:
+            row = connection.execute(
+                "SELECT state_value FROM runtime_state WHERE state_key = ?",
+                (key.strip(),),
+            ).fetchone()
+        return str(row["state_value"]) if row is not None else None
 
     def set_user_jurisdiction(
         self,

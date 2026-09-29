@@ -67,7 +67,8 @@ class ColdArchiveService:
                 completed_at=completed_at,
             )
         finally:
-            if self.queue.batch_record(batch.batch_id)?.get("status") == "complete":
+            record = self.queue.batch_record(batch.batch_id)
+            if record is not None and record.get("status") == "complete":
                 history.path.unlink(missing_ok=True)
                 if manifest is not None:
                     manifest.path.unlink(missing_ok=True)

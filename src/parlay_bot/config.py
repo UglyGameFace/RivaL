@@ -19,3 +19,12 @@ class Settings(BaseSettings):
     rival_db_path: str = Field(default="data/rival.sqlite")
     discord_token: SecretStr | None = Field(default=None)
     rival_dev_guild_id: int | None = Field(default=None, ge=1)
+
+    rival_drive_root_folder_id: str | None = Field(default=None)
+    rival_drive_history_folder_id: str | None = Field(default=None)
+    rival_drive_manifests_folder_id: str | None = Field(default=None)
+    rival_drive_models_folder_id: str | None = Field(default=None)
+    rival_drive_predictions_folder_id: str | None = Field(default=None)
+    rival_drive_backups_folder_id: str | None = Field(default=None)
+    rival_drive_reports_folder_id: str | None = Field(default=None)
+    rival_drive_staging_folder_id: str | None = Field(default=None)

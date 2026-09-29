@@ -150,7 +150,7 @@ class RivalDiscordClient(discord.Client):
                     )
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception:  # noqa: BLE001 - background archive must not kill Discord
                 _LOG.exception("RivaL cold archive cycle failed safely")
 
             await asyncio.sleep(self.settings.rival_archive_run_seconds)

@@ -68,9 +68,14 @@ class SQLiteHotStore:
                     fixture_id TEXT NOT NULL,
                     bookmaker TEXT NOT NULL,
                     market_id TEXT NOT NULL,
+                    market_name TEXT,
                     outcome_id TEXT NOT NULL,
+                    outcome_name TEXT,
                     player_id TEXT NOT NULL,
                     player_name TEXT,
+                    line_value REAL,
+                    line_group_value REAL,
+                    deeplink TEXT,
                     active INTEGER NOT NULL,
                     main_line INTEGER NOT NULL,
                     price_decimal REAL NOT NULL,
@@ -97,9 +102,14 @@ class SQLiteHotStore:
                     fixture_id TEXT NOT NULL,
                     bookmaker TEXT NOT NULL,
                     market_id TEXT NOT NULL,
+                    market_name TEXT,
                     outcome_id TEXT NOT NULL,
+                    outcome_name TEXT,
                     player_id TEXT NOT NULL,
                     player_name TEXT,
+                    line_value REAL,
+                    line_group_value REAL,
+                    deeplink TEXT,
                     active INTEGER NOT NULL,
                     main_line INTEGER NOT NULL,
                     price_decimal REAL NOT NULL,
@@ -131,6 +141,30 @@ class SQLiteHotStore:
                 );
                 """
             )
+            self._ensure_column(connection, "current_odds", "market_name", "TEXT")
+            self._ensure_column(connection, "current_odds", "outcome_name", "TEXT")
+            self._ensure_column(connection, "current_odds", "line_value", "REAL")
+            self._ensure_column(connection, "current_odds", "line_group_value", "REAL")
+            self._ensure_column(connection, "current_odds", "deeplink", "TEXT")
+            self._ensure_column(connection, "odds_changes", "market_name", "TEXT")
+            self._ensure_column(connection, "odds_changes", "outcome_name", "TEXT")
+            self._ensure_column(connection, "odds_changes", "line_value", "REAL")
+            self._ensure_column(connection, "odds_changes", "line_group_value", "REAL")
+            self._ensure_column(connection, "odds_changes", "deeplink", "TEXT")
+
+    @staticmethod
+    def _ensure_column(
+        connection: sqlite3.Connection,
+        table: str,
+        column: str,
+        definition: str,
+    ) -> None:
+        columns = {
+            str(row["name"])
+            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+        }
+        if column not in columns:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     @staticmethod
     def _exchange_json(observation: MarketObservation) -> str | None:
@@ -223,12 +257,13 @@ class SQLiteHotStore:
         connection.execute(
             """
             INSERT INTO odds_changes (
-                selection_key, provider, fixture_id, bookmaker, market_id, outcome_id,
-                player_id, player_name, active, main_line, price_decimal, price_american,
-                price_fractional, bet_limit, provider_changed_at,
+                selection_key, provider, fixture_id, bookmaker, market_id, market_name,
+                outcome_id, outcome_name, player_id, player_name, line_value,
+                line_group_value, deeplink, active, main_line, price_decimal,
+                price_american, price_fractional, bet_limit, provider_changed_at,
                 bookmaker_changed_at, exchange_meta_json, state_fingerprint,
                 first_seen, last_seen, occurrences
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 observation.selection_key,
@@ -236,9 +271,14 @@ class SQLiteHotStore:
                 observation.fixture_id,
                 observation.bookmaker,
                 observation.market_id,
+                observation.market_name,
                 observation.outcome_id,
+                observation.outcome_name,
                 observation.player_id,
                 observation.player_name,
+                observation.line_value,
+                observation.line_group_value,
+                observation.deeplink,
                 int(observation.active),
                 int(observation.main_line),
                 observation.price_decimal,
@@ -263,13 +303,19 @@ class SQLiteHotStore:
         cursor = connection.execute(
             """
             INSERT INTO current_odds (
-                selection_key, provider, fixture_id, bookmaker, market_id, outcome_id,
-                player_id, player_name, active, main_line, price_decimal, price_american,
-                price_fractional, bet_limit, changed_at, bookmaker_changed_at,
-                observed_at, exchange_meta_json, state_fingerprint
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                selection_key, provider, fixture_id, bookmaker, market_id, market_name,
+                outcome_id, outcome_name, player_id, player_name, line_value,
+                line_group_value, deeplink, active, main_line, price_decimal,
+                price_american, price_fractional, bet_limit, changed_at,
+                bookmaker_changed_at, observed_at, exchange_meta_json, state_fingerprint
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(selection_key) DO UPDATE SET
+                market_name = excluded.market_name,
+                outcome_name = excluded.outcome_name,
                 player_name = excluded.player_name,
+                line_value = excluded.line_value,
+                line_group_value = excluded.line_group_value,
+                deeplink = excluded.deeplink,
                 active = excluded.active,
                 main_line = excluded.main_line,
                 price_decimal = excluded.price_decimal,
@@ -289,9 +335,14 @@ class SQLiteHotStore:
                 observation.fixture_id,
                 observation.bookmaker,
                 observation.market_id,
+                observation.market_name,
                 observation.outcome_id,
+                observation.outcome_name,
                 observation.player_id,
                 observation.player_name,
+                observation.line_value,
+                observation.line_group_value,
+                observation.deeplink,
                 int(observation.active),
                 int(observation.main_line),
                 observation.price_decimal,

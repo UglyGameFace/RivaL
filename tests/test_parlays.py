@@ -253,3 +253,78 @@ def test_stale_prices_are_not_used_for_new_slips(tmp_path) -> None:
 
     with pytest.raises(ParlayBuildError, match="No current eligible sportsbook prices"):
         engine.build_for_state(state_code="CT", leg_count=2)
+
+
+def seed_spread_fixture(
+    store: SQLiteHotStore,
+    *,
+    number: int,
+    dk_line: float,
+    fd_line: float,
+) -> None:
+    now = datetime.now(UTC) + timedelta(minutes=number)
+    observations: list[MarketObservation] = []
+    for bookmaker, line in (("draftkings", dk_line), ("fanduel", fd_line)):
+        group = abs(line)
+        observations.extend(
+            [
+                MarketObservation(
+                    provider="test",
+                    fixture_id=f"spread-{number}",
+                    sport_id=11,
+                    tournament_id=132,
+                    bookmaker=bookmaker,
+                    market_id="spread-pair",
+                    market_name="Spread",
+                    outcome_id="home",
+                    outcome_name="Home",
+                    player_id="0",
+                    line_value=line,
+                    line_group_value=group,
+                    active=True,
+                    main_line=True,
+                    price_decimal=1.91,
+                    changed_at=now,
+                ),
+                MarketObservation(
+                    provider="test",
+                    fixture_id=f"spread-{number}",
+                    sport_id=11,
+                    tournament_id=132,
+                    bookmaker=bookmaker,
+                    market_id="spread-pair",
+                    market_name="Spread",
+                    outcome_id="away",
+                    outcome_name="Away",
+                    player_id="0",
+                    line_value=-line,
+                    line_group_value=group,
+                    active=True,
+                    main_line=True,
+                    price_decimal=1.91,
+                    changed_at=now,
+                ),
+            ]
+        )
+
+    store.ingest_board(
+        NormalizedOddsBoard(
+            provider="test",
+            fixture_id=f"spread-{number}",
+            sport_id=11,
+            tournament_id=132,
+            start_time=now + timedelta(days=1),
+            participant1_name=f"Home {number}",
+            participant2_name=f"Away {number}",
+            observations=observations,
+        )
+    )
+
+
+def test_mismatched_spreads_are_not_falsely_compared_as_consensus(tmp_path) -> None:
+    engine, store = build_engine(tmp_path)
+    seed_spread_fixture(store, number=1, dk_line=-5.5, fd_line=-6.0)
+    seed_spread_fixture(store, number=2, dk_line=-5.5, fd_line=-6.0)
+
+    with pytest.raises(ParlayBuildError, match="No current eligible sportsbook prices"):
+        engine.build_for_state(state_code="CT", leg_count=2)

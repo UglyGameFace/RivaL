@@ -39,6 +39,7 @@ def zero_cooldowns() -> dict[str, float]:
         "odds": 0,
         "historical": 0,
         "odds_by_tournaments": 0,
+        "markets": 0,
     }
 
 
@@ -183,3 +184,51 @@ async def test_historical_endpoint_rejects_more_than_three_books() -> None:
             )
 
     assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_markets_endpoint_parses_catalog_and_counts_as_billable() -> None:
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        if request.url.path == "/v4/account":
+            return httpx.Response(200, json=account_payload(count=100, limit=250), request=request)
+        if request.url.path == "/v4/markets":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "marketId": 106,
+                        "marketLength": 2,
+                        "marketName": "Over Under Full Time",
+                        "playerProp": False,
+                        "sportId": 10,
+                        "handicap": 0.5,
+                        "period": "fulltime",
+                        "marketType": "totals",
+                        "outcomes": [
+                            {"outcomeId": 106, "outcomeName": "Over"},
+                            {"outcomeId": 107, "outcomeName": "Under"},
+                        ],
+                    }
+                ],
+                request=request,
+            )
+        raise AssertionError(f"unexpected path {request.url.path}")
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="https://api.oddspapi.io"
+    ) as http_client:
+        client = OddsPapiClient(
+            "secret",
+            client=http_client,
+            cooldowns=zero_cooldowns(),
+        )
+        markets = await client.get_markets()
+
+    assert calls == ["/v4/account", "/v4/markets"]
+    assert markets[0].market_id == "106"
+    assert markets[0].market_name == "Over Under Full Time"
+    assert markets[0].outcomes[1].outcome_name == "Under"

@@ -102,8 +102,10 @@ class SportsGameOddsClient:
         path: str,
         *,
         params: Mapping[str, object] | None = None,
+        throttled: bool = True,
     ) -> httpx.Response:
-        await self._gate.wait()
+        if throttled:
+            await self._gate.wait()
         headers = {"x-api-key": self._api_key}
         response = await self._client.get(path, params=params, headers=headers)
 
@@ -131,7 +133,7 @@ class SportsGameOddsClient:
         return payload
 
     async def get_usage(self) -> SportsGameOddsUsage:
-        payload = self._payload(await self._request("/account/usage"))
+        payload = self._payload(await self._request("/account/usage", throttled=False))
         data = payload.get("data")
         if not isinstance(data, dict):
             raise ProviderProtocolError("SportsGameOdds usage response has no data object")

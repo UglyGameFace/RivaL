@@ -103,9 +103,8 @@ correlation model remain later milestones.
 
 ## Validation status
 
-Implementation written. Exact-head GitHub Actions CI and final diff/security review are required before merge.
+Implementation code passed GitHub Actions on feature head `6587a924e62fe5f5481096e9acc5ea7d194804c1`: Ruff passed and pytest reported 35 passed, 1 warning. Final metadata/documentation head still requires one exact-head CI pass plus final diff/security review.
 
 ## Next step
 
-Open a draft PR, run exact-head CI, repair any lint/test failures, inspect the complete diff for
-secrets and unrelated changes, then squash-merge only if green.
+PR #1 is open in draft. Require green exact-head CI after final documentation changes, inspect the complete diff for secrets/unrelated changes, then mark ready and squash-merge only if green.

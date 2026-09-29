@@ -13,23 +13,17 @@ Do not write RivaL code, workflows, task records, branches, or pull requests to
 
 ## Completed milestones
 
-- Provider-neutral odds foundation and quota-aware OddsPapi integration.
-- Historical OddsPapi access with ETags and state compaction.
+- Provider-neutral odds foundation and quota-aware OddsPapi history access.
+- SportsGameOdds shared current/today feed with quota reserve and persistent refresh gating.
 - Canonical odds normalization and SQLite hot storage.
-- ZIP/state onboarding with ZIP discarded after state resolution.
+- ZIP/state onboarding with state-only persistence.
 - Verified sportsbook filtering.
 - Private Discord `/rival` dashboard.
-- Market-consensus parlay engine V1:
-  - no-vig probabilities
-  - same-book executable slips
-  - risk modes
-  - one-leg-per-fixture correlation guard
-  - freshness/start-time filtering
-  - Build Parlay / Make Safer / Boost Payout
-- RivaL-only Google Drive cold-warehouse folder tree and hard access boundary.
+- Market-consensus parlay engine V1.
+- RivaL-only Google Drive warehouse folder tree and hard access boundary.
 
-Parlay engine V1 was merged as commit
-`e44534d43ee8b81499a73df7bb11e80f4d80598c`.
+SportsGameOdds current-feed PR #2 merged as
+`47864350e98be72e3b84fffb27e4010785ead908`.
 The validated feature tree and squash-merge tree were identical.
 
 ## Google Drive boundary
@@ -53,105 +47,105 @@ RivaL may operate only inside this root. See `docs/GOOGLE_DRIVE_BOUNDARY.md`.
 
 ## Active task / outcome
 
-Add SportsGameOdds as RivaL's quota-efficient **current/today odds feed**, while keeping
-OddsPapi for historical/backfill and provider-account functions.
+Build the first durable Google Drive cold-archive pipeline for closed line-movement states.
 
-Branch: `feat/sportsgameodds-current-feed`
+Branch: `feat/google-drive-cold-archive`
 
 ### Implemented on branch
 
-- SportsGameOdds V2 client using `x-api-key` header authentication.
-- Usage/quota parser and configurable monthly entity reserve.
-- Event-limit trimming so a request cannot intentionally consume the reserve.
-- Rate-limit handling and event-request pacing.
-- Current event filters:
-  - selected leagues
-  - selected books
-  - odds available
-  - not started
-  - not cancelled
-  - alternate lines excluded for the V1 current feed
-- Canonical SportsGameOdds event/odds normalization.
-- American-to-decimal price conversion.
-- Team/event/player metadata extraction.
-- Player-prop identity and line preservation.
-- Spread/total line normalization.
-- Canonical paired market identity using opposing odds.
-- Actual sportsbook deeplink preservation when supplied.
-- Extended hot-store schema for market names, outcome names, line values, line-group values, and deeplinks.
-- Safe in-place SQLite column migration for existing RivaL databases.
-- Line movement included in the meaningful-state fingerprint.
-- Persistent runtime-state table for collector cadence.
-- Shared current-board collector with an async lock.
-- Refresh cadence persists across bot restarts.
-- Default current MVP scope:
-  - NBA
-  - NFL
-  - DraftKings
-  - FanDuel
-  - one page / up to 25 events per refresh
-  - 10-minute shared refresh interval
-- Discord Build Parlay and risk rebuilds call refresh-if-due before using cache.
-- Provider failures fall back only to cache; the builder still refuses stale prices.
-- Parlay consensus is line-aware.
-- At least two reference probability samples are required for a consensus leg.
-- Different spread/total lines are not compared as if they were the same wager.
+- Optional archive dependency using DuckDB; it is not part of the normal hot Discord dependency path.
+- CI installs the archive extra so the cold path is regression tested.
+- SQLite archive queue that selects only **closed** line states.
+- The latest state for every market selection is never archive-eligible.
+- Closed states must also be older than a caller-supplied cutoff.
+- Deterministic batch IDs derived from provider/book/sport/date/source row IDs.
+- Archive batch lifecycle table.
+- Archive markers on line-history rows.
+- Chunked row completion updates to avoid SQLite variable-count limits.
+- Explicit-schema Parquet writer.
+- ZSTD Parquet compression.
+- SHA-256 and MD5 local digests.
+- JSON manifest containing schema version, row count, source-row hash, time bounds, data checksum, and Drive history-file ID.
+- Google OAuth refresh-token client using the documented token endpoint.
+- Resumable Google Drive upload.
+- Upload chunk size constrained to Google Drive's 256 KiB multiple requirement.
+- No generic Drive-root listing method.
+- No delete method.
+- Bounded Drive searches only inside configured RivaL `staging`, `history`, or `manifests` folders.
+- History files upload to RivaL `staging` first.
+- Uploaded size and MD5 must match the local artifact.
+- Verified staged history is moved only from RivaL `staging` to RivaL `history`.
+- Manifest uploads only to RivaL `manifests`.
+- SQLite rows are marked archived only after both verified Drive objects exist.
+- Deterministic batch properties allow safe restart/retry without intentionally duplicating an archive.
+- Local temporary artifacts are deleted only after the batch reaches complete state.
+- Archive OAuth client ID/secret/refresh token are deployment secrets, never Git values.
 
-## Current data architecture
+## Archive commit sequence
 
 ```text
-SportsGameOdds
- current/today board
-       |
-       v
-shared 10-minute refresh gate
-       |
-       v
-canonical normalization
-       |
-       v
-SQLite hot store
-       |
-       +------> Discord /rival Build Parlay
-       |
-       v
-market-consensus engine
-
-OddsPapi
- historical/backfill
-       |
-       v
-history/archive pipeline
-       |
-       v
-Google Drive cold warehouse
+closed SQLite line states
+        |
+        v
+explicit-schema Parquet + ZSTD
+        |
+        v
+SHA-256 / MD5 / row count
+        |
+        v
+Drive staging/
+        |
+        v
+remote size + MD5 verification
+        |
+        v
+promote to Drive history/
+        |
+        v
+write + upload manifest
+        |
+        v
+mark SQLite source rows archived
+        |
+        v
+delete local temporary files
 ```
 
-A Discord button press does not equal an API request. The current board is shared across users.
+A failure before the manifest is verified leaves the SQLite source rows unarchived.
 
-## Data-integrity rules
+## Safety rules
 
-- API keys never appear in request query strings or Git.
-- Current odds are rejected when stale.
-- Already-started fixtures are rejected.
-- Alternate lines are excluded from the initial live collector.
-- Spread consensus compares the same absolute spread only.
-- Total consensus compares the same total only.
-- A returned parlay remains one-book only.
-- Same-game multiple legs remain disabled until correlation is explicitly modeled.
-- RivaL does not represent market consensus as guaranteed outcomes or a trained prediction model.
+- The current/latest state of a selection is never archived.
+- RivaL has no archive API that enumerates My Drive/root.
+- RivaL has no cold-archive delete operation.
+- Uploads can target only configured RivaL staging/manifests folders.
+- History promotion can move only a file already found/uploaded in configured RivaL staging.
+- Drive object size and MD5 must match before commit.
+- Secrets, ZIP codes, personal Drive content, and user message content are not archive inputs.
+- Real Drive folder IDs and the account email are not committed.
 
 ## Validation status
 
-Feature head `0fa5ed1d0a1dd5cd787ccdbe4b20a6b743ed03c9` passed GitHub Actions push CI:
+Latest implementation head `2b39d14a2d304afd8388f174415678862a6c0746` passed GitHub Actions push CI.
 
-- install passed on Python 3.11
-- Ruff passed
-- pytest: **48 passed, 1 warning**
+The previous validated head reported:
 
-Exact-head PR merge-ref CI and final security/diff review are still required before merge.
+- Ruff passed.
+- pytest: **55 passed, 1 warning**.
+- Parquet artifacts were read back through DuckDB in tests.
+- Drive resumable upload/promotion was exercised with a mocked Google endpoint.
+- Archive completion ordering was regression tested.
+
+Final documentation head and PR merge-ref CI still need validation before merge.
+
+## Deployment blocker
+
+The archive code is ready, but automatic production uploads remain intentionally disabled until
+the deployed RivaL runtime receives its own Google OAuth client ID, client secret, and offline
+refresh token in secret storage. ChatGPT's connected Drive authorization is not reused by the bot.
 
 ## Next step
 
-Open draft PR #2, require green merge-ref CI, scan the complete diff for secrets/unrelated
-changes, then squash-merge only if the validated tree is clean.
+Open draft PR #3, require green exact-head PR CI, scan for secrets/private Drive identifiers,
+then squash-merge if clean. Runtime scheduling can be added after the production OAuth secret
+path is configured.

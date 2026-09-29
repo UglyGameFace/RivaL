@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import logging
-from datetime import timedelta
+from contextlib import suppress
+from datetime import UTC, datetime, timedelta
 
 import discord
 from discord import app_commands
 
+from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_runtime
 from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.presentation import onboarding_embed, saved_location_embed
@@ -62,6 +65,9 @@ class RivalDiscordClient(discord.Client):
                 max_pages=settings.rival_current_max_pages,
             )
 
+        self.archive_runtime: ColdArchiveRuntime | None = build_cold_archive_runtime(settings)
+        self._archive_task: asyncio.Task[None] | None = None
+
         self._register_commands()
 
     @staticmethod
@@ -113,12 +119,51 @@ class RivalDiscordClient(discord.Client):
                 len(synced),
                 guild.id,
             )
-            return
+        else:
+            synced = await self.tree.sync()
+            _LOG.info("RivaL synced %d global command(s)", len(synced))
 
-        synced = await self.tree.sync()
-        _LOG.info("RivaL synced %d global command(s)", len(synced))
+        if self.archive_runtime is not None and self._archive_task is None:
+            self._archive_task = asyncio.create_task(
+                self._archive_loop(),
+                name="rival-cold-archive",
+            )
+
+    async def _archive_loop(self) -> None:
+        await self.wait_until_ready()
+        assert self.archive_runtime is not None
+
+        while not self.is_closed():
+            try:
+                cutoff = datetime.now(UTC) - timedelta(
+                    minutes=self.settings.rival_archive_closed_state_minutes
+                )
+                completed = await self.archive_runtime.service.archive_ready(
+                    cutoff=cutoff,
+                    max_rows=self.settings.rival_archive_batch_rows,
+                    max_batches=self.settings.rival_archive_max_batches,
+                )
+                if completed:
+                    _LOG.info(
+                        "RivaL cold archive completed %d batch(es)",
+                        len(completed),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                _LOG.exception("RivaL cold archive cycle failed safely")
+
+            await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self._archive_task is not None:
+            self._archive_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._archive_task
+            self._archive_task = None
+
+        if self.archive_runtime is not None:
+            await self.archive_runtime.drive.aclose()
         if self.current_provider is not None:
             await self.current_provider.aclose()
         await self.zip_resolver.aclose()

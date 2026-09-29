@@ -215,3 +215,28 @@ def test_parlay_embed_labels_market_consensus_not_prediction_model() -> None:
     assert "one leg per fixture" in rendered["fields"][1]["value"].lower()
     assert "not guaranteed outcomes" in rendered["footer"]["text"]
     assert "not" in rendered["footer"]["text"].lower()
+
+
+@pytest.mark.asyncio
+async def test_discord_client_configures_current_collector_without_polling_on_startup(
+    tmp_path,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        rival_db_path=str(tmp_path / "rival.sqlite"),
+        discord_token=None,
+        sportsgameodds_api_key="test-secret",
+        rival_current_leagues="NBA,NFL",
+        rival_current_bookmakers="draftkings,fanduel",
+    )
+    client = RivalDiscordClient(settings)
+    try:
+        assert client.current_provider is not None
+        assert client.current_collector is not None
+        assert client.current_collector.league_ids == ("NBA", "NFL")
+        assert client.current_collector.bookmaker_ids == ("draftkings", "fanduel")
+        assert client.current_collector.is_due() is True
+    finally:
+        if client.current_provider is not None:
+            await client.current_provider.aclose()
+        await client.zip_resolver.aclose()

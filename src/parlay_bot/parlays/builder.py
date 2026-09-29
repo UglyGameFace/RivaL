@@ -28,6 +28,9 @@ class _PricedCandidate:
     outcome_name: str
     player_id: str
     player_name: str | None
+    line_value: float | None
+    line_group_value: float | None
+    deeplink: str | None
     price_decimal: float
     price_american: str | None
     fair_probability: float
@@ -59,13 +62,17 @@ class ParlayBuilder:
         registry: JurisdictionRegistry,
         catalog: MarketCatalogStore | None = None,
         max_price_age: timedelta = timedelta(minutes=30),
+        minimum_reference_books: int = 2,
     ) -> None:
         if max_price_age <= timedelta(0):
             raise ValueError("max_price_age must be positive")
+        if minimum_reference_books < 1:
+            raise ValueError("minimum_reference_books must be positive")
         self.store = store
         self.registry = registry
         self.catalog = catalog or MarketCatalogStore(store.path)
         self.max_price_age = max_price_age
+        self.minimum_reference_books = minimum_reference_books
 
     @staticmethod
     def _score(*, probability: float, edge: float, price: float, risk: RiskMode) -> float:
@@ -114,20 +121,40 @@ class ParlayBuilder:
 
         catalog = self.catalog.metadata()
 
-        by_book_market: dict[tuple[str, str, str, str], list[dict]] = defaultdict(list)
+        by_book_market: dict[
+            tuple[str, str, str, str, float | None],
+            list[dict],
+        ] = defaultdict(list)
         for row in rows:
             key = (
                 str(row["bookmaker"]),
                 str(row["fixture_id"]),
                 str(row["market_id"]),
                 str(row["player_id"]),
+                (
+                    round(float(row["line_group_value"]), 6)
+                    if row.get("line_group_value") is not None
+                    else None
+                ),
             )
             by_book_market[key].append(row)
 
-        probability_samples: dict[tuple[str, str, str, str], list[float]] = defaultdict(list)
-        seen_vectors: dict[tuple[str, str, str], set[tuple[tuple[str, float], ...]]] = defaultdict(set)
+        probability_samples: dict[
+            tuple[str, str, str, str, float | None],
+            list[float],
+        ] = defaultdict(list)
+        seen_vectors: dict[
+            tuple[str, str, str, float | None],
+            set[tuple[tuple[str, float], ...]],
+        ] = defaultdict(set)
 
-        for (book, fixture, market_id, player_id), group in by_book_market.items():
+        for (
+            _book,
+            fixture,
+            market_id,
+            player_id,
+            line_group_value,
+        ), group in by_book_market.items():
             if len(group) < 2:
                 continue
             ordered = sorted(group, key=lambda row: str(row["outcome_id"]))
@@ -142,7 +169,7 @@ class ParlayBuilder:
                 (str(row["outcome_id"]), round(probability, 8))
                 for row, probability in zip(ordered, probabilities, strict=True)
             )
-            vector_key = (fixture, market_id, player_id)
+            vector_key = (fixture, market_id, player_id, line_group_value)
             if vector in seen_vectors[vector_key]:
                 continue
             seen_vectors[vector_key].add(vector)
@@ -153,6 +180,7 @@ class ParlayBuilder:
                     market_id,
                     str(row["outcome_id"]),
                     player_id,
+                    line_group_value,
                 )
                 probability_samples[logical].append(probability)
 
@@ -164,9 +192,14 @@ class ParlayBuilder:
                 str(row["market_id"]),
                 str(row["outcome_id"]),
                 str(row["player_id"]),
+                (
+                    round(float(row["line_group_value"]), 6)
+                    if row.get("line_group_value") is not None
+                    else None
+                ),
             )
             samples = probability_samples.get(logical, [])
-            if not samples:
+            if len(samples) < self.minimum_reference_books:
                 continue
 
             fair = statistics.median(samples)
@@ -180,7 +213,8 @@ class ParlayBuilder:
 
             market_meta = catalog.get(str(row["market_id"]), {})
             outcome_name = (
-                market_meta.get("outcomes", {}).get(str(row["outcome_id"]))
+                row.get("outcome_name")
+                or market_meta.get("outcomes", {}).get(str(row["outcome_id"]))
                 or f"Outcome {row['outcome_id']}"
             )
             event_parts = [
@@ -196,12 +230,25 @@ class ParlayBuilder:
                     event_name=event_name,
                     market_id=str(row["market_id"]),
                     market_name=str(
-                        market_meta.get("market_name") or f"Market {row['market_id']}"
+                        row.get("market_name")
+                        or market_meta.get("market_name")
+                        or f"Market {row['market_id']}"
                     ),
                     outcome_id=str(row["outcome_id"]),
                     outcome_name=str(outcome_name),
                     player_id=str(row["player_id"]),
                     player_name=row["player_name"],
+                    line_value=(
+                        float(row["line_value"])
+                        if row.get("line_value") is not None
+                        else None
+                    ),
+                    line_group_value=(
+                        float(row["line_group_value"])
+                        if row.get("line_group_value") is not None
+                        else None
+                    ),
+                    deeplink=row.get("deeplink"),
                     price_decimal=price,
                     price_american=row["price_american"],
                     fair_probability=fair,
@@ -273,6 +320,8 @@ class ParlayBuilder:
                     outcome_name=item.outcome_name,
                     player_id=item.player_id,
                     player_name=item.player_name,
+                    line_value=item.line_value,
+                    deeplink=item.deeplink,
                     price_decimal=item.price_decimal,
                     price_american=item.price_american,
                     market_fair_probability=item.fair_probability,

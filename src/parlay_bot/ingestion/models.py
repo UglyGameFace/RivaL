@@ -17,13 +17,18 @@ class MarketObservation(BaseModel):
 
     provider: str
     fixture_id: str
-    sport_id: int | None = None
-    tournament_id: int | None = None
+    sport_id: str | int | None = None
+    tournament_id: str | int | None = None
     bookmaker: str
     market_id: str
+    market_name: str | None = None
     outcome_id: str
+    outcome_name: str | None = None
     player_id: str
     player_name: str | None = None
+    line_value: float | None = None
+    line_group_value: float | None = None
+    deeplink: str | None = None
 
     active: bool
     main_line: bool = False
@@ -63,6 +68,8 @@ class MarketObservation(BaseModel):
             "price_american": self.price_american,
             "price_fractional": self.price_fractional,
             "limit": self.limit,
+            "line_value": self.line_value,
+            "line_group_value": self.line_group_value,
             "exchange_meta": self.exchange_meta,
         }
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
@@ -72,8 +79,8 @@ class MarketObservation(BaseModel):
 class NormalizedOddsBoard(BaseModel):
     provider: str
     fixture_id: str
-    sport_id: int | None = None
-    tournament_id: int | None = None
+    sport_id: str | int | None = None
+    tournament_id: str | int | None = None
     status_id: int | None = None
     status_name: str | None = None
     start_time: datetime | None = None

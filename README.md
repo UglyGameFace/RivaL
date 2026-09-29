@@ -7,10 +7,12 @@ RivaL is a provider-agnostic sports-odds intelligence and parlay-analysis projec
 ## Current architecture
 
 ```text
-OddsPapi / future providers
-          |
-          v
- provider adapters
+SportsGameOdds         OddsPapi
+ current/today       history/backfill
+      |                    |
+      +---------+----------+
+                v
+         provider adapters
           |
           v
  canonical normalization
@@ -37,8 +39,10 @@ Odds are stored once per real sportsbook selection rather than duplicated per st
 
 ## Implemented
 
+- SportsGameOdds V2 current/today odds and player-prop feed.
+- Shared quota-aware current-board refresh instead of per-user polling.
 - OddsPapi v4 account entitlement parsing.
-- Quota-aware fixtures, odds, historical odds, and market-catalog access.
+- Quota-aware OddsPapi fixtures, odds, historical odds, and market-catalog access.
 - Provider-specific cooldown enforcement and billable-request reserve.
 - Canonical sportsbook selection identity.
 - Current OddsPapi board normalization.
@@ -52,6 +56,7 @@ Odds are stored once per real sportsbook selection rather than duplicated per st
 - No-vig implied-probability normalization.
 - Multi-book median market-consensus probability.
 - Same-book parlay construction.
+- Line-aware consensus so different spreads/totals are never silently combined.
 - Lower / Balanced / Aggressive / Longshot risk modes.
 - One-leg-per-fixture correlation guard.
 - Freshness and started-fixture guards.
@@ -83,7 +88,7 @@ RivaL exposes one application command:
 /rival
 ```
 
-New users can enter a ZIP or state. If a ZIP is used, only the resolved two-letter state is persisted; the ZIP itself is discarded. Returning users see their saved jurisdiction, verified sportsbook options, and the parlay builder when current cached data is available.
+New users can enter a ZIP or state. If a ZIP is used, only the resolved two-letter state is persisted; the ZIP itself is discarded. Returning users see their saved jurisdiction, verified sportsbook options, and the parlay builder. Build/rebuild actions refresh the shared SportsGameOdds cache only when its configured interval has expired, then reuse that cache across users.
 
 The Discord client does not request message-content intent.
 

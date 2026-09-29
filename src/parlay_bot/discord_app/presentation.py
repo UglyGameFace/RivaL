@@ -88,9 +88,10 @@ def parlay_embed(slip: ParlaySlip) -> discord.Embed:
     for index, leg in enumerate(slip.legs, start=1):
         subject = f"{leg.player_name} • " if leg.player_name else ""
         odds = leg.price_american or f"{leg.price_decimal:.2f}"
+        line = f" • Line {leg.line_value:g}" if leg.line_value is not None else ""
         lines.append(
             f"**{index}. {leg.event_name}**\n"
-            f"{subject}{leg.market_name} • {leg.outcome_name} • {odds}\n"
+            f"{subject}{leg.market_name} • {leg.outcome_name}{line} • {odds}\n"
             f"Market fair: {leg.market_fair_probability:.1%} • "
             f"Price edge: {leg.price_edge:+.1%}"
         )

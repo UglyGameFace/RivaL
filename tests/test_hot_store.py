@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from parlay_bot.ingestion.oddspapi import normalize_current_odds
 from parlay_bot.storage.hot import SQLiteHotStore
@@ -94,3 +94,39 @@ def test_stale_provider_update_does_not_replace_current_price(tmp_path) -> None:
     assert current_standard["price_decimal"] == 2.1
     assert stale_result.stale_states_ignored == 1
     assert len(changes) == 1
+
+
+def test_line_metadata_is_persisted_and_line_move_creates_new_state(tmp_path) -> None:
+    store = SQLiteHotStore(tmp_path / "rival.sqlite")
+    payload = sample_payload()
+    board = normalize_current_odds(payload)
+    original = board.observations[0].model_copy(
+        update={
+            "market_name": "Spread",
+            "outcome_name": "Home",
+            "line_value": -5.5,
+            "line_group_value": 5.5,
+            "deeplink": "https://example.invalid/book",
+        }
+    )
+    first = board.model_copy(update={"observations": [original]})
+    store.ingest_board(first)
+
+    moved = original.model_copy(
+        update={
+            "line_value": -6.0,
+            "line_group_value": 6.0,
+            "changed_at": original.changed_at + timedelta(minutes=1),
+        }
+    )
+    store.ingest_board(board.model_copy(update={"observations": [moved]}))
+
+    current = store.current_for_fixture(board.fixture_id)
+    changes = store.changes_for_selection(original.selection_key)
+
+    assert current[0]["market_name"] == "Spread"
+    assert current[0]["outcome_name"] == "Home"
+    assert current[0]["line_value"] == -6.0
+    assert current[0]["line_group_value"] == 6.0
+    assert current[0]["deeplink"] == "https://example.invalid/book"
+    assert len(changes) == 2

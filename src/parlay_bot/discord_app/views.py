@@ -6,6 +6,7 @@ import sqlite3
 import discord
 import httpx
 
+from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.discord_app.presentation import (
     location_embed,
     onboarding_embed,
@@ -15,6 +16,7 @@ from parlay_bot.jurisdiction.onboarding import LocationOnboardingService, Onboar
 from parlay_bot.jurisdiction.zip_lookup import ZipLookupError
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
+from parlay_bot.providers.errors import ProviderError
 
 _LOG = logging.getLogger(__name__)
 
@@ -24,10 +26,15 @@ async def _finish_location(
     location: OnboardingLocation,
     service: LocationOnboardingService,
     parlay_builder: ParlayBuilder | None,
+    current_collector: CurrentBoardCollector | None,
 ) -> None:
     await interaction.edit_original_response(
         embed=location_embed(location),
-        view=LocationView(service=service, parlay_builder=parlay_builder),
+        view=LocationView(
+            service=service,
+            parlay_builder=parlay_builder,
+            current_collector=current_collector,
+        ),
     )
 
 
@@ -36,6 +43,19 @@ async def _modal_error(interaction: discord.Interaction, message: str) -> None:
         await interaction.edit_original_response(content=message, embed=None, view=None)
     else:
         await interaction.response.send_message(message, ephemeral=True)
+
+
+async def _refresh_current_board(
+    collector: CurrentBoardCollector | None,
+) -> None:
+    if collector is None:
+        return
+    try:
+        await collector.refresh_if_due()
+    except (ProviderError, httpx.HTTPError):
+        # Cached odds may still be usable. The parlay builder performs its own
+        # strict freshness check and will reject stale data.
+        _LOG.warning("RivaL current-board refresh failed; trying safe cache", exc_info=True)
 
 
 def _log_interaction_error(
@@ -98,10 +118,12 @@ class ZipModal(RivalModal, title="Set location with ZIP"):
         *,
         service: LocationOnboardingService,
         parlay_builder: ParlayBuilder | None = None,
+        current_collector: CurrentBoardCollector | None = None,
     ) -> None:
         super().__init__()
         self.service = service
         self.parlay_builder = parlay_builder
+        self.current_collector = current_collector
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -127,6 +149,7 @@ class ZipModal(RivalModal, title="Set location with ZIP"):
             location,
             self.service,
             self.parlay_builder,
+            self.current_collector,
         )
 
 
@@ -144,10 +167,12 @@ class StateModal(RivalModal, title="Choose betting state"):
         *,
         service: LocationOnboardingService,
         parlay_builder: ParlayBuilder | None = None,
+        current_collector: CurrentBoardCollector | None = None,
     ) -> None:
         super().__init__()
         self.service = service
         self.parlay_builder = parlay_builder
+        self.current_collector = current_collector
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -174,6 +199,7 @@ class StateModal(RivalModal, title="Choose betting state"):
             location,
             self.service,
             self.parlay_builder,
+            self.current_collector,
         )
 
 
@@ -183,10 +209,12 @@ class OnboardingView(RivalView):
         *,
         service: LocationOnboardingService,
         parlay_builder: ParlayBuilder | None = None,
+        current_collector: CurrentBoardCollector | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.service = service
         self.parlay_builder = parlay_builder
+        self.current_collector = current_collector
 
     @discord.ui.button(
         label="Enter ZIP",
@@ -200,7 +228,11 @@ class OnboardingView(RivalView):
         _button: discord.ui.Button,
     ) -> None:
         await interaction.response.send_modal(
-            ZipModal(service=self.service, parlay_builder=self.parlay_builder)
+            ZipModal(
+                service=self.service,
+                parlay_builder=self.parlay_builder,
+                current_collector=self.current_collector,
+            )
         )
 
     @discord.ui.button(
@@ -215,7 +247,11 @@ class OnboardingView(RivalView):
         _button: discord.ui.Button,
     ) -> None:
         await interaction.response.send_modal(
-            StateModal(service=self.service, parlay_builder=self.parlay_builder)
+            StateModal(
+                service=self.service,
+                parlay_builder=self.parlay_builder,
+                current_collector=self.current_collector,
+            )
         )
 
 
@@ -225,10 +261,12 @@ class LocationView(RivalView):
         *,
         service: LocationOnboardingService,
         parlay_builder: ParlayBuilder | None = None,
+        current_collector: CurrentBoardCollector | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.service = service
         self.parlay_builder = parlay_builder
+        self.current_collector = current_collector
         if parlay_builder is None:
             self.remove_item(self.build_parlay)
 
@@ -251,6 +289,8 @@ class LocationView(RivalView):
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
+        await _refresh_current_board(self.current_collector)
+
         try:
             slip = self.parlay_builder.build_for_user(
                 platform="discord",
@@ -265,6 +305,7 @@ class LocationView(RivalView):
                 view=LocationView(
                     service=self.service,
                     parlay_builder=self.parlay_builder,
+                    current_collector=self.current_collector,
                 ),
             )
             return
@@ -275,6 +316,7 @@ class LocationView(RivalView):
             view=ParlayResultView(
                 service=self.service,
                 parlay_builder=self.parlay_builder,
+                current_collector=self.current_collector,
             ),
         )
 
@@ -294,6 +336,7 @@ class LocationView(RivalView):
             view=OnboardingView(
                 service=self.service,
                 parlay_builder=self.parlay_builder,
+                current_collector=self.current_collector,
             ),
         )
 
@@ -318,6 +361,7 @@ class LocationView(RivalView):
                 view=OnboardingView(
                     service=self.service,
                     parlay_builder=self.parlay_builder,
+                    current_collector=self.current_collector,
                 ),
             )
             return
@@ -327,6 +371,7 @@ class LocationView(RivalView):
             view=LocationView(
                 service=self.service,
                 parlay_builder=self.parlay_builder,
+                current_collector=self.current_collector,
             ),
         )
 
@@ -337,10 +382,12 @@ class ParlayResultView(RivalView):
         *,
         service: LocationOnboardingService,
         parlay_builder: ParlayBuilder,
+        current_collector: CurrentBoardCollector | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.service = service
         self.parlay_builder = parlay_builder
+        self.current_collector = current_collector
 
     async def _rebuild(
         self,
@@ -349,6 +396,8 @@ class ParlayResultView(RivalView):
         risk: RiskMode,
     ) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
+        await _refresh_current_board(self.current_collector)
+
         try:
             slip = self.parlay_builder.build_for_user(
                 platform="discord",
@@ -366,6 +415,7 @@ class ParlayResultView(RivalView):
             view=ParlayResultView(
                 service=self.service,
                 parlay_builder=self.parlay_builder,
+                current_collector=self.current_collector,
             ),
         )
 
@@ -416,6 +466,7 @@ class ParlayResultView(RivalView):
                 view=OnboardingView(
                     service=self.service,
                     parlay_builder=self.parlay_builder,
+                    current_collector=self.current_collector,
                 ),
             )
             return
@@ -425,5 +476,6 @@ class ParlayResultView(RivalView):
             view=LocationView(
                 service=self.service,
                 parlay_builder=self.parlay_builder,
+                current_collector=self.current_collector,
             ),
         )

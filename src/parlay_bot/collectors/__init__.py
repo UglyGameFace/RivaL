@@ -1,0 +1,1 @@
+"""Shared current-board collectors."""

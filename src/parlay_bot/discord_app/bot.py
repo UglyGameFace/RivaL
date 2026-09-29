@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta
 
 import discord
 from discord import app_commands
 
+from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.presentation import onboarding_embed, saved_location_embed
 from parlay_bot.discord_app.views import LocationView, OnboardingView
@@ -13,6 +15,7 @@ from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
 from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
+from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.storage.catalog import MarketCatalogStore
 from parlay_bot.storage.hot import SQLiteHotStore
 
@@ -41,7 +44,29 @@ class RivalDiscordClient(discord.Client):
             catalog=self.market_catalog,
         )
 
+        self.current_provider: SportsGameOddsClient | None = None
+        self.current_collector: CurrentBoardCollector | None = None
+        if settings.sportsgameodds_api_key is not None:
+            self.current_provider = SportsGameOddsClient(
+                settings.sportsgameodds_api_key.get_secret_value(),
+                base_url=settings.sportsgameodds_base_url,
+                monthly_entity_reserve=settings.sportsgameodds_monthly_entity_reserve,
+            )
+            self.current_collector = CurrentBoardCollector(
+                client=self.current_provider,
+                store=self.store,
+                league_ids=self._csv_tuple(settings.rival_current_leagues),
+                bookmaker_ids=self._csv_tuple(settings.rival_current_bookmakers),
+                refresh_interval=timedelta(seconds=settings.rival_current_refresh_seconds),
+                event_limit=settings.rival_current_event_limit,
+                max_pages=settings.rival_current_max_pages,
+            )
+
         self._register_commands()
+
+    @staticmethod
+    def _csv_tuple(value: str) -> tuple[str, ...]:
+        return tuple(item.strip() for item in value.split(",") if item.strip())
 
     def _register_commands(self) -> None:
         @self.tree.command(
@@ -61,6 +86,7 @@ class RivalDiscordClient(discord.Client):
                     view=OnboardingView(
                         service=self.location_service,
                         parlay_builder=self.parlay_builder,
+                        current_collector=self.current_collector,
                     ),
                 )
                 return
@@ -73,6 +99,7 @@ class RivalDiscordClient(discord.Client):
                 view=LocationView(
                     service=self.location_service,
                     parlay_builder=self.parlay_builder,
+                    current_collector=self.current_collector,
                 ),
             )
 
@@ -92,6 +119,8 @@ class RivalDiscordClient(discord.Client):
         _LOG.info("RivaL synced %d global command(s)", len(synced))
 
     async def close(self) -> None:
+        if self.current_provider is not None:
+            await self.current_provider.aclose()
         await self.zip_resolver.aclose()
         await super().close()
 

@@ -34,16 +34,14 @@ RivaL Data Warehouse/
 
 Long-term compressed market history, line movement, props, results, and future training data.
 
-Recommended partitioning:
+V1 uses partition-encoded filenames directly inside `history/` to avoid dynamic folder discovery:
 
 ```text
-history/
-└── <sport>/
-    └── <year>/
-        └── <month>/
-            └── <date>/
-                └── <bookmaker>.parquet
+sport=<sport>__date=<YYYY-MM-DD>__book=<book>__provider=<provider>__batch=<id>.parquet
 ```
+
+A future nested partition layout may be added, but only by creating descendants from the configured
+`history/` folder. RivaL must never discover those partitions by starting at My Drive/root.
 
 ### manifests/
 
@@ -114,6 +112,16 @@ RIVAL_DRIVE_STAGING_FOLDER_ID=<private configured folder id>
 ```
 
 Actual IDs stay in deployment secret/config storage and are not committed to GitHub.
+
+## Implemented archive invariants
+
+- Only closed line states are eligible. The latest state of every selection remains hot.
+- Data is written as explicit-schema ZSTD Parquet.
+- Every data file has SHA-256 and MD5 digests plus a row count.
+- Data uploads first to configured `staging/`, is checksum-verified, then is promoted to configured `history/`.
+- A JSON manifest is written to configured `manifests/`.
+- SQLite source rows are marked archived only after both Drive objects are verified.
+- There is no archive delete API.
 
 ## Archive write sequence
 

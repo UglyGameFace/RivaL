@@ -8,6 +8,7 @@ from typing import ClassVar, Self
 
 import httpx
 
+from parlay_bot.domain.catalog import MarketDefinition
 from parlay_bot.domain.models import (
     AccountSnapshot,
     BookmakerEntitlement,
@@ -45,6 +46,7 @@ class OddsPapiClient:
         "odds": 0.5,
         "historical": 5.0,
         "odds_by_tournaments": 2.0,
+        "markets": 1.0,
     }
 
     def __init__(
@@ -277,6 +279,21 @@ class OddsPapiClient:
         if not isinstance(payload, list):
             raise ProviderProtocolError("OddsPapi fixtures response is not a list")
         return [Fixture.model_validate(item) for item in payload]
+
+    async def get_markets(self) -> list[MarketDefinition]:
+        """Fetch the market/outcome label catalog used to resolve numeric odds IDs."""
+
+        await self._ensure_billable_capacity()
+        response = await self._request(
+            "/v4/markets",
+            params={"language": "en"},
+            endpoint="markets",
+            billable=True,
+        )
+        payload = response.json()
+        if not isinstance(payload, list):
+            raise ProviderProtocolError("OddsPapi markets response is not a list")
+        return [MarketDefinition.model_validate(item) for item in payload]
 
     async def get_odds(
         self,

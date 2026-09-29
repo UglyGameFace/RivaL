@@ -29,7 +29,7 @@ def usage_payload(*, current: int = 100, maximum: int = 2500) -> dict:
 @pytest.mark.asyncio
 async def test_usage_parses_entity_and_request_limits() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
-        assert request.url.path == "/account/usage"
+        assert request.url.path == "/v2/account/usage"
         assert request.headers["x-api-key"] == "secret"
         assert "api" not in request.url.params
         return httpx.Response(200, json=usage_payload(), request=request)
@@ -63,10 +63,10 @@ async def test_event_request_uses_header_filters_and_cursor() -> None:
         assert request.headers["x-api-key"] == "secret"
         assert "apiKey" not in request.url.params
 
-        if request.url.path == "/account/usage":
+        if request.url.path == "/v2/account/usage":
             return httpx.Response(200, json=usage_payload(), request=request)
 
-        assert request.url.path == "/events"
+        assert request.url.path == "/v2/events"
         assert request.url.params["leagueID"] == "NBA,NFL"
         assert request.url.params["bookmakerID"] == "draftkings,fanduel"
         assert request.url.params["oddsAvailable"] == "true"
@@ -103,7 +103,7 @@ async def test_event_request_uses_header_filters_and_cursor() -> None:
             cursor="cursor-1",
         )
 
-    assert calls == ["/account/usage", "/events"]
+    assert calls == ["/v2/account/usage", "/v2/events"]
     assert events == [{"eventID": "e1"}]
     assert cursor == "cursor-2"
     assert notice == "test notice"
@@ -135,7 +135,7 @@ async def test_monthly_reserve_blocks_event_call_before_spending_entities() -> N
         with pytest.raises(QuotaReserveReached):
             await client.get_events(league_ids=["NBA"], limit=25)
 
-    assert calls == ["/account/usage"]
+    assert calls == ["/v2/account/usage"]
 
 
 @pytest.mark.asyncio
@@ -144,7 +144,7 @@ async def test_limit_is_trimmed_to_safe_remaining_entity_budget() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal observed_limit
-        if request.url.path == "/account/usage":
+        if request.url.path == "/v2/account/usage":
             return httpx.Response(
                 200,
                 json=usage_payload(current=2235, maximum=2500),

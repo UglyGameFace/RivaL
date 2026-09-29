@@ -5,6 +5,7 @@ import discord
 from parlay_bot.brand import APP_NAME, APP_TAGLINE
 from parlay_bot.jurisdiction.onboarding import OnboardingLocation
 from parlay_bot.jurisdiction.states import state_name
+from parlay_bot.parlays.models import ParlaySlip
 
 _BOOK_NAMES = {
     "draftkings": "DraftKings",
@@ -80,3 +81,46 @@ def saved_location_embed(*, state_code: str, eligible_books: list[str]) -> disco
             source="saved",
         )
     )
+
+
+def parlay_embed(slip: ParlaySlip) -> discord.Embed:
+    lines: list[str] = []
+    for index, leg in enumerate(slip.legs, start=1):
+        subject = f"{leg.player_name} • " if leg.player_name else ""
+        odds = leg.price_american or f"{leg.price_decimal:.2f}"
+        lines.append(
+            f"**{index}. {leg.event_name}**\n"
+            f"{subject}{leg.market_name} • {leg.outcome_name} • {odds}\n"
+            f"Market fair: {leg.market_fair_probability:.1%} • "
+            f"Price edge: {leg.price_edge:+.1%}"
+        )
+
+    embed = discord.Embed(
+        title=f"{APP_NAME} • {display_book(slip.bookmaker)}",
+        description="\n\n".join(lines),
+    )
+    embed.add_field(
+        name="Slip",
+        value=(
+            f"{len(slip.legs)} legs • {slip.risk_mode.value.title()}\n"
+            f"Combined decimal odds: {slip.combined_decimal_odds:.2f}\n"
+            f"Market-implied hit estimate: {slip.market_fair_probability:.1%}\n"
+            f"Market-implied price edge: {slip.market_implied_edge:+.1%}"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Correlation guard",
+        value=(
+            "One leg per fixture. Same-game combinations stay disabled until "
+            "RivaL has a dedicated correlation model."
+        ),
+        inline=False,
+    )
+    embed.set_footer(
+        text=(
+            "Probabilities are no-vig market-consensus estimates, not guaranteed outcomes "
+            "or a trained prediction model."
+        )
+    )
+    return embed

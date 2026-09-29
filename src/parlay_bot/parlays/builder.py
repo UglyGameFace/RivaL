@@ -62,13 +62,17 @@ class ParlayBuilder:
         registry: JurisdictionRegistry,
         catalog: MarketCatalogStore | None = None,
         max_price_age: timedelta = timedelta(minutes=30),
+        minimum_reference_books: int = 2,
     ) -> None:
         if max_price_age <= timedelta(0):
             raise ValueError("max_price_age must be positive")
+        if minimum_reference_books < 1:
+            raise ValueError("minimum_reference_books must be positive")
         self.store = store
         self.registry = registry
         self.catalog = catalog or MarketCatalogStore(store.path)
         self.max_price_age = max_price_age
+        self.minimum_reference_books = minimum_reference_books
 
     @staticmethod
     def _score(*, probability: float, edge: float, price: float, risk: RiskMode) -> float:
@@ -195,7 +199,7 @@ class ParlayBuilder:
                 ),
             )
             samples = probability_samples.get(logical, [])
-            if not samples:
+            if len(samples) < self.minimum_reference_books:
                 continue
 
             fair = statistics.median(samples)

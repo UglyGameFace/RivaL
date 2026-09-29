@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol
 
+from parlay_bot.domain.catalog import MarketDefinition
 from parlay_bot.domain.models import AccountSnapshot, Fixture
 
 
@@ -20,6 +21,8 @@ class OddsProvider(Protocol):
         has_odds: bool | None = None,
         bookmakers: Sequence[str] | None = None,
     ) -> list[Fixture]: ...
+
+    async def get_markets(self) -> list[MarketDefinition]: ...
 
     async def get_odds(
         self,

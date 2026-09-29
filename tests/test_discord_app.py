@@ -8,11 +8,20 @@ from parlay_bot.discord_app.presentation import (
     display_book,
     location_embed,
     onboarding_embed,
+    parlay_embed,
 )
-from parlay_bot.discord_app.views import LocationView, OnboardingView, StateModal, ZipModal
+from parlay_bot.discord_app.views import (
+    LocationView,
+    OnboardingView,
+    ParlayResultView,
+    StateModal,
+    ZipModal,
+)
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
 from parlay_bot.jurisdiction.onboarding import LocationOnboardingService, OnboardingLocation
 from parlay_bot.jurisdiction.registry import JurisdictionRegistry
+from parlay_bot.parlays.builder import ParlayBuilder
+from parlay_bot.parlays.models import ParlayLeg, ParlaySlip, RiskMode
 from parlay_bot.storage.hot import SQLiteHotStore
 
 
@@ -121,3 +130,88 @@ def test_run_requires_discord_token(tmp_path) -> None:
 
     with pytest.raises(RuntimeError, match="DISCORD_TOKEN"):
         run_discord_bot(settings)
+
+
+def build_parlay_builder(tmp_path) -> ParlayBuilder:
+    return ParlayBuilder(
+        store=SQLiteHotStore(tmp_path / "rival-parlay.sqlite"),
+        registry=JurisdictionRegistry(verified_us_sportsbooks()),
+    )
+
+
+@pytest.mark.asyncio
+async def test_location_view_exposes_build_parlay_when_engine_is_attached(tmp_path) -> None:
+    service = build_service(tmp_path)
+    builder = build_parlay_builder(tmp_path)
+    view = LocationView(service=service, parlay_builder=builder)
+
+    controls = {item.custom_id: item.label for item in view.children}
+
+    assert controls["rival:parlay:build"] == "Build Parlay"
+    assert controls["rival:location:change"] == "Change Location"
+    assert controls["rival:location:refresh"] == "Refresh Books"
+
+
+@pytest.mark.asyncio
+async def test_parlay_result_view_only_exposes_working_v1_controls(tmp_path) -> None:
+    service = build_service(tmp_path)
+    builder = build_parlay_builder(tmp_path)
+    view = ParlayResultView(service=service, parlay_builder=builder)
+
+    controls = {item.custom_id: item.label for item in view.children}
+
+    assert controls == {
+        "rival:parlay:safer": "Make Safer",
+        "rival:parlay:boost": "Boost Payout",
+        "rival:parlay:back": "Back",
+    }
+
+
+def test_parlay_embed_labels_market_consensus_not_prediction_model() -> None:
+    slip = ParlaySlip(
+        bookmaker="fanduel",
+        risk_mode=RiskMode.BALANCED,
+        legs=[
+            ParlayLeg(
+                fixture_id="fixture-1",
+                event_name="Home vs Away",
+                bookmaker="fanduel",
+                market_id="100",
+                market_name="Winner",
+                outcome_id="101",
+                outcome_name="Home",
+                player_id="0",
+                price_decimal=2.02,
+                price_american="+102",
+                market_fair_probability=0.51,
+                price_edge=0.0302,
+                reference_books=3,
+            ),
+            ParlayLeg(
+                fixture_id="fixture-2",
+                event_name="Team C vs Team D",
+                bookmaker="fanduel",
+                market_id="100",
+                market_name="Winner",
+                outcome_id="101",
+                outcome_name="Home",
+                player_id="0",
+                price_decimal=1.95,
+                price_american="-105",
+                market_fair_probability=0.53,
+                price_edge=0.0335,
+                reference_books=3,
+            ),
+        ],
+        combined_decimal_odds=3.939,
+        market_fair_probability=0.2703,
+        market_implied_edge=0.0649,
+    )
+
+    rendered = parlay_embed(slip).to_dict()
+
+    assert "FanDuel" in rendered["title"]
+    assert "Market-implied hit estimate" in rendered["fields"][0]["value"]
+    assert "one leg per fixture" in rendered["fields"][1]["value"].lower()
+    assert "not guaranteed outcomes" in rendered["footer"]["text"]
+    assert "not" in rendered["footer"]["text"].lower()

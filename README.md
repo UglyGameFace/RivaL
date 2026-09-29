@@ -2,73 +2,117 @@
 
 **Know the line. Build the slip.**
 
-RivaL is a provider-agnostic sports-odds intelligence and parlay-analysis project. It is being built so the complicated parts — sportsbook coverage, line comparison, historical movement, probability modeling, and jurisdiction filtering — stay behind a simple user experience.
+RivaL is a provider-agnostic sports-odds intelligence and parlay-analysis project. It keeps sportsbook coverage, line comparison, historical movement, jurisdiction filtering, and parlay construction behind a simple Discord experience.
 
 ## Current architecture
 
 ```text
-Odds providers
-     |
-     v
-provider adapters
-     |
-     v
-canonical normalization
-     |
- +---+----------------+
- |                    |
- v                    v
-SQLite hot store    historical state stream
- |                    |
- v                    v
-current board       compact archive partitions
- |                    |
- +---------+----------+
-           |
-           v
-     future model layer
-           |
-           v
- Discord first / other clients later
+OddsPapi / future providers
+          |
+          v
+ provider adapters
+          |
+          v
+ canonical normalization
+          |
+   +------+-------------------+
+   |                          |
+   v                          v
+SQLite hot store      Google Drive cold warehouse
+   |                  history / models / backups
+   |                          |
+   +------------+-------------+
+                |
+                v
+       market-consensus layer
+                |
+                v
+        parlay construction
+                |
+                v
+          Discord /rival
 ```
 
-Jurisdiction data filters which sportsbooks a user can act on. Odds are stored once per real market selection rather than duplicated for every state. A ZIP can be used to determine the state during onboarding, but RivaL persists only the state code and discards the ZIP.
+Odds are stored once per real sportsbook selection rather than duplicated per state. Jurisdiction metadata filters which books a user can actually act on.
 
 ## Implemented
 
 - OddsPapi v4 account entitlement parsing.
-- Quota-aware current fixture and odds access.
-- Historical odds access with ETag support.
-- Provider-specific cooldown enforcement.
-- Configurable billable-request reserve.
+- Quota-aware fixtures, odds, historical odds, and market-catalog access.
+- Provider-specific cooldown enforcement and billable-request reserve.
 - Canonical sportsbook selection identity.
 - Current OddsPapi board normalization.
-- SQLite hot storage for fixtures and current prices.
-- Meaningful-state line history with repeated-snapshot compaction.
-- Protection against stale provider updates overwriting newer current prices.
-- Jurisdiction-ready sportsbook availability model.
-- ZIP or state onboarding with state-only persistence.
+- SQLite hot storage for fixtures/current prices.
+- Meaningful-state line history with duplicate-state compaction.
+- Stale provider-state protection.
+- ZIP/state onboarding with state-only persistence.
 - Verified sportsbook filtering for the user's selected jurisdiction.
-- Private Discord `/rival` dashboard with ZIP/state onboarding.
+- Private Discord `/rival` dashboard.
+- Market/outcome label catalog.
+- No-vig implied-probability normalization.
+- Multi-book median market-consensus probability.
+- Same-book parlay construction.
+- Lower / Balanced / Aggressive / Longshot risk modes.
+- One-leg-per-fixture correlation guard.
+- Freshness and started-fixture guards.
+- Discord `Build Parlay`, `Make Safer`, and `Boost Payout` controls.
+- Dedicated Google Drive `RivaL Data Warehouse` boundary.
 - Python 3.11 CI with Ruff and pytest.
+
+## Parlay V1
+
+RivaL's first parlay engine is deliberately **market-derived**, not presented as a trained prediction model.
+
+For each market, RivaL removes the sportsbook's vig from the available outcome prices, compares the same logical outcome across eligible books, de-duplicates identical probability vectors, and uses the median no-vig probability as its market-consensus estimate.
+
+A returned parlay:
+
+- uses one sportsbook only;
+- uses active main lines only;
+- ignores stale prices;
+- ignores already-started fixtures;
+- uses at most one leg per fixture until a proper same-game correlation model exists.
+
+The Discord result explicitly labels these values as market-consensus estimates rather than guaranteed outcomes or model predictions.
 
 ## Discord surface
 
-RivaL currently exposes one application command:
+RivaL exposes one application command:
 
 ```text
 /rival
 ```
 
-It opens an ephemeral dashboard. New users can enter a ZIP or state; returning users see their saved jurisdiction and verified sportsbook options. The Discord client does not request message-content intent.
+New users can enter a ZIP or state. If a ZIP is used, only the resolved two-letter state is persisted; the ZIP itself is discarded. Returning users see their saved jurisdiction, verified sportsbook options, and the parlay builder when current cached data is available.
 
-Set `DISCORD_TOKEN` in secret storage. `RIVAL_DEV_GUILD_ID` is optional and can be used for immediate development-guild command sync; omit it for global sync.
+The Discord client does not request message-content intent.
+
+Set `DISCORD_TOKEN` in secret storage. `RIVAL_DEV_GUILD_ID` is optional for development-guild command sync.
+
+## Google Drive
+
+Historical archives and future model artifacts live under one dedicated Drive root:
+
+```text
+RivaL Data Warehouse/
+├── history/
+├── manifests/
+├── models/
+├── predictions/
+├── backups/
+├── reports/
+└── staging/
+```
+
+RivaL is forbidden from enumerating or modifying Drive content outside that root. Real Drive account details and folder IDs remain private runtime configuration and are not committed.
+
+See `docs/GOOGLE_DRIVE_BOUNDARY.md`.
 
 ## Secrets and generated data
 
-Never commit API keys, Discord tokens, OAuth credentials, downloaded odds payloads, databases, or archive files.
+Never commit API keys, Discord tokens, OAuth credentials, real Drive folder IDs, downloaded odds payloads, databases, or archive files.
 
-Copy `.env.example` to a local `.env` and inject real credentials through the deployment platform's secret manager. The default hot database path is `data/rival.sqlite`, which is ignored by Git.
+Copy `.env.example` to a local `.env` and inject real credentials through deployment secret/config storage. The default hot database path is `data/rival.sqlite`, which is ignored by Git.
 
 ## Development
 
@@ -78,4 +122,4 @@ ruff check .
 pytest -q
 ```
 
-See `ACTIVE_TASK.md` for the exact task, validation evidence, blockers, and next step.
+See `ACTIVE_TASK.md` for the exact active task, validation evidence, and next milestone.

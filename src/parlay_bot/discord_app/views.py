@@ -6,9 +6,15 @@ import sqlite3
 import discord
 import httpx
 
-from parlay_bot.discord_app.presentation import location_embed, onboarding_embed
+from parlay_bot.discord_app.presentation import (
+    location_embed,
+    onboarding_embed,
+    parlay_embed,
+)
 from parlay_bot.jurisdiction.onboarding import LocationOnboardingService, OnboardingLocation
 from parlay_bot.jurisdiction.zip_lookup import ZipLookupError
+from parlay_bot.parlays.builder import ParlayBuilder
+from parlay_bot.parlays.models import ParlayBuildError, RiskMode
 
 _LOG = logging.getLogger(__name__)
 
@@ -17,10 +23,11 @@ async def _finish_location(
     interaction: discord.Interaction,
     location: OnboardingLocation,
     service: LocationOnboardingService,
+    parlay_builder: ParlayBuilder | None,
 ) -> None:
     await interaction.edit_original_response(
         embed=location_embed(location),
-        view=LocationView(service=service),
+        view=LocationView(service=service, parlay_builder=parlay_builder),
     )
 
 
@@ -86,9 +93,15 @@ class ZipModal(RivalModal, title="Set location with ZIP"):
         required=True,
     )
 
-    def __init__(self, *, service: LocationOnboardingService) -> None:
+    def __init__(
+        self,
+        *,
+        service: LocationOnboardingService,
+        parlay_builder: ParlayBuilder | None = None,
+    ) -> None:
         super().__init__()
         self.service = service
+        self.parlay_builder = parlay_builder
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -109,7 +122,12 @@ class ZipModal(RivalModal, title="Set location with ZIP"):
             )
             return
 
-        await _finish_location(interaction, location, self.service)
+        await _finish_location(
+            interaction,
+            location,
+            self.service,
+            self.parlay_builder,
+        )
 
 
 class StateModal(RivalModal, title="Choose betting state"):
@@ -121,9 +139,15 @@ class StateModal(RivalModal, title="Choose betting state"):
         required=True,
     )
 
-    def __init__(self, *, service: LocationOnboardingService) -> None:
+    def __init__(
+        self,
+        *,
+        service: LocationOnboardingService,
+        parlay_builder: ParlayBuilder | None = None,
+    ) -> None:
         super().__init__()
         self.service = service
+        self.parlay_builder = parlay_builder
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -145,13 +169,24 @@ class StateModal(RivalModal, title="Choose betting state"):
             await _modal_error(interaction, "RivaL could not save that state right now.")
             return
 
-        await _finish_location(interaction, location, self.service)
+        await _finish_location(
+            interaction,
+            location,
+            self.service,
+            self.parlay_builder,
+        )
 
 
 class OnboardingView(RivalView):
-    def __init__(self, *, service: LocationOnboardingService) -> None:
+    def __init__(
+        self,
+        *,
+        service: LocationOnboardingService,
+        parlay_builder: ParlayBuilder | None = None,
+    ) -> None:
         super().__init__(timeout=900)
         self.service = service
+        self.parlay_builder = parlay_builder
 
     @discord.ui.button(
         label="Enter ZIP",
@@ -164,7 +199,9 @@ class OnboardingView(RivalView):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
-        await interaction.response.send_modal(ZipModal(service=self.service))
+        await interaction.response.send_modal(
+            ZipModal(service=self.service, parlay_builder=self.parlay_builder)
+        )
 
     @discord.ui.button(
         label="Choose State",
@@ -177,13 +214,69 @@ class OnboardingView(RivalView):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
-        await interaction.response.send_modal(StateModal(service=self.service))
+        await interaction.response.send_modal(
+            StateModal(service=self.service, parlay_builder=self.parlay_builder)
+        )
 
 
 class LocationView(RivalView):
-    def __init__(self, *, service: LocationOnboardingService) -> None:
+    def __init__(
+        self,
+        *,
+        service: LocationOnboardingService,
+        parlay_builder: ParlayBuilder | None = None,
+    ) -> None:
         super().__init__(timeout=900)
         self.service = service
+        self.parlay_builder = parlay_builder
+        if parlay_builder is None:
+            self.remove_item(self.build_parlay)
+
+    @discord.ui.button(
+        label="Build Parlay",
+        style=discord.ButtonStyle.success,
+        emoji="🎟️",
+        custom_id="rival:parlay:build",
+    )
+    async def build_parlay(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        if self.parlay_builder is None:
+            await interaction.response.send_message(
+                "RivaL's parlay engine is not available in this runtime.",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            slip = self.parlay_builder.build_for_user(
+                platform="discord",
+                user_id=str(interaction.user.id),
+                leg_count=3,
+                risk=RiskMode.BALANCED,
+            )
+        except ParlayBuildError as exc:
+            await interaction.edit_original_response(
+                content=str(exc),
+                embed=None,
+                view=LocationView(
+                    service=self.service,
+                    parlay_builder=self.parlay_builder,
+                ),
+            )
+            return
+
+        await interaction.edit_original_response(
+            content=None,
+            embed=parlay_embed(slip),
+            view=ParlayResultView(
+                service=self.service,
+                parlay_builder=self.parlay_builder,
+            ),
+        )
 
     @discord.ui.button(
         label="Change Location",
@@ -198,7 +291,10 @@ class LocationView(RivalView):
     ) -> None:
         await interaction.response.edit_message(
             embed=onboarding_embed(),
-            view=OnboardingView(service=self.service),
+            view=OnboardingView(
+                service=self.service,
+                parlay_builder=self.parlay_builder,
+            ),
         )
 
     @discord.ui.button(
@@ -219,11 +315,115 @@ class LocationView(RivalView):
         if saved is None:
             await interaction.response.edit_message(
                 embed=onboarding_embed(),
-                view=OnboardingView(service=self.service),
+                view=OnboardingView(
+                    service=self.service,
+                    parlay_builder=self.parlay_builder,
+                ),
             )
             return
 
         await interaction.response.edit_message(
             embed=location_embed(saved),
-            view=LocationView(service=self.service),
+            view=LocationView(
+                service=self.service,
+                parlay_builder=self.parlay_builder,
+            ),
+        )
+
+
+class ParlayResultView(RivalView):
+    def __init__(
+        self,
+        *,
+        service: LocationOnboardingService,
+        parlay_builder: ParlayBuilder,
+    ) -> None:
+        super().__init__(timeout=900)
+        self.service = service
+        self.parlay_builder = parlay_builder
+
+    async def _rebuild(
+        self,
+        interaction: discord.Interaction,
+        *,
+        risk: RiskMode,
+    ) -> None:
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        try:
+            slip = self.parlay_builder.build_for_user(
+                platform="discord",
+                user_id=str(interaction.user.id),
+                leg_count=3,
+                risk=risk,
+            )
+        except ParlayBuildError as exc:
+            await interaction.edit_original_response(content=str(exc), embed=None, view=self)
+            return
+
+        await interaction.edit_original_response(
+            content=None,
+            embed=parlay_embed(slip),
+            view=ParlayResultView(
+                service=self.service,
+                parlay_builder=self.parlay_builder,
+            ),
+        )
+
+    @discord.ui.button(
+        label="Make Safer",
+        style=discord.ButtonStyle.primary,
+        emoji="🛡️",
+        custom_id="rival:parlay:safer",
+    )
+    async def make_safer(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await self._rebuild(interaction, risk=RiskMode.LOWER)
+
+    @discord.ui.button(
+        label="Boost Payout",
+        style=discord.ButtonStyle.secondary,
+        emoji="📈",
+        custom_id="rival:parlay:boost",
+    )
+    async def boost_payout(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        await self._rebuild(interaction, risk=RiskMode.AGGRESSIVE)
+
+    @discord.ui.button(
+        label="Back",
+        style=discord.ButtonStyle.secondary,
+        emoji="↩️",
+        custom_id="rival:parlay:back",
+    )
+    async def back(
+        self,
+        interaction: discord.Interaction,
+        _button: discord.ui.Button,
+    ) -> None:
+        saved = self.service.get_saved(
+            platform="discord",
+            user_id=str(interaction.user.id),
+        )
+        if saved is None:
+            await interaction.response.edit_message(
+                embed=onboarding_embed(),
+                view=OnboardingView(
+                    service=self.service,
+                    parlay_builder=self.parlay_builder,
+                ),
+            )
+            return
+
+        await interaction.response.edit_message(
+            embed=location_embed(saved),
+            view=LocationView(
+                service=self.service,
+                parlay_builder=self.parlay_builder,
+            ),
         )

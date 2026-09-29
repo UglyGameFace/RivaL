@@ -12,6 +12,8 @@ from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
 from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
 from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
+from parlay_bot.parlays.builder import ParlayBuilder
+from parlay_bot.storage.catalog import MarketCatalogStore
 from parlay_bot.storage.hot import SQLiteHotStore
 
 _LOG = logging.getLogger(__name__)
@@ -32,6 +34,12 @@ class RivalDiscordClient(discord.Client):
             registry=self.registry,
             zip_resolver=self.zip_resolver,
         )
+        self.market_catalog = MarketCatalogStore(settings.rival_db_path)
+        self.parlay_builder = ParlayBuilder(
+            store=self.store,
+            registry=self.registry,
+            catalog=self.market_catalog,
+        )
 
         self._register_commands()
 
@@ -50,7 +58,10 @@ class RivalDiscordClient(discord.Client):
             if saved is None:
                 await interaction.edit_original_response(
                     embed=onboarding_embed(),
-                    view=OnboardingView(service=self.location_service),
+                    view=OnboardingView(
+                        service=self.location_service,
+                        parlay_builder=self.parlay_builder,
+                    ),
                 )
                 return
 
@@ -59,7 +70,10 @@ class RivalDiscordClient(discord.Client):
                     state_code=saved.state_code,
                     eligible_books=list(saved.eligible_books),
                 ),
-                view=LocationView(service=self.location_service),
+                view=LocationView(
+                    service=self.location_service,
+                    parlay_builder=self.parlay_builder,
+                ),
             )
 
     async def setup_hook(self) -> None:

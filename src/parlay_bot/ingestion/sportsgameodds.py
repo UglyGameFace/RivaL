@@ -10,7 +10,7 @@ class SportsGameOddsNormalizationError(ValueError):
     """A SportsGameOdds event cannot be normalized safely."""
 
 
-def american_to_decimal(value: str | int | float) -> float:
+def american_to_decimal(value: str | float) -> float:
     try:
         american = float(value)
     except (TypeError, ValueError) as exc:

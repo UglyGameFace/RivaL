@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class MarketOutcomeDefinition(BaseModel):
@@ -8,6 +10,13 @@ class MarketOutcomeDefinition(BaseModel):
 
     outcome_id: str = Field(alias="outcomeId")
     outcome_name: str = Field(alias="outcomeName")
+
+    @field_validator("outcome_id", mode="before")
+    @classmethod
+    def stringify_outcome_id(cls, value: Any) -> str:
+        if value is None:
+            raise ValueError("outcomeId is required")
+        return str(value)
 
 
 class MarketDefinition(BaseModel):
@@ -22,3 +31,10 @@ class MarketDefinition(BaseModel):
     period: str | None = None
     market_type: str | None = Field(default=None, alias="marketType")
     outcomes: list[MarketOutcomeDefinition] = Field(default_factory=list)
+
+    @field_validator("market_id", mode="before")
+    @classmethod
+    def stringify_market_id(cls, value: Any) -> str:
+        if value is None:
+            raise ValueError("marketId is required")
+        return str(value)

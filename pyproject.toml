@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rival-bot"
+version = "0.1.0"
+description = "RivaL sports odds intelligence and parlay analysis bot"
+requires-python = ">=3.11"
+dependencies = [
+  "discord.py==2.7.1",
+  "httpx>=0.28,<1",
+  "pydantic>=2.9,<3",
+  "pydantic-settings>=2.6,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.3,<9",
+  "pytest-asyncio>=0.25,<1",
+  "ruff>=0.8,<1",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100

@@ -47,6 +47,6 @@ async def test_enabled_archive_builds_without_making_network_request(tmp_path) -
     try:
         assert runtime.drive.folders.root == "root"
         assert runtime.drive.folders.history == "history"
-        assert runtime.service.queue.path == settings.rival_db_path
+        assert str(runtime.service.queue.path) == settings.rival_db_path
     finally:
         await runtime.drive.aclose()

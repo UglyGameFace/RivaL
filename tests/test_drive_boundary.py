@@ -5,7 +5,11 @@ import hashlib
 import httpx
 import pytest
 
-from parlay_bot.archive.drive import DriveArchiveError, DriveArchiveFolders, GoogleDriveArchiveClient
+from parlay_bot.archive.drive import (
+    DriveArchiveError,
+    DriveArchiveFolders,
+    GoogleDriveArchiveClient,
+)
 from parlay_bot.archive.models import ArchiveArtifact
 
 

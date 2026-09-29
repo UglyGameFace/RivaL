@@ -3,7 +3,7 @@ from __future__ import annotations
 import statistics
 from collections import defaultdict
 from dataclasses import dataclass
-from pathlib import Path
+from datetime import UTC, datetime, timedelta
 
 from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.parlays.math import (
@@ -58,10 +58,14 @@ class ParlayBuilder:
         store: SQLiteHotStore,
         registry: JurisdictionRegistry,
         catalog: MarketCatalogStore | None = None,
+        max_price_age: timedelta = timedelta(minutes=30),
     ) -> None:
+        if max_price_age <= timedelta(0):
+            raise ValueError("max_price_age must be positive")
         self.store = store
         self.registry = registry
         self.catalog = catalog or MarketCatalogStore(store.path)
+        self.max_price_age = max_price_age
 
     @staticmethod
     def _score(*, probability: float, edge: float, price: float, risk: RiskMode) -> float:
@@ -79,6 +83,8 @@ class ParlayBuilder:
             return []
         self.store.initialize()
         placeholders = ",".join("?" for _ in eligible_books)
+        now = datetime.now(UTC)
+        freshest = now - self.max_price_age
         with self.store.connect() as connection:
             rows = connection.execute(
                 f"""
@@ -94,8 +100,10 @@ class ParlayBuilder:
                 WHERE c.active = 1
                   AND c.main_line = 1
                   AND c.bookmaker IN ({placeholders})
+                  AND c.observed_at >= ?
+                  AND (f.start_time IS NULL OR f.start_time > ?)
                 """,
-                tuple(sorted(eligible_books)),
+                (*sorted(eligible_books), freshest.isoformat(), now.isoformat()),
             ).fetchall()
         return [dict(row) for row in rows]
 

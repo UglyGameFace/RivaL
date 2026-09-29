@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from parlay_bot.ingestion.oddspapi import normalize_current_odds
 from parlay_bot.storage.hot import SQLiteHotStore
@@ -116,7 +116,7 @@ def test_line_metadata_is_persisted_and_line_move_creates_new_state(tmp_path) ->
         update={
             "line_value": -6.0,
             "line_group_value": 6.0,
-            "changed_at": original.changed_at + __import__("datetime").timedelta(minutes=1),
+            "changed_at": original.changed_at + timedelta(minutes=1),
         }
     )
     store.ingest_board(board.model_copy(update={"observations": [moved]}))

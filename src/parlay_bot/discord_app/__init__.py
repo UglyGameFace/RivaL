@@ -1,0 +1,1 @@
+"""Discord interface for RivaL."""

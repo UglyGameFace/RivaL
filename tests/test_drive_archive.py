@@ -48,6 +48,21 @@ async def test_history_upload_is_bounded_staged_verified_and_idempotent(tmp_path
                 request=request,
             )
 
+        if request.method == "GET" and request.url.path.startswith("/drive/v3/files/"):
+            folder_id = request.url.path.rsplit("/", 1)[1]
+            parents = [] if folder_id == "root-id" else ["root-id"]
+            return httpx.Response(
+                200,
+                json={
+                    "id": folder_id,
+                    "name": folder_id,
+                    "mimeType": "application/vnd.google-apps.folder",
+                    "parents": parents,
+                    "trashed": False,
+                },
+                request=request,
+            )
+
         if request.method == "GET" and request.url.path == "/drive/v3/files":
             query = request.url.params["q"]
             if "'history-id' in parents" in query:

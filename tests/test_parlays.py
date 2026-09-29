@@ -86,7 +86,7 @@ def seed_fixture(
     fd_home: float,
     fd_away: float,
 ) -> None:
-    now = datetime(2026, 9, 28, 20, 0, tzinfo=UTC) + timedelta(minutes=number)
+    now = datetime.now(UTC) + timedelta(minutes=number)
     store.ingest_board(
         NormalizedOddsBoard(
             provider="test",
@@ -216,4 +216,40 @@ def test_rejects_same_fixture_as_multiple_legs(tmp_path) -> None:
     )
 
     with pytest.raises(ParlayBuildError, match="independent fixtures"):
+        engine.build_for_state(state_code="CT", leg_count=2)
+
+
+def test_stale_prices_are_not_used_for_new_slips(tmp_path) -> None:
+    engine, store = build_engine(tmp_path)
+    stale_time = datetime.now(UTC) - timedelta(hours=2)
+    fixture_time = datetime.now(UTC) + timedelta(days=1)
+    store.ingest_board(
+        NormalizedOddsBoard(
+            provider="test",
+            fixture_id="stale-fixture",
+            sport_id=11,
+            tournament_id=132,
+            start_time=fixture_time,
+            participant1_name="Old Home",
+            participant2_name="Old Away",
+            observations=[
+                observation(
+                    fixture="stale-fixture",
+                    bookmaker="draftkings",
+                    outcome="101",
+                    price=1.91,
+                    changed=stale_time,
+                ).model_copy(update={"observed_at": stale_time}),
+                observation(
+                    fixture="stale-fixture",
+                    bookmaker="draftkings",
+                    outcome="102",
+                    price=1.91,
+                    changed=stale_time,
+                ).model_copy(update={"observed_at": stale_time}),
+            ],
+        )
+    )
+
+    with pytest.raises(ParlayBuildError, match="No current eligible sportsbook prices"):
         engine.build_for_state(state_code="CT", leg_count=2)

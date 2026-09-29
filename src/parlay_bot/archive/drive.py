@@ -61,6 +61,8 @@ class GoogleDriveArchiveClient:
         self._token: str | None = None
         self._token_expires_at = 0.0
         self._token_lock = asyncio.Lock()
+        self._boundary_lock = asyncio.Lock()
+        self._boundary_verified = False
 
     async def aclose(self) -> None:
         if self._owns_client:
@@ -132,6 +134,67 @@ class GoogleDriveArchiveClient:
             md5=str(payload["md5Checksum"]) if payload.get("md5Checksum") else None,
             parents=tuple(str(item) for item in parents),
         )
+
+
+    async def _verify_folder_boundary(self) -> None:
+        """Prove configured archive folders are direct children of the configured RivaL root."""
+
+        if self._boundary_verified:
+            return
+
+        async with self._boundary_lock:
+            if self._boundary_verified:
+                return
+
+            headers = await self._headers()
+
+            async def folder_metadata(folder_id: str) -> dict[str, Any]:
+                response = await self._client.get(
+                    f"{self.DRIVE_URL}/files/{folder_id}",
+                    params={"fields": "id,name,mimeType,parents,trashed"},
+                    headers=headers,
+                )
+                if response.status_code >= 400:
+                    raise DriveArchiveError(
+                        f"Google Drive folder verification failed with {response.status_code}"
+                    )
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise DriveArchiveError(
+                        "Google Drive folder verification returned invalid metadata"
+                    )
+                if payload.get("trashed") is True:
+                    raise DriveArchiveError("Configured RivaL Drive folder is trashed")
+                if payload.get("mimeType") != "application/vnd.google-apps.folder":
+                    raise DriveArchiveError(
+                        "Configured RivaL Drive boundary ID is not a folder"
+                    )
+                if str(payload.get("id") or "") != folder_id:
+                    raise DriveArchiveError(
+                        "Google Drive folder verification returned unexpected identity"
+                    )
+                return payload
+
+            root = await folder_metadata(self.folders.root)
+            root_parents = root.get("parents") or []
+            if not isinstance(root_parents, list):
+                raise DriveArchiveError("RivaL Drive root returned invalid parent metadata")
+
+            for child_id in (
+                self.folders.history,
+                self.folders.manifests,
+                self.folders.staging,
+            ):
+                child = await folder_metadata(child_id)
+                parents = child.get("parents") or []
+                if not isinstance(parents, list) or self.folders.root not in {
+                    str(item) for item in parents
+                }:
+                    raise DriveArchiveError(
+                        "Configured archive folder is outside the RivaL Data Warehouse root"
+                    )
+
+            self._boundary_verified = True
 
     async def _find_batch_object(
         self,
@@ -318,6 +381,7 @@ class GoogleDriveArchiveClient:
         artifact: ArchiveArtifact,
         batch_id: str,
     ) -> DriveObject:
+        await self._verify_folder_boundary()
         existing = await self._find_batch_object(
             parent_id=self.folders.history,
             batch_id=batch_id,
@@ -369,6 +433,7 @@ class GoogleDriveArchiveClient:
         artifact: ArchiveArtifact,
         batch_id: str,
     ) -> DriveObject:
+        await self._verify_folder_boundary()
         return await self._upload_resumable(
             artifact=artifact,
             parent_id=self.folders.manifests,

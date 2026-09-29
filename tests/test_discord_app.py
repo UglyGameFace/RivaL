@@ -117,6 +117,7 @@ async def test_discord_client_registers_one_rival_command_without_message_intent
         assert command is not None
         assert command.description == "Open your private RivaL sports odds dashboard."
         assert client.intents.message_content is False
+        assert client.archive_runtime is None
     finally:
         await client.zip_resolver.aclose()
 

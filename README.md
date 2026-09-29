@@ -62,6 +62,9 @@ Odds are stored once per real sportsbook selection rather than duplicated per st
 - Freshness and started-fixture guards.
 - Discord `Build Parlay`, `Make Safer`, and `Boost Payout` controls.
 - Dedicated Google Drive `RivaL Data Warehouse` boundary.
+- ZSTD Parquet cold archive for closed line states.
+- SHA-256/MD5 archive integrity manifests.
+- Resumable Drive staging -> verification -> history promotion.
 - Python 3.11 CI with Ruff and pytest.
 
 ## Parlay V1
@@ -110,6 +113,8 @@ RivaL Data Warehouse/
 ```
 
 RivaL is forbidden from enumerating or modifying Drive content outside that root. Real Drive account details and folder IDs remain private runtime configuration and are not committed.
+
+Closed line states are written as explicit-schema ZSTD Parquet, uploaded to `staging/`, verified by size and MD5, promoted to `history/`, then paired with a JSON manifest. Source SQLite rows are marked archived only after both remote objects are verified. The latest mutable state of every market selection is never archive-eligible.
 
 See `docs/GOOGLE_DRIVE_BOUNDARY.md`.
 

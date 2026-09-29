@@ -38,3 +38,11 @@ class Settings(BaseSettings):
     rival_drive_backups_folder_id: str | None = Field(default=None)
     rival_drive_reports_folder_id: str | None = Field(default=None)
     rival_drive_staging_folder_id: str | None = Field(default=None)
+
+    rival_drive_oauth_client_id: str | None = Field(default=None)
+    rival_drive_oauth_client_secret: SecretStr | None = Field(default=None)
+    rival_drive_oauth_refresh_token: SecretStr | None = Field(default=None)
+    rival_archive_local_dir: str = Field(default="data/archive-staging")
+    rival_archive_closed_state_minutes: int = Field(default=60, ge=10)
+    rival_archive_batch_rows: int = Field(default=25_000, ge=100, le=250_000)
+    rival_archive_chunk_mib: int = Field(default=8, ge=1, le=64)

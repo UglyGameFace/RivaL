@@ -1,0 +1,1 @@
+"""External odds provider adapters."""

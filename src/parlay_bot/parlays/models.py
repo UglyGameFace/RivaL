@@ -22,6 +22,8 @@ class ParlayLeg(BaseModel):
     outcome_name: str
     player_id: str
     player_name: str | None = None
+    line_value: float | None = None
+    deeplink: str | None = None
     price_decimal: float
     price_american: str | None = None
     market_fair_probability: float = Field(ge=0, le=1)

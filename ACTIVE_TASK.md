@@ -72,6 +72,7 @@ Branch: `feat/google-drive-cold-archive`
 - No generic Drive-root listing method.
 - No delete method.
 - Bounded Drive searches only inside configured RivaL `staging`, `history`, or `manifests` folders.
+- Runtime verifies that the configured `history`, `manifests`, and `staging` folders are actual Google Drive folders and direct children of the configured RivaL root before any archive search/upload begins.
 - History files upload to RivaL `staging` first.
 - Uploaded size and MD5 must match the local artifact.
 - Verified staged history is moved only from RivaL `staging` to RivaL `history`.
@@ -117,6 +118,7 @@ A failure before the manifest is verified leaves the SQLite source rows unarchiv
 
 - The current/latest state of a selection is never archived.
 - RivaL has no archive API that enumerates My Drive/root.
+- A child folder configured outside the RivaL Data Warehouse root causes the archive cycle to fail closed before any search or upload.
 - RivaL has no cold-archive delete operation.
 - Uploads can target only configured RivaL staging/manifests folders.
 - History promotion can move only a file already found/uploaded in configured RivaL staging.
@@ -126,26 +128,33 @@ A failure before the manifest is verified leaves the SQLite source rows unarchiv
 
 ## Validation status
 
-Latest implementation head `2b39d14a2d304afd8388f174415678862a6c0746` passed GitHub Actions push CI.
+Exact-head push and pull-request CI passed after root-containment hardening.
 
-The previous validated head reported:
+Validated head before this documentation-only update:
+`ba021c5d63b4ff283c97d82d0b45fbd2c3cc53a7`
 
-- Ruff passed.
-- pytest: **55 passed, 1 warning**.
+- Ruff: passed.
+- pytest: **59 passed, 1 warning**.
 - Parquet artifacts were read back through DuckDB in tests.
-- Drive resumable upload/promotion was exercised with a mocked Google endpoint.
+- Drive resumable upload/promotion was exercised with mocked Google endpoints.
 - Archive completion ordering was regression tested.
+- Misconfigured archive child folders outside the configured RivaL root are regression tested to fail closed.
+- Final diff scan found no account email, real Drive folder IDs, API keys, OAuth credentials, conflict markers, or unrelated repository changes.
 
-Final documentation head and PR merge-ref CI still need validation before merge.
+The live connected RivaL root was inspected only within that root. It currently contains two
+historical internal naming layouts. No folder was deleted or moved. The active runtime layout is
+the explicitly configured `history`, `manifests`, and `staging` set; legacy-numbered folders
+are not discovered or used by the runtime.
 
 ## Deployment blocker
 
-The archive code is ready, but automatic production uploads remain intentionally disabled until
-the deployed RivaL runtime receives its own Google OAuth client ID, client secret, and offline
-refresh token in secret storage. ChatGPT's connected Drive authorization is not reused by the bot.
+The archive scheduler is implemented but remains disabled by default. Automatic production
+uploads require the deployed RivaL runtime to receive its own Google OAuth client ID, client
+secret, offline refresh token, and private RivaL folder IDs through deployment secret/config
+storage. ChatGPT's connected Drive authorization is not reused by the bot.
 
 ## Next step
 
-Open draft PR #3, require green exact-head PR CI, scan for secrets/private Drive identifiers,
-then squash-merge if clean. Runtime scheduling can be added after the production OAuth secret
-path is configured.
+Require one final green CI run for this documentation head, then mark PR #3 ready and squash-merge
+if the final tree remains clean. Production archive activation happens only after deployment OAuth
+and private folder configuration are supplied.

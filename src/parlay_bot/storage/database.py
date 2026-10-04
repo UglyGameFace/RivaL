@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
+import sqlite3
 from types import TracebackType
 from typing import Any, Literal, Protocol, Self
 

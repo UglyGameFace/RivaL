@@ -4,6 +4,7 @@ import pytest
 
 from parlay_bot.archive.runtime import build_cold_archive_runtime
 from parlay_bot.config import Settings
+from parlay_bot.storage.hot import SQLiteHotStore
 
 
 def test_archive_runtime_is_off_by_default(tmp_path) -> None:
@@ -42,11 +43,12 @@ async def test_enabled_archive_builds_without_making_network_request(tmp_path) -
         rival_drive_oauth_refresh_token="refresh-token",
     )
 
-    runtime = build_cold_archive_runtime(settings)
+    store = SQLiteHotStore(tmp_path / "rival.sqlite")
+    runtime = build_cold_archive_runtime(settings, store=store)
     assert runtime is not None
     try:
         assert runtime.drive.folders.root == "root"
         assert runtime.drive.folders.history == "history"
-        assert str(runtime.service.queue.path) == settings.rival_db_path
+        assert runtime.service.queue.store is store
     finally:
         await runtime.drive.aclose()

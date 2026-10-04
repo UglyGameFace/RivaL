@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from parlay_bot.ingestion.models import MarketObservation, NormalizedOddsBoard
+from parlay_bot.storage.database import (
+    ConnectionLike,
+    PostgresDatabase,
+    RelationalDatabase,
+    SQLiteDatabase,
+)
 
 
 def _iso(value: datetime | None) -> str | None:
@@ -27,30 +32,29 @@ class IngestResult:
     current_rows_written: int
 
 
-class SQLiteHotStore:
-    """Small local operational store for current RivaL odds and line changes."""
+class RelationalHotStore:
+    """Operational store for current RivaL odds, line changes, and user state."""
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+    def __init__(self, database: RelationalDatabase) -> None:
+        self.database = database
 
-    def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute("PRAGMA foreign_keys=ON")
-        return connection
+    def connect(self):
+        return self.database.connect()
+
+    def close(self) -> None:
+        self.database.close()
 
     def initialize(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        auto_id = self.database.auto_increment_primary_key
         with self.connect() as connection:
             connection.executescript(
-                """
+                f"""
                 CREATE TABLE IF NOT EXISTS fixtures (
                     provider TEXT NOT NULL,
                     fixture_id TEXT NOT NULL,
-                    sport_id INTEGER,
-                    tournament_id INTEGER,
-                    status_id INTEGER,
+                    sport_id TEXT,
+                    tournament_id TEXT,
+                    status_id TEXT,
                     status_name TEXT,
                     start_time TEXT,
                     provider_updated_at TEXT,
@@ -73,15 +77,15 @@ class SQLiteHotStore:
                     outcome_name TEXT,
                     player_id TEXT NOT NULL,
                     player_name TEXT,
-                    line_value REAL,
-                    line_group_value REAL,
+                    line_value DOUBLE PRECISION,
+                    line_group_value DOUBLE PRECISION,
                     deeplink TEXT,
                     active INTEGER NOT NULL,
                     main_line INTEGER NOT NULL,
-                    price_decimal REAL NOT NULL,
+                    price_decimal DOUBLE PRECISION NOT NULL,
                     price_american TEXT,
                     price_fractional TEXT,
-                    bet_limit REAL,
+                    bet_limit DOUBLE PRECISION,
                     changed_at TEXT NOT NULL,
                     bookmaker_changed_at TEXT,
                     observed_at TEXT NOT NULL,
@@ -96,7 +100,7 @@ class SQLiteHotStore:
                     ON current_odds (fixture_id, market_id, outcome_id, player_id);
 
                 CREATE TABLE IF NOT EXISTS odds_changes (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id {auto_id},
                     selection_key TEXT NOT NULL,
                     provider TEXT NOT NULL,
                     fixture_id TEXT NOT NULL,
@@ -107,15 +111,15 @@ class SQLiteHotStore:
                     outcome_name TEXT,
                     player_id TEXT NOT NULL,
                     player_name TEXT,
-                    line_value REAL,
-                    line_group_value REAL,
+                    line_value DOUBLE PRECISION,
+                    line_group_value DOUBLE PRECISION,
                     deeplink TEXT,
                     active INTEGER NOT NULL,
                     main_line INTEGER NOT NULL,
-                    price_decimal REAL NOT NULL,
+                    price_decimal DOUBLE PRECISION NOT NULL,
                     price_american TEXT,
                     price_fractional TEXT,
-                    bet_limit REAL,
+                    bet_limit DOUBLE PRECISION,
                     provider_changed_at TEXT NOT NULL,
                     bookmaker_changed_at TEXT,
                     exchange_meta_json TEXT,
@@ -149,27 +153,23 @@ class SQLiteHotStore:
             )
             self._ensure_column(connection, "current_odds", "market_name", "TEXT")
             self._ensure_column(connection, "current_odds", "outcome_name", "TEXT")
-            self._ensure_column(connection, "current_odds", "line_value", "REAL")
-            self._ensure_column(connection, "current_odds", "line_group_value", "REAL")
+            self._ensure_column(connection, "current_odds", "line_value", "DOUBLE PRECISION")
+            self._ensure_column(connection, "current_odds", "line_group_value", "DOUBLE PRECISION")
             self._ensure_column(connection, "current_odds", "deeplink", "TEXT")
             self._ensure_column(connection, "odds_changes", "market_name", "TEXT")
             self._ensure_column(connection, "odds_changes", "outcome_name", "TEXT")
-            self._ensure_column(connection, "odds_changes", "line_value", "REAL")
-            self._ensure_column(connection, "odds_changes", "line_group_value", "REAL")
+            self._ensure_column(connection, "odds_changes", "line_value", "DOUBLE PRECISION")
+            self._ensure_column(connection, "odds_changes", "line_group_value", "DOUBLE PRECISION")
             self._ensure_column(connection, "odds_changes", "deeplink", "TEXT")
 
-    @staticmethod
     def _ensure_column(
-        connection: sqlite3.Connection,
+        self,
+        connection: ConnectionLike,
         table: str,
         column: str,
         definition: str,
     ) -> None:
-        columns = {
-            str(row["name"])
-            for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
-        }
-        if column not in columns:
+        if column not in self.database.column_names(connection, table):
             connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     @staticmethod
@@ -185,7 +185,7 @@ class SQLiteHotStore:
 
     def _upsert_fixture(
         self,
-        connection: sqlite3.Connection,
+        connection: ConnectionLike,
         board: NormalizedOddsBoard,
         *,
         ingested_at: datetime,
@@ -213,9 +213,9 @@ class SQLiteHotStore:
             (
                 board.provider,
                 board.fixture_id,
-                board.sport_id,
-                board.tournament_id,
-                board.status_id,
+                str(board.sport_id) if board.sport_id is not None else None,
+                str(board.tournament_id) if board.tournament_id is not None else None,
+                str(board.status_id) if board.status_id is not None else None,
                 board.status_name,
                 _iso(board.start_time),
                 _iso(board.updated_at),
@@ -229,7 +229,7 @@ class SQLiteHotStore:
 
     def _record_change(
         self,
-        connection: sqlite3.Connection,
+        connection: ConnectionLike,
         observation: MarketObservation,
     ) -> str:
         latest = connection.execute(
@@ -303,7 +303,7 @@ class SQLiteHotStore:
 
     def _upsert_current(
         self,
-        connection: sqlite3.Connection,
+        connection: ConnectionLike,
         observation: MarketObservation,
     ) -> bool:
         cursor = connection.execute(
@@ -394,7 +394,6 @@ class SQLiteHotStore:
             current_rows_written=current_rows_written,
         )
 
-
     def set_runtime_state(self, key: str, value: str) -> None:
         if not key.strip():
             raise ValueError("runtime state key is required")
@@ -458,7 +457,12 @@ class SQLiteHotStore:
                 ),
             )
 
-    def get_user_jurisdiction(self, *, platform: str, user_id: str) -> dict[str, Any] | None:
+    def get_user_jurisdiction(
+        self,
+        *,
+        platform: str,
+        user_id: str,
+    ) -> dict[str, Any] | None:
         self.initialize()
         with self.connect() as connection:
             row = connection.execute(
@@ -498,3 +502,18 @@ class SQLiteHotStore:
                 (selection_key,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+
+class SQLiteHotStore(RelationalHotStore):
+    """Local/test compatibility backend."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        super().__init__(SQLiteDatabase(self.path))
+
+
+class PostgresHotStore(RelationalHotStore):
+    """Managed PostgreSQL backend for Discloud production."""
+
+    def __init__(self, dsn: str) -> None:
+        super().__init__(PostgresDatabase(dsn))

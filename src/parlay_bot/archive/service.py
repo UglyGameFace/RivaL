@@ -5,17 +5,17 @@ from datetime import UTC, datetime
 
 from parlay_bot.archive.drive import GoogleDriveArchiveClient
 from parlay_bot.archive.models import ArchiveCompletion
-from parlay_bot.archive.queue import SQLiteArchiveQueue
+from parlay_bot.archive.queue import RelationalArchiveQueue
 from parlay_bot.archive.writer import ParquetArchiveWriter
 
 
 class ColdArchiveService:
-    """Commit closed SQLite line states to Drive only after verified data + manifest."""
+    """Commit closed line states to Drive only after verified data + manifest."""
 
     def __init__(
         self,
         *,
-        queue: SQLiteArchiveQueue,
+        queue: RelationalArchiveQueue,
         writer: ParquetArchiveWriter,
         drive: GoogleDriveArchiveClient,
     ) -> None:

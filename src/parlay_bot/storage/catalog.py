@@ -25,7 +25,6 @@ class MarketCatalogStore:
         return self.database.connect()
 
     def initialize(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(
                 """

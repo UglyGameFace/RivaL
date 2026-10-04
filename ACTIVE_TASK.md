@@ -35,9 +35,9 @@ SQLite is retained only as an explicit local/test compatibility backend.
 
 ## Status
 
-Implementation is in progress. Core storage, runtime wiring, deployment configuration, and
-PostgreSQL integration tests are on the feature branch. Validation and final cleanup are not yet
-complete.
+Implementation is complete on the feature branch and the runtime/storage changes are validated in
+CI. Production activation still requires the real Discloud PostgreSQL instance and its private
+connection URL to be supplied through deployment configuration.
 
 ## Findings / root cause
 
@@ -104,26 +104,42 @@ that is a controlled deployment operation using an inspected source file.
 
 ## Validation / results
 
-Pending exact-head CI.
+Validated implementation head:
+`897da83566f9684d1d52166e38f1c57e8a395d38`
 
-Required before completion:
+GitHub Actions CI run #161 passed on the PR merge tree:
 
-- Ruff passes.
-- Existing SQLite regression suite passes.
-- New PostgreSQL integration tests pass against PostgreSQL 16.
-- Archive tests pass with the shared store.
+- PostgreSQL 16 service initialized and became healthy.
+- Runtime dependencies, including psycopg, installed successfully.
+- Ruff: passed.
+- pytest: **65 passed, 1 dependency deprecation warning**.
+- PostgreSQL integration tests cover SportsGameOdds string IDs, current/history writes, runtime
+  state, jurisdiction state, market metadata, archive transaction ordering, and an end-to-end
+  three-leg parlay build through PostgreSQL.
+- Existing SQLite compatibility/regression tests still pass.
+- Archive tests pass with the shared relational store.
 - Discord client construction tests cover both production PostgreSQL requirements and explicit
   SQLite test mode.
-- Final diff contains no credentials, generated databases, conflict markers, or unrelated changes.
-- Branch remains based only on the intended RivaL production baseline.
+
+Final diff inspection:
+
+- branch is ahead of the intended production baseline and not behind it;
+- no conflict markers;
+- no private-key material or Discord-token-like values;
+- no real database URL or credential committed;
+- no generated database/archive artifacts;
+- no unrelated project files;
+- SQLite references in production code are restricted to the explicit local/test compatibility
+  path.
 
 ## Cleanup / conflicts
 
-The affected storage area is being consolidated so production code does not keep competing SQLite
-and PostgreSQL implementations for the same state.
+The affected storage area is consolidated behind the relational store. The stale catalog filesystem
+assumption and redundant PostgreSQL archive wrapper found during validation were removed.
 
-Compatibility wrappers are allowed only where existing tests or local development need SQLite.
-They must not become a second production authority.
+The SQLite archive wrapper remains only for existing local/test compatibility. Production runtime
+constructs one authoritative store and passes it to hot odds, market catalog, jurisdiction, refresh
+state, parlay queries, and archive bookkeeping.
 
 ## Blockers / risks
 
@@ -140,5 +156,6 @@ No unrelated work is active.
 
 ## Next step
 
-Run exact-head CI, inspect failures if any, clean the affected storage area, review the final diff,
-then open the focused pull request only after validation evidence is green.
+Run final exact-head CI for this validation-record update, then make PR #5 ready for review if it
+remains green. Production activation after merge requires provisioning the Discloud PostgreSQL
+template and setting `RIVAL_DATABASE_URL` in the bot's deployment environment.

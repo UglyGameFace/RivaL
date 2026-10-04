@@ -109,7 +109,7 @@ def test_market_catalog_uses_same_postgres_database(
                     "marketLength": 2,
                     "marketName": "Winner",
                     "playerProp": False,
-                    "sportId": "BASKETBALL",
+                    "sportId": 11,
                     "handicap": 0,
                     "period": "fulltime",
                     "marketType": "moneyline",
@@ -125,7 +125,7 @@ def test_market_catalog_uses_same_postgres_database(
     metadata = catalog.metadata()
 
     assert metadata["100"]["market_name"] == "Winner"
-    assert metadata["100"]["sport_id"] == "BASKETBALL"
+    assert metadata["100"]["sport_id"] == "11"
     assert metadata["100"]["outcomes"] == {"101": "Home", "102": "Away"}
 
 

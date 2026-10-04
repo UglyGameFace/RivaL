@@ -6,7 +6,6 @@ from pathlib import Path
 
 from parlay_bot.archive.models import HistoryArchiveBatch
 from parlay_bot.storage.hot import (
-    PostgresHotStore,
     RelationalHotStore,
     SQLiteHotStore,
 )
@@ -336,10 +335,3 @@ class SQLiteArchiveQueue(RelationalArchiveQueue):
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         super().__init__(SQLiteHotStore(self.path))
-
-
-class PostgresArchiveQueue(RelationalArchiveQueue):
-    """Standalone PostgreSQL archive queue compatibility helper."""
-
-    def __init__(self, dsn: str) -> None:
-        super().__init__(PostgresHotStore(dsn))

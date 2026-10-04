@@ -1,3 +1,5 @@
+from typing import Literal
+
 from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -26,6 +28,8 @@ class Settings(BaseSettings):
     rival_current_event_limit: int = Field(default=25, ge=1, le=100)
     rival_current_max_pages: int = Field(default=1, ge=1, le=5)
 
+    rival_storage_backend: Literal["postgres", "sqlite"] = Field(default="postgres")
+    rival_database_url: SecretStr | None = Field(default=None)
     rival_db_path: str = Field(default="data/rival.sqlite")
     discord_token: SecretStr | None = Field(default=None)
     rival_dev_guild_id: int | None = Field(default=None, ge=1)

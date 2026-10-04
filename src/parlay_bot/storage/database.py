@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Sequence
 from pathlib import Path
-from typing import Any, Literal, Protocol, Sequence
+from types import TracebackType
+from typing import Any, Literal, Protocol, Self
 
 import psycopg
 from psycopg.rows import dict_row
@@ -47,11 +49,16 @@ class _Connection:
         for statement in statements:
             self._raw.execute(statement)
 
-    def __enter__(self) -> "_Connection":
+    def __enter__(self) -> Self:
         self._raw.__enter__()
         return self
 
-    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> bool | None:
         try:
             result = self._raw.__exit__(exc_type, exc, tb)
         finally:

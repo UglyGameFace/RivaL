@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.ingestion.sportsgameodds import normalize_event
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
-from parlay_bot.storage.hot import SQLiteHotStore
+from parlay_bot.storage.hot import RelationalHotStore
 
 _STATE_KEY = "sportsgameodds:last_successful_refresh"
 
@@ -31,7 +31,7 @@ class CurrentBoardCollector:
         self,
         *,
         client: SportsGameOddsClient,
-        store: SQLiteHotStore,
+        store: RelationalHotStore,
         league_ids: tuple[str, ...] = ("NBA", "NFL"),
         bookmaker_ids: tuple[str, ...] = ("draftkings", "fanduel"),
         refresh_interval: timedelta = timedelta(minutes=10),

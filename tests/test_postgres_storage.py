@@ -9,6 +9,9 @@ from parlay_bot.archive.queue import RelationalArchiveQueue
 from parlay_bot.domain.catalog import MarketDefinition
 from parlay_bot.ingestion.models import MarketObservation, NormalizedOddsBoard
 from parlay_bot.ingestion.sportsgameodds import normalize_event
+from parlay_bot.jurisdiction.models import SportsbookAvailability
+from parlay_bot.jurisdiction.registry import JurisdictionRegistry
+from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.storage.catalog import MarketCatalogStore
 from parlay_bot.storage.hot import PostgresHotStore
 from tests.sgo_samples import sample_sgo_event
@@ -209,3 +212,110 @@ def test_postgres_archive_queue_preserves_latest_and_commits_transactionally(
     )
     assert archived_changes[0]["archived_batch_id"] == batch.batch_id
     assert archived_changes[1]["archived_batch_id"] is None
+
+
+
+def _parlay_registry() -> JurisdictionRegistry:
+    return JurisdictionRegistry(
+        [
+            SportsbookAvailability(
+                jurisdiction="CT",
+                sportsbook="draftkings",
+                online_available=True,
+            ),
+            SportsbookAvailability(
+                jurisdiction="CT",
+                sportsbook="fanduel",
+                online_available=True,
+            ),
+        ]
+    )
+
+
+def _seed_postgres_parlay_fixture(
+    store: PostgresHotStore,
+    *,
+    number: int,
+) -> None:
+    observed = datetime.now(UTC)
+    fixture_id = f"pg-parlay-{number}"
+    observations: list[MarketObservation] = []
+    for bookmaker, home_price, away_price in (
+        ("draftkings", 1.91, 1.91),
+        ("fanduel", 2.02, 1.86),
+    ):
+        observations.extend(
+            [
+                MarketObservation(
+                    provider="test",
+                    fixture_id=fixture_id,
+                    sport_id="BASKETBALL",
+                    tournament_id="NBA",
+                    bookmaker=bookmaker,
+                    market_id="winner",
+                    market_name="Winner",
+                    outcome_id="home",
+                    outcome_name="Home",
+                    player_id="0",
+                    active=True,
+                    main_line=True,
+                    price_decimal=home_price,
+                    changed_at=observed,
+                    observed_at=observed,
+                ),
+                MarketObservation(
+                    provider="test",
+                    fixture_id=fixture_id,
+                    sport_id="BASKETBALL",
+                    tournament_id="NBA",
+                    bookmaker=bookmaker,
+                    market_id="winner",
+                    market_name="Winner",
+                    outcome_id="away",
+                    outcome_name="Away",
+                    player_id="0",
+                    active=True,
+                    main_line=True,
+                    price_decimal=away_price,
+                    changed_at=observed,
+                    observed_at=observed,
+                ),
+            ]
+        )
+
+    store.ingest_board(
+        NormalizedOddsBoard(
+            provider="test",
+            fixture_id=fixture_id,
+            sport_id="BASKETBALL",
+            tournament_id="NBA",
+            start_time=observed + timedelta(days=1),
+            participant1_name=f"Home {number}",
+            participant2_name=f"Away {number}",
+            sport_name="Basketball",
+            tournament_name="NBA",
+            observations=observations,
+        )
+    )
+
+
+def test_postgres_parlay_builder_queries_the_managed_store(
+    postgres_store: PostgresHotStore,
+) -> None:
+    for number in range(1, 4):
+        _seed_postgres_parlay_fixture(postgres_store, number=number)
+
+    builder = ParlayBuilder(
+        store=postgres_store,
+        registry=_parlay_registry(),
+    )
+    slip = builder.build_for_state(state_code="CT", leg_count=3)
+
+    assert slip.bookmaker == "fanduel"
+    assert len(slip.legs) == 3
+    assert {leg.fixture_id for leg in slip.legs} == {
+        "pg-parlay-1",
+        "pg-parlay-2",
+        "pg-parlay-3",
+    }
+    assert {leg.bookmaker for leg in slip.legs} == {"fanduel"}

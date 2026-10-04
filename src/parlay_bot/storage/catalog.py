@@ -1,21 +1,28 @@
 from __future__ import annotations
 
-import sqlite3
 from pathlib import Path
 
 from parlay_bot.domain.catalog import MarketDefinition
+from parlay_bot.storage.database import RelationalDatabase, SQLiteDatabase
+from parlay_bot.storage.hot import RelationalHotStore
 
 
 class MarketCatalogStore:
     """Persist human-readable OddsPapi market and outcome metadata."""
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+    def __init__(
+        self,
+        database: RelationalDatabase | RelationalHotStore | str | Path,
+    ) -> None:
+        if isinstance(database, RelationalHotStore):
+            self.database = database.database
+        elif isinstance(database, RelationalDatabase):
+            self.database = database
+        else:
+            self.database = SQLiteDatabase(database)
 
-    def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def connect(self):
+        return self.database.connect()
 
     def initialize(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -27,8 +34,8 @@ class MarketCatalogStore:
                     market_length INTEGER NOT NULL,
                     market_name TEXT NOT NULL,
                     player_prop INTEGER NOT NULL,
-                    sport_id INTEGER NOT NULL,
-                    handicap REAL,
+                    sport_id TEXT NOT NULL,
+                    handicap DOUBLE PRECISION,
                     period TEXT,
                     market_type TEXT
                 );
@@ -47,7 +54,6 @@ class MarketCatalogStore:
     def replace(self, markets: list[MarketDefinition]) -> None:
         self.initialize()
         with self.connect() as connection:
-            connection.execute("PRAGMA foreign_keys=ON")
             for market in markets:
                 connection.execute(
                     """
@@ -69,7 +75,7 @@ class MarketCatalogStore:
                         market.market_length,
                         market.market_name,
                         int(market.player_prop),
-                        market.sport_id,
+                        str(market.sport_id),
                         market.handicap,
                         market.period,
                         market.market_type,

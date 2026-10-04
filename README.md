@@ -20,7 +20,7 @@ SportsGameOdds         OddsPapi
    +------+-------------------+
    |                          |
    v                          v
-SQLite hot store      Google Drive cold warehouse
+Discloud PostgreSQL   Google Drive cold warehouse
    |                  history / models / backups
    |                          |
    +------------+-------------+
@@ -46,7 +46,7 @@ Odds are stored once per real sportsbook selection rather than duplicated per st
 - Provider-specific cooldown enforcement and billable-request reserve.
 - Canonical sportsbook selection identity.
 - Current OddsPapi board normalization.
-- SQLite hot storage for fixtures/current prices.
+- Discloud PostgreSQL hot storage for fixtures/current prices, line history, user state, refresh gates, market metadata, and archive bookkeeping.
 - Meaningful-state line history with duplicate-state compaction.
 - Stale provider-state protection.
 - ZIP/state onboarding with state-only persistence.
@@ -114,7 +114,7 @@ RivaL Data Warehouse/
 
 RivaL is forbidden from enumerating or modifying Drive content outside that root. Real Drive account details and folder IDs remain private runtime configuration and are not committed.
 
-Closed line states are written as explicit-schema ZSTD Parquet, uploaded to `staging/`, verified by size and MD5, promoted to `history/`, then paired with a JSON manifest. Source SQLite rows are marked archived only after both remote objects are verified. The latest mutable state of every market selection is never archive-eligible.
+Closed line states are written as explicit-schema ZSTD Parquet, uploaded to `staging/`, verified by size and MD5, promoted to `history/`, then paired with a JSON manifest. Source PostgreSQL rows are marked archived only after both remote objects are verified. The latest mutable state of every market selection is never archive-eligible.
 
 See `docs/GOOGLE_DRIVE_BOUNDARY.md`.
 
@@ -122,7 +122,11 @@ See `docs/GOOGLE_DRIVE_BOUNDARY.md`.
 
 Never commit API keys, Discord tokens, OAuth credentials, real Drive folder IDs, downloaded odds payloads, databases, or archive files.
 
-Copy `.env.example` to a local `.env` and inject real credentials through deployment secret/config storage. The default hot database path is `data/rival.sqlite`, which is ignored by Git.
+Production storage defaults to PostgreSQL. Set `RIVAL_DATABASE_URL` to the private PostgreSQL connection URL supplied for RivaL's Discloud database and keep `RIVAL_STORAGE_BACKEND=postgres`. The bot fails startup if PostgreSQL is selected without a database URL rather than silently writing to a local file.
+
+SQLite remains available only as an explicit local/test compatibility backend with `RIVAL_STORAGE_BACKEND=sqlite` and `RIVAL_DB_PATH=data/rival.sqlite`. Generated local databases remain ignored by Git.
+
+For the Discloud deployment steps and the database boundary, see `docs/DISCLOUD_POSTGRES.md`.
 
 ## Development
 

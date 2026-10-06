@@ -11,150 +11,151 @@ RivaL development belongs only in `UglyGameFace/RivaL`.
 Do not write RivaL code, workflows, task records, branches, or pull requests to
 `UglyGameFace/sports-parlay-bot`.
 
-## Completed milestones
-
-- Provider-neutral odds foundation and quota-aware OddsPapi history access.
-- SportsGameOdds shared current/today feed with quota reserve and persistent refresh gating.
-- Canonical odds normalization and SQLite hot storage.
-- ZIP/state onboarding with state-only persistence.
-- Verified sportsbook filtering.
-- Private Discord `/rival` dashboard.
-- Market-consensus parlay engine V1.
-- RivaL-only Google Drive warehouse folder tree and hard access boundary.
-
-SportsGameOdds current-feed PR #2 merged as
-`47864350e98be72e3b84fffb27e4010785ead908`.
-The validated feature tree and squash-merge tree were identical.
-
-## Google Drive boundary
-
-The authorized connected Google account contains one dedicated root:
-
-`RivaL Data Warehouse/`
-
-with:
-
-- `history/`
-- `manifests/`
-- `models/`
-- `predictions/`
-- `backups/`
-- `reports/`
-- `staging/`
-
-Real account details and real folder IDs are private runtime configuration and are not committed.
-RivaL may operate only inside this root. See `docs/GOOGLE_DRIVE_BOUNDARY.md`.
-
 ## Active task / outcome
 
-Build the first durable Google Drive cold-archive pipeline for closed line-movement states.
+Replace RivaL's production SQLite hot/state database with a Discloud-managed PostgreSQL database
+without changing the user-facing odds, jurisdiction, parlay, or archive behavior.
 
-Branch: `feat/google-drive-cold-archive`
+Branch: `feat/discloud-postgres-storage`
 
-### Implemented on branch
+Production baseline: `main@46986f7aada639b649a01e976c082dcaa2e82d9a`
 
-- Optional archive dependency using DuckDB; it is not part of the normal hot Discord dependency path.
-- CI installs the archive extra so the cold path is regression tested.
-- SQLite archive queue that selects only **closed** line states.
-- The latest state for every market selection is never archive-eligible.
-- Closed states must also be older than a caller-supplied cutoff.
-- Deterministic batch IDs derived from provider/book/sport/date/source row IDs.
-- Archive batch lifecycle table.
-- Archive markers on line-history rows.
-- Chunked row completion updates to avoid SQLite variable-count limits.
-- Explicit-schema Parquet writer.
-- ZSTD Parquet compression.
-- SHA-256 and MD5 local digests.
-- JSON manifest containing schema version, row count, source-row hash, time bounds, data checksum, and Drive history-file ID.
-- Google OAuth refresh-token client using the documented token endpoint.
-- Resumable Google Drive upload.
-- Upload chunk size constrained to Google Drive's 256 KiB multiple requirement.
-- No generic Drive-root listing method.
-- No delete method.
-- Bounded Drive searches only inside configured RivaL `staging`, `history`, or `manifests` folders.
-- Runtime verifies that the configured `history`, `manifests`, and `staging` folders are actual Google Drive folders and direct children of the configured RivaL root before any archive search/upload begins.
-- History files upload to RivaL `staging` first.
-- Uploaded size and MD5 must match the local artifact.
-- Verified staged history is moved only from RivaL `staging` to RivaL `history`.
-- Manifest uploads only to RivaL `manifests`.
-- SQLite rows are marked archived only after both verified Drive objects exist.
-- Deterministic batch properties allow safe restart/retry without intentionally duplicating an archive.
-- Local temporary artifacts are deleted only after the batch reaches complete state.
-- Archive OAuth client ID/secret/refresh token are deployment secrets, never Git values.
+## Scope
 
-## Archive commit sequence
+PostgreSQL must become the single authoritative production store for:
+
+- fixtures and current sportsbook prices;
+- meaningful line-state history;
+- saved state/jurisdiction selections;
+- shared SportsGameOdds refresh gating;
+- OddsPapi market/outcome catalog metadata;
+- Google Drive cold-archive batch bookkeeping and source-row archive markers.
+
+SQLite is retained only as an explicit local/test compatibility backend.
+
+## Status
+
+Implementation is complete on the feature branch and the runtime/storage changes are validated in
+CI. Production activation still requires the real Discloud PostgreSQL instance and its private
+connection URL to be supplied through deployment configuration.
+
+## Findings / root cause
+
+RivaL previously had several direct SQLite owners rather than one production database boundary:
+`SQLiteHotStore`, `MarketCatalogStore`, and `SQLiteArchiveQueue` each opened the local database
+independently. The Discord runtime also constructed them separately.
+
+A simple connection-string replacement would therefore have left part of the application on local
+SQLite.
+
+SportsGameOdds also uses string provider identifiers such as `BASKETBALL` and `NBA`. SQLite
+accepted those values in columns declared `INTEGER` because of its dynamic typing. PostgreSQL would
+reject that schema, so provider ID columns must be text-compatible.
+
+## Execution path
 
 ```text
-closed SQLite line states
-        |
-        v
-explicit-schema Parquet + ZSTD
-        |
-        v
-SHA-256 / MD5 / row count
-        |
-        v
-Drive staging/
-        |
-        v
-remote size + MD5 verification
-        |
-        v
-promote to Drive history/
-        |
-        v
-write + upload manifest
-        |
-        v
-mark SQLite source rows archived
-        |
-        v
-delete local temporary files
+Discord /rival
+    |
+    v
+RivalDiscordClient
+    |
+    +--> shared RelationalHotStore
+           |
+           +--> fixtures/current odds/line history
+           +--> jurisdiction state
+           +--> refresh runtime state
+           +--> market catalog
+           +--> cold archive queue/batch state
+    |
+    v
+Discloud PostgreSQL
 ```
 
-A failure before the manifest is verified leaves the SQLite source rows unarchived.
+Closed historical line states can still flow from PostgreSQL through the existing verified Parquet
+and Google Drive archive path. Drive remains cold storage, not the operational database.
 
-## Safety rules
+## Changes on branch
 
-- The current/latest state of a selection is never archived.
-- RivaL has no archive API that enumerates My Drive/root.
-- A child folder configured outside the RivaL Data Warehouse root causes the archive cycle to fail closed before any search or upload.
-- RivaL has no cold-archive delete operation.
-- Uploads can target only configured RivaL staging/manifests folders.
-- History promotion can move only a file already found/uploaded in configured RivaL staging.
-- Drive object size and MD5 must match before commit.
-- Secrets, ZIP codes, personal Drive content, and user message content are not archive inputs.
-- Real Drive folder IDs and the account email are not committed.
+- Added a shared relational database adapter with SQLite and PostgreSQL implementations.
+- Added PostgreSQL hot-store support using psycopg.
+- Made production storage default to `postgres`.
+- Added `RIVAL_DATABASE_URL` and an explicit `RIVAL_STORAGE_BACKEND`.
+- Made missing PostgreSQL configuration fail clearly instead of falling back to SQLite.
+- Moved market catalog access onto the active relational store.
+- Moved cold-archive queue bookkeeping onto the active relational store.
+- Generalized collector, onboarding, and parlay-builder storage typing.
+- Preserved SQLite compatibility for local tests and existing SQLite-focused regression tests.
+- Added the PostgreSQL runtime dependency to both Python packaging and Discloud requirements.
+- Enabled Discloud VLAN configuration for the bot.
+- Added a PostgreSQL 16 service to CI.
+- Added PostgreSQL integration coverage for SportsGameOdds IDs, current/history writes, runtime
+  state, jurisdiction state, market catalog data, and archive completion ordering.
 
-## Validation status
+## Compatibility review
 
-Exact-head push and pull-request CI passed after root-containment hardening.
+The public Discord surface remains `/rival`. Existing market-consensus rules, sportsbook
+eligibility logic, refresh cadence, one-leg-per-fixture policy, Drive archive verification, and ZIP
+privacy behavior are intentionally unchanged.
 
-Validated head before this documentation-only update:
-`ba021c5d63b4ff283c97d82d0b45fbd2c3cc53a7`
+No automatic SQLite-to-PostgreSQL data copy is performed by runtime startup. Production must not
+silently import or discard an unknown legacy database. If a real legacy database needs migration,
+that is a controlled deployment operation using an inspected source file.
 
+## Validation / results
+
+Validated implementation head:
+`897da83566f9684d1d52166e38f1c57e8a395d38`
+
+GitHub Actions CI run #161 passed on the PR merge tree:
+
+- PostgreSQL 16 service initialized and became healthy.
+- Runtime dependencies, including psycopg, installed successfully.
 - Ruff: passed.
-- pytest: **59 passed, 1 warning**.
-- Parquet artifacts were read back through DuckDB in tests.
-- Drive resumable upload/promotion was exercised with mocked Google endpoints.
-- Archive completion ordering was regression tested.
-- Misconfigured archive child folders outside the configured RivaL root are regression tested to fail closed.
-- Final diff scan found no account email, real Drive folder IDs, API keys, OAuth credentials, conflict markers, or unrelated repository changes.
+- pytest: **65 passed, 1 dependency deprecation warning**.
+- PostgreSQL integration tests cover SportsGameOdds string IDs, current/history writes, runtime
+  state, jurisdiction state, market metadata, archive transaction ordering, and an end-to-end
+  three-leg parlay build through PostgreSQL.
+- Existing SQLite compatibility/regression tests still pass.
+- Archive tests pass with the shared relational store.
+- Discord client construction tests cover both production PostgreSQL requirements and explicit
+  SQLite test mode.
 
-The live connected RivaL root was inspected only within that root. It currently contains two
-historical internal naming layouts. No folder was deleted or moved. The active runtime layout is
-the explicitly configured `history`, `manifests`, and `staging` set; legacy-numbered folders
-are not discovered or used by the runtime.
+Final diff inspection:
 
-## Deployment blocker
+- branch is ahead of the intended production baseline and not behind it;
+- no conflict markers;
+- no private-key material or Discord-token-like values;
+- no real database URL or credential committed;
+- no generated database/archive artifacts;
+- no unrelated project files;
+- SQLite references in production code are restricted to the explicit local/test compatibility
+  path.
 
-The archive scheduler is implemented but remains disabled by default. Automatic production
-uploads require the deployed RivaL runtime to receive its own Google OAuth client ID, client
-secret, offline refresh token, and private RivaL folder IDs through deployment secret/config
-storage. ChatGPT's connected Drive authorization is not reused by the bot.
+## Cleanup / conflicts
+
+The affected storage area is consolidated behind the relational store. The stale catalog filesystem
+assumption and redundant PostgreSQL archive wrapper found during validation were removed.
+
+The SQLite archive wrapper remains only for existing local/test compatibility. Production runtime
+constructs one authoritative store and passes it to hot odds, market catalog, jurisdiction, refresh
+state, parlay queries, and archive bookkeeping.
+
+## Blockers / risks
+
+- A real Discloud PostgreSQL instance and its private connection URL are deployment configuration,
+  not repository data.
+- Production activation cannot be validated against the user's actual Discloud database until that
+  database exists and its URL is supplied through deployment environment configuration.
+- No legacy SQLite data migration should be attempted without first confirming that the deployed
+  SQLite file contains data worth preserving.
+
+## Backlog
+
+No unrelated work is active.
 
 ## Next step
 
-Require one final green CI run for this documentation head, then mark PR #3 ready and squash-merge
-if the final tree remains clean. Production archive activation happens only after deployment OAuth
-and private folder configuration are supplied.
+Run final exact-head CI for this validation-record update, then make PR #5 ready for review if it
+remains green. Production activation after merge requires provisioning the Discloud PostgreSQL
+template and setting `RIVAL_DATABASE_URL` in the bot's deployment environment.

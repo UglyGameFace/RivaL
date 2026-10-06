@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from parlay_bot.config import Settings
-from parlay_bot.discord_app.bot import RivalDiscordClient, run_discord_bot
+from parlay_bot.discord_app.bot import RivalDiscordClient, build_hot_store, run_discord_bot
 from parlay_bot.discord_app.presentation import (
     display_book,
     location_embed,
@@ -108,6 +108,7 @@ async def test_modals_enforce_location_input_bounds(tmp_path) -> None:
 async def test_discord_client_registers_one_rival_command_without_message_intent(tmp_path) -> None:
     settings = Settings(
         _env_file=None,
+        rival_storage_backend="sqlite",
         rival_db_path=str(tmp_path / "rival.sqlite"),
         discord_token=None,
     )
@@ -224,6 +225,7 @@ async def test_discord_client_configures_current_collector_without_polling_on_st
 ) -> None:
     settings = Settings(
         _env_file=None,
+        rival_storage_backend="sqlite",
         rival_db_path=str(tmp_path / "rival.sqlite"),
         discord_token=None,
         sportsgameodds_api_key="test-secret",
@@ -241,3 +243,25 @@ async def test_discord_client_configures_current_collector_without_polling_on_st
         if client.current_provider is not None:
             await client.current_provider.aclose()
         await client.zip_resolver.aclose()
+
+
+def test_production_storage_requires_database_url() -> None:
+    settings = Settings(_env_file=None, rival_storage_backend="postgres")
+
+    with pytest.raises(RuntimeError, match="RIVAL_DATABASE_URL"):
+        build_hot_store(settings)
+
+
+def test_explicit_sqlite_backend_remains_available_for_local_tests(tmp_path) -> None:
+    settings = Settings(
+        _env_file=None,
+        rival_storage_backend="sqlite",
+        rival_db_path=str(tmp_path / "rival.sqlite"),
+    )
+
+    store = build_hot_store(settings)
+    try:
+        assert isinstance(store, SQLiteHotStore)
+        store.initialize()
+    finally:
+        store.close()

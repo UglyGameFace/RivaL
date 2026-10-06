@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import hashlib
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
 from parlay_bot.archive.models import HistoryArchiveBatch
-from parlay_bot.storage.hot import SQLiteHotStore
+from parlay_bot.storage.hot import (
+    RelationalHotStore,
+    SQLiteHotStore,
+)
 
 
 def _slug(value: str) -> str:
@@ -14,24 +16,19 @@ def _slug(value: str) -> str:
     return "-".join(part for part in cleaned.split("-") if part) or "unknown"
 
 
-class SQLiteArchiveQueue:
+class RelationalArchiveQueue:
     """Select only closed line states and mark them archived transactionally."""
 
-    def __init__(self, path: str | Path) -> None:
-        self.path = Path(path)
+    def __init__(self, store: RelationalHotStore) -> None:
+        self.store = store
 
-    def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
-        connection.row_factory = sqlite3.Row
-        return connection
+    def connect(self):
+        return self.store.connect()
 
     def initialize(self) -> None:
-        SQLiteHotStore(self.path).initialize()
+        self.store.initialize()
         with self.connect() as connection:
-            columns = {
-                str(row["name"])
-                for row in connection.execute("PRAGMA table_info(odds_changes)").fetchall()
-            }
+            columns = self.store.database.column_names(connection, "odds_changes")
             if "archived_batch_id" not in columns:
                 connection.execute(
                     "ALTER TABLE odds_changes ADD COLUMN archived_batch_id TEXT"
@@ -330,3 +327,11 @@ class SQLiteArchiveQueue:
                 (batch_id,),
             ).fetchone()
         return dict(row) if row is not None else None
+
+
+class SQLiteArchiveQueue(RelationalArchiveQueue):
+    """Local/test compatibility archive queue."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+        super().__init__(SQLiteHotStore(self.path))

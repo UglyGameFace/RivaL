@@ -3,10 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from parlay_bot.archive.drive import DriveArchiveFolders, GoogleDriveArchiveClient
-from parlay_bot.archive.queue import SQLiteArchiveQueue
+from parlay_bot.archive.queue import RelationalArchiveQueue
 from parlay_bot.archive.service import ColdArchiveService
 from parlay_bot.archive.writer import ParquetArchiveWriter
 from parlay_bot.config import Settings
+from parlay_bot.storage.hot import RelationalHotStore
 
 
 @dataclass(frozen=True)
@@ -15,7 +16,11 @@ class ColdArchiveRuntime:
     drive: GoogleDriveArchiveClient
 
 
-def build_cold_archive_runtime(settings: Settings) -> ColdArchiveRuntime | None:
+def build_cold_archive_runtime(
+    settings: Settings,
+    *,
+    store: RelationalHotStore | None = None,
+) -> ColdArchiveRuntime | None:
     """Build the archive runtime only when explicitly enabled."""
 
     if not settings.rival_archive_enabled:
@@ -45,6 +50,9 @@ def build_cold_archive_runtime(settings: Settings) -> ColdArchiveRuntime | None:
             + ", ".join(sorted(missing))
         )
 
+    if store is None:
+        raise RuntimeError("RivaL cold archive requires the active relational store")
+
     folders = DriveArchiveFolders(
         root=str(settings.rival_drive_root_folder_id),
         history=str(settings.rival_drive_history_folder_id),
@@ -58,7 +66,7 @@ def build_cold_archive_runtime(settings: Settings) -> ColdArchiveRuntime | None:
         folders=folders,
         chunk_size_bytes=settings.rival_archive_chunk_mib * 1024 * 1024,
     )
-    queue = SQLiteArchiveQueue(settings.rival_db_path)
+    queue = RelationalArchiveQueue(store)
     writer = ParquetArchiveWriter(settings.rival_archive_local_dir)
     return ColdArchiveRuntime(
         service=ColdArchiveService(queue=queue, writer=writer, drive=drive),

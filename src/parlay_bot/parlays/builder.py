@@ -14,7 +14,7 @@ from parlay_bot.parlays.math import (
 )
 from parlay_bot.parlays.models import ParlayBuildError, ParlayLeg, ParlaySlip, RiskMode
 from parlay_bot.storage.catalog import MarketCatalogStore
-from parlay_bot.storage.hot import SQLiteHotStore
+from parlay_bot.storage.hot import RelationalHotStore
 
 
 @dataclass(frozen=True)
@@ -58,7 +58,7 @@ class ParlayBuilder:
     def __init__(
         self,
         *,
-        store: SQLiteHotStore,
+        store: RelationalHotStore,
         registry: JurisdictionRegistry,
         catalog: MarketCatalogStore | None = None,
         max_price_age: timedelta = timedelta(minutes=30),
@@ -70,7 +70,7 @@ class ParlayBuilder:
             raise ValueError("minimum_reference_books must be positive")
         self.store = store
         self.registry = registry
-        self.catalog = catalog or MarketCatalogStore(store.path)
+        self.catalog = catalog or MarketCatalogStore(store)
         self.max_price_age = max_price_age
         self.minimum_reference_books = minimum_reference_books
 

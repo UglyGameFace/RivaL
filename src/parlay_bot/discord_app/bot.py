@@ -20,9 +20,20 @@ from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.storage.catalog import MarketCatalogStore
-from parlay_bot.storage.hot import SQLiteHotStore
+from parlay_bot.storage.hot import PostgresHotStore, RelationalHotStore, SQLiteHotStore
 
 _LOG = logging.getLogger(__name__)
+
+
+def build_hot_store(settings: Settings) -> RelationalHotStore:
+    if settings.rival_storage_backend == "sqlite":
+        return SQLiteHotStore(settings.rival_db_path)
+
+    if settings.rival_database_url is None:
+        raise RuntimeError(
+            "RIVAL_DATABASE_URL is required when RIVAL_STORAGE_BACKEND=postgres"
+        )
+    return PostgresHotStore(settings.rival_database_url.get_secret_value())
 
 
 class RivalDiscordClient(discord.Client):
@@ -31,7 +42,7 @@ class RivalDiscordClient(discord.Client):
         self.settings = settings
         self.tree = app_commands.CommandTree(self)
 
-        self.store = SQLiteHotStore(settings.rival_db_path)
+        self.store = build_hot_store(settings)
         self.store.initialize()
         self.registry = JurisdictionRegistry(verified_us_sportsbooks())
         self.zip_resolver = ZipStateResolver()
@@ -40,7 +51,7 @@ class RivalDiscordClient(discord.Client):
             registry=self.registry,
             zip_resolver=self.zip_resolver,
         )
-        self.market_catalog = MarketCatalogStore(settings.rival_db_path)
+        self.market_catalog = MarketCatalogStore(self.store)
         self.parlay_builder = ParlayBuilder(
             store=self.store,
             registry=self.registry,
@@ -65,7 +76,10 @@ class RivalDiscordClient(discord.Client):
                 max_pages=settings.rival_current_max_pages,
             )
 
-        self.archive_runtime: ColdArchiveRuntime | None = build_cold_archive_runtime(settings)
+        self.archive_runtime: ColdArchiveRuntime | None = build_cold_archive_runtime(
+            settings,
+            store=self.store,
+        )
         self._archive_task: asyncio.Task[None] | None = None
 
         self._register_commands()
@@ -167,6 +181,7 @@ class RivalDiscordClient(discord.Client):
         if self.current_provider is not None:
             await self.current_provider.aclose()
         await self.zip_resolver.aclose()
+        self.store.close()
         await super().close()
 
 

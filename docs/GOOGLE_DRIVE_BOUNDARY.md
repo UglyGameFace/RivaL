@@ -120,7 +120,7 @@ Actual IDs stay in deployment secret/config storage and are not committed to Git
 - Every data file has SHA-256 and MD5 digests plus a row count.
 - Data uploads first to configured `staging/`, is checksum-verified, then is promoted to configured `history/`.
 - A JSON manifest is written to configured `manifests/`.
-- SQLite source rows are marked archived only after both Drive objects are verified.
+- Source database rows are marked archived only after both Drive objects are verified.
 - There is no archive delete API.
 
 ## Archive write sequence

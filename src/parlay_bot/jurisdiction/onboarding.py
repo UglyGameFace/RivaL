@@ -5,7 +5,7 @@ from typing import Protocol
 
 from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.jurisdiction.states import normalize_state, state_name
-from parlay_bot.storage.hot import SQLiteHotStore
+from parlay_bot.storage.hot import RelationalHotStore
 
 
 class ZipResolver(Protocol):
@@ -26,7 +26,7 @@ class LocationOnboardingService:
     def __init__(
         self,
         *,
-        store: SQLiteHotStore,
+        store: RelationalHotStore,
         registry: JurisdictionRegistry,
         zip_resolver: ZipResolver,
     ) -> None:

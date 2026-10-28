@@ -39,7 +39,7 @@ def _is_text_research_model(name: str) -> bool:
 
 def _model_rank(name: str) -> tuple[int, int, int, int, str]:
     """Newer versions first, stable before previews; not a capability ranking."""
-    match = re.match(r"^gemini-(\\d+)(?:\\.(\\d+))?", name)
+    match = re.match(r"^gemini-(\d+)(?:\.(\d+))?", name)
     major = int(match.group(1)) if match else -1
     minor = int(match.group(2)) if match and match.group(2) else 0
     stable = int("preview" not in name and "exp" not in name)

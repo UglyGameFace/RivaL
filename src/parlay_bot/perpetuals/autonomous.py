@@ -22,6 +22,8 @@ MIN_UNIQUE_TIMES = 100
 MIN_DAYS = 7
 MIN_BRIER_GAIN = 0.005
 SLOT_HOURS = 4
+GEMINI_HORIZON_MINUTES = 15
+LEGACY_GEMINI_HORIZON_MINUTES = 5
 
 
 def _utc(value: datetime) -> datetime:
@@ -77,6 +79,7 @@ class AutonomousResearch:
                     target_opened_at TEXT NOT NULL,
                     direction TEXT NOT NULL,
                     source_count INTEGER NOT NULL,
+                    horizon_minutes INTEGER NOT NULL DEFAULT 5,
                     settled_at TEXT,
                     outcome_up INTEGER,
                     realized_close DOUBLE PRECISION,
@@ -102,6 +105,14 @@ class AutonomousResearch:
                 );
                 """
             )
+            # Existing 5m records remain 5m, never silently relabeled 15m.
+            if "horizon_minutes" not in self.store.database.column_names(
+                conn, "perp_auto_ai_forecasts"
+            ):
+                conn.execute(
+                    "ALTER TABLE perp_auto_ai_forecasts "
+                    "ADD COLUMN horizon_minutes INTEGER NOT NULL DEFAULT 5"
+                )
 
     def settle_ai(self, *, now: datetime | None = None) -> int:
         """Resolve ONLY same-contract future candles observed after issuance."""
@@ -131,6 +142,15 @@ class AutonomousResearch:
             if candle is None:
                 continue
             issuance = _time(pred["issued_at"])
+            horizon = int(pred["horizon_minutes"])
+            if horizon not in (LEGACY_GEMINI_HORIZON_MINUTES, GEMINI_HORIZON_MINUTES):
+                continue
+            reference_open = _time(pred["reference_opened_at"])
+            target_open = _time(pred["target_opened_at"])
+            if target_open != reference_open + timedelta(minutes=horizon):
+                continue
+            if issuance < reference_open + timedelta(minutes=5):
+                continue
             observed = _time(candle["first_observed_at"])
             if not (issuance < observed <= current and _time(candle["closed_at"]) < current):
                 continue
@@ -208,10 +228,11 @@ class AutonomousResearch:
             return False
         if not timedelta(0) <= issued - result.generated_at <= timedelta(minutes=5):
             return False
-        target_open = (_time(reference["last_candle_close"]) +
-                       timedelta(milliseconds=1))
-        target_close = target_open + timedelta(minutes=5)
-        if not (target_open <= issued < target_close):
+        reference_close = _time(reference["last_candle_close"])
+        reference_open = reference_close + timedelta(milliseconds=1) - timedelta(minutes=5)
+        # Prediction is for 15m from the closing reference candle.
+        target_open = reference_open + timedelta(minutes=GEMINI_HORIZON_MINUTES)
+        if not (reference_close < issued < target_open):
             return False
         return await asyncio.to_thread(
             self._insert_ai_forecast,
@@ -225,20 +246,26 @@ class AutonomousResearch:
         issued: datetime, reference: dict, target_open: datetime,
         direction: str, count: int,
     ) -> bool:
+        reference_close = _time(reference["last_candle_close"])
+        reference_open = reference_close + timedelta(milliseconds=1) - timedelta(minutes=5)
+        if target_open != reference_open + timedelta(minutes=GEMINI_HORIZON_MINUTES):
+            raise ValueError("Gemini target must match the stated 15-minute horizon")
+        if not reference_close < issued < target_open:
+            raise ValueError("Gemini prediction issued outside causal horizon")
         with self.store.connect() as conn:
             record = conn.execute(
                 """INSERT INTO perp_auto_ai_forecasts
                    (asset,model,evidence_sha256,issued_at,venue,contract,quote,
                     reference_opened_at,reference_price,target_opened_at,
-                    direction,source_count)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+                    direction,source_count,horizon_minutes)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT DO NOTHING""",
                 (
                     asset, model, digest, issued.isoformat(),
                     reference["venue"], reference["contract"], reference["quote"],
-                    (target_open - timedelta(minutes=5)).isoformat(),
+                    reference_open.isoformat(),
                     float(reference["close"]), target_open.isoformat(),
-                    direction, count,
+                    direction, count, GEMINI_HORIZON_MINUTES,
                 ),
             )
         return record.rowcount == 1

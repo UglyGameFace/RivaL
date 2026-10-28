@@ -21,12 +21,16 @@ VENUE_NAMES = {
     "dydx": "dYdX",
     "bitget": "Bitget Futures",
     "gate": "Gate Futures",
+    "okx": "OKX Swaps",
+    "kucoin": "KuCoin Futures",
 }
 MARKET_SYMBOLS = {
     "hyperliquid": ("{asset}", "USDC"),
     "dydx": ("{asset}-USD", "USD"),
     "bitget": ("{asset}USDT", "USDT"),
     "gate": ("{asset}_USDT", "USDT"),
+    "okx": ("{asset}-USDT-SWAP", "USDT"),
+    "kucoin": ("{asset}USDTM", "USDT"),
 }
 
 
@@ -329,6 +333,8 @@ class MarketDataDashboard(discord.ui.View):
         if self.screen == "markets" and self.selected_asset:
             for venue in self.venues:
                 symbol, quote = MARKET_SYMBOLS.get(venue, ("{asset}", "?"))
+                if venue == "kucoin" and self.selected_asset == "BTC":
+                    symbol = "XBTUSDTM"
                 market_rows = self.market.recent_candles(
                     venue=venue, contract=symbol.format(asset=self.selected_asset),
                     quote=quote, interval_minutes=5, count=1,

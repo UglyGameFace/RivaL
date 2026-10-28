@@ -192,3 +192,33 @@ changed by this UI-only improvement.
 
 Deploy the newest RivaL main revision to the **existing** Discloud app to see
 the interface. A GitHub merge alone does not update Discord.
+
+## OKX and KuCoin public perpetual market adapters
+
+**New code integrations, not yet verified active from Discloud.** RivaL checks
+OKX V5 `public/instruments?instType=SWAP&instId=...` metadata and only
+collects live, linear, USDT-settled SWAP contracts from `market/candles`.
+For a linear contract with `ctValCcy` equal to the coin, base volume equals
+exchange contract-count `vol` times `ctVal` and `ctMult`. The adapter
+honors OKX's completed-candle confirm flag.
+
+For KuCoin, RivaL checks the public futures contract specification via
+`api-futures.kucoin.com/api/v1/contracts/{symbol}` and fetches bounded
+trade klines from `api.kucoin.com/api/ua/v2/market/kline` with
+`tradeType=FUTURES`. Futures volume is the number of contracts; RivaL uses
+the public `multiplier` as coin quantity per contract. BTC on KuCoin is
+`XBTUSDTM`, NOT BTCUSDTM. Neither source supplies fabricated market
+contexts or trade counts, and no account/key/trading permission is needed.
+
+Official reference documentation:
+- https://www.okx.com/docs-v5/en/
+- https://www.kucoin.com/docs-new/v2/rest/ua/get-klines
+- https://www.kucoin.com/docs-new/rest/futures-trading/market-data/get-symbol
+
+The bounded five-minute collector, blocked-source cooldowns, private menu
+and existing four venues remain intact. Check `/rival-data` after deploying
+the merged revision to determine whether actual Discloud API access,
+market identity checks and immutable PostgreSQL inserts succeeded.
+
+The target remains ten independent **verified** venues and outcome-evaluated
+forecasts. No model-accuracy claim follows merely from a newly coded adapter.

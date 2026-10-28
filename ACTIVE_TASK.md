@@ -19,6 +19,23 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 **Active: live four-venue ingestion evidenced; six source integrations and production prediction engine remain.** PRs #9–12 supplied two data adapters, immutable PostgreSQL market storage and shadow evaluation. PR #13 started automatic five-minute collection, PR #14 added Bitget/Gate, and PR #15 introduced a private interactive data dashboard. On October 28 at 8:00 AM user-local time, the owner's deployed Discord screenshot showed BTC Markets with four venues (Hyperliquid, dYdX, Bitget Futures, Gate Futures) all marked Collecting, each displaying a recently saved BTC close about five minutes old. This is evidence of four live data pipelines for BTC, not proof of ETH/SOL health, long-term uptime, prediction accuracy or completion of the requested ten-source model. Six additional venue integrations and automated, verified forecasting/retraining remain unfinished.
 
+## October 28, 2026: OKX and KuCoin futures integrations under CI
+
+- Extend automatic read-only collector with OKX V5 linear USDT swaps and
+  KuCoin UTA V2 USDTM futures candles backed by public contract metadata.
+- Verify market symbols, active/linear/perpetual contract type, complete
+  candles and native quote. Convert trading volume from **contract units**
+  with published per-contract multipliers, not using unverified fake base volumes.
+- Preserve distinct BTC KuCoin symbol XBTUSDTM and all venue identifiers;
+  update BTC/ETH/SOL market dashboard lookup to use exact source symbols.
+- Failure of either API cannot stop the existing four live venues;
+  blocked/rate-limited feeds must fail closed with visible source health.
+- **Live deployment evidence remains four BTC sources only.** Newly
+  integrated venues must not count as confirmed until Discloud reports
+  successful persisted candles and current health.
+- Six coded adapters after merge; four still need implementation to reach
+  the ten-source owner requirement. Model training/prediction remains unfinished.
+
 ## October 28, 2026: real private Discord data dashboard
 
 - Replace /rival-data's unbounded one-embed source list with a responsive

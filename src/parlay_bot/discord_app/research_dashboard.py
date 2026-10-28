@@ -21,6 +21,153 @@ from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMo
 
 _LOG = logging.getLogger(__name__)
 
+# Every page has a hard content cap. Detailed metrics stay available behind a
+# selector; no Discord message ever lists all research diagnostics at once.
+_SECTIONS = {
+    "math": (
+        ("overview", "Overview"),
+        ("pulse", "Market pulse"),
+        ("history", "History & gaps"),
+        ("recovery", "Backfill progress"),
+        ("learning", "Learning status"),
+    ),
+    "accuracy": (
+        ("overview", "Overview"),
+        ("engine", "Engine health"),
+        ("readiness", "Forecast readiness"),
+        ("venue", "Exchange blocker"),
+        ("five", "5-minute results"),
+        ("fifteen", "15-minute results"),
+        ("gemini", "Gemini results"),
+        ("method", "Scoring method"),
+    ),
+    "ai": (
+        ("overview", "Overview"),
+        ("limits", "Request limits"),
+        ("analysis", "AI assessment"),
+    ),
+}
+_FIELD_GROUPS = {
+    "math": {
+        "pulse": ("Current market pulse",),
+        "history": ("Six-month history target", "Historical gap audit"),
+        "recovery": ("Gate six-month recovery", "KuCoin six-month recovery"),
+        "learning": ("Mathematical model", "Automatic shadow evaluation",
+                     "Automatic learning"),
+    },
+    "accuracy": {
+        "engine": ("Automatic learning engine",),
+        "readiness": ("Mathematical forecast readiness",),
+        "venue": ("Why this exchange",),
+        "five": ("Forward 5-minute evaluation", "Math 5m"),
+        "fifteen": ("Forward 15-minute evaluation", "Math 15m"),
+        "gemini": ("Gemini · independent forward outcomes",
+                   "Independent track analytics"),
+        "method": ("How accuracy is audited",),
+    },
+    "ai": {
+        "limits": ("Gemini model & request limits",),
+        "analysis": ("Gemini assessment", "Analysis status"),
+    },
+}
+
+
+class _SectionSelect(discord.ui.Select["ResearchDashboard"]):
+    def __init__(self, screen: str, section: str) -> None:
+        super().__init__(
+            placeholder="Choose what to see",
+            custom_id="rival:research:section",
+            row=3,
+            options=[
+                discord.SelectOption(
+                    label=label, value=key, default=key == section,
+                )
+                for key, label in _SECTIONS[screen]
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        dashboard.section = self.values[0]
+        await dashboard.redraw(interaction)
+
+
+def _short(value: str, limit: int = 225) -> str:
+    """Trim verbose boilerplate ONLY in summaries; details retain full text."""
+    compact = " ".join(value.replace("\\n", "\n").split())
+    if len(compact) <= limit:
+        return compact
+    return compact[:limit - 1].rsplit(" ", 1)[0] + "…"
+
+
+def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord.Embed:
+    """A real phone-sized screen; detailed metrics are separate screens."""
+    label = dict(_SECTIONS[screen]).get(section, "Overview")
+    result = discord.Embed(
+        title=full.title,
+        description={
+            "math": "Live market observations and historical research. No approved trade.",
+            "accuracy": "Forward-only predictions versus actual outcomes. No verified betting edge.",
+            "ai": "Independent Gemini analysis from verified exchange data.",
+        }[screen] + f"\n**{label}** · Choose a section below for details.",
+        color=full.color,
+    )
+    result.timestamp = full.timestamp
+    fields = list(full.fields)
+
+    # Live health is always visible and never served from the history cache.
+    source = next(
+        (f for f in fields if "Live collection status" in f.name), None,
+    )
+    if source is not None:
+        result.add_field(
+            name="Live market feeds",
+            value=_short(source.value, 180), inline=False,
+        )
+
+    def add_one(prefixes: tuple[str, ...], *, short: bool = False) -> bool:
+        for prefix in prefixes:
+            field = next((f for f in fields if f.name.startswith(prefix)), None)
+            if field is None:
+                continue
+            result.add_field(
+                name=field.name,
+                value=_short(field.value, 230) if short else field.value,
+                inline=False,
+            )
+            return True
+        return False
+
+    if section == "overview":
+        if screen == "math":
+            add_one(("Current market pulse",), short=True)
+            add_one(("Six-month history target", "History"), short=True)
+        elif screen == "accuracy":
+            add_one(("Tonight's research verdict", "Accuracy tracking"), short=True)
+            add_one(("Forward 5-minute evaluation",), short=True)
+        else:
+            add_one(("Gemini assessment", "Analysis status"), short=True)
+            add_one(("Gemini model & request limits",), short=True)
+    else:
+        for prefix in _FIELD_GROUPS[screen].get(section, ()):
+            if len(result.fields) >= 3:  # live + max two detailed metrics
+                break
+            add_one((prefix,))
+    if len(result.fields) == (1 if source is not None else 0):
+        result.add_field(
+            name="No results yet",
+            value="No verified records for this section yet. "
+                  "The collector continues independently.",
+            inline=False,
+        )
+    result.set_footer(
+        text="Current PostgreSQL snapshot • Update live stats to reload • "
+             "Historical results ≠ verified trading edge"
+    )
+    return result
+
+
 
 class _AssetSelect(discord.ui.Select["ResearchDashboard"]):
     def __init__(self, current: str) -> None:
@@ -48,7 +195,7 @@ class _VenueSelect(discord.ui.Select["ResearchDashboard"]):
     def __init__(self, venues: tuple[str, ...], selected: str) -> None:
         super().__init__(
             placeholder="Inspect an exchange's forecast readiness",
-            custom_id="rival:research:venue", row=3,
+            custom_id="rival:research:venue", row=4,
             options=[
                 discord.SelectOption(
                     label=venue.replace("_", " ").title(),
@@ -80,6 +227,7 @@ class _ScreenButton(discord.ui.Button["ResearchDashboard"]):
         assert self.view is not None
         dashboard = self.view
         dashboard.screen = self.screen
+        dashboard.section = "overview"
         dashboard.message = None
         await dashboard.redraw(interaction)
 
@@ -199,6 +347,7 @@ class ResearchDashboard(discord.ui.View):
         self.shadow_enabled = shadow_enabled
         self.asset = "BTC"
         self.screen = "math"
+        self.section = "overview"
         self.selected_venue = venues[0] if venues else ""
         self.opinion: AiResearch | None = None
         self.message: str | None = None
@@ -231,7 +380,9 @@ class ResearchDashboard(discord.ui.View):
             self.add_item(item)
         self.add_item(_AssetSelect(self.asset))
         self.add_item(_RefreshButton())
-        if self.screen == "accuracy" and self.venues:
+        self.add_item(_SectionSelect(self.screen, self.section))
+        if (self.screen == "accuracy" and self.section == "venue"
+                and self.venues):
             self.add_item(_VenueSelect(self.venues, self.selected_venue))
         if self.screen == "ai":
             enabled = self.market is not None and self.ai is not None and self.ai.available
@@ -339,6 +490,13 @@ class ResearchDashboard(discord.ui.View):
         )
 
     async def render(self) -> discord.Embed:
+        detailed = await self._render_full()
+        return _compact_embed(
+            detailed, screen=self.screen, section=self.section,
+        )
+
+    async def _render_full(self) -> discord.Embed:
+        """Current authoritative data, never returned as a giant Discord embed."""
         embed = discord.Embed(
             title=f"RivaL  |  {self.asset} Research",
             description=(

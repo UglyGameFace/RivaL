@@ -112,6 +112,7 @@ async def test_research_menu_shows_honest_pause_and_exact_retry_time():
         "RivaL temporarily paused gemini-3.8-flash analysis. "
         "See the exact reason and retry time below."
     )
+    dashboard.section = "limits"
     dashboard._rebuild()
     embed = await dashboard.render()
     budget = next(
@@ -125,8 +126,10 @@ async def test_research_menu_shows_honest_pause_and_exact_retry_time():
     assert "Next permitted request" in budget
     assert "<t:" in budget
     assert "Google's account-wide limit" in budget
+    dashboard.section = "analysis"
+    analysis_embed = await dashboard.render()
     status = next(
-        field.value for field in embed.fields
+        field.value for field in analysis_embed.fields
         if field.name == "Analysis status"
     )
     assert "paused" in status

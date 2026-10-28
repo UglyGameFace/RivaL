@@ -89,7 +89,7 @@ async def test_live_health_is_not_cached_but_history_is_cached_until_refresh(
     try:
         first = await dashboard.render()
         assert "1/2" in next(
-            f.value for f in first.fields if f.name == "🟢 Live collection status"
+            f.value for f in first.fields if f.name == "Live market feeds"
         )
         assert len(calls) == 1
         market.record_feed_health(
@@ -100,7 +100,7 @@ async def test_live_health_is_not_cached_but_history_is_cached_until_refresh(
         )
         second = await dashboard.render()
         assert "2/2" in next(
-            f.value for f in second.fields if f.name == "🟢 Live collection status"
+            f.value for f in second.fields if f.name == "Live market feeds"
         )
         assert len(calls) == 1
         button = controls(dashboard)["rival:research:refresh"]
@@ -112,7 +112,7 @@ async def test_live_health_is_not_cached_but_history_is_cached_until_refresh(
         assert len(calls) == 2
         assert "2/2" in next(
             f.value for f in interaction.embed.fields
-            if f.name == "🟢 Live collection status"
+            if f.name == "Live market feeds"
         )
         assert interaction.embed.timestamp is not None
     finally:
@@ -136,7 +136,7 @@ async def test_api_success_without_completed_candle_is_not_a_fresh_feed(tmp_path
     try:
         embed = await view.render()
         health = next(
-            f.value for f in embed.fields if f.name == "🟢 Live collection status"
+            f.value for f in embed.fields if f.name == "Live market feeds"
         )
         assert "0/1" in health
     finally:

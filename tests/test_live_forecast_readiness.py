@@ -127,6 +127,7 @@ async def test_live_accuracy_screen_explains_shortage_in_actual_database(tmp_pat
             venues=("hyperliquid", "binance"), shadow_enabled=True,
         )
         view.screen = "accuracy"
+        view.section = "readiness"
         view._rebuild()
         embed = await view.render()
         readiness = next(

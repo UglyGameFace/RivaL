@@ -18,6 +18,8 @@ async def test_math_panel_discloses_automatic_shadow_status(tmp_path):
         venues=("hyperliquid",), shadow_enabled=True,
     )
     try:
+        dashboard.section = "learning"
+        dashboard._rebuild()
         rendered = (await dashboard.render()).to_dict()
         fields = {field["name"]: field["value"] for field in rendered["fields"]}
         assert "Automatic shadow evaluation" in fields
@@ -39,6 +41,8 @@ async def test_math_panel_reports_when_background_learning_disabled(tmp_path):
         venues=("hyperliquid",), shadow_enabled=False,
     )
     try:
+        dashboard.section = "learning"
+        dashboard._rebuild()
         rendered = (await dashboard.render()).to_dict()
         fields = {field["name"]: field["value"] for field in rendered["fields"]}
         assert "disabled" in fields["Mathematical model"]

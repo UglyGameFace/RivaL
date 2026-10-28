@@ -155,8 +155,12 @@ async def test_research_accuracy_tab_reads_real_database_without_invented_result
         assert "Forward 5-minute evaluation" in fields
         assert "settled: **0**" in fields["Forward 5-minute evaluation"]
         assert "No measurable accuracy" in fields["Forward 5-minute evaluation"]
-        assert "Forward 15-minute evaluation" in fields
-        assert "future-outcome scores" in fields["How accuracy is audited"]
+        view.section = "fifteen"
+        fifteen = {x.name: x.value for x in (await view.render()).fields}
+        assert "Forward 15-minute evaluation" in fifteen
+        view.section = "method"
+        method = {x.name: x.value for x in (await view.render()).fields}
+        assert "future-outcome scores" in method["How accuracy is audited"]
         assert embed.timestamp is not None
     finally:
         view.stop()

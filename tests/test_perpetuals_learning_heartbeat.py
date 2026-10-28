@@ -72,6 +72,7 @@ async def test_accuracy_screen_reads_persisted_learning_cycle(tmp_path):
             shadow_enabled=True,
         )
         panel.screen = "accuracy"
+        panel.section = "engine"
         panel._rebuild()
         embed = await panel.render()
         result = next(

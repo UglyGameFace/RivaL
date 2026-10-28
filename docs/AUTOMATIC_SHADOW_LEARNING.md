@@ -39,3 +39,28 @@ multi-venue prediction generation and real-world performance checks.
 A successful Github Actions run does not prove that Discloud actually ran
 the worker; inspect deployed logs (`RivaL automatic shadow learning`) and
 the research panel for production evidence.
+
+## Prospective shadow-model governance hardening
+
+A **qualified_shadow** label is not permission to bet. The governance
+evaluator now includes only actual `prospective-logistic-shadow-v1` records
+with settled outcomes. It groups all venues at one UTC target time as
+**one correlated event** and computes paired, per-target model-versus-baseline
+Brier improvement.
+
+Qualification requires 100 or more distinct targets across at least seven
+calendar days, average paired gain strictly greater than 0.005, positive
+average gain on at least 80% of those days, and a positive daily block
+stress margin (daily mean minus 2.58 standard errors). The margin is an
+**intentionally conservative heuristic**, not an independently validated
+95% confidence interval or proof of an exploitable trading edge. Thin,
+noisy, contradictory or drifting evidence must stay `insufficient` or
+`rejected_shadow`. The evidence/gain is written into governance reasons
+and can requalify/reject as fresh targets settle. Invalid scores and model
+versions are not mixed into the vote.
+
+The Accuracy tab's seven-day trend now compares the model's
+`baseline_brier - model_brier` skill in each period. An improving raw
+Brier score on an easier week is not presented as learning progress if the
+baseline improved even faster. All performance is *observed shadow research*
+without actual fills, funding, slippage or verified net profitability.

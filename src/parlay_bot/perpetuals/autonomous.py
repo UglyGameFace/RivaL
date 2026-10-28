@@ -13,14 +13,13 @@ import math
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence, build_evidence
+from parlay_bot.perpetuals.forward_audit import MODEL as FORWARD_MODEL
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import GeminiResearch, ResearchUnavailable
+from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
 _LOG = logging.getLogger(__name__)
-MIN_UNIQUE_TIMES = 100
-MIN_DAYS = 7
-MIN_BRIER_GAIN = 0.005
 SLOT_HOURS = 4
 
 
@@ -287,68 +286,67 @@ class AutonomousResearch:
         return successes
 
     def review_model(self, *, now: datetime | None = None) -> int:
-        """Promote/rollback for SHADOW research only, never auto-betting.
+        """Evaluate shadow promotion on paired forward events, not bar volume.
 
-        Each five-minute target is one correlated event even if nine exchanges
-        all recorded it. Requires 100 distinct settled UTC targets across at
-        least 7 separate days and lower prospective Brier loss than baseline.
+        Correlated exchanges at the same target time count ONCE. Only scores
+        produced by the exact forward model version can affect governance.
+        The day-block stress rule screens unstable results but cannot prove
+        a live betting edge, and never grants trading permission.
         """
         current = _utc(now or datetime.now(UTC))
         self.initialize()
         with self.store.connect() as conn:
             rows = conn.execute(
-                """SELECT asset,horizon_minutes,model_version,target_opened_at,
+                """SELECT asset,horizon_minutes,target_opened_at,
                           model_brier,baseline_brier
                    FROM perp_forward_audit
-                   WHERE settled_at IS NOT NULL AND issued_at>=?
-                     AND issued_at<=?
+                   WHERE model_version=? AND settled_at IS NOT NULL
+                     AND issued_at>=? AND issued_at<=?
                    ORDER BY target_opened_at""",
-                ((current - timedelta(days=14)).isoformat(), current.isoformat()),
+                (FORWARD_MODEL, (current - timedelta(days=14)).isoformat(),
+                 current.isoformat()),
             ).fetchall()
         count = 0
         for asset in self.assets:
             for horizon in (5, 15):
-                relevant = [
-                    x for x in rows if x["asset"] == asset
-                    and int(x["horizon_minutes"]) == horizon
-                ]
-                buckets: dict[str, list[tuple[float, float]]] = {}
-                for x in relevant:
-                    key = str(x["target_opened_at"])
-                    buckets.setdefault(key, []).append(
-                        (float(x["model_brier"]), float(x["baseline_brier"]))
-                    )
                 recent = [
-                    (key, values) for key, values in buckets.items()
-                    if _time(key) >= current - timedelta(days=7)
+                    (str(x["target_opened_at"]), float(x["model_brier"]),
+                     float(x["baseline_brier"]))
+                    for x in rows
+                    if x["asset"] == asset
+                    and int(x["horizon_minutes"]) == horizon
+                    and _time(x["target_opened_at"]) >= current - timedelta(days=7)
                 ]
-                n = len(recent)
-                days = len({_time(k).date() for k, _ in recent})
-                model = (
-                    sum(sum(p for p, _ in values) / len(values) for _, values in recent) / n
-                    if n else None
+                try:
+                    audit = score_paired_forward(recent)
+                except (ValueError, TypeError, OverflowError) as exc:
+                    _LOG.warning(
+                        "RivaL governance skipped corrupt forward scores "
+                        "asset=%s horizon=%s error=%s",
+                        asset, horizon, type(exc).__name__,
+                    )
+                    continue
+                reason = (
+                    f"{audit.reason}; paired_gain="
+                    f"{audit.paired_gain:.5f}; day_stress_lower="
+                    f"{audit.lower_day_bound:.5f}; positive_days="
+                    f"{audit.positive_days}/{audit.days}"
+                    if audit.paired_gain is not None else audit.reason
                 )
-                baseline = (
-                    sum(sum(b for _, b in values) / len(values) for _, values in recent) / n
-                    if n else None
-                )
-                if n < MIN_UNIQUE_TIMES or days < MIN_DAYS:
-                    status, reason = "insufficient", "Not enough unique forward UTC targets/days"
-                elif model is not None and baseline is not None and model + MIN_BRIER_GAIN < baseline:
-                    status, reason = "qualified_shadow", "Prospective Brier beats base-rate benchmark"
-                else:
-                    status, reason = "rejected_shadow", "No demonstrated improvement over baseline"
                 with self.store.connect() as conn:
                     previous = conn.execute(
-                        """SELECT status,unique_target_windows,calendar_days
-                           FROM perp_model_governance WHERE asset=? AND horizon_minutes=?
+                        """SELECT status,unique_target_windows,calendar_days,
+                                  candidate_brier,baseline_brier,reason
+                           FROM perp_model_governance
+                           WHERE asset=? AND horizon_minutes=? AND model_version=?
                            ORDER BY evaluated_at DESC LIMIT 1""",
-                        (asset, horizon),
+                        (asset, horizon, FORWARD_MODEL),
                     ).fetchone()
                     if previous and (
-                        previous["status"] == status and
-                        int(previous["unique_target_windows"]) == n and
-                        int(previous["calendar_days"]) == days
+                        previous["status"] == audit.status
+                        and int(previous["unique_target_windows"]) == audit.targets
+                        and int(previous["calendar_days"]) == audit.days
+                        and previous["reason"] == reason
                     ):
                         continue
                     conn.execute(
@@ -358,8 +356,10 @@ class AutonomousResearch:
                             baseline_brier,status,reason)
                            VALUES (?,?,?,?,?,?,?,?,?,?)
                            ON CONFLICT DO NOTHING""",
-                        (asset, horizon, "prospective-logistic-shadow-v1",
-                         current.isoformat(), n, days, model, baseline, status, reason),
+                        (asset, horizon, FORWARD_MODEL,
+                         current.isoformat(), audit.targets, audit.days,
+                         audit.model_brier, audit.baseline_brier,
+                         audit.status, reason),
                     )
                     count += 1
         return count

@@ -1,3 +1,25 @@
+## October 28, 2026: conservative paired forward-model qualification and meaningful skill trend
+
+- Governance now filters strictly to the actual prospective logistic shadow
+  model version, not other experiments sharing asset/horizon.
+- Every UTC outcome target counts once regardless of how many correlated
+  venues recorded it. Compare model and baseline on the *same* target.
+- Require at least 100 unique forward targets across 7 days, minimum paired
+  Brier improvement >0.005, positive gains on at least 80% of days, and a
+  positive conservative day-block standard-error stress bound.
+- The daily bound is a **heuristic screen**, not a proven statistical
+  confidence interval or evidence of profitable trading. Reject unstable
+  models and automatically retract status if forward skill deteriorates.
+- Governance reason records paired gain, day-stress lower and positive-day
+  ratio; same counts with changed outcomes can trigger re-evaluation.
+- Accuracy trend compares model improvement relative to each week's
+  own baseline, not misleading raw Brier across different regimes.
+  The private Accuracy menu labels the trend baseline-adjusted.
+- Add tests for correlated venues, a lucky couple of days, weak gains,
+  invalid timestamps, wrong model version and misleading raw-score trends.
+- No exchange/API costs, Gemini requests, order placement, credential
+  changes or interruption of existing 5-minute collection.
+
 ## October 28, 2026: permanent compact Discord Research UI
 
 - Owner screenshot at 6:03 PM shows an unacceptable nearly full-phone

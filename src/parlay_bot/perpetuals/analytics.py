@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.autonomous import AutonomousResearch, _utc
+from parlay_bot.perpetuals.forward_audit import MODEL as FORWARD_MODEL
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
 MIN_TREND_EVENTS = 100
@@ -86,12 +87,12 @@ def analytics_snapshot(
                                     /reference_close*10000
                                ELSE NULL END) AS gross_bps
                FROM perp_forward_audit
-               WHERE asset=? AND settled_at IS NOT NULL
+               WHERE asset=? AND model_version=? AND settled_at IS NOT NULL
                  AND target_opened_at>=? AND target_opened_at<=?
                  AND outcome_up IS NOT NULL
                GROUP BY horizon_minutes,target_opened_at
                ORDER BY target_opened_at DESC LIMIT 9000""",
-            (asset, start_earlier.isoformat(), clock.isoformat()),
+            (asset, FORWARD_MODEL, start_earlier.isoformat(), clock.isoformat()),
         ).fetchall()
         ai_rows = conn.execute(
             """SELECT model,issued_at,direction,settled_at,correct
@@ -109,7 +110,8 @@ def analytics_snapshot(
         ).fetchall()
         pending = conn.execute(
             """SELECT COUNT(*) AS n FROM perp_forward_audit
-               WHERE asset=? AND settled_at IS NULL""", (asset,),
+               WHERE asset=? AND model_version=? AND settled_at IS NULL""",
+                (asset, FORWARD_MODEL),
         ).fetchone()
     by_horizon = {}
     for h in (5, 15):
@@ -124,14 +126,35 @@ def analytics_snapshot(
             and str(x["target_opened_at"]) < start_recent.isoformat()
         ]
         today, previous = _bucket(recent), _bucket(prior)
-        trend = (
-            "improving" if today["brier"] < previous["brier"] else
-            "worsening" if today["brier"] > previous["brier"] else "unchanged"
-        ) if (
+        # Comparing raw Brier scores across weeks can label a model as
+        # "improving" simply because the market became easier to predict.
+        # Compare each week's model-vs-baseline *paired skill* instead.
+        current_skill = (
+            today["baseline"] - today["brier"]
+            if today["baseline"] is not None else None
+        )
+        prior_skill = (
+            previous["baseline"] - previous["brier"]
+            if previous["baseline"] is not None else None
+        )
+        trend = "insufficient"
+        if (
             today["events"] >= MIN_TREND_EVENTS
             and previous["events"] >= MIN_TREND_EVENTS
-        ) else "insufficient"
-        by_horizon[h] = {"last_7d": today, "prior_7d": previous, "trend": trend}
+            and current_skill is not None and prior_skill is not None
+        ):
+            gain = current_skill - prior_skill
+            trend = (
+                "improving" if gain > 0.005
+                else "worsening" if gain < -0.005
+                else "unchanged"
+            )
+        by_horizon[h] = {
+            "last_7d": today, "prior_7d": previous,
+            "trend": trend, "last_7d_skill": current_skill,
+            "prior_7d_skill": prior_skill,
+            "trend_method": "relative_to_same_window_baseline",
+        }
     seen = set()
     governance = {}
     for row in governors:

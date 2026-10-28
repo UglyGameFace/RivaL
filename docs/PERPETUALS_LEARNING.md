@@ -750,3 +750,27 @@ remain authoritative and read from PostgreSQL on each menu edit or
 explicit live refresh. The menu does not directly issue exchange HTTP
 requests. This is a user-interface change only, not an approval of
 unvalidated real-money betting signals.
+
+## Autonomous forecast cycle diagnosis
+
+RivaL's read-only, independently settled mathematical forward forecasts
+already run automatically following the five-minute market collection.
+Their out-of-sample skill cannot be inferred from the six-month candle
+count, from green collection badges, or from an engine heartbeat alone.
+
+The Accuracy -> Engine health screen now displays an additional
+**Forward issue audit** sourced from the real prospective forecast
+worker and stored per UTC five-minute slot in PostgreSQL. It reports
+discovered/selected streams and counts for missing 65-bar live history,
+stale observations, invalid data, insufficient causal labels,
+insufficient training, expired target windows, duplicate issuance,
+new issued forecasts and settled outcomes. A stale audit is explicitly
+flagged rather than quietly represented as current.
+
+The existing Accuracy -> 5m/15m results and scoring-method sections still
+provide prospective forecast Brier loss against the same-window baseline,
+calibration diagnostics, sample counts, and conservative governance.
+None of these authorizes automated trades. The model changes only using
+known, subsequently verified outcomes; model performance is not guaranteed
+to improve every five minutes. Offline six-month backfill remains
+separate from genuinely issued live forecasts.

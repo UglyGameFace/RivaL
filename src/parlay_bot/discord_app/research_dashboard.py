@@ -56,7 +56,7 @@ _FIELD_GROUPS = {
                      "Automatic learning"),
     },
     "accuracy": {
-        "engine": ("Automatic learning engine",),
+        "engine": ("Automatic learning engine", "Forward issue audit"),
         "readiness": ("Mathematical forecast readiness",),
         "venue": ("Why this exchange",),
         "five": ("Forward 5-minute evaluation", "Math 5m"),
@@ -820,6 +820,64 @@ class ResearchDashboard(discord.ui.View):
                         name="Automatic learning engine · LIVE",
                         value="PostgreSQL cycle diagnostics unavailable; "
                               "do not assume the engine is running.",
+                        inline=False,
+                    )
+            # A successful heartbeat with zero predictions is ambiguous until
+            # we inspect the forecast gate outcomes from the *actual* run.
+            # Query one small durable row; never infer readiness from candle totals.
+            if self.market is not None:
+                try:
+                    diagnostics = await asyncio.to_thread(
+                        ForwardAccuracyMonitor(self.market).latest_diagnostics,
+                    )
+                    if diagnostics is None:
+                        details = (
+                            "No automatic issuance audit has been recorded yet. "
+                            "Collection may be working, but forecast readiness "
+                            "has not been verified."
+                        )
+                    else:
+                        checked = datetime.fromisoformat(
+                            str(diagnostics["checked_at"])
+                        ).astimezone(UTC)
+                        elapsed = datetime.now(UTC) - checked
+                        state = (
+                            "🔴 Stale execution"
+                            if elapsed > timedelta(minutes=12)
+                            else "🟢 Fresh execution"
+                            if elapsed >= timedelta(0)
+                            else "⚠️ Invalid future timestamp"
+                        )
+                        details = (
+                            f"**{state}** · "
+                            f"{discord.utils.format_dt(checked, style='R')}\\n"
+                            f"Discovered **{diagnostics['discovered_streams']}** "
+                            f"fresh streams, checked "
+                            f"**{diagnostics['selected_streams']}** this cycle.\\n"
+                            f"Issued **{diagnostics['issued_forecasts']}**, "
+                            f"settled **{diagnostics['settled_forecasts']}**, "
+                            f"already-issued **{diagnostics['duplicate_forecasts']}**.\\n"
+                            f"Blocked by short history "
+                            f"**{diagnostics['short_history']}**, "
+                            f"stale **{diagnostics['stale_last_candle']}**, "
+                            f"invalid **{diagnostics['invalid_data']}**; "
+                            f"insufficient causal labels "
+                            f"**{diagnostics['insufficient_causal_labels']}**, "
+                            f"insufficient evaluation "
+                            f"**{diagnostics['insufficient_training']}**, "
+                            f"expired target **{diagnostics['target_expired']}**."
+                        ).replace("\\\\n", "\\n")
+                    embed.add_field(
+                        name="Forward issue audit · LIVE",
+                        value=details[:1024],
+                        inline=False,
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL forward issue diagnostics unavailable")
+                    embed.add_field(
+                        name="Forward issue audit · LIVE",
+                        value="Cannot read forecast issue audit from PostgreSQL. "
+                              "Do not infer model health from candle counts.",
                         inline=False,
                     )
             embed.description = (

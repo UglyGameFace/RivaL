@@ -1,3 +1,24 @@
+## October 28, 2026: per-cycle mathematical forecast issuance diagnostics
+
+- Existing automatic five-minute collector, forward issue/settle cycle,
+  outcome-weighted retraining and out-of-sample accuracy dashboard already
+  run. Do NOT claim that zero forecasts means it learned or failed.
+- Persist real engine observations per UTC five-minute slot in the current
+  PostgreSQL database: discovered fresh streams, bounded selected streams,
+  short live history, stale last observation, invalid rows, inadequate causal
+  labels, immature walk-forward training, expired target windows, duplicate
+  forecast attempts, actual issues and outcomes settled. Do not fake data.
+- Show the latest uncached, time-stamped issuance audit in compact private
+  Accuracy -> Engine health alongside the heartbeat. Keep the one-to-three
+  field mobile cap; retain drilldowns for skill against baseline, statistical
+  governance and actual settled sample sizes.
+- Only completed bars available at issue time can create predictions. Do
+  not lower the 65-bar genuinely live history gate, convert backfills into
+  paper wins, imply model-profitability or place trades.
+- Tests verify initial empty cycle, short backfill-only history, real
+  prospective issuance, idempotent reruns, persistent diagnostics and actual
+  Discord render. Require full CI/Postgres before merge.
+
 ## October 28, 2026: conservative paired forward-model qualification and meaningful skill trend
 
 - Governance now filters strictly to the actual prospective logistic shadow

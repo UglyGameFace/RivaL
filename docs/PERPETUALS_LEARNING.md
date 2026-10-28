@@ -582,3 +582,47 @@ under the 24-request/day local budget. Each asset has its own persisted
 four-hour slot and retries cannot multiply requests across restarts.
 Normal 5-minute candle collection, math shadow training and manual
 Gemini responses continue independently.
+
+## Six-month gap audits and first bounded historical recovery
+
+Unlike a count ratio such as "1,085 / 527,040", this audit reads each
+stored five-minute candle's **actual UTC opening timestamp** and checks
+whether every expected point exists in the preceding **six calendar months**.
+A per-venue/coin report includes expected, valid and missing slots, gap
+segments, largest gap, malformed timestamps and observations made before
+the source candle closed (or after the audit time). Only a window with
+zero missing or invalid bars is marked **complete**. The audit is
+low-priority, one coin across venues per hour, and reports its *last
+completed scan*, not a falsely live audit of half a million rows on each
+button press.
+
+RivaL now starts a separate bounded Gate USDT Futures recovery by default
+once deployed, performing at most one **600-candle ranged** GET per BTC,
+ETH and SOL every five minutes. Gate's public V4 documentation supports
+`from`, `to`, `interval=5m` and up to 2,000 bars per request. We
+deliberately stay below its maximum. Each request first verifies an active,
+direct contract and the published `quanto_multiplier` used to normalize
+volume. Valid candles import to the preexisting immutable PostgreSQL
+table; the **actual retrieval date** becomes `first_observed_at`.
+This makes them useful for historical research but **never** eligible
+to masquerade as predictions placed months ago.
+
+The progress table stores per-coin cursor, attempts, imported count,
+empty-result windows and provider cooldown. A retry never overwrites or
+rewinds older observations. HTTP 401/403/451 cannot be bypassed and
+pauses only the historical source for six hours. Collection of the
+other nine live sources, automatic shadow evaluations, Gemini budgets
+and Discord remain independent. Inspect Math & History to see the
+latest verified gap status and Gate recovery cursor/progress.
+
+Documentation:
+- https://www.gate.com/docs/developers/apiv4/en/futures/
+- https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/info-endpoint
+
+**This is not a claim that six months are already downloaded.**
+Recovery takes subsequent scheduled requests, and a provider may lack
+older data, have gaps or block host access. Each other venue requires
+a separately validated historical adapter or independently acquired
+quality-checked data. Historic row counts, source count, and GitHub
+tests do not prove positive out-of-sample trading returns, real exchange
+fills, user eligibility or permission to trade.

@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     rival_perp_collection_seconds: int = Field(default=300, ge=300, le=3600)
     rival_perp_collection_bars: int = Field(default=48, ge=2, le=48)
 
+    # Bounded read-only historical recovery (Gate Futures only initially).
+    # New data is marked by actual first_observed_at; never synthetic live PnL.
+    rival_history_recovery_enabled: bool = Field(default=True)
+    rival_history_recovery_seconds: int = Field(default=300, ge=300, le=21600)
+    rival_history_audit_enabled: bool = Field(default=True)
+
     # Low-cost local research; never auto-promotes models or places orders.
     rival_shadow_learning_enabled: bool = Field(default=True)
     rival_shadow_eval_seconds: int = Field(default=3600, ge=900, le=21600)

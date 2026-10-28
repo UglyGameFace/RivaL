@@ -10,7 +10,6 @@ from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore
 
-
 START = datetime(2026, 10, 21, 18, tzinfo=UTC)
 
 

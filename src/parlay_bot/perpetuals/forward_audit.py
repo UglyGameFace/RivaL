@@ -177,8 +177,27 @@ class ForwardAccuracyMonitor:
         issued = 0
         # Reuse the same bounded, freshness-checked stream selection as
         # existing offline evaluation, without external HTTP requests.
-        selection = ShadowLearningMonitor(self.store)._eligible_streams(now=stamp)
-        for venue, contract, quote in selection[:MAX_STREAMS_PER_CYCLE]:
+        eligible = ShadowLearningMonitor(self.store)._eligible_streams(
+            now=stamp, limit=30,
+        )
+        with self.store.connect() as conn:
+            history = conn.execute(
+                """SELECT venue,contract,quote,MAX(issued_at) AS last_issued
+                   FROM perp_forward_audit
+                   GROUP BY venue,contract,quote"""
+            ).fetchall()
+        last_issued = {
+            (str(row["venue"]), str(row["contract"]), str(row["quote"])):
+            str(row["last_issued"])
+            for row in history
+        }
+        # Round-robin after restart so each of the 30 BTC/ETH/SOL feeds can
+        # accumulate *independent temporal predictions* every ~15 minutes.
+        selection = sorted(
+            eligible,
+            key=lambda item: (last_issued.get(item, ""), item),
+        )[:MAX_STREAMS_PER_CYCLE]
+        for venue, contract, quote in selection:
             try:
                 rows = self.market.recent_candles(
                     venue=venue, contract=contract, quote=quote,

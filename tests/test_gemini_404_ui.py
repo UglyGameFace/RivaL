@@ -128,7 +128,7 @@ async def test_legacy_25_flash_is_migrated_and_404_pauses_future_calls(
     try:
         with pytest.raises(ResearchUnavailable, match="HTTP 404"):
             await service.ask(asset="BTC", venues=("hyperliquid", "dydx", "bitget"))
-        with pytest.raises(ResearchUnavailable, match="budget/cooldown"):
+        with pytest.raises(ResearchUnavailable, match="temporarily paused"):
             await service.ask(asset="BTC", venues=("hyperliquid", "dydx", "bitget"))
         assert len(seen) == 1
     finally:

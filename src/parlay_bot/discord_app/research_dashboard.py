@@ -239,7 +239,7 @@ class ResearchDashboard(discord.ui.View):
                         name="Current market pulse",
                         value=(
                             "NO SIGNAL · Not enough fresh, contiguous "
-                            "15-minute candles from at least three exchanges."
+                            "5-minute candles from at least three exchanges."
                         ), inline=False,
                     )
                 except Exception:  # noqa: BLE001 - no credentials in Discord
@@ -250,6 +250,10 @@ class ResearchDashboard(discord.ui.View):
                         inline=False,
                     )
                 else:
+                    quarter = (
+                        f"{pulse.median_15m_pct:+.3f}%"
+                        if pulse.median_15m_pct is not None else "unavailable"
+                    )
                     hour = (
                         f"{pulse.median_1h_pct:+.3f}%"
                         if pulse.median_1h_pct is not None else "insufficient history"
@@ -260,15 +264,17 @@ class ResearchDashboard(discord.ui.View):
                             f"**{pulse.sources}/{pulse.configured}** fresh venues "
                             f"· most recent shared close "
                             f"{discord.utils.format_dt(pulse.observed_at, style='R')}\n"
-                            f"Median 15m move: **{pulse.median_15m_pct:+.3f}%** "
-                            f"· 1h: **{hour}**\n"
-                            f"15m direction: **{pulse.up} up / "
+                            f"Previous 5m median move: "
+                            f"**{pulse.median_5m_pct:+.3f}%**\n"
+                            f"15m context: **{quarter}** · 1h: **{hour}**\n"
+                            f"Past 5m sources: **{pulse.up} up / "
                             f"{pulse.down} down / {pulse.flat} flat**\n"
                             f"Exchange range: "
-                            f"{pulse.range_15m_pct[0]:+.3f}% to "
-                            f"{pulse.range_15m_pct[1]:+.3f}%\n"
-                            "**Suggested target: Not validated**. Your target "
-                            "should vary by coin, timeframe and volatility."
+                            f"{pulse.range_5m_pct[0]:+.3f}% to "
+                            f"{pulse.range_5m_pct[1]:+.3f}%\n"
+                            "**Next 5m forecast: NOT VALIDATED.** "
+                            "Suggested take-profit/stop: not approved. "
+                            "Past momentum is not the next candle."
                         )[:1024],
                         inline=False,
                     )
@@ -332,7 +338,8 @@ class ResearchDashboard(discord.ui.View):
             name="AI evidence",
             value=(
                 "Gemini analyzes **all currently healthy distinct exchanges**, "
-                "including available 15m, 1h, 4h and 24h return/volatility "
+                "for a **5-minute forecast**, with available 5m, 15m, "
+                "1h, 4h and 24h returns and volatility "
                 "features. Unavailable sources are excluded and disclosed."
             ), inline=False,
         )

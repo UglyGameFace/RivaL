@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from parlay_bot.perpetuals.fusion import utc
@@ -63,6 +63,26 @@ class PerpetualMarketStore:
                     total_new_candles INTEGER NOT NULL DEFAULT 0,
                     failure_count INTEGER NOT NULL DEFAULT 0,
                     PRIMARY KEY (venue, asset)
+                );
+                CREATE TABLE IF NOT EXISTS perp_ai_research (
+                    asset TEXT NOT NULL,
+                    model TEXT NOT NULL,
+                    evidence_sha256 TEXT NOT NULL,
+                    issued_at TEXT NOT NULL,
+                    direction TEXT NOT NULL,
+                    confidence TEXT NOT NULL,
+                    thesis TEXT NOT NULL,
+                    risk TEXT NOT NULL,
+                    source_count INTEGER NOT NULL,
+                    PRIMARY KEY (asset,model,evidence_sha256)
+                );
+                CREATE TABLE IF NOT EXISTS perp_ai_quota (
+                    model TEXT NOT NULL,
+                    utc_day TEXT NOT NULL,
+                    used INTEGER NOT NULL,
+                    last_called_at TEXT NOT NULL,
+                    blocked_until TEXT,
+                    PRIMARY KEY (model,utc_day)
                 );
                 CREATE TABLE IF NOT EXISTS perp_market_contexts (
                     venue TEXT NOT NULL,
@@ -252,3 +272,88 @@ class PerpetualMarketStore:
                    FROM perp_feed_health ORDER BY venue,asset"""
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def cached_ai_research(
+        self, *, asset: str, model: str, evidence_sha256: str,
+    ) -> dict | None:
+        """Only a previously saved response for the *exact same* evidence."""
+        self.initialize()
+        with self.store.connect() as conn:
+            item = conn.execute(
+                """SELECT * FROM perp_ai_research
+                   WHERE asset=? AND model=? AND evidence_sha256=?""",
+                (asset, model, evidence_sha256),
+            ).fetchone()
+        return dict(item) if item is not None else None
+
+    def reserve_ai_request(
+        self, *, model: str, now: datetime, daily_max: int,
+        cooldown_seconds: int,
+    ) -> bool:
+        """One atomic quota reservation across processes and bot restarts."""
+        if daily_max < 1 or cooldown_seconds < 60:
+            raise ValueError("invalid AI budget policy")
+        instant = utc(now)
+        stamp = instant.isoformat()
+        cutoff = (instant - timedelta(seconds=cooldown_seconds)).isoformat()
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """INSERT INTO perp_ai_quota
+                   (model,utc_day,used,last_called_at,blocked_until)
+                   VALUES (?,?,1,?,NULL)
+                   ON CONFLICT(model,utc_day) DO UPDATE SET
+                     used=perp_ai_quota.used+1,
+                     last_called_at=excluded.last_called_at
+                   WHERE perp_ai_quota.used < ?
+                     AND perp_ai_quota.last_called_at <= ?
+                     AND (perp_ai_quota.blocked_until IS NULL OR
+                          perp_ai_quota.blocked_until <= ?)
+                   RETURNING used""",
+                (model, instant.date().isoformat(), stamp,
+                 daily_max, cutoff, stamp),
+            ).fetchone()
+        return row is not None
+
+    def pause_ai_requests(
+        self, *, model: str, now: datetime, seconds: int = 3600,
+    ) -> None:
+        """Persist a model-wide circuit breaker for upstream quota denials."""
+        if seconds < 60:
+            raise ValueError("invalid AI cooldown")
+        instant = utc(now)
+        with self.store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_ai_quota SET blocked_until=?
+                   WHERE model=? AND utc_day=?""",
+                ((instant + timedelta(seconds=seconds)).isoformat(),
+                 model, instant.date().isoformat()),
+            )
+
+    def save_ai_research(
+        self, *, asset: str, model: str, evidence_sha256: str,
+        issued_at: datetime, direction: str, confidence: str,
+        thesis: str, risk: str, source_count: int,
+    ) -> None:
+        """Append-only Gemini paper trail; cannot rewrite existing analyses."""
+        if (asset not in ("BTC", "ETH", "SOL")
+            or direction not in ("up", "down", "uncertain")
+            or confidence not in ("low", "medium", "high")
+            or len(evidence_sha256) != 64
+            or any(ch not in "0123456789abcdef" for ch in evidence_sha256)
+            or source_count < 3 or not thesis or not risk):
+            raise ValueError("invalid AI research")
+        args = (
+            asset, model, evidence_sha256, utc(issued_at).isoformat(),
+            direction, confidence, thesis[:400], risk[:250], source_count,
+        )
+        self.initialize()
+        with self.store.connect() as conn:
+            conn.execute(
+                """INSERT INTO perp_ai_research
+                   (asset,model,evidence_sha256,issued_at,direction,
+                    confidence,thesis,risk,source_count)
+                   VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(asset,model,evidence_sha256) DO NOTHING""",
+                args,
+            )

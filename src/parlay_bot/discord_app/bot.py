@@ -12,6 +12,7 @@ from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_ru
 from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
+from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.discord_app.presentation import onboarding_embed, saved_location_embed
 from parlay_bot.discord_app.views import LocationView, OnboardingView
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
@@ -20,6 +21,7 @@ from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
+from parlay_bot.perpetuals.gemini_research import GeminiResearch
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.storage.catalog import MarketCatalogStore
 from parlay_bot.storage.hot import PostgresHotStore, RelationalHotStore, SQLiteHotStore
@@ -101,6 +103,17 @@ class RivalDiscordClient(discord.Client):
                 bars=settings.rival_perp_collection_bars,
             )
         self._perp_task: asyncio.Task[None] | None = None
+        secret = settings.gemini_api_key or settings.google_api_key
+        self.gemini_research: GeminiResearch | None = (
+            GeminiResearch(
+                self.perp_collector.market,
+                api_key=secret.get_secret_value() if secret is not None else None,
+                model=settings.rival_gemini_model,
+                daily_max=settings.rival_gemini_daily_max,
+                cooldown_seconds=settings.rival_gemini_cooldown_seconds,
+            )
+            if self.perp_collector is not None else None
+        )
 
         self._register_commands()
 
@@ -157,6 +170,23 @@ class RivalDiscordClient(discord.Client):
                 assets=collector.assets if collector is not None else (),
                 interval_seconds=self.settings.rival_perp_collection_seconds,
                 enabled=collector is not None,
+            )
+            await interaction.edit_original_response(
+                embed=await dashboard.render(), view=dashboard,
+            )
+
+        @self.tree.command(
+            name="rival-research",
+            description="Private mathematical history and optional Gemini analysis.",
+        )
+        async def rival_research(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            collector = self.perp_collector
+            dashboard = ResearchDashboard(
+                owner_id=interaction.user.id,
+                market=collector.market if collector is not None else None,
+                ai=self.gemini_research,
+                venues=tuple(collector.providers) if collector is not None else (),
             )
             await interaction.edit_original_response(
                 embed=await dashboard.render(), view=dashboard,
@@ -241,6 +271,8 @@ class RivalDiscordClient(discord.Client):
             self._perp_task = None
         if self.perp_collector is not None:
             await self.perp_collector.aclose()
+        if self.gemini_research is not None:
+            await self.gemini_research.aclose()
 
         if self._archive_task is not None:
             self._archive_task.cancel()

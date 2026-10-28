@@ -41,6 +41,14 @@ class Settings(BaseSettings):
     rival_perp_collection_seconds: int = Field(default=300, ge=300, le=3600)
     rival_perp_collection_bars: int = Field(default=48, ge=2, le=48)
 
+    # Independent, user-triggered Gemini research (never called by candle worker).
+    # Reads existing GEMINI_API_KEY in Discloud if configured there.
+    gemini_api_key: SecretStr | None = Field(default=None)
+    google_api_key: SecretStr | None = Field(default=None)
+    rival_gemini_model: str = Field(default="gemini-2.5-flash")
+    rival_gemini_daily_max: int = Field(default=24, ge=1, le=96)
+    rival_gemini_cooldown_seconds: int = Field(default=900, ge=60, le=86400)
+
     rival_drive_root_folder_id: str | None = Field(default=None)
     rival_drive_history_folder_id: str | None = Field(default=None)
     rival_drive_manifests_folder_id: str | None = Field(default=None)

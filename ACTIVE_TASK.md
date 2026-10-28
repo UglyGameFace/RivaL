@@ -19,6 +19,31 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 **Active: all 10 requested public perpetual data adapters implemented and merged; only FOUR live BTC feeds independently confirmed.** PR #13 activated five-minute PostgreSQL ingestion, PR #14 integrated Bitget/Gate, PR #15 delivered the interactive market dashboard, PR #16 added OKX/KuCoin, PR #17 Deribit/Binance, and PR #18 Lighter/Phemex. Merged CI covers the adapters with mock HTTP, SQLite replay and PostgreSQL 16 integration tests. Owner's October 28 8:00 AM local Discord screenshot verifies fresh stored BTC candles from Hyperliquid, dYdX, Bitget and Gate. **New six are not deployed/live-verified.** Deployment may reveal geo blocks or real schema differences; only successful recent PostgreSQL source health and preserved historical data count as usable. ETH/SOL health, sustained uptime, automatic multi-source prediction generation, calibrated walk-forward accuracy, mature-outcome feedback/retraining and Discord signal UI remain unverified or incomplete. Issue #6 stays OPEN.
 
+## October 28, 2026: independent Math and Gemini tracks, with restart-safe caching
+
+- Owner wants six calendar months of genuine, audited history and two separate
+  prediction systems: deterministic statistical learning and optional Gemini
+  analysis over ALL healthy exchange feeds, not a prose rewrite of three prices.
+- Implement /rival-research: Math & History displays *actual* six-month
+  candle coverage; mathematical model is still shadow-only and not a
+  calibrated, automatically retrained production predictor.
+- Gemini reads PostgreSQL records from all fresh independent venues, compares
+  15-minute, 1-hour, 4-hour and 24-hour returns/volatility, plus any available
+  7/30/90 day and 6-calendar-month baseline returns, then makes an independent
+  15m research assessment. It never bypasses missing/blocked sources.
+- Evidence SHA-256 keyed Gemini response cache in PostgreSQL survives
+  bot restarts. Atomic per-model UTC-day quota and cooldown persist across
+  processes; identical evidence triggers ZERO new Gemini requests.
+- Existing Discloud GEMINI_API_KEY or GOOGLE_API_KEY is read from Secrets;
+  absent keys disable Ask Gemini without impacting collection.
+- A manual Discord button is the only Gemini trigger. No automatic hourly
+  calls, training claims, bets, order access or profit guarantees.
+- This is a candidate research layer, not mathematically proven accuracy.
+  Do not label Gemini's self-reported confidence as a calibrated probability.
+- Six-month historical backfill, gap/availability auditing, real out-of-sample
+  skill metrics, settled evaluations and automatic model promotion remain
+  active implementation milestones.
+
 ## October 28, 2026: Source Coverage and AI readiness transparency
 
 - Add a visible Source Coverage screen to /rival-data, one exchange at a time.

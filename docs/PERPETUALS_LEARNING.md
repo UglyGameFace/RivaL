@@ -289,3 +289,22 @@ the ends and the page resets when reentering Markets. The selector for
 BTC/ETH/SOL remains. Each page reads only its visible exchanges' latest
 five-minute candles, avoiding a wall of ten source fields and unnecessary
 database reads. This does not change the collection loop or trained model.
+
+## Source Coverage and prediction-track transparency
+
+The private /rival-data menu has a **Coverage** tab. It reports the actual
+Discloud host's status for each BTC/ETH/SOL venue and lists only other
+currently healthy, recently synced exchanges as *available market-data
+alternatives*. This is **not a prediction fallback**; source-weighted
+forecasting and Gemini are not yet deployed.
+
+A provider HTTP 401/403/451 means only that the deployment was denied.
+It **does not establish which country is restricted**, whether a Discord
+user can trade there, or why the provider denied access. Source limits,
+timeouts, unavailable instruments and invalid candles are separate
+statuses. RivaL does not bypass these restrictions.
+
+The Overview now distinguishes live collection from learning explicitly:
+the deterministic learner remains shadow research, and Gemini is not
+yet wired into automatic analysis. No provider credential or rate
+limit changes are made by this UI.

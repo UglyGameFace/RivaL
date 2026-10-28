@@ -19,6 +19,21 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 **Active: all 10 requested public perpetual data adapters implemented and merged; only FOUR live BTC feeds independently confirmed.** PR #13 activated five-minute PostgreSQL ingestion, PR #14 integrated Bitget/Gate, PR #15 delivered the interactive market dashboard, PR #16 added OKX/KuCoin, PR #17 Deribit/Binance, and PR #18 Lighter/Phemex. Merged CI covers the adapters with mock HTTP, SQLite replay and PostgreSQL 16 integration tests. Owner's October 28 8:00 AM local Discord screenshot verifies fresh stored BTC candles from Hyperliquid, dYdX, Bitget and Gate. **New six are not deployed/live-verified.** Deployment may reveal geo blocks or real schema differences; only successful recent PostgreSQL source health and preserved historical data count as usable. ETH/SOL health, sustained uptime, automatic multi-source prediction generation, calibrated walk-forward accuracy, mature-outcome feedback/retraining and Discord signal UI remain unverified or incomplete. Issue #6 stays OPEN.
 
+## October 28, 2026: Source Coverage and AI readiness transparency
+
+- Add a visible Source Coverage screen to /rival-data, one exchange at a time.
+- Distinguish HTTP access denial *from the Discloud host* from legal
+  regional availability of a Discord user, which cannot be inferred.
+- Show all BTC/ETH/SOL statuses, last attempts, and up to three **other
+  verified fresh** feeds per asset, explicitly as independent data
+  alternatives NOT silently substituted into predictions.
+- Explain rate limits, timeouts, malformed provider responses, stale sources
+  and bounded automated cooldowns with no geographic bypass.
+- Dashboard Overview clearly labels Math as shadow-only and Gemini as
+  not connected, preventing collection from being mistaken for learning.
+- This is a read-only Discord interface; no change to collectors, database,
+  automated trading or credentials.
+
 ## October 28, 2026: mobile pagination for ten-provider Data Center
 
 - With ten configured venues, BTC/ETH/SOL Market screens must not regress

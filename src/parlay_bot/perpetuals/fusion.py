@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import hashlib
 import math
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from collections.abc import Callable, Sequence
 
 HORIZONS = frozenset({5, 15, 60, 240})
 

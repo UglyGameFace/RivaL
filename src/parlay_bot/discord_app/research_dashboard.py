@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 
 import discord
 
@@ -29,10 +30,11 @@ class _AssetSelect(discord.ui.Select["ResearchDashboard"]):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         assert self.view is not None
-        self.view.asset = self.values[0]
-        self.view.opinion = None
-        self.view.message = None
-        await self.view.redraw(interaction)
+        dashboard = self.view
+        dashboard.asset = self.values[0]
+        dashboard.opinion = None
+        dashboard.message = None
+        await dashboard.redraw(interaction)
 
 
 class _ScreenButton(discord.ui.Button["ResearchDashboard"]):
@@ -40,17 +42,34 @@ class _ScreenButton(discord.ui.Button["ResearchDashboard"]):
         super().__init__(
             label="Math & History" if screen == "math" else "Gemini AI",
             emoji="📐" if screen == "math" else "✨",
-            style=discord.ButtonStyle.success if screen == "math"
-                  else discord.ButtonStyle.secondary,
+            style=discord.ButtonStyle.primary,
             custom_id=f"rival:research:{screen}", row=0,
         )
         self.screen = screen
 
     async def callback(self, interaction: discord.Interaction) -> None:
         assert self.view is not None
-        self.view.screen = self.screen
-        self.view.message = None
-        await self.view.redraw(interaction)
+        dashboard = self.view
+        dashboard.screen = self.screen
+        dashboard.message = None
+        await dashboard.redraw(interaction)
+
+
+class _RefreshButton(discord.ui.Button["ResearchDashboard"]):
+    """Re-read current persisted source health and market pulse, without API calls."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            label="Update live stats", emoji="🔄",
+            style=discord.ButtonStyle.primary,
+            custom_id="rival:research:refresh", row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        dashboard._history_cache.clear()
+        await dashboard.redraw(interaction)
 
 
 class _AskButton(discord.ui.Button["ResearchDashboard"]):
@@ -153,6 +172,10 @@ class ResearchDashboard(discord.ui.View):
         self.screen = "math"
         self.opinion: AiResearch | None = None
         self.message: str | None = None
+        # Six-month inventory is an expensive historical aggregate. Cache it
+        # briefly per asset; ALWAYS read live source health and market pulse
+        # from PostgreSQL on every navigation/refresh.
+        self._history_cache: dict[str, tuple[datetime, dict]] = {}
         self._rebuild()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -168,15 +191,65 @@ class ResearchDashboard(discord.ui.View):
         self.clear_items()
         for name in ("math", "ai"):
             item = _ScreenButton(name)
-            item.disabled = self.screen == name
-            item.style = (discord.ButtonStyle.success if self.screen == name
-                          else discord.ButtonStyle.secondary)
+            # A selected tab is still clickable. Gray/disabled made users
+            # think the entire research engine was unavailable.
+            item.disabled = False
+            item.style = (
+                discord.ButtonStyle.success if self.screen == name
+                else discord.ButtonStyle.primary
+            )
             self.add_item(item)
         self.add_item(_AssetSelect(self.asset))
+        self.add_item(_RefreshButton())
         if self.screen == "ai":
             enabled = self.market is not None and self.ai is not None and self.ai.available
             self.add_item(_AskButton(enabled))
             self.add_item(_ModelListButton(enabled=enabled))
+
+    def _history_inventory_cached(self) -> dict:
+        """Historical totals cached for 2 minutes, NEVER live feed status."""
+        now = datetime.now(UTC)
+        cached = self._history_cache.get(self.asset)
+        if cached is not None and now - cached[0] < timedelta(minutes=2):
+            return cached[1]
+        assert self.market is not None
+        value = history_inventory(
+            self.market, asset=self.asset, venues=self.venues,
+        )
+        self._history_cache[self.asset] = (now, value)
+        return value
+
+    def _live_feed_status(self) -> tuple[int, int, datetime | None]:
+        if self.market is None:
+            return (0, len(self.venues), None)
+        now = datetime.now(UTC)
+        rows = self.market.feed_health()
+        observed = [
+            row for row in rows if row["asset"] == self.asset
+            and row["venue"] in self.venues
+        ]
+        fresh = []
+        for row in observed:
+            if row["status"] != "ok" or not row.get("last_success_at"):
+                continue
+            try:
+                stamp = datetime.fromisoformat(str(row["last_success_at"]))
+                if stamp.utcoffset() is None:
+                    continue
+                if timedelta(0) <= now - stamp <= timedelta(minutes=10):
+                    fresh.append(row)
+            except (TypeError, ValueError):
+                continue
+        attempts = []
+        for row in observed:
+            try:
+                when = datetime.fromisoformat(str(row["last_attempt_at"]))
+                if when.utcoffset() is not None and when <= now:
+                    attempts.append(when.astimezone(UTC))
+            except (TypeError, ValueError):
+                continue
+        return (len({r["venue"] for r in fresh}),
+                len(self.venues), max(attempts, default=None))
 
     async def render(self) -> discord.Embed:
         embed = discord.Embed(
@@ -187,6 +260,35 @@ class ResearchDashboard(discord.ui.View):
             ),
             color=discord.Color.green(),
         )
+        # Source health is NOT cached: every menu edit reads actual
+        # PostgreSQL collection status. "Live" means fresh recent polling,
+        # not a tick-by-tick exchange order book stream.
+        try:
+            live, configured, checked = await asyncio.to_thread(
+                self._live_feed_status,
+            )
+            stamp = (
+                discord.utils.format_dt(checked, style="R")
+                if checked is not None else "not yet"
+            )
+            embed.add_field(
+                name="🟢 Live collection status",
+                value=(
+                    f"**{live}/{configured}** exchanges recently collecting "
+                    f"{self.asset}. Last checked **{stamp}**. "
+                    "Live figures reload when you tap **Update live stats** "
+                    "or switch screens. Market polling continues every 5m."
+                ), inline=False,
+            )
+        except Exception:  # noqa: BLE001 - collection may be down
+            _LOG.exception("RivaL live status read failed")
+            embed.add_field(
+                name="Live collection status",
+                value="Current PostgreSQL collection status unavailable.",
+                inline=False,
+            )
+        embed.timestamp = datetime.now(UTC)
+
         if self.screen == "math":
             if self.market is None:
                 embed.add_field(
@@ -196,8 +298,7 @@ class ResearchDashboard(discord.ui.View):
             else:
                 try:
                     status = await asyncio.to_thread(
-                        history_inventory, self.market,
-                        asset=self.asset, venues=self.venues,
+                        self._history_inventory_cached,
                     )
                 except Exception:  # noqa: BLE001
                     _LOG.exception("History audit unavailable")
@@ -234,13 +335,15 @@ class ResearchDashboard(discord.ui.View):
                         calculate_market_pulse, self.market,
                         asset=self.asset, venues=self.venues,
                     )
-                except InsufficientEvidence:
+                except InsufficientEvidence as exc:
                     embed.add_field(
                         name="Current market pulse",
                         value=(
-                            "NO SIGNAL · Not enough fresh, contiguous "
-                            "5-minute candles from at least three exchanges."
-                        ), inline=False,
+                            f"NO SIGNAL · {exc} "
+                            "Exchange collection can be healthy while "
+                            "the required continuous five-minute history "
+                            "is still incomplete. Tap **Update live stats**."
+                        )[:1024], inline=False,
                     )
                 except Exception:  # noqa: BLE001 - no credentials in Discord
                     _LOG.exception("RivaL market pulse calculation failed")

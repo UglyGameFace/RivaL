@@ -1,3 +1,37 @@
+## October 28, 2026: real six-month continuity audit and bounded Gate backfill
+
+- First genuine **five-minute continuity audit** scans the actual six-calendar-month
+  window for each venue/asset, checks every UTC grid opening, missing bars, gap
+  segments, largest outage, off-grid candles and invalid observed/closed times.
+  Snapshot results remain in separate PostgreSQL history-quality records.
+- Launch a separate low-priority read-only **Gate Futures 5m recovery worker**
+  with at most one 600-bar historical API request per coin every 5 minutes.
+  It reads official active-direct-contract metadata, multiplies *contract*
+  volume by the official quanto multiplier and imports only closed, aligned
+  UTC candles with a real first_observed_at (the recovery date, NEVER
+  impersonating a past live sample). Persist cursor, missing windows,
+  per-asset progress, blocked-provider cooldowns and count of actual inserts.
+- Retry malformed responses conservatively; HTTP 401/403/451 uses a six-hour
+  pause, while regular errors pause 20 minutes. A delayed/restarted worker
+  cannot move the recovery cursor backward. Provider errors cannot stop
+  live collection, shadow math or Discord; no keys, trades or region bypass.
+- Perform one venue-spanning asset gap audit each hour (assets rotate across
+  UTC hours) and show the latest **gap-checked** state, missing counts and
+  Gate recovery progress separately from the original raw row-count target
+  in private Math & History.
+- These controls are enabled by default for existing PostgreSQL deployments,
+  with optional RIVAL_HISTORY_RECOVERY_ENABLED=false to stop bounded repair.
+- **Still not complete:** Gate is the first verified candidate with a publicly
+  documented ranged API. All ten historical markets do not magically gain
+  six months. Other venues have different retention, restrictions, data
+  availability and backfill requirements. Hyperliquid API exposes only its
+  5,000 latest candles, so obtaining six months requires a different
+  source/archive, never fake data. No investment/trading approval, auto
+  order creation or evidence of a profitable edge is claimed.
+- Automatic point-in-time math/Gemini prediction, outcome settlement and
+  shadow-only governance from PR #30 remain active and unchanged.
+- Run full PostgreSQL+SQLite regression and CI before merging.
+
 ## October 28, 2026: one-PR autonomous dual-track accuracy & governance
 
 **Owner request: all five milestones together in ONE PR.**

@@ -15,8 +15,8 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence, build_evidence
 from parlay_bot.perpetuals.forward_audit import MODEL as FORWARD_MODEL
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
-from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.gemini_research import GeminiResearch, ResearchUnavailable
+from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
 _LOG = logging.getLogger(__name__)

@@ -15,7 +15,7 @@ from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
-from parlay_bot.perpetuals.readiness import forecast_readiness
+from parlay_bot.perpetuals.readiness import explain_venue_readiness, forecast_readiness
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
 
 _LOG = logging.getLogger(__name__)
@@ -38,6 +38,29 @@ class _AssetSelect(discord.ui.Select["ResearchDashboard"]):
         dashboard.asset = self.values[0]
         dashboard.opinion = None
         dashboard.message = None
+        await dashboard.redraw(interaction)
+
+
+class _VenueSelect(discord.ui.Select["ResearchDashboard"]):
+    """Inspect a single source's causal forecast blocker; no giant source list."""
+
+    def __init__(self, venues: tuple[str, ...], selected: str) -> None:
+        super().__init__(
+            placeholder="Inspect an exchange's forecast readiness",
+            custom_id="rival:research:venue", row=3,
+            options=[
+                discord.SelectOption(
+                    label=venue.replace("_", " ").title(),
+                    value=venue, default=venue == selected,
+                )
+                for venue in venues[:25]
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        dashboard.selected_venue = self.values[0]
         await dashboard.redraw(interaction)
 
 
@@ -175,6 +198,7 @@ class ResearchDashboard(discord.ui.View):
         self.shadow_enabled = shadow_enabled
         self.asset = "BTC"
         self.screen = "math"
+        self.selected_venue = venues[0] if venues else ""
         self.opinion: AiResearch | None = None
         self.message: str | None = None
         # Six-month inventory is an expensive historical aggregate. Cache it
@@ -206,6 +230,8 @@ class ResearchDashboard(discord.ui.View):
             self.add_item(item)
         self.add_item(_AssetSelect(self.asset))
         self.add_item(_RefreshButton())
+        if self.screen == "accuracy" and self.venues:
+            self.add_item(_VenueSelect(self.venues, self.selected_venue))
         if self.screen == "ai":
             enabled = self.market is not None and self.ai is not None and self.ai.available
             self.add_item(_AskButton(enabled))
@@ -645,6 +671,13 @@ class ResearchDashboard(discord.ui.View):
                                 f"{blocker} No betting permission implied."
                             )[:1024], inline=False,
                         )
+                        embed.add_field(
+                            name="Why this exchange is or isn't ready",
+                            value=explain_venue_readiness(
+                                readiness, self.selected_venue,
+                            )[:1024],
+                            inline=False,
+                        )
                     for horizon in (5, 15):
                         stats = report["last_7d"][horizon]
                         earlier = report["prior_7d"][horizon]
@@ -695,6 +728,26 @@ class ResearchDashboard(discord.ui.View):
                             name=f"Forward {horizon}-minute evaluation",
                             value=value[:1024], inline=False,
                         )
+                    # Never replace verified out-of-sample results with a
+                    # compelling-looking near-term price move. A short period
+                    # of market collection is not a validated betting edge.
+                    recent_5 = report["last_7d"][5]
+                    recent_15 = report["last_7d"][15]
+                    embed.add_field(
+                        name="Tonight's research verdict",
+                        value=(
+                            "**NO VERIFIED BETTING EDGE.** RivaL may observe "
+                            "live prices and issue shadow predictions, but "
+                            f"only **{recent_5['settled']}** five-minute and "
+                            f"**{recent_15['settled']}** fifteen-minute "
+                            "prospective forecasts have settled in this "
+                            "seven-day window. Real fill costs, funding, "
+                            "slippage and liquidation risk are not fully "
+                            "validated. No auto-betting orders are placed. "
+                            "Do not interpret a green feed or historical "
+                            "momentum as a recommended trade."
+                        )[:1024], inline=False,
+                    )
                     # Database evidence is queried at every Accuracy screen
                     # render, never a frozen Discord embed or cached AI claim.
                     try:

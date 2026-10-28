@@ -519,7 +519,7 @@ days with the preceding, nonoverlapping seven days require at least
 are correlated, so these totals are research diagnostics, not
 independent statistical replications or proof of a profitable betting edge.
 
-Provisional learning stays in the existing shadow timer and never places
+Prospective issuance/settlement runs on the existing five-minute collector cadence, rotating through up to ten of thirty source/asset streams per cycle; the heavier historical shadow review remains hourly and never places
 trades. Read-only forecast issuance, score settlement and UI audit
 continue across process restarts using the existing PostgreSQL database.
 No Gemini calls, model upgrade or paid provider changes are needed.

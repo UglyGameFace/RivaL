@@ -7,7 +7,7 @@
 - Add private **Accuracy** screen in /rival-research. Compute it from the
   current PostgreSQL forward shadow ledger on every visit, no static embed
   cache, no Gemini/HTTP request and no model promotion.
-- On the pre-existing shadow timer, train only with time-released historical
+- On the five-minute post-collection timer (separate from hourly shadow review), train only with time-released historical
   labeled examples, then **persist a future-candle forecast before that
   candle could close** for 5m/15m horizons. Immutable per-venue/candle keys,
   same-exchange later settlement, confirmed first-observation timestamps and
@@ -16,6 +16,8 @@
   source count and possible prior-7-day comparison only when both periods
   have >=50 outcomes. Flag overlapping/correlated venue data; NOT a set of
   independent bets or proven post-cost edge.
+- Cover all 30 potential exchange/coin streams in bounded, deterministic 10-stream round-robin sets across consecutive five-minute cycles, avoiding stream starvation and retraining cost spikes.
+- PostgreSQL integration test confirms issuance/settlement and idempotent restart-safe audit persistence.
 - UI always rereads feed health and newest completed candle from PostgreSQL,
   showing last check time separately from last candle close and specifying
   five-minute REST polling, not tick-level real-time data. Refresh button

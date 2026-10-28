@@ -18,6 +18,7 @@ from parlay_bot.perpetuals.additional_venues import (
     DeribitMarketClient,
 )
 from parlay_bot.perpetuals.dydx import DydxMarketClient
+from parlay_bot.perpetuals.final_venues import LighterMarketClient, PhemexMarketClient
 from parlay_bot.perpetuals.hyperliquid import (
     HyperliquidMarketClient,
     MarketBatch,
@@ -96,11 +97,13 @@ class PerpetualMarketCollector:
                 "kucoin": KucoinMarketClient(),
                 "deribit": DeribitMarketClient(),
                 "binance": BinanceFuturesMarketClient(),
+                "lighter": LighterMarketClient(),
+                "phemex": PhemexMarketClient(),
             }
         )
         if not self.providers or any(
             not key or key not in {"hyperliquid", "dydx", "bitget", "gate", "okx", "kucoin",
-                        "deribit", "binance"} for key in self.providers
+                        "deribit", "binance", "lighter", "phemex"} for key in self.providers
         ):
             raise ValueError("unsupported public market provider")
         self._pauses: dict[str, datetime] = {}

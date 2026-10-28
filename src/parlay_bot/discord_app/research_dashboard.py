@@ -104,12 +104,26 @@ class _ModelListButton(discord.ui.Button["ResearchDashboard"]):
             if dashboard.ai is None:
                 raise ResearchUnavailable("Gemini research is not configured.")
             names = await dashboard.ai.list_advertised_models()
-            options = ", ".join(names[:12]) or "No advertised generation models"
+            configured = dashboard.ai.model
+            listed = configured in names
+            other = [name for name in names if name != configured]
+            # Short, mobile-friendly, relevant alternatives only.
+            options = ", ".join(other[:5]) or "None listed"
             dashboard.message = (
-                f"Configured: **{dashboard.ai.model}**\n"
-                f"Advertised: {options[:750]}\n"
-                "The model list is metadata only. A model may still reject "
-                "generation for this project."
+                f"**Selected for analysis:** \`{configured}\`\n"
+                + (
+                    "✅ **Listed for text generation** with this API key.\n"
+                    if listed else
+                    "⚠️ **Not advertised for text generation** in the "
+                    "complete model catalog returned to this API key.\n"
+                )
+                + f"**Other text models (newest first):** {options[:430]}\n"
+                + (
+                    f"+{len(other) - 5} more text models available.\n"
+                    if len(other) > 5 else ""
+                )
+                + "This is a model catalog, not a quality ranking or a "
+                "successful API generation test."
             )
         except ResearchUnavailable as exc:
             dashboard.message = str(exc)

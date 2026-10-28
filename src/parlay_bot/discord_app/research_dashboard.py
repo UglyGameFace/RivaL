@@ -7,8 +7,8 @@ from datetime import UTC, datetime, timedelta
 
 import discord
 
-from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
+from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory

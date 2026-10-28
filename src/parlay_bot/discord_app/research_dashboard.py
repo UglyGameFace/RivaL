@@ -12,6 +12,7 @@ from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
+from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
@@ -222,6 +223,27 @@ class ResearchDashboard(discord.ui.View):
         self._history_cache[self.asset] = (now, value)
         return value
 
+    def _history_quality_status(self) -> tuple[list[dict], dict | None]:
+        """Read latest completed gap audit and separate recovery progress."""
+        if self.market is None:
+            return [], None
+        audits = SixMonthQualityAudit(self.market).latest(
+            asset=self.asset, venues=self.venues,
+        )
+        recovery = None
+        with self.market.store.connect() as conn:
+            try:
+                row = conn.execute(
+                    """SELECT * FROM perp_history_recovery
+                       WHERE venue='gate' AND asset=?""",
+                    (self.asset,),
+                ).fetchone()
+            except Exception:  # noqa: BLE001 - older DB may not have this table
+                row = None
+            if row is not None:
+                recovery = dict(row)
+        return audits, recovery
+
     def _live_feed_status(
         self,
     ) -> tuple[int, int, datetime | None, datetime | None]:
@@ -344,6 +366,58 @@ class ResearchDashboard(discord.ui.View):
                             "Gaps and real-time availability need separate audits."
                         ), inline=False,
                     )
+                    try:
+                        audits, recovery = await asyncio.to_thread(
+                            self._history_quality_status,
+                        )
+                        if audits:
+                            complete = sum(x["status"] == "complete" for x in audits)
+                            missing = sum(int(x["missing_bars"]) for x in audits)
+                            anomalies = sum(
+                                int(x["off_grid_bars"]) +
+                                int(x["invalid_observations"])
+                                for x in audits
+                            )
+                            last = max(
+                                datetime.fromisoformat(x["audited_at"])
+                                for x in audits
+                            )
+                            embed.add_field(
+                                name="Historical gap audit",
+                                value=(
+                                    f"**{complete}/{len(audits)}** inspected streams "
+                                    f"have complete six-month history; "
+                                    f"**{missing:,}** missing bars and "
+                                    f"**{anomalies:,}** malformed/invalid observations "
+                                    f"across last completed per-venue audits. "
+                                    f"Last check {discord.utils.format_dt(last, style='R')}. "
+                                    "This measures real continuity, not model accuracy."
+                                ), inline=False,
+                            )
+                        else:
+                            embed.add_field(
+                                name="Historical gap audit",
+                                value="No completed background six-month continuity audit yet.",
+                                inline=False,
+                            )
+                        if recovery is not None:
+                            embed.add_field(
+                                name="Gate six-month recovery",
+                                value=(
+                                    f"**{recovery['status']}** · "
+                                    f"**{int(recovery['inserted_bars']):,}** old "
+                                    f"candles imported for {self.asset}. "
+                                    f"Cursor: {str(recovery['next_opened_at'])[:16]} UTC. "
+                                    "No old candle is counted as a live prediction."
+                                ), inline=False,
+                            )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("History audit status read unavailable")
+                        embed.add_field(
+                            name="Historical gap audit",
+                            value="Gap-check report temporarily unavailable.",
+                            inline=False,
+                        )
                     embed.add_field(
                         name="Mathematical model",
                         value=(

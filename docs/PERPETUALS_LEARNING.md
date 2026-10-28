@@ -279,3 +279,13 @@ validates the tested parser contracts, not live access from Discloud.
 When data is flowing, the next development priority is point-in-time
 features, a calibrated multi-source forecast, delayed-outcome settlement
 and controlled automated retraining, not simply more collection widgets.
+
+## Ten-provider mobile Data Center pagination
+
+The Markets screen shows **at most four exchanges on one page**, even when
+all ten candidate sources are configured. Previous/Next buttons navigate
+pages 1/3, 2/3 and 3/3 in the existing ephemeral menu. Buttons disable at
+the ends and the page resets when reentering Markets. The selector for
+BTC/ETH/SOL remains. Each page reads only its visible exchanges' latest
+five-minute candles, avoiding a wall of ten source fields and unnecessary
+database reads. This does not change the collection loop or trained model.

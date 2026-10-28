@@ -16,6 +16,8 @@ from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
 _LOG = logging.getLogger(__name__)
 
+MARKET_PAGE_SIZE = 4
+
 VENUE_NAMES = {
     "hyperliquid": "Hyperliquid",
     "dydx": "dYdX",
@@ -263,6 +265,26 @@ class _RefreshButton(discord.ui.Button["MarketDataDashboard"]):
         await self.view.show(interaction, self.view.screen)
 
 
+class _MarketPageButton(discord.ui.Button["MarketDataDashboard"]):
+    def __init__(self, step: int, *, disabled: bool) -> None:
+        super().__init__(
+            label="Previous" if step < 0 else "Next",
+            emoji="◀️" if step < 0 else "▶️",
+            style=discord.ButtonStyle.secondary,
+            custom_id="rival:data:previous" if step < 0 else "rival:data:next",
+            row=2, disabled=disabled,
+        )
+        self.step = step
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        self.view.market_page = max(
+            0, min(self.view.market_page + self.step,
+                   (len(self.view.venues) - 1) // MARKET_PAGE_SIZE)
+        )
+        await self.view.show(interaction, "markets")
+
+
 class _ChooseItem(discord.ui.Select["MarketDataDashboard"]):
     def __init__(self, kind: str, values: tuple[str, ...], selected: str) -> None:
         options = [
@@ -287,6 +309,7 @@ class _ChooseItem(discord.ui.Select["MarketDataDashboard"]):
             self.view.selected_venue = self.values[0]
         else:
             self.view.selected_asset = self.values[0]
+            self.view.market_page = 0
         await self.view.show(interaction, self.view.screen)
 
 
@@ -308,6 +331,7 @@ class MarketDataDashboard(discord.ui.View):
         self.screen = "overview"
         self.selected_venue = venues[0] if venues else ""
         self.selected_asset = assets[0] if assets else ""
+        self.market_page = 0
         self._rebuild()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -336,6 +360,18 @@ class MarketDataDashboard(discord.ui.View):
             self.add_item(_ChooseItem("exchange", self.venues, self.selected_venue))
         if self.screen == "markets" and self.assets:
             self.add_item(_ChooseItem("market", self.assets, self.selected_asset))
+            if len(self.venues) > MARKET_PAGE_SIZE:
+                self.add_item(_MarketPageButton(
+                    -1, disabled=self.market_page == 0,
+                ))
+                self.add_item(_MarketPageButton(
+                    1, disabled=(self.market_page + 1) * MARKET_PAGE_SIZE
+                    >= len(self.venues),
+                ))
+
+    def _market_venues(self) -> tuple[str, ...]:
+        start = self.market_page * MARKET_PAGE_SIZE
+        return self.venues[start:start + MARKET_PAGE_SIZE]
 
     def _snapshot(self) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any] | None]]:
         if self.market is None:
@@ -343,7 +379,7 @@ class MarketDataDashboard(discord.ui.View):
         rows = self.market.feed_health()
         candles: dict[str, dict[str, Any] | None] = {}
         if self.screen == "markets" and self.selected_asset:
-            for venue in self.venues:
+            for venue in self._market_venues():
                 symbol, quote = MARKET_SYMBOLS.get(venue, ("{asset}", "?"))
                 if venue == "kucoin" and self.selected_asset == "BTC":
                     symbol = "XBTUSDTM"
@@ -367,9 +403,18 @@ class MarketDataDashboard(discord.ui.View):
                 rows, self.selected_venue, self.assets, self.interval_seconds,
             )
         if self.screen == "markets" and self.selected_asset:
-            return market_embed(
-                rows, self.selected_asset, candles, self.venues, self.interval_seconds,
+            embed = market_embed(
+                rows, self.selected_asset, candles, self._market_venues(),
+                self.interval_seconds,
             )
+            if len(self.venues) > MARKET_PAGE_SIZE:
+                pages = (len(self.venues) + MARKET_PAGE_SIZE - 1) // MARKET_PAGE_SIZE
+                embed.description = (
+                    f"**Page {self.market_page + 1}/{pages}** · "
+                    "Select an exchange page below.\n"
+                    + (embed.description or "")
+                )
+            return embed
         return overview_embed(
             rows, self.venues, self.assets, self.interval_seconds,
             enabled=self.enabled,
@@ -377,6 +422,8 @@ class MarketDataDashboard(discord.ui.View):
 
     async def show(self, interaction: discord.Interaction, screen: str) -> None:
         await interaction.response.defer()
+        if self.screen != screen and screen == "markets":
+            self.market_page = 0
         self.screen = screen
         self._rebuild()
         await interaction.edit_original_response(embed=await self.render(), view=self)

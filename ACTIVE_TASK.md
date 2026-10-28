@@ -19,6 +19,15 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 **Active: all 10 requested public perpetual data adapters implemented and merged; only FOUR live BTC feeds independently confirmed.** PR #13 activated five-minute PostgreSQL ingestion, PR #14 integrated Bitget/Gate, PR #15 delivered the interactive market dashboard, PR #16 added OKX/KuCoin, PR #17 Deribit/Binance, and PR #18 Lighter/Phemex. Merged CI covers the adapters with mock HTTP, SQLite replay and PostgreSQL 16 integration tests. Owner's October 28 8:00 AM local Discord screenshot verifies fresh stored BTC candles from Hyperliquid, dYdX, Bitget and Gate. **New six are not deployed/live-verified.** Deployment may reveal geo blocks or real schema differences; only successful recent PostgreSQL source health and preserved historical data count as usable. ETH/SOL health, sustained uptime, automatic multi-source prediction generation, calibrated walk-forward accuracy, mature-outcome feedback/retraining and Discord signal UI remain unverified or incomplete. Issue #6 stays OPEN.
 
+## October 28, 2026: mobile pagination for ten-provider Data Center
+
+- With ten configured venues, BTC/ETH/SOL Market screens must not regress
+  into a ten-item endless list. Display at most four exchanges per page.
+- Add Previous/Next buttons, accurate disabled states, Page 1/3 indicators,
+  reset on return to market view, and per-page PostgreSQL candle fetching.
+- Preserve private ephemeral controls and the unchanged automatic collector.
+- Add regression tests for all three pages, navigation, limits and reset.
+
 ## October 28, 2026: completion of ten coded candidate adapters
 
 - Lighter public orderBooks and bounded candles (market_id derived from active

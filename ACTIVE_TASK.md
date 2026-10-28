@@ -19,6 +19,35 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 **Active: all 10 perpetual adapters implemented; NINE venues now production-evidenced for BTC, ETH and SOL, Binance host blocked by HTTP 451.** PR #13 activated five-minute PostgreSQL ingestion, PR #14 integrated Bitget/Gate, PR #15 delivered the interactive market dashboard, PR #16 added OKX/KuCoin, PR #17 Deribit/Binance, and PR #18 Lighter/Phemex. Merged CI covers the adapters with mock HTTP, SQLite replay and PostgreSQL 16 integration tests. Owner's October 28 8:00 AM local Discord screenshot verifies fresh stored BTC candles from Hyperliquid, dYdX, Bitget and Gate. **Owner's 09:22–09:22:36 EDT Discloud log verifies Hyperliquid, dYdX, Bitget, Gate, OKX, KuCoin, Deribit, Lighter and Phemex all returned 200 and completed collection on BTC/ETH/SOL.** Binance exchangeInfo returned HTTP 451 from Discloud and was paused. Previously saved candle replays produced new=0 (deduplication), not evidence of failed collection. No account region classification or Binance routing workaround is inferred. Deployment may reveal geo blocks or real schema differences; only successful recent PostgreSQL source health and preserved historical data count as usable. ETH/SOL health, sustained uptime, automatic multi-source prediction generation, calibrated walk-forward accuracy, mature-outcome feedback/retraining and Discord signal UI remain unverified or incomplete. Issue #6 stays OPEN.
 
+## October 28, 2026: live research UX, verified candle freshness, UTC scheduling
+
+- Owner's 1:37 PM BTC screenshot: Math & History selected with green
+  DISABLED control, Gemini appeared inactive. Replace disabled/gray tab
+  controls with both clickable colored navigation and an explicit
+  blue "Update live stats" action. Retain private view permissions.
+- The research UI now reads actual PostgreSQL feed health on EVERY
+  navigation/refresh; only status=ok with a recent last successful sync
+  AND a recently completed candle is counted as actively collecting.
+  Include last collection check time and Discord embed timestamp.
+- Store the last actual closed-candle timestamp from every successful
+  collector batch. A successful HTTP response without recent candles is
+  NOT a live market sample.
+- Show the actual NO SIGNAL reason rather than an unhelpful generic
+  statement. Do not convert past movement into a fabricated bet.
+- Six-calendar-month aggregate history counts can be cached in the
+  user's private view for up to two minutes per asset; pressing
+  Update live stats clears it. Current source health and market pulse
+  must NEVER use that cache. Gemini's evidence-keyed database cache and
+  rate limits remain independent.
+- Background ingestion is tied to the NEXT UTC five-minute candle
+  boundary + 15 seconds to account for finalization, not five minutes
+  after the previous serial network batch finishes. The initial
+  collector run remains immediate; blocked venue pauses remain intact.
+- Discord ephemeral controls can update when interacted with, but
+  must not claim an infinite push-stream or tick-level updates.
+- Add UI, source timestamp, cache invalidation, freshness and UTC
+  cadence tests, with production deployment verification still required.
+
 ## October 28, 2026: automatic evidence-only shadow-learning evaluation
 
 - Existing 10-venue collection and nine producer-verified venue feeds are preserved,

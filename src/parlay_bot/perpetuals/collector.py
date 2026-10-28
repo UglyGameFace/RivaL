@@ -20,6 +20,7 @@ from parlay_bot.perpetuals.hyperliquid import (
     MarketDataError,
 )
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.other_venues import BitgetMarketClient, GateMarketClient
 from parlay_bot.storage.hot import RelationalHotStore
 
 _LOG = logging.getLogger(__name__)
@@ -81,10 +82,15 @@ class PerpetualMarketCollector:
         self.bars = bars
         self.providers: dict[str, PublicPerpProvider] = (
             dict(providers) if providers is not None
-            else {"hyperliquid": HyperliquidMarketClient(), "dydx": DydxMarketClient()}
+            else {
+                "hyperliquid": HyperliquidMarketClient(),
+                "dydx": DydxMarketClient(),
+                "bitget": BitgetMarketClient(),
+                "gate": GateMarketClient(),
+            }
         )
         if not self.providers or any(
-            not key or key not in {"hyperliquid", "dydx"} for key in self.providers
+            not key or key not in {"hyperliquid", "dydx", "bitget", "gate"} for key in self.providers
         ):
             raise ValueError("unsupported public market provider")
         self._pauses: dict[str, datetime] = {}

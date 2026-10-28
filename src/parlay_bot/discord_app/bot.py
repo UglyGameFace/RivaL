@@ -175,7 +175,16 @@ class RivalDiscordClient(discord.Client):
                             "Collector configured. No completed collection attempts "
                             "recorded yet. Check the Discloud startup logs."
                         )
-                    for row in rows[:12]:
+                    live_sources = len({
+                        row["venue"] for row in rows if row["status"] == "ok"
+                    })
+                    configured_sources = len(self.perp_collector.providers)
+                    embed.description = (
+                        f"Active feeds: **{live_sources}/{configured_sources}** "
+                        "configured. Target: **10 independent venues**. "
+                        "Historical backfill is not counted as live model accuracy."
+                    )
+                    for row in rows[:24]:
                         last_ok = row["last_success_at"]
                         success = (
                             discord.utils.format_dt(
@@ -186,10 +195,10 @@ class RivalDiscordClient(discord.Client):
                         embed.add_field(
                             name=f'{row["venue"]} • {row["asset"]}',
                             value=(
-                                f'Status: **{row["status"]}**\\n'
-                                f'Last success: {success}\\n'
+                                f'Status: **{row["status"]}**\n'
+                                f'Last success: {success}\n'
                                 f'New candles total: {row["total_new_candles"]}'
-                            ).replace("\\\\n", "\\n"),
+                            ),
                             inline=False,
                         )
             await interaction.edit_original_response(embed=embed)
@@ -210,8 +219,9 @@ class RivalDiscordClient(discord.Client):
 
         if self.perp_collector is not None and self._perp_task is None:
             _LOG.info(
-                "RivaL perp automatic collector ENABLED venues=hyperliquid,dydx "
+                "RivaL perp automatic collector ENABLED venues=%s "
                 "assets=%s interval=%ds backend=postgres",
+                ",".join(self.perp_collector.providers),
                 ",".join(self.perp_collector.assets),
                 self.settings.rival_perp_collection_seconds,
             )

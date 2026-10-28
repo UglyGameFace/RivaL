@@ -131,3 +131,38 @@ candles are marked as backfill by first_observed timestamp.
 This only **collects** data; automated forecasting/model retraining and
 production accuracy validation remain incomplete and cannot be inferred from
 successful candle writes.
+
+## Additional perpetual feed candidates and status formatting fix
+
+Bitget Futures is a public no-key USDT perpetual candle provider with official
+`GET /api/v3/market/instruments` and `GET /api/v3/market/candles`
+endpoints. Verify type=perpetual/status=online and use only
+`category=USDT-FUTURES` on each BTCUSDT/ETHUSDT/SOLUSDT contract.
+
+Gate V4 futures is a different USDT contract feed. Verify direct, active
+BTC_USDT/ETH_USDT/SOL_USDT contracts with
+`GET /api/v4/futures/usdt/contracts/{contract}`, then collect bounded
+`GET /api/v4/futures/usdt/candlesticks` responses. Gate reports volumes in
+contract units. Use the current direct-contract `quanto_multiplier` only after
+validation to produce base-asset volumes. Contract metadata changes can trigger
+immutable-history conflicts and must not silently rewrite old data.
+
+Official documentation:
+- https://www.bitget.com/docs/catalog/market/market-data
+- https://www.gate.com/docs/developers/apiv4/en/futures/
+
+Neither API's successful response is proven from Discloud yet. HTTP 401/403/451
+blocks and rate limits must fail closed, remain visible and enter the existing
+cooldown, never be bypassed. Candle prices/contract identities are venue-specific
+and must not be merged as if interchangeable. A missing per-bar trade count is
+written as sentinel `-1` (unknown), NOT `0` trades. Never feed that sentinel
+to a learned trade-count feature.
+
+The private `/rival-data` response now uses actual newline rendering, shows
+the number of latest successful venues of the *configured* source list and the
+separate ten-source target. Historical initial 48-bar backfill is not evidence
+that the bot observed 48 consecutive live intervals.
+
+Production activation requires deploying the newer main commit to the existing
+Discloud RivaL app and checking actual status rows. GitHub CI is not a runtime
+feed audit.

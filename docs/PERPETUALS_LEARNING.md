@@ -308,3 +308,46 @@ The Overview now distinguishes live collection from learning explicitly:
 the deterministic learner remains shadow research, and Gemini is not
 yet wired into automatic analysis. No provider credential or rate
 limit changes are made by this UI.
+
+## Two independent research tracks and restart-safe AI caching
+
+**/rival-research** is a private Discord menu with Math & History and
+Gemini AI pages. BTC/ETH/SOL can be selected without exposing credentials.
+
+- **Math & History** audits actual PostgreSQL candle counts over the preceding
+  six calendar months for each configured source/asset, labeling the ratio
+  as an *upper bound* until gaps, corrections and availability are audited.
+  Existing statistical training is still shadow-only: no calibrated real-money
+  bet is produced. Historical backfills are **not** live observations.
+- **Gemini AI** is an explicitly triggered second track, never automatically
+  substituted for the mathematical model. It reads every currently healthy
+  exchange with recent closed candles and computes per-venue 15m/1h/4h/24h
+  returns/volatility, plus any present 7d/30d/90d/6-calendar-month baseline
+  returns. Bad, stale and region-blocked sources are excluded and disclosed.
+  It does not average different USDC/USD/USDT markets as exact equivalents.
+- Gemini returns a separate qualitative 15m direction and uncalibrated
+  confidence and risks. This has **no verified edge**, cannot trade, and
+  does not modify math-model weights. Model evaluation, actual settlement,
+  calibration and model promotion are still future work.
+
+**Smart caching:** The normalized verified evidence has a SHA-256 fingerprint.
+An identical evidence/model/asset query serves the saved immutable response
+from PostgreSQL even across Discloud restarts, using **zero** Gemini requests.
+New closed candles update the fingerprint and are eligible for new analysis,
+but global model-wide cooldown is 900 seconds by default, with an atomic
+24-request-per-UTC-day limit. A Gemini 401/403/429 triggers a persisted
+one-hour circuit breaker. Source polling continues unaffected. The cached
+analysis is never served if fresh source validation fails; no stale data
+or failed provider is implicitly treated as a working replacement.
+
+Discloud may already have `GEMINI_API_KEY` or `GOOGLE_API_KEY` configured.
+RivaL reads one of those environment secrets but never prints or uploads
+their values. Optional `RIVAL_GEMINI_MODEL`,
+`RIVAL_GEMINI_DAILY_MAX`, and `RIVAL_GEMINI_COOLDOWN_SECONDS`
+adjust usage. The model name is configurable because provider model
+availability and project quotas change.
+
+Six-month collection and historical backfill are **not implemented in this
+slice**; this slice accurately measures missing data and uses the history
+that is genuinely present. Full-six-month fetches require venue-specific
+retention limits, checksum/gap validation, and host-level availability checks.

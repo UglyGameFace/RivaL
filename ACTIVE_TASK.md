@@ -19,6 +19,24 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 **Active: foundational prediction/feedback slice merged; further conversion work remains.** PR #9 merged at `78dbbc18d0dfc0c31902e727fe9736a5834498e7`. Exact-head pull-request CI passed Ruff and 75 tests (including PostgreSQL 16 integration). The sports app remains the live production behavior; the new modules are isolated, not scheduled, not fed by exchange APIs, and not exposed in Discord. No claims of trained predictions or demonstrated profitability.
 
+## October 28, 2026: bounded market-data ingestion slice
+
+- Active task remains the entire perpetuals conversion, not a separate feature.
+- First official no-key source: Hyperliquid POST Info (metaAndAssetCtxs and candleSnapshot).
+- Isolated market adapter, immutable shared-store candle/context tables, owner-invoked
+  public probe and explicitly opt-in PostgreSQL ingestion, mock-HTTP regression cases,
+  plus PostgreSQL 16 compatibility test. No automatic polling, Discord changes,
+  sportsbook code edits, trade execution, or exchange credentials.
+- Data provenance: source/contract/USDC quote, interval, UTC candle boundaries,
+  observed-at timestamp, base-asset volume/OI, mark/funding snapshot.
+- Fail closed on 403/429, schema discrepancies, future/forming bars and changed
+  historical candles. Limits: 10 assets, 200 bars/request, no source retries.
+- Live regional access from Discloud and supervised backfill are **not yet verified**;
+  test fixtures cannot establish that. Avoid model-training claims.
+- Immediate next step: run exact-head Ruff/pytest with PostgreSQL 16, inspect the
+  entire PR diff, merge only when green, and validate the no-key probe from
+  Discloud before automatic ingestion or forecasts.
+
 ## Findings / authoritative execution path
 
 `main.py` -> `parlay_bot.discord_app.bot.run_discord_bot` ->

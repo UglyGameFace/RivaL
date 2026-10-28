@@ -1,3 +1,19 @@
+## October 28, 2026: correct Gemini restart-safe quota at UTC midnight
+
+- Repair existing PostgreSQL Gemini budget gate: current daily used
+  count must reset at midnight, but the previous day's 15-minute
+  minimum request spacing and one-hour provider-error pause must NOT.
+- Daily status and atomic reservation now inspect earlier model rows
+  so overlapping Discloud workers cannot bypass the previous day's
+  unexpired restrictions with a new-day insert.
+- Keep the same exact UTC retry shown in the private Gemini research UI;
+  do not call Google merely to inspect quota.
+- Regression tests use fixed before/after-midnight timestamps and real
+  PostgreSQL 16, including restart persistence and safe availability
+  after the pause actually expires.
+- No trading permission, signal promotion, API key changes or interference
+  with the automatic five-minute collection, shadow math and outcome scoring.
+
 ## October 28, 2026: third independent six-month historical recovery (Bitget)
 
 - The automatic math/Gemini prospective research engine, forward-only

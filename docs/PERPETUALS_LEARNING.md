@@ -807,3 +807,15 @@ This is **code integration**, not proof that the Discloud deployment
 can read six months or that complete coverage and profitable results
 exist. Check real cursor movement, inserted counts, independent six-month
 gap audits and exchange restrictions after deployment.
+
+## UTC-midnight Gemini quota rollover fix
+
+RivaL's per-model daily budget is keyed by UTC date. Previously, when the
+date changed, a fresh quota row could bypass a prior-day error pause or
+minimum request spacing. The reservation and read-only status now also
+check unexpired previous-day restrictions. A new UTC day resets **only
+the daily request counter**, never an outstanding Google 429/403/404
+pause or a still-active minimum interval. The atomic PostgreSQL/SQLite
+reservation remains the authoritative source; the Discord retry time
+matches the same rules. No additional Gemini requests, keys, exchange
+polls or trading actions are introduced.

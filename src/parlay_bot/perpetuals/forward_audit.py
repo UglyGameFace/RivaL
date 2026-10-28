@@ -78,6 +78,21 @@ class ForwardAccuracyMonitor:
         with self.store.connect() as conn:
             conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS perp_forward_cycle_diagnostics (
+                    slot_utc TEXT PRIMARY KEY,
+                    checked_at TEXT NOT NULL,
+                    discovered_streams INTEGER NOT NULL,
+                    selected_streams INTEGER NOT NULL,
+                    short_history INTEGER NOT NULL,
+                    stale_last_candle INTEGER NOT NULL,
+                    invalid_data INTEGER NOT NULL,
+                    insufficient_causal_labels INTEGER NOT NULL,
+                    insufficient_training INTEGER NOT NULL,
+                    target_expired INTEGER NOT NULL,
+                    duplicate_forecasts INTEGER NOT NULL,
+                    issued_forecasts INTEGER NOT NULL,
+                    settled_forecasts INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS perp_forward_audit (
                     venue TEXT NOT NULL,
                     contract TEXT NOT NULL,
@@ -107,6 +122,55 @@ class ForwardAccuracyMonitor:
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_asset_horizon
                     ON perp_forward_audit (asset,horizon_minutes,issued_at);
                 """
+            )
+
+    def latest_diagnostics(self) -> dict | None:
+        """Actual most recent issuance cycle, uncached and restart-safe."""
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT * FROM perp_forward_cycle_diagnostics
+                   ORDER BY checked_at DESC LIMIT 1"""
+            ).fetchone()
+        return dict(row) if row is not None else None
+
+    def _record_cycle(self, stamp: datetime, metrics: dict[str, int]) -> None:
+        """Bounded per-UTC-slot reason counts, no guesses about missing data."""
+        slot = stamp.replace(
+            minute=stamp.minute // 5 * 5, second=0, microsecond=0,
+        ).isoformat()
+        columns = (
+            "discovered_streams", "selected_streams", "short_history",
+            "stale_last_candle", "invalid_data",
+            "insufficient_causal_labels", "insufficient_training",
+            "target_expired", "duplicate_forecasts",
+            "issued_forecasts", "settled_forecasts",
+        )
+        with self.store.connect() as conn:
+            conn.execute(
+                """INSERT INTO perp_forward_cycle_diagnostics
+                   (slot_utc,checked_at,discovered_streams,selected_streams,
+                    short_history,stale_last_candle,invalid_data,
+                    insufficient_causal_labels,insufficient_training,
+                    target_expired,duplicate_forecasts,
+                    issued_forecasts,settled_forecasts)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT (slot_utc) DO UPDATE SET
+                     checked_at=excluded.checked_at,
+                     discovered_streams=excluded.discovered_streams,
+                     selected_streams=excluded.selected_streams,
+                     short_history=excluded.short_history,
+                     stale_last_candle=excluded.stale_last_candle,
+                     invalid_data=excluded.invalid_data,
+                     insufficient_causal_labels=excluded.insufficient_causal_labels,
+                     insufficient_training=excluded.insufficient_training,
+                     target_expired=excluded.target_expired,
+                     duplicate_forecasts=excluded.duplicate_forecasts,
+                     issued_forecasts=excluded.issued_forecasts,
+                     settled_forecasts=excluded.settled_forecasts
+                   WHERE perp_forward_cycle_diagnostics.checked_at
+                         <= excluded.checked_at""",
+                (slot, stamp.isoformat(), *(metrics[x] for x in columns)),
             )
 
     def _settle(self, now: datetime) -> int:
@@ -175,11 +239,20 @@ class ForwardAccuracyMonitor:
         self.initialize()
         settled = self._settle(stamp)
         issued = 0
+        metrics = {
+            "discovered_streams": 0, "selected_streams": 0,
+            "short_history": 0, "stale_last_candle": 0,
+            "invalid_data": 0, "insufficient_causal_labels": 0,
+            "insufficient_training": 0, "target_expired": 0,
+            "duplicate_forecasts": 0, "issued_forecasts": 0,
+            "settled_forecasts": settled,
+        }
         # Reuse the same bounded, freshness-checked stream selection as
         # existing offline evaluation, without external HTTP requests.
         eligible = ShadowLearningMonitor(self.store)._eligible_streams(
             now=stamp, limit=30,
         )
+        metrics["discovered_streams"] = len(eligible)
         # Rotate across source groups on UTC five-minute boundaries. This
         # guarantees that a still-untrained market cannot continually block
         # the other markets, even when the bot restarts.
@@ -190,6 +263,7 @@ class ForwardAccuracyMonitor:
         slot = int(stamp.timestamp() // 300) % groups
         start = slot * MAX_STREAMS_PER_CYCLE
         selection = eligible[start:start + MAX_STREAMS_PER_CYCLE]
+        metrics["selected_streams"] = len(selection)
         for venue, contract, quote in selection:
             try:
                 rows = self.market.recent_candles(
@@ -197,22 +271,26 @@ class ForwardAccuracyMonitor:
                     interval_minutes=5, count=1000, as_of=stamp,
                 )
                 if len(rows) < 65:
+                    metrics["short_history"] += 1
                     continue
                 candles = persisted_candles(rows)
                 last = candles[-1]
                 if not timedelta(0) <= stamp - utc(last.observed_at) <= timedelta(
                     minutes=10
                 ):
+                    metrics["stale_last_candle"] += 1
                     continue
                 features = _features(candles)
                 for horizon in HORIZONS:
                     samples = live_examples(candles, horizon_minutes=horizon)
                     if len(samples) < MIN_PREVIOUS_EVALUATED + 20:
+                        metrics["insufficient_causal_labels"] += 1
                         continue
                     tested = walk_forward(
                         samples, as_of=stamp, minimum_evaluated=50,
                     )
                     if tested.evaluated < MIN_PREVIOUS_EVALUATED:
+                        metrics["insufficient_training"] += 1
                         continue
                     usable = [
                         sample for sample in samples
@@ -231,6 +309,7 @@ class ForwardAccuracyMonitor:
                     # still genuinely in the future. A late job cannot
                     # retrospectively issue a 'prediction'.
                     if stamp >= target_open + timedelta(minutes=5, milliseconds=-1):
+                        metrics["target_expired"] += 1
                         continue
                     with self.store.connect() as conn:
                         record = conn.execute(
@@ -249,12 +328,16 @@ class ForwardAccuracyMonitor:
                             ),
                         )
                         issued += int(record.rowcount == 1)
+                        metrics["duplicate_forecasts"] += int(record.rowcount == 0)
             except (ValueError, TypeError, ArithmeticError):
+                metrics["invalid_data"] += 1
                 _LOG.warning(
                     "Prospective issue skipped invalid venue=%s contract=%s",
                     venue, contract,
                 )
                 continue
+        metrics["issued_forecasts"] = issued
+        self._record_cycle(stamp, metrics)
         _LOG.info(
             "RivaL prospective shadow audit issued=%s settled=%s",
             issued, settled,

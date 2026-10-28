@@ -150,3 +150,39 @@ def forecast_readiness(
         "best_evaluated_5m": max((r["evaluated_5m"] for r in records), default=0),
         "streams": records,
     }
+
+
+def explain_venue_readiness(readiness: dict, venue: str) -> str:
+    """One exchange at a time; separate fresh feeds from trained forecasts."""
+    record = next(
+        (row for row in readiness["streams"] if row["venue"] == venue),
+        None,
+    )
+    if record is None:
+        return "That exchange is not configured for this market."
+    status = record["status"]
+    messages = {
+        "blocked_or_unavailable": "API/data stream blocked or unavailable.",
+        "stale": "Collection or latest completed candle is stale.",
+        "not_collecting": "No successful collection recorded.",
+        "no_usable_candles": "No valid closed candles available.",
+        "needs_live_history": "Still accumulating genuinely observed consecutive candles.",
+        "needs_matured_labels": "Still waiting for enough released future outcomes.",
+        "invalid_or_missing_history": "History chronology, identity, or prices failed validation.",
+        "eligible_shadow": "Eligible for SHADOW evaluation, not real-money approval.",
+    }
+    minimum = readiness["min_live_bars"]
+    streak = record["recent_live_streak"]
+    remaining = max(0, minimum - streak)
+    return (
+        f"**{venue}** · **{status.replace('_', ' ').title()}**\\n"
+        f"{messages.get(status, 'Unavailable; inspect source health.')}\\n"
+        f"Stored recent bars: **{record['observations']}** · "
+        f"Live observed streak: **{streak}/{minimum}**"
+        + (f" (**{remaining}** more consecutive bars required)" if remaining else "")
+        + f"\\nCausal labels: **5m {record['causal_5m']}** / "
+        f"**15m {record['causal_15m']}**. "
+        f"Forward-evaluable: **5m {record['evaluated_5m']}** / "
+        f"**15m {record['evaluated_15m']}**."
+        + "\\nBackfilled candles never count as past live predictions."
+    ).replace("\\\\n", "\\n")

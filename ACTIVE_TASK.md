@@ -1,3 +1,36 @@
+## October 28, 2026: expand six-month history + cost-stressed prospective evaluation
+
+- Preserve the actual ten-source 5m live market collector and existing
+  historical Gate, KuCoin and Bitget recovery workers.
+- Add OKX public V5 SWAP 5-minute historical recovery from
+  `/api/v5/market/history-candles` using **backwards after timestamp**
+  pagination (100 max per request) and a dedicated per-asset, persisted
+  descending cursor. Require active linear USDT instrument metadata,
+  contract size factors, completed aligned OHLCV, and no invented bars.
+  A source block causes a six-hour pause; invalid responses do not move
+  the cursor. Cache validated contract metadata one hour, NOT candles.
+  History source shares the low-priority background loop and real progress
+  appears in mobile Math > Backfill progress. Actual provider availability
+  and imported coverage still require Discloud verification.
+- Introduce a **separate cost-stress audit** on genuinely settled,
+  prospective, 5m/15m mathematical shadow forecasts. Group each UTC
+  outcome target once instead of multiplying correlated exchange bets.
+  Test hypothetical 16 / 40 / 80 bps round-trip fee + two-sided slippage
+  + adverse funding assumptions; require 100 unique decisions over at
+  least 7 days plus positive/consistent day-block net stress for even a
+  hypothetical research pass. This is NOT actual exchange fees, fills
+  or funding, not a calibrated betting signal or profit evidence.
+- Retain the paired Brier baseline-adjusted governance gate, exact
+  point-in-time issuance, and no-order configuration. Report severe
+  stress on Accuracy 5m/15m detail; method explains assumptions.
+- Tests include OKX backwards cursor and restart, blocked and malformed
+  responses, historical provenance, Discord progress, correlated-outcome
+  nonindependence, insufficient forward days, bad costs and actual
+  SQLite analytics integration; run full Ruff/pytest/PostgreSQL CI.
+- Six-month coverage and independent profitability proof cannot be
+  honestly declared complete from code-only CI. They require actual
+  Discloud historical import and future live outcomes as they occur.
+
 ## October 28, 2026: correct Gemini restart-safe quota at UTC midnight
 
 - Repair existing PostgreSQL Gemini budget gate: current daily used

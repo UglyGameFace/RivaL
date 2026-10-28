@@ -179,6 +179,7 @@ async def test_kucoin_history_progress_visible_in_research_menu(tmp_path):
     try:
         worker._position("BTC", NOW)
         view.screen = "math"
+        view.section = "recovery"
         view._rebuild()
         fields = {field.name: field.value for field in (await view.render()).fields}
         assert "KuCoin six-month recovery" in fields

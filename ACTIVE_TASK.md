@@ -17,7 +17,7 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 ## Status
 
-**Active: foundational prediction/feedback slice merged; further conversion work remains.** PR #9 merged at `78dbbc18d0dfc0c31902e727fe9736a5834498e7`. Exact-head pull-request CI passed Ruff and 75 tests (including PostgreSQL 16 integration). The sports app remains the live production behavior; the new modules are isolated, not scheduled, not fed by exchange APIs, and not exposed in Discord. No claims of trained predictions or demonstrated profitability.
+**Active: first public perpetuals collector merged; full conversion remains unfinished.** PR #9 merged the forecast/feedback ledger; PR #10 merged the bounded no-key Hyperliquid adapter, immutable PostgreSQL candle/context store and explicit probe. GitHub exact-head PR CI and merged main CI for PR #10 both passed Ruff and 81 tests, including PostgreSQL 16 integration. The existing sports dashboard remains the deployed behavior. Automatic data collection, multi-venue ingest, model training, retraining and crypto Discord predictions are not implemented or validated.
 
 ## October 28, 2026: bounded market-data ingestion slice
 
@@ -31,11 +31,8 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
   observed-at timestamp, base-asset volume/OI, mark/funding snapshot.
 - Fail closed on 403/429, schema discrepancies, future/forming bars and changed
   historical candles. Limits: 10 assets, 200 bars/request, no source retries.
-- Live regional access from Discloud and supervised backfill are **not yet verified**;
-  test fixtures cannot establish that. Avoid model-training claims.
-- Immediate next step: run exact-head Ruff/pytest with PostgreSQL 16, inspect the
-  entire PR diff, merge only when green, and validate the no-key probe from
-  Discloud before automatic ingestion or forecasts.
+- PR #10 merged at `fdc95c75c1a3876d6c660984693f138292935599` after a reviewed, focused 7-file diff and passing CI (81 tests, Ruff, PostgreSQL 16); merged main CI also passed. Live regional access from Discloud and supervised backfill are **not yet verified**; test fixtures cannot establish that. Avoid model-training claims.
+- Immediate next step: run the read-only `python -m parlay_bot.perpetuals.probe` on the actual Discloud host and record safe response status. Only then authorize `--persist` after reviewing source health, and develop the second independent exchange adapter. Do not activate automatic ingestion or forecasts until runtime safety and quality checks pass.
 
 ## Findings / authoritative execution path
 

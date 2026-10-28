@@ -9,7 +9,7 @@ import hashlib
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Callable, Sequence
+from collections.abc import Callable, Sequence
 
 HORIZONS = frozenset({5, 15, 60, 240})
 
@@ -168,11 +168,11 @@ def fuse_forecasts(
     agreement = max(0.0, 1.0 - 2.0 * math.sqrt(variance))
     # When sources disagree, retreat towards an uninformative 50% forecast.
     probability = 0.5 + (mean - 0.5) * agreement
-    reference = sorted(
+    reference = min(
         contributors, key=lambda x: (-x.quality, -utc(x.observed_at).timestamp(), x.origin)
-    )[0]
+    )
     digest = hashlib.sha256(
-        f"{key}|{now.isoformat()}".encode("utf-8")
+        f"{key}|{now.isoformat()}".encode()
     ).hexdigest()
     return FusedForecast(
         id=digest, asset=key[0], quote=key[1], horizon_minutes=key[2],

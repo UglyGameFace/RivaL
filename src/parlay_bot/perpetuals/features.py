@@ -6,6 +6,7 @@ research, but is not evidence of an executable point-in-time prediction.
 """
 from __future__ import annotations
 
+import itertools
 import math
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -97,7 +98,7 @@ def live_examples(
             continue
         if any(
             int((utc(b.opened_at) - utc(a.opened_at)).total_seconds()) != seconds
-            for a, b in zip(history, history[1:])
+            for a, b in itertools.pairwise(history)
         ):
             continue
         if int((utc(target.opened_at) - utc(current.opened_at)).total_seconds()) != (

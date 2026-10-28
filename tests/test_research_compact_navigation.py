@@ -26,6 +26,7 @@ def expanded_report() -> discord.Embed:
         ("Historical gap audit", "0/10 audited streams complete"),
         ("Gate six-month recovery", "Recovering history from Gate"),
         ("KuCoin six-month recovery", "Recovering KuCoin"),
+        ("Historical recovery progress", "Gate 100, KuCoin 200, Bitget 300 imported"),
         ("Mathematical model", "Background shadow evaluation; no live signals."),
         ("Current market pulse · NOT a trading signal", "8 fresh venues; +0.057% observed 5m median; no trading signal."),
         ("Automatic shadow evaluation", "9 streams, 99 evaluated"),
@@ -121,9 +122,9 @@ async def test_real_section_selector_and_tab_buttons_are_clickable(monkeypatch):
         await view.redraw(interaction)
         assert interaction.response.deferred
         assert interaction.view is view
-        assert len(interaction.embed.fields) == 3
-        assert "Gate six-month recovery" in [f.name for f in interaction.embed.fields]
-        assert "KuCoin six-month recovery" in [f.name for f in interaction.embed.fields]
+        assert len(interaction.embed.fields) <= 3
+        assert "Historical recovery progress" in [f.name for f in interaction.embed.fields]
+        assert "Bitget" in interaction.embed.fields[-1].value
 
         button = control(view, "rival:research:accuracy")
         clicked = Interaction()

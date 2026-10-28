@@ -351,3 +351,40 @@ Six-month collection and historical backfill are **not implemented in this
 slice**; this slice accurately measures missing data and uses the history
 that is genuinely present. Full-six-month fetches require venue-specific
 retention limits, checksum/gap validation, and host-level availability checks.
+
+## Production hotfix: Gemini HTTP 404, view detachment and diagnostics
+
+The owner verified 9 public venues active for BTC/ETH/SOL on Discloud.
+Binance's publicly reachable host returned HTTP **451**, which is
+logged as **blocked** and paused without affecting the other nine.
+An HTTP 451 from a single server does not establish a Discord user's
+personal trading eligibility or justify bypassing regional controls.
+`bars=48 new=0` means the latest re-read candles already existed in
+immutable PostgreSQL, not that the source failed.
+
+The `/rival-research` Analyze button was broken by a Discord UI
+lifecycle error: rebuilding a View detaches its previous buttons, making
+`self.view` become `None`. This now retains the dashboard object
+before asynchronous calls and rebuilding, then edits the same private
+Discord message with the result **or the actual error explanation**.
+
+The running Gemini key reached Google's API, but configured
+`gemini-2.5-flash` returned 404. A newer default model is
+`gemini-3.8-flash`, and the exact known failing legacy model name
+is mapped once to that newer model to prevent repeated known-bad
+requests. An API 404 still fails closed, pauses further generation
+for one hour in the persistent PostgreSQL quota table, and can never
+create a false or pretend forecast. There is no silent switching
+through a long series of paid models.
+
+The new private **Check models** button reads Google's public
+`GET /v1beta/models` metadata with the configured key and caches
+results for one hour in the running process. It reports configured and
+advertised generation models *without exposing API keys*. A model
+being listed does **not** prove that generation is provisioned or
+enabled for the specific project. RivaL needs a successful actual
+`generateContent` call to verify that.
+
+After merging, update the existing Discloud app and reopen the private
+`/rival-research` menu. The research quota and immutable candle
+history remain in the existing PostgreSQL database.

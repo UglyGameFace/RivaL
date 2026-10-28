@@ -60,25 +60,64 @@ class _AskButton(discord.ui.Button["ResearchDashboard"]):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        assert self.view is not None
+        # clear_items() in _rebuild() detaches this button from its View.
+        # Hold the owning View before awaiting or rebuilding; self.view becomes
+        # None after detachment and must not be consulted again.
+        dashboard = self.view
+        assert dashboard is not None
         await interaction.response.defer()
-        self.view.screen = "ai"
-        self.view.message = None
-        self.view.opinion = None
+        dashboard.screen = "ai"
+        dashboard.message = None
+        dashboard.opinion = None
         try:
-            if self.view.ai is None:
+            if dashboard.ai is None:
                 raise ResearchUnavailable("Gemini research is unavailable.")
-            self.view.opinion = await self.view.ai.ask(
-                asset=self.view.asset, venues=self.view.venues,
+            dashboard.opinion = await dashboard.ai.ask(
+                asset=dashboard.asset, venues=dashboard.venues,
             )
         except (ResearchUnavailable, InsufficientEvidence) as exc:
-            self.view.message = str(exc)
+            dashboard.message = str(exc)
         except Exception:  # noqa: BLE001 - don't leak API keys/database DSNs
             _LOG.exception("RivaL research analysis failed")
-            self.view.message = "Analysis unavailable. No prediction produced."
-        self.view._rebuild()
+            dashboard.message = "Analysis unavailable. No prediction produced."
+        dashboard._rebuild()
         await interaction.edit_original_response(
-            embed=await self.view.render(), view=self.view,
+            embed=await dashboard.render(), view=dashboard,
+        )
+
+
+class _ModelListButton(discord.ui.Button["ResearchDashboard"]):
+    def __init__(self, *, enabled: bool) -> None:
+        super().__init__(
+            label="Check models", emoji="🔍",
+            style=discord.ButtonStyle.secondary,
+            custom_id="rival:research:models", row=2,
+            disabled=not enabled,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        await interaction.response.defer()
+        try:
+            if dashboard.ai is None:
+                raise ResearchUnavailable("Gemini research is not configured.")
+            names = await dashboard.ai.list_advertised_models()
+            options = ", ".join(names[:12]) or "No advertised generation models"
+            dashboard.message = (
+                f"Configured: **{dashboard.ai.model}**\\n"
+                f"Advertised: {options[:750]}\\n"
+                "The model list is metadata only. A model may still reject "
+                "generation for this project."
+            )
+        except ResearchUnavailable as exc:
+            dashboard.message = str(exc)
+        except Exception:  # noqa: BLE001
+            _LOG.exception("RivaL Gemini model inspection failed")
+            dashboard.message = "Model lookup failed. No API key disclosed."
+        dashboard._rebuild()
+        await interaction.edit_original_response(
+            embed=await dashboard.render(), view=dashboard,
         )
 
 
@@ -117,9 +156,9 @@ class ResearchDashboard(discord.ui.View):
             self.add_item(item)
         self.add_item(_AssetSelect(self.asset))
         if self.screen == "ai":
-            self.add_item(_AskButton(
-                self.market is not None and self.ai is not None and self.ai.available
-            ))
+            enabled = self.market is not None and self.ai is not None and self.ai.available
+            self.add_item(_AskButton(enabled))
+            self.add_item(_ModelListButton(enabled=enabled))
 
     async def render(self) -> discord.Embed:
         embed = discord.Embed(
@@ -198,7 +237,8 @@ class ResearchDashboard(discord.ui.View):
                 name="Analysis status",
                 value=(
                     self.message or (
-                        "Gemini is ready for on-demand, cached analysis."
+                        f"Gemini **{self.ai.model}** is configured for "
+                        "on-demand, cached analysis."
                         if self.ai is not None and self.ai.available else
                         "No Gemini API key is visible to this RivaL process."
                     )

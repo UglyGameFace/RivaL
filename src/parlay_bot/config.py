@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     # Reads existing GEMINI_API_KEY in Discloud if configured there.
     gemini_api_key: SecretStr | None = Field(default=None)
     google_api_key: SecretStr | None = Field(default=None)
-    rival_gemini_model: str = Field(default="gemini-2.5-flash")
+    rival_gemini_model: str = Field(default="gemini-3.8-flash")
     rival_gemini_daily_max: int = Field(default=24, ge=1, le=96)
     rival_gemini_cooldown_seconds: int = Field(default=900, ge=60, le=86400)
 

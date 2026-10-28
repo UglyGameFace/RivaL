@@ -17,7 +17,28 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 ## Status
 
-**Active: all 10 requested public perpetual data adapters implemented and merged; only FOUR live BTC feeds independently confirmed.** PR #13 activated five-minute PostgreSQL ingestion, PR #14 integrated Bitget/Gate, PR #15 delivered the interactive market dashboard, PR #16 added OKX/KuCoin, PR #17 Deribit/Binance, and PR #18 Lighter/Phemex. Merged CI covers the adapters with mock HTTP, SQLite replay and PostgreSQL 16 integration tests. Owner's October 28 8:00 AM local Discord screenshot verifies fresh stored BTC candles from Hyperliquid, dYdX, Bitget and Gate. **New six are not deployed/live-verified.** Deployment may reveal geo blocks or real schema differences; only successful recent PostgreSQL source health and preserved historical data count as usable. ETH/SOL health, sustained uptime, automatic multi-source prediction generation, calibrated walk-forward accuracy, mature-outcome feedback/retraining and Discord signal UI remain unverified or incomplete. Issue #6 stays OPEN.
+**Active: all 10 perpetual adapters implemented; NINE venues now production-evidenced for BTC, ETH and SOL, Binance host blocked by HTTP 451.** PR #13 activated five-minute PostgreSQL ingestion, PR #14 integrated Bitget/Gate, PR #15 delivered the interactive market dashboard, PR #16 added OKX/KuCoin, PR #17 Deribit/Binance, and PR #18 Lighter/Phemex. Merged CI covers the adapters with mock HTTP, SQLite replay and PostgreSQL 16 integration tests. Owner's October 28 8:00 AM local Discord screenshot verifies fresh stored BTC candles from Hyperliquid, dYdX, Bitget and Gate. **Owner's 09:22–09:22:36 EDT Discloud log verifies Hyperliquid, dYdX, Bitget, Gate, OKX, KuCoin, Deribit, Lighter and Phemex all returned 200 and completed collection on BTC/ETH/SOL.** Binance exchangeInfo returned HTTP 451 from Discloud and was paused. Previously saved candle replays produced new=0 (deduplication), not evidence of failed collection. No account region classification or Binance routing workaround is inferred. Deployment may reveal geo blocks or real schema differences; only successful recent PostgreSQL source health and preserved historical data count as usable. ETH/SOL health, sustained uptime, automatic multi-source prediction generation, calibrated walk-forward accuracy, mature-outcome feedback/retraining and Discord signal UI remain unverified or incomplete. Issue #6 stays OPEN.
+
+## October 28, 2026: production Gemini HTTP 404 + Discord View crash hotfix
+
+- Owner Discloud live logs verified 9/10 venues completed BTC/ETH/SOL
+  collection; Binance HTTP 451 access blocked at the Discloud host.
+  Data is continuing on nine others, no bypass or replacement claim.
+- /rival-research Analyze button had a real Discord View detach bug:
+  _rebuild() calls clear_items(), so self.view is None afterward.
+  The callback must retain a stable dashboard reference before rebuild.
+- The configured gemini-2.5-flash returned HTTP 404. Read-only model
+  documentation now recommends newer Flash models. The default is
+  gemini-3.8-flash; legacy 2.5 Flash is translated once to 3.8 for
+  this deployment to stop known-bad repeated requests.
+- Gemini model listing is an explicitly clicked, one-hour cached,
+  read-only metadata diagnostic; advertised generateContent capability
+  is NOT a guarantee of project-specific generation permissions.
+- Gemini 404 now opens a persisted one-hour circuit breaker, displays
+  a clear actionable explanation and leaves Discord interactions and
+  PostgreSQL collection running. Never show keys or generic stack traces.
+- Additional tests exercise 404, crash regression, new model selection
+  and metadata caching; validate exact-head CI before merge.
 
 ## October 28, 2026: independent Math and Gemini tracks, with restart-safe caching
 

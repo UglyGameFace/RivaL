@@ -182,3 +182,46 @@ def test_disabled_dashboard_never_claims_live_collection():
     embed = overview_embed([], VENUES, ASSETS, 300, enabled=False, now=NOW)
     assert "disabled" in embed.description
     assert len(embed.fields) == 0
+
+
+@pytest.mark.asyncio
+async def test_ten_venue_market_menu_has_four_entries_per_page_and_working_navigation():
+    venues = (
+        "hyperliquid", "dydx", "bitget", "gate", "okx",
+        "kucoin", "deribit", "binance", "lighter", "phemex",
+    )
+    dashboard = MarketDataDashboard(
+        owner_id=42, market=None, venues=venues, assets=("BTC", "ETH", "SOL"),
+        interval_seconds=300, enabled=False,
+    )
+    first = Interaction()
+    await dashboard.show(first, "markets")
+    assert len(first.embed.fields) == 4
+    assert "Page 1/3" in first.embed.description
+    assert buttons(dashboard)["rival:data:previous"].disabled
+    assert not buttons(dashboard)["rival:data:next"].disabled
+
+    second = Interaction()
+    await buttons(dashboard)["rival:data:next"].callback(second)
+    assert second.response.deferred
+    assert second.view is dashboard
+    assert "Page 2/3" in second.embed.description
+    assert len(second.embed.fields) == 4
+    assert second.embed.fields[0].name.startswith("OKX")
+
+    third = Interaction()
+    await buttons(dashboard)["rival:data:next"].callback(third)
+    assert len(third.embed.fields) == 2
+    assert "Page 3/3" in third.embed.description
+    assert buttons(dashboard)["rival:data:next"].disabled
+    assert third.embed.fields[-1].name.startswith("Phemex")
+
+    prior = Interaction()
+    await buttons(dashboard)["rival:data:previous"].callback(prior)
+    assert "Page 2/3" in prior.embed.description
+
+    await dashboard.show(Interaction(), "overview")
+    again = Interaction()
+    await dashboard.show(again, "markets")
+    assert "Page 1/3" in again.embed.description
+    assert len(again.embed.fields) == 4

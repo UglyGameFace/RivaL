@@ -51,7 +51,7 @@ _FIELD_GROUPS = {
     "math": {
         "pulse": ("Current market pulse",),
         "history": ("Six-month history target", "Historical gap audit"),
-        "recovery": ("Gate six-month recovery", "KuCoin six-month recovery"),
+        "recovery": ("Historical recovery progress",),
         "learning": ("Mathematical model", "Automatic shadow evaluation",
                      "Automatic learning"),
     },
@@ -440,6 +440,23 @@ class ResearchDashboard(discord.ui.View):
                 return None
         return dict(row) if row is not None else None
 
+    def _bitget_history_progress(self) -> dict | None:
+        """One DB query, no Bitget API request or stale embedded cache."""
+        if self.market is None:
+            return None
+        with self.market.store.connect() as conn:
+            try:
+                row = conn.execute(
+                    """SELECT status,inserted_bars,next_opened_at,empty_windows,
+                              attempted_at
+                       FROM perp_history_recovery
+                       WHERE venue='bitget' AND asset=?""",
+                    (self.asset,),
+                ).fetchone()
+            except Exception:  # noqa: BLE001 - schema upgrade pending
+                return None
+        return dict(row) if row is not None else None
+
     def _live_feed_status(
         self,
     ) -> tuple[int, int, datetime | None, datetime | None]:
@@ -614,6 +631,9 @@ class ResearchDashboard(discord.ui.View):
                                     "No old candle is counted as a live prediction."
                                 ), inline=False,
                             )
+                        bitget = await asyncio.to_thread(
+                            self._bitget_history_progress,
+                        )
                         kucoin = await asyncio.to_thread(
                             self._kucoin_history_progress,
                         )
@@ -630,6 +650,25 @@ class ResearchDashboard(discord.ui.View):
                                     "These are NOT live forward tests."
                                 )[:1024], inline=False,
                             )
+                        progress = (
+                            ("Gate", recovery), ("KuCoin", kucoin),
+                            ("Bitget", bitget),
+                        )
+                        lines = [
+                            (
+                                f"**{name}**: {row['status']} · "
+                                f"{int(row['inserted_bars']):,} imported · "
+                                f"cursor {str(row['next_opened_at'])[:16]} UTC"
+                            ) if row is not None else f"**{name}**: not started"
+                            for name, row in progress
+                        ]
+                        embed.add_field(
+                            name="Historical recovery progress",
+                            value="\n".join(lines) +
+                                  "\nBackfills are NOT past live predictions. "
+                                  "Continuity audits verify actual gaps.",
+                            inline=False,
+                        )
                     except Exception:  # noqa: BLE001
                         _LOG.exception("History audit status read unavailable")
                         embed.add_field(

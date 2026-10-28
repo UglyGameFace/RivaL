@@ -8,8 +8,8 @@ from datetime import UTC, datetime, timedelta
 import discord
 
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
-from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore

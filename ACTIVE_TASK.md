@@ -19,6 +19,22 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 **Active: live four-venue ingestion evidenced; six source integrations and production prediction engine remain.** PRs #9–12 supplied two data adapters, immutable PostgreSQL market storage and shadow evaluation. PR #13 started automatic five-minute collection, PR #14 added Bitget/Gate, and PR #15 introduced a private interactive data dashboard. On October 28 at 8:00 AM user-local time, the owner's deployed Discord screenshot showed BTC Markets with four venues (Hyperliquid, dYdX, Bitget Futures, Gate Futures) all marked Collecting, each displaying a recently saved BTC close about five minutes old. This is evidence of four live data pipelines for BTC, not proof of ETH/SOL health, long-term uptime, prediction accuracy or completion of the requested ten-source model. Six additional venue integrations and automated, verified forecasting/retraining remain unfinished.
 
+## October 28, 2026: Deribit and Binance perpetuals adapters under CI
+
+- Add public linear USDC perpetual data from Deribit: validate genuine
+  active USDC perpetual instruments, and capture base-coin TradingView
+  OHLCV with the official minute-resolution API.
+- Add Binance USD-M futures exchangeInfo + 5m klines for actual
+  USDT-settled PERPETUAL contracts; base-currency volume and actual
+  trade counts remain source-specific.
+- No API keys, trade permissions or orders. Region-blocked Binance
+  must fail closed with a six-hour cooldown; never circumvent restrictions.
+- Eight venue adapters are now coded, but only four have live BTC
+  evidence in the owner screenshot. Do not mark new feeds live until
+  Discloud reports actual persisted successful collection.
+- Four source adapters still needed for ten; the production model
+  prediction/retraining loop remains a separate milestone in issue #6.
+
 ## October 28, 2026: OKX and KuCoin futures integrations under CI
 
 - Extend automatic read-only collector with OKX V5 linear USDT swaps and

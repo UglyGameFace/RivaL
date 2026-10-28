@@ -23,6 +23,8 @@ VENUE_NAMES = {
     "gate": "Gate Futures",
     "okx": "OKX Swaps",
     "kucoin": "KuCoin Futures",
+    "deribit": "Deribit Perpetuals",
+    "binance": "Binance Futures",
 }
 MARKET_SYMBOLS = {
     "hyperliquid": ("{asset}", "USDC"),
@@ -31,6 +33,8 @@ MARKET_SYMBOLS = {
     "gate": ("{asset}_USDT", "USDT"),
     "okx": ("{asset}-USDT-SWAP", "USDT"),
     "kucoin": ("{asset}USDTM", "USDT"),
+    "deribit": ("{asset}_USDC-PERPETUAL", "USDC"),
+    "binance": ("{asset}USDT", "USDT"),
 }
 
 

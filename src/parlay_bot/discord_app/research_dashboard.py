@@ -110,7 +110,7 @@ class _ModelListButton(discord.ui.Button["ResearchDashboard"]):
             # Short, mobile-friendly, relevant alternatives only.
             options = ", ".join(other[:5]) or "None listed"
             dashboard.message = (
-                f"**Selected for analysis:** \`{configured}\`\n"
+                f"**Selected for analysis:** `{configured}`\n"
                 + (
                     "✅ **Listed for text generation** with this API key.\n"
                     if listed else

@@ -62,10 +62,11 @@ async def test_ai_evidence_consumes_all_healthy_venues_and_many_windows(tmp_path
             {"venue": "gate", "status": "never"}
         ]
         assert all(
-            set(x["windows"]) == {"15m", "1h", "4h", "24h"}
+            set(x["windows"]) == {"5m", "15m", "1h", "4h", "24h"}
             for x in evidence["sources"]
         )
         assert all(x["historical_windows"] == {} for x in evidence["sources"])
+        assert evidence["horizon_minutes"] == 5
         assert len(digest) == 64
         assert digest == build_evidence(
             market, asset="BTC",

@@ -195,7 +195,8 @@ class GeminiResearch:
             )
         async with self._lock:
             evidence, digest = await asyncio.to_thread(
-                build_evidence, self.market, asset=asset, venues=venues
+                build_evidence, self.market, asset=asset, venues=venues,
+                horizon_minutes=5
             )
             cached = await asyncio.to_thread(
                 self.market.cached_ai_research, asset=asset,
@@ -225,7 +226,8 @@ class GeminiResearch:
                 )
             prompt = (
                 "You are an INDEPENDENT research model for perpetual futures. "
-                "Read every healthy exchange summary supplied. Compare 15m/1h/"
+                "Read every healthy exchange summary supplied. Make a next "
+                "FIVE-MINUTE assessment, using 5m/15m/1h/"
                 "4h/24h returns, volatility, disagreement and missing windows. "
                 "Do not treat USD, USDC and USDT quotes as perfectly fungible. "
                 "These are independently sampled 5-minute candles, not a trained "
@@ -234,7 +236,10 @@ class GeminiResearch:
                 "Return strict JSON: direction (up/down/uncertain), "
                 "confidence (low/medium/high, uncalibrated), thesis (under "
                 "400 characters), risk (under 250 characters). Prefer uncertain "
-                "when data or disagreement warrants it. Prediction horizon 15m. "
+                "when data or disagreement warrants it. Prediction horizon 5m. "
+                "5-minute candle returns are past movements, not future "
+                "prediction probabilities. No untested price target or "
+                "stop-loss recommendation should be presented as validated. "
                 "Never claim results from data you were not given.\n"
                 + json.dumps(evidence, sort_keys=True, separators=(",", ":"))
             )

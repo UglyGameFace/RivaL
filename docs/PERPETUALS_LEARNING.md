@@ -430,3 +430,30 @@ requires an actual successful `generateContent` call and is subject
 to account/project quotas and regional limitations. This UI change
 does not automatically select a lower model, place trades or affect
 the market collector.
+
+## Five-minute perpetuals as the primary research horizon
+
+The owner's primary trading horizon is **5 minutes**. Do not confuse
+the existing **five-minute OHLCV sampling interval** with a 15-minute
+future forecast. RivaL's Gemini evidence now requests a *next 5m*
+qualitative assessment, using observed 5m, 15m, 1h, 4h and 24h
+within-venue percentage returns and volatilities, plus any genuinely
+stored multi-month baseline observations.
+
+The private Math & History menu shows the **previous completed five-minute
+market move** aggregated as a median of independent quoted-venue returns,
+with agreement counts and 15m/1h trend context. This is a description
+of what happened, *not* a probability that the next candle will have
+the same direction. It excludes source data more than seven minutes
+old, requiring three distinct fresh exchanges.
+
+The existing scheduled online shadow learner already evaluates both
+five-minute and fifteen-minute causal outcomes. It cannot be marketed
+as an approved trading model simply because it is running. The future
+target planner must use the actual user's asset and chosen timeframe,
+expected path volatility, venue-specific quote/spread, fees, funding,
+slippage, and a tested target-hit distribution. Accepting a user's
+custom profit target must trigger a recalculation rather than blindly
+retaining the default probability. Until that is validated, the menu
+must show **NO VERIFIED TARGET / NO VERIFIED BET**, not an invented
+price or confidence.

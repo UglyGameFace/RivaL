@@ -9,6 +9,7 @@ import discord
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
+from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
 
@@ -226,6 +227,57 @@ class ResearchDashboard(discord.ui.View):
                             "exist; scheduled evaluation is disabled."
                         ), inline=False,
                     )
+                # This describes *observed* cross-venue movement; no
+                # target/stop-loss/probability is invented from raw momentum.
+                try:
+                    pulse = await asyncio.to_thread(
+                        calculate_market_pulse, self.market,
+                        asset=self.asset, venues=self.venues,
+                    )
+                except InsufficientEvidence:
+                    embed.add_field(
+                        name="Current market pulse",
+                        value=(
+                            "NO SIGNAL · Not enough fresh, contiguous "
+                            "5-minute candles from at least three exchanges."
+                        ), inline=False,
+                    )
+                except Exception:  # noqa: BLE001 - no credentials in Discord
+                    _LOG.exception("RivaL market pulse calculation failed")
+                    embed.add_field(
+                        name="Current market pulse",
+                        value="Current read-only market observations unavailable.",
+                        inline=False,
+                    )
+                else:
+                    quarter = (
+                        f"{pulse.median_15m_pct:+.3f}%"
+                        if pulse.median_15m_pct is not None else "unavailable"
+                    )
+                    hour = (
+                        f"{pulse.median_1h_pct:+.3f}%"
+                        if pulse.median_1h_pct is not None else "insufficient history"
+                    )
+                    embed.add_field(
+                        name="Current market pulse · NOT a trading signal",
+                        value=(
+                            f"**{pulse.sources}/{pulse.configured}** fresh venues "
+                            f"· most recent shared close "
+                            f"{discord.utils.format_dt(pulse.observed_at, style='R')}\n"
+                            f"Previous 5m median move: "
+                            f"**{pulse.median_5m_pct:+.3f}%**\n"
+                            f"15m context: **{quarter}** · 1h: **{hour}**\n"
+                            f"Past 5m sources: **{pulse.up} up / "
+                            f"{pulse.down} down / {pulse.flat} flat**\n"
+                            f"Exchange range: "
+                            f"{pulse.range_5m_pct[0]:+.3f}% to "
+                            f"{pulse.range_5m_pct[1]:+.3f}%\n"
+                            "**Next 5m forecast: NOT VALIDATED.** "
+                            "Suggested take-profit/stop: not approved. "
+                            "Past momentum is not the next candle."
+                        )[:1024],
+                        inline=False,
+                    )
                 if self.shadow_enabled:
                     try:
                         snapshots = await asyncio.to_thread(
@@ -286,7 +338,8 @@ class ResearchDashboard(discord.ui.View):
             name="AI evidence",
             value=(
                 "Gemini analyzes **all currently healthy distinct exchanges**, "
-                "including available 15m, 1h, 4h and 24h return/volatility "
+                "for a **5-minute forecast**, with available 5m, 15m, "
+                "1h, 4h and 24h returns and volatility "
                 "features. Unavailable sources are excluded and disclosed."
             ), inline=False,
         )

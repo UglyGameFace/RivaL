@@ -23,7 +23,7 @@ async def test_math_panel_discloses_automatic_shadow_status(tmp_path):
         assert "Automatic shadow evaluation" in fields
         assert "Waiting for at least" in fields["Automatic shadow evaluation"]
         assert "verified production signals" not in fields["Mathematical model"]
-        assert "not" in fields["Mathematical model"].lower()
+        assert "no model is approved" in fields["Mathematical model"].lower()
     finally:
         dashboard.stop()
         store.close()

@@ -200,17 +200,35 @@ class PerpetualMarketStore:
     def recent_candles(
         self, *, venue: str, contract: str, quote: str,
         interval_minutes: int, count: int = 200,
+        as_of: datetime | None = None,
     ) -> list[dict]:
+        """Retrieve a venue-specific history, optionally as it was actually known.
+
+        Point-in-time callers must request `as_of`: a backfilled candle is not
+        visible before its first real observation, even if its close is older.
+        Filtering occurs BEFORE LIMIT, preventing backfills from displacing
+        earlier usable rows.
+        """
         if not 1 <= count <= 5000:
             raise ValueError("recent candle count out of bounds")
         self.initialize()
         with self.store.connect() as conn:
-            rows = conn.execute(
-                """SELECT * FROM perp_market_candles
-                   WHERE venue=? AND contract=? AND quote=? AND interval_minutes=?
-                   ORDER BY opened_at DESC LIMIT ?""",
-                (venue, contract, quote, interval_minutes, count),
-            ).fetchall()
+            if as_of is None:
+                rows = conn.execute(
+                    """SELECT * FROM perp_market_candles
+                       WHERE venue=? AND contract=? AND quote=? AND interval_minutes=?
+                       ORDER BY opened_at DESC LIMIT ?""",
+                    (venue, contract, quote, interval_minutes, count),
+                ).fetchall()
+            else:
+                instant = utc(as_of).isoformat()
+                rows = conn.execute(
+                    """SELECT * FROM perp_market_candles
+                       WHERE venue=? AND contract=? AND quote=? AND interval_minutes=?
+                         AND closed_at<? AND first_observed_at<=?
+                       ORDER BY opened_at DESC LIMIT ?""",
+                    (venue, contract, quote, interval_minutes, instant, instant, count),
+                ).fetchall()
         return [dict(row) for row in reversed(rows)]
 
     def record_feed_health(

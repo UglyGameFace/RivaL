@@ -1,13 +1,13 @@
-"""Bounded, unauthenticated Hyperliquid perpetual-candle ingestion.
+"""Read-only, bounded Hyperliquid USDC perpetual market-data ingestion.
 
-Official read-only endpoint: POST https://api.hyperliquid.xyz/info.
-No client in this module has exchange trading credentials or order methods.
+Candles and asset contexts are observations, NOT source forecast probabilities.
+Never manufacture missing/unfinished candles or bypass unavailable endpoints.
 """
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -15,154 +15,192 @@ import httpx
 from parlay_bot.perpetuals.fusion import utc
 
 INFO_URL = "https://api.hyperliquid.xyz/info"
-INTERVALS = {"1m": 1, "5m": 5, "15m": 15, "1h": 60, "4h": 240}
-# Limit each request: candleSnapshot has a base weight plus weight per 60 rows.
-MAX_CANDLES = 180
-ASSETS = frozenset({"BTC", "ETH", "SOL"})
+INTERVALS = {5: "5m", 15: "15m", 60: "1h", 240: "4h"}
+MAX_BARS = 200
 
 
-@dataclass(frozen=True)
-class PerpCandle:
-    venue: str
-    asset: str
-    quote: str
-    contract_kind: str
-    interval: str
-    opened_at: datetime
-    closed_at: datetime
-    open: float
-    high: float
-    low: float
-    close: float
-    base_volume: float
-    trades: int
-
-    def __post_init__(self) -> None:
-        if (self.venue, self.quote, self.contract_kind) != (
-            "hyperliquid", "USDC", "linear_perpetual"
-        ):
-            raise ValueError("unexpected market identity")
-        if self.asset not in ASSETS or self.interval not in INTERVALS:
-            raise ValueError("unsupported candle instrument or interval")
-        opened = utc(self.opened_at)
-        closed = utc(self.closed_at)
-        duration = timedelta(minutes=INTERVALS[self.interval])
-        if closed != opened + duration - timedelta(milliseconds=1):
-            raise ValueError("invalid candle boundaries")
-        if not all(math.isfinite(x) for x in (
-            self.open, self.high, self.low, self.close, self.base_volume
-        )):
-            raise ValueError("nonfinite candle value")
-        if (
-            min(self.open, self.high, self.low, self.close) <= 0
-            or self.low > min(self.open, self.close)
-            or self.high < max(self.open, self.close)
-            or self.high < self.low
-            or self.base_volume < 0
-            or type(self.trades) is not int
-            or self.trades < 0
-        ):
-            raise ValueError("invalid OHLCV or trade count")
+class MarketDataError(RuntimeError):
+    """Provider returned an unavailable or untrustworthy market observation."""
 
 
-def _number(raw: Any) -> float:
-    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
-        raise TypeError("numeric exchange field required")
+def _float(value: Any, *, positive: bool = False) -> float:
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        raise MarketDataError("invalid market number")
     try:
-        result = float(raw)
-    except (TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("invalid exchange numeric field") from exc
-    if not math.isfinite(result):
-        raise ValueError("exchange numeric field must be finite")
+        result = float(value)
+    except (ValueError, OverflowError) as exc:
+        raise MarketDataError("invalid market number") from exc
+    if not math.isfinite(result) or (positive and result <= 0):
+        raise MarketDataError("nonfinite or nonpositive market number")
     return result
 
 
-def normalize_candle(
-    raw: dict[str, Any], *, coin: str, interval: str, requested_at: datetime
-) -> PerpCandle | None:
-    """Only complete, internally valid candles may enter the training store."""
-    if not isinstance(raw, dict):
-        raise TypeError("candle response row must be an object")
-    if raw.get("s") != coin or raw.get("i") != interval:
-        raise ValueError("exchange candle identity mismatch")
-    start_ms, close_ms = raw.get("t"), raw.get("T")
-    if (
-        type(start_ms) is not int
-        or type(close_ms) is not int
-        or start_ms < 0
-    ):
-        raise ValueError("invalid millisecond timestamps")
-    # The API's T is the inclusive last millisecond of the candle.
-    if close_ms != start_ms + INTERVALS[interval] * 60_000 - 1:
-        raise ValueError("invalid timestamp range")
-    end_ms = int(utc(requested_at).timestamp() * 1000)
-    if close_ms >= end_ms:
-        return None  # Never train on the live, unfinished bar.
-    if start_ms % (INTERVALS[interval] * 60_000) != 0:
-        raise ValueError("unaligned candle start")
-    return PerpCandle(
-        venue="hyperliquid", asset=coin, quote="USDC",
-        contract_kind="linear_perpetual", interval=interval,
-        opened_at=datetime.fromtimestamp(start_ms / 1000, tz=UTC),
-        closed_at=datetime.fromtimestamp(close_ms / 1000, tz=UTC),
-        open=_number(raw.get("o")), high=_number(raw.get("h")),
-        low=_number(raw.get("l")), close=_number(raw.get("c")),
-        base_volume=_number(raw.get("v")), trades=raw.get("n"),
-    )
+def _nonnegative(value: Any) -> float:
+    result = _float(value)
+    if result < 0:
+        raise MarketDataError("negative market quantity")
+    return result
 
 
-class HyperliquidPublicCandles:
-    """Read-only API adapter; caller owns the supplied HTTP client if given."""
+def _integer(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise MarketDataError("invalid market timestamp or count")
+    return value
 
+
+@dataclass(frozen=True)
+class MarketContext:
+    venue: str
+    contract: str
+    quote: str
+    observed_at: datetime
+    mark_price: float
+    oracle_price: float
+    funding_rate: float
+    open_interest_base: float
+
+
+@dataclass(frozen=True)
+class MarketCandle:
+    venue: str
+    contract: str
+    quote: str
+    interval_minutes: int
+    opened_at: datetime
+    closed_at: datetime
+    observed_at: datetime
+    open_price: float
+    high_price: float
+    low_price: float
+    close_price: float
+    volume_base: float
+    trades: int
+
+
+@dataclass(frozen=True)
+class MarketBatch:
+    contexts: tuple[MarketContext, ...]
+    candles: tuple[MarketCandle, ...]
+    interval_minutes: int
+    observed_at: datetime
+
+
+class HyperliquidMarketClient:
     def __init__(self, client: httpx.AsyncClient | None = None) -> None:
-        self._client = client
+        self._owned = client is None
+        self._client = client or httpx.AsyncClient(timeout=15, follow_redirects=False)
 
-    async def fetch_closed(
-        self, *,
-        coin: str,
-        interval: str = "5m",
-        count: int = 48,
-        requested_at: datetime | None = None,
-    ) -> tuple[PerpCandle, ...]:
-        if coin not in ASSETS or interval not in INTERVALS:
-            raise ValueError("unsupported Hyperliquid instrument or interval")
-        if type(count) is not int or not 1 <= count <= MAX_CANDLES:
-            raise ValueError("count outside bounded free API request window")
-        now = utc(requested_at or datetime.now(UTC))
-        if now > datetime.now(UTC) + timedelta(seconds=5):
-            raise ValueError("request cutoff cannot be in the future")
-        finish = int(now.timestamp() * 1000)
-        start = finish - (count + 1) * INTERVALS[interval] * 60_000
-        payload = {
-            "type": "candleSnapshot",
-            "req": {
-                "coin": coin,
-                "interval": interval,
-                "startTime": start,
-                "endTime": finish,
-            },
-        }
-        if self._client is None:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(10.0),
-                headers={"User-Agent": "RivaL-public-perpetual-data/1.0"},
-            ) as client:
-                response = await client.post(INFO_URL, json=payload)
-        else:
-            response = await self._client.post(INFO_URL, json=payload)
-        response.raise_for_status()  # 403/429 are failures, never fabricated success.
-        data = response.json()
-        if not isinstance(data, list):
-            raise TypeError("unexpected candle response schema")
-        result: list[PerpCandle] = []
-        seen: set[datetime] = set()
-        for raw in data:
-            candle = normalize_candle(raw, coin=coin, interval=interval, requested_at=now)
-            if candle is None:
-                continue
-            if candle.opened_at in seen:
-                raise ValueError("duplicate exchange candle timestamp")
-            seen.add(candle.opened_at)
-            if start <= int(candle.opened_at.timestamp() * 1000) <= finish:
-                result.append(candle)
-        return tuple(sorted(result, key=lambda c: c.opened_at)[-count:])
+    async def aclose(self) -> None:
+        if self._owned:
+            await self._client.aclose()
+
+    async def _info(self, payload: dict[str, Any]) -> Any:
+        try:
+            response = await self._client.post(
+                INFO_URL, json=payload, headers={"Content-Type": "application/json"}
+            )
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            # A blocked/limited provider is an error, not an invitation to bypass.
+            raise MarketDataError("public market request failed") from exc
+
+    async def collect(
+        self, *, assets: tuple[str, ...] = ("BTC", "ETH", "SOL"),
+        interval_minutes: int = 5, bars: int = 48,
+        as_of: datetime | None = None,
+    ) -> MarketBatch:
+        if interval_minutes not in INTERVALS or not 1 <= bars <= MAX_BARS:
+            raise ValueError("invalid interval or history bounds")
+        if not assets or len(assets) > 10 or len(assets) != len(set(assets)) or any(
+            not a.isascii() or not a.isupper() or not a.isalnum() or len(a) > 15
+            for a in assets
+        ):
+            raise ValueError("use unique simple uppercase perpetual contract symbols")
+
+        observed = utc(as_of if as_of is not None else datetime.now(UTC))
+        interval_ms = interval_minutes * 60_000
+        # The current, still-forming bucket must never be used for training.
+        end_ms = int(observed.timestamp() * 1000) // interval_ms * interval_ms
+        start_ms = end_ms - bars * interval_ms
+        response = await self._info({"type": "metaAndAssetCtxs", "dex": ""})
+        if (
+            not isinstance(response, list) or len(response) != 2
+            or not isinstance(response[0], dict)
+            or not isinstance(response[0].get("universe"), list)
+            or not isinstance(response[1], list)
+            or len(response[0]["universe"]) != len(response[1])
+        ):
+            raise MarketDataError("invalid perpetual universe/context alignment")
+        available: dict[str, dict[str, Any]] = {}
+        for market, context in zip(response[0]["universe"], response[1]):
+            if not isinstance(market, dict) or not isinstance(context, dict):
+                raise MarketDataError("invalid perpetual market metadata")
+            name = market.get("name")
+            if not isinstance(name, str) or not name or name in available:
+                raise MarketDataError("invalid or duplicate contract identity")
+            if not market.get("isDelisted", False):
+                available[name] = context
+
+        contexts: list[MarketContext] = []
+        candles: list[MarketCandle] = []
+        for asset in assets:
+            if asset not in available:
+                raise MarketDataError(f"active perpetual unavailable: {asset}")
+            context = available[asset]
+            contexts.append(MarketContext(
+                "hyperliquid", asset, "USDC", observed,
+                _float(context.get("markPx"), positive=True),
+                _float(context.get("oraclePx"), positive=True),
+                _float(context.get("funding")),
+                _nonnegative(context.get("openInterest")),
+            ))
+            rows = await self._info({
+                "type": "candleSnapshot",
+                "req": {"coin": asset, "interval": INTERVALS[interval_minutes],
+                        "startTime": start_ms, "endTime": end_ms},
+            })
+            if not isinstance(rows, list) or len(rows) > bars + 1:
+                raise MarketDataError("invalid or unbounded candle response")
+            count_before = len(candles)
+            previous = -1
+            for row in rows:
+                if (
+                    not isinstance(row, dict) or row.get("s") != asset
+                    or row.get("i") != INTERVALS[interval_minutes]
+                ):
+                    raise MarketDataError("wrong candle contract or interval")
+                opened = _integer(row.get("t"))
+                closed = _integer(row.get("T"))
+                if opened <= previous:
+                    raise MarketDataError("duplicate or out-of-order candle")
+                previous = opened
+                if opened % interval_ms or closed != opened + interval_ms - 1:
+                    raise MarketDataError("wrong candle interval boundaries")
+                if opened >= end_ms and opened < end_ms + interval_ms:
+                    continue  # Provider may return an unfinished candle.
+                if opened < start_ms or opened >= end_ms:
+                    raise MarketDataError("candle outside requested period")
+                o, h, low, c = (
+                    _float(row.get(field), positive=True)
+                    for field in ("o", "h", "l", "c")
+                )
+                if low > min(o, c) or h < max(o, c) or h < low:
+                    raise MarketDataError("inconsistent OHLC prices")
+                candles.append(MarketCandle(
+                    "hyperliquid", asset, "USDC", interval_minutes,
+                    datetime.fromtimestamp(opened / 1000, UTC),
+                    datetime.fromtimestamp(closed / 1000, UTC),
+                    observed, o, h, low, c,
+                    _nonnegative(row.get("v")), _integer(row.get("n")),
+                ))
+            if len(candles) == count_before:
+                raise MarketDataError(f"no complete candle returned for {asset}")
+        # Record when the entire HTTP batch became available, not when the first
+        # request began. This prevents a future model from seeing data early.
+        available_at = observed if as_of is not None else datetime.now(UTC)
+        return MarketBatch(
+            tuple(replace(x, observed_at=available_at) for x in contexts),
+            tuple(replace(x, observed_at=available_at) for x in candles),
+            interval_minutes, available_at,
+        )

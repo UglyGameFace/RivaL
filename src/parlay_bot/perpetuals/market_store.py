@@ -323,23 +323,33 @@ class PerpetualMarketStore:
                    FROM perp_ai_quota WHERE model=? AND utc_day=?""",
                 (model, instant.date().isoformat()),
             ).fetchone()
+            previous = conn.execute(
+                """SELECT last_called_at,blocked_until
+                   FROM perp_ai_quota WHERE model=? AND utc_day<?
+                   ORDER BY utc_day DESC LIMIT 1""",
+                (model, instant.date().isoformat()),
+            ).fetchone()
         used = int(row["used"]) if row is not None else 0
         checks: list[tuple[str, datetime]] = []
         day_reset = (instant + timedelta(days=1)).replace(
             hour=0, minute=0, second=0, microsecond=0,
         )
-        if row is not None:
-            if row["blocked_until"]:
-                blocked = utc(datetime.fromisoformat(str(row["blocked_until"])))
+        # An error at 23:59 UTC must remain blocked at 00:00 UTC.
+        # Today's request count resets, but the provider's pause does not.
+        for record in (row, previous):
+            if record is None:
+                continue
+            if record["blocked_until"]:
+                blocked = utc(datetime.fromisoformat(str(record["blocked_until"])))
                 if blocked > instant:
                     checks.append(("provider_error_pause", blocked))
-            if row["last_called_at"]:
-                last_call = utc(datetime.fromisoformat(str(row["last_called_at"])))
+            if record["last_called_at"]:
+                last_call = utc(datetime.fromisoformat(str(record["last_called_at"])))
                 next_call = last_call + timedelta(seconds=cooldown_seconds)
                 if next_call > instant:
                     checks.append(("minimum_spacing", next_call))
-            if used >= daily_max:
-                checks.append(("daily_budget_exhausted", day_reset))
+        if used >= daily_max:
+            checks.append(("daily_budget_exhausted", day_reset))
         # The earliest safe retry is after *all* active restrictions expire.
         retry_at = max((when for _, when in checks), default=None)
         return {
@@ -366,7 +376,12 @@ class PerpetualMarketStore:
             row = conn.execute(
                 """INSERT INTO perp_ai_quota
                    (model,utc_day,used,last_called_at,blocked_until)
-                   VALUES (?,?,1,?,NULL)
+                   SELECT ?,?,1,?,NULL
+                   WHERE NOT EXISTS (
+                       SELECT 1 FROM perp_ai_quota AS prior
+                       WHERE prior.model=? AND prior.utc_day<?
+                         AND (prior.last_called_at>? OR prior.blocked_until>?)
+                   )
                    ON CONFLICT(model,utc_day) DO UPDATE SET
                      used=perp_ai_quota.used+1,
                      last_called_at=excluded.last_called_at
@@ -374,9 +389,18 @@ class PerpetualMarketStore:
                      AND perp_ai_quota.last_called_at <= ?
                      AND (perp_ai_quota.blocked_until IS NULL OR
                           perp_ai_quota.blocked_until <= ?)
+                     AND NOT EXISTS (
+                       SELECT 1 FROM perp_ai_quota AS prior
+                       WHERE prior.model=? AND prior.utc_day<?
+                         AND (prior.last_called_at>? OR prior.blocked_until>?)
+                     )
                    RETURNING used""",
-                (model, instant.date().isoformat(), stamp,
-                 daily_max, cutoff, stamp),
+                (
+                    model, instant.date().isoformat(), stamp,
+                    model, instant.date().isoformat(), cutoff, stamp,
+                    daily_max, cutoff, stamp,
+                    model, instant.date().isoformat(), cutoff, stamp,
+                ),
             ).fetchone()
         return row is not None
 

@@ -21,6 +21,7 @@ from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
+from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import GeminiResearch
@@ -141,6 +142,13 @@ class RivalDiscordClient(discord.Client):
         )
         self.kucoin_history_recovery: KucoinHistoryRecovery | None = (
             KucoinHistoryRecovery(
+                self.perp_collector.market, assets=self.perp_collector.assets,
+            )
+            if self.perp_collector is not None
+            and settings.rival_history_recovery_enabled else None
+        )
+        self.bitget_history_recovery: BitgetHistoryRecovery | None = (
+            BitgetHistoryRecovery(
                 self.perp_collector.market, assets=self.perp_collector.assets,
             )
             if self.perp_collector is not None
@@ -371,6 +379,18 @@ class RivalDiscordClient(discord.Client):
                     raise
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL KuCoin history recovery failed safely")
+            if self.bitget_history_recovery is not None:
+                try:
+                    added = await self.bitget_history_recovery.run_once()
+                    if added:
+                        _LOG.info(
+                            "RivaL verified historical Bitget recovery inserted=%d",
+                            added,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL Bitget history recovery failed safely")
             if self.history_auditor is not None and self.perp_collector is not None:
                 now = datetime.now(UTC)
                 hour = int(now.timestamp() // 3600)
@@ -445,6 +465,8 @@ class RivalDiscordClient(discord.Client):
             await self.history_recovery.aclose()
         if self.kucoin_history_recovery is not None:
             await self.kucoin_history_recovery.aclose()
+        if self.bitget_history_recovery is not None:
+            await self.bitget_history_recovery.aclose()
         if self._shadow_task is not None:
             self._shadow_task.cancel()
             with suppress(asyncio.CancelledError):

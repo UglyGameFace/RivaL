@@ -1,3 +1,32 @@
+## October 28, 2026: third independent six-month historical recovery (Bitget)
+
+- The automatic math/Gemini prospective research engine, forward-only
+  settlement, stable paired skill evaluation, and detailed per-cycle engine
+  diagnostics are already merged. Continue without altering trading gates.
+- Add Bitget V3 USDT-FUTURES historical recovery using the documented
+  read-only /api/v3/market/history-candles endpoint (max **100** bars).
+  BTC/ETH/SOL must pass the same active linear-perpetual instrument identity
+  checks as the live Bitget feed. Historical volume is already base coin.
+- One <=100-bar historical request per asset per five-minute background
+  recovery cycle. Every independent venue has its own persisted cursor.
+  Cache validated instrument metadata for 1 hour, NOT candle data; keep
+  source paging and the live market loop independent.
+- Guard UTC 5m time-grid alignment, closed bars, response identity/length,
+  OHLC and volume, and documented potential extra rounded earlier bar.
+  A 401/403/429/451 pauses only Bitget recovery for six hours; invalid
+  responses pause 20 minutes without moving the cursor.
+- First_observed_at is the actual import time. Historical records are not
+  backdated as live predictions or qualified performance examples.
+  Preserve immutable PostgreSQL uniqueness and reject conflicting history.
+- Show compact Gate+KuCoin+Bitget recovery progress on the same private
+  mobile history screen without violating its three-field limit.
+- Add SQLite/API-response tests for correct samples, restart recovery,
+  metadata caching, rate blocks, invalid bars and Discord status.
+  Full Ruff/pytest/PostgreSQL 16 CI before merge.
+- Actual Discloud verification of Bitget historical API and imported
+  volume is still required after deployment. Six-month history remains a
+  measured target, not a completed assertion.
+
 ## October 28, 2026: per-cycle mathematical forecast issuance diagnostics
 
 - Existing automatic five-minute collector, forward issue/settle cycle,

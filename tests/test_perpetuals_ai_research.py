@@ -138,7 +138,8 @@ async def test_database_cached_gemini_survives_restart_and_no_extra_requests(tmp
 async def test_persisted_quota_rejects_requests_after_limit_and_honors_cooldown(tmp_path):
     store = SQLiteHotStore(tmp_path / "rival.sqlite")
     market = PerpetualMarketStore(store)
-    now = datetime.now(UTC)
+    # Daily budget resets at midnight UTC; this test exercises SAME-DAY caps.
+    now = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
     try:
         assert market.reserve_ai_request(
             model="gemini-test", now=now, daily_max=2, cooldown_seconds=900,

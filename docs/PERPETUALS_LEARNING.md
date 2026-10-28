@@ -774,3 +774,36 @@ None of these authorizes automated trades. The model changes only using
 known, subsequently verified outcomes; model performance is not guaranteed
 to improve every five minutes. Offline six-month backfill remains
 separate from genuinely issued live forecasts.
+
+
+## Bitget as third bounded six-month historical recovery feed
+
+Bitget V3 officially documents a no-key USDT futures
+`GET /api/v3/market/history-candles` endpoint with a maximum of **100**
+records per request and older-than-90-day availability. The history
+worker uses a 100-bar UTC-aligned window per BTC/ETH/SOL every five-minute
+cycle, isolates a `venue='bitget'` progress cursor in the existing
+PostgreSQL `perp_history_recovery` table, and caches only approved
+instrument metadata for one hour.
+
+Reference: https://www.bitget.com/docs/catalog/market/market-data
+
+The historical response has genuine base-coin volume. RivaL validates
+active USDT perpetual contract identity, opening times, five-minute
+alignment, closed windows, OHLC/volume integrity, and page boundaries.
+Bitget documents that a rounded end-time can yield an extra old
+candle; the worker sends a strict millisecond-before-boundary end time
+and tolerates at most one earlier interval, never a future bar.
+A denied/rate-limited host pauses that venue's backfill without affecting
+the other historical workers or live exchange feeds.
+
+Every recovered candle gets its **actual retrieval time** for
+`first_observed_at`. It can inform separately labeled offline research
+and six-month continuity audits, but cannot masquerade as a
+historical live prediction. The private Math & History > Backfill progress
+page consolidates Gate, KuCoin and Bitget in a compact field.
+
+This is **code integration**, not proof that the Discloud deployment
+can read six months or that complete coverage and profitable results
+exist. Check real cursor movement, inserted counts, independent six-month
+gap audits and exchange restrictions after deployment.

@@ -271,6 +271,23 @@ class ResearchDashboard(discord.ui.View):
                 recovery = dict(row)
         return audits, recovery
 
+    def _kucoin_history_progress(self) -> dict | None:
+        """Read KuCoin-specific recovery progress without fetching exchange data."""
+        if self.market is None:
+            return None
+        with self.market.store.connect() as conn:
+            try:
+                row = conn.execute(
+                    """SELECT status,inserted_bars,next_opened_at,empty_windows,
+                              attempted_at
+                       FROM perp_history_recovery
+                       WHERE venue='kucoin' AND asset=?""",
+                    (self.asset,),
+                ).fetchone()
+            except Exception:  # noqa: BLE001 - older DB may not have schema
+                return None
+        return dict(row) if row is not None else None
+
     def _live_feed_status(
         self,
     ) -> tuple[int, int, datetime | None, datetime | None]:
@@ -437,6 +454,22 @@ class ResearchDashboard(discord.ui.View):
                                     f"Cursor: {str(recovery['next_opened_at'])[:16]} UTC. "
                                     "No old candle is counted as a live prediction."
                                 ), inline=False,
+                            )
+                        kucoin = await asyncio.to_thread(
+                            self._kucoin_history_progress,
+                        )
+                        if kucoin is not None:
+                            embed.add_field(
+                                name="KuCoin six-month recovery",
+                                value=(
+                                    f"**{kucoin['status']}** · "
+                                    f"**{int(kucoin['inserted_bars']):,}** old "
+                                    f"candles imported for {self.asset}. "
+                                    f"Cursor: {str(kucoin['next_opened_at'])[:16]} UTC. "
+                                    f"Missing intervals: **{int(kucoin['empty_windows'])}** "
+                                    "empty request windows. "
+                                    "These are NOT live forward tests."
+                                )[:1024], inline=False,
                             )
                     except Exception:  # noqa: BLE001
                         _LOG.exception("History audit status read unavailable")

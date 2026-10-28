@@ -672,3 +672,40 @@ the required additional consecutive candles and genuine causal
 5m/15m labels/evaluations. Historical download/backfills do not
 impersonate live predictions. The dropdown is private and refreshes
 from PostgreSQL without spending exchange or Gemini API requests.
+
+## Second independently paginated six-month history source: KuCoin Futures
+
+RivaL additionally recovers old KuCoin USDTM perpetual **five-minute**
+candles via the public UTA V2
+`GET https://api.kucoin.com/api/ua/v2/market/kline` endpoint. Official
+KuCoin documentation states futures data for intervals under 8 hours is
+available after January 1, 2025, and the maximum response is **200**
+records. Each BTC/ETH/SOL window is at most 200 aligned five-minute
+bars, no more than one window per coin per five-minute recovery cycle.
+`tradeType=FUTURES`, `klineType=TRADE`, `interval=5min`, public
+contract metadata, USDT linear settlement and XBTUSDTM for BTC must match.
+Contract volume is converted only using a validated instrument multiplier.
+
+KuCoin uses its own immutable, restart-safe historical cursor
+(`venue=kucoin`) in the same PostgreSQL `perp_history_recovery` table.
+Gate keeps its separate `venue=gate` cursor. Both remain independent of
+the main live collection and prediction loops. Static contract metadata
+is refreshed at most once hourly inside the worker; five-minute candles
+themselves are never declared fresh by that cache. A changed multiplier,
+out-of-window candle, invalid symbol, regional access refusal or malformed
+data fails closed without manufacturing missing history.
+
+The Math & History Discord panel shows both recovered source counts
+separately. All older candles retain the actual **first-observed time of
+retrieval** so they can be used for separately labeled historical research
+but cannot be backdated into real-time model accuracy, win rate, or
+a profitable recommendation. The six-month continuity scanner remains
+a separate authoritative gap check.
+
+Official source:
+https://www.kucoin.com/docs-new/v2/rest/ua/get-klines
+
+This code must still be deployed to Discloud and verified against the
+actual KuCoin market/contract API. Passing mocked CI does not prove
+six months have already been recovered or that the mathematical model
+is accurate enough to place real-money bets.

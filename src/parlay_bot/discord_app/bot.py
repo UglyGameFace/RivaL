@@ -26,6 +26,7 @@ from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import GeminiResearch
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
+from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.storage.catalog import MarketCatalogStore
@@ -133,6 +134,13 @@ class RivalDiscordClient(discord.Client):
         )
         self.history_recovery: GateHistoryRecovery | None = (
             GateHistoryRecovery(
+                self.perp_collector.market, assets=self.perp_collector.assets,
+            )
+            if self.perp_collector is not None
+            and settings.rival_history_recovery_enabled else None
+        )
+        self.kucoin_history_recovery: KucoinHistoryRecovery | None = (
+            KucoinHistoryRecovery(
                 self.perp_collector.market, assets=self.perp_collector.assets,
             )
             if self.perp_collector is not None
@@ -278,7 +286,9 @@ class RivalDiscordClient(discord.Client):
             )
 
         if (
-            (self.history_auditor is not None or self.history_recovery is not None)
+            (self.history_auditor is not None
+             or self.history_recovery is not None
+             or self.kucoin_history_recovery is not None)
             and self._history_task is None
         ):
             self._history_task = asyncio.create_task(
@@ -349,6 +359,18 @@ class RivalDiscordClient(discord.Client):
                     raise
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL historical recovery failed safely")
+            if self.kucoin_history_recovery is not None:
+                try:
+                    added = await self.kucoin_history_recovery.run_once()
+                    if added:
+                        _LOG.info(
+                            "RivaL verified historical KuCoin recovery inserted=%d",
+                            added,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL KuCoin history recovery failed safely")
             if self.history_auditor is not None and self.perp_collector is not None:
                 now = datetime.now(UTC)
                 hour = int(now.timestamp() // 3600)
@@ -421,6 +443,8 @@ class RivalDiscordClient(discord.Client):
             self._history_task = None
         if self.history_recovery is not None:
             await self.history_recovery.aclose()
+        if self.kucoin_history_recovery is not None:
+            await self.kucoin_history_recovery.aclose()
         if self._shadow_task is not None:
             self._shadow_task.cancel()
             with suppress(asyncio.CancelledError):

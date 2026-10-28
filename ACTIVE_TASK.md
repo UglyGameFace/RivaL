@@ -1,3 +1,29 @@
+## October 28, 2026: independent KuCoin six-month historical recovery
+
+- The current Gemini research implementation already requests **5-minute**
+  forecasts and scores the matching future five-minute candles. No 15-minute
+  semantic change is appropriate; an earlier exploratory fix was abandoned
+  and never merged.
+- Extend the existing read-only 6-month history worker to a second source,
+  KuCoin Futures UTA V2. Official docs provide 5m futures candles after
+  2025-01-01 and permit up to **200** rows per time-bounded request.
+- Require actual active USDT linear contract metadata, exact XBTUSDTM BTC
+  identity, base-volume multiplier and strict UTC/closed/OHLCV validation.
+- Use a durable `perp_history_recovery` cursor keyed by venue=kucoin,
+  separate from Gate. Process one <=200-bar page/coin/5min cycle, cache
+  static instrument metadata for one hour, and fail closed with 6-hour
+  401/403/429/451 pause. Do not bypass region restrictions.
+- Preserve actual first_observed_at at the recovery date; no historical
+  candle becomes a past live forecast or validated prediction result.
+  Gap-audit worker remains authoritative for completeness.
+- Show both Gate and KuCoin historical recovery status, insertion counts
+  and cursors in the private Math & History screen.
+- Keep 10 live data adapters, 5-minute auto math/Gemini shadow predictions,
+  UTC source health, real forward model analytics and Gemini quotas unchanged.
+- Tests include real SQLite storage, continuation across restarts, API
+  caching, bounded pages, geo-block handling, invalid response and menu.
+  Require full PostgreSQL CI and post-merge validation.
+
 ## October 28, 2026: tonight's actual shadow betting readiness and venue blocker
 
 - No more false implication that "9/10 exchange connections" means an

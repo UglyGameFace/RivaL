@@ -101,7 +101,7 @@ class PerpetualMarketStore:
             if (
                 not all(math.isfinite(x) and x > 0 for x in prices)
                 or not math.isfinite(item.volume_base) or item.volume_base < 0
-                or not isinstance(item.trades, int) or item.trades < 0
+                or not isinstance(item.trades, int) or item.trades < -1
                 or item.low_price > min(item.open_price, item.close_price)
                 or item.high_price < max(item.open_price, item.close_price)
             ):

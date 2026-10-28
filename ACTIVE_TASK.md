@@ -19,6 +19,24 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 **Active: integrate automatic source collection into the Discord runtime.** PRs #9–12 supplied two independent bounded data adapters, immutable PostgreSQL market storage and a shadow evaluator. This PR now schedules immediate and five-minute collection in the existing Discloud bot process, with persistent feed health and phone-accessible /rival-data status. Live Discloud deployment/API reachability and actual writes remain UNVERIFIED until redeployment. Eight other adapters and the full production prediction/retraining bot remain unfinished.
 
+## October 28, 2026: additional feed integration and Discord status fix
+
+- Add two newly documented candidates to the collector: Bitget V3 USDT-FUTURES
+  and Gate V4 direct USDT futures (BTC/ETH/SOL).
+- Bitget API provides base-coin volume. Gate reports contract-size volume;
+  fetch its public contract metadata and convert to base units using
+  `quanto_multiplier` only for direct, active contracts.
+- Unknown source trade counts use an explicitly documented -1 sentinel, NEVER
+  zero, and no forecast model can interpret it as a measured count.
+- Keep original venue/quote identifiers; do not combine prices naively or
+  mislabel historical bars as live observations.
+- Actual feed availability from Discloud remains UNVERIFIED; four adapters
+  merged/CI does not imply four successful production feeds. Request status
+  and failure diagnostics from /rival-data after deployment.
+- Fix literal escaped newlines in /rival-data and show dynamically observed
+  active sources against the owner's ten-source target.
+- This is a code-integration step within active issue #6, not model completion.
+
 ## October 28, 2026: automatic collection activation
 
 - Owner identified that no existing code ever scheduled perpetual collection;

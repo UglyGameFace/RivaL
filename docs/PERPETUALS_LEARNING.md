@@ -248,3 +248,34 @@ Do not bypass HTTP 401/403/451 regional denial. The existing collector
 records the failure and pauses that venue. No exchange credentials are
 needed, and 8 coded feeds do not mean 8 healthy feeds. Model retraining
 and validated production predictions remain separate from collection.
+
+## Final public-data candidate integrations: Lighter and Phemex
+
+The last two sources bring RivaL to **ten coded candidates**, NOT ten
+live-verified venues. The bot only counts fresh successful sources, and
+region-blocked/broken venues are excluded, never silently substituted.
+
+Lighter exposes public `GET /api/v1/orderBooks` for perpetual identity,
+then `GET /api/v1/candles` (bounded market_id/resolution/time window).
+Its request bounds are Unix seconds but candle `t` uses milliseconds;
+lowercase `v` is base-volume. Market identifiers come from the active
+perpetual listing, not a hardcoded assumption about BTC/ETH/SOL market IDs.
+This adapter calls only public REST and does not attempt to access a
+geographically restricted websocket stream.
+Documentation: https://github.com/elliottech/lighter-python/blob/main/docs/CandlestickApi.md .
+
+Phemex V2 USDT perpetuals are selected from the public
+`GET /public/products` `perpProductsV2` list with Listed status,
+then collected using
+`GET /exchange/public/md/v2/kline/last`. Kline array positions
+represent seconds timestamp, seconds interval, prior close, actual OHLC,
+**base-asset** volume, quote turnover. No inverse contracts or spot.
+Documentation:
+https://github.com/phemex/phemex-api-docs/blob/master/Public-Hedged-Perpetual-API.md .
+
+Deployed data still needs successful automatic collection checks for
+OKX, KuCoin, Deribit, Binance, Lighter and Phemex. A successful CI run
+validates the tested parser contracts, not live access from Discloud.
+When data is flowing, the next development priority is point-in-time
+features, a calibrated multi-source forecast, delayed-outcome settlement
+and controlled automated retraining, not simply more collection widgets.

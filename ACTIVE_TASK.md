@@ -19,6 +19,24 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 **Active: live four-venue ingestion evidenced; six source integrations and production prediction engine remain.** PRs #9–12 supplied two data adapters, immutable PostgreSQL market storage and shadow evaluation. PR #13 started automatic five-minute collection, PR #14 added Bitget/Gate, and PR #15 introduced a private interactive data dashboard. On October 28 at 8:00 AM user-local time, the owner's deployed Discord screenshot showed BTC Markets with four venues (Hyperliquid, dYdX, Bitget Futures, Gate Futures) all marked Collecting, each displaying a recently saved BTC close about five minutes old. This is evidence of four live data pipelines for BTC, not proof of ETH/SOL health, long-term uptime, prediction accuracy or completion of the requested ten-source model. Six additional venue integrations and automated, verified forecasting/retraining remain unfinished.
 
+## October 28, 2026: completion of ten coded candidate adapters
+
+- Lighter public orderBooks and bounded candles (market_id derived from active
+  perpetual symbol metadata). Distinguish spot from perp, request seconds
+  versus returned millisecond candle timestamps, and base-currency volume.
+  Label venue-specific USD quote, no fake USDC settlement assertion.
+- Phemex public products perpProductsV2 and USDⓈ-M hedged-perpetual candle
+  rows. Validate listed PerpetualV2 USDT instruments and unscaled base volume;
+  reject inverse, spot, delisted and malformed rows.
+- Registered both sources with the existing 5-minute collection worker
+  and venue-aware /rival-data menu.
+- **10 coded candidates only, not 10 proven production sources.** The last
+  user screenshot verified four live BTC feeds; the six newer integrations
+  must be deployed, observed, and repaired individually if their real APIs
+  respond differently or region-block the host.
+- The production forecast engine and outcome-based retraining are not done;
+  issue #6 remains active and must not close on source count alone.
+
 ## October 28, 2026: Deribit and Binance perpetuals adapters under CI
 
 - Add public linear USDC perpetual data from Deribit: validate genuine

@@ -25,6 +25,8 @@ VENUE_NAMES = {
     "kucoin": "KuCoin Futures",
     "deribit": "Deribit Perpetuals",
     "binance": "Binance Futures",
+    "lighter": "Lighter Perpetuals",
+    "phemex": "Phemex Futures",
 }
 MARKET_SYMBOLS = {
     "hyperliquid": ("{asset}", "USDC"),
@@ -35,6 +37,8 @@ MARKET_SYMBOLS = {
     "kucoin": ("{asset}USDTM", "USDT"),
     "deribit": ("{asset}_USDC-PERPETUAL", "USDC"),
     "binance": ("{asset}USDT", "USDT"),
+    "lighter": ("{asset}", "USD"),
+    "phemex": ("{asset}USDT", "USDT"),
 }
 
 

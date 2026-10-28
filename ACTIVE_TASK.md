@@ -1,3 +1,24 @@
+## October 28, 2026: live mathematical forecast readiness diagnostics
+
+- Autonomous math forecasts and delayed settlement are already scheduled
+  after each bounded five-minute collection. This is shadow research,
+  **not** automatic bets, guaranteed accuracy or model promotion.
+- Show a fresh, read-only **Mathematical forecast readiness** panel on the
+  Accuracy tab, distinct from six-month historical backfill counts.
+- For each available exchange stream require a recent successful poll,
+  recent closed candle, a genuinely time-observed contiguous live streak,
+  causal labeled samples, and at least 20 out-of-sample evaluations.
+- Report eligible streams, max live streak versus a 65-bar gate, causal
+  samples, evaluated examples, and stale/blocked stream counts. Do not
+  interpret 9/10 API connectivity as 9/10 trained predictors.
+- Historical imported candles first seen in one later batch cannot create
+  past predictions or extend the genuine live observation streak.
+- Recalculate on each Accuracy navigation/refresh from PostgreSQL; no
+  provider calls, Gemini tokens, cached live statuses, trading or writes.
+- Add SQLite regression tests for short live series, late backfills,
+  causal readiness, and the actual Discord Accuracy view. CI includes
+  PostgreSQL integration before merging.
+
 ## October 28, 2026: real six-month continuity audit and bounded Gate backfill
 
 - First genuine **five-minute continuity audit** scans the actual six-calendar-month

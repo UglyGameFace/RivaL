@@ -1,3 +1,27 @@
+## October 28, 2026: permanent compact Discord Research UI
+
+- Owner screenshot at 6:03 PM shows an unacceptable nearly full-phone
+  scrolling research list of 15+ sections. This is a real UX regression,
+  not a data-collection problem. Never show every detailed analytic in
+  one Discord embed again.
+- Research UI hard caps ALL Math, Accuracy and Gemini render paths at
+  three fields per screen, including one concise current source health
+  field, with a clearly labeled details dropdown. Overview is the default.
+- Math details: Market pulse, History & gaps, Backfill progress and
+  Learning. Accuracy details: Engine, Readiness, Exchange blocker,
+  5-minute and 15-minute results, Gemini outcomes and Scoring method.
+  Gemini details: Overview, Request limits and AI assessment.
+- Tab controls remain bright, active and clickable even if selected.
+  Keep existing BTC/ETH/SOL choice, refresh and on-demand AI buttons.
+  The Accuracy exchange selector only appears on the Exchange blocker
+  page to avoid overfilling the mobile interface.
+- Every navigation/edit still reads authoritative PostgreSQL live source
+  health, with the historical count's existing two-minute cache. No
+  invented forecasts, improved-accuracy claims or market-feed interruptions.
+- Update regression tests to assert real drilldown controls, no hidden
+  loss of old diagnostics and hard maximum field count in all subpages.
+  CI must pass before merging.
+
 ## October 28, 2026: prove automatic learning is alive, or reveal failures
 
 - The bot already runs bounded collection and autonomous math/Gemini shadow

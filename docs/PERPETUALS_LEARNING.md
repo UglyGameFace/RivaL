@@ -726,3 +726,27 @@ predictions. A failed stage or stale heartbeat is clearly labeled; neither
 can be disguised by green exchange data or a six-month row-count percentage.
 This does not change prediction thresholds, start betting, change Gemini
 budgets, or claim any model achieved an edge.
+
+## Permanent compact research menu (no long scrolling lists)
+
+`/rival-research` no longer returns a full inventory of all analytics
+as one Discord embed. Each screen is strictly limited to **three
+fields**, including an always refreshed, concise PostgreSQL live-feed
+health field. The selected primary tab is clickable; the other tabs
+remain visually actionable.
+
+A new **Choose what to see** selector drives individual detail pages:
+Math (Overview, Market pulse, History & gaps, Backfill progress,
+Learning), Accuracy (Overview, Engine health, Forecast readiness,
+Exchange blocker, 5-minute results, 15-minute results, Gemini results,
+Scoring method), and AI (Overview, Request limits, AI assessment).
+The exchange picker only appears when inspecting a specific venue.
+Existing underlying analytics and failures are still available on
+their matching detail page. No more grocery lists.
+
+History's row-count inventory remains briefly cached because a
+six-month aggregate is expensive; source health and research analytics
+remain authoritative and read from PostgreSQL on each menu edit or
+explicit live refresh. The menu does not directly issue exchange HTTP
+requests. This is a user-interface change only, not an approval of
+unvalidated real-money betting signals.

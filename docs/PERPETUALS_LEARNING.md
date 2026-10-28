@@ -80,3 +80,54 @@ PostgreSQL, run the **read-only** evaluation (no model publication):
 Or use `--provider hyperliquid`. If only one-shot backfills exist, the
 correct output is zero causal examples, not made-up historical live accuracy.
 There is no live trading, periodic training or automatic promotion in this slice.
+
+## October 28: Automatic data collection ON after production deployment
+
+RivaL's Discord process starts its read-only perpetual market-data worker
+**automatically** whenever the existing runtime is using PostgreSQL.
+No manual shell command, Kraken account, API key, per-user trigger, external
+cron, or Discord interaction is needed to collect.
+
+The first supported sources are Hyperliquid (USDC perp contracts) and dYdX
+v4 (USD perp contracts). BTC, ETH and SOL run immediately after the Discord
+Gateway becomes ready, followed by one bounded cycle every 300 seconds.
+The default fetch window is 48 completed five-minute candles per asset.
+Replayed history is idempotent and cannot silently overwrite changed candles.
+First-observed timestamps are preserved for time-safe future evaluation.
+
+If a source is blocked, rate-limited, temporarily unavailable or sends invalid
+data, the other source/assets continue. The collector remembers a cooldown
+for explicit 403/451/401 regional/access blocks (six hours) and HTTP 429
+(twenty minutes). It does not bypass restrictions or retry rapidly.
+Failures and successful inserts are stored in the separate `perp_feed_health`
+table and logged without secrets; they never take down Discord.
+
+Use the new private Discord command **`/rival-data`** to see the actual
+last successful collection and number of newly stored candles per source.
+Logs include:
+
+    RivaL perp automatic collector ENABLED venues=hyperliquid,dydx ...
+    RivaL perp automatic collector RUNNING
+    RivaL perp collection OK venue=hyperliquid asset=BTC bars=48 new=48
+
+If you see FAILED status or no new candles, the source is not collecting
+successfully. **A green GitHub Actions run does NOT prove the process is
+deployed or that Discloud can access the exchange.** Check Discloud after
+upload/redeploy. This has no effect on sports-only `/rival` command.
+
+Configuration is optional and defaults to ON on PostgreSQL:
+
+    RIVAL_PERP_COLLECTION_ENABLED=true
+    RIVAL_PERP_COLLECTION_ASSETS=BTC,ETH,SOL
+    RIVAL_PERP_COLLECTION_SECONDS=300
+    RIVAL_PERP_COLLECTION_BARS=48
+
+Set RIVAL_PERP_COLLECTION_ENABLED=false to temporarily stop it.
+SQLite local/test deployments do not start it. A new revision must be
+deployed to Discloud before any data starts flowing, and the older overnight
+hours were NOT previously captured as live observations. Initial historic
+candles are marked as backfill by first_observed timestamp.
+
+This only **collects** data; automated forecasting/model retraining and
+production accuracy validation remain incomplete and cannot be inferred from
+successful candle writes.

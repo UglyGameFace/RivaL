@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from parlay_bot.perpetuals.fusion import utc
@@ -51,6 +52,18 @@ class PerpetualMarketStore:
                 CREATE INDEX IF NOT EXISTS idx_perp_market_candles_close
                     ON perp_market_candles
                        (venue,contract,quote,interval_minutes,closed_at);
+                CREATE TABLE IF NOT EXISTS perp_feed_health (
+                    venue TEXT NOT NULL,
+                    asset TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    last_attempt_at TEXT NOT NULL,
+                    last_success_at TEXT,
+                    last_candle_close TEXT,
+                    last_new_candles INTEGER NOT NULL DEFAULT 0,
+                    total_new_candles INTEGER NOT NULL DEFAULT 0,
+                    failure_count INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (venue, asset)
+                );
                 CREATE TABLE IF NOT EXISTS perp_market_contexts (
                     venue TEXT NOT NULL,
                     contract TEXT NOT NULL,
@@ -179,3 +192,63 @@ class PerpetualMarketStore:
                 (venue, contract, quote, interval_minutes, count),
             ).fetchall()
         return [dict(row) for row in reversed(rows)]
+
+    def record_feed_health(
+        self, *, venue: str, asset: str, status: str,
+        attempted_at: datetime, new_candles: int, total_candles: int,
+        last_candle_close: datetime | None = None,
+    ) -> None:
+        """Persist observable collection attempts without saving errors or secrets."""
+        allowed = {
+            "ok", "blocked", "rate_limited", "http_error", "timeout",
+            "network_error", "invalid_market_data", "storage_error",
+        }
+        if (
+            status not in allowed or not venue.strip() or not asset.strip()
+            or min(new_candles, total_candles) < 0
+            or new_candles > total_candles
+        ):
+            raise ValueError("invalid source health report")
+        timestamp = utc(attempted_at).isoformat()
+        if last_candle_close is not None and utc(last_candle_close) > utc(attempted_at):
+            raise ValueError("future candle cannot be reported as completed")
+        self.initialize()
+        with self.store.connect() as conn:
+            conn.execute(
+                """INSERT INTO perp_feed_health
+                   (venue,asset,status,last_attempt_at,last_success_at,
+                    last_candle_close,last_new_candles,total_new_candles,failure_count)
+                   VALUES (?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT (venue,asset) DO UPDATE SET
+                     status=excluded.status,
+                     last_attempt_at=excluded.last_attempt_at,
+                     last_success_at=CASE WHEN excluded.status='ok'
+                       THEN excluded.last_success_at
+                       ELSE perp_feed_health.last_success_at END,
+                     last_candle_close=CASE WHEN excluded.status='ok'
+                       THEN excluded.last_candle_close
+                       ELSE perp_feed_health.last_candle_close END,
+                     last_new_candles=excluded.last_new_candles,
+                     total_new_candles=perp_feed_health.total_new_candles
+                       +excluded.last_new_candles,
+                     failure_count=CASE WHEN excluded.status='ok'
+                       THEN 0 ELSE perp_feed_health.failure_count+1 END""",
+                (
+                    venue, asset, status, timestamp,
+                    timestamp if status == "ok" else None,
+                    utc(last_candle_close).isoformat() if last_candle_close else None,
+                    new_candles, new_candles, 0 if status == "ok" else 1,
+                ),
+            )
+
+    def feed_health(self) -> list[dict]:
+        """Summarize *actual* persisted ingestion for Android Discord inspection."""
+        self.initialize()
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """SELECT venue,asset,status,last_attempt_at,last_success_at,
+                          last_candle_close,last_new_candles,total_new_candles,
+                          failure_count
+                   FROM perp_feed_health ORDER BY venue,asset"""
+            ).fetchall()
+        return [dict(row) for row in rows]

@@ -107,7 +107,7 @@ async def test_modals_enforce_location_input_bounds(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_discord_client_registers_one_rival_command_without_message_intent(
+async def test_discord_client_registers_rival_and_data_status_without_message_intent(
     tmp_path, caplog
 ) -> None:
     settings = Settings(
@@ -123,7 +123,9 @@ async def test_discord_client_registers_one_rival_command_without_message_intent
         command = client.tree.get_command("rival")
         assert command is not None
         assert command.description == "Open your private RivaL sports odds dashboard."
+        assert client.tree.get_command("rival-data") is not None
         assert client.intents.message_content is False
+        assert client.perp_collector is None
         assert client.archive_runtime is None
     finally:
         await client.zip_resolver.aclose()

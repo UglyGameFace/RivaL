@@ -12,7 +12,6 @@ from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore
 
-
 VENUES = (
     ("hyperliquid", "BTC", "USDC", 1),
     ("dydx", "BTC-USD", "USD", -1),

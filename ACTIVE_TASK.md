@@ -38,6 +38,29 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
   registry, cross-venue probability synthesis, calibration and promotion
   remain explicitly incomplete.
 
+## October 28, 2026: prioritize owner's five-minute perpetual trades
+
+- User trades five-minute perpetuals. Use next-**5m** forecast horizon
+  for Gemini research by default and retain 15m/1h/4h/24h windows as
+  contextual market information, not a 15m forecast by accident.
+- The existing automatic shadow learner already evaluates both 5m and
+  15m outcomes; do not claim it has passed live signal promotion tests.
+- Add a Math-screen market pulse showing the **previous completed 5m**
+  return, up/down source agreement, 15m/1h context and provenance.
+  This is descriptive market data; it is NOT the probability of the
+  next five-minute move. NO SIGNAL when fewer than three fresh venues.
+- Use source-level live success and closed-candle age guards (seven
+  minutes) to avoid stale evidence in a rapid five-minute market.
+- The bot must eventually recommend a target/stop for the user's market
+  and 5m horizon, with optional custom target, fees/funding/spread/
+  slippage, and independently validated target-hit likelihood.
+  **No target or take-profit probability is implemented or verified in
+  this pulse slice. Never invent or sell a market pulse as a wager.**
+- Keep all ten configured providers and nine independently verified
+  feeds intact; Binance HTTP 451 remains paused without circumvention.
+- Add 5m evidence, pulse and Discord rendering tests, then exact-head
+  Ruff/pytest/PostgreSQL CI before merge.
+
 ## October 28, 2026: Gemini advertised model list relevance fix
 
 - User's 1:05 PM Discord screenshot showed "Configured: gemini-3.8-flash"

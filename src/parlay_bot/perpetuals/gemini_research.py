@@ -125,6 +125,15 @@ class GeminiResearch:
                     "Unable to list Gemini models for this API key."
                 ) from exc
 
+    async def request_status(self) -> dict:
+        """Report local, persisted limits without spending a Google request."""
+        return await asyncio.to_thread(
+            self.market.ai_request_status,
+            model=self.model, now=datetime.now(UTC),
+            daily_max=self.daily_max,
+            cooldown_seconds=self.cooldown_seconds,
+        )
+
     async def ask(self, *, asset: str, venues: tuple[str, ...]) -> AiResearch:
         """Only called by an explicit Discord button; zero background LLM calls."""
         if not self._key:
@@ -157,8 +166,9 @@ class GeminiResearch:
             )
             if not permitted:
                 raise ResearchUnavailable(
-                    "Gemini request budget/cooldown reached. "
-                    "Existing market collection continues normally."
+                    f"RivaL temporarily paused {self.model} analysis. "
+                    "See the exact reason and retry time below. "
+                    "Market collection continues."
                 )
             prompt = (
                 "You are an INDEPENDENT research model for perpetual futures. "

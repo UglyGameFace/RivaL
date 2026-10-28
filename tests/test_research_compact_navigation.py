@@ -11,7 +11,9 @@ import discord
 import pytest
 
 from parlay_bot.discord_app.research_dashboard import (
-    ResearchDashboard, _compact_embed, _SECTIONS,
+    _SECTIONS,
+    ResearchDashboard,
+    _compact_embed,
 )
 
 

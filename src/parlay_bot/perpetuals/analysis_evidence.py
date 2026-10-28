@@ -57,15 +57,18 @@ def _summary(candles: list[dict[str, Any]], size: int) -> dict[str, float] | Non
 
 def build_evidence(
     market: PerpetualMarketStore, *, asset: str, venues: tuple[str, ...],
-    now: datetime | None = None, freshness_minutes: int = 15,
+    now: datetime | None = None, freshness_minutes: int = 7,
+    horizon_minutes: int = 5,
 ) -> tuple[dict[str, Any], str]:
-    """Read every healthy independent venue, including 15m/1h/4h/24h.
+    """Read every healthy independent venue, including 5m/15m/1h/4h/24h.
 
     Uses at most 289 candle rows per venue; six-month *coverage* is separately
     audited. Old gaps never become continuous features. A source can be fresh
     and still lack sufficient time-series history, which is reported.
     """
-    if asset not in ("BTC", "ETH", "SOL") or not 5 <= freshness_minutes <= 60:
+    if (asset not in ("BTC", "ETH", "SOL")
+        or horizon_minutes not in (5, 15, 60, 240)
+        or not 5 <= freshness_minutes <= 60):
         raise ValueError("invalid analysis market")
     clock = (now or datetime.now(UTC)).astimezone(UTC)
     statuses = {
@@ -95,7 +98,7 @@ def build_evidence(
             unavailable.append({"venue": venue, "status": "not_enough_history"})
             continue
         close_time = _stamp(rows[-1]["closed_at"])
-        if not timedelta(0) <= clock - close_time <= timedelta(minutes=10):
+        if not timedelta(0) <= clock - close_time <= timedelta(minutes=7):
             unavailable.append({"venue": venue, "status": "no_recent_candle"})
             continue
         prices = [float(row["close_price"]) for row in rows]
@@ -104,7 +107,7 @@ def build_evidence(
             continue
         windows = {
             label: summary
-            for label, bars in (("15m", 3), ("1h", 12), ("4h", 48), ("24h", 288))
+            for label, bars in (("5m", 1), ("15m", 3), ("1h", 12), ("4h", 48), ("24h", 288))
             if (summary := _summary(rows, bars)) is not None
         }
         # Multi-month research uses bounded, indexed point lookups rather than
@@ -152,7 +155,7 @@ def build_evidence(
     # Stable digest: if none of the input candles changes, reuse stored analysis.
     # Disconnected/blocked provider health changes also invalidate old evidence.
     evidence = {
-        "asset": asset, "horizon_minutes": 15,
+        "asset": asset, "horizon_minutes": horizon_minutes,
         "analysis": "unvalidated_research",
         "sources": independent,
         "unavailable_sources": unavailable,

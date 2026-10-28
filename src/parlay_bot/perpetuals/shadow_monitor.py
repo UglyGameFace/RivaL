@@ -69,7 +69,11 @@ class ShadowLearningMonitor:
                 """
             )
 
-    def _eligible_streams(self, *, now: datetime) -> list[tuple[str, str, str]]:
+    def _eligible_streams(
+        self, *, now: datetime, limit: int = MAX_STREAMS,
+    ) -> list[tuple[str, str, str]]:
+        if not 1 <= limit <= 30:
+            raise ValueError("invalid shadow stream discovery limit")
         with self.store.connect() as conn:
             observed = conn.execute(
                 """SELECT venue,contract,quote,MAX(first_observed_at) AS last_seen
@@ -99,7 +103,7 @@ class ShadowLearningMonitor:
                 continue
             valid.append(stream)
         # Round robin across process restarts, weighted by last saved evaluation.
-        return sorted(valid, key=lambda x: (evaluated.get(x) or "", x))[:MAX_STREAMS]
+        return sorted(valid, key=lambda x: (evaluated.get(x) or "", x))[:limit]
 
     def run_once(self, *, now: datetime | None = None) -> int:
         """One bounded offline evaluation, without exchange requests or API keys."""

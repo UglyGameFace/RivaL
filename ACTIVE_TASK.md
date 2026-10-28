@@ -262,6 +262,8 @@ The first two source integrations are Hyperliquid (USDC perpetuals) and dYdX v4 
 
 ## Changes / validation / cleanup / conflicts
 
+- Work in progress: Hyperliquid `candleSnapshot` collector, strict completed-candle normalization, provenance-preserving and immutable PostgreSQL-compatible candle table, point-in-time availability filters, and offline + PostgreSQL regression tests. Unrelated sports runtime not modified. Candidate API behavior is grounded in official docs but **not yet verified reachable from Discloud**.
+
 - Added the first isolated conversion code on `feat/rival-perps-forecast-ledger`: source-provenance-aware probability fusion (`perpetuals/fusion.py`) and an idempotent, transactional forecast/outcome ledger (`perpetuals/ledger.py`) using the existing relational database. Added local SQLite unit tests and PostgreSQL integration coverage plus `docs/PERPETUALS_LEARNING.md`. The runtime entry point is intentionally unchanged.
 - Existing PostgreSQL/Discord runtime on `main` remains unchanged.
 - Backlog unrelated requests; retain one active implementation task, including verification and cleanup.

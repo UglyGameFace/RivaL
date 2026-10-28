@@ -12,7 +12,6 @@ import logging
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
 
 import httpx
 
@@ -141,7 +140,7 @@ class GeminiResearch:
                 raw = response.json()["candidates"][0]["content"]["parts"][0]["text"]
                 result = json.loads(raw)
                 if not isinstance(result, dict):
-                    raise ValueError("non-object Gemini output")
+                    raise TypeError("non-object Gemini output")
                 direction, confidence = result.get("direction"), result.get("confidence")
                 thesis, risk = result.get("thesis"), result.get("risk")
                 if (

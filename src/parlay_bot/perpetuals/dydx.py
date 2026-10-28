@@ -54,7 +54,7 @@ def _timestamp(value: Any) -> datetime:
     if not isinstance(value, str):
         raise MarketDataError("invalid dYdX candle timestamp")
     try:
-        stamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        stamp = datetime.fromisoformat(value)
         return utc(stamp)
     except ValueError as exc:
         raise MarketDataError("invalid dYdX candle timestamp") from exc

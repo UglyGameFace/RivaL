@@ -236,7 +236,17 @@ class ResearchDashboard(discord.ui.View):
                 stamp = datetime.fromisoformat(str(row["last_success_at"]))
                 if stamp.utcoffset() is None:
                     continue
-                if timedelta(0) <= now - stamp <= timedelta(minutes=10):
+                if not timedelta(0) <= now - stamp <= timedelta(minutes=10):
+                    continue
+                # A successful HTTP sync is not proof of current candles.
+                # Old rows will become verifiable on the next collector cycle.
+                closed_raw = row.get("last_candle_close")
+                if not closed_raw:
+                    continue
+                closed = datetime.fromisoformat(str(closed_raw))
+                if closed.utcoffset() is None:
+                    continue
+                if timedelta(0) <= now - closed <= timedelta(minutes=10):
                     fresh.append(row)
             except (TypeError, ValueError):
                 continue

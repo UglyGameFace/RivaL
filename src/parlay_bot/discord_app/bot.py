@@ -20,6 +20,7 @@ from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
 from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
+from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
 from parlay_bot.perpetuals.gemini_research import GeminiResearch
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
@@ -125,6 +126,11 @@ class RivalDiscordClient(discord.Client):
         self.shadow_monitor: ShadowLearningMonitor | None = (
             ShadowLearningMonitor(self.store)
             if self.perp_collector is not None and settings.rival_shadow_learning_enabled
+            else None
+        )
+        self.forward_audit: ForwardAccuracyMonitor | None = (
+            ForwardAccuracyMonitor(self.perp_collector.market)
+            if self.shadow_monitor is not None and self.perp_collector is not None
             else None
         )
         self._shadow_task: asyncio.Task[None] | None = None
@@ -288,6 +294,15 @@ class RivalDiscordClient(discord.Client):
                 raise
             except Exception:  # noqa: BLE001 - shadow research cannot kill Discord
                 _LOG.exception("RivaL automatic shadow evaluation failed safely")
+            # Prospective shadow predictions must be written BEFORE their
+            # corresponding target candles exist. Fail independently.
+            if self.forward_audit is not None:
+                try:
+                    await asyncio.to_thread(self.forward_audit.run_once)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL prospective evaluation failed safely")
             await asyncio.sleep(self.settings.rival_shadow_eval_seconds)
 
     async def _archive_loop(self) -> None:

@@ -89,7 +89,7 @@ async def test_private_accuracy_calibration_page_reads_real_forward_rows(tmp_pat
     try:
         with store.connect() as conn:
             current = datetime.now(UTC)
-            start = current - timedelta(days=6)
+            start = current - timedelta(days=6, hours=2)
             for i, row in enumerate(examples()):
                 base_target = datetime.fromisoformat(row["target_opened_at"])
                 target = start + (

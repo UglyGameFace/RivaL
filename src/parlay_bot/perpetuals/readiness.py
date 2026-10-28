@@ -175,14 +175,14 @@ def explain_venue_readiness(readiness: dict, venue: str) -> str:
     streak = record["recent_live_streak"]
     remaining = max(0, minimum - streak)
     return (
-        f"**{venue}** · **{status.replace('_', ' ').title()}**\\n"
-        f"{messages.get(status, 'Unavailable; inspect source health.')}\\n"
+        f"**{venue}** · **{status.replace('_', ' ').title()}**\n"
+        f"{messages.get(status, 'Unavailable; inspect source health.')}\n"
         f"Stored recent bars: **{record['observations']}** · "
         f"Live observed streak: **{streak}/{minimum}**"
         + (f" (**{remaining}** more consecutive bars required)" if remaining else "")
-        + f"\\nCausal labels: **5m {record['causal_5m']}** / "
+        + f"\nCausal labels: **5m {record['causal_5m']}** / "
         f"**15m {record['causal_15m']}**. "
         f"Forward-evaluable: **5m {record['evaluated_5m']}** / "
         f"**15m {record['evaluated_15m']}**."
-        + "\\nBackfilled candles never count as past live predictions."
-    ).replace("\\\\n", "\\n")
+        + "\nBackfilled candles never count as past live predictions."
+    ).replace("\\\n", "\n")

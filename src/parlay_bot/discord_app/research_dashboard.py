@@ -15,6 +15,7 @@ from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.readiness import forecast_readiness
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
 
 _LOG = logging.getLogger(__name__)
@@ -567,6 +568,50 @@ class ResearchDashboard(discord.ui.View):
                         inline=False,
                     )
                 else:
+                    # Always recompute genuine live observation readiness from
+                    # PostgreSQL, never reuse six-month historical cache.
+                    try:
+                        readiness = await asyncio.to_thread(
+                            forecast_readiness, self.market,
+                            asset=self.asset, venues=self.venues,
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("RivaL forecast readiness audit failed")
+                        embed.add_field(
+                            name="Mathematical forecast readiness · LIVE",
+                            value="Current readiness audit unavailable; "
+                                  "no forecast was inferred.",
+                            inline=False,
+                        )
+                    else:
+                        ready = readiness["eligible"]
+                        configured = readiness["configured"]
+                        streak = readiness["best_live_streak"]
+                        blocker = (
+                            "Eligible for shadow evaluation; verify actual "
+                            "issued/settled forecasts below."
+                            if ready else
+                            "Collecting is not training: RivaL requires "
+                            "continuous live-observed candles and outcomes "
+                            "already known before model evaluation."
+                        )
+                        embed.add_field(
+                            name="Mathematical forecast readiness · LIVE",
+                            value=(
+                                f"**{ready}/{configured}** exchange streams "
+                                "eligible for 5m and 15m shadow evaluation.\n"
+                                f"Longest genuine live streak: "
+                                f"**{streak}/{readiness['min_live_bars']}** bars.\n"
+                                f"Best 5m causal samples: "
+                                f"**{readiness['best_causal_5m']}**, "
+                                f"evaluated **{readiness['best_evaluated_5m']}** "
+                                f"(minimum {readiness['min_evaluations']}).\n"
+                                f"Stale/blocked: **{readiness['stale_or_blocked']}** "
+                                f"· awaiting live history: "
+                                f"**{readiness['waiting_history']}**.\n"
+                                f"{blocker} No betting permission implied."
+                            )[:1024], inline=False,
+                        )
                     for horizon in (5, 15):
                         stats = report["last_7d"][horizon]
                         earlier = report["prior_7d"][horizon]

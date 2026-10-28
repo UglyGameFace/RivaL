@@ -180,23 +180,16 @@ class ForwardAccuracyMonitor:
         eligible = ShadowLearningMonitor(self.store)._eligible_streams(
             now=stamp, limit=30,
         )
-        with self.store.connect() as conn:
-            history = conn.execute(
-                """SELECT venue,contract,quote,MAX(issued_at) AS last_issued
-                   FROM perp_forward_audit
-                   GROUP BY venue,contract,quote"""
-            ).fetchall()
-        last_issued = {
-            (str(row["venue"]), str(row["contract"]), str(row["quote"])):
-            str(row["last_issued"])
-            for row in history
-        }
-        # Round-robin after restart so each of the 30 BTC/ETH/SOL feeds can
-        # accumulate *independent temporal predictions* every ~15 minutes.
-        selection = sorted(
-            eligible,
-            key=lambda item: (last_issued.get(item, ""), item),
-        )[:MAX_STREAMS_PER_CYCLE]
+        # Rotate across source groups on UTC five-minute boundaries. This
+        # guarantees that a still-untrained market cannot continually block
+        # the other markets, even when the bot restarts.
+        groups = max(
+            1, (len(eligible) + MAX_STREAMS_PER_CYCLE - 1)
+            // MAX_STREAMS_PER_CYCLE,
+        )
+        slot = int(stamp.timestamp() // 300) % groups
+        start = slot * MAX_STREAMS_PER_CYCLE
+        selection = eligible[start:start + MAX_STREAMS_PER_CYCLE]
         for venue, contract, quote in selection:
             try:
                 rows = self.market.recent_candles(

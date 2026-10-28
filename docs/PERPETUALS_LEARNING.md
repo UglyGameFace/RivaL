@@ -388,3 +388,21 @@ enabled for the specific project. RivaL needs a successful actual
 After merging, update the existing Discloud app and reopen the private
 `/rival-research` menu. The research quota and immutable candle
 history remain in the existing PostgreSQL database.
+
+## Gemini research pause diagnostics
+
+The on-demand Gemini research panel displays the **configured model**, the
+number of requests already reserved against RivaL's own per-UTC-day budget,
+and a precise explanation of any persisted restriction. The panel
+distinguishes three independent reasons: a previous Google provider
+401/403/404/429 pause, a per-model 15-minute spacing requirement, and
+the per-day safety cap. It computes the next permitted retry by taking
+the **latest** expiry across all active local restrictions, and Discord
+renders that time in the viewer's own timezone.
+
+Reading this status is completely local to RivaL's PostgreSQL database:
+it performs no Gemini calls, does not reset or spend quota, and continues
+working across bot restarts. Displayed limits are **RivaL protection limits**,
+not Google's actual account/project limits. A shown retry time is the
+earliest RivaL will attempt again, not a guarantee that Google will accept
+the next request. Source market collection is never paused by Gemini.

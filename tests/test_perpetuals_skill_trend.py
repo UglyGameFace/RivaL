@@ -4,7 +4,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.analytics import analytics_snapshot
-from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor, MODEL
+from parlay_bot.perpetuals.forward_audit import MODEL, ForwardAccuracyMonitor
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore
 

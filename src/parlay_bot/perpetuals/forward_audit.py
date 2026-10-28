@@ -143,7 +143,7 @@ class ForwardAccuracyMonitor:
                     continue  # A backfill known at issuance is not a forward outcome.
                 value = float(row["close_price"])
                 previous = float(pred["reference_close"])
-                if not math.isfinite(value) or value <= 0:
+                if not math.isfinite(value) or value <= 0 or value == previous:
                     continue  # Flat moves remain unresolved, never forced to up/down.
                 label = int(value > previous)
                 p = float(pred["probability_up"])

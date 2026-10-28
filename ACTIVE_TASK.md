@@ -1,3 +1,48 @@
+## October 28, 2026: one-PR autonomous dual-track accuracy & governance
+
+**Owner request: all five milestones together in ONE PR.**
+
+- Automatic math predictions: retain the existing point-in-time five-minute
+  and fifteen-minute `ForwardAccuracyMonitor`, wired after each five-minute
+  market-data collection cycle. Predictions and versioned weights derive only
+  from labels already observed; prior historical backfills cannot qualify as
+  genuine forward outcomes. No betting orders.
+- Immutable feedback: math settles matching exchange future candles once.
+  New independent Gemini research uses a four-hour UTC slot per coin, reuses
+  RivaL's budgeted `GeminiResearch.ask` across ALL healthy sources, and
+  persists an issue-before-outcome `perp_auto_ai_forecasts` ledger. Settlement
+  requires a future, observed, same-venue/same-contract price, with ties neutral.
+  Uncertain AI calls count as abstentions, not wins. Slot keys, evidence hashes,
+  and all settlement columns are PostgreSQL restart-safe.
+- Continuous mathematical learning: existing `walk_forward` online logistic
+  weights are recomputed every eligible collection cycle using only matured
+  labels. A new **shadow-only model governance gate** reviews the last seven
+  days of prospective Brier versus base-rate, using unique five-minute UTC
+  market windows (NOT summed correlated exchange bets). Requires >=100
+  distinct target windows across >=7 UTC days and >=0.005 Brier improvement
+  before being marked `qualified_shadow`. Failure or deteriorating evidence
+  removes that status on subsequent reviews; nothing silently goes live.
+- Gemini auto analysis: if an existing Discloud API key is available and
+  `RIVAL_GEMINI_AUTO_ENABLED` (default true), run at most one per asset per
+  4-hour UTC slot, max 18 candidate calls per day for BTC/ETH/SOL, leaving
+  room under the existing RivaL 24/day cap for manual use. Existing rate-limit
+  breaker/caching still rules; no Gemini generation on every five-minute
+  candle. No AI-based trades or uncalibrated probabilities.
+- Live research Accuracy UI: show 5m/15m distinct forward-market windows,
+  Brier, calibration gap, meaningful 7-day comparison only with >=100
+  windows in BOTH periods, shadow qualification/withdrawal, and hypothetical
+  cost-adjusted bps (20 bps round trip, NOT an executable PnL estimate).
+  Show separately how many Gemini forecasts were issued/settled, abstentions,
+  and hit rate for directional decisions. Never call Google to load analytics.
+- Each subsystem fails separately; missing Gemini keys or HTTP 404 must
+  not break collection or mathematical assessment. Existing ten exchange
+  integrations and regional restrictions remain unchanged.
+- Scope limitations: six months of historical observations are STILL a
+  backfill/gap-audit goal; model qualification is for SHADOW research only,
+  not a trading permission or proof of profitable edge. Trading execution,
+  live post-cost fills, funding/slippage accounting, cross-venue transaction
+  weighting, and automatic real-money bets are NOT claimed.
+
 ## October 28, 2026: forward-only model accuracy ledger and live research status
 
 - Owner's 2:28 PM deployed Discord screenshot showed 8/10 recently collecting

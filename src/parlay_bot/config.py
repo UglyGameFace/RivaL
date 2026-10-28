@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     rival_gemini_model: str = Field(default="gemini-3.8-flash")
     rival_gemini_daily_max: int = Field(default=24, ge=1, le=96)
     rival_gemini_cooldown_seconds: int = Field(default=900, ge=60, le=86400)
+    rival_gemini_auto_enabled: bool = Field(default=True)
 
     rival_drive_root_folder_id: str | None = Field(default=None)
     rival_drive_history_folder_id: str | None = Field(default=None)

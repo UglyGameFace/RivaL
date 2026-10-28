@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import discord
 
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
+from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
@@ -541,6 +542,78 @@ class ResearchDashboard(discord.ui.View):
                         embed.add_field(
                             name=f"Forward {horizon}-minute evaluation",
                             value=value[:1024], inline=False,
+                        )
+                    # Database evidence is queried at every Accuracy screen
+                    # render, never a frozen Discord embed or cached AI claim.
+                    try:
+                        details = await asyncio.to_thread(
+                            analytics_snapshot, self.market, asset=self.asset,
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("Advanced RivaL analytics unavailable")
+                        embed.add_field(
+                            name="Independent track analytics",
+                            value="The forward analytics query is unavailable. "
+                                  "No accuracy numbers were inferred.",
+                            inline=False,
+                        )
+                    else:
+                        for horizon in (5, 15):
+                            item = details["math"][horizon]
+                            recent = item["last_7d"]
+                            gate = details["model_governance"].get(horizon)
+                            brier = (
+                                f"{recent['brier']:.4f}"
+                                if recent["brier"] is not None else "pending"
+                            )
+                            calibration = (
+                                f"{recent['ece']:.4f}"
+                                if recent["ece"] is not None else "pending"
+                            )
+                            cost = (
+                                f"{recent['simulated_net_bps']:+.1f} bps"
+                                if recent["simulated_net_bps"] is not None
+                                else "not measurable"
+                            )
+                            state = (
+                                gate["status"].replace("_", " ")
+                                if gate is not None else "no review yet"
+                            )
+                            embed.add_field(
+                                name=f"Math {horizon}m · independent UTC windows",
+                                value=(
+                                    f"**{recent['events']}** forward events, "
+                                    f"**{details['math_pending']}** unresolved "
+                                    "per-exchange forecasts.\n"
+                                    f"Brier: {brier} · calibration gap: {calibration}\n"
+                                    f"7d trend: **{item['trend']}** "
+                                    "(100+ unique events in both periods required).\n"
+                                    f"Shadow model gate: **{state}**.\n"
+                                    "Illustrative net after 20 bps roundtrip "
+                                    f"cost: **{cost}**; excludes funding, "
+                                    "spread, liquidation, fills."
+                                )[:1024],
+                                inline=False,
+                            )
+                        ai_status = details["gemini"]
+                        quality = (
+                            f"{ai_status['directional_accuracy'] * 100:.1f}%"
+                            if ai_status["directional_accuracy"] is not None
+                            else "not measurable"
+                        )
+                        embed.add_field(
+                            name="Gemini · independent forward outcomes",
+                            value=(
+                                f"Issued **{ai_status['issued']}**, "
+                                f"settled **{ai_status['settled']}**, "
+                                f"directional decisions **{ai_status['decided']}**, "
+                                f"uncertain/abstain **{ai_status['abstained']}**.\n"
+                                f"Observed hit rate **{quality}**. "
+                                "Self-reported confidence is NOT calibrated. "
+                                "Source health and Google availability may "
+                                "cause skipped cycles."
+                            )[:1024],
+                            inline=False,
                         )
                     embed.add_field(
                         name="How accuracy is audited",

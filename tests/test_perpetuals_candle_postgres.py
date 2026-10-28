@@ -32,10 +32,10 @@ def test_perp_candles_are_idempotent_and_point_in_time_on_postgres():
         storage.initialize()
         assert storage.ingest((candle,), ingested_at=now) == 1
         assert storage.ingest((candle,), ingested_at=now) == 0
-        args = dict(
-            venue="hyperliquid", asset="BTC", quote="USDC",
-            contract_kind="linear_perpetual", interval="5m",
-        )
+        args = {
+            "venue": "hyperliquid", "asset": "BTC", "quote": "USDC",
+            "contract_kind": "linear_perpetual", "interval": "5m",
+        }
         assert storage.recent(**args, as_of=now - timedelta(seconds=1)) == []
         assert len(storage.recent(**args, as_of=now)) == 1
     finally:

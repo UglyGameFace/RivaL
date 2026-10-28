@@ -61,7 +61,7 @@ async def test_invalid_api_response_or_region_block_never_succeeds():
     for body in ({"error": "invalid"}, [row(coin="ETH")], [dict(row(), h="99")]):
         client, _ = market_client(body)
         async with client:
-            with pytest.raises(ValueError):
+            with pytest.raises((ValueError, TypeError)):
                 await HyperliquidPublicCandles(client).fetch_closed(
                     coin="BTC", count=2, requested_at=NOW
                 )
@@ -124,10 +124,10 @@ async def test_collect_in_same_db_once_preserves_metadata_and_availability(tmp_p
     assert first == (1, 1)
     assert second == (1, 0)
     candles = PerpCandleStore(store)
-    identity = dict(
-        venue="hyperliquid", asset="BTC", quote="USDC",
-        contract_kind="linear_perpetual", interval="5m",
-    )
+    identity = {
+        "venue": "hyperliquid", "asset": "BTC", "quote": "USDC",
+        "contract_kind": "linear_perpetual", "interval": "5m",
+    }
     assert candles.recent(**identity, as_of=NOW - timedelta(milliseconds=1)) == []
     found = candles.recent(**identity, as_of=NOW)
     assert len(found) == 1

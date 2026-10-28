@@ -67,7 +67,7 @@ class PerpCandle:
 
 def _number(raw: Any) -> float:
     if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
-        raise ValueError("numeric exchange field required")
+        raise TypeError("numeric exchange field required")
     try:
         result = float(raw)
     except (TypeError, ValueError, OverflowError) as exc:
@@ -82,7 +82,7 @@ def normalize_candle(
 ) -> PerpCandle | None:
     """Only complete, internally valid candles may enter the training store."""
     if not isinstance(raw, dict):
-        raise ValueError("candle response row must be an object")
+        raise TypeError("candle response row must be an object")
     if raw.get("s") != coin or raw.get("i") != interval:
         raise ValueError("exchange candle identity mismatch")
     start_ms, close_ms = raw.get("t"), raw.get("T")
@@ -153,7 +153,7 @@ class HyperliquidPublicCandles:
         response.raise_for_status()  # 403/429 are failures, never fabricated success.
         data = response.json()
         if not isinstance(data, list):
-            raise ValueError("unexpected candle response schema")
+            raise TypeError("unexpected candle response schema")
         result: list[PerpCandle] = []
         seen: set[datetime] = set()
         for raw in data:

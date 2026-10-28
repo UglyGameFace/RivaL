@@ -13,6 +13,10 @@ from typing import Protocol
 
 import httpx
 
+from parlay_bot.perpetuals.additional_venues import (
+    BinanceFuturesMarketClient,
+    DeribitMarketClient,
+)
 from parlay_bot.perpetuals.dydx import DydxMarketClient
 from parlay_bot.perpetuals.hyperliquid import (
     HyperliquidMarketClient,
@@ -90,10 +94,13 @@ class PerpetualMarketCollector:
                 "gate": GateMarketClient(),
                 "okx": OkxMarketClient(),
                 "kucoin": KucoinMarketClient(),
+                "deribit": DeribitMarketClient(),
+                "binance": BinanceFuturesMarketClient(),
             }
         )
         if not self.providers or any(
-            not key or key not in {"hyperliquid", "dydx", "bitget", "gate", "okx", "kucoin"} for key in self.providers
+            not key or key not in {"hyperliquid", "dydx", "bitget", "gate", "okx", "kucoin",
+                        "deribit", "binance"} for key in self.providers
         ):
             raise ValueError("unsupported public market provider")
         self._pauses: dict[str, datetime] = {}

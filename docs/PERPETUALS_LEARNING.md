@@ -222,3 +222,29 @@ market identity checks and immutable PostgreSQL inserts succeeded.
 
 The target remains ten independent **verified** venues and outcome-evaluated
 forecasts. No model-accuracy claim follows merely from a newly coded adapter.
+
+## Deribit and Binance Futures
+
+RivaL now has two more **coded**, independently labeled no-key exchange
+integrations. These remain unverified from Discloud until the operator
+deploys the newest `main` and checks the real database-backed status.
+
+- Deribit: only active, linear, USDC-settled
+  `BTC_USDC-PERPETUAL`, `ETH_USDC-PERPETUAL`,
+  `SOL_USDC-PERPETUAL` (or other supported named perps).
+  Read-only `/public/get_instrument` checks instrument type and
+  `/public/get_tradingview_chart_data` supplies aligned OHLCV
+  with base-currency volume, each with a UTC first-observed timestamp.
+- Binance USD-M: only `PERPETUAL` `TRADING` USDT-margined
+  contracts validated by public `/fapi/v1/exchangeInfo`, then
+  read-only `/fapi/v1/klines`. Volume is in base asset and trade
+  count is the actual exchange-reported count. No spot or delivery
+  futures are mixed into the observations.
+
+Official docs: https://www.deribit.com/api_console/ and
+https://developers.binance.info/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data .
+
+Do not bypass HTTP 401/403/451 regional denial. The existing collector
+records the failure and pauses that venue. No exchange credentials are
+needed, and 8 coded feeds do not mean 8 healthy feeds. Model retraining
+and validated production predictions remain separate from collection.

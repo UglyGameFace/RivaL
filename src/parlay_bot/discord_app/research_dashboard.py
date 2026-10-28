@@ -60,25 +60,29 @@ class _AskButton(discord.ui.Button["ResearchDashboard"]):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        assert self.view is not None
+        # clear_items() in _rebuild() detaches this button from its View.
+        # Hold the owning View before awaiting or rebuilding; self.view becomes
+        # None after detachment and must not be consulted again.
+        dashboard = self.view
+        assert dashboard is not None
         await interaction.response.defer()
-        self.view.screen = "ai"
-        self.view.message = None
-        self.view.opinion = None
+        dashboard.screen = "ai"
+        dashboard.message = None
+        dashboard.opinion = None
         try:
-            if self.view.ai is None:
+            if dashboard.ai is None:
                 raise ResearchUnavailable("Gemini research is unavailable.")
-            self.view.opinion = await self.view.ai.ask(
-                asset=self.view.asset, venues=self.view.venues,
+            dashboard.opinion = await dashboard.ai.ask(
+                asset=dashboard.asset, venues=dashboard.venues,
             )
         except (ResearchUnavailable, InsufficientEvidence) as exc:
-            self.view.message = str(exc)
+            dashboard.message = str(exc)
         except Exception:  # noqa: BLE001 - don't leak API keys/database DSNs
             _LOG.exception("RivaL research analysis failed")
-            self.view.message = "Analysis unavailable. No prediction produced."
-        self.view._rebuild()
+            dashboard.message = "Analysis unavailable. No prediction produced."
+        dashboard._rebuild()
         await interaction.edit_original_response(
-            embed=await self.view.render(), view=self.view,
+            embed=await dashboard.render(), view=dashboard,
         )
 
 

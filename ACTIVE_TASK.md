@@ -152,10 +152,28 @@ state, parlay queries, and archive bookkeeping.
 
 ## Backlog
 
-No unrelated work is active.
+The requested self-learning crypto perpetual-futures conversion is recorded in GitHub issue #6.
+Do not begin it until this cutover is verified or the owner explicitly force-switches tasks.
+
+## October 27, 2026 post-merge production observations
+
+- PR #5 was merged into `main` on October 6, and the merge-head GitHub CI passed.
+- Discloud logs provided by the owner show that RivaL synced one Discord command to guild
+  `1514374173517152418` and connected to Discord Gateway after the bot was installed.
+- The owner displayed the private `/rival` dashboard with Connecticut selected.
+  Code inspection confirms this is backed by `LocationOnboardingService` and the selected
+  relational store; it proves a runtime write/read path, not restart persistence.
+- Discloud backend selection, connection URL provenance, and restart persistence are not yet
+  independently verified. A visible Discord connection alone is insufficient evidence.
+- This focused follow-up adds a non-secret startup log recording the actual instantiated
+  database backend after successful initialization. It does not alter storage, authentication,
+  migrations, command semantics, or archive behavior.
 
 ## Next step
 
-Run final exact-head CI for this validation-record update, then make PR #5 ready for review if it
-remains green. Production activation after merge requires provisioning the Discloud PostgreSQL
-template and setting `RIVAL_DATABASE_URL` in the bot's deployment environment.
+Once the startup-log PR is validated and deployed, inspect the Discloud log for
+`RivaL operational storage initialized (backend=postgres)`.
+Then restart the bot and invoke `/rival` again using the same Discord user to verify the
+saved Connecticut location remains present without re-entering it. Record safe evidence only;
+never copy database URLs, passwords, Discord tokens, or OAuth refresh tokens into logs.
+The PostgreSQL cutover remains active until those production checks pass.

@@ -12,8 +12,8 @@ from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_ru
 from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
-from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.discord_app.presentation import onboarding_embed, saved_location_embed
+from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.discord_app.views import LocationView, OnboardingView
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
 from parlay_bot.jurisdiction.onboarding import LocationOnboardingService

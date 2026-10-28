@@ -1,3 +1,31 @@
+## October 28, 2026: causal probability reliability and calibration diagnostics
+
+- Existing prospective math model already issues immutable forward predictions,
+  compares paired Brier to baseline, and models fee/slip/funding *assumptions*.
+  Keep that separate from verified profitability or trade authorization.
+- Report a new **Accuracy > Probability reliability** page for real settled
+  5m/15m forward targets only. Each UTC outcome counts once rather than
+  treating correlated venues as independent trials.
+- Build ten probability buckets with predicted-vs-observed outcomes,
+  descriptive Wilson frequencies and expected calibration error (ECE).
+  Withhold a disputed target when exchange outcomes disagree instead of
+  silently averaging contradictory binary labels.
+- A purely descriptive preliminary screen requires >=100 independent
+  target outcomes across >=7 UTC days and at least two well-supported
+  probability buckets; high ECE or narrow coverage is called out
+  explicitly. The status NEVER means fitted/calibrated model, trade
+  permission or profit.
+- Keep the existing Brier governance and model probabilities unchanged:
+  calibrating a model on future labels would be data leakage. Actual
+  recalibration requires strictly time-ordered matured labels and
+  separate forward verification after sufficient data accrues.
+- Add binary observed-frequency and drift tests, opposite-venue labels
+  safety, and private mobile <=3-field Discord regression; validate
+  full CI and PostgreSQL.
+- Still not complete: actual six-month imported data and independent
+  forward results after real execution costs, which cannot be
+  manufactured from a code change. Preserve the no-trade gate.
+
 ## October 28, 2026: expand six-month history + cost-stressed prospective evaluation
 
 - Preserve the actual ten-source 5m live market collector and existing

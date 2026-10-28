@@ -859,3 +859,29 @@ RivaL continues its independent baseline-adjusted Brier,
 calibration and daily stability evaluation. Live execution is
 disabled. Real trades and measured costs would be required
 for an actual empirical net-profit claim.
+
+## Truly prospective probability calibration monitoring
+
+RivaL's Accuracy tab adds **Probability reliability**, separate from
+mathematical model Brier skill and hypothetical trade-cost stress.
+For both 5m and 15m horizons it groups settled, forward-issued forecasts
+by **unique UTC target** so multiple exchanges do not generate fake
+independent wins. When exchanges disagree on the direction of the same
+target, it withholds that row from binary reliability estimates and
+counts it as disputed.
+
+It builds ten bins for predicted probabilities, showing per-bin
+observations, average predicted probability, actual up frequency,
+a descriptive Wilson interval and expected calibration error (ECE).
+A sample needs >=100 unique UTC future outcomes spanning >=7 calendar
+days and at least two bins with >=15 events before even receiving
+a **preliminary reliability screen**. A small sample, a single
+probability bucket or high ECE is explicitly insufficient.
+
+This is not a fitted calibration transformation. Actual forecast
+probabilities remain immutable at issue time; any future Platt/isotonic
+recalibrator must train exclusively on prior matured labels and then
+demonstrate strictly subsequent performance. Lower ECE alone is not
+evidence of an executable net-positive strategy. Real fills, spread,
+venue-specific fees, observed funding, leverage/liquidation and long
+forward testing remain requirements.

@@ -137,7 +137,7 @@ async def test_real_section_selector_and_tab_buttons_are_clickable(monkeypatch):
         view.section = "venue"
         view._rebuild()
         assert control(view, "rival:research:venue").row == 4
-        assert len(control(view, "rival:research:section").options) == 8
+        assert len(control(view, "rival:research:section").options) == len(_SECTIONS["accuracy"])
 
         view.section = "five"
         outcome = await view.render()

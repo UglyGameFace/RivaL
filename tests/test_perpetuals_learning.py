@@ -37,7 +37,7 @@ def test_live_features_do_not_read_future_candles():
         assert all(len(x.features) == 5 for x in samples)
         assert all(x.venue == "dydx" and x.quote == "USD" for x in samples)
         assert all(x.label_up == 1 for x in samples)
-    with pytest.raises(ValueError, match="resolution"):
+    with pytest.raises(ValueError, match="horizon"):
         live_examples(candles, horizon_minutes=15 + 1)
 
 

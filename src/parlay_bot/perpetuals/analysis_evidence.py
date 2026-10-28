@@ -7,6 +7,7 @@ as exactly interchangeable prices or volumes.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 from datetime import UTC, datetime, timedelta
@@ -39,7 +40,7 @@ def _summary(candles: list[dict[str, Any]], size: int) -> dict[str, float] | Non
         return None
     subset = candles[-size - 1:]
     if any((_stamp(y["opened_at"]) - _stamp(x["opened_at"])).total_seconds() != 300
-           for x, y in zip(subset, subset[1:])):
+           for x, y in itertools.pairwise(subset)):
         return None
     closes = [float(x["close_price"]) for x in subset]
     if any(not math.isfinite(x) or x <= 0 for x in closes):

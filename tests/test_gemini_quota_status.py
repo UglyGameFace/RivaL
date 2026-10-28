@@ -133,3 +133,79 @@ async def test_research_menu_shows_honest_pause_and_exact_retry_time():
         if field.name == "Analysis status"
     )
     assert "paused" in status
+
+
+def test_midnight_resets_daily_count_but_preserves_previous_day_spacing(tmp_path):
+    store = SQLiteHotStore(tmp_path / "midnight-spacing.sqlite")
+    market = PerpetualMarketStore(store)
+    previous = datetime(2026, 10, 28, 23, 55, tzinfo=UTC)
+    next_day = datetime(2026, 10, 29, 0, 1, tzinfo=UTC)
+    try:
+        assert market.reserve_ai_request(
+            model="gemini-flash", now=previous, daily_max=1,
+            cooldown_seconds=900,
+        )
+        # A new UTC date resets only the daily count, not 15-minute spacing.
+        blocked = market.ai_request_status(
+            model="gemini-flash", now=next_day, daily_max=1,
+            cooldown_seconds=900,
+        )
+        assert blocked["requests_today"] == 0
+        assert blocked["reasons"] == ("minimum_spacing",)
+        assert blocked["retry_at"] == previous + timedelta(minutes=15)
+        assert not market.reserve_ai_request(
+            model="gemini-flash", now=next_day, daily_max=1,
+            cooldown_seconds=900,
+        )
+        assert market.reserve_ai_request(
+            model="gemini-flash", now=previous + timedelta(minutes=15),
+            daily_max=1, cooldown_seconds=900,
+        )
+        assert not market.reserve_ai_request(
+            model="gemini-flash", now=previous + timedelta(minutes=35),
+            daily_max=1, cooldown_seconds=900,
+        )
+    finally:
+        store.close()
+
+
+def test_midnight_preserves_provider_429_pause_across_bot_restart(tmp_path):
+    filename = tmp_path / "midnight-provider.sqlite"
+    original = SQLiteHotStore(filename)
+    market = PerpetualMarketStore(original)
+    previous = datetime(2026, 10, 28, 23, 58, tzinfo=UTC)
+    try:
+        assert market.reserve_ai_request(
+            model="gemini-flash", now=previous, daily_max=24,
+            cooldown_seconds=900,
+        )
+        market.pause_ai_requests(
+            model="gemini-flash", now=previous, seconds=3600,
+        )
+    finally:
+        original.close()
+    restarted = SQLiteHotStore(filename)
+    other = PerpetualMarketStore(restarted)
+    try:
+        now = datetime(2026, 10, 29, 0, 25, tzinfo=UTC)
+        blocked = other.ai_request_status(
+            model="gemini-flash", now=now, daily_max=24,
+            cooldown_seconds=900,
+        )
+        assert blocked["requests_today"] == 0
+        assert blocked["reasons"] == ("provider_error_pause",)
+        assert blocked["retry_at"] == previous + timedelta(hours=1)
+        assert not other.reserve_ai_request(
+            model="gemini-flash", now=now, daily_max=24,
+            cooldown_seconds=900,
+        )
+        assert other.ai_request_status(
+            model="gemini-flash", now=previous + timedelta(hours=1),
+            daily_max=24, cooldown_seconds=900,
+        )["ready"]
+        assert other.reserve_ai_request(
+            model="gemini-flash", now=previous + timedelta(hours=1),
+            daily_max=24, cooldown_seconds=900,
+        )
+    finally:
+        restarted.close()

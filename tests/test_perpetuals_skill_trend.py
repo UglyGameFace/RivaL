@@ -40,6 +40,24 @@ def test_raw_brier_improves_but_relative_skill_worsens(tmp_path):
                          (target + timedelta(minutes=5)).isoformat(),
                          1, 101., (1 - p) ** 2, (1 - baseline) ** 2),
                     )
+                    # A different research model must not pollute the
+                    # official 5m math model's trend or event counts.
+                    conn.execute(
+                        """INSERT INTO perp_forward_audit
+                           (venue,contract,quote,asset,horizon_minutes,
+                            model_version,reference_opened_at,reference_close,
+                            issued_at,target_opened_at,probability_up,
+                            baseline_up,training_evaluated,settled_at,
+                            outcome_up,realized_close,model_brier,
+                            baseline_brier)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        ("hyperliquid", "BTC", "USDC", "BTC", 5,
+                         "rogue-older-experiment-v0",
+                         opened.isoformat(), 100., issued.isoformat(),
+                         target.isoformat(), .01, .99, 100,
+                         (target + timedelta(minutes=5)).isoformat(),
+                         1, 101., .9801, .0001),
+                    )
         report = analytics_snapshot(market, asset="BTC", now=now)
         period = report["math"][5]
         assert period["last_7d"]["events"] == 120

@@ -1,3 +1,20 @@
+## October 28, 2026: tonight's actual shadow betting readiness and venue blocker
+
+- No more false implication that "9/10 exchange connections" means an
+  approved predictor or that a six-month count is an accuracy percentage.
+- On each Accuracy navigation or Update live stats click, read current
+  PostgreSQL causal-readiness and prospective issued/settled outcomes.
+- Add an explicitly **NO VERIFIED BETTING EDGE** panel with actual
+  five-minute and fifteen-minute settled counts, and state that fills,
+  funding, slippage and liquidation have not been fully validated.
+- Add exchange selector on the Accuracy page (one source at a time),
+  showing the exact failure, real observed candle streak versus the
+  65-bar gate, causal training labels and evaluated samples.
+- Never shorten the validation gate, claim real bets or invent prices
+  just because owner wants to place a bet tonight. Market ingestion,
+  automatic shadow learning and Gemini budgets stay untouched.
+- Validate the actual Discord screen against SQLite plus full CI/Postgres.
+
 ## October 28, 2026: live mathematical forecast readiness diagnostics
 
 - Autonomous math forecasts and delayed settlement are already scheduled

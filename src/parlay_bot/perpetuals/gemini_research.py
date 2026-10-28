@@ -103,7 +103,7 @@ class GeminiResearch:
                 if not isinstance(payload, dict) or not isinstance(
                     payload.get("models"), list
                 ):
-                    raise ValueError("missing model metadata")
+                    raise TypeError("missing model metadata")
                 names = {
                     name[7:]
                     for item in payload["models"] if isinstance(item, dict)

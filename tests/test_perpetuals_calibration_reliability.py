@@ -86,11 +86,15 @@ async def test_private_accuracy_calibration_page_reads_real_forward_rows(tmp_pat
     store = SQLiteHotStore(tmp_path / "reliability.sqlite")
     market = PerpetualMarketStore(store)
     ForwardAccuracyMonitor(market).initialize()
-    now = datetime(2026, 10, 28, 20, tzinfo=UTC)
     try:
         with store.connect() as conn:
+            current = datetime.now(UTC)
+            start = current - timedelta(days=6)
             for i, row in enumerate(examples()):
-                target = datetime.fromisoformat(row["target_opened_at"])
+                base_target = datetime.fromisoformat(row["target_opened_at"])
+                target = start + (
+                    base_target - datetime(2026, 10, 20, 12, tzinfo=UTC)
+                )
                 for venue, contract in (("hyperliquid", "BTC"),):
                     p = row["probability"]
                     y = int(row["up_rate"])

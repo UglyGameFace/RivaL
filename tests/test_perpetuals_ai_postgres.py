@@ -62,3 +62,42 @@ def test_postgres_ai_cache_quota_and_circuit_breaker_are_restart_safe():
                    DROP TABLE IF EXISTS perp_ai_quota;"""
             )
         store.close()
+
+
+def test_postgres_gemini_pause_survives_utc_midnight():
+    dsn = os.getenv("RIVAL_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("Postgres integration service not configured")
+    store = PostgresHotStore(dsn)
+    market = PerpetualMarketStore(store)
+    model = "rival-ci-midnight-pause"
+    previous = datetime(2026, 10, 28, 23, 58, tzinfo=UTC)
+    try:
+        market.initialize()
+        assert market.reserve_ai_request(
+            model=model, now=previous, daily_max=1,
+            cooldown_seconds=900,
+        )
+        market.pause_ai_requests(model=model, now=previous, seconds=3600)
+        checked = previous + timedelta(minutes=12)
+        state = market.ai_request_status(
+            model=model, now=checked, daily_max=1,
+            cooldown_seconds=900,
+        )
+        assert state["requests_today"] == 0
+        assert "provider_error_pause" in state["reasons"]
+        assert state["retry_at"] == previous + timedelta(hours=1)
+        assert not market.reserve_ai_request(
+            model=model, now=checked, daily_max=1,
+            cooldown_seconds=900,
+        )
+        assert market.reserve_ai_request(
+            model=model, now=previous + timedelta(hours=1),
+            daily_max=1, cooldown_seconds=900,
+        )
+    finally:
+        with store.connect() as conn:
+            conn.execute(
+                "DELETE FROM perp_ai_quota WHERE model=?", (model,),
+            )
+        store.close()

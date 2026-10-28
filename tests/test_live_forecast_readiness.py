@@ -11,8 +11,10 @@ from parlay_bot.storage.hot import SQLiteHotStore
 
 
 def _clock():
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    return now.replace(minute=now.minute // 5 * 5) + timedelta(minutes=2)
+    # The Discord view uses the real current time. A fixture clock in the
+    # FUTURE makes legitimate observations look future-dated to production.
+    # Pin source events safely in the past so this test is time-independent.
+    return datetime.now(UTC) - timedelta(minutes=2)
 
 
 def _populate(
@@ -28,7 +30,7 @@ def _populate(
             closed = opened + timedelta(minutes=5, milliseconds=-1)
             # A late bulk import must not be counted as 100 live observations.
             observed = now if historical_backfill else (
-                closed + timedelta(seconds=1)
+                closed + timedelta(milliseconds=1)
             )
             p = 100 + i / 20 + (i % 5) / 10
             conn.execute(

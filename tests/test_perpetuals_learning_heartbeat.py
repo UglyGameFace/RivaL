@@ -5,10 +5,10 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore
-from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 
 
 @pytest.mark.asyncio

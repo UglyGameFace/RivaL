@@ -41,6 +41,24 @@ def build_hot_store(settings: Settings) -> RelationalHotStore:
     return PostgresHotStore(settings.rival_database_url.get_secret_value())
 
 
+def next_collection_delay(
+    now: datetime, interval_seconds: int, *, settle_seconds: int = 15,
+) -> float:
+    """Schedule collection after the next UTC candle boundary, without drift.
+
+    The existing collector is still read-only, sequential and rate limited.
+    Scheduling is anchored to UTC, not to how long 30 venue calls happened
+    to take during the previous poll.
+    """
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("clock must be timezone-aware")
+    if interval_seconds < 60 or not 0 <= settle_seconds < interval_seconds:
+        raise ValueError("invalid bar schedule")
+    timestamp = now.timestamp()
+    boundary = (int(timestamp // interval_seconds) + 1) * interval_seconds
+    return max(0.01, boundary + settle_seconds - timestamp)
+
+
 class RivalDiscordClient(discord.Client):
     def __init__(self, settings: Settings) -> None:
         super().__init__(intents=discord.Intents.none())
@@ -253,7 +271,12 @@ class RivalDiscordClient(discord.Client):
                 raise
             except Exception:  # noqa: BLE001 - collector never crashes Discord
                 _LOG.exception("RivaL perp automatic collection cycle failed")
-            await asyncio.sleep(self.settings.rival_perp_collection_seconds)
+            await asyncio.sleep(
+                next_collection_delay(
+                    datetime.now(UTC),
+                    self.settings.rival_perp_collection_seconds,
+                )
+            )
 
     async def _shadow_loop(self) -> None:
         await self.wait_until_ready()

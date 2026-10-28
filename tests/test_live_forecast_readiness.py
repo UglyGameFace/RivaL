@@ -19,6 +19,7 @@ def _populate(
     market, *, now, count=100, venue="hyperliquid",
     historical_backfill=False,
 ):
+    market.initialize()
     boundary = now.replace(second=0, microsecond=0)
     boundary = boundary.replace(minute=boundary.minute // 5 * 5)
     with market.store.connect() as conn:
@@ -116,6 +117,7 @@ async def test_live_accuracy_screen_explains_shortage_in_actual_database(tmp_pat
     store = SQLiteHotStore(tmp_path / "screen.sqlite")
     market = PerpetualMarketStore(store)
     now = _clock()
+    view = None
     try:
         _populate(market, now=now, count=25)
         view = ResearchDashboard(
@@ -134,5 +136,6 @@ async def test_live_accuracy_screen_explains_shortage_in_actual_database(tmp_pat
         assert "Stale/blocked" in readiness
         assert "No betting permission implied" in readiness
     finally:
-        view.stop()
+        if view is not None:
+            view.stop()
         store.close()

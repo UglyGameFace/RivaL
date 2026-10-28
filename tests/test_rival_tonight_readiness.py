@@ -46,6 +46,7 @@ async def test_accuracy_tab_shows_live_per_exchange_blocker_and_no_unverified_be
     )
     try:
         view.screen = "accuracy"
+        view.section = "venue"
         view._rebuild()
         selects = [
             item for item in view.children
@@ -55,16 +56,28 @@ async def test_accuracy_tab_shows_live_per_exchange_blocker_and_no_unverified_be
         assert {x.value for x in venue_select.options} == {
             "hyperliquid", "dydx", "binance",
         }
-        assert venue_select.row == 3
+        assert venue_select.row == 4
         assert view.selected_venue == "hyperliquid"
         embed = await view.render()
         fields = {field.name: field.value for field in embed.fields}
-        assert "NO VERIFIED BETTING EDGE" in fields["Tonight's research verdict"]
         assert "not real-money approval" not in fields["Why this exchange is or isn't ready"]
         assert "Hyperliquid" not in fields["Why this exchange is or isn't ready"] or "hyperliquid" in fields["Why this exchange is or isn't ready"]
         assert "blocked" in fields["Why this exchange is or isn't ready"].lower()
-        assert "Issued: **0**" in fields["Forward 5-minute evaluation"]
         assert any(x.custom_id == "rival:research:refresh" for x in view.children)
+        assert len(embed.fields) <= 3
+        view.section = "overview"
+        summary = await view.render()
+        assert "NO VERIFIED BETTING EDGE" in next(
+            x.value for x in summary.fields
+            if x.name == "Tonight's research verdict"
+        )
+        view.section = "five"
+        five = await view.render()
+        assert "Issued: **0**" in next(
+            x.value for x in five.fields
+            if x.name == "Forward 5-minute evaluation"
+        )
+        view.section = "venue"
         # Selection changes the actual displayed venue without requesting new quotes.
         view.selected_venue = "binance"
         again = await view.render()

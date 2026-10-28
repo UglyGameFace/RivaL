@@ -17,7 +17,7 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 ## Status
 
-**Active: integrate automatic source collection into the Discord runtime.** PRs #9–12 supplied two independent bounded data adapters, immutable PostgreSQL market storage and a shadow evaluator. This PR now schedules immediate and five-minute collection in the existing Discloud bot process, with persistent feed health and phone-accessible /rival-data status. Live Discloud deployment/API reachability and actual writes remain UNVERIFIED until redeployment. Eight other adapters and the full production prediction/retraining bot remain unfinished.
+**Active: live four-venue ingestion evidenced; six source integrations and production prediction engine remain.** PRs #9–12 supplied two data adapters, immutable PostgreSQL market storage and shadow evaluation. PR #13 started automatic five-minute collection, PR #14 added Bitget/Gate, and PR #15 introduced a private interactive data dashboard. On October 28 at 8:00 AM user-local time, the owner's deployed Discord screenshot showed BTC Markets with four venues (Hyperliquid, dYdX, Bitget Futures, Gate Futures) all marked Collecting, each displaying a recently saved BTC close about five minutes old. This is evidence of four live data pipelines for BTC, not proof of ETH/SOL health, long-term uptime, prediction accuracy or completion of the requested ten-source model. Six additional venue integrations and automated, verified forecasting/retraining remain unfinished.
 
 ## October 28, 2026: real private Discord data dashboard
 

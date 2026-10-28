@@ -277,6 +277,16 @@ class RivalDiscordClient(discord.Client):
                 raise
             except Exception:  # noqa: BLE001 - collector never crashes Discord
                 _LOG.exception("RivaL perp automatic collection cycle failed")
+            # Forward evaluation is on the same UTC 5-minute cadence as
+            # market observation. It makes no exchange or Gemini API calls.
+            # Failure is isolated from both collection and Discord.
+            if self.forward_audit is not None:
+                try:
+                    await asyncio.to_thread(self.forward_audit.run_once)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL prospective audit failed safely")
             await asyncio.sleep(
                 next_collection_delay(
                     datetime.now(UTC),
@@ -294,15 +304,6 @@ class RivalDiscordClient(discord.Client):
                 raise
             except Exception:  # noqa: BLE001 - shadow research cannot kill Discord
                 _LOG.exception("RivaL automatic shadow evaluation failed safely")
-            # Prospective shadow predictions must be written BEFORE their
-            # corresponding target candles exist. Fail independently.
-            if self.forward_audit is not None:
-                try:
-                    await asyncio.to_thread(self.forward_audit.run_once)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL prospective evaluation failed safely")
             await asyncio.sleep(self.settings.rival_shadow_eval_seconds)
 
     async def _archive_loop(self) -> None:

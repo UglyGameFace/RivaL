@@ -819,3 +819,43 @@ pause or a still-active minimum interval. The atomic PostgreSQL/SQLite
 reservation remains the authoritative source; the Discord retry time
 matches the same rules. No additional Gemini requests, keys, exchange
 polls or trading actions are introduced.
+
+## Additional six-month repair path: OKX Futures
+
+RivaL's low-priority history loop now has Gate, KuCoin, Bitget and
+OKX independent backfill sources, each with durable PostgreSQL state.
+OKX V5 `/api/v5/market/history-candles` pages backwards:
+`after` asks for bars older than the exclusive millisecond cursor,
+at most 100 per page. The importer validates active linear
+USDT-SWAP contract metadata, base-volume contract multiplier,
+five-minute closed candle alignment, duplicate timestamps,
+and immutable data identity. It advances the cursor only after
+successful persistence. History bars retain *their true retrieval time*
+and are never counted as prospective predictions.
+
+Official API: https://www.okx.com/docs-v5/en/ . Actual host
+availability, source retention and six-month gap completeness are
+not established by tests. No trading, authentication, proxy
+bypass or quota evasion is introduced. A blocked venue pauses
+its own history worker without interrupting nine other feeds.
+
+## Forward cost sensitivity, not simulated winnings
+
+Accuracy > 5m/15m now provides three illustrative round-trip
+cost scenarios: **16, 40 and 80 bps**, each decomposed into
+fees, entry/exit slippage and an adverse funding allowance.
+The severe scenario is shown in the compact outcome detail.
+Each UTC outcome target counts once, regardless of the number
+of correlated exchanges. Even a positive hypothetical net
+stress screen requires 100 unique forward decisions over at
+least seven UTC days, positive across at least 80% of days and
+a positive conservative day-block stress lower bound.
+
+A hypothetical stress pass **never** authorizes real-money bets.
+These amounts are not venue-specific actual fee schedules,
+real spread/depth/slippage/funding payments, leverage,
+margin, financing, liquidation or recorded fills.
+RivaL continues its independent baseline-adjusted Brier,
+calibration and daily stability evaluation. Live execution is
+disabled. Real trades and measured costs would be required
+for an actual empirical net-profit claim.

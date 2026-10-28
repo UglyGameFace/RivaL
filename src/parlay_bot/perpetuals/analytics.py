@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.autonomous import AutonomousResearch, _utc
+from parlay_bot.perpetuals.cost_stress import score_cost_stress
 from parlay_bot.perpetuals.forward_audit import MODEL as FORWARD_MODEL
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
@@ -149,7 +150,9 @@ def analytics_snapshot(
                 else "worsening" if gain < -0.005
                 else "unchanged"
             )
+        stress = score_cost_stress(recent)
         by_horizon[h] = {
+            "cost_stress_7d": stress,
             "last_7d": today, "prior_7d": previous,
             "trend": trend, "last_7d_skill": current_skill,
             "prior_7d_skill": prior_skill,
@@ -187,5 +190,6 @@ def analytics_snapshot(
         "linked_venue_outcomes": True,
         "fees_assumed_bps": ROUNDTRIP_COST_BPS,
         "includes_funding": False,
+        "hypothetical_funding_stressed": True,
         "backtested_pnl": False,
     }

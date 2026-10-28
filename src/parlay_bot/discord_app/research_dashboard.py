@@ -440,6 +440,23 @@ class ResearchDashboard(discord.ui.View):
                 return None
         return dict(row) if row is not None else None
 
+    def _okx_history_progress(self) -> dict | None:
+        """Reverse-chronological OKX six-month repair state from PostgreSQL."""
+        if self.market is None:
+            return None
+        with self.market.store.connect() as conn:
+            try:
+                row = conn.execute(
+                    """SELECT status,inserted_bars,next_opened_at,empty_windows,
+                              attempted_at
+                       FROM perp_history_recovery
+                       WHERE venue='okx' AND asset=?""",
+                    (self.asset,),
+                ).fetchone()
+            except Exception:  # noqa: BLE001 - previous DB version
+                return None
+        return dict(row) if row is not None else None
+
     def _bitget_history_progress(self) -> dict | None:
         """One DB query, no Bitget API request or stale embedded cache."""
         if self.market is None:
@@ -650,9 +667,12 @@ class ResearchDashboard(discord.ui.View):
                                     "These are NOT live forward tests."
                                 )[:1024], inline=False,
                             )
+                        okx = await asyncio.to_thread(
+                            self._okx_history_progress,
+                        )
                         progress = (
                             ("Gate", recovery), ("KuCoin", kucoin),
-                            ("Bitget", bitget),
+                            ("Bitget", bitget), ("OKX", okx),
                         )
                         lines = [
                             (
@@ -1095,9 +1115,11 @@ class ResearchDashboard(discord.ui.View):
                                 f"{recent['ece']:.4f}"
                                 if recent["ece"] is not None else "pending"
                             )
+                            stress = item["cost_stress_7d"]
+                            harsh = stress["scenarios"]["severe_stress"]
                             cost = (
-                                f"{recent['simulated_net_bps']:+.1f} bps"
-                                if recent["simulated_net_bps"] is not None
+                                f"{harsh['mean_net_bps']:+.1f} bps"
+                                if harsh["mean_net_bps"] is not None
                                 else "not measurable"
                             )
                             state = (
@@ -1115,9 +1137,13 @@ class ResearchDashboard(discord.ui.View):
                                     "(100+ unique events per period; "
                                     "observational research only).\n"
                                     f"Shadow model gate: **{state}**.\n"
-                                    "Illustrative net after 20 bps roundtrip "
-                                    f"cost: **{cost}**; excludes funding, "
-                                    "spread, liquidation, fills."
+                                    "Net after hypothetical severe "
+                                    f"{harsh['assumed_total_bps']:.0f} bps "
+                                    f"fees/slippage/adverse funding: **{cost}** "
+                                    f"({stress['unique_decided_targets']} UTC targets, "
+                                    f"{stress['utc_days']} days; "
+                                    f"{harsh['status'].replace('_', ' ')}). "
+                                    "NOT actual fills or trading approval."
                                 )[:1024],
                                 inline=False,
                             )
@@ -1149,7 +1175,14 @@ class ResearchDashboard(discord.ui.View):
                             "settled once. Exchange returns are correlated, "
                             "so summed scores are NOT independent bets. "
                             "A better score on a small sample doesn't prove "
-                            "a profitable edge after fees, funding or slippage."
+                            "a profitable edge after fees, funding or slippage. "
+                            "Cost stress uses hypothetical 16/40/80 bps "
+                            "round trips with fees, entry+exit slippage and "
+                            "adverse funding allowances. One UTC target counts "
+                            "once. 100 decisions over 7 days plus daily "
+                            "consistency are required even for a hypothetical "
+                            "pass. Real fills, funding payments, liquidation "
+                            "and position sizing have NOT been verified."
                         ), inline=False,
                     )
             embed.set_footer(

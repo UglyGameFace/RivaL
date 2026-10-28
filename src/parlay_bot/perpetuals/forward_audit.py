@@ -6,6 +6,7 @@ Uses only model weights trained on outcomes already known at issuance.
 """
 from __future__ import annotations
 
+import itertools
 import logging
 import math
 from datetime import UTC, datetime, timedelta
@@ -29,7 +30,7 @@ def _features(candles) -> tuple[float, ...]:
     window = tuple(candles[-LOOKBACK - 1:])
     if len(window) != LOOKBACK + 1:
         raise ValueError("not enough point-in-time candles")
-    for left, right in zip(window, window[1:]):
+    for left, right in itertools.pairwise(window):
         if (
             (utc(right.opened_at) - utc(left.opened_at)).total_seconds() != 300
             or (left.venue, left.contract, left.quote) !=
@@ -39,7 +40,7 @@ def _features(candles) -> tuple[float, ...]:
     closes = [x.close_price for x in window]
     if any(not math.isfinite(x) or x <= 0 for x in closes):
         raise ValueError("invalid prospective prices")
-    returns = [math.log(b / a) for a, b in zip(closes, closes[1:])]
+    returns = [math.log(b / a) for a, b in itertools.pairwise(closes)]
     avg = sum(returns) / len(returns)
     variance = sum((v - avg) ** 2 for v in returns) / len(returns)
     current = window[-1]

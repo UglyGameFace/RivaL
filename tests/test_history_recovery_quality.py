@@ -6,9 +6,9 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
-from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
+from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore
 

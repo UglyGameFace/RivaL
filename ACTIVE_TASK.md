@@ -34,6 +34,19 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 - PR #10 merged at `fdc95c75c1a3876d6c660984693f138292935599` after a reviewed, focused 7-file diff and passing CI (81 tests, Ruff, PostgreSQL 16); merged main CI also passed. Live regional access from Discloud and supervised backfill are **not yet verified**; test fixtures cannot establish that. Avoid model-training claims.
 - Immediate next step: run the read-only `python -m parlay_bot.perpetuals.probe` on the actual Discloud host and record safe response status. Only then authorize `--persist` after reviewing source health, and develop the second independent exchange adapter. Do not activate automatic ingestion or forecasts until runtime safety and quality checks pass.
 
+## October 28, 2026: second independent venue, dYdX v4 (under validation)
+
+- Public dYdX Chain v4 Indexer provides BTC-USD/ETH-USD/SOL-USD
+  perpetual-market and 5m/15m/1h/4h candle endpoints (no Kraken).
+- Implemented separate bounded collector; USD quotes, exact ticker identity,
+  candle-close timestamps and base-volume, no invented mark/funding values.
+- Market storage now accepts legitimate candle-only sources, with the existing
+  immutable, atomic PostgreSQL writes and unchanged legacy sports tables.
+- Added a provider selector to owner-invoked read-only probe. No automatically
+  scheduled collection, unapproved exchange access, or trading permissions.
+- This is a code-integration candidate: Discloud's regional HTTP reachability,
+  provider responses and data quality remain unverified until the real probe.
+
 ## Findings / authoritative execution path
 
 `main.py` -> `parlay_bot.discord_app.bot.run_discord_bot` ->

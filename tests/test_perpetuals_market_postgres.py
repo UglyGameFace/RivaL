@@ -52,3 +52,42 @@ def test_postgres_candles_are_idempotent_and_legacy_schema_survives():
                    DROP TABLE IF EXISTS perp_market_contexts;"""
             )
         store.close()
+
+
+def test_postgres_candle_only_source_does_not_invent_market_context():
+    dsn = os.getenv("RIVAL_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("PostgreSQL integration service not configured")
+    store = PostgresHotStore(dsn)
+    opened = datetime(2026, 10, 28, 1, 0, tzinfo=UTC)
+    observed = opened + timedelta(minutes=6)
+    try:
+        market = PerpetualMarketStore(store)
+        batch = MarketBatch(
+            contexts=(),
+            candles=(MarketCandle(
+                "dydx", "BTC-USD", "USD", 5, opened,
+                opened + timedelta(minutes=5) - timedelta(milliseconds=1),
+                observed, 101, 103, 100, 102, 4.5, 18,
+            ),),
+            interval_minutes=5,
+            observed_at=observed,
+        )
+        assert market.ingest(batch).inserted_candles == 1
+        assert market.ingest(batch).unchanged_candles == 1
+        saved = market.recent_candles(
+            venue="dydx", contract="BTC-USD", quote="USD", interval_minutes=5,
+        )
+        assert len(saved) == 1
+        assert saved[0]["volume_base"] == 4.5
+        with store.connect() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) AS n FROM perp_market_contexts WHERE venue='dydx'"
+            ).fetchone()["n"] == 0
+    finally:
+        with store.connect() as conn:
+            conn.executescript(
+                """DROP TABLE IF EXISTS perp_market_candles;
+                   DROP TABLE IF EXISTS perp_market_contexts;"""
+            )
+        store.close()

@@ -116,13 +116,13 @@ async def test_bad_okx_ohlc_or_unconfirmed_page_does_not_advance(tmp_path):
         store = SQLiteHotStore(tmp_path / f"{invalid}.sqlite")
         market = PerpetualMarketStore(store)
 
-        def broken(req):
+        def broken(req, variant=invalid):
             if req.url.path.endswith("/instruments"):
                 return response(req)
             payload = response(req).json()
-            if invalid == "ohlc":
+            if variant == "ohlc":
                 payload["data"][0][2] = "95"
-            elif invalid == "unconfirmed":
+            elif variant == "unconfirmed":
                 payload["data"][0][8] = "0"
             else:
                 payload["data"][0][0] = str(int(payload["data"][0][0]) + 1)

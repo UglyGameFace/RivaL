@@ -488,3 +488,38 @@ later each cycle just because the exchange requests take time. API rate
 limits and region blocks remain respected. Discord ephemeral views have a
 limited interaction lifetime and do not provide perpetual tick-by-tick
 push updates; pressing Update live refreshes the displayed snapshot.
+
+## Forward-only accuracy audit (not retrospective self-congratulation)
+
+The private `/rival-research` menu now includes **Accuracy** alongside
+Math & History and Gemini AI. This screen and the collection-health summary
+reload from the authoritative PostgreSQL database on navigation/refresh.
+The UI distinguishes the newest **source check** from the newest actually
+completed **candle**, and states that the public collector polls every
+five minutes, not every market tick. Only six-month history totals are
+cached briefly, and the refresh button bypasses that cache.
+
+The new `perp_forward_audit` table persists a model probability and a
+separate historical base-rate probability, version, venue/instrument, exact
+reference candle and issuance time while the target candle close is still
+in the future. Model weights come only from training examples whose
+labels were known at issuance. The evaluator later looks up the **same
+venue**, verifies the target first became observable after issuance,
+and settles once. It will not convert historical backfill into an
+on-time prediction or count the same outcome twice.
+
+The Accuracy screen reports actual prospective issued/settled counts,
+directional hit rate, candidate Brier loss and baseline Brier loss by
+5-minute and 15-minute horizons. The first requests should display
+**no measurable accuracy** until new forecasts settle. A minimum of 50
+settled outcomes is required before even considering whether the candidate
+outperformed its baseline. Comparisons of the current seven calendar
+days with the preceding, nonoverlapping seven days require at least
+50 settled outcomes in **each** period. Results from multiple venues
+are correlated, so these totals are research diagnostics, not
+independent statistical replications or proof of a profitable betting edge.
+
+Provisional learning stays in the existing shadow timer and never places
+trades. Read-only forecast issuance, score settlement and UI audit
+continue across process restarts using the existing PostgreSQL database.
+No Gemini calls, model upgrade or paid provider changes are needed.

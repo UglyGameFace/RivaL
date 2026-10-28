@@ -136,6 +136,9 @@ class PerpetualMarketCollector:
                             attempted_at=datetime.now(UTC),
                             new_candles=result.inserted_candles,
                             total_candles=len(batch.candles),
+                            last_candle_close=max(
+                                candle.closed_at for candle in batch.candles
+                            ),
                         )
                         _LOG.info(
                             "RivaL perp collection OK venue=%s asset=%s bars=%d new=%d",

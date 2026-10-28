@@ -457,3 +457,34 @@ custom profit target must trigger a recalculation rather than blindly
 retaining the default probability. Until that is validated, the menu
 must show **NO VERIFIED TARGET / NO VERIFIED BET**, not an invented
 price or confidence.
+
+## Research screen live status and smart caching
+
+The research menu's selected Math or Gemini tab is highlighted but **never
+disabled**; the other is an equally visible clickable button. A separate
+**Update live stats** button reloads live PostgreSQL source health, completed
+candle proof, math pulse and (when requested) the six-month historical
+inventory. Switching screens/coins also rereads live source data.
+
+The private screen displays a UTC-backed "last checked" relative timestamp.
+An exchange counts as freshly collecting only when the last successful
+feed synchronization **and** last closed candle are recent. The collector
+now persists the true closed-at timestamp from each validated batch;
+successful stale responses cannot masquerade as live market data.
+"NO SIGNAL" remains valid when the model lacks contiguous causal
+history, even if the API is healthy.
+
+The historical six-month row-count aggregation is cached **per view per coin**
+for up to two minutes to spare repeated expensive SQL. Refresh invalidates
+it immediately. Source health and the 5-minute cross-venue pulse are always
+read directly from PostgreSQL and are never served from that historical
+cache. Gemini's content-fingerprint cache survives restarts separately and
+still honors daily request quotas.
+
+Market collection still starts immediately after the bot becomes ready and
+continues unattended, scheduled from then on at UTC-aligned five-minute
+boundaries + 15 seconds for bar completion. Scheduling no longer drifts
+later each cycle just because the exchange requests take time. API rate
+limits and region blocks remain respected. Discord ephemeral views have a
+limited interaction lifetime and do not provide perpetual tick-by-tick
+push updates; pressing Update live refreshes the displayed snapshot.

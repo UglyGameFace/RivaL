@@ -70,6 +70,7 @@ async def test_background_collection_persists_two_venues_across_replays(tmp_path
         assert all(row["total_new_candles"] == 1 for row in rows)
         assert all(row["last_new_candles"] == 0 for row in rows)
         assert all(row["last_success_at"] for row in rows)
+        assert all(row["last_candle_close"] == (NOW - timedelta(milliseconds=1)).isoformat() for row in rows)
         assert hl.called == ["BTC", "ETH", "BTC", "ETH"]
         assert dx.called == ["BTC", "ETH", "BTC", "ETH"]
         assert "RivaL perp collection OK" in caplog.text

@@ -626,3 +626,30 @@ a separately validated historical adapter or independently acquired
 quality-checked data. Historic row counts, source count, and GitHub
 tests do not prove positive out-of-sample trading returns, real exchange
 fills, user eligibility or permission to trade.
+
+## Why the math predictor may still show no signal
+
+RivaL has separate production stages: venue REST **collection**,
+**point-in-time** observation history, mathematical walk-forward
+evaluation, prospective prediction issuance, later settlement, and
+shadow-only model governance. Nine successful source API responses
+do not mean nine models are trained or ready to issue a reliable
+five-minute prediction.
+
+The Accuracy screen now reads the current database and displays a
+**Mathematical forecast readiness** audit. It shows how many streams
+meet the actual prerequisites: a recent completed candle plus successful
+source check; at least 65 contiguous five-minute bars observed near
+their real closes (not added later in a backfill); and a sufficiently
+matured causal feature/label dataset with at least 20 walk-forward
+evaluations for each of the 5m and 15m horizons. The progress numbers
+are descriptive, not a countdown or trading recommendation.
+
+This UI query does not send exchange requests, spend Gemini tokens,
+train a model, generate predictions, change the database, or alter
+existing five-minute source polling. Historical backfills still help
+offline research but **never qualify retrospectively as live forward
+results**. A stream being mathematically ready does not establish a
+positive forward edge; the independent Brier, calibration, baseline
+and hypothetical cost-adjusted accuracy metrics remain the only
+grounded way to evaluate possible improvement.

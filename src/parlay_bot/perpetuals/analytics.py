@@ -24,7 +24,18 @@ def _bucket(rows: list[dict]) -> dict:
         }
     brier = sum(x["brier"] for x in rows) / n
     base = sum(x["baseline"] for x in rows) / n
-    calib = sum(abs(x["probability"] - x["up_rate"]) for x in rows) / n
+    # Genuine ten-bin expected calibration error (ECE) rather than
+    # per-event absolute error mislabeled as calibration.
+    bins: dict[int, list[dict]] = {}
+    for row in rows:
+        bins.setdefault(min(9, max(0, int(float(row["probability"]) * 10))), []).append(row)
+    calib = sum(
+        (len(group) / n) * abs(
+            sum(float(x["probability"]) for x in group) / len(group)
+            - sum(float(x["up_rate"]) for x in group) / len(group)
+        )
+        for group in bins.values()
+    )
     chosen = [x for x in rows if x["pred_count"] and x["gross_bps"] is not None]
     return {
         "events": n,

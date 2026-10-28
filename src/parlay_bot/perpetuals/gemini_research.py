@@ -11,7 +11,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 
@@ -43,7 +43,7 @@ class AiResearch:
 class GeminiResearch:
     def __init__(
         self, market: PerpetualMarketStore, *, api_key: str | None,
-        model: str = "gemini-2.5-flash", daily_max: int = 24,
+        model: str = "gemini-3.8-flash", daily_max: int = 24,
         cooldown_seconds: int = 900,
         client: httpx.AsyncClient | None = None,
     ) -> None:
@@ -53,12 +53,23 @@ class GeminiResearch:
             raise ValueError("invalid Gemini cooldown")
         self.market = market
         self._key = api_key
+        # This app's old 2.5 Flash endpoint returned HTTP 404 in production.
+        # Migrate that legacy selection once; do not repeatedly spend requests
+        # retrying a known-failing model. A different explicit model stays explicit.
+        if model == "gemini-2.5-flash":
+            _LOG.warning(
+                "RivaL Gemini legacy model gemini-2.5-flash replaced by "
+                "gemini-3.8-flash after production HTTP 404"
+            )
+            model = "gemini-3.8-flash"
         self.model = model
         self.daily_max = daily_max
         self.cooldown_seconds = cooldown_seconds
         self._client = client or httpx.AsyncClient(timeout=25, follow_redirects=False)
         self._owned_client = client is None
         self._lock = asyncio.Lock()
+        self._model_list: tuple[str, ...] | None = None
+        self._model_list_checked_at: datetime | None = None
 
     @property
     def available(self) -> bool:
@@ -67,6 +78,52 @@ class GeminiResearch:
     async def aclose(self) -> None:
         if self._owned_client:
             await self._client.aclose()
+
+    async def list_advertised_models(self) -> tuple[str, ...]:
+        """Read-only provider metadata. Listing NEVER proves generation access."""
+        if not self._key:
+            raise ResearchUnavailable("Gemini API key is not configured.")
+        async with self._lock:
+            now = datetime.now(UTC)
+            if (
+                self._model_list is not None
+                and self._model_list_checked_at is not None
+                and now - self._model_list_checked_at < timedelta(hours=1)
+            ):
+                return self._model_list
+            try:
+                response = await self._client.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    params={"pageSize": 100},
+                    headers={"x-goog-api-key": self._key},
+                    follow_redirects=False,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict) or not isinstance(
+                    payload.get("models"), list
+                ):
+                    raise ValueError("missing model metadata")
+                names = {
+                    name[7:]
+                    for item in payload["models"] if isinstance(item, dict)
+                    if isinstance((name := item.get("name")), str)
+                    and name.startswith("models/gemini-")
+                    and "generateContent" in item.get(
+                        "supportedGenerationMethods", []
+                    )
+                }
+                self._model_list = tuple(sorted(names))[:40]
+                self._model_list_checked_at = now
+                return self._model_list
+            except (httpx.HTTPError, ValueError, TypeError) as exc:
+                _LOG.warning(
+                    "Gemini model metadata lookup unavailable type=%s",
+                    type(exc).__name__,
+                )
+                raise ResearchUnavailable(
+                    "Unable to list Gemini models for this API key."
+                ) from exc
 
     async def ask(self, *, asset: str, venues: tuple[str, ...]) -> AiResearch:
         """Only called by an explicit Discord button; zero background LLM calls."""
@@ -152,15 +209,21 @@ class GeminiResearch:
                     raise ValueError("unvalidated Gemini output")
             except httpx.HTTPStatusError as exc:
                 code = exc.response.status_code
-                if code in (401, 403, 429):
+                if code in (401, 403, 404, 429):
                     await asyncio.to_thread(
                         self.market.pause_ai_requests, model=self.model,
                         now=now, seconds=3600,
                     )
                 _LOG.warning("RivaL Gemini unavailable, HTTP %d", code)
-                raise ResearchUnavailable(
+                explanation = (
+                    f"Gemini model {self.model} returned HTTP 404. "
+                    "It is unavailable for this API key/project. "
+                    "Use Check models to inspect advertised alternatives "
+                    "(listing alone cannot guarantee generation)."
+                    if code == 404 else
                     f"Gemini unavailable (HTTP {code}); no AI forecast generated."
-                ) from exc
+                )
+                raise ResearchUnavailable(explanation) from exc
             except (httpx.HTTPError, ValueError, KeyError, IndexError, TypeError) as exc:
                 _LOG.warning("RivaL Gemini response rejected: %s", type(exc).__name__)
                 raise ResearchUnavailable(

@@ -17,7 +17,7 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 ## Status
 
-**Active: first public perpetuals collector merged; full conversion remains unfinished.** PR #9 merged the forecast/feedback ledger; PR #10 merged the bounded no-key Hyperliquid adapter, immutable PostgreSQL candle/context store and explicit probe. GitHub exact-head PR CI and merged main CI for PR #10 both passed Ruff and 81 tests, including PostgreSQL 16 integration. The existing sports dashboard remains the deployed behavior. Automatic data collection, multi-venue ingest, model training, retraining and crypto Discord predictions are not implemented or validated.
+**Active: two public feed adapters and shadow learning evaluation merged; full conversion remains unfinished.** PR #9 delivered forecast/outcome ledger; PR #10 added bounded Hyperliquid ingestion; PR #11 added independent dYdX v4 USD candles and shared PostgreSQL compatibility (88 tests); PR #12 added time-safe features, delayed-label online logistic shadow evaluation and read-only DB evaluation (94 tests). The existing sports dashboard remains deployed. Real Discloud endpoint reachability, continuous ingestion, production model/version control, automatic model promotion, the other eight feed adapters and crypto Discord predictions are **not** implemented or verified.
 
 ## October 28, 2026: bounded market-data ingestion slice
 
@@ -69,7 +69,7 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 `LocationOnboardingService`, `CurrentBoardCollector`,
 `ParlayBuilder`, and `ColdArchiveRuntime` -> `/rival` and views.
 
-As of 2026-10-27, Kraken's public Futures charts documentation offers no-key chart candles; Hyperliquid's public Info endpoint offers candle snapshots and asset contexts (funding/open interest); Bybit V5 offers no-key historical klines, funding and open-interest data but exchange availability varies by location. Provider selection requires endpoint and regional-validation checks before integration. Historical retention, websocket consistency, and missing fields must be handled explicitly.
+The first two source integrations are Hyperliquid (USDC perpetuals) and dYdX v4 Indexer (USD perpetuals), both bounded and read-only but **not verified reachable from Discloud**. Kraken is excluded per owner request, and no source geographic restrictions may be bypassed. Provider-specific contract identities and missing data must be preserved.
 
 ## Changes / validation / cleanup / conflicts
 
@@ -88,7 +88,7 @@ As of 2026-10-27, Kraken's public Futures charts documentation offers no-key cha
 
 ## Next step
 
-The first isolated ledger/fusion slice was merged after successful exact-head CI and focused diff review. Next, verify which permitted public perpetuals market-data endpoints are reachable from Discloud; implement bounded, normalized, independently traced read-only ingestion and point-in-time features into the existing PostgreSQL store, then connect genuine forecasts/settlements to the tested ledger. Integrate model training and Discord UI only after evaluation gates. Do not claim live predictions or switch the active task prematurely.
+PRs #9-12 contain the tested outcome ledger, two bounded public feed adapters and a shadow-only time-safe learning evaluator. Next, validate read-only Hyperliquid and dYdX probes on the actual Discloud host, check permitted regional access, and conduct supervised immutable ingestion. Add a third independent verified venue before meeting the existing 3-source fusion quorum. After collecting genuinely observed time-series data, measure out-of-sample calibration against baselines; only then build health-gated scheduled ingestion, automated retraining with model versioning and rollback, and a crypto Discord UI. Backfills are not live prediction evidence. No trading credentials or profit guarantees.
 
 ---
 

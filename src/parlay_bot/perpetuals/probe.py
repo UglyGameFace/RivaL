@@ -13,6 +13,7 @@ from parlay_bot.perpetuals.hyperliquid import HyperliquidMarketClient
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="RivaL public perpetual feed probe")
+    parser.add_argument("--provider", choices=["hyperliquid", "dydx"], default="hyperliquid")
     parser.add_argument("--assets", nargs="+", default=["BTC", "ETH", "SOL"])
     parser.add_argument("--interval", type=int, choices=[5, 15, 60, 240], default=5)
     parser.add_argument("--bars", type=int, default=48)
@@ -20,7 +21,12 @@ def main() -> None:
     args = parser.parse_args()
 
     async def read():
-        client = HyperliquidMarketClient()
+        if args.provider == "dydx":
+            from parlay_bot.perpetuals.dydx import DydxMarketClient
+
+            client = DydxMarketClient()
+        else:
+            client = HyperliquidMarketClient()
         try:
             return await client.collect(
                 assets=tuple(args.assets), interval_minutes=args.interval, bars=args.bars
@@ -30,8 +36,8 @@ def main() -> None:
 
     batch = asyncio.run(read())
     summary = {
-        "venue": "hyperliquid", "status": "validated_public_response",
-        "contracts": sorted(x.contract for x in batch.contexts),
+        "venue": args.provider, "status": "validated_public_response",
+        "contracts": sorted({x.contract for x in batch.candles}),
         "complete_candles": len(batch.candles),
         "observed_at": batch.observed_at.isoformat(),
         "persisted": False,

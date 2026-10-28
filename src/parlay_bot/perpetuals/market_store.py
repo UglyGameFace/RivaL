@@ -67,12 +67,12 @@ class PerpetualMarketStore:
 
     def ingest(self, batch: MarketBatch) -> MarketWriteResult:
         """Atomically insert closed candles; retries cannot rewrite historical prices."""
-        if not batch.contexts or not batch.candles:
-            raise ValueError("batch requires market contexts and closed candles")
+        if not batch.candles:
+            raise ValueError("batch requires closed candles")
         keys = {(x.venue, x.contract, x.quote) for x in batch.contexts}
         if len(keys) != len(batch.contexts) or any(
-            (x.venue, x.contract, x.quote) not in keys
-            or x.interval_minutes != batch.interval_minutes
+            x.interval_minutes != batch.interval_minutes
+            or (bool(keys) and (x.venue, x.contract, x.quote) not in keys)
             or utc(x.observed_at) != utc(batch.observed_at)
             or utc(x.opened_at) >= utc(x.closed_at)
             or utc(x.closed_at) >= utc(batch.observed_at)

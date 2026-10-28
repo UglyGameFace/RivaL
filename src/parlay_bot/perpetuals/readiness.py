@@ -185,4 +185,4 @@ def explain_venue_readiness(readiness: dict, venue: str) -> str:
         f"Forward-evaluable: **5m {record['evaluated_5m']}** / "
         f"**15m {record['evaluated_15m']}**."
         + "\nBackfilled candles never count as past live predictions."
-    ).replace("\\\n", "\n")
+    )

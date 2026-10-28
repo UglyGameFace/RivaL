@@ -31,6 +31,8 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
   15-minute, 1-hour, 4-hour and 24-hour returns/volatility, plus any available
   7/30/90 day and 6-calendar-month baseline returns, then makes an independent
   15m research assessment. It never bypasses missing/blocked sources.
+- New PostgreSQL 16 integration test verifies atomic quota, idempotent stored
+  AI responses and persisted provider pause across service instances.
 - Evidence SHA-256 keyed Gemini response cache in PostgreSQL survives
   bot restarts. Atomic per-model UTC-day quota and cooldown persist across
   processes; identical evidence triggers ZERO new Gemini requests.

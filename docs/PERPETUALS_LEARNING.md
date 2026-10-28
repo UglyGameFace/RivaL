@@ -523,3 +523,50 @@ Prospective issuance/settlement runs on the existing five-minute collector caden
 trades. Read-only forecast issuance, score settlement and UI audit
 continue across process restarts using the existing PostgreSQL database.
 No Gemini calls, model upgrade or paid provider changes are needed.
+
+## Autonomous math, Gemini, and prediction-accuracy audit (one combined PR)
+
+RivaL's five-minute Discloud collector is the authoritative market clock.
+After collection it runs an isolated mathematical prospective-audit cycle:
+train from strictly older **resolved labels only**, issue immutable
+5m/15m predictions before the respective future candle closes, and score
+each when the same exchange confirms the next target candle. The weights
+are replayed from the observed data, so the model can learn without the
+user making bets. Automatic retraining is not a guarantee of improvement.
+
+A second **Gemini research** path operates by default with an existing
+Discloud Gemini key. It only attempts once per BTC/ETH/SOL every **four
+UTC hours**, at most 18 candidate requests/day (the separate Gemini quota
+table retains its default 24/day cap). Every request requires at least three
+currently healthy sources and enough point-in-time history; reuse of
+unchanged evidence is free through the SHA-256 PostgreSQL answer cache.
+A Gemini opinion is stored as a directional/uncertain qualitative result;
+it is not converted into a mathematically calibrated probability. An
+additional immutable, venue-pinned, five-minute **AI forward ledger**
+records when an opinion was issued, what evidence was available, and how
+the later same-exchange close actually moved. Neutral moves and
+`uncertain` opinions cannot become fabricated winning predictions.
+API failures do not interrupt the mathematical loop or collection.
+
+The shadow model-gate compares forward Brier against a base-rate over
+**unique** UTC five-minute target windows; correlated exchanges are
+averaged into the same window rather than pretending ten confirmations
+are ten independent bets. Qualification requires at least 100 distinct
+forward-market windows across at least seven different dates and an
+average Brier margin of 0.005. Evaluation re-runs as new outcomes mature,
+and the shadow qualification can be withdrawn automatically. It does
+**not** authorize live trading or turn a research model into proven profit.
+
+The private /rival-research **Accuracy** tab now queries PostgreSQL
+each time and separately reports mathematical 5m/15m calibration and
+Brier, forward unique-market timestamps, a previous-week comparison
+where sufficiently populated, sample/model-gate counts, and Gemini
+directional decisions/abstentions. Cost-adjusted sample bps are
+**hypothetical** using an assumed 20 basis-point roundtrip cost and
+are explicitly not exchange fills; no funding or actual execution data.
+Out-of-sample improvement and financial profitability require further
+long-run verification, source-gaps review, risk limits and actual venue
+execution assumptions. No automatic wager is made.
+
+Set `RIVAL_GEMINI_AUTO_ENABLED=false` to disable the budgeted AI worker
+without affecting all mathematical monitoring and data collection.

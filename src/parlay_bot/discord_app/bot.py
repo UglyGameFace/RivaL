@@ -20,6 +20,7 @@ from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
 from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
+from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import GeminiResearch
@@ -144,6 +145,17 @@ class RivalDiscordClient(discord.Client):
                 cooldown_seconds=settings.rival_gemini_cooldown_seconds,
             )
             if self.perp_collector is not None else None
+        )
+        self.autonomous: AutonomousResearch | None = (
+            AutonomousResearch(
+                self.perp_collector.market,
+                ai=self.gemini_research,
+                venues=tuple(self.perp_collector.providers),
+                assets=self.perp_collector.assets,
+                auto_ai=settings.rival_gemini_auto_enabled,
+            )
+            if self.forward_audit is not None and self.perp_collector is not None
+            else None
         )
 
         self._register_commands()
@@ -280,13 +292,18 @@ class RivalDiscordClient(discord.Client):
             # Forward evaluation is on the same UTC 5-minute cadence as
             # market observation. It makes no exchange or Gemini API calls.
             # Failure is isolated from both collection and Discord.
-            if self.forward_audit is not None:
+            if self.autonomous is not None:
                 try:
-                    await asyncio.to_thread(self.forward_audit.run_once)
+                    issued, settled, ai_issued = await self.autonomous.cycle()
+                    _LOG.info(
+                        "RivaL automatic research math_issued=%s "
+                        "math_settled=%s ai_issued=%s",
+                        issued, settled, ai_issued,
+                    )
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL prospective audit failed safely")
+                    _LOG.exception("RivaL autonomous research cycle failed safely")
             await asyncio.sleep(
                 next_collection_delay(
                     datetime.now(UTC),

@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.autonomous import AutonomousResearch, _utc
+from parlay_bot.perpetuals.calibration_audit import forward_reliability
 from parlay_bot.perpetuals.cost_stress import score_cost_stress
 from parlay_bot.perpetuals.forward_audit import MODEL as FORWARD_MODEL
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -151,7 +152,9 @@ def analytics_snapshot(
                 else "unchanged"
             )
         stress = score_cost_stress(recent)
+        reliability = forward_reliability(recent)
         by_horizon[h] = {
+            "forward_reliability_7d": reliability,
             "cost_stress_7d": stress,
             "last_7d": today, "prior_7d": previous,
             "trend": trend, "last_7d_skill": current_skill,

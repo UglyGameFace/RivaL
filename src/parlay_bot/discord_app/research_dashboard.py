@@ -38,6 +38,7 @@ _SECTIONS = {
         ("venue", "Exchange blocker"),
         ("five", "5-minute results"),
         ("fifteen", "15-minute results"),
+        ("calibration", "Probability reliability"),
         ("gemini", "Gemini results"),
         ("method", "Scoring method"),
     ),
@@ -61,6 +62,7 @@ _FIELD_GROUPS = {
         "venue": ("Why this exchange",),
         "five": ("Forward 5-minute evaluation", "Math 5m"),
         "fifteen": ("Forward 15-minute evaluation", "Math 15m"),
+        "calibration": ("Forward 5m calibration", "Forward 15m calibration"),
         "gemini": ("Gemini · independent forward outcomes",
                    "Independent track analytics"),
         "method": ("How accuracy is audited",),
@@ -1145,6 +1147,39 @@ class ResearchDashboard(discord.ui.View):
                                     f"{harsh['status'].replace('_', ' ')}). "
                                     "NOT actual fills or trading approval."
                                 )[:1024],
+                                inline=False,
+                            )
+                        for horizon in (5, 15):
+                            reliability = details["math"][horizon][
+                                "forward_reliability_7d"
+                            ]
+                            ece = (
+                                f"{reliability['ece']:.4f}"
+                                if reliability["ece"] is not None
+                                else "not measurable"
+                            )
+                            bins = [
+                                f"{part['bin'] / 10:.1f}–"
+                                f"{(part['bin'] + 1) / 10:.1f}: "
+                                f"n={part['n']}, "
+                                f"p={part['average_probability']:.2f}, "
+                                f"observed={part['observed_up_rate']:.2f}"
+                                for part in reliability["bins"][:5]
+                            ]
+                            embed.add_field(
+                                name=f"Forward {horizon}m calibration",
+                                value=(
+                                    f"**{reliability['unique_targets']}** independent "
+                                    f"UTC target outcomes over **{reliability['days']}** "
+                                    f"days; conflicting venue labels: "
+                                    f"**{reliability['disputed_targets']}**.\\n"
+                                    f"Expected calibration error: **{ece}**. "
+                                    f"Status: **{reliability['status'].replace('_', ' ')}**.\\n"
+                                    f"Bin evidence (predicted vs observed):\\n"
+                                    + ("\\n".join(bins) if bins else "Not enough outcomes.")
+                                    + "\\nHistorical bins are descriptive, NOT "
+                                      "a calibrated deployable model or trading approval."
+                                ).replace("\\\\n", "\\n")[:1024],
                                 inline=False,
                             )
                         ai_status = details["gemini"]

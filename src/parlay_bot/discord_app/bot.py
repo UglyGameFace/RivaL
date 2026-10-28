@@ -44,6 +44,10 @@ class RivalDiscordClient(discord.Client):
 
         self.store = build_hot_store(settings)
         self.store.initialize()
+        _LOG.info(
+            "RivaL operational storage initialized (backend=%s)",
+            self.store.database.backend,
+        )
         self.registry = JurisdictionRegistry(verified_us_sportsbooks())
         self.zip_resolver = ZipStateResolver()
         self.location_service = LocationOnboardingService(

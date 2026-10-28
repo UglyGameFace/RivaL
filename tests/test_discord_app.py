@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import pytest
 
 from parlay_bot.config import Settings
@@ -105,14 +107,18 @@ async def test_modals_enforce_location_input_bounds(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_discord_client_registers_one_rival_command_without_message_intent(tmp_path) -> None:
+async def test_discord_client_registers_one_rival_command_without_message_intent(
+    tmp_path, caplog
+) -> None:
     settings = Settings(
         _env_file=None,
         rival_storage_backend="sqlite",
         rival_db_path=str(tmp_path / "rival.sqlite"),
         discord_token=None,
     )
-    client = RivalDiscordClient(settings)
+    with caplog.at_level(logging.INFO, logger="parlay_bot.discord_app.bot"):
+        client = RivalDiscordClient(settings)
+    assert "RivaL operational storage initialized (backend=sqlite)" in caplog.text
     try:
         command = client.tree.get_command("rival")
         assert command is not None

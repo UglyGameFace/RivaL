@@ -58,3 +58,20 @@ be unsafe when the source file's age, completeness, or deployment provenance is 
 If a deployed SQLite file contains production data that must be preserved, inspect and back it up
 first, then perform a one-time controlled import before enabling PostgreSQL as the production source
 of truth.
+
+## Live production verification (no credentials in logs)
+
+After deploying a revision with the startup backend log:
+
+1. Confirm `RIVAL_STORAGE_BACKEND=postgres` and that the private `RIVAL_DATABASE_URL` is
+   configured in Discloud. Never post or log the URL itself.
+2. Look for `RivaL operational storage initialized (backend=postgres)` in startup logs.
+   This line only appears **after** the selected database has initialized successfully.
+3. Run `/rival`, select a state once if needed, restart the bot, and run `/rival` again
+   with the same Discord account. The chosen state should still appear.
+4. Confirm no unexpected database connection or schema errors appear after restart.
+
+A working slash command without the backend log cannot prove PostgreSQL was selected; a
+successful backend startup without a restart check cannot prove persisted application state.
+Google Drive OAuth and cold-archive upload verification are separate and should remain disabled
+until the credentials and archive path have been validated.

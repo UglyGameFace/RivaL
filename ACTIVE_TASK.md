@@ -17,7 +17,7 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 ## Status
 
-**Active: research and execution-path inspection.** No perpetual-futures implementation has been merged. The existing sports application remains the live production behavior.
+**Active: first foundational prediction/feedback slice under CI validation.** The sports application remains the live production behavior. New modules are isolated, not scheduled, not fed by exchange APIs, and not exposed in Discord. No claims of trained predictions or demonstrated profitability.
 
 ## Findings / authoritative execution path
 
@@ -30,7 +30,7 @@ As of 2026-10-27, Kraken's public Futures charts documentation offers no-key cha
 
 ## Changes / validation / cleanup / conflicts
 
-- New conversion code: none yet.
+- Added the first isolated conversion code on `feat/rival-perps-forecast-ledger`: source-provenance-aware probability fusion (`perpetuals/fusion.py`) and an idempotent, transactional forecast/outcome ledger (`perpetuals/ledger.py`) using the existing relational database. Added local SQLite unit tests and PostgreSQL integration coverage plus `docs/PERPETUALS_LEARNING.md`. The runtime entry point is intentionally unchanged.
 - Existing PostgreSQL/Discord runtime on `main` remains unchanged.
 - Backlog unrelated requests; retain one active implementation task, including verification and cleanup.
 - The previous PostgreSQL cutover has passed GitHub CI and a user-observed Discloud restart/persistence test, recorded below.
@@ -45,7 +45,7 @@ As of 2026-10-27, Kraken's public Futures charts documentation offers no-key cha
 
 ## Next step
 
-Inspect the existing sports command and storage execution paths and identify the smallest complete conversion design. Choose a supported no-key derivatives market-data source, implement normalized read-only ingestion with tests into **existing PostgreSQL**, then add labelled prediction/evaluation and Discord presentation with end-to-end validation. Never silently replace working storage or move production secrets.
+Validate this first ledger/fusion slice through exact-head Ruff/pytest/PostgreSQL CI, review all affected files and clean conflicts, and merge only after successful checks. Then validate accessible public market-data endpoints from Discloud and implement bounded read-only ingestion/normalization and point-in-time source forecasts into the existing PostgreSQL database. Do not start a separate feature or claim live predictions before the full pipeline is tested.
 
 ---
 

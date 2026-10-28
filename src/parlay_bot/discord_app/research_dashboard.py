@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import discord
 
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
+from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
@@ -40,8 +41,9 @@ class _AssetSelect(discord.ui.Select["ResearchDashboard"]):
 class _ScreenButton(discord.ui.Button["ResearchDashboard"]):
     def __init__(self, screen: str) -> None:
         super().__init__(
-            label="Math & History" if screen == "math" else "Gemini AI",
-            emoji="📐" if screen == "math" else "✨",
+            label={"math": "Math & History", "ai": "Gemini AI",
+                   "accuracy": "Accuracy"}[screen],
+            emoji={"math": "📐", "ai": "✨", "accuracy": "📊"}[screen],
             style=discord.ButtonStyle.primary,
             custom_id=f"rival:research:{screen}", row=0,
         )
@@ -189,7 +191,7 @@ class ResearchDashboard(discord.ui.View):
 
     def _rebuild(self) -> None:
         self.clear_items()
-        for name in ("math", "ai"):
+        for name in ("math", "ai", "accuracy"):
             item = _ScreenButton(name)
             # A selected tab is still clickable. Gray/disabled made users
             # think the entire research engine was unavailable.
@@ -219,9 +221,11 @@ class ResearchDashboard(discord.ui.View):
         self._history_cache[self.asset] = (now, value)
         return value
 
-    def _live_feed_status(self) -> tuple[int, int, datetime | None]:
+    def _live_feed_status(
+        self,
+    ) -> tuple[int, int, datetime | None, datetime | None]:
         if self.market is None:
-            return (0, len(self.venues), None)
+            return (0, len(self.venues), None, None)
         now = datetime.now(UTC)
         rows = self.market.feed_health()
         observed = [
@@ -229,6 +233,7 @@ class ResearchDashboard(discord.ui.View):
             and row["venue"] in self.venues
         ]
         fresh = []
+        recent_closes = []
         for row in observed:
             if row["status"] != "ok" or not row.get("last_success_at"):
                 continue
@@ -248,6 +253,7 @@ class ResearchDashboard(discord.ui.View):
                     continue
                 if timedelta(0) <= now - closed <= timedelta(minutes=10):
                     fresh.append(row)
+                    recent_closes.append(closed.astimezone(UTC))
             except (TypeError, ValueError):
                 continue
         attempts = []
@@ -258,8 +264,11 @@ class ResearchDashboard(discord.ui.View):
                     attempts.append(when.astimezone(UTC))
             except (TypeError, ValueError):
                 continue
-        return (len({r["venue"] for r in fresh}),
-                len(self.venues), max(attempts, default=None))
+        return (
+            len({r["venue"] for r in fresh}),
+            len(self.venues), max(attempts, default=None),
+            max(recent_closes, default=None),
+        )
 
     async def render(self) -> discord.Embed:
         embed = discord.Embed(
@@ -274,20 +283,27 @@ class ResearchDashboard(discord.ui.View):
         # PostgreSQL collection status. "Live" means fresh recent polling,
         # not a tick-by-tick exchange order book stream.
         try:
-            live, configured, checked = await asyncio.to_thread(
+            live, configured, checked, last_close = await asyncio.to_thread(
                 self._live_feed_status,
             )
             stamp = (
                 discord.utils.format_dt(checked, style="R")
                 if checked is not None else "not yet"
             )
+            bar = (
+                discord.utils.format_dt(last_close, style="R")
+                if last_close is not None else "unavailable"
+            )
             embed.add_field(
                 name="🟢 Live collection status",
                 value=(
-                    f"**{live}/{configured}** exchanges recently collecting "
-                    f"{self.asset}. Last checked **{stamp}**. "
-                    "Live figures reload when you tap **Update live stats** "
-                    "or switch screens. Market polling continues every 5m."
+                    f"**{live}/{configured}** exchanges with recently saved "
+                    f"{self.asset} candles. "
+                    f"Last source check: **{stamp}**. "
+                    f"Newest completed candle: **{bar}**.\n"
+                    "Database read: **just now**. Values update on navigation "
+                    "or **Update live stats**; exchange polling runs every 5m, "
+                    "not tick-by-tick."
                 ), inline=False,
             )
         except Exception:  # noqa: BLE001 - collection may be down
@@ -444,6 +460,102 @@ class ResearchDashboard(discord.ui.View):
                             )
             embed.set_footer(
                 text="Historical backfills do not count as live forward tests."
+            )
+            return embed
+
+        if self.screen == "accuracy":
+            embed.description = (
+                "**Prospective accuracy ledger** · RivaL records shadow "
+                "predictions before future candles exist, then settles them "
+                "from the SAME exchange after outcomes are observed. "
+                "No live bets or automated trading."
+            )
+            if self.market is None or not self.shadow_enabled:
+                embed.add_field(
+                    name="Accuracy tracking",
+                    value="Forward shadow evaluation is disabled or PostgreSQL "
+                          "is unavailable. Accuracy cannot be established.",
+                    inline=False,
+                )
+            else:
+                try:
+                    report = await asyncio.to_thread(
+                        ForwardAccuracyMonitor(self.market).summary,
+                        asset=self.asset,
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL prospective score read unavailable")
+                    embed.add_field(
+                        name="Accuracy tracking",
+                        value="The forward prediction ledger is temporarily "
+                              "unavailable. Market collection continues.",
+                        inline=False,
+                    )
+                else:
+                    for horizon in (5, 15):
+                        stats = report["last_7d"][horizon]
+                        earlier = report["prior_7d"][horizon]
+                        n = stats["settled"]
+                        if n == 0:
+                            value = (
+                                f"Issued: **{stats['issued']}** · settled: **0**. "
+                                "No measurable accuracy yet."
+                            )
+                        else:
+                            hit = (
+                                f"{stats['hit_rate'] * 100:.1f}%"
+                                if stats["hit_rate"] is not None else "unavailable"
+                            )
+                            value = (
+                                f"Issued: **{stats['issued']}**, settled: "
+                                f"**{n}** across {stats['venues']} venues.\n"
+                                f"Directional hit rate: **{hit}**.\n"
+                                f"Brier loss: **{stats['brier']:.4f}** vs "
+                                f"baseline **{stats['baseline_brier']:.4f}** "
+                                "(lower is better)."
+                            )
+                            if stats["model_beats_baseline"] is None:
+                                value += (
+                                    "\nNot enough completed trials to "
+                                    "judge predictive skill (minimum 50)."
+                                )
+                            else:
+                                value += (
+                                    "\nCandidate "
+                                    + ("beats" if stats["model_beats_baseline"]
+                                       else "does not beat")
+                                    + " baseline in this window."
+                                )
+                        if earlier["settled"] >= 50 and n >= 50:
+                            value += (
+                                f"\nPrevious non-overlapping 7 days: "
+                                f"{earlier['settled']} settled; "
+                                f"Brier {earlier['brier']:.4f} vs "
+                                f"{stats['brier']:.4f} now."
+                            )
+                        else:
+                            value += (
+                                "\nAccuracy trend: awaiting comparable "
+                                "previous/current 7-day cohorts."
+                            )
+                        embed.add_field(
+                            name=f"Forward {horizon}-minute evaluation",
+                            value=value[:1024], inline=False,
+                        )
+                    embed.add_field(
+                        name="How accuracy is audited",
+                        value=(
+                            "These are future-outcome scores, not historical "
+                            "backfill wins. Each forecast is immutable and "
+                            "settled once. Exchange returns are correlated, "
+                            "so summed scores are NOT independent bets. "
+                            "A better score on a small sample doesn't prove "
+                            "a profitable edge after fees, funding or slippage."
+                        ), inline=False,
+                    )
+            embed.set_footer(
+                text="Live PostgreSQL audit • New outcomes accrue over time • "
+                     "No accuracy guarantee"
             )
             return embed
 

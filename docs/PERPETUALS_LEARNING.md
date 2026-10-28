@@ -653,3 +653,22 @@ results**. A stream being mathematically ready does not establish a
 positive forward edge; the independent Brier, calibration, baseline
 and hypothetical cost-adjusted accuracy metrics remain the only
 grounded way to evaluate possible improvement.
+
+## Tonight's honest model readiness
+
+Opening `/rival-research` -> **Accuracy** now loads source-specific live
+causal readiness and the actual 5-minute and 15-minute *prospective*
+settlement ledger from existing PostgreSQL. It displays a prominent
+**NO VERIFIED BETTING EDGE** verdict with genuine settled counts.
+A healthy exchange API is not itself a model, and model promotion is
+still shadow-only. Full live trading fees, liquidation, slippage and
+funding are not validated, and RivaL places no exchange orders.
+
+The new exchange dropdown inspects one venue's actual current
+`needs_live_history`, `needs_matured_labels`, `eligible_shadow`,
+stale, blocked or invalid status. It displays the live-observed
+consecutive five-minute candle streak against the 65-bar minimum,
+the required additional consecutive candles and genuine causal
+5m/15m labels/evaluations. Historical download/backfills do not
+impersonate live predictions. The dropdown is private and refreshes
+from PostgreSQL without spending exchange or Gemini API requests.

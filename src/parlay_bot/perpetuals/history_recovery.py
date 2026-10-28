@@ -136,13 +136,12 @@ class GateHistoryRecovery:
             conn.execute(
                 """UPDATE perp_history_recovery SET
                    next_opened_at=CASE
-                     WHEN ? IS NOT NULL AND ? > next_opened_at THEN ?
+                     WHEN ? > next_opened_at THEN ?
                      ELSE next_opened_at END,
                    attempted_at=?,inserted_bars=inserted_bars+?,
                    empty_windows=empty_windows+?,status=?,retry_after=?
                    WHERE venue='gate' AND asset=?""",
                 (next_open.isoformat() if next_open else None,
-                 next_open.isoformat() if next_open else None,
                  next_open.isoformat() if next_open else None,
                  now.isoformat(), inserted, int(empty), status,
                  retry_after.isoformat() if retry_after else None, asset),

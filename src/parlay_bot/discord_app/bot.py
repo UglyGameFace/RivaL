@@ -22,6 +22,8 @@ from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
+from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
+from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import GeminiResearch
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
@@ -124,6 +126,19 @@ class RivalDiscordClient(discord.Client):
                 bars=settings.rival_perp_collection_bars,
             )
         self._perp_task: asyncio.Task[None] | None = None
+        self.history_auditor: SixMonthQualityAudit | None = (
+            SixMonthQualityAudit(self.perp_collector.market)
+            if self.perp_collector is not None and settings.rival_history_audit_enabled
+            else None
+        )
+        self.history_recovery: GateHistoryRecovery | None = (
+            GateHistoryRecovery(
+                self.perp_collector.market, assets=self.perp_collector.assets,
+            )
+            if self.perp_collector is not None
+            and settings.rival_history_recovery_enabled else None
+        )
+        self._history_task: asyncio.Task[None] | None = None
         self.shadow_monitor: ShadowLearningMonitor | None = (
             ShadowLearningMonitor(self.store)
             if self.perp_collector is not None and settings.rival_shadow_learning_enabled
@@ -262,6 +277,14 @@ class RivalDiscordClient(discord.Client):
                 self._perp_loop(), name="rival-perp-auto-collector"
             )
 
+        if (
+            (self.history_auditor is not None or self.history_recovery is not None)
+            and self._history_task is None
+        ):
+            self._history_task = asyncio.create_task(
+                self._history_loop(), name="rival-perp-history-recovery"
+            )
+
         if self.shadow_monitor is not None and self._shadow_task is None:
             _LOG.info(
                 "RivaL automatic shadow learning ENABLED interval=%ds "
@@ -311,6 +334,47 @@ class RivalDiscordClient(discord.Client):
                 )
             )
 
+    async def _history_loop(self) -> None:
+        """Low-priority history repair; live feeds and predictions never wait."""
+        await self.wait_until_ready()
+        await asyncio.sleep(20)
+        last_audited_hour: int | None = None
+        while not self.is_closed():
+            if self.history_recovery is not None:
+                try:
+                    inserted = await self.history_recovery.run_once()
+                    if inserted:
+                        _LOG.info("RivaL verified historical Gate recovery inserted=%d", inserted)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL historical recovery failed safely")
+            if self.history_auditor is not None and self.perp_collector is not None:
+                now = datetime.now(UTC)
+                hour = int(now.timestamp() // 3600)
+                if hour != last_audited_hour:
+                    last_audited_hour = hour
+                    asset = self.perp_collector.assets[hour % len(
+                        self.perp_collector.assets
+                    )]
+                    try:
+                        report = await asyncio.to_thread(
+                            self.history_auditor.audit_asset,
+                            asset=asset,
+                            venues=tuple(self.perp_collector.providers),
+                        )
+                        _LOG.info(
+                            "RivaL six-month history audit asset=%s streams=%d "
+                            "complete=%d",
+                            asset, len(report),
+                            sum(x["status"] == "complete" for x in report),
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("RivaL six-month history audit failed safely")
+            await asyncio.sleep(self.settings.rival_history_recovery_seconds)
+
     async def _shadow_loop(self) -> None:
         await self.wait_until_ready()
         assert self.shadow_monitor is not None
@@ -350,6 +414,13 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self._history_task is not None:
+            self._history_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._history_task
+            self._history_task = None
+        if self.history_recovery is not None:
+            await self.history_recovery.aclose()
         if self._shadow_task is not None:
             self._shadow_task.cancel()
             with suppress(asyncio.CancelledError):

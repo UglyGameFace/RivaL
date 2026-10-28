@@ -406,3 +406,27 @@ working across bot restarts. Displayed limits are **RivaL protection limits**,
 not Google's actual account/project limits. A shown retry time is the
 earliest RivaL will attempt again, not a guarantee that Google will accept
 the next request. Source market collection is never paused by Gemini.
+
+## Gemini model listing clarification
+
+"Configured" is the exact model RivaL will send to `generateContent`.
+"Advertised" was previously an **alphabetical**, first-12-only
+metadata list, not a ranking of intelligence. Seeing Gemini 2.5
+above 3.8 did not mean that 2.5 was configured or preferred.
+
+The improved `Check models` page shows the configured model first,
+reports whether the full API catalog advertises that model with the
+`generateContent` method for the running key, then shows up to five
+other text-research models sorted newest-version first. Unrelated
+image, TTS, speech, live, embedding and computer-control variants are
+excluded. The metadata endpoint's `nextPageToken` is followed before
+determining presence or absence, within a safe, bounded page limit.
+If listing is incomplete the bot reports unavailable rather than
+wrongly claiming the model is missing. Catalog results are cached for
+one hour and **do not count** toward Gemini analysis requests.
+
+A listed model is still **not verified generation access**: that
+requires an actual successful `generateContent` call and is subject
+to account/project quotas and regional limitations. This UI change
+does not automatically select a lower model, place trades or affect
+the market collector.

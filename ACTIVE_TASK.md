@@ -38,6 +38,23 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
   registry, cross-venue probability synthesis, calibration and promotion
   remain explicitly incomplete.
 
+## October 28, 2026: Gemini advertised model list relevance fix
+
+- User's 1:05 PM Discord screenshot showed "Configured: gemini-3.8-flash"
+  followed by an alphabetical 2.5/3.1 list. The UI showed only 12
+  lexicographically sorted models, NOT a capability ranking.
+- Update Check models to enumerate all catalog pages, keep only text
+  models advertising generateContent, and order alternatives newest
+  version first. Exclude image, speech, TTS, computer-use and embedding
+  product variants from this perpetual market research selector.
+- Place RivaL's configured model FIRST with clear whether it was
+  advertised in the COMPLETE model catalog. Do not confuse catalog
+  listing with a verified successful generation or claim API access.
+- Keep the one-hour metadata cache and no-key-leak rules. Metadata
+  checks do not reserve new Gemini generateContent requests.
+- Add pagination, filtering, ordering and explicit absence regression
+  tests. Keep primary ten-source collection independent.
+
 ## October 28, 2026: exact Gemini pause diagnostics for research menu
 
 - Owner's 9:38 AM Discord screenshot: Gemini UI crash is fixed, but

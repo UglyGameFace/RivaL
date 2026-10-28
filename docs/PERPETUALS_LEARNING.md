@@ -53,3 +53,30 @@ The implementation is read-only and has no trade execution or exchange
 credentials. Keep Google Drive archiving disabled pending its own OAuth
 validation; no new secrets, startup bypasses, or silent changes to the
 currently working sports app.
+
+## Point-in-time feature and shadow online learning (next slice)
+
+`perpetuals/features.py` reads the existing immutable per-venue candles,
+checks consistent UTC bar intervals and that every candle was **observed**
+before the issued prediction, then builds return, volatility, intrabar-range
+and relative-volume features. Raw prices from USD and USDC contracts are
+never averaged together. It skips simultaneous first-observation timestamps
+from historical backfills: a fetched dataset does not prove that a prediction
+could have been issued at those old timestamps.
+
+`perpetuals/learning.py` supplies a small online logistic baseline, run in
+strict chronological (prequential) order. Each prediction is recorded in
+memory **before** feedback, and weights update only when earlier labels have
+actually matured. It measures Brier score against a rolling base-rate
+benchmark. A favorable result is only a **shadow candidate**; it does not
+promote or deploy models automatically. Source-level, cross-venue signals,
+calibration and statistically stronger challengers remain future work.
+
+After several days of actual sampled market data are present in production
+PostgreSQL, run the **read-only** evaluation (no model publication):
+
+    python -m parlay_bot.perpetuals.evaluate --provider dydx --asset BTC --interval 5 --horizon 15
+
+Or use `--provider hyperliquid`. If only one-shot backfills exist, the
+correct output is zero causal examples, not made-up historical live accuracy.
+There is no live trading, periodic training or automatic promotion in this slice.

@@ -47,6 +47,21 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 - This is a code-integration candidate: Discloud's regional HTTP reachability,
   provider responses and data quality remain unverified until the real probe.
 
+## October 28, 2026: point-in-time feature and shadow learning evaluation
+
+- New feature extractor refuses chronology gaps, mismatched contracts, and
+  later-backfilled candles as if they had been observed before old predictions.
+- Read-only walk-forward logistic shadow evaluator trains **only** on matured
+  prior labels, compares probability quality to a rolling baseline, and does
+  not deploy a model or make trading recommendations.
+- Explicit owner-invoked PostgreSQL evaluation command reports causal sample
+  counts and metrics. No cron scheduler, exchange keys, or old Discord changes.
+- Tests exercise source identity, simulated feedback delays, absence of
+  look-ahead and baseline measurements.
+- Active conversion remains unfinished until a sufficient live sample of
+  permitted source data, successful evaluation, controlled model versioning,
+  and Discord end-to-end operation are proven.
+
 ## Findings / authoritative execution path
 
 `main.py` -> `parlay_bot.discord_app.bot.run_discord_bot` ->

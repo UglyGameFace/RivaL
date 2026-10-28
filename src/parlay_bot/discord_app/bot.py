@@ -22,6 +22,7 @@ from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
 from parlay_bot.perpetuals.gemini_research import GeminiResearch
+from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.storage.catalog import MarketCatalogStore
 from parlay_bot.storage.hot import PostgresHotStore, RelationalHotStore, SQLiteHotStore
@@ -103,6 +104,12 @@ class RivalDiscordClient(discord.Client):
                 bars=settings.rival_perp_collection_bars,
             )
         self._perp_task: asyncio.Task[None] | None = None
+        self.shadow_monitor: ShadowLearningMonitor | None = (
+            ShadowLearningMonitor(self.store)
+            if self.perp_collector is not None and settings.rival_shadow_learning_enabled
+            else None
+        )
+        self._shadow_task: asyncio.Task[None] | None = None
         secret = settings.gemini_api_key or settings.google_api_key
         self.gemini_research: GeminiResearch | None = (
             GeminiResearch(
@@ -187,6 +194,7 @@ class RivalDiscordClient(discord.Client):
                 market=collector.market if collector is not None else None,
                 ai=self.gemini_research,
                 venues=tuple(collector.providers) if collector is not None else (),
+                shadow_enabled=self.shadow_monitor is not None,
             )
             await interaction.edit_original_response(
                 embed=await dashboard.render(), view=dashboard,
@@ -218,6 +226,16 @@ class RivalDiscordClient(discord.Client):
                 self._perp_loop(), name="rival-perp-auto-collector"
             )
 
+        if self.shadow_monitor is not None and self._shadow_task is None:
+            _LOG.info(
+                "RivaL automatic shadow learning ENABLED interval=%ds "
+                "max_streams=%d model=shadow_only",
+                self.settings.rival_shadow_eval_seconds, 10,
+            )
+            self._shadow_task = asyncio.create_task(
+                self._shadow_loop(), name="rival-shadow-learning"
+            )
+
         if self.archive_runtime is not None and self._archive_task is None:
             self._archive_task = asyncio.create_task(
                 self._archive_loop(),
@@ -236,6 +254,18 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001 - collector never crashes Discord
                 _LOG.exception("RivaL perp automatic collection cycle failed")
             await asyncio.sleep(self.settings.rival_perp_collection_seconds)
+
+    async def _shadow_loop(self) -> None:
+        await self.wait_until_ready()
+        assert self.shadow_monitor is not None
+        while not self.is_closed():
+            try:
+                await asyncio.to_thread(self.shadow_monitor.run_once)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - shadow research cannot kill Discord
+                _LOG.exception("RivaL automatic shadow evaluation failed safely")
+            await asyncio.sleep(self.settings.rival_shadow_eval_seconds)
 
     async def _archive_loop(self) -> None:
         await self.wait_until_ready()
@@ -264,6 +294,11 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self._shadow_task is not None:
+            self._shadow_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._shadow_task
+            self._shadow_task = None
         if self._perp_task is not None:
             self._perp_task.cancel()
             with suppress(asyncio.CancelledError):

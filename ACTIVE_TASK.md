@@ -19,6 +19,25 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 **Active: all 10 perpetual adapters implemented; NINE venues now production-evidenced for BTC, ETH and SOL, Binance host blocked by HTTP 451.** PR #13 activated five-minute PostgreSQL ingestion, PR #14 integrated Bitget/Gate, PR #15 delivered the interactive market dashboard, PR #16 added OKX/KuCoin, PR #17 Deribit/Binance, and PR #18 Lighter/Phemex. Merged CI covers the adapters with mock HTTP, SQLite replay and PostgreSQL 16 integration tests. Owner's October 28 8:00 AM local Discord screenshot verifies fresh stored BTC candles from Hyperliquid, dYdX, Bitget and Gate. **Owner's 09:22–09:22:36 EDT Discloud log verifies Hyperliquid, dYdX, Bitget, Gate, OKX, KuCoin, Deribit, Lighter and Phemex all returned 200 and completed collection on BTC/ETH/SOL.** Binance exchangeInfo returned HTTP 451 from Discloud and was paused. Previously saved candle replays produced new=0 (deduplication), not evidence of failed collection. No account region classification or Binance routing workaround is inferred. Deployment may reveal geo blocks or real schema differences; only successful recent PostgreSQL source health and preserved historical data count as usable. ETH/SOL health, sustained uptime, automatic multi-source prediction generation, calibrated walk-forward accuracy, mature-outcome feedback/retraining and Discord signal UI remain unverified or incomplete. Issue #6 stays OPEN.
 
+## October 28, 2026: automatic evidence-only shadow-learning evaluation
+
+- Existing 10-venue collection and nine producer-verified venue feeds are preserved,
+  not replaced. Automatic Discloud update after GitHub merge is a deployment
+  expectation, NOT a substitute for runtime log and DB verification.
+- A separate hourly, bounded shadow evaluator uses persisted first-observed
+  candle timestamps, settled target outcomes and the existing walk-forward
+  logistic model. It re-evaluates only ten streams per cycle, rotates across
+  active streams, and stores observed counts, Brier and baseline scores in
+  PostgreSQL; Gemini and exchange APIs are not called by this worker.
+- The Math & History research panel shows measured outcomes after at least
+  50 causally valid settled evaluations per stream; before then it truthfully
+  reports insufficient evidence. No model approval, live trade signals or
+  leveraged orders; the original collector and sports command remain live.
+- This is a production-deployable shadow-monitor implementation awaiting
+  exact-head CI and subsequent Discloud log/database evidence. Full model
+  registry, cross-venue probability synthesis, calibration and promotion
+  remain explicitly incomplete.
+
 ## October 28, 2026: exact Gemini pause diagnostics for research menu
 
 - Owner's 9:38 AM Discord screenshot: Gemini UI crash is fixed, but

@@ -6,7 +6,7 @@ Never manufacture missing/unfinished candles or bypass unavailable endpoints.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
 
@@ -196,4 +196,11 @@ class HyperliquidMarketClient:
                 ))
             if len(candles) == count_before:
                 raise MarketDataError(f"no complete candle returned for {asset}")
-        return MarketBatch(tuple(contexts), tuple(candles), interval_minutes, observed)
+        # Record when the entire HTTP batch became available, not when the first
+        # request began. This prevents a future model from seeing data early.
+        available_at = observed if as_of is not None else datetime.now(UTC)
+        return MarketBatch(
+            tuple(replace(x, observed_at=available_at) for x in contexts),
+            tuple(replace(x, observed_at=available_at) for x in candles),
+            interval_minutes, available_at,
+        )

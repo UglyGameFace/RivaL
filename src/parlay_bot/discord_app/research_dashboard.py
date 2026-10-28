@@ -219,6 +219,50 @@ class ResearchDashboard(discord.ui.View):
                 "features. Unavailable sources are excluded and disclosed."
             ), inline=False,
         )
+        if self.ai is not None and self.ai.available:
+            try:
+                quota = await self.ai.request_status()
+                reasons = {
+                    "provider_error_pause": "A previous Google API error caused a pause",
+                    "minimum_spacing": "RivaL's minimum interval between AI requests",
+                    "daily_budget_exhausted": "RivaL's daily safety limit is reached",
+                }
+                model = discord.utils.escape_markdown(quota["model"])
+                if quota["ready"]:
+                    state = "**Available for a new request**"
+                else:
+                    state = " · ".join(
+                        reasons.get(reason, "Temporary pause")
+                        for reason in quota["reasons"]
+                    )
+                    retry = quota["retry_at"]
+                    if retry is not None:
+                        state += (
+                            "\nNext permitted request: "
+                            + discord.utils.format_dt(retry, style="f")
+                            + " ("
+                            + discord.utils.format_dt(retry, style="R")
+                            + ")"
+                        )
+                embed.add_field(
+                    name="Gemini model & request limits",
+                    value=(
+                        f"Model: **{model}**\n"
+                        f"RivaL usage: **{quota['requests_today']}/"
+                        f"{quota['rival_daily_limit']}** requests today "
+                        "(not Google's account-wide limit)\n"
+                        f"{state}"
+                    )[:1024],
+                    inline=False,
+                )
+            except Exception:  # noqa: BLE001 - no secrets in UI
+                _LOG.warning("RivaL Gemini quota status read unavailable")
+                embed.add_field(
+                    name="Gemini model & request limits",
+                    value="The stored request budget could not be read. "
+                          "No Google API request was made to check it.",
+                    inline=False,
+                )
         if self.opinion is not None and self.opinion.asset == self.asset:
             answer = self.opinion
             embed.add_field(

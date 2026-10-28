@@ -17,7 +17,22 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 ## Status
 
-**Active: two public feed adapters and shadow learning evaluation merged; full conversion remains unfinished.** PR #9 delivered forecast/outcome ledger; PR #10 added bounded Hyperliquid ingestion; PR #11 added independent dYdX v4 USD candles and shared PostgreSQL compatibility (88 tests); PR #12 added time-safe features, delayed-label online logistic shadow evaluation and read-only DB evaluation (94 tests). The existing sports dashboard remains deployed. Real Discloud endpoint reachability, continuous ingestion, production model/version control, automatic model promotion, the other eight feed adapters and crypto Discord predictions are **not** implemented or verified.
+**Active: integrate automatic source collection into the Discord runtime.** PRs #9–12 supplied two independent bounded data adapters, immutable PostgreSQL market storage and a shadow evaluator. This PR now schedules immediate and five-minute collection in the existing Discloud bot process, with persistent feed health and phone-accessible /rival-data status. Live Discloud deployment/API reachability and actual writes remain UNVERIFIED until redeployment. Eight other adapters and the full production prediction/retraining bot remain unfinished.
+
+## October 28, 2026: automatic collection activation
+
+- Owner identified that no existing code ever scheduled perpetual collection;
+  the previous night DID NOT collect observed live market history.
+- Fix wires an automatic worker into the existing Discord process on PostgreSQL
+  at Gateway readiness and every 300 seconds, ON by default with optional disable.
+- Each venue/asset isolates errors and writes to the existing authoritative database.
+  Blocked/rate-limited hosts enter a cooldown; no bypass or high-rate retries.
+- /rival-data is private, Android-friendly and reports persisted successes,
+  failures and total inserted candles from real database records.
+- Do not mark this LIVE until the new revision is confirmed running in Discloud
+  with OK collection logs and nonzero PostgreSQL data. GitHub CI alone is insufficient.
+- Subsequent model training must keep backfilled history separate from
+  genuine time-stamped collection observations.
 
 ## October 28, 2026: bounded market-data ingestion slice
 

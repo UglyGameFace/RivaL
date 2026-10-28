@@ -18,6 +18,7 @@ from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
 from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
+from parlay_bot.perpetuals.collector import PerpetualMarketCollector
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.storage.catalog import MarketCatalogStore
 from parlay_bot.storage.hot import PostgresHotStore, RelationalHotStore, SQLiteHotStore
@@ -86,6 +87,20 @@ class RivalDiscordClient(discord.Client):
         )
         self._archive_task: asyncio.Task[None] | None = None
 
+        # No extra account is needed: two public, read-only feeds start
+        # automatically with the existing PostgreSQL Discord deployment.
+        self.perp_collector: PerpetualMarketCollector | None = None
+        if (
+            settings.rival_perp_collection_enabled
+            and settings.rival_storage_backend == "postgres"
+        ):
+            self.perp_collector = PerpetualMarketCollector(
+                store=self.store,
+                assets=self._csv_tuple(settings.rival_perp_collection_assets),
+                bars=settings.rival_perp_collection_bars,
+            )
+        self._perp_task: asyncio.Task[None] | None = None
+
         self._register_commands()
 
     @staticmethod
@@ -127,6 +142,58 @@ class RivalDiscordClient(discord.Client):
                 ),
             )
 
+        @self.tree.command(
+            name="rival-data",
+            description="Check live RivaL crypto market collection and database status.",
+        )
+        async def rival_data(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            embed = discord.Embed(
+                title="RivaL • Market Data",
+                description=(
+                    "Automatic read-only BTC/ETH/SOL collection. "
+                    "These observations are not trading predictions."
+                ),
+                color=discord.Color.green(),
+            )
+            if self.perp_collector is None:
+                embed.description = (
+                    "Automatic perpetual collection is disabled or "
+                    "the bot is not using PostgreSQL."
+                )
+            else:
+                try:
+                    rows = await asyncio.to_thread(
+                        self.perp_collector.market.feed_health
+                    )
+                except Exception:  # noqa: BLE001 - do not expose DB credentials
+                    _LOG.warning("RivaL market status lookup failed")
+                    embed.description = "Market status temporarily unavailable."
+                else:
+                    if not rows:
+                        embed.description = (
+                            "Collector configured. No completed collection attempts "
+                            "recorded yet. Check the Discloud startup logs."
+                        )
+                    for row in rows[:12]:
+                        last_ok = row["last_success_at"]
+                        success = (
+                            discord.utils.format_dt(
+                                datetime.fromisoformat(str(last_ok)), style="R"
+                            )
+                            if last_ok else "never"
+                        )
+                        embed.add_field(
+                            name=f'{row["venue"]} • {row["asset"]}',
+                            value=(
+                                f'Status: **{row["status"]}**\\n'
+                                f'Last success: {success}\\n'
+                                f'New candles total: {row["total_new_candles"]}'
+                            ).replace("\\\\n", "\\n"),
+                            inline=False,
+                        )
+            await interaction.edit_original_response(embed=embed)
+
     async def setup_hook(self) -> None:
         if self.settings.rival_dev_guild_id is not None:
             guild = discord.Object(id=self.settings.rival_dev_guild_id)
@@ -141,11 +208,35 @@ class RivalDiscordClient(discord.Client):
             synced = await self.tree.sync()
             _LOG.info("RivaL synced %d global command(s)", len(synced))
 
+        if self.perp_collector is not None and self._perp_task is None:
+            _LOG.info(
+                "RivaL perp automatic collector ENABLED venues=hyperliquid,dydx "
+                "assets=%s interval=%ds backend=postgres",
+                ",".join(self.perp_collector.assets),
+                self.settings.rival_perp_collection_seconds,
+            )
+            self._perp_task = asyncio.create_task(
+                self._perp_loop(), name="rival-perp-auto-collector"
+            )
+
         if self.archive_runtime is not None and self._archive_task is None:
             self._archive_task = asyncio.create_task(
                 self._archive_loop(),
                 name="rival-cold-archive",
             )
+
+    async def _perp_loop(self) -> None:
+        await self.wait_until_ready()
+        assert self.perp_collector is not None
+        _LOG.info("RivaL perp automatic collector RUNNING")
+        while not self.is_closed():
+            try:
+                await self.perp_collector.collect_once()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - collector never crashes Discord
+                _LOG.exception("RivaL perp automatic collection cycle failed")
+            await asyncio.sleep(self.settings.rival_perp_collection_seconds)
 
     async def _archive_loop(self) -> None:
         await self.wait_until_ready()
@@ -174,6 +265,14 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self._perp_task is not None:
+            self._perp_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._perp_task
+            self._perp_task = None
+        if self.perp_collector is not None:
+            await self.perp_collector.aclose()
+
         if self._archive_task is not None:
             self._archive_task.cancel()
             with suppress(asyncio.CancelledError):

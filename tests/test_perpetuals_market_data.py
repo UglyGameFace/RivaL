@@ -70,7 +70,7 @@ async def test_fetch_three_venues_complete_candles_and_contexts(client):
 async def test_refuses_geoblocks_rate_limits_and_server_errors():
     for status in (403, 429, 500):
         raw = httpx.AsyncClient(transport=httpx.MockTransport(
-            lambda _: httpx.Response(status)
+            lambda _, code=status: httpx.Response(code)
         ))
         try:
             with pytest.raises(MarketDataError, match="request failed"):

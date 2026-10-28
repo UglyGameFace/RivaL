@@ -87,7 +87,11 @@ async def test_model_diagnostic_survives_rebuild_and_labels_unverified_metadata(
         field.value for field in interaction.embed.fields
         if field.name == "Analysis status"
     )
-    assert "may still reject" in next(
+    assert "Listed for text generation" in next(
+        field.value for field in interaction.embed.fields
+        if field.name == "Analysis status"
+    )
+    assert "not a quality ranking" in next(
         field.value for field in interaction.embed.fields
         if field.name == "Analysis status"
     )
@@ -160,9 +164,85 @@ async def test_advertised_models_read_only_metadata_cached_per_hour(tmp_path):
     service = GeminiResearch(market, api_key="fake-key", client=raw)
     try:
         result = await service.list_advertised_models()
-        assert result == ("gemini-3.5-flash-lite", "gemini-3.8-flash")
+        assert result == ("gemini-3.8-flash", "gemini-3.5-flash-lite")
         assert await service.list_advertised_models() == result
         assert len(requests) == 1
     finally:
         await raw.aclose()
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_model_catalog_checks_all_pages_and_filters_irrelevant_variants(
+    tmp_path,
+):
+    store = SQLiteHotStore(tmp_path / "catalog.sqlite")
+    market = PerpetualMarketStore(store)
+    calls = []
+
+    def reply(request):
+        calls.append(request)
+        assert request.url.params["pageSize"] == "1000"
+        token = request.url.params.get("pageToken")
+        if not token:
+            return httpx.Response(200, json={
+                "models": [
+                    {"name": "models/gemini-2.5-pro",
+                     "supportedGenerationMethods": ["generateContent"]},
+                    {"name": "models/gemini-3.8-flash-tts",
+                     "supportedGenerationMethods": ["generateContent"]},
+                    {"name": "models/gemini-3.1-flash-image",
+                     "supportedGenerationMethods": ["generateContent"]},
+                ],
+                "nextPageToken": "second-page",
+            })
+        assert token == "second-page"
+        return httpx.Response(200, json={"models": [
+            {"name": "models/gemini-3.8-flash",
+             "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-4-argon",
+             "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3-flash-preview",
+             "supportedGenerationMethods": ["generateContent"]},
+            {"name": "models/gemini-3.1-flash-live",
+             "supportedGenerationMethods": ["generateContent"]},
+        ]})
+
+    raw = httpx.AsyncClient(transport=httpx.MockTransport(reply))
+    service = GeminiResearch(market, api_key="fake-key", client=raw)
+    try:
+        listed = await service.list_advertised_models()
+        assert listed == (
+            "gemini-4-argon", "gemini-3.8-flash",
+            "gemini-3-flash-preview", "gemini-2.5-pro",
+        )
+        assert await service.list_advertised_models() == listed
+        assert len(calls) == 2  # One-hour metadata cache.
+    finally:
+        await raw.aclose()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_configured_model_is_explicit_not_low_ranked():
+    class LimitedCatalog(_FailingAi):
+        async def list_advertised_models(self):
+            return ("gemini-3.6-flash", "gemini-2.5-flash-lite")
+
+    dashboard = ResearchDashboard(
+        owner_id=42, market=object(), ai=LimitedCatalog(),
+        venues=("hyperliquid", "dydx"),
+    )
+    dashboard.screen = "ai"
+    dashboard._rebuild()
+    interaction = _Interaction()
+    await _button(dashboard, "rival:research:models").callback(interaction)
+    display = next(
+        field.value for field in interaction.embed.fields
+        if field.name == "Analysis status"
+    )
+    assert "Selected for analysis" in display
+    assert "gemini-3.8-flash" in display
+    assert "Not advertised for text generation" in display
+    assert "gemini-3.6-flash" in display
+    assert "gemini-2.5-flash-lite" in display

@@ -22,6 +22,30 @@ _LOG = logging.getLogger(__name__)
 _MODEL = re.compile(r"^[a-z0-9][a-z0-9.\-]{2,63}$")
 
 
+_NON_RESEARCH_VARIANTS = (
+    "-image", "-tts", "-live", "-computer-use", "-embedding",
+    "-transcribe", "-translate", "-native-audio", "-audio",
+    "-speech", "-nano-banana",
+)
+
+
+def _is_text_research_model(name: str) -> bool:
+    """Exclude video/image/audio and computer-control tools from price research."""
+    return (
+        name.startswith("gemini-")
+        and not any(part in name for part in _NON_RESEARCH_VARIANTS)
+    )
+
+
+def _model_rank(name: str) -> tuple[int, int, int, int, str]:
+    """Newer versions first, stable before previews; not a capability ranking."""
+    match = re.match(r"^gemini-(\d+)(?:\.(\d+))?", name)
+    major = int(match.group(1)) if match else -1
+    minor = int(match.group(2)) if match and match.group(2) else 0
+    stable = int("preview" not in name and "exp" not in name)
+    return (major, minor, stable, int("flash" in name), name)
+
+
 class ResearchUnavailable(ValueError):
     """A fail-closed answer. No pretending this is a validated trade."""
 
@@ -80,7 +104,12 @@ class GeminiResearch:
             await self._client.aclose()
 
     async def list_advertised_models(self) -> tuple[str, ...]:
-        """Read-only provider metadata. Listing NEVER proves generation access."""
+        """List relevant text-generation models across ALL catalog pages.
+
+        The older implementation sorted models alphabetically and displayed
+        only the first 12, making Gemini 2.5 look like a recommendation.
+        Listing is metadata only, not a successful generateContent call.
+        """
         if not self._key:
             raise ResearchUnavailable("Gemini API key is not configured.")
         async with self._lock:
@@ -91,29 +120,52 @@ class GeminiResearch:
                 and now - self._model_list_checked_at < timedelta(hours=1)
             ):
                 return self._model_list
+            names: set[str] = set()
+            token: str | None = None
+            seen_tokens: set[str] = set()
             try:
-                response = await self._client.get(
-                    "https://generativelanguage.googleapis.com/v1beta/models",
-                    params={"pageSize": 100},
-                    headers={"x-goog-api-key": self._key},
-                    follow_redirects=False,
-                )
-                response.raise_for_status()
-                payload = response.json()
-                if not isinstance(payload, dict) or not isinstance(
-                    payload.get("models"), list
-                ):
-                    raise TypeError("missing model metadata")
-                names = {
-                    name[7:]
-                    for item in payload["models"] if isinstance(item, dict)
-                    if isinstance((name := item.get("name")), str)
-                    and name.startswith("models/gemini-")
-                    and "generateContent" in item.get(
-                        "supportedGenerationMethods", []
+                # Google's catalog is paginated. Never say the selected model
+                # is absent based on an incomplete first page.
+                for _ in range(5):
+                    params: dict[str, str | int] = {"pageSize": 1000}
+                    if token:
+                        params["pageToken"] = token
+                    response = await self._client.get(
+                        "https://generativelanguage.googleapis.com/v1beta/models",
+                        params=params,
+                        headers={"x-goog-api-key": self._key},
+                        follow_redirects=False,
                     )
-                }
-                self._model_list = tuple(sorted(names))[:40]
+                    response.raise_for_status()
+                    payload = response.json()
+                    if (
+                        not isinstance(payload, dict)
+                        or not isinstance(payload.get("models"), list)
+                    ):
+                        raise TypeError("missing model metadata")
+                    for item in payload["models"]:
+                        if not isinstance(item, dict):
+                            continue
+                        name = item.get("name")
+                        methods = item.get("supportedGenerationMethods", [])
+                        if (
+                            isinstance(name, str)
+                            and name.startswith("models/gemini-")
+                            and isinstance(methods, list)
+                            and "generateContent" in methods
+                            and _is_text_research_model(name[7:])
+                        ):
+                            names.add(name[7:])
+                    next_token = payload.get("nextPageToken")
+                    if not next_token:
+                        break
+                    if not isinstance(next_token, str) or next_token in seen_tokens:
+                        raise ValueError("invalid catalog pagination")
+                    seen_tokens.add(next_token)
+                    token = next_token
+                else:
+                    raise ValueError("model catalog exceeds safe pagination limit")
+                self._model_list = tuple(sorted(names, key=_model_rank, reverse=True))
                 self._model_list_checked_at = now
                 return self._model_list
             except (httpx.HTTPError, ValueError, TypeError) as exc:
@@ -122,7 +174,8 @@ class GeminiResearch:
                     type(exc).__name__,
                 )
                 raise ResearchUnavailable(
-                    "Unable to list Gemini models for this API key."
+                    "Unable to complete Gemini text-model catalog lookup "
+                    "for this API key. No generation request was made."
                 ) from exc
 
     async def request_status(self) -> dict:

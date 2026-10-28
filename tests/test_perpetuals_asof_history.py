@@ -69,7 +69,7 @@ def test_as_of_filters_first_observation_and_close_before_limit(market):
     }
     assert len(market.recent_candles(**args)) == 2
     assert market.recent_candles(**args, as_of=first_seen - timedelta(seconds=1)) == []
-    as_of = second_start + timedelta(seconds=1)
+    as_of = second_start + timedelta(minutes=5, seconds=1)
     rows = market.recent_candles(**args, count=1, as_of=as_of)
     assert len(rows) == 1
     assert rows[0]["opened_at"] == start.isoformat()

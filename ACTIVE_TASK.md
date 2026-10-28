@@ -19,6 +19,22 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 **Active: all 10 perpetual adapters implemented; NINE venues now production-evidenced for BTC, ETH and SOL, Binance host blocked by HTTP 451.** PR #13 activated five-minute PostgreSQL ingestion, PR #14 integrated Bitget/Gate, PR #15 delivered the interactive market dashboard, PR #16 added OKX/KuCoin, PR #17 Deribit/Binance, and PR #18 Lighter/Phemex. Merged CI covers the adapters with mock HTTP, SQLite replay and PostgreSQL 16 integration tests. Owner's October 28 8:00 AM local Discord screenshot verifies fresh stored BTC candles from Hyperliquid, dYdX, Bitget and Gate. **Owner's 09:22–09:22:36 EDT Discloud log verifies Hyperliquid, dYdX, Bitget, Gate, OKX, KuCoin, Deribit, Lighter and Phemex all returned 200 and completed collection on BTC/ETH/SOL.** Binance exchangeInfo returned HTTP 451 from Discloud and was paused. Previously saved candle replays produced new=0 (deduplication), not evidence of failed collection. No account region classification or Binance routing workaround is inferred. Deployment may reveal geo blocks or real schema differences; only successful recent PostgreSQL source health and preserved historical data count as usable. ETH/SOL health, sustained uptime, automatic multi-source prediction generation, calibrated walk-forward accuracy, mature-outcome feedback/retraining and Discord signal UI remain unverified or incomplete. Issue #6 stays OPEN.
 
+## October 28, 2026: exact Gemini pause diagnostics for research menu
+
+- Owner's 9:38 AM Discord screenshot: Gemini UI crash is fixed, but
+  Analyze displays the ambiguous "budget/cooldown reached" message.
+- The PostgreSQL ai quota table already tracks used requests, last request
+  and provider block until. Expose read-only ai_request_status with exact
+  reasons and retry timestamp; no guessing and no resetting the breaker.
+- Separate a provider-error pause, RivaL's own minimum request spacing and
+  RivaL daily request ceiling. Show the active model, count/limit, exact
+  UTC retry rendered in the user's Discord timezone, and keep Google's
+  independent project quotas distinct.
+- Calls to inspect the budget never spend requests or refresh the pause.
+  Collection, math shadow track and cached successful Gemini results remain.
+- Regression tests verify restart-safe quota read, 404 pause, daily reset
+  and Discord UI rendering. Require CI before deploy.
+
 ## October 28, 2026: production Gemini HTTP 404 + Discord View crash hotfix
 
 - Owner Discloud live logs verified 9/10 venues completed BTC/ETH/SOL

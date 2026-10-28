@@ -286,6 +286,53 @@ class PerpetualMarketStore:
             ).fetchone()
         return dict(item) if item is not None else None
 
+    def ai_request_status(
+        self, *, model: str, now: datetime, daily_max: int,
+        cooldown_seconds: int,
+    ) -> dict:
+        """Explain stored Gemini request controls without consuming quota.
+
+        The limit here is RivaL's own conservative cap, not Google's project
+        quota. The same persisted row is used by the atomic reservation path.
+        """
+        if not model or daily_max < 1 or cooldown_seconds < 60:
+            raise ValueError("invalid AI budget policy")
+        instant = utc(now)
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT used,last_called_at,blocked_until
+                   FROM perp_ai_quota WHERE model=? AND utc_day=?""",
+                (model, instant.date().isoformat()),
+            ).fetchone()
+        used = int(row["used"]) if row is not None else 0
+        checks: list[tuple[str, datetime]] = []
+        day_reset = (instant + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+        if row is not None:
+            if row["blocked_until"]:
+                blocked = utc(datetime.fromisoformat(str(row["blocked_until"])))
+                if blocked > instant:
+                    checks.append(("provider_error_pause", blocked))
+            if row["last_called_at"]:
+                last_call = utc(datetime.fromisoformat(str(row["last_called_at"])))
+                next_call = last_call + timedelta(seconds=cooldown_seconds)
+                if next_call > instant:
+                    checks.append(("minimum_spacing", next_call))
+            if used >= daily_max:
+                checks.append(("daily_budget_exhausted", day_reset))
+        # The earliest safe retry is after *all* active restrictions expire.
+        retry_at = max((when for _, when in checks), default=None)
+        return {
+            "model": model,
+            "requests_today": used,
+            "rival_daily_limit": daily_max,
+            "reasons": tuple(reason for reason, _ in checks),
+            "retry_at": retry_at,
+            "ready": not checks,
+        }
+
     def reserve_ai_request(
         self, *, model: str, now: datetime, daily_max: int,
         cooldown_seconds: int,

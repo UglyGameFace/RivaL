@@ -175,7 +175,7 @@ async def test_ai_429_pauses_requests_across_service_instances(tmp_path):
         with pytest.raises(ResearchUnavailable, match="HTTP 429"):
             await service.ask(asset="BTC", venues=("hyperliquid", "dydx", "bitget"))
         another = GeminiResearch(market, api_key="fake", client=raw, cooldown_seconds=60)
-        with pytest.raises(ResearchUnavailable, match="budget/cooldown"):
+        with pytest.raises(ResearchUnavailable, match="temporarily paused"):
             await another.ask(asset="BTC", venues=("hyperliquid", "dydx", "bitget"))
         assert len(calls) == 1
     finally:

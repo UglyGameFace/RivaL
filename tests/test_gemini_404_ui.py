@@ -63,7 +63,10 @@ async def test_failed_gemini_keeps_rebuilt_discord_view_and_shows_error():
     assert interaction.response.deferred
     assert interaction.view is dashboard
     assert interaction.embed.title == "RivaL  |  BTC Research"
-    assert "HTTP 404" in interaction.embed.fields[1].value
+    assert "HTTP 404" in next(
+        field.value for field in interaction.embed.fields
+        if field.name == "Analysis status"
+    )
     assert _button(dashboard, "rival:research:analyze").view is dashboard
 
 
@@ -80,8 +83,14 @@ async def test_model_diagnostic_survives_rebuild_and_labels_unverified_metadata(
     await button.callback(interaction)
     assert button.view is None
     assert interaction.view is dashboard
-    assert "gemini-3.8-flash" in interaction.embed.fields[1].value
-    assert "may still reject" in interaction.embed.fields[1].value
+    assert "gemini-3.8-flash" in next(
+        field.value for field in interaction.embed.fields
+        if field.name == "Analysis status"
+    )
+    assert "may still reject" in next(
+        field.value for field in interaction.embed.fields
+        if field.name == "Analysis status"
+    )
 
 
 @pytest.mark.asyncio
@@ -119,7 +128,7 @@ async def test_legacy_25_flash_is_migrated_and_404_pauses_future_calls(
     try:
         with pytest.raises(ResearchUnavailable, match="HTTP 404"):
             await service.ask(asset="BTC", venues=("hyperliquid", "dydx", "bitget"))
-        with pytest.raises(ResearchUnavailable, match="budget/cooldown"):
+        with pytest.raises(ResearchUnavailable, match="temporarily paused"):
             await service.ask(asset="BTC", venues=("hyperliquid", "dydx", "bitget"))
         assert len(seen) == 1
     finally:

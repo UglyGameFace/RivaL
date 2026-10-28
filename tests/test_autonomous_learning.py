@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 import parlay_bot.perpetuals.autonomous as autonomous_module
-from parlay_bot.perpetuals.analytics import analytics_snapshot
+from parlay_bot.perpetuals.analytics import _bucket, analytics_snapshot
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.gemini_research import AiResearch
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -211,3 +211,19 @@ def test_zero_scores_are_not_claimed_as_predictive_skill(tmp_path):
         assert report["model_governance"] == {}
     finally:
         store.close()
+
+
+def test_calibration_uses_probability_bins_not_absolute_outcome_error():
+    # At a 50% forecast, one up and one down are perfectly calibrated.
+    values = [
+        {"brier": .25, "baseline": .25, "probability": .5,
+         "up_rate": float(y), "pred_count": 0., "gross_bps": None,
+         "correct": None}
+        for y in (0, 1)
+    ]
+    report = _bucket(values)
+    assert report["events"] == 2
+    assert report["ece"] == 0
+    assert report["brier"] == .25
+    assert report["decided_events"] == 0
+    assert report["simulated_net_bps"] is None

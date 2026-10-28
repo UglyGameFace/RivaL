@@ -1,3 +1,20 @@
+## October 28, 2026: prove automatic learning is alive, or reveal failures
+
+- The bot already runs bounded collection and autonomous math/Gemini shadow
+  processing every five minutes; collection health is not proof forecasts
+  were actually issued, settled or reviewed.
+- Persist one five-minute-UTC-slot record in PostgreSQL after each automatic
+  learning cycle, with completed_at, actual math issued/settled, Gemini records,
+  and independent math/AI settlement/governance/Gemini scheduler success flags.
+- Show most recent engine heartbeat on private Accuracy tab, never cached.
+  Distinguish healthy-but-zero-forecasts from stale (>12 minutes), failed
+  stages and absent/no-heartbeat. The row is an operations metric, NOT proof
+  of predictive accuracy, paper-trade edge or permission to bet.
+- Do not shorten the 65 genuinely observed candle readiness gate, fabricate
+  evaluation labels, add orders or let background failure stop collection.
+- Include regression tests for persisted health across restart, stage failure
+  and Discord accuracy view. Full CI required before main merge.
+
 ## October 28, 2026: independent KuCoin six-month historical recovery
 
 - The current Gemini research implementation already requests **5-minute**

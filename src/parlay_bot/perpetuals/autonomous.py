@@ -57,6 +57,18 @@ class AutonomousResearch:
         with self.store.connect() as conn:
             conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS perp_learning_cycle_health (
+                    slot_utc TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL,
+                    completed_at TEXT NOT NULL,
+                    math_issued INTEGER NOT NULL,
+                    math_settled INTEGER NOT NULL,
+                    ai_issued INTEGER NOT NULL,
+                    math_ok INTEGER NOT NULL,
+                    ai_settlement_ok INTEGER NOT NULL,
+                    model_review_ok INTEGER NOT NULL,
+                    gemini_ok INTEGER NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS perp_auto_ai_slots (
                     asset TEXT NOT NULL,
                     model TEXT NOT NULL,
@@ -352,24 +364,98 @@ class AutonomousResearch:
                     count += 1
         return count
 
+    def learning_heartbeat(self) -> dict | None:
+        """Uncached persisted result of the last five-minute research cycle."""
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT slot_utc,started_at,completed_at,math_issued,
+                          math_settled,ai_issued,math_ok,ai_settlement_ok,
+                          model_review_ok,gemini_ok
+                   FROM perp_learning_cycle_health
+                   ORDER BY completed_at DESC LIMIT 1"""
+            ).fetchone()
+        return dict(row) if row else None
+
+    def _save_cycle(
+        self, *, started: datetime, issued: int, settled: int, ai_count: int,
+        math_ok: bool, ai_settlement_ok: bool, review_ok: bool,
+        gemini_ok: bool,
+    ) -> None:
+        """A single durable UTC-slot heartbeat, not fabricated predictions."""
+        ended = datetime.now(UTC)
+        slot = started.replace(
+            minute=started.minute // 5 * 5, second=0, microsecond=0,
+        ).isoformat()
+        self.initialize()
+        with self.store.connect() as conn:
+            conn.execute(
+                """INSERT INTO perp_learning_cycle_health
+                   (slot_utc,started_at,completed_at,math_issued,
+                    math_settled,ai_issued,math_ok,ai_settlement_ok,
+                    model_review_ok,gemini_ok)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(slot_utc) DO UPDATE SET
+                       completed_at=excluded.completed_at,
+                       math_issued=excluded.math_issued,
+                       math_settled=excluded.math_settled,
+                       ai_issued=excluded.ai_issued,
+                       math_ok=excluded.math_ok,
+                       ai_settlement_ok=excluded.ai_settlement_ok,
+                       model_review_ok=excluded.model_review_ok,
+                       gemini_ok=excluded.gemini_ok
+                   WHERE perp_learning_cycle_health.completed_at <=
+                         excluded.completed_at""",
+                (
+                    slot, started.isoformat(), ended.isoformat(),
+                    issued, settled, ai_count, int(math_ok),
+                    int(ai_settlement_ok), int(review_ok), int(gemini_ok),
+                ),
+            )
+
     async def cycle(self) -> tuple[int, int, int]:
-        """Five-minute autonomous cycle; each operation fails independently."""
+        """Five-minute automatic research, with durable proof of each stage."""
+        started = datetime.now(UTC)
         issued = settled = ai_count = 0
+        math_ok = settlement_ok = review_ok = gemini_ok = True
         try:
             issued, settled = await asyncio.to_thread(self.forward.run_once)
+        except asyncio.CancelledError:
+            raise
         except Exception:  # noqa: BLE001
+            math_ok = False
             _LOG.exception("RivaL forward mathematical research cycle failed")
         try:
             await asyncio.to_thread(self.settle_ai)
+        except asyncio.CancelledError:
+            raise
         except Exception:  # noqa: BLE001
+            settlement_ok = False
             _LOG.exception("RivaL Gemini outcome settlement failed")
         if datetime.now(UTC).minute < 5:
             try:
                 await asyncio.to_thread(self.review_model)
+            except asyncio.CancelledError:
+                raise
             except Exception:  # noqa: BLE001
+                review_ok = False
                 _LOG.exception("RivaL shadow model gate review failed")
         try:
             ai_count = await self.run_auto_ai()
+        except asyncio.CancelledError:
+            raise
         except Exception:  # noqa: BLE001
+            gemini_ok = False
             _LOG.exception("RivaL automatic Gemini research cycle failed")
+        try:
+            await asyncio.to_thread(
+                self._save_cycle, started=started,
+                issued=issued, settled=settled, ai_count=ai_count,
+                math_ok=math_ok, ai_settlement_ok=settlement_ok,
+                review_ok=review_ok, gemini_ok=gemini_ok,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001
+            _LOG.exception("RivaL automatic learning heartbeat failed to persist")
         return issued, settled, ai_count

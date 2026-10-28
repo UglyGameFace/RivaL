@@ -9,6 +9,7 @@ import discord
 
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.analytics import analytics_snapshot
+from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
@@ -599,6 +600,70 @@ class ResearchDashboard(discord.ui.View):
             return embed
 
         if self.screen == "accuracy":
+            # Read-only proof that the autonomous engine actually attempted
+            # its last scheduled research cycle. Do not confuse zero issued
+            # forecasts with a failed learning process.
+            if self.market is not None:
+                try:
+                    latest = await asyncio.to_thread(
+                        AutonomousResearch(
+                            self.market, ai=None, venues=self.venues,
+                        ).learning_heartbeat,
+                    )
+                    if latest is None:
+                        heartbeat = (
+                            "No automatic learning cycle has been recorded "
+                            "since this feature was deployed. This is not "
+                            "evidence of a trained model."
+                        )
+                    else:
+                        completed = datetime.fromisoformat(
+                            str(latest["completed_at"])
+                        )
+                        age = datetime.now(UTC) - completed.astimezone(UTC)
+                        if age < timedelta(0):
+                            health = "Invalid future timestamp"
+                        elif age > timedelta(minutes=12):
+                            health = "🔴 Stale: automatic research may be stalled"
+                        elif any(not bool(latest[key]) for key in (
+                            "math_ok", "ai_settlement_ok",
+                            "model_review_ok", "gemini_ok",
+                        )):
+                            health = "🟡 Cycle ran, but a stage failed"
+                        else:
+                            health = "🟢 Background research cycle completed"
+                        stages = (
+                            "math " + ("OK" if latest["math_ok"] else "FAILED")
+                            + " · settlement "
+                            + ("OK" if latest["ai_settlement_ok"] else "FAILED")
+                            + " · governance "
+                            + ("OK" if latest["model_review_ok"] else "FAILED")
+                            + " · Gemini scheduler "
+                            + ("OK" if latest["gemini_ok"] else "FAILED")
+                        )
+                        heartbeat = (
+                            f"**{health}** · "
+                            f"{discord.utils.format_dt(completed, style='R')}\\n"
+                            f"{stages}\\n"
+                            f"Last cycle: **{latest['math_issued']}** math "
+                            f"forecasts issued, **{latest['math_settled']}** "
+                            "settled, "
+                            f"**{latest['ai_issued']}** Gemini research records.\\n"
+                            "Zero means no new qualifying forecast, "
+                            "**not** that prior predictions became more accurate."
+                        ).replace("\\\\n", "\\n")
+                    embed.add_field(
+                        name="Automatic learning engine · LIVE",
+                        value=heartbeat[:1024], inline=False,
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL learning heartbeat read unavailable")
+                    embed.add_field(
+                        name="Automatic learning engine · LIVE",
+                        value="PostgreSQL cycle diagnostics unavailable; "
+                              "do not assume the engine is running.",
+                        inline=False,
+                    )
             embed.description = (
                 "**Prospective accuracy ledger** · RivaL records shadow "
                 "predictions before future candles exist, then settles them "

@@ -709,3 +709,20 @@ This code must still be deployed to Discloud and verified against the
 actual KuCoin market/contract API. Passing mocked CI does not prove
 six months have already been recovered or that the mathematical model
 is accurate enough to place real-money bets.
+
+## Automatic research engine heartbeat (October 28)
+
+The bot's perpetual data collector calls autonomous research each five-minute
+collection cycle. Source collection success alone does not establish whether
+math training, forward issuance/settlement, governance or optional Gemini
+processing completed. The new immutable-by-cycle-slot operational status is
+persisted in `perp_learning_cycle_health` with the exact UTC attempt/completion
+time, actual issued/settled counts, and four independent success flags.
+
+The private `/rival-research` **Accuracy** page reads the latest completed
+cycle directly from PostgreSQL on each visit/refresh. Healthy but zero
+forecasts means the engine ran without any new eligible prospective
+predictions. A failed stage or stale heartbeat is clearly labeled; neither
+can be disguised by green exchange data or a six-month row-count percentage.
+This does not change prediction thresholds, start betting, change Gemini
+budgets, or claim any model achieved an edge.

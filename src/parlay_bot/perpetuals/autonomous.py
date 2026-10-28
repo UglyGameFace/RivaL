@@ -248,12 +248,18 @@ class AutonomousResearch:
         current = _utc(now or datetime.now(UTC))
         if (
             not self.auto_ai or self.ai is None or not self.ai.available
-            or current.hour % SLOT_HOURS or current.minute >= 5
+            or current.hour % SLOT_HOURS or current.minute % 20 >= 5
         ):
+            return 0
+        # Global Gemini API spacing is 15 minutes, so never dispatch BTC,
+        # ETH and SOL back-to-back. Use UTC minute 00/20/40 and persist
+        # one attempt per asset per four-hour slot across bot restarts.
+        position = current.minute // 20
+        if position >= len(self.assets):
             return 0
         successes = 0
         async with self._lock:
-            for asset in self.assets:
+            for asset in self.assets[position:position + 1]:
                 try:
                     if await self.record_ai_forecast(
                         asset=asset, now=datetime.now(UTC),

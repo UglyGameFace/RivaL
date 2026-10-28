@@ -227,3 +227,32 @@ def test_calibration_uses_probability_bins_not_absolute_outcome_error():
     assert report["brier"] == .25
     assert report["decided_events"] == 0
     assert report["simulated_net_bps"] is None
+
+
+@pytest.mark.asyncio
+async def test_auto_ai_staggers_assets_to_respect_global_model_cooldown(
+    tmp_path, monkeypatch,
+):
+    store = SQLiteHotStore(tmp_path / "slots.sqlite")
+    market = PerpetualMarketStore(store)
+    monitor = AutonomousResearch(
+        market, ai=StubGemini(),
+        venues=("hyperliquid", "dydx", "bitget"),
+    )
+    called = []
+
+    async def fake_forecast(*, asset, now):
+        called.append(asset)
+        return True
+
+    monkeypatch.setattr(monitor, "record_ai_forecast", fake_forecast)
+    day = datetime(2026, 10, 28, 12, 0, tzinfo=UTC)
+    try:
+        assert await monitor.run_auto_ai(now=day + timedelta(minutes=1)) == 1
+        assert await monitor.run_auto_ai(now=day + timedelta(minutes=21)) == 1
+        assert await monitor.run_auto_ai(now=day + timedelta(minutes=41)) == 1
+        assert await monitor.run_auto_ai(now=day + timedelta(minutes=6)) == 0
+        assert await monitor.run_auto_ai(now=day + timedelta(hours=1)) == 0
+        assert called == ["BTC", "ETH", "SOL"]
+    finally:
+        store.close()

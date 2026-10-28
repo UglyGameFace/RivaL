@@ -570,3 +570,15 @@ execution assumptions. No automatic wager is made.
 
 Set `RIVAL_GEMINI_AUTO_ENABLED=false` to disable the budgeted AI worker
 without affecting all mathematical monitoring and data collection.
+
+### Staggered automatic Gemini scheduling
+
+Because RivaL enforces a model-wide 15-minute request cooldown, the
+three-coin four-hour UTC analysis round **must not fire three back-to-back
+API calls**. The live scheduler now attempts BTC in minute 00–04,
+ETH in minute 20–24, and SOL in minute 40–44 of each qualifying four-hour
+UTC cycle. Six cycles per day times three assets is at most 18 attempts,
+under the 24-request/day local budget. Each asset has its own persisted
+four-hour slot and retries cannot multiply requests across restarts.
+Normal 5-minute candle collection, math shadow training and manual
+Gemini responses continue independently.

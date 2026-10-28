@@ -187,7 +187,10 @@ class AutonomousResearch:
         reference = next(
             (
                 x for x in sources
-                if timedelta(0) <= now - _time(x["last_candle_close"])
+                if x.get("last_candle_close")
+                and x.get("contract") and x.get("quote")
+                and x.get("venue") and x.get("close")
+                and timedelta(0) <= now - _time(x["last_candle_close"])
                 <= timedelta(minutes=7)
             ), None,
         )

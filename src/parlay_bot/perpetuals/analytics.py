@@ -8,6 +8,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.autonomous import AutonomousResearch, _utc
+from parlay_bot.perpetuals.forward_audit import MODEL as FORWARD_MODEL
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
 MIN_TREND_EVENTS = 100
@@ -86,12 +87,12 @@ def analytics_snapshot(
                                     /reference_close*10000
                                ELSE NULL END) AS gross_bps
                FROM perp_forward_audit
-               WHERE asset=? AND settled_at IS NOT NULL
+               WHERE asset=? AND model_version=? AND settled_at IS NOT NULL
                  AND target_opened_at>=? AND target_opened_at<=?
                  AND outcome_up IS NOT NULL
                GROUP BY horizon_minutes,target_opened_at
                ORDER BY target_opened_at DESC LIMIT 9000""",
-            (asset, start_earlier.isoformat(), clock.isoformat()),
+            (asset, FORWARD_MODEL, start_earlier.isoformat(), clock.isoformat()),
         ).fetchall()
         ai_rows = conn.execute(
             """SELECT model,issued_at,direction,settled_at,correct
@@ -109,7 +110,8 @@ def analytics_snapshot(
         ).fetchall()
         pending = conn.execute(
             """SELECT COUNT(*) AS n FROM perp_forward_audit
-               WHERE asset=? AND settled_at IS NULL""", (asset,),
+               WHERE asset=? AND model_version=? AND settled_at IS NULL""",
+                (asset, FORWARD_MODEL),
         ).fetchone()
     by_horizon = {}
     for h in (5, 15):

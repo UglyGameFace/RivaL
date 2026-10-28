@@ -9,6 +9,7 @@ import pytest
 
 from parlay_bot.discord_app.data_dashboard import (
     MarketDataDashboard,
+    coverage_embed,
     exchange_embed,
     market_embed,
     overview_embed,
@@ -122,7 +123,7 @@ async def test_menu_navigation_edits_same_private_screen_and_has_no_dead_control
         owner_id=42, market=None, venues=VENUES, assets=ASSETS,
         interval_seconds=300, enabled=False,
     )
-    assert len(buttons(dashboard)) == 4
+    assert len(buttons(dashboard)) == 5
     assert buttons(dashboard)["rival:data:overview"].disabled
     interaction = Interaction()
     await dashboard.show(interaction, "exchanges")
@@ -225,3 +226,93 @@ async def test_ten_venue_market_menu_has_four_entries_per_page_and_working_navig
     await dashboard.show(again, "markets")
     assert "Page 1/3" in again.embed.description
     assert len(again.embed.fields) == 4
+
+
+def test_coverage_uses_real_host_status_without_inventing_blocked_countries():
+    rows = [
+        health("hyperliquid", "BTC"),
+        health("hyperliquid", "ETH"),
+        health("hyperliquid", "SOL", status="rate_limited"),
+        health("dydx", "BTC"),
+        health("dydx", "ETH"),
+        health("dydx", "SOL"),
+        health("bitget", "BTC", status="blocked"),
+        health("bitget", "ETH", status="blocked"),
+        health("bitget", "SOL", status="blocked"),
+    ]
+    embed = coverage_embed(
+        rows, ("hyperliquid", "dydx", "bitget", "gate"),
+        ASSETS, "bitget", 300, now=NOW,
+    )
+    assert "2/4 reporting exchanges" in embed.description
+    assert "5/12 recent market feeds" in embed.description
+    fields = {field.name: field.value for field in embed.fields}
+    selected = fields["Selected: Bitget Futures"]
+    assert selected.count("🔴") == 3
+    assert "Access denied" in fields["Why data is unavailable"]
+    assert "blocked country" in fields["Why data is unavailable"]
+    alternatives = fields["Other collecting exchanges"]
+    assert "Hyperliquid" in alternatives and "dYdX" in alternatives
+    assert "automatic replacements" in alternatives
+    assert "not verified" in fields["Regional restrictions"]
+    assert "RivaL never routes around blocks" in fields["Regional restrictions"]
+
+
+def test_coverage_shows_rate_limits_stale_sources_and_no_fake_fallbacks():
+    rows = [
+        health("hyperliquid", "BTC", status="rate_limited"),
+        health("hyperliquid", "ETH", age=50),
+        health("dydx", "BTC"),
+    ]
+    embed = coverage_embed(
+        rows, ("hyperliquid", "dydx", "gate"),
+        ("BTC", "ETH"), "hyperliquid", 300, now=NOW,
+    )
+    fields = {field.name: field.value for field in embed.fields}
+    assert "🔴 Rate Limited" in fields["Selected: Hyperliquid"]
+    assert "🟡 Stale" in fields["Selected: Hyperliquid"]
+    assert "Collector pauses" in fields["Why data is unavailable"]
+    assert "dYdX" in fields["Other collecting exchanges"]
+    assert "None confirmed" in fields["Other collecting exchanges"]
+
+
+@pytest.mark.asyncio
+async def test_coverage_is_a_visible_private_real_navigation_screen():
+    dashboard = MarketDataDashboard(
+        owner_id=42, market=None, venues=VENUES, assets=ASSETS,
+        interval_seconds=300, enabled=False,
+    )
+    assert "rival:data:coverage" in buttons(dashboard)
+    first = Interaction()
+    await buttons(dashboard)["rival:data:coverage"].callback(first)
+    assert first.response.deferred
+    assert first.view is dashboard
+    assert first.embed.title == "RivaL  |  Source Coverage"
+    assert "rival:data:choose:coverage" in buttons(dashboard)
+    assert buttons(dashboard)["rival:data:coverage"].disabled
+    assert buttons(dashboard)["rival:data:refresh"].row == 3
+    assert buttons(dashboard)["rival:data:coverage"].row == 3
+    assert "Discloud server" in first.embed.description
+    assert not await dashboard.interaction_check(Interaction(user_id=99))
+    assert await dashboard.interaction_check(Interaction())
+
+
+@pytest.mark.asyncio
+async def test_coverage_dashboard_reads_authoritative_source_health(tmp_path):
+    store = SQLiteHotStore(tmp_path / "coverage.sqlite")
+    market = PerpetualMarketStore(store)
+    try:
+        market.record_feed_health(
+            venue="dydx", asset="BTC", status="blocked",
+            attempted_at=NOW, new_candles=0, total_candles=0,
+        )
+        dashboard = MarketDataDashboard(
+            owner_id=42, market=market, venues=("dydx",), assets=("BTC",),
+            interval_seconds=300, enabled=True,
+        )
+        interaction = Interaction()
+        await dashboard.show(interaction, "coverage")
+        assert "Access denied" in interaction.embed.fields[2].value
+        assert "Selected: dYdX" in interaction.embed.fields[0].name
+    finally:
+        store.close()

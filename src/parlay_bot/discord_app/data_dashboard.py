@@ -130,7 +130,8 @@ def overview_embed(
     )
     embed.description = (
         "**Your live collection overview**\n"
-        "Monitor source availability and stored candles in one place."
+        "Monitor source availability and stored candles in one place.\n"
+        "**Learning:** shadow-only · **Gemini:** not connected."
     )
     embed.add_field(
         name="🌐 Exchanges collecting",
@@ -205,6 +206,124 @@ def exchange_embed(
     return embed
 
 
+_ACCESS_DETAILS = {
+    "blocked": (
+        "Access denied to the Discloud server by the provider (HTTP 401/403/451). "
+        "This does NOT identify a blocked country or prove user ineligibility."
+    ),
+    "rate_limited": (
+        "Provider rate limit hit. Collector pauses this provider before retrying; "
+        "other exchanges keep collecting."
+    ),
+    "invalid_market_data": (
+        "Exchange response, instrument type or candle format failed validation. "
+        "It is excluded rather than guessed."
+    ),
+    "timeout": "Provider response timed out; not a verified geographic block.",
+    "network_error": "Server could not reach the provider; region is not established.",
+    "http_error": "Provider returned an HTTP error; this is not proof of a region ban.",
+    "storage_error": "The exchange data could not be saved; check server logs.",
+}
+
+
+def coverage_embed(
+    rows: list[dict[str, Any]], venues: tuple[str, ...],
+    assets: tuple[str, ...], selected_venue: str,
+    interval_seconds: int, *, now: datetime | None = None,
+) -> discord.Embed:
+    """One-provider coverage panel; show observed host health, not legal regions."""
+    clock = now or datetime.now(UTC)
+    by_key = _index(rows)
+    embed = _header("RivaL  |  Source Coverage")
+    good = {
+        (venue, asset)
+        for venue in venues for asset in assets
+        if _is_fresh(by_key.get((venue, asset)),
+                     now=clock, interval_seconds=interval_seconds)
+    }
+    live = len({venue for venue, _ in good})
+    embed.description = (
+        f"**{live}/{len(venues)} reporting exchanges** · "
+        f"**{len(good)}/{len(venues) * len(assets)} recent market feeds**\n"
+        "Availability measured from **RivaL's Discloud server**, "
+        "not your physical location."
+    )
+    if not venues or selected_venue not in venues:
+        embed.add_field(
+            name="No configured exchanges",
+            value="The collector is disabled or has not loaded source settings.",
+            inline=False,
+        )
+        return embed
+
+    status_lines = []
+    problems: set[str] = set()
+    alternates = []
+    for asset in assets:
+        row = by_key.get((selected_venue, asset))
+        status_lines.append(
+            f"**{asset}** · {_health(row, now=clock, interval_seconds=interval_seconds)} "
+            f"· checked {_relative(row.get('last_attempt_at') if row else None)}"
+        )
+        if row and row.get("status") not in (None, "ok"):
+            problems.add(str(row["status"]))
+        healthy = [
+            VENUE_NAMES.get(venue, venue)
+            for venue in venues if venue != selected_venue and
+            (venue, asset) in good
+        ]
+        names = ", ".join(healthy[:3]) if healthy else "None confirmed"
+        if len(healthy) > 3:
+            names += f" +{len(healthy) - 3} more"
+        alternates.append(f"**{asset}** · {names}")
+
+    embed.add_field(
+        name=f"Selected: {VENUE_NAMES.get(selected_venue, selected_venue)}",
+        value="\n".join(status_lines) or "No configured markets",
+        inline=False,
+    )
+    embed.add_field(
+        name="Other collecting exchanges",
+        value="\n".join(alternates) + (
+            "\n*These are independent market data sources, not automatic "
+            "replacements in a running prediction model.*"
+        ),
+        inline=False,
+    )
+    if problems:
+        descriptions = [
+            f"**{name.replace('_', ' ').title()}**: {_ACCESS_DETAILS.get(name, 'Check logs.')}"
+            for name in sorted(problems)
+        ]
+        embed.add_field(
+            name="Why data is unavailable",
+            value="\n".join(descriptions)[:1000], inline=False,
+        )
+    else:
+        embed.add_field(
+            name="Availability details",
+            value=(
+                "A green feed means a recent API/database sync, not proof "
+                "of trade eligibility or a trustworthy model forecast."
+            ),
+            inline=False,
+        )
+    embed.add_field(
+        name="Regional restrictions",
+        value=(
+            "Country-specific legal coverage is **not verified by this bot**. "
+            "An access denial may be authentication, policy, IP or region-related. "
+            "Consult the exchange's official restrictions for your location; "
+            "RivaL never routes around blocks."
+        ),
+        inline=False,
+    )
+    embed.set_footer(
+        text="Select any provider below • Read-only sources • No forecast fallback deployed"
+    )
+    return embed
+
+
 def market_embed(
     rows: list[dict[str, Any]], asset: str,
     latest: dict[str, dict[str, Any] | None],
@@ -246,7 +365,8 @@ def market_embed(
 class _NavButton(discord.ui.Button["MarketDataDashboard"]):
     def __init__(self, screen: str, label: str, emoji: str) -> None:
         super().__init__(label=label, emoji=emoji, style=discord.ButtonStyle.secondary,
-                         custom_id=f"rival:data:{screen}", row=0)
+                         custom_id=f"rival:data:{screen}",
+                         row=3 if screen == "coverage" else 0)
         self.screen = screen
 
     async def callback(self, interaction: discord.Interaction) -> None:
@@ -258,7 +378,7 @@ class _RefreshButton(discord.ui.Button["MarketDataDashboard"]):
     def __init__(self) -> None:
         super().__init__(label="Refresh", emoji="🔄",
                          style=discord.ButtonStyle.primary,
-                         custom_id="rival:data:refresh", row=0)
+                         custom_id="rival:data:refresh", row=3)
 
     async def callback(self, interaction: discord.Interaction) -> None:
         assert self.view is not None
@@ -296,7 +416,7 @@ class _ChooseItem(discord.ui.Select["MarketDataDashboard"]):
             for value in values[:25]
         ]
         super().__init__(
-            placeholder="Choose an exchange" if kind == "exchange"
+            placeholder="Choose an exchange" if kind in ("exchange", "coverage")
                         else "Choose BTC, ETH, SOL…",
             options=options, min_values=1, max_values=1,
             custom_id=f"rival:data:choose:{kind}", row=1,
@@ -305,7 +425,7 @@ class _ChooseItem(discord.ui.Select["MarketDataDashboard"]):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         assert self.view is not None
-        if self.kind == "exchange":
+        if self.kind in ("exchange", "coverage"):
             self.view.selected_venue = self.values[0]
         else:
             self.view.selected_asset = self.values[0]
@@ -349,6 +469,7 @@ class MarketDataDashboard(discord.ui.View):
             ("overview", "Overview", "🏠"),
             ("exchanges", "Exchanges", "🌐"),
             ("markets", "Markets", "📊"),
+            ("coverage", "Coverage", "🛡️"),
         ):
             item = _NavButton(screen, label, emoji)
             if self.screen == screen:
@@ -358,6 +479,8 @@ class MarketDataDashboard(discord.ui.View):
         self.add_item(_RefreshButton())
         if self.screen == "exchanges" and self.venues:
             self.add_item(_ChooseItem("exchange", self.venues, self.selected_venue))
+        if self.screen == "coverage" and self.venues:
+            self.add_item(_ChooseItem("coverage", self.venues, self.selected_venue))
         if self.screen == "markets" and self.assets:
             self.add_item(_ChooseItem("market", self.assets, self.selected_asset))
             if len(self.venues) > MARKET_PAGE_SIZE:
@@ -398,6 +521,11 @@ class MarketDataDashboard(discord.ui.View):
             embed = _header("RivaL  |  Data Center", accent=False)
             embed.description = "Market data is temporarily unavailable. Retry in a moment."
             return embed
+        if self.screen == "coverage":
+            return coverage_embed(
+                rows, self.venues, self.assets, self.selected_venue,
+                self.interval_seconds,
+            )
         if self.screen == "exchanges" and self.selected_venue:
             return exchange_embed(
                 rows, self.selected_venue, self.assets, self.interval_seconds,

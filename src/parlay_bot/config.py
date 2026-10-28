@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     rival_perp_collection_seconds: int = Field(default=300, ge=300, le=3600)
     rival_perp_collection_bars: int = Field(default=48, ge=2, le=48)
 
+    # Low-cost local research; never auto-promotes models or places orders.
+    rival_shadow_learning_enabled: bool = Field(default=True)
+    rival_shadow_eval_seconds: int = Field(default=3600, ge=900, le=21600)
+
     # Independent, user-triggered Gemini research (never called by candle worker).
     # Reads existing GEMINI_API_KEY in Discloud if configured there.
     gemini_api_key: SecretStr | None = Field(default=None)

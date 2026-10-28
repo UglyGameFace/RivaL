@@ -10,6 +10,7 @@ from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
 
 _LOG = logging.getLogger(__name__)
 
@@ -105,8 +106,8 @@ class _ModelListButton(discord.ui.Button["ResearchDashboard"]):
             names = await dashboard.ai.list_advertised_models()
             options = ", ".join(names[:12]) or "No advertised generation models"
             dashboard.message = (
-                f"Configured: **{dashboard.ai.model}**\\n"
-                f"Advertised: {options[:750]}\\n"
+                f"Configured: **{dashboard.ai.model}**\n"
+                f"Advertised: {options[:750]}\n"
                 "The model list is metadata only. A model may still reject "
                 "generation for this project."
             )
@@ -125,12 +126,14 @@ class ResearchDashboard(discord.ui.View):
     def __init__(
         self, *, owner_id: int, market: PerpetualMarketStore | None,
         ai: GeminiResearch | None, venues: tuple[str, ...],
+        shadow_enabled: bool = False,
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
         self.market = market
         self.ai = ai
         self.venues = venues
+        self.shadow_enabled = shadow_enabled
         self.asset = "BTC"
         self.screen = "math"
         self.opinion: AiResearch | None = None
@@ -201,11 +204,65 @@ class ResearchDashboard(discord.ui.View):
                     embed.add_field(
                         name="Mathematical model",
                         value=(
-                            "Point-in-time features and shadow evaluation exist. "
-                            "**Scheduled training, calibration and verified "
-                            "production signals are not active.**"
+                            "Online weights are evaluated in the background on "
+                            "settled historical observations. **No model is "
+                            "approved for live trading or automated signals.**"
+                        ) if self.shadow_enabled else (
+                            "Point-in-time features and offline shadow evaluation "
+                            "exist; scheduled evaluation is disabled."
                         ), inline=False,
                     )
+                if self.shadow_enabled:
+                    try:
+                        snapshots = await asyncio.to_thread(
+                            ShadowLearningMonitor(self.market.store).latest,
+                            asset=self.asset,
+                        )
+                    except Exception:  # noqa: BLE001 - view must never crash
+                        _LOG.exception("Stored shadow evaluation read failed")
+                        embed.add_field(
+                            name="Automatic learning",
+                            value="Learning history unavailable; collection can continue.",
+                            inline=False,
+                        )
+                    else:
+                        ready = [
+                            row for row in snapshots
+                            if row["evaluated"] >= MIN_EVALUATED
+                            and row["brier"] is not None
+                        ]
+                        if ready:
+                            total = sum(int(x["evaluated"]) for x in ready)
+                            model_score = sum(
+                                float(x["brier"]) * int(x["evaluated"])
+                                for x in ready
+                            ) / total
+                            baseline_score = sum(
+                                float(x["baseline_brier"]) * int(x["evaluated"])
+                                for x in ready
+                            ) / total
+                            embed.add_field(
+                                name="Automatic shadow evaluation",
+                                value=(
+                                    f"**{len(ready)}** qualifying venue/horizon streams "
+                                    f"· **{total:,}** settled evaluations (may overlap).\n"
+                                    f"Mean Brier: **{model_score:.4f}** vs "
+                                    f"baseline **{baseline_score:.4f}**.\n"
+                                    "Research only: not a calibrated or deployed signal."
+                                ),
+                                inline=False,
+                            )
+                        else:
+                            embed.add_field(
+                                name="Automatic shadow evaluation",
+                                value=(
+                                    f"**{len(snapshots)}** tracked venue/horizon streams. "
+                                    f"Waiting for at least {MIN_EVALUATED} causal "
+                                    "settled evaluations per stream. Backfilled "
+                                    "candles cannot qualify as live predictions."
+                                ),
+                                inline=False,
+                            )
             embed.set_footer(
                 text="Historical backfills do not count as live forward tests."
             )

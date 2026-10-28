@@ -166,3 +166,29 @@ that the bot observed 48 consecutive live intervals.
 Production activation requires deploying the newer main commit to the existing
 Discloud RivaL app and checking actual status rows. GitHub CI is not a runtime
 feed audit.
+
+## The new interactive /rival-data dashboard
+
+The command is now a private multi-screen menu, **not** a long embed with an
+entry for each exchange/coin combination.
+
+- **Overview**: live/configured venues, fresh-market pairs, total persisted
+  candles, last successful sync and progress against ten-source target.
+- **Exchanges**: use the dropdown to inspect one exchange at a time. BTC, ETH
+  and SOL show accurate status, last success and cumulative inserted candles.
+- **Markets**: use the dropdown to choose an asset, then inspect the most recent
+  *stored* five-minute candle for each venue separately. USD, USDC and USDT are
+  explicitly labeled rather than averaged into a misleading price.
+- **Refresh**: re-fetch live status from the existing PostgreSQL market store
+  without generating unnecessary exchange API calls.
+
+A last success is treated as fresh only when the source status is `ok`
+and the timestamp is no older than three configured collection intervals.
+Stale, failed or never-attempted sources are not counted as active. Controls
+are private to the invoking Discord user, expire after 15 minutes, and use
+ephemeral interaction responses. Database lookup errors are handled without
+exposing secrets. The sports command and existing collection loop are not
+changed by this UI-only improvement.
+
+Deploy the newest RivaL main revision to the **existing** Discloud app to see
+the interface. A GitHub merge alone does not update Discord.

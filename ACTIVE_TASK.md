@@ -19,6 +19,23 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 **Active: integrate automatic source collection into the Discord runtime.** PRs #9–12 supplied two independent bounded data adapters, immutable PostgreSQL market storage and a shadow evaluator. This PR now schedules immediate and five-minute collection in the existing Discloud bot process, with persistent feed health and phone-accessible /rival-data status. Live Discloud deployment/API reachability and actual writes remain UNVERIFIED until redeployment. Eight other adapters and the full production prediction/retraining bot remain unfinished.
 
+## October 28, 2026: real private Discord data dashboard
+
+- Replace /rival-data's unbounded one-embed source list with a responsive
+  multi-screen ephemeral dashboard built using Discord Views and Selects.
+- Overview shows fresh/configured markets, live venue count, persisted candle
+  total, last successful sync and ten-source goal as distinct values.
+- Exchanges screen shows one chosen venue at a time with asset-level health
+  and last success; user switches venue from a dropdown.
+- Markets screen shows a chosen asset's latest stored venue-specific prices,
+  quote denomination and candle age; never computes a false cross-venue mean.
+- Overview/Exchanges/Markets/Refresh buttons navigate in place and re-read
+  authoritative PostgreSQL on demand. Another Discord user cannot control
+  the invoking user's menu. DB errors give a safe message, not credentials.
+- A stale timestamp cannot be called live just because the last result was
+  "ok"; a venue without records remains explicitly waiting.
+- No changes to background collection or the sports /rival UI.
+
 ## October 28, 2026: additional feed integration and Discord status fix
 
 - Add two newly documented candidates to the collector: Bitget V3 USDT-FUTURES

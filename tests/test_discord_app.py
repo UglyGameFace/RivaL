@@ -124,6 +124,9 @@ async def test_discord_client_registers_rival_and_data_status_without_message_in
         assert command is not None
         assert command.description == "Open your private RivaL sports odds dashboard."
         assert client.tree.get_command("rival-data") is not None
+        assert client.tree.get_command("rival-data").description == (
+            "Open the private RivaL market data dashboard."
+        )
         assert client.intents.message_content is False
         assert client.perp_collector is None
         assert client.archive_runtime is None

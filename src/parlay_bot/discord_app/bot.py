@@ -11,6 +11,7 @@ from discord import app_commands
 from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_runtime
 from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.config import Settings
+from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
 from parlay_bot.discord_app.presentation import onboarding_embed, saved_location_embed
 from parlay_bot.discord_app.views import LocationView, OnboardingView
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
@@ -144,64 +145,22 @@ class RivalDiscordClient(discord.Client):
 
         @self.tree.command(
             name="rival-data",
-            description="Check live RivaL crypto market collection and database status.",
+            description="Open the private RivaL market data dashboard.",
         )
         async def rival_data(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
-            embed = discord.Embed(
-                title="RivaL • Market Data",
-                description=(
-                    "Automatic read-only BTC/ETH/SOL collection. "
-                    "These observations are not trading predictions."
-                ),
-                color=discord.Color.green(),
+            collector = self.perp_collector
+            dashboard = MarketDataDashboard(
+                owner_id=interaction.user.id,
+                market=collector.market if collector is not None else None,
+                venues=tuple(collector.providers) if collector is not None else (),
+                assets=collector.assets if collector is not None else (),
+                interval_seconds=self.settings.rival_perp_collection_seconds,
+                enabled=collector is not None,
             )
-            if self.perp_collector is None:
-                embed.description = (
-                    "Automatic perpetual collection is disabled or "
-                    "the bot is not using PostgreSQL."
-                )
-            else:
-                try:
-                    rows = await asyncio.to_thread(
-                        self.perp_collector.market.feed_health
-                    )
-                except Exception:  # noqa: BLE001 - do not expose DB credentials
-                    _LOG.warning("RivaL market status lookup failed")
-                    embed.description = "Market status temporarily unavailable."
-                else:
-                    if not rows:
-                        embed.description = (
-                            "Collector configured. No completed collection attempts "
-                            "recorded yet. Check the Discloud startup logs."
-                        )
-                    live_sources = len({
-                        row["venue"] for row in rows if row["status"] == "ok"
-                    })
-                    configured_sources = len(self.perp_collector.providers)
-                    embed.description = (
-                        f"Active feeds: **{live_sources}/{configured_sources}** "
-                        "configured. Target: **10 independent venues**. "
-                        "Historical backfill is not counted as live model accuracy."
-                    )
-                    for row in rows[:24]:
-                        last_ok = row["last_success_at"]
-                        success = (
-                            discord.utils.format_dt(
-                                datetime.fromisoformat(str(last_ok)), style="R"
-                            )
-                            if last_ok else "never"
-                        )
-                        embed.add_field(
-                            name=f'{row["venue"]} • {row["asset"]}',
-                            value=(
-                                f'Status: **{row["status"]}**\n'
-                                f'Last success: {success}\n'
-                                f'New candles total: {row["total_new_candles"]}'
-                            ),
-                            inline=False,
-                        )
-            await interaction.edit_original_response(embed=embed)
+            await interaction.edit_original_response(
+                embed=await dashboard.render(), view=dashboard,
+            )
 
     async def setup_hook(self) -> None:
         if self.settings.rival_dev_guild_id is not None:

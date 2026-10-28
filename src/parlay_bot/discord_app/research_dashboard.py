@@ -10,6 +10,7 @@ from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
 
 _LOG = logging.getLogger(__name__)
@@ -225,6 +226,51 @@ class ResearchDashboard(discord.ui.View):
                             "Point-in-time features and offline shadow evaluation "
                             "exist; scheduled evaluation is disabled."
                         ), inline=False,
+                    )
+                # This describes *observed* cross-venue movement; no
+                # target/stop-loss/probability is invented from raw momentum.
+                try:
+                    pulse = await asyncio.to_thread(
+                        calculate_market_pulse, self.market,
+                        asset=self.asset, venues=self.venues,
+                    )
+                except InsufficientEvidence:
+                    embed.add_field(
+                        name="Current market pulse",
+                        value=(
+                            "NO SIGNAL · Not enough fresh, contiguous "
+                            "15-minute candles from at least three exchanges."
+                        ), inline=False,
+                    )
+                except Exception:  # noqa: BLE001 - no credentials in Discord
+                    _LOG.exception("RivaL market pulse calculation failed")
+                    embed.add_field(
+                        name="Current market pulse",
+                        value="Current read-only market observations unavailable.",
+                        inline=False,
+                    )
+                else:
+                    hour = (
+                        f"{pulse.median_1h_pct:+.3f}%"
+                        if pulse.median_1h_pct is not None else "insufficient history"
+                    )
+                    embed.add_field(
+                        name="Current market pulse · NOT a trading signal",
+                        value=(
+                            f"**{pulse.sources}/{pulse.configured}** fresh venues "
+                            f"· most recent shared close "
+                            f"{discord.utils.format_dt(pulse.observed_at, style='R')}\n"
+                            f"Median 15m move: **{pulse.median_15m_pct:+.3f}%** "
+                            f"· 1h: **{hour}**\n"
+                            f"15m direction: **{pulse.up} up / "
+                            f"{pulse.down} down / {pulse.flat} flat**\n"
+                            f"Exchange range: "
+                            f"{pulse.range_15m_pct[0]:+.3f}% to "
+                            f"{pulse.range_15m_pct[1]:+.3f}%\n"
+                            "**Suggested target: Not validated**. Your target "
+                            "should vary by coin, timeframe and volatility."
+                        )[:1024],
+                        inline=False,
                     )
                 if self.shadow_enabled:
                     try:

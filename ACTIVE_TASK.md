@@ -17,7 +17,7 @@ Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459
 
 ## Status
 
-**Active: first foundational prediction/feedback slice under CI validation.** The sports application remains the live production behavior. New modules are isolated, not scheduled, not fed by exchange APIs, and not exposed in Discord. No claims of trained predictions or demonstrated profitability.
+**Active: foundational prediction/feedback slice merged; further conversion work remains.** PR #9 merged at `78dbbc18d0dfc0c31902e727fe9736a5834498e7`. Exact-head pull-request CI passed Ruff and 75 tests (including PostgreSQL 16 integration). The sports app remains the live production behavior; the new modules are isolated, not scheduled, not fed by exchange APIs, and not exposed in Discord. No claims of trained predictions or demonstrated profitability.
 
 ## Findings / authoritative execution path
 
@@ -45,7 +45,7 @@ As of 2026-10-27, Kraken's public Futures charts documentation offers no-key cha
 
 ## Next step
 
-Validate this first ledger/fusion slice through exact-head Ruff/pytest/PostgreSQL CI, review all affected files and clean conflicts, and merge only after successful checks. Then validate accessible public market-data endpoints from Discloud and implement bounded read-only ingestion/normalization and point-in-time source forecasts into the existing PostgreSQL database. Do not start a separate feature or claim live predictions before the full pipeline is tested.
+The first isolated ledger/fusion slice was merged after successful exact-head CI and focused diff review. Next, verify which permitted public perpetuals market-data endpoints are reachable from Discloud; implement bounded, normalized, independently traced read-only ingestion and point-in-time features into the existing PostgreSQL store, then connect genuine forecasts/settlements to the tested ledger. Integrate model training and Discord UI only after evaluation gates. Do not claim live predictions or switch the active task prematurely.
 
 ---
 

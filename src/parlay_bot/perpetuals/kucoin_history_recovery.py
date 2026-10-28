@@ -15,9 +15,9 @@ import httpx
 
 from parlay_bot.perpetuals.history_inventory import six_months_prior
 from parlay_bot.perpetuals.history_recovery import (
-    GateHistoryRecovery,
     _ALLOWED,
     _STEP,
+    GateHistoryRecovery,
     _num,
     _utc,
 )

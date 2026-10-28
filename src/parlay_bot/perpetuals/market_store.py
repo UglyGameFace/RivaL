@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from parlay_bot.perpetuals.fusion import utc

@@ -124,14 +124,35 @@ def analytics_snapshot(
             and str(x["target_opened_at"]) < start_recent.isoformat()
         ]
         today, previous = _bucket(recent), _bucket(prior)
-        trend = (
-            "improving" if today["brier"] < previous["brier"] else
-            "worsening" if today["brier"] > previous["brier"] else "unchanged"
-        ) if (
+        # Comparing raw Brier scores across weeks can label a model as
+        # "improving" simply because the market became easier to predict.
+        # Compare each week's model-vs-baseline *paired skill* instead.
+        current_skill = (
+            today["baseline"] - today["brier"]
+            if today["baseline"] is not None else None
+        )
+        prior_skill = (
+            previous["baseline"] - previous["brier"]
+            if previous["baseline"] is not None else None
+        )
+        trend = "insufficient"
+        if (
             today["events"] >= MIN_TREND_EVENTS
             and previous["events"] >= MIN_TREND_EVENTS
-        ) else "insufficient"
-        by_horizon[h] = {"last_7d": today, "prior_7d": previous, "trend": trend}
+            and current_skill is not None and prior_skill is not None
+        ):
+            gain = current_skill - prior_skill
+            trend = (
+                "improving" if gain > 0.005
+                else "worsening" if gain < -0.005
+                else "unchanged"
+            )
+        by_horizon[h] = {
+            "last_7d": today, "prior_7d": previous,
+            "trend": trend, "last_7d_skill": current_skill,
+            "prior_7d_skill": prior_skill,
+            "trend_method": "relative_to_same_window_baseline",
+        }
     seen = set()
     governance = {}
     for row in governors:

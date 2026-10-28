@@ -21,12 +21,16 @@ VENUE_NAMES = {
     "dydx": "dYdX",
     "bitget": "Bitget Futures",
     "gate": "Gate Futures",
+    "okx": "OKX Swaps",
+    "kucoin": "KuCoin Futures",
 }
 MARKET_SYMBOLS = {
     "hyperliquid": ("{asset}", "USDC"),
     "dydx": ("{asset}-USD", "USD"),
     "bitget": ("{asset}USDT", "USDT"),
     "gate": ("{asset}_USDT", "USDT"),
+    "okx": ("{asset}-USDT-SWAP", "USDT"),
+    "kucoin": ("{asset}USDTM", "USDT"),
 }
 
 
@@ -209,6 +213,10 @@ def market_embed(
         row = by_key.get((venue, asset))
         candle = latest.get(venue)
         symbol_template, quote = MARKET_SYMBOLS.get(venue, ("{asset}", "?"))
+        contract = (
+            "XBTUSDTM" if venue == "kucoin" and asset == "BTC"
+            else symbol_template.format(asset=asset)
+        )
         if candle:
             price = float(candle["close_price"])
             close = _relative(candle.get("closed_at"))
@@ -217,7 +225,7 @@ def market_embed(
             detail = "No stored candle yet"
         embed.add_field(
             name=f"{VENUE_NAMES.get(venue, venue.title())}  •  "
-                 f"{symbol_template.format(asset=asset)}",
+                 f"{contract}",
             value=f"{_health(row, now=clock, interval_seconds=interval_seconds)}\n{detail}",
             inline=False,
         )
@@ -329,6 +337,8 @@ class MarketDataDashboard(discord.ui.View):
         if self.screen == "markets" and self.selected_asset:
             for venue in self.venues:
                 symbol, quote = MARKET_SYMBOLS.get(venue, ("{asset}", "?"))
+                if venue == "kucoin" and self.selected_asset == "BTC":
+                    symbol = "XBTUSDTM"
                 market_rows = self.market.recent_candles(
                     venue=venue, contract=symbol.format(asset=self.selected_asset),
                     quote=quote, interval_minutes=5, count=1,

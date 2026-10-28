@@ -1,4 +1,68 @@
-# Active Task Record
+# RivaL Active Task Record
+
+## Active task / outcome
+
+Convert RivaL's existing sports-only Discord parlay application into an **automatically evaluated and retrained, read-only crypto perpetual-futures prediction bot**, using verified no-cost public market-data APIs and the existing authoritative Discloud PostgreSQL runtime.
+
+Source request: GitHub issue #6. Start from `main@fb28a85523891c8251d8c2e5814459817f4c931c` after verified completion of PostgreSQL cutover.
+
+## Scope
+
+- Inspect current `/rival` entry point, sports collector, provider adapters, normalization, persistence, jurisdiction/onboarding, parlay UI, archive/runtime, tests, and deployment dependencies before replacing behavior.
+- Confirm supported public derivatives data endpoints, limitations, legal/geographical access restrictions, rate limits, venue symbol and contract identity, funding, open interest, and historical retention. Do not assume source interchangeability or combine venue-specific prices as if identical.
+- Keep PostgreSQL authoritative and Drive as optional, separately authenticated cold storage. Preserve existing user data, legacy compatibility until explicitly migrated, and safe rollback.
+- Build point-in-time candles/feature/label datasets, horizon-specific probability predictions, walk-forward evaluation, calibration, outcome settlement, autonomous model-training triggers, model version/rollback, quality/drift monitoring, and visible user-facing metrics.
+- Preserve Discord private application-command workflows while replacing sports-specific screens with perp prediction screens. Do not enable actual orders, exchange credentials, leverage, or unattended trading.
+- Free-first, Android-manageable, Discloud-friendly, low-resource and rate-limit-safe. Do not claim predictive edge without tested out-of-sample evidence.
+
+## Status
+
+**Active: research and execution-path inspection.** No perpetual-futures implementation has been merged. The existing sports application remains the live production behavior.
+
+## Findings / authoritative execution path
+
+`main.py` -> `parlay_bot.discord_app.bot.run_discord_bot` ->
+`RivalDiscordClient` -> shared `RelationalHotStore` / `PostgresHotStore` ->
+`LocationOnboardingService`, `CurrentBoardCollector`,
+`ParlayBuilder`, and `ColdArchiveRuntime` -> `/rival` and views.
+
+As of 2026-10-27, Kraken's public Futures charts documentation offers no-key chart candles; Hyperliquid's public Info endpoint offers candle snapshots and asset contexts (funding/open interest); Bybit V5 offers no-key historical klines, funding and open-interest data but exchange availability varies by location. Provider selection requires endpoint and regional-validation checks before integration. Historical retention, websocket consistency, and missing fields must be handled explicitly.
+
+## Changes / validation / cleanup / conflicts
+
+- New conversion code: none yet.
+- Existing PostgreSQL/Discord runtime on `main` remains unchanged.
+- Backlog unrelated requests; retain one active implementation task, including verification and cleanup.
+- The previous PostgreSQL cutover has passed GitHub CI and a user-observed Discloud restart/persistence test, recorded below.
+- No live exchange access or model quality can be claimed from docs alone.
+
+## Blockers / risks
+
+- Exchange/public API availability from the actual Discloud region is not yet verified.
+- A statistically useful training dataset must first be collected/backfilled, with no future leakage. Data scarcity may require a conservative baseline and a shadow model.
+- Google Drive OAuth refresh/token lifecycle and archive uploads remain **separate unverified functionality**. Leave archiving off until authenticated validation; do not confuse Drive readiness with the PostgreSQL cutover.
+- Trading access and legal eligibility vary by region; read-only analytics must not circumvent access restrictions.
+
+## Next step
+
+Inspect the existing sports command and storage execution paths and identify the smallest complete conversion design. Choose a supported no-key derivatives market-data source, implement normalized read-only ingestion with tests into **existing PostgreSQL**, then add labelled prediction/evaluation and Discord presentation with end-to-end validation. Never silently replace working storage or move production secrets.
+
+---
+
+# Completed prior task: Discloud PostgreSQL production cutover
+
+## Closure evidence (2026-10-27)
+
+- PR #5 merged the shared PostgreSQL implementation, with PostgreSQL integration regression tests passing.
+- PR #7 added a secret-safe startup backend log; exact-head push/PR GitHub Actions CI passed, as did the merged `main@fb28a85523891c8251d8c2e5814459817f4c931c` run.
+- Owner-supplied Discloud startup logs at **22:58 local** show `RivaL operational storage initialized (backend=postgres)`, one command synchronized to guild `1514374173517152418`, and a Discord Gateway connection.
+- A freshly invoked `/rival` at **23:01 local**, after that process restart, directly displayed the previously saved Connecticut (CT) selection without reentry. This verifies persistence across the deployment restart through the currently configured PostgreSQL runtime.
+- The `403 Missing Access` from 22:41 was resolved by installing the Discord app in the server, not by altering the guild ID.
+- No production DB URL or credentials were exposed. Cold archive uploads, SportsGameOdds live refresh and perpetuals models are *not* implied verified by these checks.
+
+Prior task scope, findings, original test and compatibility results are archived below as historical evidence. References to outstanding production verification there describe the **pre-closure snapshot**, not current blockers.
+
+# Historical PostgreSQL Cutover Record (pre-closure snapshot)
 
 ## Project
 

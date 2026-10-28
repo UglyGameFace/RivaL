@@ -157,11 +157,11 @@ async def test_dydx_rejects_wrong_ticker_duplicates_and_bad_prices():
 async def test_dydx_no_stale_or_future_candles_as_training_inputs():
     old = {
         **item("BTC-USD", 5),
-        "startedAt": (NOW - timedelta(hours=2)).isoformat(),
+        "startedAt": (NOW.replace(minute=5) - timedelta(hours=2)).isoformat(),
     }
     future = {
         **item("BTC-USD", 5),
-        "startedAt": (NOW + timedelta(minutes=5)).isoformat(),
+        "startedAt": NOW.replace(minute=20).isoformat(),
     }
 
     def reply(request):

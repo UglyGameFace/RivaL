@@ -7,7 +7,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from parlay_bot.perpetuals.fusion import (
-    SourceForecast, SourceSkill, fuse_forecasts,
+    SourceForecast,
+    SourceSkill,
+    fuse_forecasts,
 )
 from parlay_bot.perpetuals.ledger import PredictionLedger
 

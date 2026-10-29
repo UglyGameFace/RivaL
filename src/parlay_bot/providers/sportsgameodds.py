@@ -13,6 +13,7 @@ from parlay_bot.providers.errors import (
     ProviderRateLimited,
     QuotaReserveReached,
 )
+from parlay_bot.providers.owner_limits import OwnerLimitStore
 
 
 @dataclass(frozen=True)
@@ -71,12 +72,14 @@ class SportsGameOddsClient:
         monthly_entity_reserve: int = 250,
         client: httpx.AsyncClient | None = None,
         request_cooldown_seconds: float = 6.1,
+        owner_limits: OwnerLimitStore | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("SportsGameOdds API key is required")
         if monthly_entity_reserve < 0:
             raise ValueError("monthly_entity_reserve cannot be negative")
 
+        self._owner_limits = owner_limits
         self._api_key = api_key
         self._monthly_entity_reserve = monthly_entity_reserve
         self._owns_client = client is None
@@ -232,7 +235,16 @@ class SportsGameOddsClient:
         if remaining is None:
             return requested
 
+        owner = self._owner_limits.get("sportsgameodds") if self._owner_limits else None
+        if owner is not None:
+            # A configured owner cap is an additional hard ceiling, never a
+            # replacement for the provider's authoritative monthly allowance.
+            safe_owner = owner.maximum_units - usage.monthly_current_entities - owner.reserve_units
+            if safe_owner <= 0:
+                raise QuotaReserveReached("Owner-configured SportsGameOdds budget exhausted")
         safe_remaining = remaining - self._monthly_entity_reserve
+        if owner is not None:
+            safe_remaining = min(safe_remaining, safe_owner)
         if safe_remaining <= 0:
             raise QuotaReserveReached(
                 "SportsGameOdds monthly entity reserve protected: "

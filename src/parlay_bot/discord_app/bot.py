@@ -50,6 +50,7 @@ from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
+from parlay_bot.providers.owner_limits import OwnerLimitStore
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.research.sports_results import (
     ResultIntegrityError,
@@ -123,6 +124,7 @@ class RivalDiscordClient(discord.Client):
                 settings.sportsgameodds_api_key.get_secret_value(),
                 base_url=settings.sportsgameodds_base_url,
                 monthly_entity_reserve=settings.sportsgameodds_monthly_entity_reserve,
+                owner_limits=OwnerLimitStore(self.store),
             )
             self.current_collector = CurrentBoardCollector(
                 client=self.current_provider,

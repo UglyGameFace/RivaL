@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from parlay_bot.discord_app.api_limits import OwnerLimitsView
+from parlay_bot.discord_app.manual_parlay import ManualParlayView
 from parlay_bot.discord_app.presentation import (
     display_book,
     onboarding_embed,
@@ -20,6 +22,7 @@ from parlay_bot.jurisdiction.zip_lookup import ZipLookupError
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.live_quotes import QuoteUnavailable, quote_embed
+from parlay_bot.providers.owner_limits import OwnerLimitStore
 
 if TYPE_CHECKING:
     from parlay_bot.collectors.current import CurrentBoardCollector
@@ -202,7 +205,8 @@ class GuidedHome(discord.ui.View):
             self._add("Choose State", "state", 0, "🗺️")
             self._add("Enter ZIP", "zip", 0, "📍")
             self._add("Refresh Odds", "refresh", 0, "🔄")
-            self._add("Build 3-Pick Slip", "slip", 1, "🎟️", True)
+            self._add("Choose My Picks", "manual", 1, "🎟️", True)
+            self._add("Auto-Suggest 3", "slip", 1, "🎲")
         elif p == "slip":
             self._add("Lower Risk", "lower", 0, "🛡️")
             self._add("Balanced", "balanced", 0, "⚖️")
@@ -236,6 +240,7 @@ class GuidedHome(discord.ui.View):
             self._add("Are My Prices Fresh?", "feeds", 0, "📡")
             self._add("Is RivaL Improving?", "trust", 0, "📊")
             self._add("Technical Research", "research", 1, "🧪")
+            self._add("API Usage & Limits", "api-limits", 2, "🔒")
         elif p in ("feeds", "trust"):
             self.add_item(_Coin(self.coin))
             if p == "trust":
@@ -650,6 +655,41 @@ class GuidedHome(discord.ui.View):
             return
         if action in ("zip", "state", "target", "funds"):
             await interaction.response.send_modal(_Entry(self, action))
+            return
+        if action == "api-limits":
+            application = await interaction.client.application_info()
+            owner = application.owner
+            if owner is None or owner.id != interaction.user.id:
+                await interaction.response.send_message(
+                    "Only the application owner can edit API limits.", ephemeral=True,
+                )
+                return
+            limits = OwnerLimitStore(interaction.client.store)
+            view = OwnerLimitsView(store=limits, owner_id=owner.id)
+            await interaction.response.send_message(
+                "API Usage & Limits: choose a provider to set your safety ceiling. "
+                "This does not upgrade the provider subscription.",
+                view=view, ephemeral=True,
+            )
+            return
+        if action == "manual":
+            saved = await asyncio.to_thread(
+                self.location.get_saved, platform="discord",
+                user_id=str(self.owner_id),
+            )
+            if saved is None:
+                await interaction.response.send_message(
+                    "Choose your betting state first.", ephemeral=True,
+                )
+                return
+            books = set(self.builder.registry.eligible_books(str(saved["state_code"])))
+            picker = await asyncio.to_thread(
+                ManualParlayView, owner_id=self.owner_id,
+                store=self.builder.store, eligible_books=books,
+            )
+            await interaction.response.send_message(
+                embed=picker.render(), view=picker, ephemeral=True,
+            )
             return
         await interaction.response.defer()
         if action == "back":

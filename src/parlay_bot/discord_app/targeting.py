@@ -203,6 +203,21 @@ class DirectionTargetStore:
             ).fetchall()
         return [self._target(dict(row)) for row in rows]
 
+    def can_follow(self, user_id: str) -> bool:
+        """An existing user may retarget; new watches respect a bounded budget."""
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM rival_direction_targets WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+            if row is not None:
+                return True
+            total = conn.execute(
+                "SELECT COUNT(*) AS total FROM rival_direction_targets",
+            ).fetchone()
+            return int(total["total"]) < MAX_TARGETS
+
     def save(self, target: DirectionTarget) -> None:
         if target.asset not in ASSETS or target.horizon_minutes not in HORIZONS:
             raise ValueError("invalid target")
@@ -290,6 +305,8 @@ class DirectionTargetService:
             raise ValueError("invalid target")
         async with self.lock:
             existing = await asyncio.to_thread(self.store.get, str(user.id))
+            if not await asyncio.to_thread(self.store.can_follow, str(user.id)):
+                return False, "Personal watch capacity is full. Try again later."
             snapshot = await asyncio.to_thread(
                 target_snapshot, self.market,
                 asset=asset, horizon_minutes=horizon_minutes,
@@ -324,6 +341,19 @@ class DirectionTargetService:
             if existing is None:
                 return False
             await asyncio.to_thread(self.store.stop, str(user_id))
+            # Do not leave a stale UP or DOWN card posing as an active watch.
+            try:
+                channel = self.bot.get_channel(int(existing.channel_id))
+                if channel is None:
+                    channel = await self.bot.fetch_channel(int(existing.channel_id))
+                message = await channel.fetch_message(int(existing.message_id))
+                await message.edit(embed=discord.Embed(
+                    title="RivaL • Target stopped",
+                    description="Monitoring is off. Use /rival-target to watch again.",
+                    color=discord.Color.light_grey(),
+                ))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                _LOG.info("Stopped target; original DM could not be updated")
             return True
 
     async def cycle(self) -> int:

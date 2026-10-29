@@ -198,38 +198,54 @@ class ForwardAccuracyMonitor:
             )
 
     def _settle(self, now: datetime) -> int:
+        # Recover the OLDEST genuinely settleable outcomes first. The old
+        # DESC/LIMIT queue could repeatedly skip valid old forecasts after
+        # downtime. Missing target candles and retrospectively imported
+        # outcomes must not occupy scarce settlement slots.
         with self.store.connect() as conn:
             pending = conn.execute(
-                """SELECT venue,contract,quote,asset,horizon_minutes,
-                          model_version,reference_opened_at,reference_close,
-                          issued_at,target_opened_at,probability_up,baseline_up
-                   FROM perp_forward_audit
-                   WHERE settled_at IS NULL AND target_opened_at<?
-                     AND target_opened_at>=?
-                   ORDER BY target_opened_at DESC LIMIT ?""",
-                ((now - timedelta(minutes=5)).isoformat(),
-                 (now - timedelta(days=2)).isoformat(),
-                 MAX_PENDING_SETTLEMENTS),
+                """SELECT f.venue,f.contract,f.quote,f.asset,f.horizon_minutes,
+                          f.model_version,f.reference_opened_at,
+                          f.reference_close,f.issued_at,f.target_opened_at,
+                          f.probability_up,f.baseline_up,
+                          c.close_price AS outcome_close,
+                          c.first_observed_at AS outcome_observed_at,
+                          c.closed_at AS outcome_closed_at
+                   FROM perp_forward_audit AS f
+                   JOIN perp_market_candles AS c
+                     ON c.venue=f.venue AND c.contract=f.contract
+                    AND c.quote=f.quote AND c.interval_minutes=5
+                    AND c.opened_at=f.target_opened_at
+                   WHERE f.settled_at IS NULL
+                     AND f.target_opened_at<?
+                     AND f.target_opened_at>=?
+                     AND c.first_observed_at>f.issued_at
+                     AND c.first_observed_at<=?
+                     AND c.closed_at<?
+                     AND c.close_price<>f.reference_close
+                   ORDER BY f.target_opened_at ASC,f.venue,f.contract,
+                            f.horizon_minutes
+                   LIMIT ?""",
+                (
+                    (now - timedelta(minutes=5)).isoformat(),
+                    (now - timedelta(days=2)).isoformat(),
+                    now.isoformat(), now.isoformat(),
+                    MAX_PENDING_SETTLEMENTS,
+                ),
             ).fetchall()
         resolved = 0
         for pred in pending:
             try:
-                with self.store.connect() as conn:
-                    row = conn.execute(
-                        """SELECT close_price,first_observed_at,closed_at
-                           FROM perp_market_candles WHERE venue=? AND contract=?
-                             AND quote=? AND interval_minutes=5 AND opened_at=?""",
-                        (pred["venue"], pred["contract"], pred["quote"],
-                         pred["target_opened_at"]),
-                    ).fetchone()
-                if row is None:
-                    continue
-                observed = utc(datetime.fromisoformat(str(row["first_observed_at"])))
+                observed = utc(datetime.fromisoformat(
+                    str(pred["outcome_observed_at"])
+                ))
                 issued = utc(datetime.fromisoformat(str(pred["issued_at"])))
-                close = utc(datetime.fromisoformat(str(row["closed_at"])))
+                close = utc(datetime.fromisoformat(
+                    str(pred["outcome_closed_at"])
+                ))
                 if observed <= issued or observed > now or close >= now:
-                    continue  # A backfill known at issuance is not a forward outcome.
-                value = float(row["close_price"])
+                    continue
+                value = float(pred["outcome_close"])
                 previous = float(pred["reference_close"])
                 if not math.isfinite(value) or value <= 0 or value == previous:
                     continue  # Flat moves remain unresolved, never forced to up/down.

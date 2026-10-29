@@ -178,7 +178,7 @@ def test_same_book_compares_both_models_after_spread_and_costs(tmp_path):
         assert not proof["replacement_authorized"]
         visual=multi_proof_embed(proof)
         assert "Incumbent still active" in visual.description
-        assert "Same-market after-cost" in [f.name for f in visual.fields]
+        assert "Same-market after-cost observations" in [f.name for f in visual.fields]
     finally:
         store.close()
 

@@ -63,6 +63,15 @@ class CurrentBoardCollector:
         self.max_pages = max_pages
         self._lock = asyncio.Lock()
 
+    @staticmethod
+    def _log_forecast_outcome(task: asyncio.Task[object]) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:  # noqa: BLE001
+            _LOG.exception("RivaL optional sports forecast failed; odds intake unaffected")
+
     def _last_refresh(self) -> datetime | None:
         raw = self.store.get_runtime_state(_STATE_KEY)
         if raw is None:
@@ -125,19 +134,14 @@ class CurrentBoardCollector:
                     result = await asyncio.to_thread(self.store.ingest_board, board)
                     _LOG.info('RivaL sports ingested observations=%d seconds=%.2f', result.observations_seen, time.monotonic() - stage_start)
                     if self.results is not None:
-                        try:
-                            stage_start = time.monotonic()
-                            await asyncio.wait_for(
-                                asyncio.to_thread(
-                                    self.results.issue_forecast, event,
-                                    observed_at=datetime.now(UTC),
-                                ), timeout=3,
+                        # Forecast research is optional and must not delay odds intake.
+                        task = asyncio.create_task(
+                            asyncio.to_thread(
+                                self.results.issue_forecast, event,
+                                observed_at=datetime.now(UTC),
                             )
-                            _LOG.info('RivaL sports forecast seconds=%.2f', time.monotonic() - stage_start)
-                        except Exception:  # noqa: BLE001 - odds intake must survive research failures
-                            _LOG.exception(
-                                "RivaL prospective sports forecast failed; odds intake preserved"
-                            )
+                        )
+                        task.add_done_callback(self._log_forecast_outcome)
                     observations_seen += result.observations_seen
                     new_states += result.new_states
                     repeated_states += result.repeated_states

@@ -181,7 +181,7 @@ def test_strict_prospective_venue_matching_and_realized_after_cost_losses(tmp_pa
         assert report["costs"]["conservative"]["mean_net_bps"] < 0
         assert report["status"] == "NOT_PROVEN"
         assert not report["real_fills_verified"]
-        restarted = StreamShadowLedger(SQLiteHotStore(store.database.path))
+        restarted = StreamShadowLedger(SQLiteHotStore(tmp_path / "shadow.sqlite"))
         assert restarted.report(
             asset="BTC", horizon_minutes=5, now=issued + timedelta(minutes=9),
         )["closed"] == 1

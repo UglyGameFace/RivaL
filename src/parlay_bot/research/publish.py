@@ -88,10 +88,20 @@ async def publish(drive: GoogleDriveArchiveClient, item: ResearchPublication) ->
     manifest = await drive.ensure_manifest_file(
         artifact=item.manifest, batch_id=item.batch_id,
     )
+    # Read back both *actual* stored objects, verify SHA-256, and fail closed.
+    # A completed resumable upload alone is not proof of recoverability.
+    await drive.verify_downloaded_artifact(
+        file_id=history.file_id, parent_id=drive.folders.history,
+        artifact=item.history,
+    )
+    await drive.verify_downloaded_artifact(
+        file_id=manifest.file_id, parent_id=drive.folders.manifests,
+        artifact=item.manifest,
+    )
     return {
         "source": item.source, "batch_id": item.batch_id,
         "history_id": history.file_id, "manifest_id": manifest.file_id,
-        "rows": item.history.row_count, "warehouse_promoted": True,
+        "rows": item.history.row_count, "warehouse_promoted": True, "restore_sha256_verified": True,
         "live_predictions_modified": False,
     }
 
@@ -119,6 +129,8 @@ def _drive(settings: Settings) -> GoogleDriveArchiveClient:
             history=settings.rival_drive_history_folder_id,
             manifests=settings.rival_drive_manifests_folder_id,
             staging=settings.rival_drive_staging_folder_id,
+            models=settings.rival_drive_models_folder_id,
+            reports=settings.rival_drive_reports_folder_id,
         ),
         chunk_size_bytes=settings.rival_archive_chunk_mib * 1024 * 1024,
     )

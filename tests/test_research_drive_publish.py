@@ -13,6 +13,7 @@ from parlay_bot.research.publish import prepare, publish
 class FakeDrive:
     def __init__(self):
         self.calls = []
+        self.folders = type('Folders', (), {'history': 'history-folder', 'manifests': 'manifests-folder'})()
 
     async def ensure_history_file(self, *, artifact, batch_id, mime_type):
         self.calls.append(("history", batch_id, artifact.sha256, mime_type))
@@ -23,6 +24,9 @@ class FakeDrive:
         self.calls.append(("manifest", batch_id, artifact.sha256))
         return DriveObject("private-manifest", artifact.file_name, artifact.size_bytes,
                            artifact.md5, ("manifests-folder",))
+
+    async def verify_downloaded_artifact(self, *, file_id, parent_id, artifact):
+        self.calls.append(("restore", file_id, parent_id, artifact.sha256))
 
 
 def fixture(tmp_path):
@@ -48,7 +52,8 @@ async def test_private_drive_promotion_preserves_order_and_source_provenance(tmp
     assert result["live_predictions_modified"] is False
     assert result["history_id"] == "private-history"
     assert result["manifest_id"] == "private-manifest"
-    assert [call[0] for call in drive.calls] == ["history", "manifest"]
+    assert [call[0] for call in drive.calls] == ["history", "manifest", "restore", "restore"]
+    assert result["restore_sha256_verified"] is True
     assert drive.calls[0][-1] == "application/x-ndjson"
 
 

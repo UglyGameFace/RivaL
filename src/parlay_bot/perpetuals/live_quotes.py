@@ -149,6 +149,7 @@ class PublicBestQuoteClient:
     def __init__(
         self, *, client: httpx.AsyncClient | None = None,
         base_url: str = "https://fapi.binance.com",
+        reference_client: httpx.AsyncClient | None = None,
     ) -> None:
         self._owns = client is None
         self.client = client or httpx.AsyncClient(
@@ -159,7 +160,8 @@ class PublicBestQuoteClient:
         self._blocked_until = 0.0
         # Independent read-only fallback, used ONLY for display. Never feed
         # these USD perp prices into Binance-USDT paper/profit settlement.
-        self._reference_client = httpx.AsyncClient(
+        self._owns_reference = reference_client is None
+        self._reference_client = reference_client or httpx.AsyncClient(
             base_url="https://api.hyperliquid.xyz",
             timeout=httpx.Timeout(5.0),
         )
@@ -170,7 +172,8 @@ class PublicBestQuoteClient:
     async def aclose(self) -> None:
         if self._owns:
             await self.client.aclose()
-        await self._reference_client.aclose()
+        if self._owns_reference:
+            await self._reference_client.aclose()
 
     async def get(self, asset: str) -> BookQuote:
         if asset not in ASSETS:
@@ -211,8 +214,6 @@ class PublicBestQuoteClient:
                 ) from exc
             self._cache[asset] = (time.monotonic(), quote)
             return quote
-
-
 
     async def get_reference(self, asset: str) -> PerpReferenceBook:
         """A second verified, native USD-perp reference for read-only UI."""

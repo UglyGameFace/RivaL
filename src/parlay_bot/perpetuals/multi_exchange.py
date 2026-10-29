@@ -324,8 +324,9 @@ class MultiExchangeResearch:
                    WHERE q.asset=? AND q.venue=? AND q.state='OPEN'
                      AND q.target_opened_at<=? AND q.target_opened_at>=?
                    ORDER BY q.target_opened_at LIMIT 12""",
-                (quote.asset, venue, quote.exchange_at.isoformat(),
-                 (quote.exchange_at-EXIT_GRACE).isoformat()),
+                (quote.asset, venue,
+                 (quote.exchange_at-timedelta(minutes=5)).isoformat(),
+                 (quote.exchange_at-timedelta(minutes=5)-EXIT_GRACE).isoformat()),
             ).fetchall()
             closed = 0
             for row in open_quotes:

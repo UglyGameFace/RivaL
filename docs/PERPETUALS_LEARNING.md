@@ -885,3 +885,21 @@ demonstrate strictly subsequent performance. Lower ECE alone is not
 evidence of an executable net-positive strategy. Real fills, spread,
 venue-specific fees, observed funding, leverage/liquidation and long
 forward testing remain requirements.
+
+## Disputed-outcome guard for accuracy reporting
+
+The market model's forward accuracy screen now excludes entire UTC
+target events if one exchange reports UP while another reports DOWN
+for the same coin and horizon. The former aggregation averaged labels
+across venues and could turn a contradictory binary outcome into a
+fictional 0.5 observed result. Disputed event counts are retained by
+the last seven days and previous seven days so coverage is auditable.
+The model-vs-baseline Brier comparison continues to average actual
+venue-specific scores for an unambiguous target only once.
+
+A single aggregate probability (mean of validated venue model
+probabilities) decides whether the event is in UP, DOWN or NO SIGNAL:
+>=0.55, <=0.45 or abstain respectively. Hit rate and hypothetical
+cost stress never count disagreed venue bets as multiple independent
+decisions. Existing hard minimum sample and net-profitability gates
+remain. No present forecast or historical candle data is overwritten.

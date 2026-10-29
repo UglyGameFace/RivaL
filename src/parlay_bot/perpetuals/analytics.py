@@ -74,20 +74,10 @@ def analytics_snapshot(
                       AVG(model_brier) AS brier,
                       AVG(baseline_brier) AS baseline,
                       AVG(probability_up) AS probability,
-                      AVG(outcome_up) AS up_rate,
-                      AVG(CASE WHEN probability_up>=0.55 OR probability_up<=0.45
-                               THEN 1.0 ELSE 0.0 END) AS pred_count,
-                      AVG(CASE WHEN probability_up>=0.55
-                               THEN outcome_up
-                               WHEN probability_up<=0.45
-                               THEN 1.0-outcome_up
-                               ELSE NULL END) AS correct,
-                      AVG(CASE WHEN probability_up>=0.55
-                               THEN (realized_close/reference_close-1)*10000
-                               WHEN probability_up<=0.45
-                               THEN (reference_close-realized_close)
-                                    /reference_close*10000
-                               ELSE NULL END) AS gross_bps
+                      MIN(outcome_up) AS lowest_outcome,
+                      MAX(outcome_up) AS highest_outcome,
+                      AVG((realized_close/reference_close-1)*10000)
+                          AS venue_mean_up_bps
                FROM perp_forward_audit
                WHERE asset=? AND model_version=? AND settled_at IS NOT NULL
                  AND target_opened_at>=? AND target_opened_at<=?
@@ -115,15 +105,48 @@ def analytics_snapshot(
                WHERE asset=? AND model_version=? AND settled_at IS NULL""",
                 (asset, FORWARD_MODEL),
         ).fetchone()
+    # Every UTC target is ONE correlated event across providers. Never
+    # interpret opposite settled venue labels as a fractional win. Show
+    # disputed targets separately and exclude them from ALL scoring,
+    # calibration, hypothetical cost results and improvement decisions.
+    disputed: dict[tuple[int, str], int] = {}
+    resolved = []
+    for row in math_rows:
+        horizon = int(row["horizon_minutes"])
+        when = str(row["target_opened_at"])
+        period = "recent" if when >= start_recent.isoformat() else "prior"
+        if row["lowest_outcome"] != row["highest_outcome"]:
+            disputed[(horizon, period)] = disputed.get((horizon, period), 0) + 1
+            continue
+        probability = float(row["probability"])
+        label = int(row["lowest_outcome"])
+        decision = probability >= .55 or probability <= .45
+        gross_up_bps = row["venue_mean_up_bps"]
+        resolved.append({
+            "horizon_minutes": horizon, "target_opened_at": when,
+            "brier": float(row["brier"]),
+            "baseline": float(row["baseline"]),
+            "probability": probability,
+            "up_rate": label,
+            "pred_count": int(decision),
+            "correct": (
+                int((probability >= .55) == bool(label))
+                if decision else None
+            ),
+            "gross_bps": (
+                float(gross_up_bps) * (1 if probability >= .55 else -1)
+                if decision and gross_up_bps is not None else None
+            ),
+        })
     by_horizon = {}
     for h in (5, 15):
         recent = [
-            dict(x) for x in math_rows
+            dict(x) for x in resolved
             if x["horizon_minutes"] == h
             and str(x["target_opened_at"]) >= start_recent.isoformat()
         ]
         prior = [
-            dict(x) for x in math_rows
+            dict(x) for x in resolved
             if x["horizon_minutes"] == h
             and str(x["target_opened_at"]) < start_recent.isoformat()
         ]
@@ -157,6 +180,9 @@ def analytics_snapshot(
             "forward_reliability_7d": reliability,
             "cost_stress_7d": stress,
             "last_7d": today, "prior_7d": previous,
+            "disputed_targets_7d": disputed.get((h, "recent"), 0),
+            "disputed_targets_prior_7d": disputed.get((h, "prior"), 0),
+            "target_outcome_policy": "exclude_disagreeing_exchange_labels",
             "trend": trend, "last_7d_skill": current_skill,
             "prior_7d_skill": prior_skill,
             "trend_method": "relative_to_same_window_baseline",

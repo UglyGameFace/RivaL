@@ -1,3 +1,24 @@
+## October 28, 2026: exclude disputed venue labels from all accuracy charts
+
+- Actual code audit found analytics_snapshot used AVG(outcome_up) for
+  same-target exchange disagreement and fractional pred_count/correct.
+  This can produce fake partial outcomes and spuriously improving
+  reliability, directional hit rate or cost-stressed performance.
+- Group by unique (asset, horizon, UTC target). If settled venues
+  disagree on the future binary outcome, WITHHOLD that entire target
+  from both recent and prior scoring rather than treating 0.5 as a
+  real label. Report the excluded count for each horizon and week.
+- Score a target's directional decision using the pooled probability,
+  not an average of mutually opposed venue bets. Neutral pooled
+  probabilities abstain, with no fake win rate or theoretical PnL.
+- Keep the genuine venue-mean model-vs-baseline Brier scores for
+  consistent targets, and preserve separation from actual fill PnL.
+- Add SQLite contradictory-venue/neutral/false-trend regression tests.
+  No changes to live ingestion, autonomous model weights, Gemini,
+  historical database records, order permissions or runtime schedule.
+- Full Ruff/pytest/PostgreSQL CI gates the merge. Actual profitable
+  edge and six-month verified history remain UNPROVEN.
+
 ## October 28, 2026: prospective proof by market condition and hard real-cost gate
 
 - The current RivaL autonomous loop already stores immutable 5m/15m forward

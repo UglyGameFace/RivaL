@@ -8,10 +8,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from parlay_bot.discord_app.multi_proof import multi_proof_embed
-from parlay_bot.perpetuals.forward_audit import (
-    MODEL as BASE_MODEL,
-    ForwardAccuracyMonitor,
-)
+from parlay_bot.perpetuals.forward_audit import MODEL as BASE_MODEL
+from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.live_quotes import PerpReferenceBook
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.multi_exchange import (

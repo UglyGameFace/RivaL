@@ -264,10 +264,31 @@ class GuidedHome(discord.ui.View):
     async def _refresh_odds(self) -> None:
         if self.collector is None:
             return
+        # One shared refresh runs in the background. Menu interactions never
+        # wait for sportsbook HTTP calls or PostgreSQL ingestion.
+        collector = self.collector
+        if collector._lock.locked():
+            return
         try:
-            await asyncio.wait_for(self.collector.refresh_if_due(), timeout=15)
+            due = await asyncio.to_thread(collector.is_due)
         except Exception:  # noqa: BLE001
-            _LOG.warning("Beginner sports refresh failed, stale cache filtered", exc_info=True)
+            _LOG.exception("Unable to check sportsbook refresh schedule")
+            return
+        if not due:
+            return
+        # The collector lock is shared across all views. Even if two users
+        # schedule concurrently, only one task acquires it and fetches.
+        async def refresh() -> None:
+            if collector._lock.locked():
+                return
+            try:
+                await asyncio.wait_for(collector.refresh_if_due(), timeout=60)
+            except TimeoutError:
+                _LOG.warning("Background sportsbook refresh timed out")
+            except Exception:  # noqa: BLE001
+                _LOG.exception("Background sportsbook refresh failed")
+
+        asyncio.create_task(refresh())
 
     async def render(self) -> discord.Embed:
         p = self.page
@@ -333,6 +354,29 @@ class GuidedHome(discord.ui.View):
                 embed.add_field(
                     name="Your State", value=saved.state_name, inline=False,
                 )
+            if self.collector is not None:
+                try:
+                    last = await asyncio.to_thread(self.collector._last_refresh)
+                    updating = self.collector._lock.locked()
+                    if last is None:
+                        status = ("Updating odds in background" if updating
+                                  else "No completed odds refresh yet")
+                    else:
+                        age = max(0, int((datetime.now(UTC) - last).total_seconds() // 60))
+                        if age >= int(self.collector.refresh_interval.total_seconds() // 60):
+                            status = ("Updating odds in background" if updating
+                                      else f"Last checked {age} min ago; update pending")
+                        else:
+                            status = f"Last checked {age} min ago"
+                            if updating:
+                                status += " • Updating in background"
+                    embed.add_field(name="Odds status", value=status, inline=False)
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("Sports refresh status unavailable")
+                    embed.add_field(
+                        name="Odds status", value="Refresh status unavailable",
+                        inline=False,
+                    )
         elif p == "slip":
             if self.slip is None:
                 embed = discord.Embed(

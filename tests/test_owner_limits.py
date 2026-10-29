@@ -23,10 +23,10 @@ def test_owner_limit_persists_after_reopen(tmp_path):
 
 
 @pytest.mark.parametrize("kwargs", [
-    dict(provider="unknown", plan="free", maximum_units=100, reserve_units=10),
-    dict(provider="oddspapi", plan="free", maximum_units=-1, reserve_units=0),
-    dict(provider="oddspapi", plan="free", maximum_units=100, reserve_units=101),
-    dict(provider="oddspapi", plan="bad plan", maximum_units=100, reserve_units=0),
+    {"provider": "unknown", "plan": "free", "maximum_units": 100, "reserve_units": 10},
+    {"provider": "oddspapi", "plan": "free", "maximum_units": -1, "reserve_units": 0},
+    {"provider": "oddspapi", "plan": "free", "maximum_units": 100, "reserve_units": 101},
+    {"provider": "oddspapi", "plan": "bad plan", "maximum_units": 100, "reserve_units": 0},
 ])
 def test_invalid_limits_rejected(kwargs):
     with pytest.raises(ValueError):

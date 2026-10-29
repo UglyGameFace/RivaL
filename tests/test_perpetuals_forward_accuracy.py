@@ -165,3 +165,70 @@ async def test_research_accuracy_tab_reads_real_database_without_invented_result
     finally:
         view.stop()
         store.close()
+
+
+def test_settlement_queue_prefers_oldest_eligible_outcomes_after_downtime(tmp_path):
+    """New predictions cannot starve older matured, actually observed labels."""
+    from parlay_bot.perpetuals.forward_audit import MAX_PENDING_SETTLEMENTS, MODEL
+
+    store = SQLiteHotStore(tmp_path / "backlog.sqlite")
+    market = PerpetualMarketStore(store)
+    monitor = ForwardAccuracyMonitor(market)
+    monitor.initialize()
+    now = datetime.now(UTC)
+    boundary = now.replace(minute=now.minute // 5 * 5, second=0, microsecond=0)
+    total = MAX_PENDING_SETTLEMENTS + 45
+    try:
+        with store.connect() as conn:
+            for i in range(total):
+                target = boundary - timedelta(minutes=5 * (total + 2 - i))
+                reference = target - timedelta(minutes=5)
+                issued = target + timedelta(seconds=3)
+                conn.execute(
+                    """INSERT INTO perp_forward_audit
+                       (venue,contract,quote,asset,horizon_minutes,model_version,
+                        reference_opened_at,reference_close,issued_at,
+                        target_opened_at,probability_up,baseline_up,training_evaluated)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("hyperliquid", "BTC", "USDC", "BTC", 5, MODEL,
+                     reference.isoformat(), 100, issued.isoformat(),
+                     target.isoformat(), .65, .50, 60),
+                )
+                if i < 12:
+                    continue  # Missing target must not block the queue.
+                price = 100 if i < 17 else 102
+                observed = (
+                    issued - timedelta(seconds=1) if 17 <= i < 20
+                    else target + timedelta(minutes=5, seconds=2)
+                )
+                conn.execute(
+                    """INSERT INTO perp_market_candles
+                       (venue,contract,quote,interval_minutes,opened_at,
+                        closed_at,first_observed_at,open_price,high_price,
+                        low_price,close_price,volume_base,trades)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("hyperliquid", "BTC", "USDC", 5, target.isoformat(),
+                     (target + timedelta(minutes=5, milliseconds=-1)).isoformat(),
+                     observed.isoformat(), 100, 105, 99, price, 1, 10),
+                )
+        assert monitor._settle(now) == MAX_PENDING_SETTLEMENTS
+        with store.connect() as conn:
+            rows = conn.execute(
+                "SELECT settled_at FROM perp_forward_audit ORDER BY target_opened_at"
+            ).fetchall()
+            assert rows[20]["settled_at"] is not None
+            assert rows[-1]["settled_at"] is None
+            assert all(r["settled_at"] is None for r in rows[:20])
+        restarted = ForwardAccuracyMonitor(market)
+        assert restarted._settle(now) == total - 20 - MAX_PENDING_SETTLEMENTS
+        assert restarted._settle(now) == 0
+        with store.connect() as conn:
+            scored = conn.execute(
+                """SELECT model_brier,baseline_brier,outcome_up
+                   FROM perp_forward_audit WHERE settled_at IS NOT NULL LIMIT 1"""
+            ).fetchone()
+            assert scored["outcome_up"] == 1
+            assert abs(scored["model_brier"] - .1225) < 1e-9
+            assert abs(scored["baseline_brier"] - .25) < 1e-9
+    finally:
+        store.close()

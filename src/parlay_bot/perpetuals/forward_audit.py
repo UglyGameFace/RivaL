@@ -6,7 +6,9 @@ Uses only model weights trained on outcomes already known at issuance.
 """
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 import logging
 import math
 from datetime import UTC, datetime, timedelta
@@ -15,6 +17,8 @@ from parlay_bot.perpetuals.features import LOOKBACK, live_examples, persisted_ca
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.learning import walk_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
+from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 
 _LOG = logging.getLogger(__name__)
@@ -117,6 +121,26 @@ class ForwardAccuracyMonitor:
                         model_version, reference_opened_at
                     )
                 );
+                CREATE TABLE IF NOT EXISTS perp_forward_regimes (
+                    venue TEXT NOT NULL,
+                    contract TEXT NOT NULL,
+                    quote TEXT NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    model_version TEXT NOT NULL,
+                    reference_opened_at TEXT NOT NULL,
+                    issued_at TEXT NOT NULL,
+                    method_version TEXT NOT NULL,
+                    regime TEXT NOT NULL,
+                    five_min_volatility_pct DOUBLE PRECISION NOT NULL,
+                    feature_sha256 TEXT NOT NULL,
+                    weights_sha256 TEXT NOT NULL,
+                    PRIMARY KEY (
+                        venue,contract,quote,horizon_minutes,model_version,
+                        reference_opened_at
+                    )
+                );
+                CREATE INDEX IF NOT EXISTS idx_perp_forward_regime_method
+                    ON perp_forward_regimes (method_version,regime);
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_pending
                     ON perp_forward_audit (settled_at,target_opened_at);
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_asset_horizon
@@ -311,6 +335,18 @@ class ForwardAccuracyMonitor:
                     if stamp >= target_open + timedelta(minutes=5, milliseconds=-1):
                         metrics["target_expired"] += 1
                         continue
+                    # Store regime and model fingerprints BEFORE the target
+                    # closes, in the same DB transaction as the forecast.
+                    # Existing predictions are never retro-tagged using
+                    # future outcomes or rewritten during retraining.
+                    regime = issue_regime(features)
+                    feature_hash = hashlib.sha256(json.dumps(
+                        features, separators=(",", ":"), allow_nan=False,
+                    ).encode()).hexdigest()
+                    weight_hash = hashlib.sha256(json.dumps(
+                        tested.final_weights, separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode()).hexdigest()
                     with self.store.connect() as conn:
                         record = conn.execute(
                             """INSERT INTO perp_forward_audit (
@@ -327,6 +363,19 @@ class ForwardAccuracyMonitor:
                                 probability, baseline, tested.evaluated,
                             ),
                         )
+                        if record.rowcount == 1:
+                            conn.execute(
+                                """INSERT INTO perp_forward_regimes (
+                                     venue,contract,quote,horizon_minutes,
+                                     model_version,reference_opened_at,issued_at,
+                                     method_version,regime,five_min_volatility_pct,
+                                     feature_sha256,weights_sha256
+                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                (venue, contract, quote, horizon, MODEL,
+                                 utc(last.opened_at).isoformat(), stamp.isoformat(),
+                                 REGIME_VERSION, regime, features[2],
+                                 feature_hash, weight_hash),
+                            )
                         issued += int(record.rowcount == 1)
                         metrics["duplicate_forecasts"] += int(record.rowcount == 0)
             except (ValueError, TypeError, ArithmeticError):
@@ -343,6 +392,58 @@ class ForwardAccuracyMonitor:
             issued, settled,
         )
         return issued, settled
+
+    def recent_issued(self, *, asset: str, limit: int = 3) -> list[dict]:
+        """Read actual immutable forecast rows; never synthesize predictions."""
+        if asset not in ("BTC", "ETH", "SOL") or not 1 <= limit <= 8:
+            raise ValueError("invalid recent prediction request")
+        self.initialize()
+        with self.store.connect() as conn:
+            records = conn.execute(
+                """SELECT venue,horizon_minutes,model_version,
+                          issued_at,target_opened_at,probability_up,
+                          settled_at,outcome_up,model_brier,baseline_brier
+                   FROM perp_forward_audit
+                   WHERE asset=? AND model_version=?
+                   ORDER BY issued_at DESC LIMIT ?""",
+                (asset, MODEL, limit),
+            ).fetchall()
+        return [dict(row) for row in records]
+
+    def regime_summary(
+        self, *, asset: str, horizon_minutes: int,
+        now: datetime | None = None,
+    ) -> dict:
+        """Prospective skill sliced by regime known when prediction was saved."""
+        if asset not in ("BTC", "ETH", "SOL") or horizon_minutes not in HORIZONS:
+            raise ValueError("unsupported regime query")
+        stamp = utc(now or datetime.now(UTC))
+        self.initialize()
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """SELECT f.target_opened_at,r.regime,
+                          MIN(f.issued_at) AS issued_at,
+                          MAX(f.settled_at) AS settled_at,
+                          AVG(f.model_brier) AS model_brier,
+                          AVG(f.baseline_brier) AS baseline_brier
+                   FROM perp_forward_audit AS f
+                   JOIN perp_forward_regimes AS r
+                     ON r.venue=f.venue AND r.contract=f.contract
+                    AND r.quote=f.quote AND r.horizon_minutes=f.horizon_minutes
+                    AND r.model_version=f.model_version
+                    AND r.reference_opened_at=f.reference_opened_at
+                   WHERE f.asset=? AND f.horizon_minutes=?
+                     AND f.model_version=? AND r.method_version=?
+                     AND f.settled_at IS NOT NULL
+                     AND f.outcome_up IS NOT NULL
+                     AND f.target_opened_at>=?
+                     AND f.target_opened_at<=?
+                   GROUP BY f.target_opened_at,r.regime
+                   ORDER BY f.target_opened_at DESC LIMIT 9000""",
+                (asset, horizon_minutes, MODEL, REGIME_VERSION,
+                 (stamp - timedelta(days=35)).isoformat(), stamp.isoformat()),
+            ).fetchall()
+        return evaluate_regimes([dict(row) for row in rows], as_of=stamp)
 
     def summary(self, *, asset: str, now: datetime | None = None) -> dict:
         if asset not in ("BTC", "ETH", "SOL"):

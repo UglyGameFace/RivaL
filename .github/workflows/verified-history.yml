@@ -12,6 +12,9 @@ on:
     paths:
       - ".github/workflows/verified-history.yml"
       - "src/parlay_bot/research/**"
+  schedule:
+    # First Monday's monthly archive publication has had time to complete.
+    - cron: "15 7 8 * *"
   workflow_dispatch:
     inputs:
       months:
@@ -73,7 +76,9 @@ jobs:
           retention-days: 7
 
   full-six-month-public-crypto:
-    if: github.event_name == 'pull_request'
+    # One full public multi-resolution proof succeeded on PR #49.
+    # Further expensive PR reruns require an explicit repository variable.
+    if: github.event_name == 'pull_request' && vars.RIVAL_FULL_ARCHIVE_PR_PROBE == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -111,7 +116,9 @@ jobs:
           if-no-files-found: ignore
 
   six-month-production-research:
-    if: github.event_name != 'pull_request'
+    # Never burn provider quotas or GH minutes on unattended runs until the
+    # owner's private bot OAuth and warehouse account are configured.
+    if: github.event_name == 'workflow_dispatch' || vars.RIVAL_HISTORY_PRODUCTION_ENABLED == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:

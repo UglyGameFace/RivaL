@@ -306,71 +306,63 @@ class GuidedHome(discord.ui.View):
                 ), color=discord.Color.blurple(),
             )
         elif p == "sports":
-            saved = await asyncio.to_thread(
-                self.location.get_saved, platform="discord",
-                user_id=str(self.owner_id),
+            # Browsing the sports menu is not a bet recommendation. In
+            # particular, do not run the expensive positive-edge builder here.
+            embed = discord.Embed(
+                title="🏆 Sports & Odds",
+                description=(
+                    "**Browse games and compare sportsbook prices.**\n"
+                    "Choose My Picks to browse available selections.\n"
+                    "Auto-Suggest 3 checks for qualifying recommendations; "
+                    "it may return PASS when no positive edge is verified.\n\n"
+                    "Odds refresh in the background. No bet is placed."
+                ),
+                color=discord.Color.blurple(),
             )
-            if saved is None:
-                embed = onboarding_embed()
-                embed.title = "🏆 Sports & Odds | First Step"
-                embed.description = (
-                    "Choose your state or enter a ZIP code above to see "
-                    "relevant sportsbooks. RivaL saves your state, not your ZIP."
+            try:
+                saved = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.location.get_saved, platform="discord",
+                        user_id=str(self.owner_id),
+                    ),
+                    timeout=2,
                 )
-            else:
-                try:
-                    slip = await asyncio.to_thread(
-                        self.builder.build_for_user,
-                        platform="discord", user_id=str(self.owner_id),
-                        leg_count=1, risk=RiskMode.BALANCED,
-                    )
-                    leg = slip.legs[0]
-                    label = (
-                        f"{leg.market_name}: {leg.outcome_name}"
-                        + (f" (line {leg.line_value:g})"
-                           if leg.line_value is not None else "")
-                    )
-                    embed = discord.Embed(
-                        title="🏆 Sports & Odds",
-                        description=(
-                            "**Here's one available sportsbook selection:**\n"
-                            f"**Game:** {leg.event_name}\n"
-                            f"**Pick:** {label}\n"
-                            f"**Sportsbook:** {display_book(slip.bookmaker)}\n"
-                            f"**Price:** {leg.price_american or f'{leg.price_decimal:.2f}'}\n\n"
-                            "Compare the price before making your own decision. "
-                            "This is not a proven winning bet."
-                        ), color=discord.Color.blurple(),
-                    )
-                except ParlayBuildError as exc:
-                    embed = discord.Embed(
-                        title="🏆 Sports & Odds",
-                        description=(
-                            "**PASS for now.** There isn't a verified selection "
-                            f"to show. Reason: {exc}\n"
-                            "You can refresh the odds or come back later."
-                        ), color=discord.Color.orange(),
-                    )
                 embed.add_field(
-                    name="Your State", value=saved.state_name, inline=False,
+                    name="Your State",
+                    value=saved.state_name if saved is not None else
+                          "Not set • Choose State or Enter ZIP",
+                    inline=False,
+                )
+            except TimeoutError:
+                embed.add_field(
+                    name="Your State",
+                    value="Checking saved state • Choose State if needed",
+                    inline=False,
                 )
             if self.collector is not None:
                 try:
-                    last = await asyncio.to_thread(self.collector._last_refresh)
+                    last = await asyncio.wait_for(
+                        asyncio.to_thread(self.collector._last_refresh),
+                        timeout=2,
+                    )
                     updating = self.collector._lock.locked()
                     if last is None:
                         status = ("Updating odds in background" if updating
                                   else "No completed odds refresh yet")
                     else:
                         age = max(0, int((datetime.now(UTC) - last).total_seconds() // 60))
-                        if age >= int(self.collector.refresh_interval.total_seconds() // 60):
-                            status = ("Updating odds in background" if updating
-                                      else f"Last checked {age} min ago; update pending")
-                        else:
-                            status = f"Last checked {age} min ago"
-                            if updating:
-                                status += " • Updating in background"
+                        status = f"Last checked {age} min ago"
+                        if updating:
+                            status += " • Updating in background"
+                        elif age >= int(self.collector.refresh_interval.total_seconds() // 60):
+                            status += " • Update due"
                     embed.add_field(name="Odds status", value=status, inline=False)
+                except TimeoutError:
+                    embed.add_field(
+                        name="Odds status",
+                        value="Checking update status in background",
+                        inline=False,
+                    )
                 except Exception:  # noqa: BLE001
                     _LOG.exception("Sports refresh status unavailable")
                     embed.add_field(

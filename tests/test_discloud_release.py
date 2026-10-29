@@ -1,6 +1,4 @@
 """Guard deployment so live Discloud cannot receive untested or secret-leaking code."""
-from __future__ import annotations
-
 from pathlib import Path
 
 

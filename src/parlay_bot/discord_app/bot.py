@@ -741,10 +741,21 @@ class RivalDiscordClient(discord.Client):
                         f"${cash['daily_loss_cap']:,.2f} limit"
                     ), inline=False,
                 )
+                cohorts = result["practice_feedback"]["validated_cohorts"]
+                if cohorts:
+                    embed.add_field(
+                        name="Your quote-based practice patterns",
+                        value="\\n".join(
+                            f"{x['asset']} {x['side']}: "
+                            f"{x['wins']}/{x['settled']} profitable, "
+                            f"mean net ${x['mean_net_usdt']:+,.2f} USDT"
+                            for x in cohorts[:6]
+                        ), inline=False,
+                    )
                 embed.set_footer(
                     text=(
-                        "Practicing records future decisions and quote-based "
-                        "results; never trains on imaginary profits."
+                        "Trade feedback improves research visibility; "
+                        "only independent forward outcomes qualify AI updates."
                     ),
                 )
                 await interaction.edit_original_response(embed=embed)

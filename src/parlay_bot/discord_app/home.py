@@ -11,7 +11,6 @@ import discord
 
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
-from parlay_bot.providers.owner_limits import OwnerLimitStore
 from parlay_bot.discord_app.presentation import (
     display_book,
     onboarding_embed,
@@ -23,6 +22,7 @@ from parlay_bot.jurisdiction.zip_lookup import ZipLookupError
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.live_quotes import QuoteUnavailable, quote_embed
+from parlay_bot.providers.owner_limits import OwnerLimitStore
 
 if TYPE_CHECKING:
     from parlay_bot.collectors.current import CurrentBoardCollector

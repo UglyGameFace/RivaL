@@ -6,6 +6,7 @@ Run repeatedly as a separate low-priority scheduled process. The default
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,7 +14,7 @@ from pathlib import Path
 import httpx
 
 from parlay_bot.research.free_history import (
-    ASSETS, INTERVALS, LEAGUES, HistoryImportError,
+    ASSETS, INTERVALS, HistoryImportError,
     ingest_binance, ingest_football,
 )
 
@@ -59,7 +60,7 @@ def _already_present(out: Path, job: tuple[str, str, str, str]) -> bool:
             if (
                 data.is_file() and data.name == file
                 and manifest["source"] == source
-                and __import__("hashlib").sha256(data.read_bytes()).hexdigest()
+                and hashlib.sha256(data.read_bytes()).hexdigest()
                 == manifest["data_sha256"]
             ):
                 return True
@@ -77,7 +78,7 @@ def collect(
     counts = {"planned": len(jobs), "already_verified": 0, "downloaded": 0,
               "rejected": 0, "remaining": 0}
     failed: list[dict[str, str]] = []
-    for index, job in enumerate(jobs):
+    for job in jobs:
         if _already_present(out, job):
             counts["already_verified"] += 1
             continue

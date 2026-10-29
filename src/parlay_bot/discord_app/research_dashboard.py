@@ -68,7 +68,7 @@ _FIELD_GROUPS = {
         "calibration": ("Forward 5m calibration", "Forward 15m calibration"),
         "gemini": ("Gemini · independent forward outcomes",
                    "Independent track analytics"),
-        "ledger": ("Prospective prediction ledger",),
+        "ledger": ("Prediction ledger · prospective",),
         "regimes": ("Prospective skill by market regime",),
         "costs": ("Execution cost verification", "How accuracy is audited"),
         "method": ("How accuracy is audited",),
@@ -855,7 +855,7 @@ class ResearchDashboard(discord.ui.View):
                             f"· {done}"
                         )
                     embed.add_field(
-                        name="Prospective prediction ledger",
+                        name="Prediction ledger · prospective",
                         value=(
                             "\n".join(lines) if lines else
                             "No pre-outcome mathematical predictions "
@@ -866,7 +866,7 @@ class ResearchDashboard(discord.ui.View):
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL forward prediction ledger unavailable")
                     embed.add_field(
-                        name="Prospective prediction ledger",
+                        name="Prediction ledger · prospective",
                         value="Database proof unavailable; no forecast inferred.",
                         inline=False,
                     )

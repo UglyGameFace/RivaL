@@ -264,17 +264,33 @@ class GuidedHome(discord.ui.View):
     async def _refresh_odds(self) -> None:
         if self.collector is None:
             return
-        # A background refresh may already hold the shared collector lock.
-        # Never queue another refresh behind it just to display cached odds.
-        if self.collector._lock.locked():
-            _LOG.debug("Beginner sports refresh already running; showing cached data")
+        # One shared refresh runs in the background. Menu interactions never
+        # wait for sportsbook HTTP calls or PostgreSQL ingestion.
+        collector = self.collector
+        if collector._lock.locked():
             return
         try:
-            await asyncio.wait_for(self.collector.refresh_if_due(), timeout=15)
-        except TimeoutError:
-            _LOG.info("Beginner sports refresh exceeded 15s; showing cached data")
+            due = await asyncio.to_thread(collector.is_due)
         except Exception:  # noqa: BLE001
-            _LOG.warning("Beginner sports refresh failed, stale cache filtered", exc_info=True)
+            _LOG.exception("Unable to check sportsbook refresh schedule")
+            return
+        if not due:
+            return
+        # The collector lock is shared across all views. Even if two users
+        # schedule concurrently, only one task acquires it and fetches.
+        async def refresh() -> None:
+            if collector._lock.locked():
+                return
+            try:
+                await asyncio.wait_for(collector.refresh_if_due(), timeout=60)
+            except TimeoutError:
+                _LOG.warning("Background sportsbook refresh timed out")
+            except Exception:  # noqa: BLE001
+                _LOG.exception("Background sportsbook refresh failed")
+
+        task = asyncio.create_task(refresh())
+        task.add_done_callback(lambda completed: completed.exception()
+                               if not completed.cancelled() else None)
 
     async def render(self) -> discord.Embed:
         p = self.page

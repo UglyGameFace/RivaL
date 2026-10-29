@@ -278,9 +278,9 @@ def test_fifteen_minute_target_does_not_expire_after_only_five(tmp_path):
 
 
 def test_target_button_is_present_in_real_opportunities_view(tmp_path):
+    from parlay_bot.config import Settings
     from parlay_bot.discord_app.bot import RivalDiscordClient
     from parlay_bot.discord_app.research_dashboard import ResearchDashboard
-    from parlay_bot.config import Settings
 
     client = RivalDiscordClient(Settings(
         _env_file=None,

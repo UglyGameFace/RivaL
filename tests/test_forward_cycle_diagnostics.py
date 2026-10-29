@@ -148,10 +148,10 @@ def test_each_five_minute_cycle_samples_all_available_assets_and_rotates_venues(
     observed = {"BTC": set(), "ETH": set(), "SOL": set()}
     for slot in range(10):
         selected = select_live_streams(sources, slot=slot)
-        assert len(selected) == 10
+        assert len(selected) == 30
         for coin, seen in observed.items():
             this_asset = [row for row in selected if row[1] == coin]
-            assert len(this_asset) >= 3
+            assert len(this_asset) == 10
             seen.update(row[0] for row in this_asset)
     assert all(len(sources_seen) == 10 for sources_seen in observed.values())
 

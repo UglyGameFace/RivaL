@@ -1,5 +1,6 @@
 discord.py==2.7.1
 httpx>=0.28,<1
+websockets>=14,<16
 pydantic>=2.9,<3
 pydantic-settings>=2.6,<3
 psycopg[binary]>=3.2,<4

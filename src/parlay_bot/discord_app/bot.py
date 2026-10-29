@@ -156,6 +156,8 @@ class RivalDiscordClient(discord.Client):
             SportsResultStore(self.store) if self.current_provider is not None
             else None
         )
+        if self.current_collector is not None:
+            self.current_collector.results = self.sports_results
         self._sports_results_task: asyncio.Task[None] | None = None
         self.command_synced_at: datetime | None = None
         self.command_sync_count = 0
@@ -446,9 +448,22 @@ class RivalDiscordClient(discord.Client):
                     ),
                     color=discord.Color.orange(),
                 )
+                review = await asyncio.to_thread(
+                    self.sports_results.promotion_status,
+                    sport=sport.value, league=league.strip().upper(),
+                )
                 embed.add_field(
                     name="Verified finalized games",
                     value=str(result.train_events),
+                )
+                embed.add_field(
+                    name="Prospective model governance",
+                    value=(
+                        f"{review['status']} • "
+                        f"{review['settled_unique_events']} settled pregame forecasts, "
+                        f"{review['utc_days']} UTC days • "
+                        "No real-money approval"
+                    ), inline=False,
                 )
                 embed.add_field(
                     name="Chronological model evaluation",
@@ -949,6 +964,7 @@ class RivalDiscordClient(discord.Client):
                     )
                     seen = datetime.now(UTC)
                     verified = 0
+                    affected: set[tuple[str, str]] = set()
                     for event in events:
                         if event.get("status", {}).get("finalized") is not True:
                             continue
@@ -958,6 +974,10 @@ class RivalDiscordClient(discord.Client):
                                 event, observed_at=seen,
                             )
                             verified += int(result == "inserted")
+                            if result == "inserted":
+                                affected.add((
+                                    str(event["sportID"]), str(event["leagueID"]),
+                                ))
                         except ResultIntegrityError:
                             _LOG.warning(
                                 "RivaL finalized sports result withheld: conflicting "
@@ -966,6 +986,17 @@ class RivalDiscordClient(discord.Client):
                     await asyncio.to_thread(
                         self.sports_results.mark_checked, due, now=seen,
                     )
+                    for sport, league in affected:
+                        review = await asyncio.to_thread(
+                            self.sports_results.promotion_status,
+                            sport=sport, league=league, now=seen,
+                        )
+                        _LOG.info(
+                            "RivaL automatic research model governance "
+                            "sport=%s league=%s status=%s settled=%d",
+                            sport, league, review["status"],
+                            review["settled_unique_events"],
+                        )
                     _LOG.info(
                         "RivaL finalized score audit checked=%d newly_verified=%d",
                         len(due), verified,

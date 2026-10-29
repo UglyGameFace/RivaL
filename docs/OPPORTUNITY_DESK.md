@@ -69,3 +69,42 @@ a substitute.
 prospective calibrated probabilities, net expectancy after real costs,
 observable drawdown and repeatable positive independent outcomes. If that
 last evidence is absent, the profitable decision can be not to bet.
+
+## Pick a target, see UP or DOWN
+
+Use **`/rival-target`**. Choose **BTC, ETH or SOL** and **5 minutes or
+15 minutes**. RivaL DMs a single private status card:
+
+- **📈 UP**: latest valid pre-outcome directional model watch points upward.
+- **📉 DOWN**: latest valid pre-outcome model watch points downward.
+- **⏳ WAIT**: no current valid prediction, insufficient current feed or tied
+  probability. No invented directional assertion.
+
+The card includes the most recently observed closed-candle price, source and
+raw model probability where available. Its time window is explicit. These are
+**uncalibrated research predictions, not approved profitable trades**. A candle
+close is not an executable quote, and historical data alone is not live proof.
+
+**Changes automatically:** the Discord bot rereads the actual PostgreSQL
+prospective forecast ledger about every 60 seconds and edits the **same**
+private DM only when the forecast, raw odds, recent price or status changes.
+This can show a switch from UP to DOWN, or WAIT when a prior prediction
+expires or a venue goes stale. It never sends another message for every
+candlestick. The one active target per user survives Discord-bot restarts and
+can be changed by running the target command again. The default Opportunities
+screen also has a **Follow 5m UP/DOWN** button targeting the currently
+selected coin.
+
+**`/rival-stop`** cancels and marks the old DM **Target stopped**, so an old
+green or red card cannot be mistaken for an active forecast. If the user
+blocks DMs, registration fails with a clear error and no target is silently
+created. If the user deletes the monitored message or revokes permissions,
+the worker stops the inaccessible subscription rather than sending replacement
+spam. The bot stores only Discord user/channel/message IDs, selected asset,
+horizon and last display digest in the existing relational database.
+One monitored target per user, up to 100 active targets per bot instance.
+Nothing is sent unless the user opted in.
+
+Only 5m and 15m intervals are offered because those are the actual supported
+prospective model horizons today. Additional horizons, target-price hit odds
+or trading automation require independently tested forecasting models.

@@ -289,6 +289,13 @@ class RivalDiscordClient(discord.Client):
         return tuple(item.strip() for item in value.split(",") if item.strip())
 
     def _register_commands(self) -> None:
+        # Three obvious shortcuts plus one optional tools namespace.
+        # All legacy operations remain available; ordinary users navigate
+        # /rival instead of being shown twenty competing global commands.
+        tools_group = app_commands.Group(
+            name="rival-tools",
+            description="Optional advanced features. Use /rival for the easy menu.",
+        )
         @self.tree.command(
             name="rival",
             description="Open RivaL's simple private home: sports, crypto, practice and help.",
@@ -319,6 +326,8 @@ class RivalDiscordClient(discord.Client):
                 profit=self.quote_profit,
                 research_factory=research_factory,
                 stream_shadow=self.stream_shadow,
+                multi=self.autonomous.multi if self.autonomous is not None else None,
+                venues=tuple(collector.providers) if collector is not None else (),
             )
             await interaction.edit_original_response(
                 embed=await home.render(), view=home,
@@ -364,8 +373,8 @@ class RivalDiscordClient(discord.Client):
                 )
             await interaction.edit_original_response(embed=embed)
 
-        @self.tree.command(
-            name="rival-picks",
+        @tools_group.command(
+            name="picks",
             description="Best current sportsbook price opportunity, or a clear PASS.",
         )
         async def rival_picks(interaction: discord.Interaction) -> None:
@@ -396,8 +405,8 @@ class RivalDiscordClient(discord.Client):
                     ),
                 )
 
-        @self.tree.command(
-            name="rival-opportunities",
+        @tools_group.command(
+            name="opportunities",
             description="Show current sports prices and live crypto watches, not history lessons.",
         )
         async def rival_opportunities(interaction: discord.Interaction) -> None:
@@ -426,8 +435,8 @@ class RivalDiscordClient(discord.Client):
                 ),
             )
 
-        @self.tree.command(
-            name="rival-leagues",
+        @tools_group.command(
+            name="leagues",
             description="See sports and leagues actually authorized by your odds provider.",
         )
         async def rival_leagues(interaction: discord.Interaction) -> None:
@@ -470,8 +479,8 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Could not verify entitled leagues. No invented coverage."
                 )
 
-        @self.tree.command(
-            name="rival-sport-proof",
+        @tools_group.command(
+            name="sport-proof",
             description="Show independently scored soccer or basketball model evidence.",
         )
         @app_commands.describe(
@@ -549,8 +558,8 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Cannot verify model evidence. NO BET."
                 )
 
-        @self.tree.command(
-            name="rival-health",
+        @tools_group.command(
+            name="health",
             description="Check Discord command sync, workers and verified data state.",
         )
         async def rival_health(interaction: discord.Interaction) -> None:
@@ -609,8 +618,8 @@ class RivalDiscordClient(discord.Client):
             )
             await interaction.edit_original_response(embed=embed)
 
-        @self.tree.command(
-            name="rival-sports",
+        @tools_group.command(
+            name="sports",
             description="Discover sports and leagues actually present in fresh odds feeds.",
         )
         async def rival_sports(interaction: discord.Interaction) -> None:
@@ -627,8 +636,8 @@ class RivalDiscordClient(discord.Client):
                 ),
             )
 
-        @self.tree.command(
-            name="rival-quote",
+        @tools_group.command(
+            name="quote",
             description="Current verified perpetual bid/ask, spread and assumed cost (no trade).",
         )
         @app_commands.describe(
@@ -660,8 +669,8 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Could not verify a live bid/ask. PASS.",
                 )
 
-        @self.tree.command(
-            name="rival-profit-proof",
+        @tools_group.command(
+            name="profit-proof",
             description="See actual prospective bid/ask paper profit evidence and missing data.",
         )
         @app_commands.describe(
@@ -777,8 +786,8 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Cannot verify forward trading returns. NOT PROVEN."
                 )
 
-        @self.tree.command(
-            name="rival-paper-open",
+        @tools_group.command(
+            name="paper-open",
             description="Open a limited, quote-based PAPER position (never a real order).",
         )
         @app_commands.describe(
@@ -824,8 +833,8 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Could not verify a paper entry. No real order.",
                 )
 
-        @self.tree.command(
-            name="rival-paper-close",
+        @tools_group.command(
+            name="paper-close",
             description="Close your quote-based PAPER position (not a real exchange trade).",
         )
         @app_commands.choices(coin=[
@@ -863,8 +872,8 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Paper close unavailable; position unchanged.",
                 )
 
-        @self.tree.command(
-            name="rival-practice",
+        @tools_group.command(
+            name="practice",
             description="Fund your fictional USDT bankroll and view practice risk and progress.",
         )
         @app_commands.describe(
@@ -949,8 +958,8 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Practice account unavailable. No balance was credited."
                 )
 
-        @self.tree.command(
-            name="rival-paper-results",
+        @tools_group.command(
+            name="paper-results",
             description="Your isolated paper ledger, including losses and fees.",
         )
         async def rival_paper_results(interaction: discord.Interaction) -> None:
@@ -978,8 +987,8 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Paper ledger unavailable; no P&L asserted.",
                 )
 
-        @self.tree.command(
-            name="rival-target-proof",
+        @tools_group.command(
+            name="target-proof",
             description="Independent forward evidence for your saved exact-price target.",
         )
         async def rival_target_proof(interaction: discord.Interaction) -> None:
@@ -1031,8 +1040,8 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Target probability research unavailable; no estimate published."
                 )
 
-        @self.tree.command(
-            name="rival-target",
+        @tools_group.command(
+            name="target",
             description="Watch UP/DOWN or an exact crypto USDT price, automatically.",
         )
         @app_commands.describe(
@@ -1090,8 +1099,8 @@ class RivalDiscordClient(discord.Client):
                 message = "Target cancellation unavailable; please retry."
             await interaction.edit_original_response(content=message)
 
-        @self.tree.command(
-            name="rival-source-health",
+        @tools_group.command(
+            name="source-health",
             description="Inspect all ten futures collectors for the selected coin.",
         )
         @app_commands.choices(coin=[
@@ -1163,8 +1172,8 @@ class RivalDiscordClient(discord.Client):
                     content="Source freshness couldn't be verified. NOT FRESH.",
                 )
 
-        @self.tree.command(
-            name="rival-multi-proof",
+        @tools_group.command(
+            name="multi-proof",
             description="Compare the ten-venue challenger to existing predictions.",
         )
         @app_commands.choices(
@@ -1203,8 +1212,8 @@ class RivalDiscordClient(discord.Client):
                     content="No verified multi-source outcome evidence available.",
                 )
 
-        @self.tree.command(
-            name="rival-stream-status",
+        @tools_group.command(
+            name="stream-status",
             description="Check live BTC/ETH/SOL exchange streams and freshness.",
         )
         async def rival_stream_status(interaction: discord.Interaction) -> None:
@@ -1238,8 +1247,8 @@ class RivalDiscordClient(discord.Client):
                 )
             await interaction.edit_original_response(embed=embed)
 
-        @self.tree.command(
-            name="rival-stream-proof",
+        @tools_group.command(
+            name="stream-proof",
             description="Check source-matched, forward-only after-cost shadow results.",
         )
         @app_commands.choices(
@@ -1276,8 +1285,8 @@ class RivalDiscordClient(discord.Client):
                     content="Live quote shadow evidence unavailable, no profit claimed.",
                 )
 
-        @self.tree.command(
-            name="rival-data",
+        @tools_group.command(
+            name="data",
             description="Open the private RivaL market data dashboard.",
         )
         async def rival_data(interaction: discord.Interaction) -> None:
@@ -1295,8 +1304,8 @@ class RivalDiscordClient(discord.Client):
                 embed=await dashboard.render(), view=dashboard,
             )
 
-        @self.tree.command(
-            name="rival-research",
+        @tools_group.command(
+            name="research",
             description="Live crypto opportunities first, with deeper math and accuracy on tap.",
         )
         async def rival_research(interaction: discord.Interaction) -> None:
@@ -1313,6 +1322,8 @@ class RivalDiscordClient(discord.Client):
             await interaction.edit_original_response(
                 embed=await dashboard.render(), view=dashboard,
             )
+
+        self.tree.add_command(tools_group)
 
     async def _refresh_sports_for_pick(self) -> None:
         if self.current_collector is None:

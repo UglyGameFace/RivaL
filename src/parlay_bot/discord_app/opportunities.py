@@ -76,7 +76,7 @@ def recent_watches(
                 horizon not in (5, 15)
                 or not 0 < probability < 1
                 or not math.isfinite(probability)
-                or instant >= target + timedelta(minutes=5)
+                or instant >= target + timedelta(minutes=horizon)
                 or _source_identity(venue, asset) != (
                     str(row["contract"]), str(row["quote"])
                 )

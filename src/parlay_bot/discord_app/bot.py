@@ -18,6 +18,7 @@ from parlay_bot.discord_app.opportunities import (
 )
 from parlay_bot.discord_app.presentation import onboarding_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
+from parlay_bot.discord_app.targeting import DirectionTargetService, DirectionTargetStore
 from parlay_bot.discord_app.views import LocationView, OnboardingView
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
 from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
@@ -226,6 +227,13 @@ class RivalDiscordClient(discord.Client):
             else None
         )
 
+        self.direction_targets = DirectionTargetService(
+            bot=self,
+            market=self.perp_collector.market if self.perp_collector else None,
+            store=DirectionTargetStore(self.store),
+        )
+        self._target_task: asyncio.Task[None] | None = None
+
         self._register_commands()
 
     @staticmethod
@@ -326,8 +334,65 @@ class RivalDiscordClient(discord.Client):
                     ai=self.gemini_research,
                     venues=tuple(self.perp_collector.providers) if self.perp_collector else (),
                     shadow_enabled=self.shadow_monitor is not None,
+                    target_service=self.direction_targets,
                 ),
             )
+
+        @self.tree.command(
+            name="rival-target",
+            description="Target a coin and get automatic UP, DOWN or WAIT updates in one DM.",
+        )
+        @app_commands.describe(
+            coin="Which crypto perpetual market should RivaL monitor?",
+            timeframe="Predict the next 5 or 15 minutes using actual forward models.",
+        )
+        @app_commands.choices(
+            coin=[
+                app_commands.Choice(name="Bitcoin (BTC)", value="BTC"),
+                app_commands.Choice(name="Ethereum (ETH)", value="ETH"),
+                app_commands.Choice(name="Solana (SOL)", value="SOL"),
+            ],
+            timeframe=[
+                app_commands.Choice(name="5 minutes", value=5),
+                app_commands.Choice(name="15 minutes", value=15),
+            ],
+        )
+        async def rival_target(
+            interaction: discord.Interaction,
+            coin: app_commands.Choice[str],
+            timeframe: app_commands.Choice[int],
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                ok, message = await self.direction_targets.follow(
+                    interaction.user,
+                    asset=coin.value, horizon_minutes=timeframe.value,
+                )
+            except ValueError as exc:
+                ok, message = False, str(exc)
+            except Exception:  # noqa: BLE001 - never expose Discord or DB secrets
+                _LOG.exception("RivaL personal target registration failed")
+                ok, message = False, "Target setup unavailable; no target was changed."
+            await interaction.edit_original_response(
+                content=("✅ " if ok else "⛔ ") + message,
+            )
+
+        @self.tree.command(
+            name="rival-stop",
+            description="Stop automatic personal target updates.",
+        )
+        async def rival_stop(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                stopped = await self.direction_targets.stop(interaction.user.id)
+                message = (
+                    "Target stopped. No further automatic updates."
+                    if stopped else "You have no active personal target."
+                )
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL personal target cancellation failed")
+                message = "Target cancellation unavailable; please retry."
+            await interaction.edit_original_response(content=message)
 
         @self.tree.command(
             name="rival-data",
@@ -361,6 +426,7 @@ class RivalDiscordClient(discord.Client):
                 ai=self.gemini_research,
                 venues=tuple(collector.providers) if collector is not None else (),
                 shadow_enabled=self.shadow_monitor is not None,
+                    target_service=self.direction_targets,
             )
             await interaction.edit_original_response(
                 embed=await dashboard.render(), view=dashboard,
@@ -375,6 +441,10 @@ class RivalDiscordClient(discord.Client):
             _LOG.exception("Current sportsbook refresh unavailable; fail closed if stale")
 
     async def setup_hook(self) -> None:
+        if self._target_task is None:
+            self._target_task = asyncio.create_task(
+                self._target_loop(), name="rival-personal-direction-updates",
+            )
         if self.current_collector is not None and self._sports_task is None:
             self._sports_task = asyncio.create_task(
                 self._sports_loop(), name="rival-sports-current-refresh",
@@ -431,6 +501,20 @@ class RivalDiscordClient(discord.Client):
                 self._archive_loop(),
                 name="rival-cold-archive",
             )
+
+    async def _target_loop(self) -> None:
+        """Update user-opted-in private forecast cards without flooding DMs."""
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                edited = await self.direction_targets.cycle()
+                if edited:
+                    _LOG.info("RivaL target cards updated=%d", edited)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - Discord uptime independent
+                _LOG.exception("RivaL target refresh cycle failed safely")
+            await asyncio.sleep(60)
 
     async def _sports_loop(self) -> None:
         """Keep bet candidates fresh in the background when a paid API exists.
@@ -613,6 +697,11 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self._target_task is not None:
+            self._target_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._target_task
+            self._target_task = None
         if self._sports_task is not None:
             self._sports_task.cancel()
             with suppress(asyncio.CancelledError):

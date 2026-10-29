@@ -288,9 +288,7 @@ class GuidedHome(discord.ui.View):
             except Exception:  # noqa: BLE001
                 _LOG.exception("Background sportsbook refresh failed")
 
-        task = asyncio.create_task(refresh())
-        task.add_done_callback(lambda completed: completed.exception()
-                               if not completed.cancelled() else None)
+        asyncio.create_task(refresh())
 
     async def render(self) -> discord.Embed:
         p = self.page

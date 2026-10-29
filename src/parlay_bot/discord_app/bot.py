@@ -316,6 +316,7 @@ class RivalDiscordClient(discord.Client):
                 quotes=self.public_quotes,
                 profit=self.quote_profit,
                 research_factory=research_factory,
+                stream_shadow=self.stream_shadow,
             )
             await interaction.edit_original_response(
                 embed=await home.render(), view=home,
@@ -347,6 +348,7 @@ class RivalDiscordClient(discord.Client):
                 embed = await signal_embed(
                     market, self.public_quotes,
                     asset=coin.value, horizon_minutes=timeframe.value,
+                    stream_shadow=self.stream_shadow,
                 )
             except Exception:  # noqa: BLE001 - never reveal backend details
                 _LOG.exception("RivaL verified signal rendering failed")

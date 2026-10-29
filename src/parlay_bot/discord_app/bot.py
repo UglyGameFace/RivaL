@@ -46,6 +46,8 @@ from parlay_bot.perpetuals.paper_ledger import PaperLedger
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
+from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
+from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.research.sports_results import (
     ResultIntegrityError,
@@ -253,6 +255,19 @@ class RivalDiscordClient(discord.Client):
         )
 
         self.public_quotes = PublicBestQuoteClient()
+        self.live_stream: StreamingBookHub | None = (
+            StreamingBookHub(assets=tuple(
+                asset for asset in self.perp_collector.assets
+                if asset in ("BTC", "ETH", "SOL")
+            ))
+            if self.perp_collector is not None and settings.rival_stream_enabled
+            else None
+        )
+        self.public_quotes.stream_hub = self.live_stream
+        self.stream_shadow: StreamShadowLedger | None = (
+            StreamShadowLedger(self.store) if self.live_stream is not None else None
+        )
+        self._stream_shadow_task: asyncio.Task[None] | None = None
         self.quote_profit = (
             ProspectiveQuoteProfitMonitor(self.store)
             if self.forward_audit is not None else None
@@ -1055,6 +1070,117 @@ class RivalDiscordClient(discord.Client):
             await interaction.edit_original_response(content=message)
 
         @self.tree.command(
+            name="rival-stream-status",
+            description="Check live BTC/ETH/SOL exchange streams and freshness.",
+        )
+        async def rival_stream_status(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if self.live_stream is None:
+                await interaction.edit_original_response(
+                    content="Streaming disabled or no PostgreSQL perpetual collector. "
+                            "No real-time signal service is claimed.",
+                )
+                return
+            status = self.live_stream.health()
+            embed = discord.Embed(
+                title="📡 RivaL | Live stream health",
+                description=(
+                    "Source-specific live best books. Fresh means the last "
+                    "verified exchange event was within 10 seconds, not that "
+                    "a model has proved profitable."
+                ),
+                color=discord.Color.blurple(),
+            )
+            for venue, info in status.items():
+                embed.add_field(
+                    name=venue.title(),
+                    value=(
+                        f"Connected: **{'yes' if info['connected'] else 'no'}** • "
+                        f"Fresh: **{', '.join(info['fresh_assets']) or 'none'}**\\n"
+                        f"Verified updates: {info['updates']} • "
+                        f"Reconnects: {info['reconnects']}"
+                    ),
+                    inline=False,
+                )
+            await interaction.edit_original_response(embed=embed)
+
+        @self.tree.command(
+            name="rival-stream-proof",
+            description="Check source-matched, forward-only after-cost shadow results.",
+        )
+        @app_commands.choices(
+            coin=[
+                app_commands.Choice(name="BTC", value="BTC"),
+                app_commands.Choice(name="ETH", value="ETH"),
+                app_commands.Choice(name="SOL", value="SOL"),
+            ],
+            timeframe=[
+                app_commands.Choice(name="5 minutes", value=5),
+                app_commands.Choice(name="15 minutes", value=15),
+            ],
+        )
+        async def rival_stream_proof(
+            interaction: discord.Interaction, coin: app_commands.Choice[str],
+            timeframe: app_commands.Choice[int],
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if self.stream_shadow is None:
+                await interaction.edit_original_response(
+                    content="Live shadow scoring disabled. No returns verified.",
+                )
+                return
+            try:
+                report = await asyncio.to_thread(
+                    self.stream_shadow.report,
+                    asset=coin.value, horizon_minutes=timeframe.value,
+                )
+                embed = discord.Embed(
+                    title=f"📊 RivaL | {coin.value} {timeframe.value}m after-cost audit",
+                    description=(
+                        f"**{report['status']}** • "
+                        "Strict same-exchange, genuinely later bid/ask only. "
+                        "Simulated liquidity and fees, NOT authenticated fills."
+                    ),
+                    color=discord.Color.orange(),
+                )
+                embed.add_field(
+                    name="Forward sample coverage",
+                    value=(
+                        f"Eligible venue/window cases **{report['eligible_windows']}**"
+                        f" • entries **{report['entries']}**"
+                        f" • exits **{report['closed']}**"
+                        f" • missed exits **{report['missed_exits']}**"
+                        f" • coverage **{report['coverage']:.1%}**"
+                        f" • UTC days **{report['days']}**"
+                    ), inline=False,
+                )
+                for label, stats in report["costs"].items():
+                    mean = stats["mean_net_bps"]
+                    lower = stats["daily_lower_bps"]
+                    embed.add_field(
+                        name=f"{label.title()} after-cost stress",
+                        value=(
+                            f"Extra cost **{stats['assumed_extra_cost_bps']:.0f} bps** • "
+                            f"Mean **{mean:+.2f} bps**" if mean is not None else
+                            "No verified paired entries and exits yet."
+                        ) + (
+                            f" • day-block lower **{lower:+.2f} bps**"
+                            if lower is not None else ""
+                        ),
+                        inline=False,
+                    )
+                embed.set_footer(
+                    text="At least 150 qualified outcomes / 21 days / 80% coverage; "
+                         "no real-money profit proof.",
+                )
+                await interaction.edit_original_response(embed=embed)
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL stream proof unavailable")
+                await interaction.edit_original_response(
+                    content="Live quote shadow evidence unavailable, no profit claimed.",
+                )
+
+        @self.tree.command(
             name="rival-data",
             description="Open the private RivaL market data dashboard.",
         )
@@ -1133,6 +1259,16 @@ class RivalDiscordClient(discord.Client):
             self.command_sync_count,
         )
 
+        if self.live_stream is not None:
+            self.live_stream.start()
+            if self._stream_shadow_task is None:
+                self._stream_shadow_task = asyncio.create_task(
+                    self._stream_shadow_loop(), name="rival-stream-forward-cost-audit",
+                )
+            _LOG.info(
+                "RivaL websocket market feeds started assets=%s venues=hyperliquid,binance",
+                ",".join(self.live_stream.assets),
+            )
         if self.perp_collector is not None and self._perp_task is None:
             _LOG.info(
                 "RivaL perp automatic collector ENABLED venues=%s "
@@ -1274,6 +1410,46 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001 - provider outage cannot kill bot
                 _LOG.exception("RivaL live sportsbook refresh failed safely")
             await asyncio.sleep(self.settings.rival_current_refresh_seconds)
+
+    async def _stream_shadow_loop(self) -> None:
+        """Sample fresh WS books for read-only forward cost proof, never raw ticks.
+
+        REST is deliberately not polled here. Missing data stays missing.
+        The old five-minute provenance ledger remains intact for comparison.
+        """
+        await self.wait_until_ready()
+        assert self.stream_shadow is not None
+        assert self.live_stream is not None
+        _LOG.info("RivaL streaming quote forward shadow RUNNING")
+        while not self.is_closed():
+            try:
+                await asyncio.to_thread(self.stream_shadow.expire)
+                for venue in ("hyperliquid", "binance"):
+                    for asset in self.live_stream.assets:
+                        book = self.live_stream.snapshot(venue, asset)
+                        if book is None:
+                            continue
+                        try:
+                            result = await asyncio.to_thread(
+                                self.stream_shadow.observe, book,
+                            )
+                            if result["opened"] or result["closed"] or result["expired"]:
+                                _LOG.info(
+                                    "RivaL forward quote venue=%s asset=%s "
+                                    "entered=%d exited=%d missed=%d",
+                                    venue, asset, result["opened"],
+                                    result["closed"], result["expired"],
+                                )
+                        except Exception:  # noqa: BLE001 - isolate per market
+                            _LOG.exception(
+                                "RivaL streaming forward proof failed venue=%s asset=%s",
+                                venue, asset,
+                            )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - never bring Discord down
+                _LOG.exception("RivaL streaming forward scoring temporarily unavailable")
+            await asyncio.sleep(self.settings.rival_stream_shadow_seconds)
 
     async def _perp_loop(self) -> None:
         await self.wait_until_ready()
@@ -1467,6 +1643,13 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self.live_stream is not None:
+            await self.live_stream.aclose()
+        if self._stream_shadow_task is not None:
+            self._stream_shadow_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._stream_shadow_task
+            self._stream_shadow_task = None
         await self.public_quotes.aclose()
         if self._target_task is not None:
             self._target_task.cancel()

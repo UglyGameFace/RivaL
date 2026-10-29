@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from dataclasses import replace
 
 import pytest
 
@@ -125,3 +126,22 @@ def test_walkforward_rejects_mismatched_or_leaking_labels():
     )
     with pytest.raises(ValueError, match="non-causal"):
         walk_forward([broken], as_of=START + timedelta(days=1))
+
+
+def test_batched_observations_create_only_one_live_example_per_timestamp():
+    # Multiple previously closed candles can arrive together, but are one
+    # real observation event, not several independent live predictions.
+    candles = [candle(i) for i in range(70)]
+    for index in range(10, 14):
+        candles[index] = replace(
+            candles[index], observed_at=candles[13].observed_at,
+        )
+    samples = live_examples(candles, horizon_minutes=5)
+    issued = [sample.issued_at for sample in samples]
+    assert len(issued) == len(set(issued))
+    assert issued == sorted(issued)
+    assert all(sample.issued_at < sample.label_known_at for sample in samples)
+    result = walk_forward(
+        samples, as_of=START + timedelta(days=1), minimum_evaluated=20,
+    )
+    assert result.updates > 0

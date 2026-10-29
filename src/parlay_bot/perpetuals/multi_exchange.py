@@ -452,7 +452,8 @@ class MultiExchangeResearch:
                    JOIN perp_multi_forward AS e
                      ON e.asset=q.asset AND e.horizon_minutes=q.horizon_minutes
                     AND e.target_opened_at=q.target_opened_at
-                   WHERE e.asset=? AND e.horizon_minutes=? AND e.issued_at>=?""",
+                   WHERE e.asset=? AND e.horizon_minutes=? AND e.issued_at>=?
+                     AND e.settled_at IS NOT NULL""",
                 (asset,horizon_minutes,start),
             ).fetchone()
             daily_rows = conn.execute(
@@ -471,6 +472,7 @@ class MultiExchangeResearch:
                      ON e.asset=q.asset AND e.horizon_minutes=q.horizon_minutes
                     AND e.target_opened_at=q.target_opened_at
                    WHERE e.asset=? AND e.horizon_minutes=? AND e.issued_at>=?
+                     AND e.settled_at IS NOT NULL
                      AND q.state='EXIT_QUOTED'
                    GROUP BY substr(e.target_opened_at,1,10)
                    ORDER BY day""",

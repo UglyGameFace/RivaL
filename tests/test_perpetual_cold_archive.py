@@ -145,7 +145,7 @@ async def test_manifest_failure_leaves_candles_hot_and_unmarked(tmp_path):
 
 @pytest.mark.asyncio
 async def test_real_parquet_roundtrip_preserves_observation_provenance(tmp_path):
-    store, drive, service = _setup(tmp_path)
+    store, _drive, service = _setup(tmp_path)
     now = datetime(2026, 10, 28, 20, tzinfo=UTC)
     source = now - timedelta(days=30)
     _insert(store, opened=source)
@@ -172,9 +172,10 @@ async def test_real_parquet_roundtrip_preserves_observation_provenance(tmp_path)
 
 
 def test_config_rejects_unconnected_archive_and_bounds(tmp_path):
+    from pydantic import ValidationError
+
     from parlay_bot.archive.runtime import build_cold_archive_runtime
     from parlay_bot.config import Settings
-    from pydantic import ValidationError
 
     settings = Settings(
         _env_file=None,

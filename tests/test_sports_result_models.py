@@ -35,6 +35,12 @@ def _event(*, event_id="sgo-final", sport="SOCCER", league="EPL",
             "away": {"teamID": "away-team"},
         },
         "scores": {"home": home_score, "away": away_score},
+        "results": {
+            "reg": {
+                "home": {"points": home_score},
+                "away": {"points": away_score},
+            },
+        },
     }
 
 
@@ -43,8 +49,12 @@ def test_finalized_scoring_requires_real_ids_finality_and_bounded_numbers():
     assert parse_final_score(_event(), observed_at=at).outcome == 1
     cases = [
         {"status": {"finalized": False}},
-        {"scores": {"home": True, "away": 0}},
-        {"scores": {"home": 90, "away": 0}},
+        {"results": {"reg": {
+            "home": {"points": True}, "away": {"points": 0},
+        }}},
+        {"results": {"reg": {
+            "home": {"points": 90}, "away": {"points": 0},
+        }}},
         {"teams": {"home": {"names": {"long": "Someone"}}, "away": {}}},
         {"cancelled": True},
         {"sportID": "UNSUPPORTED"},
@@ -80,6 +90,19 @@ def test_immutable_digested_sports_results_and_poll_budget(tmp_path):
         store.close()
 
 
+def test_soccer_regulation_result_excludes_extra_time_and_shootout():
+    event = _event(home_score=8, away_score=7)
+    event["results"]["reg"]["home"]["points"] = 1
+    event["results"]["reg"]["away"]["points"] = 1
+    result = parse_final_score(event, observed_at=datetime.now(UTC))
+    assert result.home_score == 1
+    assert result.away_score == 1
+    assert result.outcome == 0
+    del event["results"]
+    with pytest.raises(ResultIntegrityError, match="regulation"):
+        parse_final_score(event, observed_at=datetime.now(UTC))
+
+
 def test_sport_specific_distribution_is_normalized_and_not_claimed_profitable():
     h, d, a = soccer_home_draw_away(1.5, 1.0)
     assert abs(h + d + a - 1.0) < 1e-10
@@ -108,7 +131,7 @@ async def test_official_result_lookup_is_bounded_verified_and_reuses_quota():
                 },
             })
         assert req.url.path == "/events"
-        assert req.url.params["eventID"] == "a,b"
+        assert req.url.params["eventIDs"] == "a,b"
         return httpx.Response(200, json={"success": True, "data": [
             {"eventID": "a", "status": {"finalized": True}},
             {"eventID": "b", "status": {"finalized": False}},

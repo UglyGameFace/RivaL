@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING
 
 import discord
 
@@ -19,6 +20,9 @@ from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.readiness import explain_venue_readiness, forecast_readiness
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
+
+if TYPE_CHECKING:
+    from parlay_bot.discord_app.targeting import DirectionTargetService
 
 _LOG = logging.getLogger(__name__)
 
@@ -263,6 +267,37 @@ class _RefreshButton(discord.ui.Button["ResearchDashboard"]):
         await dashboard.redraw(interaction)
 
 
+class _QuickTargetButton(discord.ui.Button["ResearchDashboard"]):
+    """One-tap personal watch for the currently selected coin."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            label="Follow 5m UP/DOWN", emoji="🎯",
+            style=discord.ButtonStyle.success, row=2,
+            custom_id="rival:research:follow-target",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        if dashboard.target_service is None:
+            await interaction.followup.send(
+                "Personal monitoring is not configured.", ephemeral=True,
+            )
+            return
+        try:
+            ok, message = await dashboard.target_service.follow(
+                interaction.user, asset=dashboard.asset, horizon_minutes=5,
+            )
+        except Exception:  # noqa: BLE001 - never expose internal errors
+            _LOG.exception("RivaL 5m target follow failed")
+            ok, message = False, "Could not start monitoring. Try /rival-target."
+        await interaction.followup.send(
+            ("✅ " if ok else "⛔ ") + message, ephemeral=True,
+        )
+
+
 class _AskButton(discord.ui.Button["ResearchDashboard"]):
     def __init__(self, enabled: bool) -> None:
         super().__init__(
@@ -352,6 +387,7 @@ class ResearchDashboard(discord.ui.View):
         self, *, owner_id: int, market: PerpetualMarketStore | None,
         ai: GeminiResearch | None, venues: tuple[str, ...],
         shadow_enabled: bool = False,
+        target_service: DirectionTargetService | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
@@ -359,6 +395,7 @@ class ResearchDashboard(discord.ui.View):
         self.ai = ai
         self.venues = venues
         self.shadow_enabled = shadow_enabled
+        self.target_service = target_service
         self.asset = "BTC"
         self.screen = "opportunities"
         self.section = "overview"
@@ -395,6 +432,8 @@ class ResearchDashboard(discord.ui.View):
         self.add_item(_AssetSelect(self.asset))
         self.add_item(_RefreshButton())
         self.add_item(_SectionSelect(self.screen, self.section))
+        if self.screen == "opportunities" and self.target_service is not None:
+            self.add_item(_QuickTargetButton())
         if (self.screen == "accuracy" and self.section == "venue"
                 and self.venues):
             self.add_item(_VenueSelect(self.venues, self.selected_venue))

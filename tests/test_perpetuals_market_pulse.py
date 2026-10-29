@@ -106,7 +106,6 @@ async def test_math_screen_labels_past_5m_move_not_validated_bet(tmp_path):
             venues=tuple(v for v, *_ in VENUES),
         )
         view.screen = "math"
-        view.screen = "math"
         view.section = "pulse"
         view._rebuild()
         embed = await view.render()

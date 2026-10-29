@@ -11,6 +11,8 @@ from discord import app_commands
 from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_runtime
 from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.config import Settings
+from parlay_bot.discord_app.api_limits import OwnerLimitsView
+from parlay_bot.providers.owner_limits import OwnerLimitStore
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
 from parlay_bot.discord_app.home import GuidedHome
 from parlay_bot.discord_app.multi_proof import multi_proof_embed
@@ -296,6 +298,36 @@ class RivalDiscordClient(discord.Client):
             name="rival-tools",
             description="Optional advanced features. Use /rival for the easy menu.",
         )
+        @self.tree.command(
+            name="rival-api-limits",
+            description="Bot owner: edit API safety ceilings after a subscription upgrade.",
+        )
+        async def rival_api_limits(interaction: discord.Interaction) -> None:
+            application = await self.application_info()
+            owner = application.owner
+            if owner is None or interaction.user.id != owner.id:
+                await interaction.response.send_message(
+                    "Only the application owner can change API limits.", ephemeral=True,
+                )
+                return
+            store = OwnerLimitStore(self.store)
+            details = []
+            for provider in ("oddspapi", "sportsgameodds"):
+                setting = store.get(provider)
+                details.append(
+                    f"**{provider}**: "
+                    + (f"{setting.plan}, {setting.maximum_units:,} units, "
+                       f"{setting.reserve_units:,} reserved"
+                       if setting else "No owner override configured")
+                )
+            await interaction.response.send_message(
+                "**API Usage & Limits**\\n" + "\\n".join(details)
+                + "\\nThese are owner safety ceilings, not provider entitlements. "
+                "An increased setting never buys additional API access.",
+                view=OwnerLimitsView(store=store, owner_id=owner.id),
+                ephemeral=True,
+            )
+
         @self.tree.command(
             name="rival",
             description="Open RivaL's simple private home: sports, crypto, practice and help.",

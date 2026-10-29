@@ -250,3 +250,25 @@ The official football odds source was inaccessible from the Actions
 runner. A live Discloud OAuth grant, direct provider archive read-through,
 verified future prospective model performance and actual net betting
 profitability remain **NOT VERIFIED**. No automatic trading.
+
+### Controlled refresh cadence and resource budgets
+
+A successful initial full-archive PR proof already exists. To avoid
+redundant 1,018,395-row downloads on every pull-request edit,
+`full-six-month-public-crypto` runs again only when the explicit GitHub
+repository variable `RIVAL_FULL_ARCHIVE_PR_PROBE=true` is set.
+
+Monthly refresh is scheduled for the **8th at 07:15 UTC**, after the
+official previous-month release window. It performs no expensive work unless
+`RIVAL_HISTORY_PRODUCTION_ENABLED=true` is configured in GitHub repo
+variables. The separate repository Actions secrets must contain the
+bot-owned `RIVAL_DRIVE_OAUTH_*` values and root/history/manifests/staging/
+models/reports folder IDs. An Actions upload using the connected ChatGPT
+Drive account is evidence of a different authorization path, not proof
+that this unattended OAuth secret path works. Missing credentials fail
+closed into an explicit non-published report. Verify a full unattended
+run plus restored objects before treating automation as activated.
+
+No scheduled job can promote a research candidate to the live forecasting
+model or authorize wagering. The existing prospective shadow metrics remain
+independent of imported offline research.

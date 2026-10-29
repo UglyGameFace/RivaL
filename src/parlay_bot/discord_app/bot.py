@@ -12,6 +12,7 @@ from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_ru
 from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
+from parlay_bot.discord_app.home import GuidedHome
 from parlay_bot.discord_app.opportunities import (
     crypto_desk_embed,
     sportsbook_desk_embed,
@@ -272,37 +273,36 @@ class RivalDiscordClient(discord.Client):
     def _register_commands(self) -> None:
         @self.tree.command(
             name="rival",
-            description="Your best current sportsbook price opportunity, or PASS.",
+            description="Open RivaL's simple private home: sports, crypto, practice and help.",
         )
         async def rival(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
+            collector = self.perp_collector
 
-            saved = self.location_service.get_saved(
-                platform="discord",
-                user_id=str(interaction.user.id),
-            )
-            if saved is None:
-                await interaction.edit_original_response(
-                    embed=onboarding_embed(),
-                    view=OnboardingView(
-                        service=self.location_service,
-                        parlay_builder=self.parlay_builder,
-                        current_collector=self.current_collector,
-                    ),
+            def research_factory(owner_id: int) -> ResearchDashboard:
+                return ResearchDashboard(
+                    owner_id=owner_id,
+                    market=collector.market if collector is not None else None,
+                    ai=self.gemini_research,
+                    venues=tuple(collector.providers) if collector is not None else (),
+                    shadow_enabled=self.shadow_monitor is not None,
+                    target_service=self.direction_targets,
                 )
-                return
 
-            await self._refresh_sports_for_pick()
+            home = GuidedHome(
+                owner_id=interaction.user.id,
+                location=self.location_service,
+                builder=self.parlay_builder,
+                collector=self.current_collector,
+                market=collector.market if collector is not None else None,
+                targets=self.direction_targets,
+                paper=self.paper_ledger,
+                quotes=self.public_quotes,
+                profit=self.quote_profit,
+                research_factory=research_factory,
+            )
             await interaction.edit_original_response(
-                embed=await asyncio.to_thread(
-                    sportsbook_desk_embed, self.parlay_builder,
-                    user_id=str(interaction.user.id),
-                ),
-                view=LocationView(
-                    service=self.location_service,
-                    parlay_builder=self.parlay_builder,
-                    current_collector=self.current_collector,
-                ),
+                embed=await home.render(), view=home,
             )
 
         @self.tree.command(

@@ -76,7 +76,9 @@ def recent_watches(
                 horizon not in (5, 15)
                 or not 0 < probability < 1
                 or not math.isfinite(probability)
-                or instant >= target + timedelta(minutes=horizon)
+                # Outcomes always settle from the target FIVE-minute candle. The
+                # horizon selects how far ahead its opening is, not its length.
+                or instant >= target + timedelta(minutes=5)
                 or _source_identity(venue, asset) != (
                     str(row["contract"]), str(row["quote"])
                 )

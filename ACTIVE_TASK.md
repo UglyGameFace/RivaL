@@ -1,3 +1,12 @@
+## October 29, 2026: VERIFY LIVE UP/DOWN FORECAST WINDOW + DEPLOYMENT
+
+- Existing PR #51 is merged and its main CI passed, but GitHub alone did **not** prove a live Discloud deployment. This follow-up fixes real runtime problems rather than merely writing a new guide.
+- Corrected previous **15m target expiry error**: the forecast horizon changes the offset of the predicted future *five-minute* candle, not the candle duration. The old status could show UP/DOWN after its outcome candle had already closed. Both live watches and per-user DM cards now expire when `target_opened_at + 5 minutes` is reached.
+- Lost perpetual collector now moves existing active DM cards to **WAIT**, rather than silently skipping every update and leaving a stale red or green call displayed. Tests verify actual forward-ledger rows, 15m target close, collector outage and no repeated DM edits.
+- Added `.github/workflows/discloud-deploy.yml`: deploy via official `discloud/deploy-action@v1` **only** after successful same-repo `main` **push** CI, at the exact passing SHA; no PR/fork/failed runs. Deployment is skipped with warning unless `DISCLOUD_TOKEN` and `DISCLOUD_APP_ID` are present as repo secrets. The action **does not** overwrite the bot's existing Discloud `.env` or Postgres keys.
+- Accept separately: green CI at merge SHA, Discloud deploy job actually executed, Discord command sync startup log and persisted target DM flips/restart verified. Missing repo secret or no runtime proof = production **not verified**. There is no Discloud connector installed, so the bot's live console cannot be accessed from here.
+- Read-only forecasts; no real-money order placement and no verified profit claims.
+
 ## October 29, 2026: PERSONAL UP/DOWN TARGET WATCH (PR #51)
 
 - User-facing goal: choose a market/timeframe and see only UP, DOWN or WAIT; automatically edit the result if the prospective prediction changes. Implemented `/rival-target` BTC/ETH/SOL 5m/15m, `/rival-stop`, and one-tap **Follow 5m UP/DOWN** from the opportunity dashboard.

@@ -1,0 +1,64 @@
+name: RivaL Production Release
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+permissions:
+  contents: read
+jobs:
+  deploy:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Validate release source and owner credentials
+        id: access
+        shell: bash
+        env:
+          TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+          APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+          SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+          SOURCE_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+        run: |
+          if [[ "$SOURCE_EVENT" != "push" || "$SOURCE_BRANCH" != "main" || "$SOURCE_REPO" != "$GITHUB_REPOSITORY" ]]; then
+            echo "::notice::Not a verified first-party main push; deployment skipped."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [[ -z "$TOKEN" || -z "$APP_ID" ]]; then
+            echo "::warning::RivaL Discloud deployment not configured. Add DISCLOUD_TOKEN and DISCLOUD_APP_ID repository secrets."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout the exact passing commit
+        if: steps.access.outputs.ready == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      - name: Validate deployment files
+        if: steps.access.outputs.ready == 'true'
+        shell: bash
+        run: |
+          test -f discloud.config
+          test -f main.py
+          test -f requirements.txt
+          test -f pyproject.toml
+          test -f src/parlay_bot/discord_app/targeting.py
+          grep -q '^TYPE=bot$' discloud.config
+          grep -q '^MAIN=main.py$' discloud.config
+
+      - name: Deploy tested RivaL app without replacing its host environment
+        if: steps.access.outputs.ready == 'true'
+        uses: discloud/deploy-action@v1
+        with:
+          token: ${{ secrets.DISCLOUD_TOKEN }}
+          app_id: ${{ secrets.DISCLOUD_APP_ID }}
+          glob: |
+            discloud.config
+            main.py
+            requirements.txt
+            pyproject.toml
+            src/**

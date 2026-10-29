@@ -94,7 +94,9 @@ def target_snapshot(
         if watch["horizon_minutes"] != horizon_minutes:
             continue
         # A prediction applies to its future interval, not forever.
-        ends = watch["target"] + timedelta(minutes=horizon_minutes)
+        # Both 5m and 15m models predict a future five-minute candle;
+        # the 15m horizon advances its opening, not its duration.
+        ends = watch["target"] + timedelta(minutes=5)
         if stamp >= ends or watch["issued"] > stamp:
             continue
         p = float(watch["probability_up"])
@@ -358,8 +360,8 @@ class DirectionTargetService:
 
     async def cycle(self) -> int:
         """Bounded read-only forecast snapshots; edit only changed existing DMs."""
-        if self.market is None:
-            return 0
+        # Even without the collector, old cards must turn to WAIT. Never
+        # leave a green/red forecast frozen after a production outage.
         async with self.lock:
             targets = await asyncio.to_thread(self.store.active)
             cache: dict[tuple[str, int], TargetSnapshot] = {}

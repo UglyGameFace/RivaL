@@ -18,6 +18,7 @@ from parlay_bot.discord_app.opportunities import (
 )
 from parlay_bot.discord_app.presentation import onboarding_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
+from parlay_bot.discord_app.sports_discovery import sports_discovery_embed
 from parlay_bot.discord_app.targeting import DirectionTargetService, DirectionTargetStore
 from parlay_bot.discord_app.views import LocationView, OnboardingView
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
@@ -335,6 +336,24 @@ class RivalDiscordClient(discord.Client):
                     venues=tuple(self.perp_collector.providers) if self.perp_collector else (),
                     shadow_enabled=self.shadow_monitor is not None,
                     target_service=self.direction_targets,
+                ),
+            )
+
+        @self.tree.command(
+            name="rival-sports",
+            description="Discover sports and leagues actually present in fresh odds feeds.",
+        )
+        async def rival_sports(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._refresh_sports_for_pick()
+            await interaction.edit_original_response(
+                embed=await asyncio.to_thread(
+                    sports_discovery_embed, self.store,
+                    configured_leagues=(
+                        self.current_collector.league_ids
+                        if self.current_collector is not None else ()
+                    ),
+                    collector_enabled=self.current_collector is not None,
                 ),
             )
 

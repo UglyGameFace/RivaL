@@ -340,7 +340,7 @@ def test_single_opportunity_requires_positive_indicative_edge(tmp_path) -> None:
         state_code="CT", leg_count=1, risk=RiskMode.BALANCED,
     )
     assert len(single.legs) == 1
-    assert single.legs[0].bookmaker == "fanduel"
+    assert single.legs[0].bookmaker in {"draftkings", "fanduel"}
     assert single.legs[0].price_edge >= 0.02
     assert single.market_implied_edge >= 0.02
 

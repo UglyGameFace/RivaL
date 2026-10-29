@@ -147,7 +147,7 @@ jobs:
             *) echo "Invalid month count"; exit 1 ;;
           esac
           args=()
-          if [[ "${{ github.event_name }}" == "push" || "${{ github.event.inputs.publish }}" == "true" ]]; then
+          if [[ "${{ github.event_name }}" != "workflow_dispatch" || "${{ github.event.inputs.publish }}" == "true" ]]; then
             if [[ -n "$RIVAL_DRIVE_ROOT_FOLDER_ID" && -n "$RIVAL_DRIVE_HISTORY_FOLDER_ID" && -n "$RIVAL_DRIVE_MANIFESTS_FOLDER_ID" && -n "$RIVAL_DRIVE_STAGING_FOLDER_ID" && -n "$RIVAL_DRIVE_MODELS_FOLDER_ID" && -n "$RIVAL_DRIVE_REPORTS_FOLDER_ID" && -n "$RIVAL_DRIVE_OAUTH_CLIENT_ID" && -n "$RIVAL_DRIVE_OAUTH_CLIENT_SECRET" && -n "$RIVAL_DRIVE_OAUTH_REFRESH_TOKEN" ]]; then
               args+=(--publish)
             else

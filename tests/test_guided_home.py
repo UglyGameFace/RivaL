@@ -425,3 +425,77 @@ async def test_ten_source_and_ensemble_discord_commands_are_private_on_android(t
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_advanced_plain_english_pages_do_not_expose_dev_jargon(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    bot = _client(tmp_path)
+    home = _home(bot)
+    try:
+        home.navigate("advanced")
+        home._buttons()
+        assert {"Are My Prices Fresh?", "Is RivaL Improving?",
+                "Technical Research"}.issubset(set(_labels(home)))
+        assert "rival-profit-proof" not in (await home.render()).description
+        assert "/rival-tools" in (await home.render()).description
+
+        home.navigate("feeds")
+        home._buttons()
+        assert "Refresh" in _labels(home)
+        no_collection = await home.render()
+        assert "not connected" in no_collection.fields[0].value
+
+        stamp = datetime.now(UTC)
+        row = {
+            "venue": "hyperliquid", "asset": "BTC", "status": "ok",
+            "last_success_at": stamp.isoformat(),
+            "last_candle_close": (stamp - timedelta(minutes=5)).isoformat(),
+        }
+        feed_store = Mock()
+        feed_store.feed_health.return_value = [row]
+        home.market = feed_store
+        home.venues = ("hyperliquid", "binance")
+        fresh = await home.render()
+        assert "1 of 2 exchanges" in fresh.fields[0].name
+        assert "hyperliquid" in fresh.fields[0].value
+        assert "binance" in fresh.fields[0].value
+
+        home.navigate("trust")
+        home._buttons()
+        no_model = await home.render()
+        assert "Not verified" in no_model.fields[0].value
+        research = Mock()
+        research.report.return_value = {
+            "settled": 2, "days": 1, "max_sources": 3,
+            "brier_improvement": -0.02,
+        }
+        home.multi = research
+        evidence = await home.render()
+        assert "NOT beaten the original" in evidence.fields[0].value
+        assert "Not yet" in evidence.fields[1].value
+        research.report.assert_called_once_with(asset="BTC", horizon_minutes=5)
+        assert "Home" in _labels(home)
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()
+
+
+def test_every_legacy_tool_is_grouped_without_duplicate_global_commands(tmp_path):
+    bot = _client(tmp_path)
+    try:
+        roots = {c.name for c in bot.tree.get_commands()}
+        assert roots == {"rival", "rival-signal", "rival-stop", "rival-tools"}
+        group = bot.tree.get_command("rival-tools")
+        names = [c.name for c in group.commands]
+        assert len(names) == len(set(names)) == 20
+        assert {"paper-open", "paper-close", "practice", "picks",
+                "quote", "research", "multi-proof", "source-health",
+                "target", "stream-status", "profit-proof"}.issubset(names)
+        assert all(not name.startswith("rival-") for name in names)
+    finally:
+        bot.store.close()

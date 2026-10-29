@@ -29,7 +29,7 @@ class DriveArchiveFolders:
         extra = tuple(v for v in (self.models, self.reports) if v is not None)
         if any(not value.strip() for value in (*values, *extra)):
             raise ValueError("all RivaL Drive archive folder IDs are required")
-        if len(set((*values, *extra))) != len(values) + len(extra):
+        if len({*values, *extra}) != len(values) + len(extra):
             raise ValueError("RivaL Drive archive folder IDs must be distinct")
 
 

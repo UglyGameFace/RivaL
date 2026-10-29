@@ -227,21 +227,40 @@ class RelationalHotStore:
             ),
         )
 
+    def _latest_change_rows(
+        self, connection: ConnectionLike, observations: list[MarketObservation],
+    ) -> dict[str, dict[str, Any]]:
+        """Prefetch latest histories in chunks instead of one SELECT per price."""
+        latest: dict[str, dict[str, Any]] = {}
+        keys = list(dict.fromkeys(item.selection_key for item in observations))
+        for offset in range(0, len(keys), 200):
+            chunk = keys[offset:offset + 200]
+            placeholders = ", ".join("?" for _ in chunk)
+            rows = connection.execute(
+                "SELECT id, selection_key, state_fingerprint, provider_changed_at, "
+                "last_seen, occurrences FROM odds_changes "
+                f"WHERE selection_key IN ({placeholders}) ORDER BY id DESC",
+                chunk,
+            ).fetchall()
+            for row in rows:
+                key = str(row["selection_key"])
+                if key not in latest:
+                    latest[key] = dict(row)
+        return latest
+
     def _record_change(
         self,
         connection: ConnectionLike,
         observation: MarketObservation,
+        latest: dict[str, Any] | None = None,
     ) -> str:
-        latest = connection.execute(
-            """
-            SELECT id, state_fingerprint, provider_changed_at, last_seen, occurrences
-            FROM odds_changes
-            WHERE selection_key = ?
-            ORDER BY id DESC
-            LIMIT 1
-            """,
-            (observation.selection_key,),
-        ).fetchone()
+        if latest is None:
+            latest = connection.execute(
+                "SELECT id, state_fingerprint, provider_changed_at, last_seen, "
+                "occurrences FROM odds_changes WHERE selection_key = ? "
+                "ORDER BY id DESC LIMIT 1",
+                (observation.selection_key,),
+            ).fetchone()
 
         observed_at = _iso(observation.observed_at)
         if latest is not None and latest["state_fingerprint"] == observation.state_fingerprint:
@@ -374,8 +393,11 @@ class RelationalHotStore:
 
         with self.connect() as connection:
             self._upsert_fixture(connection, board, ingested_at=ingested_at)
+            latest_changes = self._latest_change_rows(connection, list(board.observations))
             for observation in board.observations:
-                change_result = self._record_change(connection, observation)
+                change_result = self._record_change(
+                    connection, observation, latest_changes.get(observation.selection_key),
+                )
                 if change_result == "new":
                     new_states += 1
                 elif change_result == "repeated":

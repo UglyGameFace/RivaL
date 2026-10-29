@@ -15,14 +15,17 @@ async def test_provider_entitled_leagues_exclude_disabled_and_non_sports_and_cac
     def handler(request):
         requests.append(request)
         assert request.url.path == "/leagues"
-        assert request.url.params["limit"] == "300"
+        assert not request.url.params
         return httpx.Response(200, json={
             "success": True,
             "data": [
-                {"leagueID": "NFL", "sportID": "FOOTBALL", "name": "NFL"},
-                {"leagueID": "EPL", "sportID": "SOCCER", "name": "Premier League"},
-                {"leagueID": "UFC", "sportID": "MMA", "name": "UFC"},
-                {"leagueID": "TV", "sportID": "NON_SPORTS", "name": "TV"},
+                {"leagueID": "NFL", "sportID": "FOOTBALL", "name": "NFL", "enabled": True},
+                {"leagueID": "EPL", "sportID": "SOCCER", "name": "Premier League", "enabled": True},
+                {"leagueID": "UFC", "sportID": "MMA", "name": "UFC", "enabled": True},
+                {"leagueID": "TV", "sportID": "NON_SPORTS", "name": "TV", "enabled": True},
+                {"leagueID": "UNKNOWN", "sportID": "BASKETBALL"},
+                {"leagueID": "NULL", "sportID": "TENNIS", "enabled": None},
+                {"leagueID": "STRING", "sportID": "GOLF", "enabled": "true"},
                 {"leagueID": "INACTIVE", "sportID": "GOLF", "enabled": False},
             ],
         })

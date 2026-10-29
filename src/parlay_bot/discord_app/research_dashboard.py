@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import discord
 
+from parlay_bot.discord_app.opportunities import crypto_desk_embed
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
@@ -24,6 +25,10 @@ _LOG = logging.getLogger(__name__)
 # Every page has a hard content cap. Detailed metrics stay available behind a
 # selector; no Discord message ever lists all research diagnostics at once.
 _SECTIONS = {
+    "opportunities": (
+        ("overview", "Current watch"),
+        ("proof", "Verified results"),
+    ),
     "math": (
         ("overview", "Overview"),
         ("pulse", "Market pulse"),
@@ -223,9 +228,10 @@ class _VenueSelect(discord.ui.Select["ResearchDashboard"]):
 class _ScreenButton(discord.ui.Button["ResearchDashboard"]):
     def __init__(self, screen: str) -> None:
         super().__init__(
-            label={"math": "Math & History", "ai": "Gemini AI",
-                   "accuracy": "Accuracy"}[screen],
-            emoji={"math": "📐", "ai": "✨", "accuracy": "📊"}[screen],
+            label={"opportunities": "Opportunities", "math": "Math & History",
+                   "ai": "Gemini AI", "accuracy": "Results"}[screen],
+            emoji={"opportunities": "🎯", "math": "📐",
+                   "ai": "✨", "accuracy": "📊"}[screen],
             style=discord.ButtonStyle.primary,
             custom_id=f"rival:research:{screen}", row=0,
         )
@@ -354,7 +360,7 @@ class ResearchDashboard(discord.ui.View):
         self.venues = venues
         self.shadow_enabled = shadow_enabled
         self.asset = "BTC"
-        self.screen = "math"
+        self.screen = "opportunities"
         self.section = "overview"
         self.selected_venue = venues[0] if venues else ""
         self.opinion: AiResearch | None = None
@@ -376,7 +382,7 @@ class ResearchDashboard(discord.ui.View):
 
     def _rebuild(self) -> None:
         self.clear_items()
-        for name in ("math", "ai", "accuracy"):
+        for name in ("opportunities", "math", "ai", "accuracy"):
             item = _ScreenButton(name)
             # A selected tab is still clickable. Gray/disabled made users
             # think the entire research engine was unavailable.
@@ -532,6 +538,11 @@ class ResearchDashboard(discord.ui.View):
         )
 
     async def render(self) -> discord.Embed:
+        if self.screen == "opportunities":
+            return await asyncio.to_thread(
+                crypto_desk_embed, self.market, asset=self.asset,
+                proof=self.section == "proof",
+            )
         detailed = await self._render_full()
         return _compact_embed(
             detailed, screen=self.screen, section=self.section,

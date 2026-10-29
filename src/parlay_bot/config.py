@@ -72,6 +72,7 @@ class Settings(BaseSettings):
     rival_drive_oauth_client_id: str | None = Field(default=None)
     rival_drive_oauth_client_secret: SecretStr | None = Field(default=None)
     rival_drive_oauth_refresh_token: SecretStr | None = Field(default=None)
+    rival_archive_autostart_when_configured: bool = Field(default=True)
     rival_archive_enabled: bool = Field(default=False)
     rival_archive_local_dir: str = Field(default="data/archive-staging")
     rival_archive_closed_state_minutes: int = Field(default=60, ge=10)

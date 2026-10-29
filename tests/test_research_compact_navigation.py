@@ -110,6 +110,8 @@ async def test_real_section_selector_and_tab_buttons_are_clickable(monkeypatch):
         return expanded_report()
 
     monkeypatch.setattr(view, "_render_full", full)
+    view.screen = "math"
+    view._rebuild()
     try:
         assert view.section == "overview"
         select = control(view, "rival:research:section")
@@ -156,6 +158,8 @@ async def test_database_error_surfaces_brief_unavailable_state(monkeypatch):
     dashboard = ResearchDashboard(
         owner_id=42, market=None, ai=None, venues=(),
     )
+    dashboard.screen = "math"
+    dashboard._rebuild()
     async def full():
         old = discord.Embed(title="RivaL Research", description="unavailable")
         old.add_field(name="Live collection status",

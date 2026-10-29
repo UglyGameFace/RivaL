@@ -105,6 +105,7 @@ async def test_math_screen_labels_past_5m_move_not_validated_bet(tmp_path):
             owner_id=42, market=market, ai=None,
             venues=tuple(v for v, *_ in VENUES),
         )
+        view.screen = "math"
         view.section = "pulse"
         view._rebuild()
         embed = await view.render()
@@ -127,6 +128,7 @@ async def test_math_screen_falls_back_to_no_signal_if_sources_stale(tmp_path):
             owner_id=42, market=PerpetualMarketStore(store), ai=None,
             venues=("hyperliquid", "dydx", "bitget"),
         )
+        view.screen = "math"
         view.section = "pulse"
         view._rebuild()
         embed = await view.render()

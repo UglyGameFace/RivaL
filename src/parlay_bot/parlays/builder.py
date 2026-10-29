@@ -271,14 +271,19 @@ class ParlayBuilder:
         leg_count: int = 3,
         risk: RiskMode = RiskMode.BALANCED,
     ) -> ParlaySlip:
-        if leg_count < 2 or leg_count > 6:
-            raise ValueError("leg_count must be between 2 and 6")
+        if leg_count < 1 or leg_count > 6:
+            raise ValueError("leg_count must be between 1 and 6")
 
         eligible = set(self.registry.eligible_books(state_code))
         candidates = self._candidates(eligible_books=eligible, risk=risk)
+        if leg_count == 1:
+            # A profitable-looking price must beat the cross-book benchmark;
+            # negative-edge prices are never advertised as single opportunities.
+            candidates = [c for c in candidates if c.price_edge >= 0.02]
         if not candidates:
             raise ParlayBuildError(
-                "No current eligible sportsbook prices can form a RivaL slip yet."
+                "No current eligible sportsbook prices pass the fresh positive-edge screen. "
+                "PASS rather than force a bet."
             )
 
         by_book: dict[str, list[_PricedCandidate]] = defaultdict(list)
@@ -289,7 +294,12 @@ class ParlayBuilder:
         for bookmaker, book_candidates in by_book.items():
             selected: list[_PricedCandidate] = []
             used_fixtures: set[str] = set()
-            for candidate in sorted(book_candidates, key=lambda item: item.score, reverse=True):
+            for candidate in sorted(
+                book_candidates,
+                key=(lambda item: (item.price_edge, item.score))
+                if leg_count == 1 else (lambda item: item.score),
+                reverse=True,
+            ):
                 if candidate.fixture_id in used_fixtures:
                     continue
                 selected.append(candidate)

@@ -118,7 +118,7 @@ jobs:
   six-month-production-research:
     # Never burn provider quotas or GH minutes on unattended runs until the
     # owner's private bot OAuth and warehouse account are configured.
-    if: github.event_name == 'workflow_dispatch' || vars.RIVAL_HISTORY_PRODUCTION_ENABLED == 'true' && github.event_name != 'pull_request'
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:

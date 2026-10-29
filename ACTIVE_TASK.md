@@ -1,3 +1,13 @@
+## October 29, 2026: TURN RIVAL INTO AN ACTUAL OPPORTUNITY FINDER (PR #50)
+
+- Owner rejects education-first UI, wants live opportunities, price-specific sports candidates and actionable yes/no decisions. One cohesive PR #50, preserve older research behind tabs rather than removing verification.
+- Main `/rival` now shows price-screened SINGLE bet if eligible (>=2 independent no-vig price samples, at least +2% indicative cross-book ROI, fresh main-line and jurisdiction verified) or PASS. `/rival-picks` and `/rival-opportunities` added; crypto research opens directly on a watchlist, reports expired/stale/no issuances as PASS, with actual prospective forecast provenance and completed candle prices.
+- Optional SportsGameOdds collector now refreshes in background when key exists. Crypto collector, history backfill, forward audit, automatic research and shadow evaluation retain existing enabled defaults. Private sports + perpetual cold archive auto-starts when ALL bot-owned Drive OAuth values and folder IDs are configured, not on guessed credentials.
+- GitHub monthly historical research collection now triggers without requiring a repository variable on the existing cron (with bounded workload). If authorization is missing, real Google Drive storage/restore is UNVERIFIED; partial source errors cannot be silently marked complete. Authenticated crypto-only publishing is allowed when football source is blocked.
+- CRITICAL: Zero offline historical candidates from prior PR passed the profitability/skill qualification; no real-money trade bot is enabled, no brokerage account or wallet connected, no validated returns inferred. Discloud deployment access not connected in ChatGPT tools, so merged code alone does not prove live Discord commands or production OAuth.
+- Required before claiming deployed: green Ruff/pytest/PostgreSQL CI, merge verified head, separately verify Discloud restart/new slash-command sync, actual API credentials and live quotations, automatic Drive permissions and round-trip, real prospective profit after fees and execution.
+- Do not split this work across many small PRs or retroactively label offline results live.
+
 ## October 29, 2026: REAL SIX-MONTH CRYPTO DATA + OWNER DRIVE RESTORE VERIFIED (PR #49)
 
 - GitHub Actions real-provider run #40806781762 completed successfully on branch PR #49. Official Binance USD-M monthly futures historical retrieval Apr–Sep 2026: 3 assets (BTC, ETH, SOL) x 6 bar resolutions (1m, 5m, 15m, 1h, 4h, 1d) x 6 months = 108/108 verified partitions, 18 qualifying streams, 1,018,395 genuine closed candles, 0 missing intervals, 0 rejected downloads. Every archived normalized dataset digest matched its source manifest.

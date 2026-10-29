@@ -209,5 +209,6 @@ def test_research_dashboard_does_not_claim_active_math_or_unconfigured_ai():
     assert {x.custom_id for x in view.children} == {
         "rival:research:math", "rival:research:ai", "rival:research:asset",
         "rival:research:refresh", "rival:research:accuracy",
+        "rival:research:opportunities",
         "rival:research:section",
     }

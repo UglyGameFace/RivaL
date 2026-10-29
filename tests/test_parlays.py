@@ -328,3 +328,30 @@ def test_mismatched_spreads_are_not_falsely_compared_as_consensus(tmp_path) -> N
 
     with pytest.raises(ParlayBuildError, match="No current eligible sportsbook prices"):
         engine.build_for_state(state_code="CT", leg_count=2)
+
+
+def test_single_opportunity_requires_positive_indicative_edge(tmp_path) -> None:
+    engine, store = build_engine(tmp_path)
+    seed_fixture(
+        store, number=1, dk_home=1.91, dk_away=1.91,
+        fd_home=2.30, fd_away=1.70,
+    )
+    single = engine.build_for_state(
+        state_code="CT", leg_count=1, risk=RiskMode.BALANCED,
+    )
+    assert len(single.legs) == 1
+    assert single.legs[0].bookmaker in {"draftkings", "fanduel"}
+    assert single.legs[0].price_edge >= 0.02
+    assert single.market_implied_edge >= 0.02
+
+
+def test_single_does_not_force_a_bad_bet(tmp_path) -> None:
+    engine, store = build_engine(tmp_path)
+    seed_fixture(
+        store, number=1, dk_home=1.91, dk_away=1.91,
+        fd_home=1.92, fd_away=1.90,
+    )
+    with pytest.raises(ParlayBuildError, match="PASS rather than force"):
+        engine.build_for_state(
+            state_code="CT", leg_count=1, risk=RiskMode.BALANCED,
+        )

@@ -12,7 +12,11 @@ from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_ru
 from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
-from parlay_bot.discord_app.presentation import onboarding_embed, saved_location_embed
+from parlay_bot.discord_app.opportunities import (
+    crypto_desk_embed,
+    sportsbook_desk_embed,
+)
+from parlay_bot.discord_app.presentation import onboarding_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.discord_app.views import LocationView, OnboardingView
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
@@ -110,8 +114,33 @@ class RivalDiscordClient(discord.Client):
                 max_pages=settings.rival_current_max_pages,
             )
 
+        # Enable archive and perpetual cold copies automatically once the
+        # private bot-owned Drive OAuth + boundary IDs are fully configured.
+        # Partial/missing credentials never interrupt Discord or imply success.
+        has_drive_config = all((
+            settings.rival_drive_root_folder_id,
+            settings.rival_drive_history_folder_id,
+            settings.rival_drive_manifests_folder_id,
+            settings.rival_drive_staging_folder_id,
+            settings.rival_drive_oauth_client_id,
+            settings.rival_drive_oauth_client_secret,
+            settings.rival_drive_oauth_refresh_token,
+        ))
+        archive_settings = settings
+        if (
+            settings.rival_archive_autostart_when_configured
+            and has_drive_config
+            and not settings.rival_archive_enabled
+        ):
+            archive_settings = settings.model_copy(update={
+                "rival_archive_enabled": True,
+                "rival_perp_archive_enabled": True,
+            })
+            _LOG.info("RivaL private Drive archiving auto-configured; "
+                      "remote authorization remains subject to actual upload checks")
+        self._sports_task: asyncio.Task[None] | None = None
         self.archive_runtime: ColdArchiveRuntime | None = build_cold_archive_runtime(
-            settings,
+            archive_settings,
             store=self.store,
         )
         self._archive_task: asyncio.Task[None] | None = None
@@ -206,7 +235,7 @@ class RivalDiscordClient(discord.Client):
     def _register_commands(self) -> None:
         @self.tree.command(
             name="rival",
-            description="Open your private RivaL sports odds dashboard.",
+            description="Your best current sportsbook price opportunity, or PASS.",
         )
         async def rival(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
@@ -226,15 +255,77 @@ class RivalDiscordClient(discord.Client):
                 )
                 return
 
+            await self._refresh_sports_for_pick()
             await interaction.edit_original_response(
-                embed=saved_location_embed(
-                    state_code=saved.state_code,
-                    eligible_books=list(saved.eligible_books),
+                embed=await asyncio.to_thread(
+                    sportsbook_desk_embed, self.parlay_builder,
+                    user_id=str(interaction.user.id),
                 ),
                 view=LocationView(
                     service=self.location_service,
                     parlay_builder=self.parlay_builder,
                     current_collector=self.current_collector,
+                ),
+            )
+
+        @self.tree.command(
+            name="rival-picks",
+            description="Best current sportsbook price opportunity, or a clear PASS.",
+        )
+        async def rival_picks(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._refresh_sports_for_pick()
+            saved = self.location_service.get_saved(
+                platform="discord", user_id=str(interaction.user.id),
+            )
+            if saved is None:
+                await interaction.edit_original_response(
+                    embed=onboarding_embed(),
+                    view=OnboardingView(
+                        service=self.location_service,
+                        parlay_builder=self.parlay_builder,
+                        current_collector=self.current_collector,
+                    ),
+                )
+            else:
+                await interaction.edit_original_response(
+                    embed=await asyncio.to_thread(
+                        sportsbook_desk_embed, self.parlay_builder,
+                        user_id=str(interaction.user.id),
+                    ),
+                    view=LocationView(
+                        service=self.location_service,
+                        parlay_builder=self.parlay_builder,
+                        current_collector=self.current_collector,
+                    ),
+                )
+
+        @self.tree.command(
+            name="rival-opportunities",
+            description="Show current sports prices and live crypto watches, not history lessons.",
+        )
+        async def rival_opportunities(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._refresh_sports_for_pick()
+            crypto_market = self.perp_collector.market if self.perp_collector else None
+            crypto = await asyncio.to_thread(crypto_desk_embed, crypto_market)
+            saved = self.location_service.get_saved(
+                platform="discord", user_id=str(interaction.user.id),
+            )
+            if saved is None:
+                sports = onboarding_embed()
+            else:
+                sports = await asyncio.to_thread(
+                    sportsbook_desk_embed, self.parlay_builder,
+                    user_id=str(interaction.user.id),
+                )
+            await interaction.edit_original_response(
+                embeds=[sports, crypto],
+                view=ResearchDashboard(
+                    owner_id=interaction.user.id, market=crypto_market,
+                    ai=self.gemini_research,
+                    venues=tuple(self.perp_collector.providers) if self.perp_collector else (),
+                    shadow_enabled=self.shadow_monitor is not None,
                 ),
             )
 
@@ -259,7 +350,7 @@ class RivalDiscordClient(discord.Client):
 
         @self.tree.command(
             name="rival-research",
-            description="Private mathematical history and optional Gemini analysis.",
+            description="Live crypto opportunities first, with deeper math and accuracy on tap.",
         )
         async def rival_research(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
@@ -275,7 +366,19 @@ class RivalDiscordClient(discord.Client):
                 embed=await dashboard.render(), view=dashboard,
             )
 
+    async def _refresh_sports_for_pick(self) -> None:
+        if self.current_collector is None:
+            return
+        try:
+            await self.current_collector.refresh_if_due()
+        except Exception:  # noqa: BLE001 - stale bets are rejected by builder
+            _LOG.exception("Current sportsbook refresh unavailable; fail closed if stale")
+
     async def setup_hook(self) -> None:
+        if self.current_collector is not None and self._sports_task is None:
+            self._sports_task = asyncio.create_task(
+                self._sports_loop(), name="rival-sports-current-refresh",
+            )
         if self.settings.rival_dev_guild_id is not None:
             guild = discord.Object(id=self.settings.rival_dev_guild_id)
             self.tree.copy_global_to(guild=guild)
@@ -328,6 +431,25 @@ class RivalDiscordClient(discord.Client):
                 self._archive_loop(),
                 name="rival-cold-archive",
             )
+
+    async def _sports_loop(self) -> None:
+        """Keep bet candidates fresh in the background when a paid API exists.
+
+        Provider quota protections remain inside CurrentBoardCollector. The
+        loop never places orders or auto-sends unsolicited Discord messages.
+        """
+        await self.wait_until_ready()
+        assert self.current_collector is not None
+        while not self.is_closed():
+            try:
+                await asyncio.wait_for(
+                    self.current_collector.refresh_if_due(), timeout=45,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - provider outage cannot kill bot
+                _LOG.exception("RivaL live sportsbook refresh failed safely")
+            await asyncio.sleep(self.settings.rival_current_refresh_seconds)
 
     async def _perp_loop(self) -> None:
         await self.wait_until_ready()
@@ -491,6 +613,11 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self._sports_task is not None:
+            self._sports_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._sports_task
+            self._sports_task = None
         if self._history_task is not None:
             self._history_task.cancel()
             with suppress(asyncio.CancelledError):

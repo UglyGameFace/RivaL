@@ -185,22 +185,38 @@ class StreamShadowLedger:
         cutoff = stamp - EXIT_GRACE
         self.initialize()
         with self.store.connect() as conn:
+            # Only exact paired instruments count, and distinguish weak
+            # forecasts from missing market data.
             denominator = conn.execute(
-                """SELECT COUNT(*) AS n FROM (
-                     SELECT DISTINCT venue,target_opened_at FROM perp_forward_audit
+                """SELECT COUNT(*) AS issued_windows,
+                          SUM(strong) AS n,
+                          MIN(first_issued) AS first_issued_at,
+                          MAX(first_issued) AS last_issued_at
+                   FROM (
+                     SELECT venue,target_opened_at,
+                            MIN(issued_at) AS first_issued,
+                            MAX(CASE WHEN probability_up<=?
+                                          OR probability_up>=?
+                                     THEN 1 ELSE 0 END) AS strong
+                     FROM perp_forward_audit
                      WHERE asset=? AND venue IN ('binance','hyperliquid')
+                       AND ((venue='hyperliquid' AND contract=? AND quote='USDC')
+                         OR (venue='binance' AND contract=? AND quote='USDT'))
                        AND horizon_minutes=? AND model_version=?
                        AND issued_at>=? AND target_opened_at<?
-                       AND (probability_up<=? OR probability_up>=?)
+                     GROUP BY venue,target_opened_at
                    ) AS eligible""",
-                (asset, horizon_minutes, MODEL, start.isoformat(),
-                 (cutoff - timedelta(minutes=5)).isoformat(),
-                 1 - MIN_SIGNAL_SCORE, MIN_SIGNAL_SCORE),
+                (1 - MIN_SIGNAL_SCORE, MIN_SIGNAL_SCORE, asset,
+                 asset, asset + "USDT", horizon_minutes, MODEL,
+                 start.isoformat(), (cutoff - timedelta(minutes=5)).isoformat()),
             ).fetchone()
             counts = conn.execute(
                 """SELECT COUNT(*) AS entries,
                           SUM(CASE WHEN state='EXIT_QUOTED' THEN 1 ELSE 0 END) AS closed,
-                          SUM(CASE WHEN state='MISSED_EXIT' THEN 1 ELSE 0 END) AS missed
+                          SUM(CASE WHEN state='MISSED_EXIT' THEN 1 ELSE 0 END) AS missed,
+                          COUNT(DISTINCT CASE WHEN state='EXIT_QUOTED'
+                                              THEN target_close_at END)
+                             AS distinct_target_windows
                    FROM rival_stream_shadow
                    WHERE asset=? AND horizon_minutes=? AND target_close_at>=?
                      AND target_close_at<=?""",
@@ -216,10 +232,12 @@ class StreamShadowLedger:
                    ORDER BY day""",
                 (asset, horizon_minutes, start.isoformat(), cutoff.isoformat()),
             ).fetchall()
+        issued_windows = int(denominator["issued_windows"] or 0)
         total = int(denominator["n"] or 0)
         entries = int(counts["entries"] or 0)
         completed = int(counts["closed"] or 0)
         missed = int(counts["missed"] or 0)
+        distinct_targets = int(counts["distinct_target_windows"] or 0)
         days = len(daily)
         coverage = completed / total if total else 0.0
         metrics = {}
@@ -248,21 +266,35 @@ class StreamShadowLedger:
                 "daily_lower_bps": lower,
                 "positive_days": sum(x > 0 for x in daily_means),
             }
-        qualified = bool(
-            total >= MIN_FORWARD_EVENTS and completed >= MIN_FORWARD_EVENTS
-            and days >= MIN_FORWARD_DAYS and coverage >= MIN_OBSERVED_COVERAGE
-            and all(
-                x["mean_net_bps"] is not None and x["mean_net_bps"] > 0
-                and x["daily_lower_bps"] is not None and x["daily_lower_bps"] > 0
-                and x["positive_days"] >= math.ceil(days * 0.8)
-                for x in metrics.values()
-            )
+        positive_cost_tests = all(
+            x["mean_net_bps"] is not None and x["mean_net_bps"] > 0
+            and x["daily_lower_bps"] is not None and x["daily_lower_bps"] > 0
+            and x["positive_days"] >= math.ceil(days * 0.8)
+            for x in metrics.values()
         )
+        readiness = {
+            "forward_windows": total >= MIN_FORWARD_EVENTS,
+            "observed_exits": completed >= MIN_FORWARD_EVENTS,
+            "distinct_target_windows": distinct_targets >= MIN_FORWARD_EVENTS,
+            "observed_days": days >= MIN_FORWARD_DAYS,
+            "quote_coverage": coverage >= MIN_OBSERVED_COVERAGE,
+            "after_cost_stress": positive_cost_tests,
+        }
+        qualified = all(readiness.values())
         return {
             "status": "SHADOW_STRESS_PASS_NOT_REAL_PROFIT" if qualified
                       else "NOT_PROVEN",
             "asset": asset, "horizon_minutes": horizon_minutes,
-            "eligible_windows": total, "entries": entries, "closed": completed,
+            "issued_windows": issued_windows, "eligible_windows": total,
+            "weak_windows": max(0, issued_windows - total),
+            "first_issued_at": denominator["first_issued_at"],
+            "last_issued_at": denominator["last_issued_at"],
+            "distinct_target_windows": distinct_targets,
+            "missing_entries": max(0, total - entries),
+            "needed_unique_exits": max(0, MIN_FORWARD_EVENTS - distinct_targets),
+            "needed_days": max(0, MIN_FORWARD_DAYS - days),
+            "readiness": readiness,
+            "entries": entries, "closed": completed,
             "missed_exits": missed,
             "coverage": min(1.0, coverage), "days": days,
             "costs": metrics, "real_fills_verified": False,

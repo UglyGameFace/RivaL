@@ -63,12 +63,10 @@ def multi_proof_embed(report: dict) -> discord.Embed:
                 "80% quote coverage, positive severe-cost edge and daily "
                 "confidence bounds\n"
                 f"Actual paired coverage **{report['quote_coverage']:.1%}**"
-                f" • Severe daily lower "
-                f"**{lower:+.2f} bps**" if lower is not None else
-                "Severe daily confidence bounds remain unavailable"
-            ) + (
-                f" • Incremental lower **{lift:+.2f} bps**"
-                if lift is not None else ""
+                + (f" • Severe daily lower **{lower:+.2f} bps**"
+                   if lower is not None else " • Severe lower unverified")
+                + (f" • Incremental lower **{lift:+.2f} bps**"
+                   if lift is not None else " • Incremental lower unverified")
             ),
             inline=False,
         )

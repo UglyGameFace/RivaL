@@ -31,6 +31,8 @@ class _Pick(discord.ui.Select):
             await interaction.response.send_message("Maximum six legs.", ephemeral=True)
             return
         parent.legs.append(candidate)
+        parent.page = 0
+        parent.refresh_components()
         await interaction.response.edit_message(embed=parent.render(), view=parent)
 
 
@@ -62,7 +64,7 @@ class ManualParlayView(discord.ui.View):
     def refresh_components(self):
         self.clear_items()
         if self.rows:
-            sports = sorted({r["sport_name"] or "Other" for r in self.rows})
+            sports = sorted({r["sport_name"] for r in self.rows if r["sport_name"]})
             self.add_item(_Filter(self, "sport", sports))
             books = sorted({r["bookmaker"] for r in self.rows})
             self.add_item(_Filter(self, "book", books))

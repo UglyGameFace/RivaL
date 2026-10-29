@@ -27,6 +27,7 @@ def test_fictional_funding_reserves_and_releases_realized_quote_costs(tmp_path):
         assert initial["practice"]["funded"] == 100
         assert initial["practice"]["available"] == 100
         assert paper.fund("123", starting_usdt=200)["practice"]["funded"] == 200
+        assert paper.fund("123")["practice"]["funded"] == 200
         paper.open(
             user_id="123", position_id="770001",
             quote=_quote(stamp=stamp - timedelta(seconds=3)),
@@ -91,6 +92,7 @@ def test_pg16_fictional_account_isolation_and_restart():
         assert again["practice"]["available"] == 1200
         assert restarted.summary("987250126")["practice"]["funded"] == 10000
         assert restarted.fund(user, starting_usdt=1200)["practice"]["funded"] == 1200
+        assert restarted.fund(user)["practice"]["funded"] == 1200
     finally:
         with hot.connect() as conn:
             conn.execute(

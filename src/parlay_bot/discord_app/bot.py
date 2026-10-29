@@ -110,8 +110,32 @@ class RivalDiscordClient(discord.Client):
                 max_pages=settings.rival_current_max_pages,
             )
 
+        # Enable archive and perpetual cold copies automatically once the
+        # private bot-owned Drive OAuth + boundary IDs are fully configured.
+        # Partial/missing credentials never interrupt Discord or imply success.
+        has_drive_config = all((
+            settings.rival_drive_root_folder_id,
+            settings.rival_drive_history_folder_id,
+            settings.rival_drive_manifests_folder_id,
+            settings.rival_drive_staging_folder_id,
+            settings.rival_drive_oauth_client_id,
+            settings.rival_drive_oauth_client_secret,
+            settings.rival_drive_oauth_refresh_token,
+        ))
+        archive_settings = settings
+        if (
+            settings.rival_archive_autostart_when_configured
+            and has_drive_config
+            and not settings.rival_archive_enabled
+        ):
+            archive_settings = settings.model_copy(update={
+                "rival_archive_enabled": True,
+                "rival_perp_archive_enabled": True,
+            })
+            _LOG.info("RivaL private Drive archiving auto-configured; "
+                      "remote authorization remains subject to actual upload checks")
         self.archive_runtime: ColdArchiveRuntime | None = build_cold_archive_runtime(
-            settings,
+            archive_settings,
             store=self.store,
         )
         self._archive_task: asyncio.Task[None] | None = None

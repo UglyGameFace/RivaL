@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -103,26 +104,36 @@ class CurrentBoardCollector:
             notice: str | None = None
 
             for _ in range(self.max_pages):
+                stage_start = time.monotonic()
                 events, next_cursor, page_notice = await self.client.get_events(
                     league_ids=self.league_ids,
                     bookmaker_ids=self.bookmaker_ids,
                     limit=self.event_limit,
                     cursor=cursor,
                 )
+                _LOG.info('RivaL sports events fetched count=%d seconds=%.2f', len(events), time.monotonic() - stage_start)
                 pages_fetched += 1
                 events_seen += len(events)
                 if page_notice:
                     notice = page_notice
 
                 for event in events:
-                    board = normalize_event(event)
+                    stage_start = time.monotonic()
+                    board = await asyncio.to_thread(normalize_event, event)
+                    _LOG.info('RivaL sports normalized seconds=%.2f', time.monotonic() - stage_start)
+                    stage_start = time.monotonic()
                     result = await asyncio.to_thread(self.store.ingest_board, board)
+                    _LOG.info('RivaL sports ingested observations=%d seconds=%.2f', result.observations_seen, time.monotonic() - stage_start)
                     if self.results is not None:
                         try:
-                            await asyncio.to_thread(
-                                self.results.issue_forecast, event,
-                                observed_at=datetime.now(UTC),
+                            stage_start = time.monotonic()
+                            await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    self.results.issue_forecast, event,
+                                    observed_at=datetime.now(UTC),
+                                ), timeout=3,
                             )
+                            _LOG.info('RivaL sports forecast seconds=%.2f', time.monotonic() - stage_start)
                         except Exception:  # noqa: BLE001 - odds intake must survive research failures
                             _LOG.exception(
                                 "RivaL prospective sports forecast failed; odds intake preserved"

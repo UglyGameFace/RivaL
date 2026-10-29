@@ -79,3 +79,10 @@ class Settings(BaseSettings):
     rival_archive_chunk_mib: int = Field(default=8, ge=1, le=64)
     rival_archive_run_seconds: int = Field(default=3600, ge=300)
     rival_archive_max_batches: int = Field(default=4, ge=1, le=24)
+
+    # Separate opt-in for old 5-minute perpetual candles, using the SAME
+    # private Drive root and existing hourly archive loop. Copy-only.
+    rival_perp_archive_enabled: bool = Field(default=False)
+    rival_perp_archive_keep_hot_days: int = Field(default=14, ge=7, le=365)
+    rival_perp_archive_batch_rows: int = Field(default=1000, ge=1, le=5000)
+    rival_perp_archive_max_batches: int = Field(default=2, ge=1, le=4)

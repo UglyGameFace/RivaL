@@ -97,6 +97,20 @@ The Discord client does not request message-content intent.
 
 Set `DISCORD_TOKEN` in secret storage. `RIVAL_DEV_GUILD_ID` is optional for development-guild command sync.
 
+## Perpetuals warehouse
+
+The existing Google Drive archive originally covered **sports line changes only**.
+An independent, opt-in copy-only warehouse now supports immutable 5-minute
+perpetual candles, preserving venue, contract, actual observation timestamps
+and historical provenance. It uses the same private warehouse, ZSTD Parquet,
+verified Drive history/manifest workflow, and the existing hourly archive loop.
+The last 14 days stay hot by default; **all** hot rows remain present until
+a separate, tested restore/read-path and retention migration exist.
+It is **not live** until the bot's separate Google OAuth configuration is
+verified and `RIVAL_ARCHIVE_ENABLED` plus `RIVAL_PERP_ARCHIVE_ENABLED`
+are deliberately enabled on the deployed host. See
+`docs/GOOGLE_DRIVE_BOUNDARY.md`.
+
 ## Google Drive
 
 Historical archives and future model artifacts live under one dedicated Drive root:

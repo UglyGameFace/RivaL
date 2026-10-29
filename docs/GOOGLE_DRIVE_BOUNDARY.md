@@ -166,3 +166,76 @@ local processing
 
 This document describes storage policy only. RivaL application development belongs solely in
 `UglyGameFace/RivaL`.
+
+
+## Perpetual-futures candle warehouse (opt-in; October 28, 2026)
+
+The sports-odds archiver above does **not** export the five-minute perpetual
+`perp_market_candles` history. The dedicated
+`PerpetualColdArchiveService` adds this separate dataset to the *same*
+RivaL Drive history/ and manifests/ folders, not to a second Google account
+or private user folder. Records are explicit-schema ZSTD Parquet with the
+original `first_observed_at`, preventing backfilled candles from acquiring
+fictional live history.
+
+Data flow:
+
+1. At most a configured number of **immutable, closed** candles older than
+   the configured hot-history age are copied from active PostgreSQL.
+2. The archive selects oldest unreceipted rows by *composite candle identity*
+   and groups one venue/contract/interval/day partition at a time. This ensures
+   a newly discovered older backfill is still eligible; a global high-water
+   timestamp cursor would miss it.
+3. Write a local Parquet object under RivaL's private staging directory. Record
+   row count, schema, source identity and SHA-256/MD5 checksums in a manifest.
+4. Upload Parquet through the existing bounded, resumable Google Drive staging
+   flow, verify metadata, promote it to `history/`, upload and verify the
+   manifest under `manifests/`.
+5. **Only after both objects verify**, transactionally record each candle's
+   archive receipt in the same authoritative PostgreSQL database. Retried
+   batches are idempotent; incomplete operations retain local evidence.
+6. Archive receipts do not modify price/provenance columns or reclassify old
+   data as prospective forecasts. A failed Drive operation **never** marks
+   a source candle archived.
+
+### Important retention guard
+
+This is deliberately **copy-only**. It **does not shrink the PostgreSQL
+database yet**, because RivaL's prediction, backtesting, historical coverage,
+and point-in-time research currently query the live candle table. Deleting rows
+today could silently corrupt results. A future hot-data eviction must first
+prove by downloaded Parquet SHA-256, manifest integrity, fully bounded
+restore/query support, research lookback compatibility, tested rollback and
+recovery from a lost host.
+
+### Private Discloud setup (NOT committed to this public repository)
+
+- Keep RivaL's verified primary database in Discloud PostgreSQL.
+- Supply your RivaL-specific Google OAuth offline refresh token and existing
+  `RIVAL_DRIVE_ROOT_FOLDER_ID`, `RIVAL_DRIVE_HISTORY_FOLDER_ID`,
+  `RIVAL_DRIVE_MANIFESTS_FOLDER_ID`, `RIVAL_DRIVE_STAGING_FOLDER_ID`
+  in the bot's private runtime environment, not GitHub.
+- The ChatGPT Google Drive connector **does not** authenticate the Discloud
+  bot; configuring these variables requires the owner's separate OAuth grant.
+- `RIVAL_ARCHIVE_ENABLED=true` activates the preexisting closed sports-odds
+  archive too. `RIVAL_PERP_ARCHIVE_ENABLED=true` opts into perpetual candles.
+  Perpetual mode fails startup if the shared archive mode is not enabled.
+- `RIVAL_PERP_ARCHIVE_KEEP_HOT_DAYS=14` (allowed 7..365),
+  `RIVAL_PERP_ARCHIVE_BATCH_ROWS=1000` (1..5000), and
+  `RIVAL_PERP_ARCHIVE_MAX_BATCHES=2` (1..4) bound network and database load
+  per hourly archive cycle. Pause with `RIVAL_PERP_ARCHIVE_ENABLED=false`.
+- Before production enablement, check that OAuth can access **only the
+  authorized warehouse**, and perform a disposable sample staging upload,
+  verify the manifest, and download/decode a copy to prove restore integrity.
+  Never copy user ZIP codes, Discord IDs, access tokens or secret trading data
+  into the public candle dataset.
+- A Google Drive 5 TB storage plan does not grant unlimited API operations or
+  guarantee future retention; monitor bytes, upload failures, free space and
+  owner storage policy separately.
+
+**Connected read-only audit on October 28:** the RivaL Data Warehouse root and
+all seven intended subfolders exist in the designated Drive account, but
+`history/`, `manifests/`, and `backups/` held zero direct files.
+That proves there is not yet an independently recoverable production archive.
+No production OAuth configuration, archive activation, or live RivaL database
+connection was performed as part of this repository update.

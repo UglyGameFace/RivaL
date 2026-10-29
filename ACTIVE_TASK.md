@@ -1,3 +1,12 @@
+## October 28, 2026: dedicated 5 TB Drive warehouse / perpetual historical preservation
+
+- Confirmed the RivaL Data Warehouse root exists in the connected UglyGameFace Drive account with seven configured subfolders. Live read-only inspection found history/, manifests/ and backups/ empty. This is a storage account availability check, NOT proof that the Discloud bot has OAuth or archival enabled.
+- Existing cold archive exports only old sports-odds changes; `perp_market_candles` had no Drive export. Add opt-in, bounded, immutable 5m perpetual copy-only archival using the existing Drive client and local ZSTD-Parquet writer, not a second provider or warehouse.
+- Each batch selects composite-key unarchived old candles, including late historical backfills. Verify both remote Parquet and manifest before committing receipt rows transactionally. No hot deletion, no price changes, no model promotion, no future-label contamination.
+- Gate production with real GitHub CI, verified independent bot OAuth, real isolated file upload/download, PostgreSQL 16 transaction checks, measured bytes and monthly API operations. RIVAL_ARCHIVE_ENABLED=false and RIVAL_PERP_ARCHIVE_ENABLED=false remain defaults. Cannot claim external Drive archive protection until actual writes and restore drills pass.
+- Branch: `feat/drive-perpetual-cold-archive-20261028`. Parallel RivaL PR #46 edits separate forward-accuracy work; do not duplicate or overwrite it.
+- No automatic six-month history hot-prune until Drive restore/read-through and prediction research parity are proven. Existing autonomous forecast and no-auto-order safety remain unchanged.
+
 ## October 28, 2026: exclude disputed venue labels from all accuracy charts
 
 - Actual code audit found analytics_snapshot used AVG(outcome_up) for

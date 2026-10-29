@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from parlay_bot.archive.drive import DriveArchiveFolders, GoogleDriveArchiveClient
+from parlay_bot.archive.perpetual_candles import PerpetualColdArchiveService
 from parlay_bot.archive.queue import RelationalArchiveQueue
 from parlay_bot.archive.service import ColdArchiveService
 from parlay_bot.archive.writer import ParquetArchiveWriter
@@ -14,6 +15,7 @@ from parlay_bot.storage.hot import RelationalHotStore
 class ColdArchiveRuntime:
     service: ColdArchiveService
     drive: GoogleDriveArchiveClient
+    perpetual_service: PerpetualColdArchiveService | None = None
 
 
 def build_cold_archive_runtime(
@@ -23,6 +25,10 @@ def build_cold_archive_runtime(
 ) -> ColdArchiveRuntime | None:
     """Build the archive runtime only when explicitly enabled."""
 
+    if settings.rival_perp_archive_enabled and not settings.rival_archive_enabled:
+        raise RuntimeError(
+            "RIVAL_PERP_ARCHIVE_ENABLED requires RIVAL_ARCHIVE_ENABLED and verified Drive OAuth"
+        )
     if not settings.rival_archive_enabled:
         return None
 
@@ -71,4 +77,8 @@ def build_cold_archive_runtime(
     return ColdArchiveRuntime(
         service=ColdArchiveService(queue=queue, writer=writer, drive=drive),
         drive=drive,
+        perpetual_service=(
+            PerpetualColdArchiveService(store=store, drive=drive, writer=writer)
+            if settings.rival_perp_archive_enabled else None
+        ),
     )

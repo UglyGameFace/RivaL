@@ -291,3 +291,58 @@ async def test_hub_shutdown_is_cancellation_safe(monkeypatch):
     await asyncio.wait_for(started.wait(), timeout=1)
     await asyncio.wait_for(hub.aclose(), timeout=1)
     assert hub._tasks == []
+
+
+@pytest.mark.asyncio
+async def test_websocket_subscription_reconnect_and_stop_without_network(monkeypatch):
+    from parlay_bot.perpetuals import stream_quotes
+
+    sessions = []
+
+    class FakeSocket:
+        def __init__(self):
+            self.sent = []
+            self.number = len(sessions) + 1
+            sessions.append(self)
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def send(self, raw):
+            self.sent.append(json.loads(raw))
+
+        def __aiter__(self):
+            async def events():
+                yield wire_hyper(datetime.now(UTC))
+                if self.number > 1:
+                    await asyncio.Future()  # hold the restored WS until shutdown
+            return events()
+
+    def fake_connect(url, **kwargs):
+        assert url == stream_quotes.HYPERLIQUID_WS
+        assert kwargs["max_queue"] <= 32
+        assert kwargs["open_timeout"] <= 10
+        return FakeSocket()
+
+    monkeypatch.setattr(stream_quotes.websockets, "connect", fake_connect)
+    monkeypatch.setattr(stream_quotes.random, "uniform", lambda _a, _b: 0)
+    hub = StreamingBookHub(assets=("BTC", "ETH"))
+    task = asyncio.create_task(hub._run("hyperliquid"))
+    try:
+        async def until_reconnected():
+            while len(sessions) < 2:
+                await asyncio.sleep(.02)
+        await asyncio.wait_for(until_reconnected(), timeout=4)
+        assert hub.health()["hyperliquid"]["reconnects"] >= 1
+        assert {item["subscription"]["coin"] for item in sessions[0].sent} == {
+            "BTC", "ETH",
+        }
+        assert hub.snapshot("hyperliquid", "BTC") is not None
+    finally:
+        task.cancel()
+        result = await asyncio.gather(task, return_exceptions=True)
+        assert isinstance(result[0], asyncio.CancelledError)
+        assert not hub.health()["hyperliquid"]["connected"]

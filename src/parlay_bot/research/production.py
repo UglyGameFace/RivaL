@@ -17,7 +17,7 @@ import httpx
 from parlay_bot.archive.drive import GoogleDriveArchiveClient
 from parlay_bot.config import Settings
 from parlay_bot.research.audit import audit_catalog
-from parlay_bot.research.batch import collect, complete_months, targets
+from parlay_bot.research.batch import _already_present, collect, complete_months, targets
 from parlay_bot.research.free_history import ASSETS, INTERVALS, LEAGUES, HistoryImportError
 from parlay_bot.research.learning import evaluate_directory
 from parlay_bot.research.publish import _artifact, _drive, prepare, publish
@@ -107,7 +107,7 @@ async def run_pipeline(
         seasons=seasons, leagues=leagues,
     )
     acquisition = {"planned": len(jobs), "downloaded": 0, "rejected": 0,
-                   "remaining": len(jobs)}
+                   "remaining": sum(not _already_present(root, j) for j in jobs)}
     if collect_enabled:
         owner = client is None
         http = client or httpx.Client(timeout=35)
@@ -141,15 +141,31 @@ async def run_pipeline(
         not missing_streams and not quality["validation_failures"]
     )
     quality["missing_or_unqualified_streams"] = missing_streams
+    expected_sports = {(league, season) for season in seasons for league in leagues}
+    saved_sports = {
+        (league, season)
+        for league, season in expected_sports
+        if _already_present(root, ("football", league, season, ""))
+    }
+    quality["missing_sports_archives"] = [
+        {"league": league, "season": season}
+        for league, season in sorted(expected_sports - saved_sports)
+    ]
     research = evaluate_directory(
         root, intervals=tuple(sorted({INTERVALS[i] for i in intervals})),
         qualified_streams=valid & expected_streams,
+    )
+    data_complete = (
+        quality["all_requested_streams_qualified"]
+        and not quality["missing_sports_archives"]
+        and not acquisition["rejected"]
+        and not acquisition["remaining"]
     )
     report = {
         "schema_version": "rival-full-history-pipeline-v1",
         "source_months": months, "assets": assets, "intervals": intervals,
         "acquisition": acquisition, "quality": quality, "research": research,
-        "all_requested_data_complete": quality["all_requested_streams_qualified"],
+        "all_requested_data_complete": data_complete,
         "live_model_promoted": False, "live_accuracy_improved_verified": False,
         "auto_betting_enabled": False,
         "production_ready": False,
@@ -157,7 +173,7 @@ async def run_pipeline(
     report_file = _report(report_dir / "history-learning-report.json", report)
     report["local_report_path"] = str(report_file)
     if publish_enabled:
-        if not quality["all_requested_streams_qualified"]:
+        if not data_complete:
             report["warehouse_status"] = "not_published_incomplete_source_coverage"
             return report
         owner = drive is None

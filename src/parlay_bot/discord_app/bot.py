@@ -683,6 +683,82 @@ class RivalDiscordClient(discord.Client):
                 )
 
         @self.tree.command(
+            name="rival-practice",
+            description="Fund your fictional USDT bankroll and view practice risk and progress.",
+        )
+        @app_commands.describe(
+            funded_usdt=(
+                "Fictional starting balance (100 to 100000 USDT); "
+                "cannot change after first practice trade"
+            ),
+        )
+        async def rival_practice(
+            interaction: discord.Interaction,
+            funded_usdt: float = 10000.0,
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                result = await asyncio.to_thread(
+                    self.paper_ledger.fund, str(interaction.user.id),
+                    starting_usdt=funded_usdt,
+                )
+                cash = result["practice"]
+                embed = discord.Embed(
+                    title="🧪 RivaL • Practice Funded Account",
+                    description=(
+                        "**100% fictional funds.** No deposit, payout, "
+                        "real order, actual trading return, or leverage."
+                    ),
+                    color=discord.Color.blurple(),
+                )
+                embed.add_field(
+                    name="Starting practice balance",
+                    value=f"${cash['funded']:,.2f} USDT",
+                )
+                embed.add_field(
+                    name="Practice equity",
+                    value=f"${cash['equity']:,.2f} USDT",
+                )
+                embed.add_field(
+                    name="Available / reserved",
+                    value=(
+                        f"${cash['available']:,.2f} / "
+                        f"${cash['committed']:,.2f} USDT"
+                    ), inline=False,
+                )
+                embed.add_field(
+                    name="Simulated outcomes",
+                    value=(
+                        f"{cash['completed']} complete • "
+                        f"{cash['wins']} wins • {cash['losses']} losses\n"
+                        f"Estimated realized net: ${cash['realized']:+,.2f} USDT"
+                    ), inline=False,
+                )
+                embed.add_field(
+                    name="Daily practice loss budget",
+                    value=(
+                        f"${cash['day_loss']:,.2f} used / "
+                        f"${cash['daily_loss_cap']:,.2f} limit"
+                    ), inline=False,
+                )
+                embed.set_footer(
+                    text=(
+                        "Practicing records future decisions and quote-based "
+                        "results; never trains on imaginary profits."
+                    ),
+                )
+                await interaction.edit_original_response(embed=embed)
+            except ValueError as exc:
+                await interaction.edit_original_response(
+                    content=f"⛔ Practice funding refused: {exc}"
+                )
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL private practice account unavailable")
+                await interaction.edit_original_response(
+                    content="⛔ Practice account unavailable. No balance was credited."
+                )
+
+        @self.tree.command(
             name="rival-paper-results",
             description="Your isolated paper ledger, including losses and fees.",
         )
@@ -697,8 +773,12 @@ class RivalDiscordClient(discord.Client):
                         f"🧪 **Paper only:** {result['open']} open, "
                         f"{result['closed']} closed. "
                         f"After assumed fees and slippage: "
-                        f"**${result['assumed_net_usdt']:,.4f} USDT**. "
-                        "No fill receipts, verified trading P&L or real orders."
+                        f"**${result['assumed_net_usdt']:,.4f} USDT**.\\n"
+                        f"Fictional equity: **${result['practice']['equity']:,.2f}** "
+                        f"• Free: **${result['practice']['available']:,.2f}** "
+                        f"• Reserved: ${result['practice']['committed']:,.2f}.\\n"
+                        "Real-world P&L unverified; simulated decisions "
+                        "cannot authorize model promotion."
                     ),
                 )
             except Exception:  # noqa: BLE001

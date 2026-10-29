@@ -72,6 +72,44 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  full-six-month-public-crypto:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Fetch, checksum-verify and audit six months of BTC/ETH/SOL in six resolutions
+        run: |
+          set -euo pipefail
+          python -m parlay_bot.research.production \
+            --months 6 --max-new 100 \
+            --assets BTC ETH SOL \
+            --intervals 1m 5m 15m 1h 4h 1d \
+            --seasons \
+            --root data/research-history \
+            --report-dir data/research-reports
+      - name: Preserve validated public exchange records for private Drive archival
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-binance-six-month-crypto-history
+          path: data/research-history/binance_um_klines/
+          retention-days: 3
+          if-no-files-found: ignore
+      - name: Preserve quality, offline evaluation and failure reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: six-month-crypto-research-reports
+          path: data/research-reports/*.json
+          retention-days: 7
+          if-no-files-found: ignore
+
   six-month-production-research:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest

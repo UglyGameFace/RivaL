@@ -347,6 +347,50 @@ class RivalDiscordClient(discord.Client):
             )
 
         @self.tree.command(
+            name="rival-leagues",
+            description="See sports and leagues actually authorized by your odds provider.",
+        )
+        async def rival_leagues(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if self.current_provider is None:
+                await interaction.edit_original_response(
+                    content="⛔ SportsGameOdds API key is not configured. No authorized catalog."
+                )
+                return
+            try:
+                leagues = await self.current_provider.get_available_leagues()
+                if not leagues:
+                    await interaction.edit_original_response(
+                        content="No eligible sports leagues confirmed by your provider plan."
+                    )
+                    return
+                sports: dict[str, list[str]] = {}
+                for league in leagues:
+                    sports.setdefault(league["sport_id"], []).append(league["name"])
+                embed = discord.Embed(
+                    title="RivaL • Provider-Authorized Leagues",
+                    description=(
+                        f"**{len(leagues)} leagues / {len(sports)} sports** "
+                        "returned by your API key. Access is not the same as "
+                        "live odds, availability or a validated predictive model."
+                    ),
+                    color=discord.Color.blurple(),
+                )
+                for sport, names in sorted(sports.items())[:15]:
+                    embed.add_field(
+                        name=sport[:80],
+                        value=", ".join(names)[:240], inline=False,
+                    )
+                if len(sports) > 15:
+                    embed.set_footer(text="Additional sports omitted from compact phone view")
+                await interaction.edit_original_response(embed=embed)
+            except Exception:  # noqa: BLE001 - hide provider response and API keys
+                _LOG.exception("RivaL provider league catalog unavailable")
+                await interaction.edit_original_response(
+                    content="⛔ Could not verify entitled leagues. No invented coverage."
+                )
+
+        @self.tree.command(
             name="rival-sports",
             description="Discover sports and leagues actually present in fresh odds feeds.",
         )

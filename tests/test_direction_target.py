@@ -265,8 +265,6 @@ def test_fifteen_minute_target_does_not_expire_after_only_five(tmp_path):
         live = target_snapshot(
             market, asset="BTC", horizon_minutes=15, now=now,
         )
-        assert live.direction == "DOWN"
-        assert live.probability == pytest.approx(.76)
         # The target candle opened 8m ago and closed 3m ago: this call
         # should already be WAIT, not falsely valid for 15 more minutes.
         assert live.direction == "WAIT"

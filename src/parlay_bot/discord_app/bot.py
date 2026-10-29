@@ -1516,6 +1516,11 @@ class RivalDiscordClient(discord.Client):
                 )
             except asyncio.CancelledError:
                 raise
+            except TimeoutError:
+                _LOG.warning(
+                    "RivaL sportsbook refresh exceeded 45s; skipped this cycle "
+                    "without marking the board fresh"
+                )
             except Exception:  # noqa: BLE001 - provider outage cannot kill bot
                 _LOG.exception("RivaL live sportsbook refresh failed safely")
             await asyncio.sleep(self.settings.rival_current_refresh_seconds)

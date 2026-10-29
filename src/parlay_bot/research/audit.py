@@ -1,7 +1,6 @@
 """Exact calendar-partition continuity and cross-resolution source audit."""
 from __future__ import annotations
 
-import calendar
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -18,7 +17,6 @@ def _next_month(month: str) -> str:
 def audit_partition(path: Path) -> dict:
     """Full-month coverage, first/last boundaries, and source checksum."""
     meta, rows = _rows(path)
-    period = path.name.split(".manifest.json")[0].rsplit("-", 1)[-1]
     # File names include '--<digest>'; derive declared period from first
     # candle and require EVERY row to remain inside that month.
     first = _as_datetime(rows[0]["opened_at"])

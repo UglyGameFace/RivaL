@@ -50,6 +50,28 @@ def multi_proof_embed(report: dict) -> discord.Embed:
         ),
         inline=False,
     )
+    if "quote_coverage" in report:
+        severe = report["daily_stress"].get("severe", {})
+        lower = severe.get("challenger_lower")
+        lift = severe.get("incremental_lower")
+        embed.add_field(
+            name="Eligibility gates",
+            value=(
+                f"{'✅' if report['model_advantage_qualified'] else '⏳'} "
+                "150 prospective pairs, 21 days and improved forecast error\n"
+                f"{'✅' if report['cost_advantage_qualified'] else '⏳'} "
+                "80% quote coverage, positive severe-cost edge and daily "
+                "confidence bounds\n"
+                f"Actual paired coverage **{report['quote_coverage']:.1%}**"
+                f" • Severe daily lower "
+                f"**{lower:+.2f} bps**" if lower is not None else
+                "Severe daily confidence bounds remain unavailable"
+            ) + (
+                f" • Incremental lower **{lift:+.2f} bps**"
+                if lift is not None else ""
+            ),
+            inline=False,
+        )
     for label, values in report["after_cost"].items():
         first = values["challenger_mean_net_bps"]
         second = values["incumbent_mean_net_bps"]

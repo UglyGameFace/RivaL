@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import discord
@@ -30,6 +31,7 @@ if TYPE_CHECKING:
     from parlay_bot.perpetuals.paper_ledger import PaperLedger
     from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
     from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
+    from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
 
 _LOG = logging.getLogger(__name__)
 COINS = ("BTC", "ETH", "SOL")
@@ -43,7 +45,9 @@ EXPLAIN = {
     "practice": "Everything in Practice Money is fictional. Buying means you expect a rise; selling means you expect a fall. Fake gains never count as proven real profit.",
     "results": "Practice results are your own fake trades. Model accuracy is measured separately from later verified market outcomes. Real profit is not yet proven.",
     "help": "Start at Home. For sports, select your state. For crypto, choose a coin and press Get Signal. To learn without real money, open Practice Money.",
-    "advanced": "Advanced research shows models, provider diagnostics, costs, accuracy and historical data. No real bets or orders are placed.",
+    "advanced": "Optional checks for whether data is fresh and whether RivaL is improving. You do not need any of this to request a prediction.",
+    "feeds": "Fresh means RivaL recently received a genuine completed market candle. That is different from a live streaming price or a prediction.",
+    "trust": "A successful prediction is not necessarily a profitable trade. The combined model must beat the old model on later matched results and after trading costs.",
 }
 
 
@@ -142,6 +146,8 @@ class GuidedHome(discord.ui.View):
         profit: ProspectiveQuoteProfitMonitor | None,
         research_factory: Callable[[int], discord.ui.View] | None = None,
         stream_shadow: StreamShadowLedger | None = None,
+        multi: MultiExchangeResearch | None = None,
+        venues: tuple[str, ...] = (),
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
@@ -154,6 +160,8 @@ class GuidedHome(discord.ui.View):
         self.quotes = quotes
         self.profit = profit
         self.stream_shadow = stream_shadow
+        self.multi = multi
+        self.venues = venues
         self.research_factory = research_factory
         self.page = "home"
         self.back_stack: list[str] = []
@@ -219,14 +227,20 @@ class GuidedHome(discord.ui.View):
             self.add_item(_Coin(self.coin))
             self.add_item(_Horizon(self.horizon))
             self._add("Check Profit Evidence", "proof", 2, "🔍")
-            self._add("View Research Details", "research", 2, "📊")
+            self._add("Can I Trust Predictions?", "trust", 2, "✅")
         elif p == "help":
             self._add("Start with Sports", "sports", 0, "🏆")
             self._add("Try Crypto", "crypto", 0, "📈")
             self._add("Practice Safely", "practice", 1, "💵")
         elif p == "advanced":
-            self._add("Open Technical Research", "research", 0, "🧪")
-            self._add("See Accuracy", "results", 0, "📊")
+            self._add("Are My Prices Fresh?", "feeds", 0, "📡")
+            self._add("Is RivaL Improving?", "trust", 0, "📊")
+            self._add("Technical Research", "research", 1, "🧪")
+        elif p in ("feeds", "trust"):
+            self.add_item(_Coin(self.coin))
+            if p == "trust":
+                self.add_item(_Horizon(self.horizon))
+            self._add("Refresh", p, 2, "🔄", True)
         self._add("Home", "home", 4, "🏠")
         self._add("Back", "back", 4, "↩️")
         self._add("Explain This", "explain", 4, "❓")
@@ -454,6 +468,124 @@ class GuidedHome(discord.ui.View):
                     value="**NOT PROVEN.** Practice wins are not actual payouts.",
                     inline=False,
                 )
+        elif p == "feeds":
+            embed = discord.Embed(
+                title=f"📡 Are the Prices Fresh? | {self.coin}",
+                description=(
+                    "RivaL checks multiple exchanges automatically. You only "
+                    "need to know whether their recent price data is usable. "
+                    "These are **5-minute market updates**, not 10 live "
+                    "streaming connections."
+                ),
+                color=discord.Color.orange(),
+            )
+            if self.market is None or not self.venues:
+                embed.add_field(
+                    name="Exchange data",
+                    value="Market collection is not connected. No freshness claimed.",
+                    inline=False,
+                )
+            else:
+                try:
+                    rows = await asyncio.to_thread(self.market.feed_health)
+                    found = {(r["venue"], r["asset"]): r for r in rows}
+                    now = datetime.now(UTC)
+                    healthy = []
+                    stale = []
+                    for venue in self.venues:
+                        row = found.get((venue, self.coin))
+                        recent = False
+                        if row and row.get("last_success_at") and row.get("last_candle_close"):
+                            try:
+                                success_at = datetime.fromisoformat(
+                                    str(row["last_success_at"])
+                                ).astimezone(UTC)
+                                candle_at = datetime.fromisoformat(
+                                    str(row["last_candle_close"])
+                                ).astimezone(UTC)
+                                recent = (
+                                    row["status"] == "ok"
+                                    and timedelta(0) <= now - success_at <= timedelta(minutes=15)
+                                    and timedelta(0) <= now - candle_at <= timedelta(minutes=15)
+                                )
+                            except (ValueError, TypeError):
+                                pass
+                        (healthy if recent else stale).append(venue)
+                    embed.add_field(
+                        name=f"{len(healthy)} of {len(self.venues)} exchanges have fresh data",
+                        value=(
+                            f"✅ Working: {', '.join(healthy) or 'None verified'}\n"
+                            f"⏳ Not verified: {', '.join(stale) or 'None'}"
+                        ),
+                        inline=False,
+                    )
+                    if healthy:
+                        embed.color = discord.Color.blurple()
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL beginner exchange freshness unavailable")
+                    embed.add_field(
+                        name="Exchange data",
+                        value="Cannot verify current exchange updates. No claims of freshness.",
+                        inline=False,
+                    )
+        elif p == "trust":
+            embed = discord.Embed(
+                title=f"📊 Is RivaL Actually Improving? | {self.coin} {self.horizon}m",
+                description=(
+                    "RivaL compares the new combined model against the old "
+                    "model using predictions made **before** prices changed. "
+                    "Until it proves better after trading costs, both remain "
+                    "research, not winning bets."
+                ),
+                color=discord.Color.orange(),
+            )
+            if self.multi is None:
+                embed.add_field(
+                    name="Current verdict",
+                    value="Not verified. The combined-model comparison isn't connected.",
+                    inline=False,
+                )
+            else:
+                try:
+                    proof = await asyncio.to_thread(
+                        self.multi.report,
+                        asset=self.coin, horizon_minutes=self.horizon,
+                    )
+                    settled = proof["settled"]
+                    is_better = proof.get("brier_improvement")
+                    performance = (
+                        "Insufficient future results"
+                        if is_better is None else
+                        ("Combined model has lower prediction error so far"
+                         if is_better > 0 else
+                         "Combined model has NOT beaten the original so far")
+                    )
+                    embed.add_field(
+                        name="What the evidence says",
+                        value=(
+                            f"**{performance}.**\n"
+                            f"Completed future comparisons: **{settled}**\n"
+                            f"Days measured: **{proof['days']}**\n"
+                            f"Exchanges contributing: **up to {proof['max_sources']}**"
+                        ),
+                        inline=False,
+                    )
+                    embed.add_field(
+                        name="Would I trust it with real money?",
+                        value=(
+                            "**Not yet.** The models need at least 150 paired "
+                            "future outcomes over 21 days and positive results "
+                            "after realistic costs. No real orders are placed."
+                        ),
+                        inline=False,
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL beginner combined-model proof unavailable")
+                    embed.add_field(
+                        name="Current verdict",
+                        value="Accuracy evidence is unavailable. No improvement claimed.",
+                        inline=False,
+                    )
         elif p == "help":
             embed = discord.Embed(
                 title="❓ Getting Started",
@@ -462,7 +594,8 @@ class GuidedHome(discord.ui.View):
                     "2. **Sports**: choose your state, then browse games.\n"
                     "3. **Crypto**: choose a coin and time, then see a forecast.\n"
                     "4. **Practice Money**: try fake buys and sells.\n"
-                    "5. **My Results**: check wins, losses and accuracy.\n\n"
+                    "5. **My Results**: check your practice trades.\n"
+                    "6. **Advanced**: optional data freshness and model accuracy.\n\n"
                     "**PASS** means the evidence doesn't support a pick. "
                     "That is a useful answer, not a broken button."
                 ), color=discord.Color.blurple(),
@@ -471,13 +604,13 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title="⚙️ Advanced Tools",
                 description=(
-                    "**Optional, for experienced users.**\n"
-                    "See mathematical models, historical data, costs and "
-                    "source reliability in Advanced Research.\n"
-                    "You can also use /rival-data, /rival-quote, "
-                    "/rival-target-proof, /rival-profit-proof, and "
-                    "/rival-sport-proof.\n"
-                    "**None of these place real wagers.**"
+                    "**Optional. You do not need this to get predictions.**\n"
+                    "**Are My Prices Fresh?** checks real exchange updates.\n"
+                    "**Is RivaL Improving?** compares the new and old predictions.\n"
+                    "**Technical Research** opens the detailed model dashboard.\n"
+                    "The old advanced shortcuts are available under "
+                    "`/rival-tools` if you genuinely need them.\n"
+                    "**No real bets are placed.**"
                 ), color=discord.Color.blurple(),
             )
         if self.note:
@@ -523,7 +656,7 @@ class GuidedHome(discord.ui.View):
             self.page = self.back_stack.pop() if self.back_stack else "home"
             self.note = None
         elif action in ("home", "sports", "crypto", "practice", "results",
-                        "help", "advanced"):
+                        "help", "advanced", "feeds", "trust"):
             self.navigate(action)
             if action == "sports":
                 await self._refresh_odds()

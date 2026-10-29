@@ -99,12 +99,24 @@ pretending there is a guaranteed profitable trade:
 - `/rival-sports`: discover actual supported sports/leagues from fresh,
   unstarted sportsbook fixtures in the configured provider feed. No fictional
   league coverage or unsupported sport-specific model predictions.
+- `/rival-leagues`: show the sports and leagues the current
+  SportsGameOdds API key really has access to, with one-hour metadata caching.
+- `/rival-quote`: verified timestamped BTC/ETH/SOL futures best bid/ask,
+  spread, top-book quantity and explicitly assumed round-trip costs.
+  If Binance USD-M denies access or quotes are stale, returns **unavailable**.
+- `/rival-target-proof`: show the independently heldout research evidence
+  for your saved exact-price goal. Outputs **NOT QUALIFIED** instead of
+  inventing a price-hit probability when model gates fail.
+- `/rival-paper-open`, `/rival-paper-close`, `/rival-paper-results`:
+  quote-to-quote paper positions with per-user limits and after-cost
+  hypothetical P&L. Absolutely no account orders or actual fills.
 - `/rival-stop`: cancel and clearly mark the old target card inactive.
 - `/rival-research`: simple opportunity summary; historical math, Gemini
   and verified forward scores remain available behind advanced sections.
 - `/rival-data`: the detailed collector dashboard.
 
-[Price-target evidence and provider coverage](docs/RIVAL_PRICE_TARGETS.md)
+[Verified quotes, heldout proof, source entitlements and paper accounting](docs/EVIDENCE_QUOTE_PAPER_GATES.md)
+and [price-target evidence and provider coverage](docs/RIVAL_PRICE_TARGETS.md)
 document the exact source/time-window rules.
 
 The status is never a placed order or promise of profitable returns. The

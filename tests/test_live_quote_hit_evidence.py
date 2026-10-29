@@ -71,7 +71,7 @@ async def test_one_shared_public_book_cache_and_rate_control():
         asset = symbol.removesuffix("USDT")
         return httpx.Response(200, json=_payload(datetime.now(UTC), f"{asset}USDT"))
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url='https://fapi.binance.com')
     source = PublicBestQuoteClient(client=client)
     try:
         a = await source.get("BTC")
@@ -93,7 +93,7 @@ async def test_geoblock_fails_closed_with_cooldown_no_repeated_requests():
         hits.append(request)
         return httpx.Response(451, json={"error": "unavailable"})
 
-    client = httpx.AsyncClient(transport=httpx.MockTransport(blocked))
+    client = httpx.AsyncClient(transport=httpx.MockTransport(blocked), base_url='https://fapi.binance.com')
     source = PublicBestQuoteClient(client=client)
     try:
         with pytest.raises(QuoteUnavailable, match="region"):

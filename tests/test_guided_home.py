@@ -135,7 +135,8 @@ async def test_sports_guided_onboarding_and_helpful_pass(tmp_path):
     try:
         i = _interaction()
         await home.act(i, "sports")
-        assert "First Step" in (await home.render()).title
+        assert "Sports & Odds" in (await home.render()).title
+        assert "Not set" in (await home.render()).fields[0].value
         await home.submit(i, "state", "Connecticut")
         assert home.page == "sports"
         assert "Saved" in home.note

@@ -11,7 +11,7 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from parlay_bot.perpetuals.forward_audit import MODEL, ForwardAccuracyMonitor
+from parlay_bot.perpetuals.forward_audit import MODEL
 from parlay_bot.perpetuals.live_quotes import BookQuote
 from parlay_bot.storage.hot import RelationalHotStore
 
@@ -84,7 +84,6 @@ class ProspectiveQuoteProfitMonitor:
         self.store = store
 
     def initialize(self) -> None:
-        ForwardAccuracyMonitor.__doc__  # Refer to the authoritative forward ledger.
         with self.store.connect() as conn:
             conn.executescript(
                 """CREATE TABLE IF NOT EXISTS rival_forward_quote_profit (

@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
-from parlay_bot.perpetuals.forward_audit import (ForwardAccuracyMonitor, select_live_streams)
+from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor, select_live_streams
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore
 
@@ -149,10 +149,10 @@ def test_each_five_minute_cycle_samples_all_available_assets_and_rotates_venues(
     for slot in range(10):
         selected = select_live_streams(sources, slot=slot)
         assert len(selected) == 10
-        for coin in observed:
+        for coin, seen in observed.items():
             this_asset = [row for row in selected if row[1] == coin]
             assert len(this_asset) >= 3
-            observed[coin].update(row[0] for row in this_asset)
+            seen.update(row[0] for row in this_asset)
     assert all(len(sources_seen) == 10 for sources_seen in observed.values())
 
     assert select_live_streams([], slot=0) == []

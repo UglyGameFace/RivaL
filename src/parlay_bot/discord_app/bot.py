@@ -470,6 +470,19 @@ class RivalDiscordClient(discord.Client):
                         "RivaL cold archive completed %d batch(es)",
                         len(completed),
                     )
+                if self.archive_runtime.perpetual_service is not None:
+                    copied = await self.archive_runtime.perpetual_service.archive_ready(
+                        now=datetime.now(UTC),
+                        keep_hot_days=self.settings.rival_perp_archive_keep_hot_days,
+                        max_rows=self.settings.rival_perp_archive_batch_rows,
+                        max_batches=self.settings.rival_perp_archive_max_batches,
+                    )
+                    if copied:
+                        _LOG.info(
+                            "RivaL perpetual warehouse copied %d verified batch(es), "
+                            "hot rows retained",
+                            len(copied),
+                        )
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - background archive must not kill Discord

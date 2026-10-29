@@ -18,6 +18,7 @@ from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
 
 _LOG = logging.getLogger(__name__)
 SLOT_HOURS = 4
@@ -45,6 +46,7 @@ class AutonomousResearch:
         self.market = market
         self.store = market.store
         self.forward = ForwardAccuracyMonitor(market)
+        self.multi = MultiExchangeResearch(self.store)
         self.ai = ai
         self.venues = venues
         self.assets = assets
@@ -53,6 +55,7 @@ class AutonomousResearch:
 
     def initialize(self) -> None:
         self.forward.initialize()
+        self.multi.initialize()
         with self.store.connect() as conn:
             conn.executescript(
                 """
@@ -425,6 +428,19 @@ class AutonomousResearch:
         except Exception:  # noqa: BLE001
             math_ok = False
             _LOG.exception("RivaL forward mathematical research cycle failed")
+        # Challenge the incumbent only with forecasts genuinely issued by
+        # the completed live research cycle, on shared UTC target windows.
+        try:
+            paired = await asyncio.to_thread(self.multi.settle)
+            fused = await asyncio.to_thread(self.multi.issue)
+            _LOG.info(
+                "RivaL multi-source shadow issued=%s paired_settled=%s "
+                "promotion=disabled", fused, paired,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - ensemble cannot block existing bot
+            _LOG.exception("RivaL multi-exchange challenger unavailable safely")
         try:
             await asyncio.to_thread(self.settle_ai)
         except asyncio.CancelledError:

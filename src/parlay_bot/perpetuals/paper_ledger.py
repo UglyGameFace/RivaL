@@ -13,6 +13,10 @@ from parlay_bot.perpetuals.live_quotes import BookQuote
 from parlay_bot.storage.hot import RelationalHotStore
 
 MAX_PAPER_USDT = 250.0
+DEFAULT_FUNDED_USDT = 10000.0
+MIN_FUNDED_USDT = 100.0
+MAX_FUNDED_USDT = 100000.0
+MAX_DAILY_PRACTICE_LOSS_RATIO = 0.05
 MAX_OPEN_PER_USER = 3
 TAKER_BPS = 4.0
 SLIPPAGE_BPS_PER_SIDE = 2.0
@@ -61,6 +65,11 @@ class PaperLedger:
                    ON rival_paper_positions (user_id,asset,open_slot);
                    CREATE INDEX IF NOT EXISTS idx_rival_paper_user_history
                    ON rival_paper_positions (user_id,opened_at);
+                   CREATE TABLE IF NOT EXISTS rival_practice_accounts (
+                     user_id TEXT PRIMARY KEY,
+                     starting_usdt DOUBLE PRECISION NOT NULL,
+                     created_at TEXT NOT NULL
+                   );
                    """
             )
 
@@ -69,6 +78,100 @@ class PaperLedger:
         if not user_id.isdecimal() or int(user_id) <= 0:
             raise ValueError("Invalid private paper account.")
         return user_id
+
+    @staticmethod
+    def _ensure_funding(conn, user_id: str) -> float:
+        conn.execute(
+            """INSERT INTO rival_practice_accounts
+               (user_id,starting_usdt,created_at) VALUES (?,?,?)
+               ON CONFLICT(user_id) DO NOTHING""",
+            (user_id, DEFAULT_FUNDED_USDT, datetime.now(UTC).isoformat()),
+        )
+        # Serialize competing opens against the same bankroll row.
+        backend = "postgres" if conn.__class__.__name__.lower().startswith(
+            "postgres"
+        ) else "sqlite"
+        lock = " FOR UPDATE" if backend == "postgres" else ""
+        row = conn.execute(
+            "SELECT starting_usdt FROM rival_practice_accounts WHERE user_id=?" + lock,
+            (user_id,),
+        ).fetchone()
+        return float(row["starting_usdt"])
+
+    def fund(self, user_id: str, *, starting_usdt: float = DEFAULT_FUNDED_USDT) -> dict:
+        """Set fictional funding once before the first trade; never mint real money.
+
+        Existing ledger history is immutable and cannot be erased to reset losses.
+        """
+        self._user(user_id)
+        if not math.isfinite(starting_usdt) or not (
+            MIN_FUNDED_USDT <= starting_usdt <= MAX_FUNDED_USDT
+        ):
+            raise ValueError("Choose a fictional starting balance of 100–100,000 USDT.")
+        self.initialize()
+        with self.store.connect() as conn:
+            existing = conn.execute(
+                "SELECT starting_usdt FROM rival_practice_accounts WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+            prior = conn.execute(
+                "SELECT COUNT(*) AS n FROM rival_paper_positions WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+            if existing is None:
+                if int(prior["n"]) > 0:
+                    # Existing historical paper trades must count toward the
+                    # same default-funded practice account.
+                    starting_usdt = DEFAULT_FUNDED_USDT
+                conn.execute(
+                    """INSERT INTO rival_practice_accounts
+                       (user_id,starting_usdt,created_at) VALUES (?,?,?)
+                       ON CONFLICT(user_id) DO NOTHING""",
+                    (user_id, starting_usdt, datetime.now(UTC).isoformat()),
+                )
+            elif starting_usdt != float(existing["starting_usdt"]):
+                if int(prior["n"]) > 0:
+                    raise ValueError(
+                        "Your existing practice history is preserved. "
+                        "Funding cannot be changed after your first trade."
+                    )
+                conn.execute(
+                    "UPDATE rival_practice_accounts SET starting_usdt=? WHERE user_id=?",
+                    (starting_usdt, user_id),
+                )
+        return self.summary(user_id)
+
+    @staticmethod
+    def _balance(conn, user_id: str, initial: float) -> dict:
+        row = conn.execute(
+            """SELECT COUNT(*) AS n,
+                      SUM(CASE WHEN open_slot=1 THEN notional_usdt ELSE 0 END)
+                        AS committed,
+                      SUM(CASE WHEN closed_at IS NOT NULL
+                               THEN assumed_net_usdt ELSE 0 END) AS realized,
+                      SUM(CASE WHEN closed_at IS NOT NULL THEN 1 ELSE 0 END) AS closed,
+                      SUM(CASE WHEN closed_at IS NOT NULL AND assumed_net_usdt>0
+                               THEN 1 ELSE 0 END) AS wins,
+                      SUM(CASE WHEN closed_at IS NOT NULL AND assumed_net_usdt<0
+                               THEN 1 ELSE 0 END) AS losses,
+                      SUM(CASE WHEN closed_at IS NOT NULL
+                               AND closed_at>=? AND assumed_net_usdt<0
+                               THEN assumed_net_usdt ELSE 0 END) AS today_losses
+               FROM rival_paper_positions WHERE user_id=?""",
+            (datetime.now(UTC).date().isoformat(), user_id),
+        ).fetchone()
+        realized = float(row["realized"] or 0)
+        committed = float(row["committed"] or 0)
+        equity = initial + realized
+        daily_losses = abs(float(row["today_losses"] or 0))
+        return {
+            "funded": initial, "realized": realized, "equity": equity,
+            "available": equity - committed, "committed": committed,
+            "completed": int(row["closed"] or 0), "wins": int(row["wins"] or 0),
+            "losses": int(row["losses"] or 0),
+            "day_loss": daily_losses,
+            "daily_loss_cap": initial * MAX_DAILY_PRACTICE_LOSS_RATIO,
+        }
 
     def open(
         self, *, user_id: str, position_id: str, quote: BookQuote,
@@ -98,6 +201,12 @@ class PaperLedger:
                 if str(existing["user_id"]) != user_id:
                     raise ValueError("Paper position ID belongs to another user.")
                 return "Already recorded (idempotent)."
+            funded = self._ensure_funding(conn, user_id)
+            bankroll = self._balance(conn, user_id, funded)
+            if notional_usdt > bankroll["available"]:
+                raise ValueError("Not enough fictional available balance.")
+            if bankroll["day_loss"] >= bankroll["daily_loss_cap"]:
+                raise ValueError("Daily practice loss limit reached. No new entries.")
             count = conn.execute(
                 """SELECT COUNT(*) AS n FROM rival_paper_positions
                    WHERE user_id=? AND open_slot=1""",
@@ -180,6 +289,8 @@ class PaperLedger:
         self._user(user_id)
         self.initialize()
         with self.store.connect() as conn:
+            funded = self._ensure_funding(conn, user_id)
+            balance = self._balance(conn, user_id, funded)
             row = conn.execute(
                 """SELECT
                      SUM(CASE WHEN open_slot=1 THEN 1 ELSE 0 END) AS open_count,
@@ -195,4 +306,18 @@ class PaperLedger:
             "assumed_net_usdt": float(row["assumed_net_usdt"] or 0),
             "actual_profit_verified": False,
             "account_receipts_present": False,
+            "practice": balance,
+            "practice_feedback": {
+                "completed": balance["completed"],
+                "wins": balance["wins"], "losses": balance["losses"],
+                "profitable_fraction": (
+                    balance["wins"] / balance["completed"]
+                    if balance["completed"] else None
+                ),
+                "training_eligible": False,
+                "reason": (
+                    "Practice outcomes can be evaluated against real quotes, "
+                    "but are not independent labels or proof of model improvement."
+                ),
+            },
         }

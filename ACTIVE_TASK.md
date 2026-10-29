@@ -1,3 +1,12 @@
+## October 28, 2026: verified free public history + bookmaker baseline
+
+- Owner authorized a free-first multi-horizon data-acquisition pipeline for RivaL.
+- Branch: `feat/verified-free-history-intake-20261028` from live `main`; no open PR on initial audit.
+- Added official Binance USD-M monthly futures klines (checksum + bounded ZIP + strict OHLC/time validation), soccer historical results and bookmaker odds (result/price checks), 6-month bounded resumable CLI, descriptive no-vig bookmaker Brier/log-loss baseline, tests and operator guide.
+- Explicitly isolated historical research: no changes to live collector, pending forecasts, RivaL PostgreSQL, account orders, sportsbook eligibility or promoted model weights.
+- Collected official archives in production: NOT VERIFIED. Direct network download from chat runtime unavailable. Durable Drive promotion/restore and live worker OAuth remain unverified; historical data alone cannot move the 46% live accuracy.
+- Next: confirm GitHub Ruff/pytest/PostgreSQL CI, independently fetch/validate official archives on a permitted network host, promote verified data+manifests into the designated private Drive warehouse, add causal research training and time-ordered forward holdout only after coverage checks. Preserve existing live services.
+
 ## October 28, 2026: dedicated 5 TB Drive warehouse / perpetual historical preservation
 
 - Confirmed the RivaL Data Warehouse root exists in the connected UglyGameFace Drive account with seven configured subfolders. Live read-only inspection found history/, manifests/ and backups/ empty. This is a storage account availability check, NOT proof that the Discloud bot has OAuth or archival enabled.

@@ -151,3 +151,12 @@ pytest -q
 ```
 
 See `ACTIVE_TASK.md` for the exact active task, validation evidence, and next milestone.
+
+## Verified free historical research intake
+
+A separate, bounded, checksum-verified research importer supports Binance USD-M
+monthly futures archives (multiple horizons) and historical football results/
+bookmaker odds, plus descriptive no-vig pricing benchmarks. It does not change
+live predictions or place trades. Run locally on a network-enabled research
+host and preserve artifacts inside the authorized RivaL warehouse after
+verified promotion. See [the importer guide](docs/VERIFIED_FREE_HISTORY.md).

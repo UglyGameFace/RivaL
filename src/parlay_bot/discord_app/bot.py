@@ -12,7 +12,7 @@ from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_ru
 from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
-from parlay_bot.discord_app.opportunities import (\n    crypto_desk_embed,\n    sportsbook_desk_embed,\n)\nfrom parlay_bot.discord_app.presentation import onboarding_embed, saved_location_embed
+from parlay_bot.discord_app.opportunities import (\n    crypto_desk_embed,\n    sportsbook_desk_embed,\n)\nfrom parlay_bot.discord_app.presentation import onboarding_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.discord_app.views import LocationView, OnboardingView
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
@@ -206,7 +206,7 @@ class RivalDiscordClient(discord.Client):
     def _register_commands(self) -> None:
         @self.tree.command(
             name="rival",
-            description="Open your private RivaL sports odds dashboard.",
+            description="Your best current sportsbook price opportunity, or PASS.",
         )
         async def rival(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
@@ -226,10 +226,11 @@ class RivalDiscordClient(discord.Client):
                 )
                 return
 
+            await self._refresh_sports_for_pick()
             await interaction.edit_original_response(
-                embed=saved_location_embed(
-                    state_code=saved.state_code,
-                    eligible_books=list(saved.eligible_books),
+                embed=await asyncio.to_thread(
+                    sportsbook_desk_embed, self.parlay_builder,
+                    user_id=str(interaction.user.id),
                 ),
                 view=LocationView(
                     service=self.location_service,

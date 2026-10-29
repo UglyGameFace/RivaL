@@ -129,11 +129,11 @@ class ShadowLearningMonitor:
                     )
                     for horizon in HORIZONS
                 ]
-            except (ValueError, TypeError, ArithmeticError):
-                # A single corrupt venue stream cannot stall all other sources.
+            except (ValueError, TypeError, ArithmeticError) as exc:
+                # Report the real validation failure without stopping other sources.
                 _LOG.warning(
-                    "RivaL shadow learning skipped invalid venue=%s contract=%s",
-                    venue, contract,
+                    "RivaL shadow learning skipped invalid venue=%s contract=%s reason=%s: %s",
+                    venue, contract, type(exc).__name__, str(exc)[:240],
                 )
                 continue
             for horizon, samples, result in evaluations:

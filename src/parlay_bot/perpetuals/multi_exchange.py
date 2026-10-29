@@ -342,7 +342,7 @@ class MultiExchangeResearch:
                         (quote.bid / float(entry["entry_ask"]) - 1)*10000
                         if prob > 0.5 else
                         ((float(entry["entry_bid"]) - quote.ask) /
-                         float(row["entry_bid"]))*10000
+                         float(entry["entry_bid"]))*10000
                     )
 
                 change = conn.execute(

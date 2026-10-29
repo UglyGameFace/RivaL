@@ -55,10 +55,12 @@ async def test_beginner_home_begins_simple_and_keeps_advanced_features(tmp_path)
     try:
         assert bot.tree.get_command("rival") is not None
         assert "simple private home" in bot.tree.get_command("rival").description
-        assert bot.tree.get_command("rival-picks") is not None
-        assert bot.tree.get_command("rival-research") is not None
-        assert bot.tree.get_command("rival-profit-proof") is not None
-        assert bot.tree.get_command("rival-practice") is not None
+        tools = bot.tree.get_command("rival-tools")
+        assert tools is not None
+        assert tools.get_command("picks") is not None
+        assert tools.get_command("research") is not None
+        assert tools.get_command("profit-proof") is not None
+        assert tools.get_command("practice") is not None
         assert home.page == "home"
         assert {"Sports & Odds", "Predict Crypto", "Practice Money",
                 "My Results", "Help Me Start", "Advanced",
@@ -81,7 +83,8 @@ async def test_every_page_has_home_back_explain_without_dead_buttons(tmp_path):
     home = _home(bot)
     try:
         for page in ("sports", "crypto", "practice", "results",
-                     "help", "advanced", "slip", "forecast", "quote"):
+                     "help", "advanced", "slip", "forecast", "quote",
+                     "feeds", "trust"):
             home.navigate("home")
             home.navigate(page)
             home._buttons()
@@ -378,9 +381,9 @@ async def test_old_and_new_profit_commands_use_same_strict_view(tmp_path):
         coin = app_commands.Choice(name="BTC", value="BTC")
         horizon = app_commands.Choice(name="5 minutes", value=5)
         views = []
-        for name in ("rival-stream-proof", "rival-profit-proof"):
+        for name in ("stream-proof", "profit-proof"):
             i = _interaction()
-            await bot.tree.get_command(name).callback(i, coin, horizon)
+            await bot.tree.get_command("rival-tools").get_command(name).callback(i, coin, horizon)
             i.response.defer.assert_awaited_once_with(
                 ephemeral=True, thinking=True,
             )
@@ -405,10 +408,10 @@ async def test_ten_source_and_ensemble_discord_commands_are_private_on_android(t
         asset = app_commands.Choice(name="BTC", value="BTC")
         horizon = app_commands.Choice(name="5 minutes", value=5)
         for name, args in (
-            ("rival-source-health", (asset,)),
-            ("rival-multi-proof", (asset, horizon)),
+            ("source-health", (asset,)),
+            ("multi-proof", (asset, horizon)),
         ):
-            command = bot.tree.get_command(name)
+            command = bot.tree.get_command("rival-tools").get_command(name)
             assert command is not None
             interaction = _interaction()
             await command.callback(interaction, *args)

@@ -5,6 +5,22 @@
 RivaL is a provider-agnostic sports-odds intelligence and parlay-analysis project. It keeps sportsbook coverage, line comparison, historical movement, jurisdiction filtering, and parlay construction behind a simple Discord experience.
 
 
+### Prospective quote-based profitability proof
+
+- `/rival-profit-proof coin:BTC timeframe:5` reports the actual
+  **forward-stamped, later-verified executable bid/ask observations** RivaL
+  collected around pre-outcome predictions. Also tracks missed/late exits,
+  quote coverage, losing trades, and conservative/severe fee, funding,
+  and slippage assumptions. It is NOT a retrospective candle-close backtest.
+- Observations are collected automatically during the existing 5m
+  research cycle (up to BTC/ETH/SOL, single shared snapshot per asset),
+  stored durably in PostgreSQL, and resumed idempotently after restart.
+  Regional or quota restrictions fail closed without fabricated quotes.
+- **Quote-based paper results are not authenticated brokerage fills.**
+  Even passing stringent day-block after-cost tests cannot establish
+  verified *actual* profitability without independent account receipts.
+  See [profitability acceptance and source limitations](docs/RIVAL_PROFIT_PROOF.md).
+
 ### Funded practice simulator and verified sports models
 
 - `/rival-practice` provides a **fictional, privately isolated funded balance**:

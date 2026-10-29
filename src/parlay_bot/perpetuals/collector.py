@@ -14,7 +14,6 @@ from typing import Protocol
 import httpx
 
 from parlay_bot.perpetuals.additional_venues import (
-    BinanceFuturesMarketClient,
     DeribitMarketClient,
 )
 from parlay_bot.perpetuals.dydx import DydxMarketClient
@@ -32,7 +31,7 @@ from parlay_bot.storage.hot import RelationalHotStore
 _LOG = logging.getLogger(__name__)
 
 # Do not retry blocked exchange endpoints every five minutes.
-_PAUSES = {"blocked": timedelta(hours=6), "rate_limited": timedelta(minutes=20)}
+_PAUSES = {"blocked": timedelta(days=7), "rate_limited": timedelta(minutes=20)}
 _PROVIDER_TIMEOUT_SECONDS = 12  # Cap each network operation; no source stalls a full candle.
 
 
@@ -99,7 +98,6 @@ class PerpetualMarketCollector:
                 "okx": OkxMarketClient(),
                 "kucoin": KucoinMarketClient(),
                 "deribit": DeribitMarketClient(),
-                "binance": BinanceFuturesMarketClient(),
                 "lighter": LighterMarketClient(),
                 "phemex": PhemexMarketClient(),
             }
@@ -109,6 +107,8 @@ class PerpetualMarketCollector:
                         "deribit", "binance", "lighter", "phemex"} for key in self.providers
         ):
             raise ValueError("unsupported public market provider")
+        # Region-blocked Binance Futures is not a default live source. An
+        # explicitly injected provider remains available for controlled tests.
         self._pauses: dict[str, datetime] = {}
         self._lock = asyncio.Lock()
 

@@ -88,10 +88,7 @@ class PaperLedger:
             (user_id, DEFAULT_FUNDED_USDT, datetime.now(UTC).isoformat()),
         )
         # Serialize competing opens against the same bankroll row.
-        backend = "postgres" if conn.__class__.__name__.lower().startswith(
-            "postgres"
-        ) else "sqlite"
-        lock = " FOR UPDATE" if backend == "postgres" else ""
+        lock = " FOR UPDATE" if conn.backend == "postgres" else ""
         row = conn.execute(
             "SELECT starting_usdt FROM rival_practice_accounts WHERE user_id=?" + lock,
             (user_id,),

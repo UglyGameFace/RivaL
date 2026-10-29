@@ -129,7 +129,7 @@ The Discord result explicitly labels these values as market-consensus estimates 
 
 ## Simple RivaL Home (mobile and first-time users)
 
-Open \`/rival\`. It now opens a **private, button-driven home**, not
+Open `/rival`. It now opens a **private, button-driven home**, not
 the technical sportsbook screen:
 
 - **Sports & Odds**: Pick your state or ZIP once, compare fresh prices,
@@ -155,11 +155,11 @@ menu. All controls are owner-checked and private, and the submenu edits
 the current screen instead of sending an endless stream of new messages.
 The advanced research button opens the already-existing research UI in
 a separate private panel so the original home stays available. New
-\`/rival\` screens require successful live Discord slash sync; a passing
+`/rival` screens require successful live Discord slash sync; a passing
 test or Discloud upload alone cannot prove a user interaction worked.
 
-Original \`/rival-picks\`, \`/rival-research\`, \`/rival-data\`,
-\`/rival-target\`, and all other power-user commands remain available.
+Original `/rival-picks`, `/rival-research`, `/rival-data`,
+`/rival-target`, and all other power-user commands remain available.
 The simplified UI uses those authoritative services; it does not
 replace prediction or storage infrastructure.
 
@@ -168,7 +168,8 @@ replace prediction or storage infrastructure.
 RivaL is **opportunity-first**, and provides private, read-only decisions without
 pretending there is a guaranteed profitable trade:
 
-- `/rival` and `/rival-picks`: current jurisdiction-eligible sports odds comparison, or PASS.
+- `/rival`: private, guided beginner Home with Sports, Crypto, Practice, Results, Help and Advanced buttons.
+- `/rival-picks`: direct power-user jurisdiction-eligible sports odds comparison, or PASS.
 - `/rival-opportunities`: sportsbook opportunity plus BTC/ETH/SOL model watches.
 - `/rival-target`: choose BTC/ETH/SOL and a 5m/15m timeframe. Leave the
   optional **target_price** empty for the existing private UP/DOWN/WAIT forward

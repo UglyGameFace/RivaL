@@ -354,6 +354,29 @@ class GuidedHome(discord.ui.View):
                 embed.add_field(
                     name="Your State", value=saved.state_name, inline=False,
                 )
+            if self.collector is not None:
+                try:
+                    last = await asyncio.to_thread(self.collector._last_refresh)
+                    updating = self.collector._lock.locked()
+                    if last is None:
+                        status = ("Updating odds in background" if updating
+                                  else "No completed odds refresh yet")
+                    else:
+                        age = max(0, int((datetime.now(UTC) - last).total_seconds() // 60))
+                        if age >= int(self.collector.refresh_interval.total_seconds() // 60):
+                            status = ("Updating odds in background" if updating
+                                      else f"Last checked {age} min ago; update pending")
+                        else:
+                            status = f"Last checked {age} min ago"
+                            if updating:
+                                status += " • Updating in background"
+                    embed.add_field(name="Odds status", value=status, inline=False)
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("Sports refresh status unavailable")
+                    embed.add_field(
+                        name="Odds status", value="Refresh status unavailable",
+                        inline=False,
+                    )
         elif p == "slip":
             if self.slip is None:
                 embed = discord.Embed(

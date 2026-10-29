@@ -43,8 +43,11 @@ class StreamShadowLedger:
 
     def __init__(self, store: RelationalHotStore) -> None:
         self.store = store
+        self._initialized = False
 
     def initialize(self) -> None:
+        if self._initialized:
+            return
         with self.store.connect() as conn:
             conn.executescript(
                 """CREATE TABLE IF NOT EXISTS rival_stream_shadow (
@@ -63,6 +66,7 @@ class StreamShadowLedger:
                 ON rival_stream_shadow (asset,venue,state,target_close_at);
                 """
             )
+        self._initialized = True
 
     def expire(self, *, now: datetime | None = None) -> int:
         stamp = now or datetime.now(UTC)

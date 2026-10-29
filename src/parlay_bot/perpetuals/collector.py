@@ -33,6 +33,7 @@ _LOG = logging.getLogger(__name__)
 
 # Do not retry blocked exchange endpoints every five minutes.
 _PAUSES = {"blocked": timedelta(hours=6), "rate_limited": timedelta(minutes=20)}
+_PROVIDER_TIMEOUT_SECONDS = 12  # Cap each network operation; no source stalls a full candle.
 
 
 class PublicPerpProvider(Protocol):
@@ -137,7 +138,7 @@ class PerpetualMarketCollector:
                                     assets=(asset,), interval_minutes=self.interval_minutes,
                                     bars=self.bars,
                                 ),
-                                timeout=12,
+                                timeout=_PROVIDER_TIMEOUT_SECONDS,
                             )
                             if not batch.candles or any(
                                 candle.venue != name for candle in batch.candles

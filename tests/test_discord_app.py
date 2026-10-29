@@ -122,7 +122,9 @@ async def test_discord_client_registers_rival_and_data_status_without_message_in
     try:
         command = client.tree.get_command("rival")
         assert command is not None
-        assert command.description == "Your best current sportsbook price opportunity, or PASS."
+        assert command.description == (
+            "Open RivaL\x27s simple private home: sports, crypto, practice and help."
+        )
         assert client.tree.get_command("rival-data") is not None
         assert client.tree.get_command("rival-research") is not None
         assert client.tree.get_command("rival-picks") is not None

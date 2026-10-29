@@ -110,7 +110,7 @@ class StreamShadowLedger:
                 gross = (
                     (quote.bid / float(row["entry_ask"]) - 1) * 10000
                     if row["side"] == "LONG" else
-                    (float(row["entry_bid"]) / quote.ask - 1) * 10000
+                    ((float(row["entry_bid"]) - quote.ask)\n                     / float(row["entry_bid"])) * 10000
                 )
                 if not math.isfinite(gross):
                     continue

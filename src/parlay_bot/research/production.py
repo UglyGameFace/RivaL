@@ -173,9 +173,12 @@ async def run_pipeline(
     report_file = _report(report_dir / "history-learning-report.json", report)
     report["local_report_path"] = str(report_file)
     if publish_enabled:
-        if not data_complete:
-            report["warehouse_status"] = "not_published_incomplete_source_coverage"
+        if not quality["all_requested_streams_qualified"]:
+            report["warehouse_status"] = "not_published_incomplete_crypto_source_coverage"
             return report
+        # A blocked football-odds endpoint must not destroy successfully
+        # verified crypto history. Archive complete crypto separately and
+        # mark unresolved sports as explicit partial production coverage.
         owner = drive is None
         connection = drive or _drive(Settings())
         try:
@@ -183,7 +186,10 @@ async def run_pipeline(
                 root=root, drive=connection, report_path=report_file, research=research,
             )
             report["archive"] = uploaded
-            report["warehouse_status"] = "verified_byte_restores"
+            report["warehouse_status"] = (
+                "verified_byte_restores" if data_complete
+                else "verified_crypto_only_sports_pending"
+            )
         finally:
             if owner:
                 await connection.aclose()

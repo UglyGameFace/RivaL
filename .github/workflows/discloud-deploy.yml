@@ -17,22 +17,24 @@ jobs:
     name: Deploy tested main, if owner has configured Discloud access
     # workflow_run grants secrets. Never deploy untrusted PR code, a failed
     # test run, a fork, or a manually selected unverified branch.
-    if: >-
-      ${{ github.event.workflow_run.conclusion == 'success'
-          && github.event.workflow_run.event == 'push'
-          && github.event.workflow_run.head_branch == 'main'
-          && github.event.workflow_run.head_repository.full_name == github.repository }}
+    if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
       DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
       DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+      RIVAL_SOURCE_EVENT: ${{ github.event.workflow_run.event }}
+      RIVAL_SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+      RIVAL_SOURCE_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
     steps:
       - name: Verify bot deployment prerequisites without printing credentials
         id: access
         shell: bash
         run: |
-          if [ -z "$DISCLOUD_TOKEN" ] || [ -z "$DISCLOUD_APP_ID" ]; then
+          if [ "$RIVAL_SOURCE_EVENT" != "push" ] || [ "$RIVAL_SOURCE_BRANCH" != "main" ] || [ "$RIVAL_SOURCE_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "::warning::Deployment refused: source was not a successful push CI on this repository's main branch."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          elif [ -z "$DISCLOUD_TOKEN" ] || [ -z "$DISCLOUD_APP_ID" ]; then
             echo "::warning::RivaL Discloud deployment NOT enabled: repository secrets DISCLOUD_TOKEN and/or DISCLOUD_APP_ID are absent. Running Discord bot was not updated."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else

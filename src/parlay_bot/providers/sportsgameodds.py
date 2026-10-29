@@ -242,8 +242,9 @@ class SportsGameOddsClient:
             safe_owner = owner.maximum_units - usage.monthly_current_entities - owner.reserve_units
             if safe_owner <= 0:
                 raise QuotaReserveReached("Owner-configured SportsGameOdds budget exhausted")
-            remaining = min(remaining, safe_owner + self._monthly_entity_reserve)
         safe_remaining = remaining - self._monthly_entity_reserve
+        if owner is not None:
+            safe_remaining = min(safe_remaining, safe_owner)
         if safe_remaining <= 0:
             raise QuotaReserveReached(
                 "SportsGameOdds monthly entity reserve protected: "

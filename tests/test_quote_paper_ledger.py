@@ -111,7 +111,7 @@ def test_paper_postgres16_persists_and_has_idempotent_schema():
         pytest.skip("PostgreSQL integration database unavailable")
     store = PostgresHotStore(dsn)
     ledger = PaperLedger(store)
-    now = datetime.now(UTC)
+    now = datetime.now(UTC) - timedelta(seconds=3)
     user = "981270000"
     try:
         ledger.initialize()

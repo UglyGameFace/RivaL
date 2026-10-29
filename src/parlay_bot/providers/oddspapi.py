@@ -86,6 +86,7 @@ class OddsPapiClient:
         self._account_cache: AccountSnapshot | None = None
         self._account_cached_at = 0.0
         self._projected_request_count: int | None = None
+        self._budget_lock = asyncio.Lock()
 
     async def __aenter__(self) -> Self:
         return self
@@ -104,6 +105,25 @@ class OddsPapiClient:
         params: Mapping[str, object] | None,
         endpoint: str,
         billable: bool,
+        headers: Mapping[str, str] | None = None,
+    ) -> httpx.Response:
+        if billable:
+            # Serialize billable requests, including quota checks, across
+            # concurrently running collectors sharing this client.
+            async with self._budget_lock:
+                await self._ensure_billable_capacity()
+                return await self._request_unlocked(
+                    path, params=params, endpoint=endpoint,
+                    billable=billable, headers=headers,
+                )
+        return await self._request_unlocked(
+            path, params=params, endpoint=endpoint,
+            billable=billable, headers=headers,
+        )
+
+    async def _request_unlocked(
+        self, path: str, *, params: Mapping[str, object] | None,
+        endpoint: str, billable: bool,
         headers: Mapping[str, str] | None = None,
     ) -> httpx.Response:
         await self._gates[endpoint].wait()

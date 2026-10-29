@@ -247,3 +247,26 @@ async def test_live_quote_failure_is_not_masked_as_a_practice_success(tmp_path):
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_actual_rival_slash_callback_opens_guided_private_home(tmp_path):
+    bot = _client(tmp_path)
+    try:
+        interaction = _interaction()
+        await bot.tree.get_command("rival").callback(interaction)
+        interaction.response.defer.assert_awaited_once_with(
+            ephemeral=True, thinking=True,
+        )
+        interaction.edit_original_response.assert_awaited_once()
+        sent = interaction.edit_original_response.await_args.kwargs
+        assert isinstance(sent["view"], GuidedHome)
+        assert sent["view"].owner_id == interaction.user.id
+        assert sent["embed"].title == "RivaL | Betting Genie"
+        assert "No real bets" in sent["embed"].description
+        assert "Home" in _labels(sent["view"])
+        sent["view"].stop()
+    finally:
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()

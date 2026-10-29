@@ -380,7 +380,10 @@ class GoogleDriveArchiveClient:
         *,
         artifact: ArchiveArtifact,
         batch_id: str,
+        mime_type: str = "application/vnd.apache.parquet",
     ) -> DriveObject:
+        if mime_type not in {"application/vnd.apache.parquet", "application/x-ndjson"}:
+            raise DriveArchiveError("unsupported archive history MIME type")
         await self._verify_folder_boundary()
         existing = await self._find_batch_object(
             parent_id=self.folders.history,
@@ -396,7 +399,7 @@ class GoogleDriveArchiveClient:
             parent_id=self.folders.staging,
             batch_id=batch_id,
             kind="history",
-            mime_type="application/vnd.apache.parquet",
+            mime_type=mime_type,
         )
         if self.folders.staging not in staged.parents:
             raise DriveArchiveError("History object is not in RivaL staging")

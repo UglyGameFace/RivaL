@@ -27,7 +27,7 @@ async def test_provider_entitled_leagues_exclude_disabled_and_non_sports_and_cac
             ],
         })
 
-    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url='https://api.sportsgameodds.com')
     client = SportsGameOddsClient(
         "test-api-key", client=http, request_cooldown_seconds=0,
     )
@@ -43,7 +43,7 @@ async def test_provider_entitled_leagues_exclude_disabled_and_non_sports_and_cac
 
 @pytest.mark.asyncio
 async def test_provider_catalog_fails_closed_on_malformed_data():
-    http = httpx.AsyncClient(transport=httpx.MockTransport(
+    http = httpx.AsyncClient(base_url='https://api.sportsgameodds.com', transport=httpx.MockTransport(
         lambda _req: httpx.Response(
             200, json={"success": True, "data": {"NFL": "not a list"}},
         ),

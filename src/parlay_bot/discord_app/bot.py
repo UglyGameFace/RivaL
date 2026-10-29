@@ -321,8 +321,8 @@ class RivalDiscordClient(discord.Client):
                        if setting else "No owner override configured")
                 )
             await interaction.response.send_message(
-                "**API Usage & Limits**\\n" + "\\n".join(details)
-                + "\\nThese are owner safety ceilings, not provider entitlements. "
+                "**API Usage & Limits**\n" + "\n".join(details)
+                + "\nThese are owner safety ceilings, not provider entitlements. "
                 "An increased setting never buys additional API access.",
                 view=OwnerLimitsView(store=store, owner_id=owner.id),
                 ephemeral=True,

@@ -122,9 +122,11 @@ async def test_discord_client_registers_rival_and_data_status_without_message_in
     try:
         command = client.tree.get_command("rival")
         assert command is not None
-        assert command.description == "Open your private RivaL sports odds dashboard."
+        assert command.description == "Your best current sportsbook price opportunity, or PASS."
         assert client.tree.get_command("rival-data") is not None
         assert client.tree.get_command("rival-research") is not None
+        assert client.tree.get_command("rival-picks") is not None
+        assert client.tree.get_command("rival-opportunities") is not None
         assert client.tree.get_command("rival-data").description == (
             "Open the private RivaL market data dashboard."
         )
@@ -277,3 +279,19 @@ def test_explicit_sqlite_backend_remains_available_for_local_tests(tmp_path) -> 
         store.initialize()
     finally:
         store.close()
+
+
+
+@pytest.mark.asyncio
+async def test_opportunities_are_default_not_history_on_research_view(tmp_path) -> None:
+    from parlay_bot.discord_app.research_dashboard import ResearchDashboard
+
+    view = ResearchDashboard(owner_id=123, market=None, ai=None, venues=())
+    assert view.screen == "opportunities"
+    assert view.section == "overview"
+    buttons = {getattr(item, "custom_id", "") for item in view.children}
+    assert "rival:research:opportunities" in buttons
+    assert "rival:research:accuracy" in buttons
+    displayed = (await view.render()).to_dict()
+    assert "Opportunity Desk" in displayed["title"]
+    assert "PASS" in displayed["description"]

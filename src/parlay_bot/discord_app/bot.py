@@ -334,6 +334,7 @@ class RivalDiscordClient(discord.Client):
                     ai=self.gemini_research,
                     venues=tuple(self.perp_collector.providers) if self.perp_collector else (),
                     shadow_enabled=self.shadow_monitor is not None,
+                    target_service=self.direction_targets,
                 ),
             )
 
@@ -425,6 +426,7 @@ class RivalDiscordClient(discord.Client):
                 ai=self.gemini_research,
                 venues=tuple(collector.providers) if collector is not None else (),
                 shadow_enabled=self.shadow_monitor is not None,
+                    target_service=self.direction_targets,
             )
             await interaction.edit_original_response(
                 embed=await dashboard.render(), view=dashboard,

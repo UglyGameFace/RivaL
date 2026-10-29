@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -62,6 +63,15 @@ class CurrentBoardCollector:
         self.max_pages = max_pages
         self._lock = asyncio.Lock()
 
+    @staticmethod
+    def _log_forecast_outcome(task: asyncio.Task[object]) -> None:
+        if task.cancelled():
+            return
+        try:
+            task.result()
+        except Exception:  # noqa: BLE001
+            _LOG.exception("RivaL optional sports forecast failed; odds intake unaffected")
+
     def _last_refresh(self) -> datetime | None:
         raw = self.store.get_runtime_state(_STATE_KEY)
         if raw is None:
@@ -103,30 +113,35 @@ class CurrentBoardCollector:
             notice: str | None = None
 
             for _ in range(self.max_pages):
+                stage_start = time.monotonic()
                 events, next_cursor, page_notice = await self.client.get_events(
                     league_ids=self.league_ids,
                     bookmaker_ids=self.bookmaker_ids,
                     limit=self.event_limit,
                     cursor=cursor,
                 )
+                _LOG.info('RivaL sports events fetched count=%d seconds=%.2f', len(events), time.monotonic() - stage_start)
                 pages_fetched += 1
                 events_seen += len(events)
                 if page_notice:
                     notice = page_notice
 
                 for event in events:
-                    board = normalize_event(event)
+                    stage_start = time.monotonic()
+                    board = await asyncio.to_thread(normalize_event, event)
+                    _LOG.info('RivaL sports normalized seconds=%.2f', time.monotonic() - stage_start)
+                    stage_start = time.monotonic()
                     result = await asyncio.to_thread(self.store.ingest_board, board)
+                    _LOG.info('RivaL sports ingested observations=%d seconds=%.2f', result.observations_seen, time.monotonic() - stage_start)
                     if self.results is not None:
-                        try:
-                            await asyncio.to_thread(
+                        # Forecast research is optional and must not delay odds intake.
+                        task = asyncio.create_task(
+                            asyncio.to_thread(
                                 self.results.issue_forecast, event,
                                 observed_at=datetime.now(UTC),
                             )
-                        except Exception:  # noqa: BLE001 - odds intake must survive research failures
-                            _LOG.exception(
-                                "RivaL prospective sports forecast failed; odds intake preserved"
-                            )
+                        )
+                        task.add_done_callback(self._log_forecast_outcome)
                     observations_seen += result.observations_seen
                     new_states += result.new_states
                     repeated_states += result.repeated_states

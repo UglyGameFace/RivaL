@@ -110,6 +110,8 @@ async def test_real_section_selector_and_tab_buttons_are_clickable(monkeypatch):
         return expanded_report()
 
     monkeypatch.setattr(view, "_render_full", full)
+    view.screen = "math"
+    view._rebuild()
     try:
         assert view.section == "overview"
         select = control(view, "rival:research:section")

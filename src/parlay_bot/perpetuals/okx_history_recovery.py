@@ -92,7 +92,9 @@ class OkxHistoryRecovery(GateHistoryRecovery):
             conn.execute(
                 """UPDATE perp_history_recovery SET
                    next_opened_at=CASE
-                     WHEN ? IS NOT NULL AND ? < next_opened_at THEN ?
+                     WHEN CAST(? AS TEXT) IS NOT NULL
+                          AND CAST(? AS TEXT) < next_opened_at
+                     THEN CAST(? AS TEXT)
                      ELSE next_opened_at END,
                    attempted_at=?,inserted_bars=inserted_bars+?,
                    empty_windows=empty_windows+?,status=?,retry_after=?

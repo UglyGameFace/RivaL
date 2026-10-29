@@ -12,7 +12,7 @@ from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_ru
 from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
-from parlay_bot.discord_app.presentation import onboarding_embed, saved_location_embed
+from parlay_bot.discord_app.opportunities import (\n    crypto_desk_embed,\n    sportsbook_desk_embed,\n)\nfrom parlay_bot.discord_app.presentation import onboarding_embed, saved_location_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.discord_app.views import LocationView, OnboardingView
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
@@ -239,6 +239,67 @@ class RivalDiscordClient(discord.Client):
             )
 
         @self.tree.command(
+            name="rival-picks",
+            description="Best current sportsbook price opportunity, or a clear PASS.",
+        )
+        async def rival_picks(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._refresh_sports_for_pick()
+            saved = self.location_service.get_saved(
+                platform="discord", user_id=str(interaction.user.id),
+            )
+            if saved is None:
+                await interaction.edit_original_response(
+                    embed=onboarding_embed(),
+                    view=OnboardingView(
+                        service=self.location_service,
+                        parlay_builder=self.parlay_builder,
+                        current_collector=self.current_collector,
+                    ),
+                )
+            else:
+                await interaction.edit_original_response(
+                    embed=await asyncio.to_thread(
+                        sportsbook_desk_embed, self.parlay_builder,
+                        user_id=str(interaction.user.id),
+                    ),
+                    view=LocationView(
+                        service=self.location_service,
+                        parlay_builder=self.parlay_builder,
+                        current_collector=self.current_collector,
+                    ),
+                )
+
+        @self.tree.command(
+            name="rival-opportunities",
+            description="Show current sports prices and live crypto watches, not history lessons.",
+        )
+        async def rival_opportunities(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._refresh_sports_for_pick()
+            crypto_market = self.perp_collector.market if self.perp_collector else None
+            crypto = await asyncio.to_thread(crypto_desk_embed, crypto_market)
+            saved = self.location_service.get_saved(
+                platform="discord", user_id=str(interaction.user.id),
+            )
+            if saved is None:
+                sports = onboarding_embed()
+            else:
+                sports = await asyncio.to_thread(
+                    sportsbook_desk_embed, self.parlay_builder,
+                    user_id=str(interaction.user.id),
+                )
+            await interaction.edit_original_response(
+                embeds=[sports, crypto],
+                view=ResearchDashboard(
+                    owner_id=interaction.user.id, market=crypto_market,
+                    ai=self.gemini_research,
+                    venues=tuple(self.perp_collector.providers) if self.perp_collector else (),
+                    shadow_enabled=self.shadow_monitor is not None,
+                ),
+            )
+
+        @self.tree.command(
             name="rival-data",
             description="Open the private RivaL market data dashboard.",
         )
@@ -259,7 +320,7 @@ class RivalDiscordClient(discord.Client):
 
         @self.tree.command(
             name="rival-research",
-            description="Private mathematical history and optional Gemini analysis.",
+            description="Live crypto opportunities first, with deeper math and accuracy on tap.",
         )
         async def rival_research(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
@@ -274,6 +335,14 @@ class RivalDiscordClient(discord.Client):
             await interaction.edit_original_response(
                 embed=await dashboard.render(), view=dashboard,
             )
+
+    async def _refresh_sports_for_pick(self) -> None:
+        if self.current_collector is None:
+            return
+        try:
+            await self.current_collector.refresh_if_due()
+        except Exception:  # noqa: BLE001 - stale bets are rejected by builder
+            _LOG.exception("Current sportsbook refresh unavailable; fail closed if stale")
 
     async def setup_hook(self) -> None:
         if self.settings.rival_dev_guild_id is not None:

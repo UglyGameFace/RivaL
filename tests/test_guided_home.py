@@ -317,3 +317,79 @@ async def test_rival_signal_slash_command_is_private_and_uses_same_signal_engine
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_guided_results_uses_strict_source_matched_cost_proof(tmp_path):
+    from unittest.mock import Mock
+
+    bot = _client(tmp_path)
+    home = _home(bot)
+    audit = Mock()
+    audit.report.return_value = {
+        "status": "NOT_PROVEN", "closed": 2, "eligible_windows": 9,
+        "days": 1, "costs": {"severe": {"mean_net_bps": -14.25}},
+    }
+    home.stream_shadow = audit
+    try:
+        home.navigate("results")
+        i = _interaction()
+        await home.act(i, "proof")
+        audit.report.assert_called_once_with(
+            asset="BTC", horizon_minutes=5,
+        )
+        embed = i.edit_original_response.await_args.kwargs["embed"]
+        assert "2/9" in str(embed.to_dict())
+        assert "-14.2 bps" in str(embed.to_dict())
+        assert "NOT_PROVEN" in str(embed.to_dict())
+        assert "Real-money profit NOT PROVEN" in str(embed.to_dict())
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_old_and_new_profit_commands_use_same_strict_view(tmp_path):
+    from unittest.mock import Mock
+
+    from discord import app_commands
+
+    bot = _client(tmp_path)
+    shadow = Mock()
+    shadow.report.return_value = {
+        "status": "NOT_PROVEN", "asset": "BTC", "horizon_minutes": 5,
+        "eligible_windows": 7, "entries": 3, "closed": 2,
+        "missed_exits": 1, "coverage": 2 / 7, "days": 1,
+        "costs": {
+            "conservative": {
+                "assumed_extra_cost_bps": 14,
+                "mean_net_bps": -3, "daily_lower_bps": None,
+            },
+            "severe": {
+                "assumed_extra_cost_bps": 80,
+                "mean_net_bps": -69, "daily_lower_bps": None,
+            },
+        },
+    }
+    bot.stream_shadow = shadow
+    try:
+        coin = app_commands.Choice(name="BTC", value="BTC")
+        horizon = app_commands.Choice(name="5 minutes", value=5)
+        views = []
+        for name in ("rival-stream-proof", "rival-profit-proof"):
+            i = _interaction()
+            await bot.tree.get_command(name).callback(i, coin, horizon)
+            i.response.defer.assert_awaited_once_with(
+                ephemeral=True, thinking=True,
+            )
+            views.append(i.edit_original_response.await_args.kwargs["embed"].to_dict())
+        assert views == [views[0], views[0]]
+        assert "NOT_PROVEN" in str(views[0])
+        assert "No real-money profit" in str(views[0])
+        assert shadow.report.call_count == 2
+    finally:
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()

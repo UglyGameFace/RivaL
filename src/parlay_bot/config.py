@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     rival_perp_collection_assets: str = Field(default="BTC,ETH,SOL")
     rival_perp_collection_seconds: int = Field(default=300, ge=300, le=3600)
     rival_perp_collection_bars: int = Field(default=48, ge=2, le=48)
+    # Shared, read-only websocket feeds; offload only verified quote samples
+    # into forward shadow research. Never persist a database row per tick.
+    rival_stream_enabled: bool = Field(default=True)
+    rival_stream_shadow_seconds: int = Field(default=30, ge=10, le=60)
 
     # Bounded read-only historical recovery (Gate Futures only initially).
     # New data is marked by actual first_observed_at; never synthetic live PnL.

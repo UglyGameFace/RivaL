@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from parlay_bot.perpetuals.market_store import PerpetualMarketStore
     from parlay_bot.perpetuals.paper_ledger import PaperLedger
     from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
+    from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 
 _LOG = logging.getLogger(__name__)
 COINS = ("BTC", "ETH", "SOL")
@@ -140,6 +141,7 @@ class GuidedHome(discord.ui.View):
         paper: PaperLedger, quotes: PublicBestQuoteClient,
         profit: ProspectiveQuoteProfitMonitor | None,
         research_factory: Callable[[int], discord.ui.View] | None = None,
+        stream_shadow: StreamShadowLedger | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
@@ -151,6 +153,7 @@ class GuidedHome(discord.ui.View):
         self.paper = paper
         self.quotes = quotes
         self.profit = profit
+        self.stream_shadow = stream_shadow
         self.research_factory = research_factory
         self.page = "home"
         self.back_stack: list[str] = []
@@ -351,6 +354,7 @@ class GuidedHome(discord.ui.View):
             embed = await signal_embed(
                 self.market, self.quotes,
                 asset=self.coin, horizon_minutes=self.horizon,
+                stream_shadow=self.stream_shadow,
             )
         elif p == "quote":
             try:
@@ -586,7 +590,27 @@ class GuidedHome(discord.ui.View):
                 _LOG.exception("Guided practice trade failed")
                 self.note = "Couldn't verify this practice trade. No order confirmed."
         elif action == "proof":
-            if self.profit is None:
+            if self.stream_shadow is not None:
+                try:
+                    result = await asyncio.to_thread(
+                        self.stream_shadow.report,
+                        asset=self.coin, horizon_minutes=self.horizon,
+                    )
+                    severe = result["costs"]["severe"]["mean_net_bps"]
+                    self.note = (
+                        f"{result['status']} • "
+                        f"{result['closed']}/{result['eligible_windows']} "
+                        "exchange-matched forward windows with quoted exits"
+                        f" • {result['days']} UTC days"
+                        + (f" • Severe-cost mean {severe:+.1f} bps"
+                           if severe is not None else
+                           " • No complete after-cost evidence yet")
+                        + ". Real-money profit NOT PROVEN."
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("Guided strict quote proof unavailable")
+                    self.note = "Source-matched forward profitability unavailable. NOT PROVEN."
+            elif self.profit is None:
                 self.note = "Live profit verification unavailable. NOT PROVEN."
             else:
                 try:
@@ -596,12 +620,12 @@ class GuidedHome(discord.ui.View):
                     )
                     self.note = (
                         f"{result.verified_quote_exits} of "
-                        f"{result.eligible_forecast_windows} forecast windows "
-                        "have complete observed entry/exit quotes. "
-                        "Actual real-money profit NOT PROVEN."
+                        f"{result.eligible_forecast_windows} legacy forecast windows "
+                        "have observed entry/exit quotes. "
+                        "Unmatched markets may exist. Profit NOT PROVEN."
                     )
                 except Exception:  # noqa: BLE001
-                    _LOG.exception("Guided profitability unavailable")
+                    _LOG.exception("Guided legacy profitability unavailable")
                     self.note = "Cannot verify profitability. NOT PROVEN."
         elif action == "research":
             if self.research_factory is None:

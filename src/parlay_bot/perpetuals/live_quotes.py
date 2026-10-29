@@ -10,10 +10,13 @@ import math
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import discord
 import httpx
+
+if TYPE_CHECKING:
+    from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
 
 ASSETS = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT"}
 MAX_QUOTE_AGE = timedelta(seconds=10)
@@ -165,6 +168,7 @@ class PublicBestQuoteClient:
         self._reference_cache: dict[str, tuple[float, PerpReferenceBook]] = {}
         self._reference_blocked_until = 0.0
         self._reference_lock = asyncio.Lock()
+        self.stream_hub: StreamingBookHub | None = None
 
     async def aclose(self) -> None:
         if self._owns:
@@ -176,6 +180,10 @@ class PublicBestQuoteClient:
         if asset not in ASSETS:
             raise QuoteUnavailable("Only BTC, ETH and SOL USDT futures supported.")
         async with self._lock:
+            if self.stream_hub is not None:
+                streamed = self.stream_hub.snapshot("binance", asset)
+                if isinstance(streamed, BookQuote):
+                    return streamed
             clock = time.monotonic()
             if clock < self._blocked_until:
                 raise QuoteUnavailable("Exchange temporarily blocked or rate limited.")
@@ -217,6 +225,10 @@ class PublicBestQuoteClient:
         if asset not in ASSETS:
             raise QuoteUnavailable("Unsupported perpetual market.")
         async with self._reference_lock:
+            if self.stream_hub is not None:
+                streamed = self.stream_hub.snapshot("hyperliquid", asset)
+                if isinstance(streamed, PerpReferenceBook):
+                    return streamed
             clock = time.monotonic()
             if clock < self._reference_blocked_until:
                 raise QuoteUnavailable("Secondary public exchange unavailable.")

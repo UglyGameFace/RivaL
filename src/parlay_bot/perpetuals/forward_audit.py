@@ -497,6 +497,11 @@ class ForwardAccuracyMonitor:
         return evaluate_regimes([dict(row) for row in rows], as_of=stamp)
 
     def summary(self, *, asset: str, now: datetime | None = None) -> dict:
+        """Aggregate source-scored accuracy inside PostgreSQL, not in Discord.
+
+        Across ten exchanges, two horizons and two weeks this otherwise
+        returns hundreds of thousands of old forecast rows for one click.
+        """
         if asset not in ("BTC", "ETH", "SOL"):
             raise ValueError("invalid asset")
         stamp = utc(now or datetime.now(UTC))
@@ -505,48 +510,59 @@ class ForwardAccuracyMonitor:
         self.initialize()
         with self.store.connect() as conn:
             rows = conn.execute(
-                """SELECT venue,horizon_minutes,issued_at,settled_at,
-                          outcome_up,probability_up,baseline_up,model_brier,
-                          baseline_brier
+                """SELECT horizon_minutes,
+                          CASE WHEN issued_at>=? THEN 'recent' ELSE 'prior' END AS cohort,
+                          COUNT(*) AS issued,
+                          SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END) AS settled,
+                          SUM(CASE WHEN settled_at IS NOT NULL
+                                    AND probability_up<>0.5 THEN 1 ELSE 0 END) AS decided,
+                          SUM(CASE WHEN settled_at IS NOT NULL
+                                    AND ((probability_up>0.5 AND outcome_up=1)
+                                    OR (probability_up<0.5 AND outcome_up=0))
+                                   THEN 1 ELSE 0 END) AS correct,
+                          SUM(CASE WHEN settled_at IS NOT NULL
+                                   THEN model_brier ELSE 0 END) AS model_sum,
+                          SUM(CASE WHEN settled_at IS NOT NULL
+                                   THEN baseline_brier ELSE 0 END) AS baseline_sum,
+                          COUNT(DISTINCT CASE WHEN settled_at IS NOT NULL
+                                              THEN venue END) AS venues
                    FROM perp_forward_audit
                    WHERE asset=? AND issued_at>=? AND issued_at<=?
-                   ORDER BY issued_at""",
-                (asset, prior, stamp.isoformat()),
+                   GROUP BY horizon_minutes, cohort""",
+                (start, asset, prior, stamp.isoformat()),
             ).fetchall()
-        def bucket(items) -> dict:
-            settled_rows = [x for x in items if x["settled_at"] is not None]
-            n = len(settled_rows)
-            if not n:
-                return {
-                    "issued": len(items), "settled": 0, "hit_rate": None,
-                    "brier": None, "baseline_brier": None,
-                    "venues": 0, "model_beats_baseline": None,
-                }
-            brier = sum(float(r["model_brier"]) for r in settled_rows) / n
-            base = sum(float(r["baseline_brier"]) for r in settled_rows) / n
-            accuracy = sum(
-                int((float(r["probability_up"]) > 0.5) == bool(r["outcome_up"]))
-                for r in settled_rows if float(r["probability_up"]) != 0.5
-            )
-            decided = sum(float(r["probability_up"]) != 0.5 for r in settled_rows)
+
+        def empty() -> dict:
             return {
-                "issued": len(items), "settled": n,
-                "venues": len({r["venue"] for r in settled_rows}),
-                "hit_rate": accuracy / decided if decided else None,
-                "brier": brier, "baseline_brier": base,
-                "model_beats_baseline": brier < base if n >= 50 else None,
+                "issued": 0, "settled": 0, "hit_rate": None,
+                "brier": None, "baseline_brier": None,
+                "venues": 0, "model_beats_baseline": None,
             }
-        recent = [r for r in rows if r["issued_at"] >= start]
-        earlier = [r for r in rows if prior <= r["issued_at"] < start]
-        by_horizon = {
-            horizon: bucket([r for r in recent if r["horizon_minutes"] == horizon])
-            for horizon in HORIZONS
+
+        cohorts = {
+            "recent": {h: empty() for h in HORIZONS},
+            "prior": {h: empty() for h in HORIZONS},
         }
+        for row in rows:
+            horizon = int(row["horizon_minutes"])
+            cohort = str(row["cohort"])
+            if horizon not in HORIZONS or cohort not in cohorts:
+                continue
+            n = int(row["settled"] or 0)
+            decided = int(row["decided"] or 0)
+            brier = float(row["model_sum"]) / n if n else None
+            baseline = float(row["baseline_sum"]) / n if n else None
+            cohorts[cohort][horizon] = {
+                "issued": int(row["issued"]), "settled": n,
+                "hit_rate": int(row["correct"] or 0) / decided if decided else None,
+                "brier": brier, "baseline_brier": baseline,
+                "venues": int(row["venues"] or 0),
+                "model_beats_baseline": (
+                    brier < baseline if n >= 50 else None
+                ),
+            }
         return {
             "asset": asset, "as_of": stamp, "model": MODEL,
-            "last_7d": by_horizon, "prior_7d": {
-                horizon: bucket([r for r in earlier if r["horizon_minutes"] == horizon])
-                for horizon in HORIZONS
-            },
+            "last_7d": cohorts["recent"], "prior_7d": cohorts["prior"],
             "threshold": 50, "independent_trials": False,
         }

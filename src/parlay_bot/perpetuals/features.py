@@ -87,6 +87,11 @@ def live_examples(
 
     horizon_bars = horizon_minutes // interval
     examples = []
+    # A batch can reveal several historical candles at the same instant.
+    # They are not independent live issuance opportunities. Keep only the
+    # latest causally eligible window per real observation timestamp.
+    by_issuance: dict[datetime, LabeledExample] = {}
+    ordered_by_open: dict[datetime, datetime] = {}
     for idx in range(LOOKBACK, len(ordered) - horizon_bars):
         history = ordered[idx - LOOKBACK:idx + 1]
         current = ordered[idx]
@@ -126,10 +131,16 @@ def live_examples(
         )
         if target.close_price == current.close_price:
             continue
-        examples.append(LabeledExample(
+        example = LabeledExample(
             venue=first.venue, contract=first.contract, quote=first.quote,
             horizon_minutes=horizon_minutes, issued_at=issued,
             label_known_at=available, features=features,
             label_up=int(target.close_price > current.close_price),
-        ))
-    return tuple(examples)
+        )
+        # Retain the most recent candle among windows visible at this instant.
+        # Do not rewrite observed_at or create synthetic earlier predictions.
+        previous = by_issuance.get(issued)
+        if previous is None or utc(current.opened_at) > utc(ordered_by_open[issued]):
+            by_issuance[issued] = example
+            ordered_by_open[issued] = current.opened_at
+    return tuple(by_issuance[key] for key in sorted(by_issuance))

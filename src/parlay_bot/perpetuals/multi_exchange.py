@@ -228,7 +228,7 @@ class MultiExchangeResearch:
                 (v for v in ("hyperliquid", "binance")
                  if v in grouped and _can_reference(
                      v, asset, str(grouped[v]["contract"]), str(grouped[v]["quote"])
-                 )), sorted(grouped)[0],
+                 )), min(grouped),
             )
             reference = grouped[ref_venue]
             contributors = json.dumps([
@@ -335,13 +335,13 @@ class MultiExchangeResearch:
                     min(quote.bid_quantity, quote.ask_quantity)):
                     continue
 
-                def gross(prob: float) -> float:
+                def gross(prob: float, entry=row) -> float:
                     if max(prob, 1-prob) < 0.56:
                         return 0.0  # No position, no invented trading costs.
                     return (
-                        (quote.bid / float(row["entry_ask"]) - 1)*10000
+                        (quote.bid / float(entry["entry_ask"]) - 1)*10000
                         if prob > 0.5 else
-                        ((float(row["entry_bid"]) - quote.ask) /
+                        ((float(entry["entry_bid"]) - quote.ask) /
                          float(row["entry_bid"]))*10000
                     )
 

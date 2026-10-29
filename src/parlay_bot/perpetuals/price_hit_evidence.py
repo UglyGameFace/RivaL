@@ -7,6 +7,7 @@ training, or issuing past outcomes as prospective predictions. It can say
 """
 from __future__ import annotations
 
+import itertools
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -59,7 +60,7 @@ def _time(value: str) -> datetime:
 
 
 def _volatility(prices: list[float]) -> float:
-    returns = [math.log(b / a) for a, b in zip(prices, prices[1:], strict=False)]
+    returns = [math.log(b / a) for a, b in itertools.pairwise(prices)]
     mean = sum(returns) / len(returns)
     return math.sqrt(sum((x - mean) ** 2 for x in returns) / len(returns))
 
@@ -132,7 +133,7 @@ def evaluate_price_hit_model(
                 continue
             opened = [_time(str(c["opened_at"])) for c in group]
             if any(int((b - a).total_seconds()) != 300
-                   for a, b in zip(opened, opened[1:], strict=False)):
+                   for a, b in itertools.pairwise(opened)):
                 continue
             issued = _time(str(history[-1]["first_observed_at"]))
             close_time = _time(str(history[-1]["closed_at"]))

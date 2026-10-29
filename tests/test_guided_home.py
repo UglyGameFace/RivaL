@@ -283,12 +283,38 @@ async def test_forecast_clearly_separates_live_quote_from_five_minute_candle(tmp
         bot.public_quotes.get = AsyncMock(
             side_effect=QuoteUnavailable("Binance exchange rate limited"),
         )
+        bot.public_quotes.get_reference = AsyncMock(
+            side_effect=QuoteUnavailable("Secondary exchange unavailable"),
+        )
         unavailable = await home.render()
         field = next(f for f in unavailable.fields if f.name == "Live bid/ask unavailable")
         assert "NOT a live trading price" in field.value
         assert "rate limited" not in unavailable.description
 
+        from parlay_bot.perpetuals.live_quotes import PerpReferenceBook
+
         stamp = datetime.now(UTC)
+        bot.public_quotes.get_reference = AsyncMock(
+            return_value=PerpReferenceBook(
+                asset="BTC", venue="hyperliquid",
+                bid=81100.0, ask=81101.0,
+                bid_quantity=3.0, ask_quantity=5.0,
+                exchange_at=stamp, received_at=stamp,
+            ),
+        )
+        fallback = await home.render()
+        fallback_field = next(
+            f for f in fallback.fields if "Hyperliquid perp order book" in f.name
+        )
+        assert "reference only" in fallback_field.value.lower()
+        assert "$81,100.00" in fallback_field.value
+        assert all(f.name != "Live bid/ask unavailable" for f in fallback.fields)
+        home.navigate("quote")
+        fallback_page = await home.render()
+        assert "Live Perpetual Reference" in fallback_page.title
+        assert "DIFFERENT market" in fallback_page.description
+
+        home.navigate("forecast")
         bot.public_quotes.get = AsyncMock(return_value=BookQuote(
             asset="BTC", venue="binance_usdm", symbol="BTCUSDT",
             bid=81100.12, bid_quantity=5.0,

@@ -162,3 +162,68 @@ def test_bad_collection_config_does_not_start(tmp_path):
         PerpetualMarketCollector(store=store, assets=("BTC", "BTC"))
     with pytest.raises(ValueError):
         PerpetualMarketCollector(store=store, assets=("BTC",), bars=400)
+
+
+@pytest.mark.asyncio
+async def test_slow_venue_does_not_serialize_independent_exchange_fetches(tmp_path):
+    inflight = 0
+    maximum = 0
+
+    class Delayed(DummyProvider):
+        async def collect(self, *, assets, interval_minutes, bars):
+            nonlocal inflight, maximum
+            inflight += 1
+            maximum = max(maximum, inflight)
+            try:
+                await asyncio.sleep(0.02)
+                return await super().collect(
+                    assets=assets, interval_minutes=interval_minutes, bars=bars,
+                )
+            finally:
+                inflight -= 1
+
+    store = SQLiteHotStore(tmp_path / "overlapping.sqlite")
+    collector = PerpetualMarketCollector(
+        store=store, assets=("BTC", "ETH"), bars=2,
+        providers={"hyperliquid": Delayed("hyperliquid"),
+                   "dydx": Delayed("dydx")},
+    )
+    try:
+        await collector.collect_once()
+        assert maximum == 2  # Different venues overlap on the network.
+        assert len(collector.market.feed_health()) == 4
+        assert all(row["status"] == "ok" for row in collector.market.feed_health())
+    finally:
+        await collector.aclose()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_hung_public_exchange_times_out_without_blocking_other_venues(
+    tmp_path, monkeypatch,
+):
+    class Hung(DummyProvider):
+        async def collect(self, *, assets, interval_minutes, bars):
+            await asyncio.sleep(10)
+            raise AssertionError("should be cancelled on timeout")
+
+    monkeypatch.setattr(
+        "parlay_bot.perpetuals.collector._PROVIDER_TIMEOUT_SECONDS", 0.02,
+    )
+    store = SQLiteHotStore(tmp_path / "timedout.sqlite")
+    collector = PerpetualMarketCollector(
+        store=store, assets=("BTC",), bars=2,
+        providers={"hyperliquid": Hung("hyperliquid"),
+                   "dydx": DummyProvider("dydx")},
+    )
+    try:
+        await asyncio.wait_for(collector.collect_once(), timeout=1)
+        health = {
+            (row["venue"], row["asset"]): row
+            for row in collector.market.feed_health()
+        }
+        assert health[("hyperliquid", "BTC")]["status"] == "timeout"
+        assert health[("dydx", "BTC")]["status"] == "ok"
+    finally:
+        await collector.aclose()
+        store.close()

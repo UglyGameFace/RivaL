@@ -33,6 +33,7 @@ _LOG = logging.getLogger(__name__)
 
 # Do not retry blocked exchange endpoints every five minutes.
 _PAUSES = {"blocked": timedelta(hours=6), "rate_limited": timedelta(minutes=20)}
+_PROVIDER_TIMEOUT_SECONDS = 12  # Cap each network operation; no source stalls a full candle.
 
 
 class PublicPerpProvider(Protocol):
@@ -44,6 +45,8 @@ class PublicPerpProvider(Protocol):
 
 
 def _failure_kind(error: Exception) -> str:
+    if isinstance(error, TimeoutError):
+        return "timeout"
     if isinstance(error, MarketDataError):
         cause = error.__cause__
         if isinstance(cause, httpx.HTTPStatusError):
@@ -110,25 +113,61 @@ class PerpetualMarketCollector:
         self._lock = asyncio.Lock()
 
     async def collect_once(self, *, now: datetime | None = None) -> None:
-        """One bounded cycle. Each asset/provider survives failures of its peers."""
+        """Collect independent venues concurrently, persist their results serially.
+
+        One slow or blocked exchange must not hold up nine healthy exchanges.
+        Per-venue assets remain sequential to avoid a burst against one API;
+        PostgreSQL/SQLite writes remain serialized for integrity.
+        """
         async with self._lock:
             started = now if now is not None else datetime.now(UTC)
             if started.tzinfo is None or started.utcoffset() is None:
                 raise ValueError("clock must be timezone-aware")
             await asyncio.to_thread(self.market.initialize)
-            for name, provider in self.providers.items():
-                if self._pauses.get(name, datetime.min.replace(tzinfo=UTC)) > started:
-                    continue
-                for asset in self.assets:
+            slots = asyncio.Semaphore(4)
+
+            async def fetch_venue(
+                name: str, provider: PublicPerpProvider,
+            ) -> tuple[str, list[tuple[str, MarketBatch | None, Exception | None]]]:
+                outcomes: list[tuple[str, MarketBatch | None, Exception | None]] = []
+                async with slots:
+                    for asset in self.assets:
+                        try:
+                            batch = await asyncio.wait_for(
+                                provider.collect(
+                                    assets=(asset,), interval_minutes=self.interval_minutes,
+                                    bars=self.bars,
+                                ),
+                                timeout=_PROVIDER_TIMEOUT_SECONDS,
+                            )
+                            if not batch.candles or any(
+                                candle.venue != name for candle in batch.candles
+                            ):
+                                raise MarketDataError("mismatched or empty market batch")
+                            outcomes.append((asset, batch, None))
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as error:  # noqa: BLE001 - isolated source
+                            outcomes.append((asset, None, error))
+                            if _failure_kind(error) in _PAUSES:
+                                break  # Do not keep querying a blocked venue.
+                return name, outcomes
+
+            # All network work completes before DB writes. Different venues
+            # overlap, but not the requests to the same venue.
+            gathered = await asyncio.gather(*(
+                fetch_venue(name, provider)
+                for name, provider in self.providers.items()
+                if self._pauses.get(
+                    name, datetime.min.replace(tzinfo=UTC),
+                ) <= started
+            ))
+            for name, outcomes in gathered:
+                for asset, batch, fetch_error in outcomes:
                     try:
-                        batch = await provider.collect(
-                            assets=(asset,), interval_minutes=self.interval_minutes,
-                            bars=self.bars,
-                        )
-                        if len(batch.candles) == 0 or any(
-                            item.venue != name for item in batch.candles
-                        ):
-                            raise MarketDataError("mismatched or empty market batch")
+                        if fetch_error is not None:
+                            raise fetch_error
+                        assert batch is not None
                         result = await asyncio.to_thread(self.market.ingest, batch)
                         await asyncio.to_thread(
                             self.market.record_feed_health,
@@ -146,14 +185,20 @@ class PerpetualMarketCollector:
                         )
                     except asyncio.CancelledError:
                         raise
-                    except Exception as error:  # noqa: BLE001 - independent fail-closed feeds
+                    except Exception as error:  # noqa: BLE001 - independent feeds
                         kind = _failure_kind(error)
-                        await asyncio.to_thread(
-                            self.market.record_feed_health,
-                            venue=name, asset=asset, status=kind,
-                            attempted_at=datetime.now(UTC),
-                            new_candles=0, total_candles=0,
-                        )
+                        try:
+                            await asyncio.to_thread(
+                                self.market.record_feed_health,
+                                venue=name, asset=asset, status=kind,
+                                attempted_at=datetime.now(UTC),
+                                new_candles=0, total_candles=0,
+                            )
+                        except Exception:  # noqa: BLE001 - preserve other feeds
+                            _LOG.exception(
+                                "RivaL source health persistence failed venue=%s asset=%s",
+                                name, asset,
+                            )
                         _LOG.warning(
                             "RivaL perp collection FAILED venue=%s asset=%s reason=%s",
                             name, asset, kind,
@@ -164,7 +209,6 @@ class PerpetualMarketCollector:
                                 "RivaL perp venue=%s paused reason=%s",
                                 name, kind,
                             )
-                            break
 
     async def aclose(self) -> None:
         for provider in self.providers.values():

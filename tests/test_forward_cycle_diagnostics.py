@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
-from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor, select_live_streams
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore
 
@@ -136,3 +136,25 @@ async def test_mobile_accuracy_engine_exposes_measured_blocker_not_stale_guess(t
         if view is not None:
             view.stop()
         store.close()
+
+
+def test_each_five_minute_cycle_samples_all_available_assets_and_rotates_venues():
+    sources = [
+        (f"venue-{n}", coin, "USDT")
+        for coin in ("BTC", "ETH", "SOL")
+        for n in range(10)
+    ]
+    # Venue grouping previously left entire assets unforecast for 10+ minutes.
+    observed = {"BTC": set(), "ETH": set(), "SOL": set()}
+    for slot in range(10):
+        selected = select_live_streams(sources, slot=slot)
+        assert len(selected) == 10
+        for coin, seen in observed.items():
+            this_asset = [row for row in selected if row[1] == coin]
+            assert len(this_asset) >= 3
+            seen.update(row[0] for row in this_asset)
+    assert all(len(sources_seen) == 10 for sources_seen in observed.values())
+
+    assert select_live_streams([], slot=0) == []
+    with pytest.raises(ValueError):
+        select_live_streams(sources, slot=-1)

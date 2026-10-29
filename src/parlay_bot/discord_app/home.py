@@ -355,9 +355,77 @@ class GuidedHome(discord.ui.View):
             )
             embed = target_embed(prediction)
             embed.title = f"📈 {self.coin} | {self.horizon}-Minute Forecast"
+            # A completed 5m candle is NOT a live price. Fetch timestamped
+            # bid/ask independently; exchange blocks must not hide the model
+            # status or invent a price from historical candles.
+            try:
+                live_quote = await self.quotes.get(self.coin)
+            except QuoteUnavailable:
+                try:
+                    alternative = await self.quotes.get_reference(self.coin)
+                except QuoteUnavailable:
+                    embed.add_field(
+                        name="Live bid/ask unavailable",
+                        value=(
+                            "Neither current exchange book is verified. The "
+                            "forecast above, if present, uses a completed "
+                            "candle, NOT a live trading price."
+                        ),
+                        inline=False,
+                    )
+                else:
+                    embed.add_field(
+                        name="Current Hyperliquid perp order book (USD reference)",
+                        value=(
+                            f"Bid **${alternative.bid:,.2f}** • "
+                            f"Ask **${alternative.ask:,.2f}** · "
+                            f"Exchange update "
+                            f"{discord.utils.format_dt(alternative.exchange_at, style='R')}. "
+                            "Separate market, reference only. NOT an "
+                            "executable Binance-USDT price or approved trade."
+                        ),
+                        inline=False,
+                    )
+            else:
+                embed.add_field(
+                    name=f"Current {live_quote.venue} bid / ask",
+                    value=(
+                        f"Bid **${live_quote.bid:,.2f}** · "
+                        f"Ask **${live_quote.ask:,.2f}**\\n"
+                        "Exchange update "
+                        f"{discord.utils.format_dt(live_quote.exchange_at, style='R')} "
+                        "· Snapshot only, not guaranteed fills"
+                    ),
+                    inline=False,
+                )
         elif p == "quote":
-            price = await self.quotes.get(self.coin)
-            embed = quote_embed(price, quantity=0.001)
+            try:
+                price = await self.quotes.get(self.coin)
+            except QuoteUnavailable:
+                reference = await self.quotes.get_reference(self.coin)
+                embed = discord.Embed(
+                    title=f"💱 {self.coin} | Live Perpetual Reference",
+                    description=(
+                        "Binance-USDT executable quotes are unavailable. "
+                        "The independently verified Hyperliquid USD-perp "
+                        "reference below is a DIFFERENT market. It cannot "
+                        "authorize a Binance practice trade or profit proof."
+                    ),
+                    color=discord.Color.orange(),
+                )
+                embed.add_field(
+                    name="Hyperliquid USD-perp top of book",
+                    value=(
+                        f"Bid **${reference.bid:,.2f}** • "
+                        f"Ask **${reference.ask:,.2f}** · "
+                        f"Exchange update "
+                        f"{discord.utils.format_dt(reference.exchange_at, style='R')} "
+                        "· Reference only, no trade"
+                    ),
+                    inline=False,
+                )
+            else:
+                embed = quote_embed(price, quantity=0.001)
         elif p in ("practice", "results"):
             stats = await asyncio.to_thread(self.paper.summary, str(self.owner_id))
             money = stats["practice"]

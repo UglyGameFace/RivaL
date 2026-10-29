@@ -12,6 +12,7 @@ from parlay_bot.perpetuals.live_quotes import (
     PublicBestQuoteClient,
     QuoteUnavailable,
     parse_book_quote,
+    parse_hyperliquid_reference,
     quote_cost_preview,
     quote_embed,
 )
@@ -143,3 +144,85 @@ def test_price_barrier_model_requires_source_matched_validated_chronology():
         "gate", 5, "No independently heldout observations",
     ).qualified
     assert _Sample("2026-10-29", True, 1).hit == 1
+
+
+def _hyperliquid_book(now, coin="BTC"):
+    return {
+        "coin": coin, "time": int(now.timestamp() * 1000),
+        "levels": [
+            [{"px": "81001", "sz": "5", "n": 2}],
+            [{"px": "81002", "sz": "4", "n": 3}],
+        ],
+    }
+
+
+def test_secondary_reference_is_a_verified_different_perp_instrument():
+    now = datetime.now(UTC)
+    value = parse_hyperliquid_reference(
+        _hyperliquid_book(now), asset="BTC", received_at=now,
+    )
+    assert value.venue == "hyperliquid"
+    assert value.bid == 81001
+    assert value.ask == 81002
+    assert value.exchange_at <= now
+    with pytest.raises(QuoteUnavailable, match="stale"):
+        value.validate(now=now + timedelta(minutes=1))
+
+
+@pytest.mark.parametrize("change", [
+    {"coin": "ETH"}, {"time": "fake"}, {"time": 1},
+    {"levels": []},
+    {"levels": [[{"px": "NaN", "sz": "1"}],
+                [{"px": "81002", "sz": "1"}]]},
+    {"levels": [[{"px": "81003", "sz": "1"}],
+                [{"px": "81002", "sz": "1"}]]},
+    {"levels": [[{"px": "81001", "sz": "0"}],
+                [{"px": "81002", "sz": "1"}]]},
+])
+def test_invalid_secondary_perp_books_never_pass_as_live_reference(change):
+    stamp = datetime.now(UTC)
+    raw = _hyperliquid_book(stamp)
+    raw.update(change)
+    with pytest.raises(QuoteUnavailable):
+        parse_hyperliquid_reference(raw, asset="BTC", received_at=stamp)
+
+
+@pytest.mark.asyncio
+async def test_secondary_reference_reuses_cache_and_fails_closed_on_rate_limits():
+    requests = []
+
+    def hyperliquid(request):
+        requests.append(request)
+        assert request.url.path == "/info"
+        if len(requests) == 1:
+            return httpx.Response(200, json=_hyperliquid_book(datetime.now(UTC)))
+        return httpx.Response(429)
+
+    secondary = httpx.AsyncClient(
+        transport=httpx.MockTransport(hyperliquid),
+        base_url="https://api.hyperliquid.xyz",
+    )
+    primary = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(451)),
+        base_url="https://fapi.binance.com",
+    )
+    source = PublicBestQuoteClient(client=primary, reference_client=secondary)
+    try:
+        a = await source.get_reference("BTC")
+        b = await source.get_reference("BTC")
+        assert a == b
+        assert len(requests) == 1
+        with pytest.raises(QuoteUnavailable, match="rate limited"):
+            await source.get_reference("ETH")
+        with pytest.raises(QuoteUnavailable, match="unavailable"):
+            await source.get_reference("ETH")
+        assert len(requests) == 2
+        with pytest.raises(QuoteUnavailable):
+            await source.get_reference("DOGE")
+        with pytest.raises(QuoteUnavailable, match="region"):
+            await source.get("BTC")
+        assert a.venue == "hyperliquid"
+    finally:
+        await source.aclose()
+        await secondary.aclose()
+        await primary.aclose()

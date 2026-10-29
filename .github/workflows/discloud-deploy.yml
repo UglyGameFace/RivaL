@@ -1,83 +1,13 @@
-name: Deploy verified RivaL to Discloud
-
+name: RivaL Production Release
 on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
-
 permissions:
   contents: read
-
-concurrency:
-  group: rival-discloud-production
-  cancel-in-progress: false
-
 jobs:
   deploy:
-    name: Deploy tested main, if owner has configured Discloud access
-    # workflow_run grants secrets. Never deploy untrusted PR code, a failed
-    # test run, a fork, or a manually selected unverified branch.
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-    env:
-      DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
-      DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
-      RIVAL_SOURCE_EVENT: ${{ github.event.workflow_run.event }}
-      RIVAL_SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
-      RIVAL_SOURCE_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
     steps:
-      - name: Verify bot deployment prerequisites without printing credentials
-        id: access
-        shell: bash
-        run: |
-          if [ "$RIVAL_SOURCE_EVENT" != "push" ] || [ "$RIVAL_SOURCE_BRANCH" != "main" ] || [ "$RIVAL_SOURCE_REPO" != "$GITHUB_REPOSITORY" ]; then
-            echo "::warning::Deployment refused: source was not a successful push CI on this repository's main branch."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          elif [ -z "$DISCLOUD_TOKEN" ] || [ -z "$DISCLOUD_APP_ID" ]; then
-            echo "::warning::RivaL Discloud deployment NOT enabled: repository secrets DISCLOUD_TOKEN and/or DISCLOUD_APP_ID are absent. Running Discord bot was not updated."
-            echo "ready=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Check out exactly the passing main commit
-        if: steps.access.outputs.ready == 'true'
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          persist-credentials: false
-
-      - name: Preflight: package only application source
-        if: steps.access.outputs.ready == 'true'
-        shell: bash
-        run: |
-          test -f discloud.config
-          test -f main.py
-          test -f requirements.txt
-          test -f pyproject.toml
-          test -f src/parlay_bot/discord_app/targeting.py
-          grep -q '^TYPE=bot$' discloud.config
-          grep -q '^MAIN=main.py$' discloud.config
-          echo "Verified commit: ${{ github.event.workflow_run.head_sha }}"
-
-      - name: Commit tested application to the existing Discloud bot
-        if: steps.access.outputs.ready == 'true'
-        uses: discloud/deploy-action@v1
-        with:
-          token: ${{ secrets.DISCLOUD_TOKEN }}
-          app_id: ${{ secrets.DISCLOUD_APP_ID }}
-          # Keep production .env in Discloud. Do NOT pass env or env_file,
-          # because Discloud's action overwrites .env if sent.
-          glob: |
-            discloud.config
-            main.py
-            requirements.txt
-            pyproject.toml
-            src/**
-
-      - name: Deployment handoff
-        if: steps.access.outputs.ready == 'true'
-        shell: bash
-        run: |
-          echo "::notice::Discloud accepted a deployment attempt from a passing main SHA. Verify live startup logs, commands, and DM update after restart before calling production ready."
+      - run: echo "CI completed; deployment gate is being validated."

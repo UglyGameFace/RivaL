@@ -8,7 +8,7 @@ GitHub merge automatically updates the running Discord bot.
 1. A change is merged into `main`.
 2. The existing `CI` workflow runs Ruff and the complete pytest suite,
    including the PostgreSQL 16-backed tests.
-3. Only a **successful `push` CI run for `main` in this repository** can
+3. Only a **successful CI run for `main` in this repository** (either a `push`\n   or an owner-triggered `workflow_dispatch` test run) can
    trigger `Deploy verified RivaL to Discloud`. Forks, pull requests and
    failed test runs cannot deploy.
 4. The workflow checks that **both** secret values exist:
@@ -39,10 +39,9 @@ returned live data, or forecasts are profitable.
    logs or screenshots.
 2. Obtain your account API token and the existing bot's exact application ID
    from your [Discloud dashboard](https://discloud.com/dashboard).
-3. After secret setup, merge another validated change to `main` to start
-   the automatic release. Existing history is not automatically replayed.
+3. After secret setup, open [CI](https://github.com/UglyGameFace/RivaL/actions/workflows/ci.yml), tap **Run workflow**, choose **main**, and run the full tests. This works without making artificial commits. A successful main CI run activates the release workflow; historical successes are not replayed.
 4. Open the repository's [Actions](https://github.com/UglyGameFace/RivaL/actions)
-   list, find `Deploy verified RivaL to Discloud`, and confirm that the
+   list, find `RivaL Production Release`, and confirm that the
    official deployment step **actually ran and succeeded**, not just
    `skipped`.
 5. Confirm the Discloud bot startup log contains

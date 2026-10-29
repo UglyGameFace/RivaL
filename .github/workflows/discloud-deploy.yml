@@ -21,8 +21,8 @@ jobs:
           SOURCE_EVENT: ${{ github.event.workflow_run.event }}
           SOURCE_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
         run: |
-          if [[ "$SOURCE_EVENT" != "push" || "$SOURCE_BRANCH" != "main" || "$SOURCE_REPO" != "$GITHUB_REPOSITORY" ]]; then
-            echo "::notice::Not a verified first-party main push; deployment skipped."
+          if [[ ( "$SOURCE_EVENT" != "push" && "$SOURCE_EVENT" != "workflow_dispatch" ) || "$SOURCE_BRANCH" != "main" || "$SOURCE_REPO" != "$GITHUB_REPOSITORY" ]]; then
+            echo "::notice::Not a verified first-party main push or manually dispatched main CI; deployment skipped."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           elif [[ -z "$TOKEN" || -z "$APP_ID" ]]; then
             echo "::warning::RivaL Discloud deployment not configured. Add DISCLOUD_TOKEN and DISCLOUD_APP_ID repository secrets."

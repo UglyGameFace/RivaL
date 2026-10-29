@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -10,6 +11,7 @@ from parlay_bot.research.sports_results import SportsResultStore
 from parlay_bot.storage.hot import RelationalHotStore
 
 _STATE_KEY = "sportsgameodds:last_successful_refresh"
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -122,9 +124,9 @@ class CurrentBoardCollector:
                                 observed_at=datetime.now(UTC),
                             )
                         except Exception:  # noqa: BLE001 - odds intake must survive research failures
-                            # The future fixture remains available even if a
-                            # model cannot issue a trustworthy pregame call.
-                            pass
+                            _LOG.exception(
+                                "RivaL prospective sports forecast failed; odds intake preserved"
+                            )
                     observations_seen += result.observations_seen
                     new_states += result.new_states
                     repeated_states += result.repeated_states

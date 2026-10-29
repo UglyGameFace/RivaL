@@ -12,7 +12,7 @@ import math
 from pathlib import Path
 from typing import Any
 
-from parlay_bot.research.free_history import HistoryImportError, SCHEMA
+from parlay_bot.research.free_history import SCHEMA, HistoryImportError
 
 RESULTS = ("H", "D", "A")
 

@@ -84,6 +84,65 @@ def parse_book_quote(
     return quote
 
 
+@dataclass(frozen=True)
+class PerpReferenceBook:
+    """Independent Hyperliquid USD perp book, never a Binance fill quote."""
+
+    asset: str
+    venue: str
+    bid: float
+    ask: float
+    bid_quantity: float
+    ask_quantity: float
+    exchange_at: datetime
+    received_at: datetime
+
+    def validate(self, *, now: datetime) -> None:
+        if self.asset not in ASSETS or self.venue != "hyperliquid":
+            raise QuoteUnavailable("Unverified perp reference identity.")
+        if self.exchange_at.utcoffset() is None or self.received_at.utcoffset() is None:
+            raise QuoteUnavailable("Missing perp reference clock.")
+        prices = (self.bid, self.ask, self.bid_quantity, self.ask_quantity)
+        if any(not math.isfinite(v) or v <= 0 for v in prices):
+            raise QuoteUnavailable("Invalid perp reference depth.")
+        if self.ask <= self.bid or (self.ask - self.bid) / self.ask > 0.02:
+            raise QuoteUnavailable("Crossed or implausibly wide perp reference.")
+        if not timedelta(0) <= now - self.exchange_at <= MAX_QUOTE_AGE:
+            raise QuoteUnavailable("Perp reference is stale.")
+        if not timedelta(0) <= now - self.received_at <= MAX_QUOTE_AGE:
+            raise QuoteUnavailable("Perp reference receipt is stale.")
+
+
+def parse_hyperliquid_reference(
+    payload: Any, *, asset: str, received_at: datetime,
+) -> PerpReferenceBook:
+    """Official public info/l2Book. Native USD perp price, NOT USDT execution."""
+    if asset not in ASSETS or not isinstance(payload, dict):
+        raise QuoteUnavailable("Unsupported perp reference.")
+    if payload.get("coin") != asset:
+        raise QuoteUnavailable("Wrong perp reference instrument.")
+    try:
+        milliseconds = payload["time"]
+        if type(milliseconds) is not int or milliseconds <= 0:
+            raise ValueError("missing exchange clock")
+        levels = payload["levels"]
+        if (not isinstance(levels, list) or len(levels) != 2
+                or not all(isinstance(side, list) and side for side in levels)):
+            raise ValueError("empty reference book")
+        bid, ask = levels[0][0], levels[1][0]
+        reference = PerpReferenceBook(
+            asset=asset, venue="hyperliquid",
+            bid=float(bid["px"]), ask=float(ask["px"]),
+            bid_quantity=float(bid["sz"]), ask_quantity=float(ask["sz"]),
+            exchange_at=datetime.fromtimestamp(milliseconds / 1000, tz=UTC),
+            received_at=received_at,
+        )
+        reference.validate(now=received_at)
+    except (ValueError, TypeError, KeyError, IndexError, OverflowError) as exc:
+        raise QuoteUnavailable("Invalid current perp reference book.") from exc
+    return reference
+
+
 class PublicBestQuoteClient:
     """Bounded shared REST snapshot; no API keys, wallet or order endpoint."""
 
@@ -98,10 +157,20 @@ class PublicBestQuoteClient:
         self._cache: dict[str, tuple[float, BookQuote]] = {}
         self._lock = asyncio.Lock()
         self._blocked_until = 0.0
+        # Independent read-only fallback, used ONLY for display. Never feed
+        # these USD perp prices into Binance-USDT paper/profit settlement.
+        self._reference_client = httpx.AsyncClient(
+            base_url="https://api.hyperliquid.xyz",
+            timeout=httpx.Timeout(5.0),
+        )
+        self._reference_cache: dict[str, tuple[float, PerpReferenceBook]] = {}
+        self._reference_blocked_until = 0.0
+        self._reference_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
         if self._owns:
             await self.client.aclose()
+        await self._reference_client.aclose()
 
     async def get(self, asset: str) -> BookQuote:
         if asset not in ASSETS:
@@ -142,6 +211,47 @@ class PublicBestQuoteClient:
                 ) from exc
             self._cache[asset] = (time.monotonic(), quote)
             return quote
+
+
+
+    async def get_reference(self, asset: str) -> PerpReferenceBook:
+        """A second verified, native USD-perp reference for read-only UI."""
+        if asset not in ASSETS:
+            raise QuoteUnavailable("Unsupported perpetual market.")
+        async with self._reference_lock:
+            clock = time.monotonic()
+            if clock < self._reference_blocked_until:
+                raise QuoteUnavailable("Secondary public exchange unavailable.")
+            cached = self._reference_cache.get(asset)
+            received = datetime.now(UTC)
+            if cached is not None and clock - cached[0] <= CACHE_SECONDS:
+                try:
+                    cached[1].validate(now=received)
+                    return cached[1]
+                except QuoteUnavailable:
+                    self._reference_cache.pop(asset, None)
+            try:
+                response = await self._reference_client.post(
+                    "/info", json={"type": "l2Book", "coin": asset},
+                )
+                if response.status_code in (401, 403, 418, 451):
+                    self._reference_blocked_until = clock + BLOCK_SECONDS
+                    raise QuoteUnavailable("Secondary public exchange is blocked.")
+                if response.status_code == 429:
+                    self._reference_blocked_until = clock + 60
+                    raise QuoteUnavailable("Secondary public exchange rate limited.")
+                response.raise_for_status()
+                value = parse_hyperliquid_reference(
+                    response.json(), asset=asset, received_at=datetime.now(UTC),
+                )
+            except QuoteUnavailable:
+                raise
+            except (httpx.HTTPError, ValueError, TypeError) as exc:
+                raise QuoteUnavailable(
+                    "No verified current secondary perp reference."
+                ) from exc
+            self._reference_cache[asset] = (time.monotonic(), value)
+            return value
 
 
 def quote_cost_preview(

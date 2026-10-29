@@ -688,13 +688,12 @@ class RivalDiscordClient(discord.Client):
         )
         @app_commands.describe(
             funded_usdt=(
-                "Fictional starting balance (100 to 100000 USDT); "
-                "cannot change after first practice trade"
+                "Optional starting amount (100–100000); omit to view your existing funds"
             ),
         )
         async def rival_practice(
             interaction: discord.Interaction,
-            funded_usdt: float = 10000.0,
+            funded_usdt: float | None = None,
         ) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:

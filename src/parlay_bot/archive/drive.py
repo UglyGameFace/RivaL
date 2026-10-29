@@ -21,12 +21,15 @@ class DriveArchiveFolders:
     history: str
     manifests: str
     staging: str
+    models: str | None = None
+    reports: str | None = None
 
     def __post_init__(self) -> None:
         values = (self.root, self.history, self.manifests, self.staging)
-        if any(not value.strip() for value in values):
+        extra = tuple(v for v in (self.models, self.reports) if v is not None)
+        if any(not value.strip() for value in (*values, *extra)):
             raise ValueError("all RivaL Drive archive folder IDs are required")
-        if len(set(values)) != len(values):
+        if len(set((*values, *extra))) != len(values) + len(extra):
             raise ValueError("RivaL Drive archive folder IDs must be distinct")
 
 
@@ -185,6 +188,7 @@ class GoogleDriveArchiveClient:
                 self.folders.history,
                 self.folders.manifests,
                 self.folders.staging,
+                *(v for v in (self.folders.models, self.folders.reports) if v),
             ):
                 child = await folder_metadata(child_id)
                 parents = child.get("parents") or []
@@ -208,6 +212,8 @@ class GoogleDriveArchiveClient:
             self.folders.history,
             self.folders.manifests,
             self.folders.staging,
+            self.folders.models,
+            self.folders.reports,
         }
         if parent_id not in allowed:
             raise DriveArchiveError("Drive search attempted outside the RivaL archive boundary")
@@ -441,7 +447,10 @@ class GoogleDriveArchiveClient:
         max_bytes: int = 64 * 1024 * 1024,
     ) -> None:
         """Read actual stored bytes back, not merely Drive object metadata."""
-        if parent_id not in {self.folders.history, self.folders.manifests}:
+        if parent_id not in {
+            self.folders.history, self.folders.manifests,
+            self.folders.models, self.folders.reports,
+        }:
             raise DriveArchiveError("restore verification outside archive folders")
         if (
             not file_id or any(char not in
@@ -483,6 +492,56 @@ class GoogleDriveArchiveClient:
                 sha.update(chunk)
         if size != artifact.size_bytes or sha.hexdigest() != artifact.sha256:
             raise DriveArchiveError("restored bytes failed SHA256 verification")
+
+
+    async def ensure_research_output(
+        self,
+        *,
+        artifact: ArchiveArtifact,
+        batch_id: str,
+        kind: str,
+    ) -> DriveObject:
+        """Stage/promote immutable candidate model or evaluation report JSON."""
+        if kind not in {"model", "report"}:
+            raise DriveArchiveError("unsupported research output type")
+        parent_id = self.folders.models if kind == "model" else self.folders.reports
+        if not parent_id:
+            raise DriveArchiveError("research output folder not configured")
+        await self._verify_folder_boundary()
+        existing = await self._find_batch_object(
+            parent_id=parent_id, batch_id=batch_id, kind=kind,
+        )
+        if existing is not None:
+            self._verify_artifact(existing, artifact)
+            await self.verify_downloaded_artifact(
+                file_id=existing.file_id, parent_id=parent_id, artifact=artifact,
+            )
+            return existing
+        staged = await self._upload_resumable(
+            artifact=artifact, parent_id=self.folders.staging,
+            batch_id=batch_id, kind=kind, mime_type="application/json",
+        )
+        if self.folders.staging not in staged.parents:
+            raise DriveArchiveError("research output outside RivaL staging")
+        response = await self._client.patch(
+            f"{self.DRIVE_URL}/files/{staged.file_id}",
+            params={
+                "addParents": parent_id,
+                "removeParents": self.folders.staging,
+                "fields": "id,name,size,md5Checksum,parents",
+            },
+            headers=await self._headers(),
+        )
+        if response.status_code != 200:
+            raise DriveArchiveError("research output promotion failed")
+        promoted = self._object(response.json())
+        if parent_id not in promoted.parents or self.folders.staging in promoted.parents:
+            raise DriveArchiveError("research output promotion outside boundary")
+        self._verify_artifact(promoted, artifact)
+        await self.verify_downloaded_artifact(
+            file_id=promoted.file_id, parent_id=parent_id, artifact=artifact,
+        )
+        return promoted
 
     async def ensure_manifest_file(
         self,

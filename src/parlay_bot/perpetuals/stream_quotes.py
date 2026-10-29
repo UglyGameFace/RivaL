@@ -156,6 +156,7 @@ class StreamingBookHub:
         )
         attempts = 0
         while True:
+            backoff_override = 0.0
             try:
                 async with websockets.connect(
                     url, open_timeout=10, close_timeout=5,
@@ -174,6 +175,17 @@ class StreamingBookHub:
                         self.accept(venue, message)
             except asyncio.CancelledError:
                 raise
+            except websockets.exceptions.InvalidStatus as exc:
+                status = getattr(exc.response, "status_code", None)
+                if status in (401, 403, 418, 451):
+                    backoff_override = 3600.0
+                    _LOG.warning("RivaL %s stream region/access blocked (HTTP %s)",
+                                 venue, status)
+                elif status == 429:
+                    backoff_override = 300.0
+                    _LOG.warning("RivaL %s stream rate limited", venue)
+                else:
+                    _LOG.warning("RivaL %s stream handshake unavailable", venue)
             except (OSError, TimeoutError, websockets.exceptions.WebSocketException,
                     ValueError):
                 _LOG.warning("RivaL %s stream disconnected; retrying safely", venue)
@@ -181,8 +193,10 @@ class StreamingBookHub:
                 self._connected[venue] = False
             attempts += 1
             self._reconnects[venue] += 1
-            await asyncio.sleep(min(RECONNECT_CAP_SECONDS, 2 ** min(attempts, 5))
-                                + random.uniform(0, 1))
+            await asyncio.sleep(
+                max(backoff_override, min(RECONNECT_CAP_SECONDS, 2 ** min(attempts, 5)))
+                + random.uniform(0, 1)
+            )
 
     def start(self) -> None:
         if self._tasks:

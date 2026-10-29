@@ -85,17 +85,34 @@ The Discord result explicitly labels these values as market-consensus estimates 
 
 ## Discord surface
 
-RivaL exposes one application command:
+RivaL is **opportunity-first**, and provides private, read-only decisions without
+pretending there is a guaranteed profitable trade:
 
-```text
-/rival
-```
+- `/rival` and `/rival-picks`: current jurisdiction-eligible sports odds comparison, or PASS.
+- `/rival-opportunities`: sportsbook opportunity plus BTC/ETH/SOL model watches.
+- `/rival-target`: choose BTC, ETH or SOL and a 5m/15m target. Get a private
+  **UP**, **DOWN**, or **WAIT** card. It updates its existing DM about once per
+  minute when the actual forward forecast or source conditions change.
+- `/rival-stop`: cancel and clearly mark the old target card inactive.
+- `/rival-research`: simple opportunity summary; historical math, Gemini
+  and verified forward scores remain available behind advanced sections.
+- `/rival-data`: the detailed collector dashboard.
 
-New users can enter a ZIP or state. If a ZIP is used, only the resolved two-letter state is persisted; the ZIP itself is discarded. Returning users see their saved jurisdiction, verified sportsbook options, and the parlay builder. Build/rebuild actions refresh the shared SportsGameOdds cache only when its configured interval has expired, then reuse that cache across users.
+The status is never a placed order or promise of profitable returns. The
+model's 15m horizon predicts the *future five-minute target candle*, not
+an entire 15-minute target candle; both horizons expire at that target
+candle's actual close. A stale feed or unavailable prediction reads WAIT.
 
-The Discord client does not request message-content intent.
+First-time sports users enter their ZIP or state; only the resolved two-letter
+state is persisted. Price comparisons always use the shared provider cache,
+and are rejected when stale. No message-content intent is requested.
 
-Set `DISCORD_TOKEN` in secret storage. `RIVAL_DEV_GUILD_ID` is optional for development-guild command sync.
+Set `DISCORD_TOKEN` in Discloud secrets. `RIVAL_DEV_GUILD_ID` optionally
+limits slash-command sync to a development guild. Deployment from passing
+GitHub `main` CI can use the **official Discloud Action** when the owner has
+configured the repository secrets `DISCLOUD_TOKEN` and `DISCLOUD_APP_ID`.
+See [Discloud auto-deploy](docs/DISCLOUD_AUTODEPLOY.md) for setup and
+**required live/restart validation**. A GitHub merge alone is not a live deployment.
 
 ## Perpetuals warehouse
 

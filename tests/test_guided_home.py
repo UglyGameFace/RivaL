@@ -429,7 +429,6 @@ async def test_ten_source_and_ensemble_discord_commands_are_private_on_android(t
 
 @pytest.mark.asyncio
 async def test_advanced_plain_english_pages_do_not_expose_dev_jargon(tmp_path):
-    from types import SimpleNamespace
     from unittest.mock import Mock
 
     bot = _client(tmp_path)

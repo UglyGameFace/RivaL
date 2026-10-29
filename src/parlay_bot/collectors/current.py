@@ -116,7 +116,7 @@ class CurrentBoardCollector:
 
                 for event in events:
                     board = normalize_event(event)
-                    result = self.store.ingest_board(board)
+                    result = await asyncio.to_thread(self.store.ingest_board, board)
                     if self.results is not None:
                         try:
                             await asyncio.to_thread(
@@ -137,7 +137,7 @@ class CurrentBoardCollector:
                     break
 
             now = datetime.now(UTC)
-            self.store.set_runtime_state(_STATE_KEY, now.isoformat())
+            await asyncio.to_thread(self.store.set_runtime_state, _STATE_KEY, now.isoformat())
 
             return CurrentRefreshResult(
                 refreshed=True,

@@ -291,7 +291,7 @@ def evaluate(
     }
 
 
-def evaluate_directory(root: Path, *, intervals: tuple[int, ...] = (5, 60, 1440)) -> dict:
+def evaluate_directory(\n    root: Path, *, intervals: tuple[int, ...] = (5, 60, 1440),\n    qualified_streams: set[tuple[str, int]] | None = None,\n) -> dict:
     groups: dict[tuple[str, int], list[Path]] = defaultdict(list)
     for path in (root / "binance_um_klines").glob("*.manifest.json"):
         meta = json.loads(path.read_text(encoding="utf-8"))
@@ -300,6 +300,10 @@ def evaluate_directory(root: Path, *, intervals: tuple[int, ...] = (5, 60, 1440)
     reports = []
     rejected = []
     for key, paths in sorted(groups.items()):
+        if qualified_streams is not None and key not in qualified_streams:
+            rejected.append({"contract": key[0], "interval_minutes": key[1],
+                             "reason": "source failed full-month quality gate"})
+            continue
         for h in HORIZON_MINUTES:
             if h % key[1]:
                 continue

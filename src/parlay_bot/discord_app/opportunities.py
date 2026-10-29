@@ -143,7 +143,7 @@ def crypto_desk_embed(
         return embed
     try:
         watches = recent_watches(market, asset=asset, now=stamp)
-    except Exception:
+    except Exception:  # noqa: BLE001 - hide backend errors from users
         # Do not leak DB credentials or provider responses into a Discord embed.
         embed.add_field(
             name="⛔ Cannot verify live data",
@@ -191,7 +191,7 @@ def crypto_desk_embed(
                     ) + f"\n**{verdict}**. Overlapping events and costs not yet cleared.",
                     inline=False,
                 )
-        except Exception:
+        except Exception:  # noqa: BLE001 - safe failure on unavailable DB
             embed.add_field(name="Forward proof", value="Unable to verify scores.", inline=False)
     embed.set_footer(
         text="Read-only • Prices are last completed candles, not executable quotes • No automatic orders"

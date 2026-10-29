@@ -23,7 +23,7 @@ from parlay_bot.storage.hot import PostgresHotStore, SQLiteHotStore
 
 def _event(*, event_id="sgo-final", sport="SOCCER", league="EPL",
            home_score=2, away_score=1, finalized=True, starts=None):
-    start = starts or datetime.now(UTC) - timedelta(days=3)
+    start = starts or datetime(2026, 10, 20, tzinfo=UTC)
     return {
         "eventID": event_id, "sportID": sport, "leagueID": league,
         "status": {
@@ -114,7 +114,9 @@ async def test_official_result_lookup_is_bounded_verified_and_reuses_quota():
             {"eventID": "b", "status": {"finalized": False}},
         ]})
 
-    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    http = httpx.AsyncClient(
+        base_url="https://mock.test", transport=httpx.MockTransport(handler),
+    )
     provider = SportsGameOddsClient("fake", client=http, request_cooldown_seconds=0)
     try:
         rows = await provider.get_result_events(("a", "b"))
@@ -138,7 +140,9 @@ async def test_result_lookup_rejects_wrong_events():
         return httpx.Response(200, json={"success": True, "data": [
             {"eventID": "not-requested"},
         ]})
-    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    http = httpx.AsyncClient(
+        base_url="https://mock.test", transport=httpx.MockTransport(handler),
+    )
     provider = SportsGameOddsClient("fake", client=http, request_cooldown_seconds=0)
     try:
         with pytest.raises(Exception, match="Unexpected event"):

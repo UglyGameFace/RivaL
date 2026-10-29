@@ -91,11 +91,12 @@ def test_binance_verified_manifest_idempotent_and_gap(tmp_path):
 def test_corrupt_market_history_fails_closed(tmp_path, wrong):
     content = binance_csv(duplicate=wrong == "duplicate", malformed=wrong == "microseconds")
     packed = zip_of(content, extra=wrong == "extra")
-    with mock_download(packed, checksum=wrong != "checksum") as client:
-        with pytest.raises(HistoryImportError):
-            ingest_binance(
-                client, asset="BTC", interval="5m", month="2024-01", out_dir=tmp_path,
-            )
+    with mock_download(packed, checksum=wrong != "checksum") as client, pytest.raises(
+        HistoryImportError
+    ):
+        ingest_binance(
+            client, asset="BTC", interval="5m", month="2024-01", out_dir=tmp_path,
+        )
     assert not list(tmp_path.rglob("*.ndjson"))
 
 
@@ -112,9 +113,8 @@ def test_source_allowlist_rejects_malicious_paths_and_partial_month():
 def test_bound_on_remote_payload():
     with httpx.Client(transport=httpx.MockTransport(
         lambda req: httpx.Response(200, content=b"x" * 13),
-    )) as client:
-        with pytest.raises(HistoryImportError):
-            _fetch(client, "https://data.binance.vision/a", limit=12)
+    )) as client, pytest.raises(HistoryImportError):
+        _fetch(client, "https://data.binance.vision/a", limit=12)
 
 
 def football_csv(*, wrong_result=False):
@@ -161,9 +161,8 @@ def test_football_research_and_bookmaker_baseline(tmp_path):
 def test_football_rejects_outcome_mismatch_and_tampered_research(tmp_path):
     with httpx.Client(transport=httpx.MockTransport(
         lambda req: httpx.Response(200, content=football_csv(wrong_result=True)),
-    )) as client:
-        with pytest.raises(HistoryImportError):
-            ingest_football(client, league="E0", season="2526", out_dir=tmp_path)
+    )) as client, pytest.raises(HistoryImportError):
+        ingest_football(client, league="E0", season="2526", out_dir=tmp_path)
     with httpx.Client(transport=httpx.MockTransport(
         lambda req: httpx.Response(200, content=football_csv()),
     )) as client:

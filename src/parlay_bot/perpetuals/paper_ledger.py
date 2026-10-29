@@ -95,14 +95,16 @@ class PaperLedger:
         ).fetchone()
         return float(row["starting_usdt"])
 
-    def fund(self, user_id: str, *, starting_usdt: float = DEFAULT_FUNDED_USDT) -> dict:
+    def fund(self, user_id: str, *, starting_usdt: float | None = None) -> dict:
         """Set fictional funding once before the first trade; never mint real money.
 
         Existing ledger history is immutable and cannot be erased to reset losses.
         """
         self._user(user_id)
-        if not math.isfinite(starting_usdt) or not (
-            MIN_FUNDED_USDT <= starting_usdt <= MAX_FUNDED_USDT
+        if starting_usdt is not None and (
+            not math.isfinite(starting_usdt) or not (
+                MIN_FUNDED_USDT <= starting_usdt <= MAX_FUNDED_USDT
+            )
         ):
             raise ValueError("Choose a fictional starting balance of 100–100,000 USDT.")
         self.initialize()
@@ -116,6 +118,8 @@ class PaperLedger:
                 (user_id,),
             ).fetchone()
             if existing is None:
+                if starting_usdt is None:
+                    starting_usdt = DEFAULT_FUNDED_USDT
                 if int(prior["n"]) > 0:
                     # Existing historical paper trades must count toward the
                     # same default-funded practice account.
@@ -126,7 +130,9 @@ class PaperLedger:
                        ON CONFLICT(user_id) DO NOTHING""",
                     (user_id, starting_usdt, datetime.now(UTC).isoformat()),
                 )
-            elif starting_usdt != float(existing["starting_usdt"]):
+            elif starting_usdt is not None and starting_usdt != float(
+                existing["starting_usdt"]
+            ):
                 if int(prior["n"]) > 0:
                     raise ValueError(
                         "Your existing practice history is preserved. "

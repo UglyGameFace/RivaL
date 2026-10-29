@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from parlay_bot.perpetuals.market_store import PerpetualMarketStore
     from parlay_bot.perpetuals.paper_ledger import PaperLedger
     from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
+    from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 
 _LOG = logging.getLogger(__name__)
 COINS = ("BTC", "ETH", "SOL")
@@ -140,6 +141,7 @@ class GuidedHome(discord.ui.View):
         paper: PaperLedger, quotes: PublicBestQuoteClient,
         profit: ProspectiveQuoteProfitMonitor | None,
         research_factory: Callable[[int], discord.ui.View] | None = None,
+        stream_shadow: StreamShadowLedger | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
@@ -151,6 +153,7 @@ class GuidedHome(discord.ui.View):
         self.paper = paper
         self.quotes = quotes
         self.profit = profit
+        self.stream_shadow = stream_shadow
         self.research_factory = research_factory
         self.page = "home"
         self.back_stack: list[str] = []
@@ -351,6 +354,7 @@ class GuidedHome(discord.ui.View):
             embed = await signal_embed(
                 self.market, self.quotes,
                 asset=self.coin, horizon_minutes=self.horizon,
+                stream_shadow=self.stream_shadow,
             )
         elif p == "quote":
             try:

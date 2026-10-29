@@ -19,7 +19,6 @@ from parlay_bot.perpetuals.profit_proof import (
     MIN_FORWARD_EVENTS,
     MIN_OBSERVED_COVERAGE,
     NOTIONAL_USDT,
-    _daily_stress,
     _stamp,
 )
 from parlay_bot.storage.hot import RelationalHotStore
@@ -198,29 +197,59 @@ class StreamShadowLedger:
                  (cutoff - timedelta(minutes=5)).isoformat(),
                  1 - MIN_SIGNAL_SCORE, MIN_SIGNAL_SCORE),
             ).fetchone()
-            rows = conn.execute(
-                """SELECT * FROM rival_stream_shadow
+            counts = conn.execute(
+                """SELECT COUNT(*) AS entries,
+                          SUM(CASE WHEN state='EXIT_QUOTED' THEN 1 ELSE 0 END) AS closed,
+                          SUM(CASE WHEN state='MISSED_EXIT' THEN 1 ELSE 0 END) AS missed
+                   FROM rival_stream_shadow
                    WHERE asset=? AND horizon_minutes=? AND target_close_at>=?
-                     AND target_close_at<=? ORDER BY target_close_at""",
+                     AND target_close_at<=?""",
+                (asset, horizon_minutes, start.isoformat(), cutoff.isoformat()),
+            ).fetchone()
+            daily = conn.execute(
+                """SELECT substr(target_close_at,1,10) AS day,
+                          COUNT(*) AS n, SUM(gross_bps) AS gross_total
+                   FROM rival_stream_shadow
+                   WHERE asset=? AND horizon_minutes=? AND target_close_at>=?
+                     AND target_close_at<=? AND state='EXIT_QUOTED'
+                   GROUP BY substr(target_close_at,1,10)
+                   ORDER BY day""",
                 (asset, horizon_minutes, start.isoformat(), cutoff.isoformat()),
             ).fetchall()
         total = int(denominator["n"] or 0)
-        closed = [r for r in rows if r["state"] == "EXIT_QUOTED"]
-        days = len({_stamp(r["target_close_at"]).date() for r in closed})
-        coverage = len(closed) / total if total else 0.0
+        entries = int(counts["entries"] or 0)
+        completed = int(counts["closed"] or 0)
+        missed = int(counts["missed"] or 0)
+        days = len(daily)
+        coverage = completed / total if total else 0.0
         metrics = {}
-        for label, bps in COST_SCENARIOS:
-            mean, lower, winning = _daily_stress([
-                (_stamp(r["target_close_at"]).date().isoformat(),
-                 float(r["gross_bps"]) - bps)
-                for r in closed
-            ])
+        # Database returns at most 30 daily aggregates, not tens of thousands
+        # of complete forward records every time a Discord button is pressed.
+        for label, assumed in COST_SCENARIOS:
+            daily_means = [
+                float(row["gross_total"]) / int(row["n"]) - assumed
+                for row in daily
+            ]
+            mean = (
+                sum(float(row["gross_total"]) for row in daily) / completed - assumed
+                if completed else None
+            )
+            daily_mean = sum(daily_means) / days if days else None
+            variance = (
+                sum((x - daily_mean) ** 2 for x in daily_means) / (days - 1)
+                if days >= 2 else 0.0
+            )
+            lower = (
+                daily_mean - 2.58 * math.sqrt(variance / days)
+                if days >= 2 else None
+            )
             metrics[label] = {
-                "assumed_extra_cost_bps": bps, "mean_net_bps": mean,
-                "daily_lower_bps": lower, "positive_days": winning,
+                "assumed_extra_cost_bps": assumed, "mean_net_bps": mean,
+                "daily_lower_bps": lower,
+                "positive_days": sum(x > 0 for x in daily_means),
             }
         qualified = bool(
-            total >= MIN_FORWARD_EVENTS and len(closed) >= MIN_FORWARD_EVENTS
+            total >= MIN_FORWARD_EVENTS and completed >= MIN_FORWARD_EVENTS
             and days >= MIN_FORWARD_DAYS and coverage >= MIN_OBSERVED_COVERAGE
             and all(
                 x["mean_net_bps"] is not None and x["mean_net_bps"] > 0
@@ -233,8 +262,8 @@ class StreamShadowLedger:
             "status": "SHADOW_STRESS_PASS_NOT_REAL_PROFIT" if qualified
                       else "NOT_PROVEN",
             "asset": asset, "horizon_minutes": horizon_minutes,
-            "eligible_windows": total, "entries": len(rows), "closed": len(closed),
-            "missed_exits": sum(r["state"] == "MISSED_EXIT" for r in rows),
+            "eligible_windows": total, "entries": entries, "closed": completed,
+            "missed_exits": missed,
             "coverage": min(1.0, coverage), "days": days,
             "costs": metrics, "real_fills_verified": False,
             "qualified_shadow": qualified,

@@ -39,8 +39,8 @@ from parlay_bot.perpetuals.live_quotes import (
     QuoteUnavailable,
     quote_embed,
 )
-from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
+from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.storage.catalog import MarketCatalogStore

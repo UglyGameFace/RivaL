@@ -41,7 +41,7 @@ EXPLAIN = {
     "quote": "Ask is the price you might buy at; bid is the price you might sell at. These quotes are not guaranteed fills.",
     "practice": "Everything in Practice Money is fictional. Buying means you expect a rise; selling means you expect a fall. Fake gains never count as proven real profit.",
     "results": "Practice results are your own fake trades. Model accuracy is measured separately from later verified market outcomes. Real profit is not yet proven.",
-    "help": "Start at Home. For sports, select your state. For crypto, choose a coin and press See Forecast. To learn without real money, open Practice Money.",
+    "help": "Start at Home. For sports, select your state. For crypto, choose a coin and press Get Signal. To learn without real money, open Practice Money.",
     "advanced": "Advanced research shows models, provider diagnostics, costs, accuracy and historical data. No real bets or orders are placed.",
 }
 
@@ -338,11 +338,11 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title=f"🎯 Crypto Signals | {self.coin}",
                 description=(
-                    f"**{headline}**\\n\\n"
+                    f"**{headline}**\n\n"
                     "Choose a coin and timeframe, then press **Get Signal** "
                     "to check the matching-market price, expiry, signal "
-                    "strength, and measured forward accuracy.\\n"
-                    "Or **Follow in DM** for automatic private model updates.\\n\\n"
+                    "strength, and measured forward accuracy.\n"
+                    "Or **Follow in DM** for automatic private model updates.\n\n"
                     "A model lean is not a proven profitable entry."
                 ),
                 color=discord.Color.orange(),

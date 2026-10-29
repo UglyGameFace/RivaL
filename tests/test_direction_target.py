@@ -144,7 +144,9 @@ def test_target_storage_replace_restart_and_cancellation(tmp_path):
     targets = DirectionTargetStore(store)
     initial = DirectionTarget("123", "444", "555", "BTC", 5, "digest1")
     try:
+        assert targets.can_follow("123") is True
         targets.save(initial)
+        assert targets.can_follow("123") is True
         targets.save(DirectionTarget("123", "444", "555", "SOL", 15, "digest2"))
         again = DirectionTargetStore(store)
         assert len(again.active()) == 1
@@ -218,6 +220,7 @@ async def test_private_follow_updates_same_dm_and_retargets_without_spam(
         assert (await replacement.cycle()) == 1
         assert "WAIT" in first.embed.title
         assert (await replacement.stop(user.id)) is True
+        assert "Target stopped" in first.embed.title
         assert (await replacement.cycle()) == 0
         assert replacement.store.active() == []
     finally:

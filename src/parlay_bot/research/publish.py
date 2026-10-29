@@ -15,7 +15,7 @@ from pathlib import Path
 from parlay_bot.archive.drive import DriveArchiveFolders, GoogleDriveArchiveClient
 from parlay_bot.archive.models import ArchiveArtifact
 from parlay_bot.config import Settings
-from parlay_bot.research.free_history import HistoryImportError, SCHEMA
+from parlay_bot.research.free_history import SCHEMA, HistoryImportError
 
 SOURCES = {"binance_um_klines", "football_data"}
 

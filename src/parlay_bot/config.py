@@ -43,7 +43,7 @@ class Settings(BaseSettings):
     # Shared, read-only websocket feeds; offload only verified quote samples
     # into forward shadow research. Never persist a database row per tick.
     rival_stream_enabled: bool = Field(default=True)
-    rival_stream_shadow_seconds: int = Field(default=10, ge=5, le=60)
+    rival_stream_shadow_seconds: int = Field(default=30, ge=10, le=60)
 
     # Bounded read-only historical recovery (Gate Futures only initially).
     # New data is marked by actual first_observed_at; never synthetic live PnL.

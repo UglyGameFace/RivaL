@@ -64,3 +64,38 @@ The Accuracy tab's seven-day trend now compares the model's
 Brier score on an easier week is not presented as learning progress if the
 baseline improved even faster. All performance is *observed shadow research*
 without actual fills, funding, slippage or verified net profitability.
+
+## Prospective regime proof, prediction ledger and execution-cost gate
+
+The existing five-minute background process issues research forecasts before
+future closes and settles them later from immutable source-specific candles.
+RivaL now also timestamps pre-outcome quiet, normal or turbulent market
+regimes using five-minute historical return volatility observed at issuance.
+The fingerprints of the actual features and model weights used are stored
+alongside the original prospective forecast in the same DB transaction.
+This is a provenance audit, not a pre-trained accuracy claim.
+
+Accuracy -> **Prediction ledger** lists the newest real recorded 5m/15m
+forecasts, their original P(up), issuance time and pending/settled status.
+Accuracy -> **Market-regime skill** compares paired forward Brier against a
+baseline across unique UTC target windows, excluding disputed regime labels
+and withholding stable-skill status until at least two distinct conditions,
+50 future targets and 7 days in each, with positive skill across at least
+two later sampled weeks. The thresholds are research heuristics, not
+statistical proof of a profitable edge. Underperformance in a regime remains
+visible, not averaged away.
+
+Accuracy -> **Actual cost proof** is deliberately blocked. Public OHLCV
+candles and hypothetical fee/slippage/funding stress do not contain account-
+specific entry/exit fills or confirmed paid fees and funding. Without
+read-only authenticated matching trade receipts, contemporaneous arrival
+bid/ask benchmarks and reconciled funding payments, RivaL must **never**
+label the strategy profitable, even if forward directional forecasts become
+more accurate. No orders or trades are authorized or placed by these checks.
+Once execution evidence is available through an authorized account, that
+is a separate audited connector and reconciliation implementation.
+
+Existing past predictions remain available but are **not** retroactively
+assigned a market regime using future information. New records accumulate as
+the live bot runs. All data freshness is tied to PostgreSQL, not to a
+cached Discord screenshot. The old model remains under its no-trade gate.

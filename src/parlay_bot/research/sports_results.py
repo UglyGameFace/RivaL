@@ -284,6 +284,33 @@ class SportsResultStore:
                    CREATE TABLE IF NOT EXISTS rival_sport_result_checks (
                      event_id TEXT PRIMARY KEY,
                      checked_at TEXT NOT NULL
+                   );
+                   CREATE TABLE IF NOT EXISTS rival_sport_forecasts (
+                     event_id TEXT PRIMARY KEY,
+                     sport TEXT NOT NULL,
+                     league TEXT NOT NULL,
+                     home_id TEXT NOT NULL,
+                     away_id TEXT NOT NULL,
+                     model_version TEXT NOT NULL,
+                     issued_at TEXT NOT NULL,
+                     starts_at TEXT NOT NULL,
+                     probability_json TEXT NOT NULL,
+                     baseline_json TEXT NOT NULL,
+                     settled_at TEXT,
+                     label INTEGER,
+                     model_brier DOUBLE PRECISION,
+                     baseline_brier DOUBLE PRECISION
+                   );
+                   CREATE INDEX IF NOT EXISTS idx_rival_sport_forward_model
+                   ON rival_sport_forecasts (sport,league,model_version,settled_at);
+                   CREATE TABLE IF NOT EXISTS rival_sport_champions (
+                     sport TEXT NOT NULL,
+                     league TEXT NOT NULL,
+                     model_version TEXT NOT NULL,
+                     promoted_at TEXT NOT NULL,
+                     disabled_at TEXT,
+                     qualification_targets INTEGER NOT NULL,
+                     PRIMARY KEY (sport,league,model_version)
                    );"""
             )
 
@@ -312,7 +339,208 @@ class SportsResultStore:
                     result.observed_at.isoformat(), result.digest,
                 ),
             )
+        # The external finalized result alone may settle a previously issued
+        # prospectively recorded research forecast. Final scores never manufacture
+        # a prediction after kickoff.
+        self.settle_forecast(result)
         return "inserted"
+
+    def settle_forecast(self, result: FinalScore) -> bool:
+        self.initialize()
+        with self.store.connect() as conn:
+            record = conn.execute(
+                "SELECT * FROM rival_sport_forecasts WHERE event_id=?",
+                (result.event_id,),
+            ).fetchone()
+            if record is None or record["settled_at"] is not None:
+                return False
+            if (
+                record["sport"] != result.sport or record["league"] != result.league
+                or record["home_id"] != result.home_id
+                or record["away_id"] != result.away_id
+            ):
+                raise ResultIntegrityError("Result identity disagrees with prospective model")
+            if _instant(record["issued_at"]) >= result.started_at:
+                raise ResultIntegrityError("Forecast was not issued before kickoff")
+            prediction = json.loads(record["probability_json"])
+            baseline = json.loads(record["baseline_json"])
+            label = 0 if result.outcome == 1 else (
+                1 if result.outcome == 0 and result.sport == "SOCCER"
+                else 2 if result.sport == "SOCCER" else 1
+            )
+            if result.sport == "BASKETBALL" and result.outcome == 0:
+                return False
+            if (
+                len(prediction) != len(baseline)
+                or len(prediction) != (3 if result.sport == "SOCCER" else 2)
+            ):
+                raise ResultIntegrityError("Incompatible immutable forecast")
+            model_loss = sum((float(p) - int(i == label)) ** 2
+                             for i, p in enumerate(prediction))
+            base_loss = sum((float(p) - int(i == label)) ** 2
+                            for i, p in enumerate(baseline))
+            changed = conn.execute(
+                """UPDATE rival_sport_forecasts
+                   SET settled_at=?,label=?,model_brier=?,baseline_brier=?
+                   WHERE event_id=? AND settled_at IS NULL""",
+                (
+                    result.observed_at.isoformat(), label,
+                    model_loss, base_loss, result.event_id,
+                ),
+            )
+            return changed.rowcount == 1
+
+    def issue_forecast(
+        self, event: dict, *, observed_at: datetime,
+    ) -> str:
+        """Only immutable pregame forecasts with qualified *historical* evidence."""
+        if observed_at.utcoffset() is None:
+            raise ValueError("Timestamp must have UTC offset")
+        status = event.get("status")
+        if not isinstance(status, dict) or (
+            status.get("started") is True or status.get("cancelled") is True
+            or status.get("finalized") is True
+        ):
+            return "not_pregame"
+        sport, league = event.get("sportID"), event.get("leagueID")
+        if sport not in SUPPORTED or not isinstance(league, str) or not league:
+            return "unsupported"
+        teams = event.get("teams")
+        if not isinstance(teams, dict):
+            return "missing_identity"
+        home, away = teams.get("home"), teams.get("away")
+        if not isinstance(home, dict) or not isinstance(away, dict):
+            return "missing_identity"
+        home_id, away_id = home.get("teamID"), away.get("teamID")
+        if (not isinstance(home_id, str) or not isinstance(away_id, str)
+            or not home_id or not away_id or home_id == away_id):
+            return "missing_identity"
+        event_id = event.get("eventID")
+        if not isinstance(event_id, str) or not event_id:
+            return "missing_identity"
+        try:
+            start = _instant(str(status.get("startsAt")))
+        except ResultIntegrityError:
+            return "missing_start"
+        stamp = observed_at.astimezone(UTC)
+        if stamp >= start:
+            return "started"
+        self.initialize()
+        with self.store.connect() as conn:
+            if conn.execute(
+                "SELECT 1 FROM rival_sport_forecasts WHERE event_id=?",
+                (event_id,),
+            ).fetchone():
+                return "already_issued"
+        prior = [
+            x for x in self.all_results(sport=sport, league=league)
+            if x.started_at < stamp and x.observed_at < stamp
+        ]
+        if evaluate_sports_model(prior, sport=sport, league=league).status != (
+            "HISTORICAL_SHADOW"
+        ):
+            return "not_qualified"
+        probability = model_probabilities(
+            prior, sport=sport, league=league, home_id=home_id, away_id=away_id,
+        )
+        if probability is None:
+            return "not_enough_team_history"
+        labels = 3 if sport == "SOCCER" else 2
+        counts = [2] * labels
+        for result in prior:
+            if result.outcome == 1:
+                counts[0] += 1
+            elif result.outcome == -1:
+                counts[-1] += 1
+            elif sport == "SOCCER":
+                counts[1] += 1
+        baseline = tuple(x / sum(counts) for x in counts)
+        with self.store.connect() as conn:
+            result = conn.execute(
+                """INSERT INTO rival_sport_forecasts
+                   (event_id,sport,league,home_id,away_id,model_version,
+                    issued_at,starts_at,probability_json,baseline_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                (
+                    event_id, sport, league, home_id, away_id, MODELS[sport],
+                    stamp.isoformat(), start.isoformat(),
+                    json.dumps(probability), json.dumps(baseline),
+                ),
+            )
+        return "issued" if result.rowcount == 1 else "already_issued"
+
+    def promotion_status(self, *, sport: str, league: str,
+                         now: datetime | None = None) -> dict:
+        """Automatic research-only champion/rollback from real forward ledger."""
+        if sport not in SUPPORTED or not league:
+            raise ValueError("Invalid model promotion query")
+        stamp = now or datetime.now(UTC)
+        if stamp.utcoffset() is None:
+            raise ValueError("Naive promotion clock")
+        self.initialize()
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """SELECT starts_at,model_brier,baseline_brier
+                   FROM rival_sport_forecasts
+                   WHERE sport=? AND league=? AND model_version=?
+                     AND settled_at IS NOT NULL
+                   ORDER BY starts_at DESC LIMIT 500""",
+                (sport, league, MODELS[sport]),
+            ).fetchall()
+            active = conn.execute(
+                """SELECT * FROM rival_sport_champions
+                   WHERE sport=? AND league=? AND model_version=?
+                     AND disabled_at IS NULL""",
+                (sport, league, MODELS[sport]),
+            ).fetchone()
+        unique_days = len({
+            _instant(str(x["starts_at"])).date().isoformat() for x in rows
+        })
+        gain = (
+            sum(float(x["baseline_brier"]) - float(x["model_brier"])
+                for x in rows) / len(rows)
+            if rows else None
+        )
+        qualified = len(rows) >= 100 and unique_days >= 14 and (
+            gain is not None and gain >= 0.01
+        )
+        # An existing shadow champion can be revoked automatically when
+        # its actual prospective performance deteriorates.
+        action = "NOT_QUALIFIED"
+        with self.store.connect() as conn:
+            if active is not None and gain is not None and gain <= 0:
+                conn.execute(
+                    """UPDATE rival_sport_champions
+                       SET disabled_at=? WHERE sport=? AND league=?
+                       AND model_version=? AND disabled_at IS NULL""",
+                    (stamp.astimezone(UTC).isoformat(), sport, league, MODELS[sport]),
+                )
+                action = "REVOKED"
+            elif active is not None:
+                action = "SHADOW_CHAMPION"
+            elif qualified:
+                conn.execute(
+                    """INSERT INTO rival_sport_champions
+                       (sport,league,model_version,promoted_at,disabled_at,
+                        qualification_targets) VALUES (?,?,?,?,?,?)
+                       ON CONFLICT(sport,league,model_version) DO UPDATE SET
+                       promoted_at=excluded.promoted_at,
+                       disabled_at=NULL,
+                       qualification_targets=excluded.qualification_targets""",
+                    (
+                        sport, league, MODELS[sport],
+                        stamp.astimezone(UTC).isoformat(), None, len(rows),
+                    ),
+                )
+                action = "SHADOW_CHAMPION"
+        return {
+            "status": action,
+            "settled_unique_events": len(rows),
+            "utc_days": unique_days,
+            "mean_paired_brier_gain": gain,
+            "live_trading_approved": False,
+            "production_inference_changed": False,
+        }
 
     def all_results(self, *, sport: str, league: str, limit: int = 2000) -> list[FinalScore]:
         if sport not in SUPPORTED or not league or not 1 <= limit <= 5000:

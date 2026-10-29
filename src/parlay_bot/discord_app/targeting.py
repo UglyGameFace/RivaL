@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import discord
 
 from parlay_bot.discord_app.opportunities import ASSETS, _cash, _utc, recent_watches
+from parlay_bot.discord_app.signals import model_strength
 from parlay_bot.discord_app.price_targets import (
     PriceGoal,
     PriceResult,
@@ -119,7 +120,8 @@ def target_snapshot(
         return TargetSnapshot(
             asset=asset, horizon_minutes=horizon_minutes,
             direction=direction,
-            detail="Prospective model watch. Not an approved trade.",
+            detail=(f"{model_strength(p)} model direction, research only. "
+                    "Not an approved trade."),
             venue=str(watch["venue"]),
             probability=max(p, 1 - p),
             price=float(watch["price"]),
@@ -133,10 +135,19 @@ def target_snapshot(
 
 
 def target_embed(snapshot: TargetSnapshot) -> discord.Embed:
-    labels = {"UP": "📈 UP", "DOWN": "📉 DOWN", "WAIT": "⏳ WAIT"}
+    strength = (
+        model_strength(snapshot.probability)
+        if snapshot.probability is not None else "invalid"
+    )
+    qualified_watch = strength == "directional watch"
+    labels = {
+        "UP": "📈 UP WATCH" if qualified_watch else "🟠 UP LEAN • NO SIGNAL",
+        "DOWN": "📉 DOWN WATCH" if qualified_watch else "🟠 DOWN LEAN • NO SIGNAL",
+        "WAIT": "⏳ NO SIGNAL",
+    }
     colors = {
-        "UP": discord.Color.green(),
-        "DOWN": discord.Color.red(),
+        "UP": discord.Color.green() if qualified_watch else discord.Color.orange(),
+        "DOWN": discord.Color.red() if qualified_watch else discord.Color.orange(),
         "WAIT": discord.Color.orange(),
     }
     embed = discord.Embed(
@@ -150,8 +161,8 @@ def target_embed(snapshot: TargetSnapshot) -> discord.Embed:
             value=_cash(snapshot.price), inline=True,
         )
         embed.add_field(
-            name="Raw model probability",
-            value=f"{snapshot.probability:.1%}", inline=True,
+            name="Uncalibrated model strength",
+            value=f"{snapshot.probability:.1%} • {strength}", inline=True,
         )
         embed.add_field(
             name="Source",
@@ -164,7 +175,7 @@ def target_embed(snapshot: TargetSnapshot) -> discord.Embed:
                 inline=False,
             )
     embed.set_footer(
-        text="Auto-updates when the call changes • Not a guaranteed or executable bet • /rival-stop",
+        text="Auto-updating model watch • No verified profitable trade • /rival-stop",
     )
     return embed
 

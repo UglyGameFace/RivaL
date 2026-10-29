@@ -8,13 +8,14 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import itertools
 import json
 import math
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from parlay_bot.research.free_history import HistoryImportError, INTERVALS, SCHEMA
+from parlay_bot.research.free_history import INTERVALS, SCHEMA, HistoryImportError
 
 LOOKBACK = 12
 HORIZON_MINUTES = (5, 15, 60, 240, 1440, 10080)
@@ -161,7 +162,7 @@ def _examples(rows: list[dict], interval_minutes: int, horizon_minutes: int) -> 
         history = rows[i - LOOKBACK:i + 1]
         target = rows[i + target_bars]
         stamps = [_as_datetime(c["opened_at"]) for c in history]
-        if any(b - a != step for a, b in zip(stamps, stamps[1:])):
+        if any(b - a != step for a, b in itertools.pairwise(stamps)):
             continue
         if _as_datetime(target["opened_at"]) - stamps[-1] != (
             timedelta(minutes=horizon_minutes)

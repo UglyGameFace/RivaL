@@ -7,7 +7,7 @@ from parlay_bot.parlays.manual import available_selections, selected_slip
 
 
 class _Pick(discord.ui.Select):
-    def __init__(self, parent: "ManualParlayView"):
+    def __init__(self, parent: ManualParlayView):
         self.parent_picker = parent
         options = []
         for i, row in enumerate(parent.visible):

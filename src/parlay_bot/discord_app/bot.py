@@ -42,6 +42,7 @@ from parlay_bot.perpetuals.live_quotes import (
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
 from parlay_bot.perpetuals.paper_ledger import PaperLedger
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
+from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.research.sports_results import (
@@ -250,6 +251,10 @@ class RivalDiscordClient(discord.Client):
         )
 
         self.public_quotes = PublicBestQuoteClient()
+        self.quote_profit = (
+            ProspectiveQuoteProfitMonitor(self.store)
+            if self.forward_audit is not None else None
+        )
         self.paper_ledger = PaperLedger(self.store)
         self.direction_targets = DirectionTargetService(
             bot=self,
@@ -594,6 +599,106 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL public best quote unavailable")
                 await interaction.edit_original_response(
                     content="⛔ Could not verify a live bid/ask. PASS.",
+                )
+
+        @self.tree.command(
+            name="rival-profit-proof",
+            description="See actual prospective bid/ask paper profit evidence and missing data.",
+        )
+        @app_commands.describe(
+            coin="BTC, ETH or SOL futures",
+            timeframe="Independent 5 or 15-minute forecast horizon",
+        )
+        @app_commands.choices(
+            coin=[
+                app_commands.Choice(name="BTC", value="BTC"),
+                app_commands.Choice(name="ETH", value="ETH"),
+                app_commands.Choice(name="SOL", value="SOL"),
+            ],
+            timeframe=[
+                app_commands.Choice(name="5 minutes", value=5),
+                app_commands.Choice(name="15 minutes", value=15),
+            ],
+        )
+        async def rival_profit_proof(
+            interaction: discord.Interaction,
+            coin: app_commands.Choice[str],
+            timeframe: app_commands.Choice[int],
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if self.quote_profit is None:
+                await interaction.edit_original_response(
+                    content="⛔ No prospective quote ledger is enabled. Profit NOT PROVEN."
+                )
+                return
+            try:
+                proof = await asyncio.to_thread(
+                    self.quote_profit.proof,
+                    asset=coin.value, horizon_minutes=timeframe.value,
+                )
+                embed = discord.Embed(
+                    title=f"RivaL • {coin.value} {timeframe.value}m Profit Verification",
+                    description=(
+                        "**REAL PROFIT: NOT VERIFIED**\\n"
+                        + proof.explanation
+                        + "\\nNo exchange orders were placed by this test."
+                    ),
+                    color=discord.Color.orange(),
+                )
+                embed.add_field(
+                    name="Prospective observation coverage",
+                    value=(
+                        f"{proof.verified_quote_exits} completed entry/exit quotes "
+                        f"of {proof.eligible_forecast_windows} potential "
+                        f"forecast windows ({proof.coverage:.1%}); "
+                        f"{proof.missing_exits} missed exits."
+                    ), inline=False,
+                )
+                embed.add_field(
+                    name="After-cost paper mean",
+                    value=(
+                        f"Conservative: "
+                        f"{proof.net_conservative_bps:+.2f} bps"
+                        if proof.net_conservative_bps is not None
+                        else "No completed quote-paired paper trades"
+                    ) + (
+                        f"\\nSevere stress: {proof.net_severe_bps:+.2f} bps"
+                        if proof.net_severe_bps is not None else ""
+                    ), inline=False,
+                )
+                embed.add_field(
+                    name="Time-ordered confidence screen",
+                    value=(
+                        f"{proof.utc_days} UTC days; "
+                        f"conservative daily lower: "
+                        f"{proof.conservative_daily_lower_bps:+.2f} bps"
+                        if proof.conservative_daily_lower_bps is not None
+                        else f"{proof.utc_days} UTC days; no valid daily lower bound"
+                    ) + (
+                        f"\\nSevere daily lower: {proof.severe_daily_lower_bps:+.2f} bps"
+                        if proof.severe_daily_lower_bps is not None else ""
+                    ), inline=False,
+                )
+                embed.add_field(
+                    name="Shadow qualification",
+                    value=(
+                        "PASS on observed quote-based assumptions; "
+                        "real-money proof still absent"
+                        if proof.quote_shadow_qualified else "NOT QUALIFIED"
+                    ), inline=False,
+                )
+                embed.set_footer(
+                    text=(
+                        "Fresh Binance USD-M bid/ask observations • "
+                        "hypothetical 25 USDT trade • assumed fees/funding/slippage "
+                        "• never verified fills"
+                    )
+                )
+                await interaction.edit_original_response(embed=embed)
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL prospective profit verification unavailable")
+                await interaction.edit_original_response(
+                    content="⛔ Cannot verify forward trading returns. NOT PROVEN."
                 )
 
         @self.tree.command(
@@ -1156,6 +1261,36 @@ class RivalDiscordClient(discord.Client):
                     raise
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL autonomous research cycle failed safely")
+            # Prospective execution research is strictly read-only and
+            # refuses to backfill old candles as executable market quotes.
+            # Three assets × one snapshot per shared collector cycle, not
+            # a REST request per subscriber or Discord guild.
+            if self.quote_profit is not None:
+                try:
+                    await asyncio.to_thread(self.quote_profit.expire_unobserved)
+                    for asset in self.perp_collector.assets:
+                        if asset not in ("BTC", "ETH", "SOL"):
+                            continue
+                        try:
+                            quote = await self.public_quotes.get(asset)
+                            result = await asyncio.to_thread(
+                                self.quote_profit.observe, quote,
+                            )
+                            if result["opened"] or result["closed"]:
+                                _LOG.info(
+                                    "RivaL paper quote forward asset=%s opened=%d "
+                                    "closed=%d unverified_expired=%d",
+                                    asset, result["opened"], result["closed"],
+                                    result["expired"],
+                                )
+                        except QuoteUnavailable:
+                            # Provider/region/geoblock makes observations
+                            # unavailable, NEVER profitable by assumption.
+                            continue
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL quote forward accounting unavailable")
             await asyncio.sleep(
                 next_collection_delay(
                     datetime.now(UTC),

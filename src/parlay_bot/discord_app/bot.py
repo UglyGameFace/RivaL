@@ -134,6 +134,7 @@ class RivalDiscordClient(discord.Client):
             })
             _LOG.info("RivaL private Drive archiving auto-configured; "
                       "remote authorization remains subject to actual upload checks")
+        self._sports_task: asyncio.Task[None] | None = None
         self.archive_runtime: ColdArchiveRuntime | None = build_cold_archive_runtime(
             archive_settings,
             store=self.store,
@@ -370,6 +371,10 @@ class RivalDiscordClient(discord.Client):
             _LOG.exception("Current sportsbook refresh unavailable; fail closed if stale")
 
     async def setup_hook(self) -> None:
+        if self.current_collector is not None and self._sports_task is None:
+            self._sports_task = asyncio.create_task(
+                self._sports_loop(), name="rival-sports-current-refresh",
+            )
         if self.settings.rival_dev_guild_id is not None:
             guild = discord.Object(id=self.settings.rival_dev_guild_id)
             self.tree.copy_global_to(guild=guild)
@@ -422,6 +427,25 @@ class RivalDiscordClient(discord.Client):
                 self._archive_loop(),
                 name="rival-cold-archive",
             )
+
+    async def _sports_loop(self) -> None:
+        """Keep bet candidates fresh in the background when a paid API exists.
+
+        Provider quota protections remain inside CurrentBoardCollector. The
+        loop never places orders or auto-sends unsolicited Discord messages.
+        """
+        await self.wait_until_ready()
+        assert self.current_collector is not None
+        while not self.is_closed():
+            try:
+                await asyncio.wait_for(
+                    self.current_collector.refresh_if_due(), timeout=45,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - provider outage cannot kill bot
+                _LOG.exception("RivaL live sportsbook refresh failed safely")
+            await asyncio.sleep(self.settings.rival_current_refresh_seconds)
 
     async def _perp_loop(self) -> None:
         await self.wait_until_ready()
@@ -585,6 +609,11 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self._sports_task is not None:
+            self._sports_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._sports_task
+            self._sports_task = None
         if self._history_task is not None:
             self._history_task.cancel()
             with suppress(asyncio.CancelledError):

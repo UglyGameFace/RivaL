@@ -109,11 +109,30 @@ prove forecast tradability. It does not issue picks.
 The user-designated private `RivaL Data Warehouse/` Drive root is the
 only permitted destination. Keep permanent imported research under
 `history/`, source digests/manifests under `manifests/`, and temporary
-objects under `staging/`. This CLI **currently writes only local
-research files**, not Google Drive or PostgreSQL. Files do not become
-durable Drive archives until a separately verified upload/restore path
-promotes both data and manifests into the authorized warehouse folders.
+objects under `staging/`. The intake CLI writes only local research files, never PostgreSQL. An
+**explicit, separate** archive command now uses the existing RivaL Drive
+client to verify source file digests and promote history files through
+`staging/` to `history/`, then upload the manifest to `manifests/`:
+
+```bash
+# Offline preview, no Drive write:
+python -m parlay_bot.research.publish \
+  data/research-history/football_data/E0-2526--<digest>.manifest.json
+
+# Requires the independent bot OAuth refresh token and all four verified
+# RIVAL_DRIVE_*_FOLDER_ID environment variables on the authorized host:
+python -m parlay_bot.research.publish \
+  data/research-history/football_data/E0-2526--<digest>.manifest.json \
+  --publish
+```
+
+The archive client checks that configured history, manifests and staging
+folders are *direct descendants of the configured RivaL warehouse root*;
+it verifies Google Drive object size and MD5 before declaring upload success.
 Do not assume a ChatGPT Drive connection authenticates the Discloud bot.
+A real downloaded restore drill has not yet been performed. Production
+credentials and permissions must be validated independently; never store
+them in this public repository.
 
 Do not enable on-demand bulk downloads in Discord handlers. For a scheduled
 worker, cap invocations and monitor network egress, provider blocks,

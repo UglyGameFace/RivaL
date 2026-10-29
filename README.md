@@ -127,6 +127,42 @@ A returned parlay:
 
 The Discord result explicitly labels these values as market-consensus estimates rather than guaranteed outcomes or model predictions.
 
+## Simple RivaL Home (mobile and first-time users)
+
+Open \`/rival\`. It now opens a **private, button-driven home**, not
+the technical sportsbook screen:
+
+- **Sports & Odds**: Pick your state or ZIP once, compare fresh prices,
+  and build a three-pick same-book parlay; adjust for lower risk or higher
+  payout. A PASS is explained and no wager is placed.
+- **Predict Crypto**: Choose Bitcoin (BTC), Ethereum (ETH), or Solana
+  (SOL), choose 5 or 15 minutes, then tap See Forecast, Follow in DM,
+  Set Price Target, See Buy/Sell Prices, or Stop My Alerts.
+- **Practice Money**: Start with 10,000 **fictional** USDT or choose a
+  different starting amount before your first trade. Use the ordinary
+  Practice Buy/Practice Sell/Close Fake Trade buttons for a fixed
+  25 USDT fake position subject to actual fresh quote and bankroll checks.
+  **No deposit, no exchange account, no real trades.**
+- **My Results**: Your individual practice balance, wins, losses and
+  estimated after-cost fake P&L; the bot's independently scored market
+  predictions and explicit unproven actual-profit status stay separate.
+- **Help Me Start**: Beginner instructions with no quantitative jargon.
+- **Advanced**: Historical data, models, trade-cost evaluation and
+  original detailed commands are still present, not deleted.
+
+**Home, Back and Explain This** are accessible throughout the beginner
+menu. All controls are owner-checked and private, and the submenu edits
+the current screen instead of sending an endless stream of new messages.
+The advanced research button opens the already-existing research UI in
+a separate private panel so the original home stays available. New
+\`/rival\` screens require successful live Discord slash sync; a passing
+test or Discloud upload alone cannot prove a user interaction worked.
+
+Original \`/rival-picks\`, \`/rival-research\`, \`/rival-data\`,
+\`/rival-target\`, and all other power-user commands remain available.
+The simplified UI uses those authoritative services; it does not
+replace prediction or storage infrastructure.
+
 ## Discord surface
 
 RivaL is **opportunity-first**, and provides private, read-only decisions without

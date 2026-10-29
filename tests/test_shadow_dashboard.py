@@ -42,6 +42,7 @@ async def test_math_panel_reports_when_background_learning_disabled(tmp_path):
         venues=("hyperliquid",), shadow_enabled=False,
     )
     try:
+        dashboard.screen = "math"
         dashboard.section = "learning"
         dashboard._rebuild()
         rendered = (await dashboard.render()).to_dict()

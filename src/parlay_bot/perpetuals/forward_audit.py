@@ -25,7 +25,7 @@ _LOG = logging.getLogger(__name__)
 MODEL = "prospective-logistic-shadow-v1"
 HORIZONS = (5, 15)
 MIN_PREVIOUS_EVALUATED = 20
-MAX_STREAMS_PER_CYCLE = 10
+MAX_STREAMS_PER_CYCLE = 30
 MAX_PENDING_SETTLEMENTS = 120
 
 
@@ -75,7 +75,7 @@ def select_live_streams(
 ) -> list[tuple[str, str, str]]:
     """Bound each research cycle while including each available coin.
 
-    A ten-venue BTC block must not starve ETH/SOL predictions just because
+    Venue grouping must not starve ETH/SOL predictions just because
     the venue-ordered SQL result is sliced into fixed 15-minute groups.
     Rotate each coin's venue list between cycles for source fairness.
     """

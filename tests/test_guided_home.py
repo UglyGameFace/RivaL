@@ -393,3 +393,32 @@ async def test_old_and_new_profit_commands_use_same_strict_view(tmp_path):
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()
+
+
+
+@pytest.mark.asyncio
+async def test_ten_source_and_ensemble_discord_commands_are_private_on_android(tmp_path):
+    from discord import app_commands
+
+    bot = _client(tmp_path)
+    try:
+        asset = app_commands.Choice(name="BTC", value="BTC")
+        horizon = app_commands.Choice(name="5 minutes", value=5)
+        for name, args in (
+            ("rival-source-health", (asset,)),
+            ("rival-multi-proof", (asset, horizon)),
+        ):
+            command = bot.tree.get_command(name)
+            assert command is not None
+            interaction = _interaction()
+            await command.callback(interaction, *args)
+            interaction.response.defer.assert_awaited_once_with(
+                ephemeral=True, thinking=True,
+            )
+            interaction.edit_original_response.assert_awaited_once()
+            message = interaction.edit_original_response.await_args.kwargs
+            assert "disabled" in message["content"]
+    finally:
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()

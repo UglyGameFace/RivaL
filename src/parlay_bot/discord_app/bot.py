@@ -13,6 +13,7 @@ from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
 from parlay_bot.discord_app.home import GuidedHome
+from parlay_bot.discord_app.multi_proof import multi_proof_embed
 from parlay_bot.discord_app.opportunities import (
     crypto_desk_embed,
     sportsbook_desk_embed,
@@ -1090,6 +1091,119 @@ class RivalDiscordClient(discord.Client):
             await interaction.edit_original_response(content=message)
 
         @self.tree.command(
+            name="rival-source-health",
+            description="Inspect all ten futures collectors for the selected coin.",
+        )
+        @app_commands.choices(coin=[
+            app_commands.Choice(name="BTC", value="BTC"),
+            app_commands.Choice(name="ETH", value="ETH"),
+            app_commands.Choice(name="SOL", value="SOL"),
+        ])
+        async def rival_source_health(
+            interaction: discord.Interaction, coin: app_commands.Choice[str],
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if self.perp_collector is None:
+                await interaction.edit_original_response(
+                    content="Ten-source collection is disabled, not live.",
+                )
+                return
+            try:
+                rows = await asyncio.to_thread(self.perp_collector.market.feed_health)
+                health = {(r["venue"],r["asset"]):r for r in rows}
+                stamp = datetime.now(UTC)
+                description = []
+                fresh = 0
+                for venue in self.perp_collector.providers:
+                    row = health.get((venue,coin.value))
+                    if row is None:
+                        description.append(f"⏳ **{venue}** • Never observed")
+                        continue
+                    seen = row.get("last_success_at")
+                    candle = row.get("last_candle_close")
+                    ok = False
+                    if seen and candle:
+                        try:
+                            age = stamp - datetime.fromisoformat(str(candle))
+                            attempted = stamp - datetime.fromisoformat(str(seen))
+                            ok = (
+                                row["status"] == "ok"
+                                and timedelta(0) <= age <= timedelta(minutes=15)
+                                and timedelta(0) <= attempted <= timedelta(minutes=15)
+                            )
+                        except (ValueError, TypeError):
+                            pass
+                    fresh += int(ok)
+                    status = "Fresh candles" if ok else (
+                        f"Not fresh • {row['status']}"
+                    )
+                    description.append(
+                        f"{'✅' if ok else '⏳'} **{venue}** • {status}"
+                        f" • failures {row['failure_count']}"
+                    )
+                embed = discord.Embed(
+                    title=f"RivaL | {coin.value} ten-source health",
+                    description=(
+                        f"**{fresh}/{len(self.perp_collector.providers)}** "
+                        "venues confirmed recently fresh from actual stored "
+                        "candle and collection timestamps.\n"
+                        + "\n".join(description)
+                    ),
+                    color=discord.Color.blurple() if fresh >= 3
+                          else discord.Color.orange(),
+                )
+                embed.set_footer(
+                    text="Five-minute candles, not ten WebSocket order books. "
+                         "A failed or region-blocked source never counts as fresh.",
+                )
+                await interaction.edit_original_response(embed=embed)
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL all-venue source health unavailable")
+                await interaction.edit_original_response(
+                    content="Source freshness couldn't be verified. NOT FRESH.",
+                )
+
+        @self.tree.command(
+            name="rival-multi-proof",
+            description="Compare the ten-venue challenger to existing predictions.",
+        )
+        @app_commands.choices(
+            coin=[
+                app_commands.Choice(name="BTC", value="BTC"),
+                app_commands.Choice(name="ETH", value="ETH"),
+                app_commands.Choice(name="SOL", value="SOL"),
+            ],
+            timeframe=[
+                app_commands.Choice(name="5 minutes", value=5),
+                app_commands.Choice(name="15 minutes", value=15),
+            ],
+        )
+        async def rival_multi_proof(
+            interaction: discord.Interaction,
+            coin: app_commands.Choice[str],
+            timeframe: app_commands.Choice[int],
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if self.autonomous is None:
+                await interaction.edit_original_response(
+                    content="Multi-source shadow model is disabled, not approved.",
+                )
+                return
+            try:
+                value = await asyncio.to_thread(
+                    self.autonomous.multi.report,
+                    asset=coin.value, horizon_minutes=timeframe.value,
+                )
+                await interaction.edit_original_response(
+                    embed=multi_proof_embed(value),
+                )
+            except Exception:  # noqa: BLE001
+                _LOG.exception("Multi-exchange evidence unavailable")
+                await interaction.edit_original_response(
+                    content="No verified multi-source outcome evidence available.",
+                )
+
+        @self.tree.command(
             name="rival-stream-status",
             description="Check live BTC/ETH/SOL exchange streams and freshness.",
         )
@@ -1406,6 +1520,8 @@ class RivalDiscordClient(discord.Client):
         while not self.is_closed():
             try:
                 await asyncio.to_thread(self.stream_shadow.expire)
+                if self.autonomous is not None:
+                    await asyncio.to_thread(self.autonomous.multi.expire)
                 for venue in ("hyperliquid", "binance"):
                     for asset in self.live_stream.assets:
                         book = self.live_stream.snapshot(venue, asset)
@@ -1415,6 +1531,17 @@ class RivalDiscordClient(discord.Client):
                             result = await asyncio.to_thread(
                                 self.stream_shadow.observe, book,
                             )
+                            if self.autonomous is not None:
+                                multi_result = await asyncio.to_thread(
+                                    self.autonomous.multi.observe, book,
+                                )
+                                if multi_result["opened"] or multi_result["closed"]:
+                                    _LOG.info(
+                                        "RivaL multi-source paired-quote "
+                                        "venue=%s asset=%s opened=%d closed=%d",
+                                        venue, asset, multi_result["opened"],
+                                        multi_result["closed"],
+                                    )
                             if result["opened"] or result["closed"] or result["expired"]:
                                 _LOG.info(
                                     "RivaL forward quote venue=%s asset=%s "

@@ -44,6 +44,10 @@ from parlay_bot.perpetuals.paper_ledger import PaperLedger
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
+from parlay_bot.research.sports_results import (
+    ResultIntegrityError,
+    SportsResultStore,
+)
 from parlay_bot.storage.catalog import MarketCatalogStore
 from parlay_bot.storage.hot import PostgresHotStore, RelationalHotStore, SQLiteHotStore
 
@@ -148,6 +152,14 @@ class RivalDiscordClient(discord.Client):
             _LOG.info("RivaL private Drive archiving auto-configured; "
                       "remote authorization remains subject to actual upload checks")
         self._sports_task: asyncio.Task[None] | None = None
+        self.sports_results = (
+            SportsResultStore(self.store) if self.current_provider is not None
+            else None
+        )
+        self._sports_results_task: asyncio.Task[None] | None = None
+        self.command_synced_at: datetime | None = None
+        self.command_sync_count = 0
+        self.discord_ready_at: datetime | None = None
         self.archive_runtime: ColdArchiveRuntime | None = build_cold_archive_runtime(
             archive_settings,
             store=self.store,
@@ -391,6 +403,132 @@ class RivalDiscordClient(discord.Client):
                 await interaction.edit_original_response(
                     content="⛔ Could not verify entitled leagues. No invented coverage."
                 )
+
+        @self.tree.command(
+            name="rival-sport-proof",
+            description="Show independently scored soccer or basketball model evidence.",
+        )
+        @app_commands.describe(
+            sport="Soccer Poisson or basketball scoring model",
+            league="Exact official provider league ID, such as EPL or NBA",
+        )
+        @app_commands.choices(sport=[
+            app_commands.Choice(name="Soccer", value="SOCCER"),
+            app_commands.Choice(name="Basketball", value="BASKETBALL"),
+        ])
+        async def rival_sport_proof(
+            interaction: discord.Interaction,
+            sport: app_commands.Choice[str],
+            league: str,
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            if self.sports_results is None:
+                await interaction.edit_original_response(
+                    content="⛔ No authorized sports results provider configured."
+                )
+                return
+            if not 1 <= len(league.strip()) <= 64:
+                await interaction.edit_original_response(
+                    content="⛔ Enter the provider's exact league ID."
+                )
+                return
+            try:
+                result = await asyncio.to_thread(
+                    self.sports_results.evaluate,
+                    sport=sport.value, league=league.strip().upper(),
+                )
+                embed = discord.Embed(
+                    title=f"RivaL • {sport.value.title()} • {result.league}",
+                    description=(
+                        f"**{result.status}**\n{result.reason}\n"
+                        "Historical model qualification is not a proven "
+                        "real-money edge or an approved wager."
+                    ),
+                    color=discord.Color.orange(),
+                )
+                embed.add_field(
+                    name="Verified finalized games",
+                    value=str(result.train_events),
+                )
+                embed.add_field(
+                    name="Chronological model evaluation",
+                    value=(
+                        f"{result.evaluated} held-out games / "
+                        f"{result.evaluated_days} dates\n"
+                        f"Brier: {result.model_brier if result.model_brier is not None else 'n/a'}"
+                        f" vs baseline "
+                        f"{result.baseline_brier if result.baseline_brier is not None else 'n/a'}"
+                    ), inline=False,
+                )
+                embed.set_footer(
+                    text="Source: verified provider-final scores • Not a profitable entry signal"
+                )
+                await interaction.edit_original_response(embed=embed)
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL sports model proof unavailable")
+                await interaction.edit_original_response(
+                    content="⛔ Cannot verify model evidence. NO BET."
+                )
+
+        @self.tree.command(
+            name="rival-health",
+            description="Check Discord command sync, workers and verified data state.",
+        )
+        async def rival_health(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            online = self.is_ready() and self.discord_ready_at is not None
+            workers = (
+                ("Sports odds", self._sports_task),
+                ("Sport results", self._sports_results_task),
+                ("Perpetual data", self._perp_task),
+                ("Model evaluation", self._shadow_task),
+                ("Personal alerts", self._target_task),
+            )
+            embed = discord.Embed(
+                title="RivaL • Live Runtime Diagnostics",
+                description=(
+                    "**This response proves Discord is accepting interactions.** "
+                    "Workers marked running are not proof that their outside "
+                    "data providers are delivering valid prices/results."
+                ),
+                color=discord.Color.green() if online else discord.Color.orange(),
+            )
+            embed.add_field(
+                name="Discord / command sync",
+                value=(
+                    f"{'READY' if online else 'NOT READY'} • "
+                    f"{self.command_sync_count} command(s) synced"
+                    + (f" {discord.utils.format_dt(self.command_synced_at, style='R')}"
+                       if self.command_synced_at else " • sync not confirmed")
+                ), inline=False,
+            )
+            embed.add_field(
+                name="Background workers",
+                value="\n".join(
+                    f"{name}: "
+                    f"{'disabled' if task is None else 'STOPPED' if task.done() else 'running'}"
+                    for name, task in workers
+                ), inline=False,
+            )
+            try:
+                latest = await asyncio.to_thread(
+                    self.store.get_runtime_state,
+                    "sportsgameodds:last_successful_refresh",
+                )
+                stamp = datetime.fromisoformat(latest) if latest else None
+                description = (
+                    "Last successful sportsbook refresh: "
+                    + discord.utils.format_dt(stamp, style="R")
+                    if stamp is not None and stamp.utcoffset() is not None
+                    else "No verified sportsbook refresh recorded"
+                )
+            except Exception:  # noqa: BLE001
+                description = "Sportsbook refresh state unavailable"
+            embed.add_field(name="Actual source status", value=description, inline=False)
+            embed.set_footer(
+                text="Use /rival-quote and /rival-sport-proof for separate market/model evidence"
+            )
+            await interaction.edit_original_response(embed=embed)
 
         @self.tree.command(
             name="rival-sports",
@@ -721,6 +859,10 @@ class RivalDiscordClient(discord.Client):
             self._sports_task = asyncio.create_task(
                 self._sports_loop(), name="rival-sports-current-refresh",
             )
+        if self.sports_results is not None and self._sports_results_task is None:
+            self._sports_results_task = asyncio.create_task(
+                self._sports_results_loop(), name="rival-sports-final-results",
+            )
         if self.settings.rival_dev_guild_id is not None:
             guild = discord.Object(id=self.settings.rival_dev_guild_id)
             self.tree.copy_global_to(guild=guild)
@@ -733,6 +875,13 @@ class RivalDiscordClient(discord.Client):
         else:
             synced = await self.tree.sync()
             _LOG.info("RivaL synced %d global command(s)", len(synced))
+
+        self.command_synced_at = datetime.now(UTC)
+        self.command_sync_count = len(synced)
+        _LOG.info(
+            "RivaL actual Discord slash command sync verified count=%d",
+            self.command_sync_count,
+        )
 
         if self.perp_collector is not None and self._perp_task is None:
             _LOG.info(
@@ -773,6 +922,59 @@ class RivalDiscordClient(discord.Client):
                 self._archive_loop(),
                 name="rival-cold-archive",
             )
+
+    async def on_ready(self) -> None:
+        self.discord_ready_at = datetime.now(UTC)
+        _LOG.info(
+            "RivaL Discord READY user_id=%s sync_count=%d",
+            self.user.id if self.user else "unknown",
+            self.command_sync_count,
+        )
+
+    async def _sports_results_loop(self) -> None:
+        """Bounded, low-priority final-score audits for actual prior fixtures."""
+        await self.wait_until_ready()
+        await asyncio.sleep(45)
+        assert self.sports_results is not None
+        assert self.current_provider is not None
+        while not self.is_closed():
+            try:
+                now = datetime.now(UTC)
+                due = await asyncio.to_thread(
+                    self.sports_results.due_fixtures, now=now, limit=8,
+                )
+                if due:
+                    events = await asyncio.wait_for(
+                        self.current_provider.get_result_events(tuple(due)), timeout=40,
+                    )
+                    seen = datetime.now(UTC)
+                    verified = 0
+                    for event in events:
+                        if event.get("status", {}).get("finalized") is not True:
+                            continue
+                        try:
+                            result = await asyncio.to_thread(
+                                self.sports_results.save_finalized,
+                                event, observed_at=seen,
+                            )
+                            verified += int(result == "inserted")
+                        except ResultIntegrityError:
+                            _LOG.warning(
+                                "RivaL finalized sports result withheld: conflicting "
+                                "or incomplete provider evidence"
+                            )
+                    await asyncio.to_thread(
+                        self.sports_results.mark_checked, due, now=seen,
+                    )
+                    _LOG.info(
+                        "RivaL finalized score audit checked=%d newly_verified=%d",
+                        len(due), verified,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - quota/provider faults never block Discord
+                _LOG.exception("RivaL sports result verification unavailable")
+            await asyncio.sleep(21600)
 
     async def _target_loop(self) -> None:
         """Update user-opted-in private forecast cards without flooding DMs."""
@@ -975,6 +1177,11 @@ class RivalDiscordClient(discord.Client):
             with suppress(asyncio.CancelledError):
                 await self._target_task
             self._target_task = None
+        if self._sports_results_task is not None:
+            self._sports_results_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._sports_results_task
+            self._sports_results_task = None
         if self._sports_task is not None:
             self._sports_task.cancel()
             with suppress(asyncio.CancelledError):

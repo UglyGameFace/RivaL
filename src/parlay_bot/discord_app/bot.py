@@ -1466,25 +1466,29 @@ class RivalDiscordClient(discord.Client):
             if self.quote_profit is not None:
                 try:
                     await asyncio.to_thread(self.quote_profit.expire_unobserved)
-                    for asset in self.perp_collector.assets:
-                        if asset not in ("BTC", "ETH", "SOL"):
-                            continue
-                        try:
-                            quote = await self.public_quotes.get(asset)
-                            result = await asyncio.to_thread(
-                                self.quote_profit.observe, quote,
-                            )
-                            if result["opened"] or result["closed"]:
-                                _LOG.info(
-                                    "RivaL paper quote forward asset=%s opened=%d "
-                                    "closed=%d unverified_expired=%d",
-                                    asset, result["opened"], result["closed"],
-                                    result["expired"],
+                    # The new streaming ledger owns prospective entries/exits.
+                    # Preserve historical legacy rows, but stop duplicate
+                    # 5-minute cross-venue quote accounting and REST polling.
+                    if self.live_stream is None:
+                        for asset in self.perp_collector.assets:
+                            if asset not in ("BTC", "ETH", "SOL"):
+                                continue
+                            try:
+                                quote = await self.public_quotes.get(asset)
+                                result = await asyncio.to_thread(
+                                    self.quote_profit.observe, quote,
                                 )
-                        except QuoteUnavailable:
-                            # Provider/region/geoblock makes observations
-                            # unavailable, NEVER profitable by assumption.
-                            continue
+                                if result["opened"] or result["closed"]:
+                                    _LOG.info(
+                                        "RivaL paper quote forward asset=%s opened=%d "
+                                        "closed=%d unverified_expired=%d",
+                                        asset, result["opened"], result["closed"],
+                                        result["expired"],
+                                    )
+                            except QuoteUnavailable:
+                                # Provider/region/geoblock makes observations
+                                # unavailable, NEVER profitable by assumption.
+                                continue
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001

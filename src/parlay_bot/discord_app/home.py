@@ -355,6 +355,33 @@ class GuidedHome(discord.ui.View):
             )
             embed = target_embed(prediction)
             embed.title = f"📈 {self.coin} | {self.horizon}-Minute Forecast"
+            # A completed 5m candle is NOT a live price. Fetch timestamped
+            # bid/ask independently; exchange blocks must not hide the model
+            # status or invent a price from historical candles.
+            try:
+                live_quote = await self.quotes.get(self.coin)
+            except QuoteUnavailable:
+                embed.add_field(
+                    name="Live bid/ask unavailable",
+                    value=(
+                        "No verified current exchange quote. The forecast "
+                        "above, if present, uses a completed candle, NOT a "
+                        "live trading price. Other sources keep collecting."
+                    ),
+                    inline=False,
+                )
+            else:
+                embed.add_field(
+                    name=f"Current {live_quote.venue} bid / ask",
+                    value=(
+                        f"Bid **${live_quote.bid:,.2f}** · "
+                        f"Ask **${live_quote.ask:,.2f}**\\n"
+                        "Exchange update "
+                        f"{discord.utils.format_dt(live_quote.exchange_at, style='R')} "
+                        "· Snapshot only, not guaranteed fills"
+                    ),
+                    inline=False,
+                )
         elif p == "quote":
             price = await self.quotes.get(self.coin)
             embed = quote_embed(price, quantity=0.001)

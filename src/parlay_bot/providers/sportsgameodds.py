@@ -132,6 +132,43 @@ class SportsGameOddsClient:
             )
         return payload
 
+    async def get_available_leagues(self) -> tuple[dict[str, str], ...]:
+        """Actual key-entitled league IDs, TTL cached to conserve metadata quota.
+
+        The public provider's advertised 67+ leagues is not proof the owner's
+        account can read them. /leagues is authoritative for this API key.
+        """
+        current = time.monotonic()
+        cached = getattr(self, "_league_cache", None)
+        if cached is not None and current - cached[0] < 3600:
+            return cached[1]
+        payload = self._payload(await self._request("/leagues", params={"limit": 300}))
+        data = payload.get("data")
+        if not isinstance(data, list) or len(data) > 300:
+            raise ProviderProtocolError("Malformed available league catalog")
+        leagues: dict[str, dict[str, str]] = {}
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            league = row.get("leagueID")
+            sport = row.get("sportID")
+            if (
+                not isinstance(league, str)
+                or not isinstance(sport, str)
+                or not 1 <= len(league) <= 64
+                or not 1 <= len(sport) <= 64
+            ):
+                continue
+            if row.get("enabled") is False or sport == "NON_SPORTS":
+                continue
+            leagues[league] = {
+                "league_id": league, "sport_id": sport,
+                "name": str(row.get("name") or league)[:80],
+            }
+        result = tuple(leagues[k] for k in sorted(leagues))
+        self._league_cache = (time.monotonic(), result)
+        return result
+
     async def get_usage(self) -> SportsGameOddsUsage:
         payload = self._payload(await self._request("/account/usage", throttled=False))
         data = payload.get("data")

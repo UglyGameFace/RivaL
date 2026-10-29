@@ -142,7 +142,9 @@ class SportsGameOddsClient:
         cached = getattr(self, "_league_cache", None)
         if cached is not None and current - cached[0] < 3600:
             return cached[1]
-        payload = self._payload(await self._request("/leagues", params={"limit": 300}))
+        # /leagues returns its full matching catalog; "limit" is not a documented
+        # query parameter for this endpoint. Do not add an unsupported argument.
+        payload = self._payload(await self._request("/leagues"))
         data = payload.get("data")
         if not isinstance(data, list) or len(data) > 300:
             raise ProviderProtocolError("Malformed available league catalog")
@@ -159,7 +161,9 @@ class SportsGameOddsClient:
                 or not 1 <= len(sport) <= 64
             ):
                 continue
-            if row.get("enabled") is False or sport == "NON_SPORTS":
+            # The enabled flag is the plan-entitlement contract. Missing,
+            # null, false or malformed flags do NOT establish authorized access.
+            if row.get("enabled") is not True or sport == "NON_SPORTS":
                 continue
             leagues[league] = {
                 "league_id": league, "sport_id": sport,

@@ -528,9 +528,8 @@ class ForwardAccuracyMonitor:
                                               THEN venue END) AS venues
                    FROM perp_forward_audit
                    WHERE asset=? AND issued_at>=? AND issued_at<=?
-                   GROUP BY horizon_minutes,
-                            CASE WHEN issued_at>=? THEN 'recent' ELSE 'prior' END""",
-                (start, asset, prior, stamp.isoformat(), start),
+                   GROUP BY horizon_minutes, cohort""",
+                (start, asset, prior, stamp.isoformat()),
             ).fetchall()
 
         def empty() -> dict:

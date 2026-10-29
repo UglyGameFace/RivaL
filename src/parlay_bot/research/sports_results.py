@@ -70,6 +70,22 @@ def parse_final_score(event: dict, *, observed_at: datetime) -> FinalScore:
         raise ResultIntegrityError("No qualified sport/league model")
     teams = event.get("teams")
     scores = event.get("scores")
+    if sport == "SOCCER":
+        # The provider's results.game includes extra time and potentially
+        # shootouts. Most 1X2 betting markets settle on regulation only.
+        # NEVER train regulation win/draw probabilities on shootout scores.
+        results = event.get("results")
+        period = results.get("reg") if isinstance(results, dict) else None
+        if not isinstance(period, dict):
+            raise ResultIntegrityError("Soccer regulation-only scores unavailable")
+        home_reg = period.get("home")
+        away_reg = period.get("away")
+        if not isinstance(home_reg, dict) or not isinstance(away_reg, dict):
+            raise ResultIntegrityError("Missing soccer regulation points")
+        scores = {
+            "home": home_reg.get("points"),
+            "away": away_reg.get("points"),
+        }
     if not isinstance(teams, dict) or not isinstance(scores, dict):
         raise ResultIntegrityError("Missing final score or team IDs")
     home, away = teams.get("home"), teams.get("away")

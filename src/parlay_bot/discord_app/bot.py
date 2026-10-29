@@ -21,6 +21,7 @@ from parlay_bot.discord_app.presentation import onboarding_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.discord_app.signals import signal_embed
 from parlay_bot.discord_app.sports_discovery import sports_discovery_embed
+from parlay_bot.discord_app.stream_proof import stream_proof_embed
 from parlay_bot.discord_app.targeting import DirectionTargetService, DirectionTargetStore
 from parlay_bot.discord_app.views import LocationView, OnboardingView
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
@@ -683,6 +684,23 @@ class RivalDiscordClient(discord.Client):
             timeframe: app_commands.Choice[int],
         ) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
+            if self.stream_shadow is not None:
+                # The old 5-minute Binance-only ledger is retained as history,
+                # but live claims now use ONLY the strict source-matched audit.
+                try:
+                    result = await asyncio.to_thread(
+                        self.stream_shadow.report,
+                        asset=coin.value, horizon_minutes=timeframe.value,
+                    )
+                    await interaction.edit_original_response(
+                        embed=stream_proof_embed(result),
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL strict profit evidence unavailable")
+                    await interaction.edit_original_response(
+                        content="Strict after-cost evidence unavailable. NOT PROVEN.",
+                    )
+                return
             if self.quote_profit is None:
                 await interaction.edit_original_response(
                     content="⛔ No prospective quote ledger is enabled. Profit NOT PROVEN."
@@ -1136,45 +1154,7 @@ class RivalDiscordClient(discord.Client):
                     self.stream_shadow.report,
                     asset=coin.value, horizon_minutes=timeframe.value,
                 )
-                embed = discord.Embed(
-                    title=f"📊 RivaL | {coin.value} {timeframe.value}m after-cost audit",
-                    description=(
-                        f"**{report['status']}** • "
-                        "Strict same-exchange, genuinely later bid/ask only. "
-                        "Simulated liquidity and fees, NOT authenticated fills."
-                    ),
-                    color=discord.Color.orange(),
-                )
-                embed.add_field(
-                    name="Forward sample coverage",
-                    value=(
-                        f"Eligible venue/window cases **{report['eligible_windows']}**"
-                        f" • entries **{report['entries']}**"
-                        f" • exits **{report['closed']}**"
-                        f" • missed exits **{report['missed_exits']}**"
-                        f" • coverage **{report['coverage']:.1%}**"
-                        f" • UTC days **{report['days']}**"
-                    ), inline=False,
-                )
-                for label, stats in report["costs"].items():
-                    mean = stats["mean_net_bps"]
-                    lower = stats["daily_lower_bps"]
-                    embed.add_field(
-                        name=f"{label.title()} after-cost stress",
-                        value=(
-                            f"Extra cost **{stats['assumed_extra_cost_bps']:.0f} bps** • "
-                            f"Mean **{mean:+.2f} bps**" if mean is not None else
-                            "No verified paired entries and exits yet."
-                        ) + (
-                            f" • day-block lower **{lower:+.2f} bps**"
-                            if lower is not None else ""
-                        ),
-                        inline=False,
-                    )
-                embed.set_footer(
-                    text="At least 150 qualified outcomes / 21 days / 80% coverage; "
-                         "no real-money profit proof.",
-                )
+                embed = stream_proof_embed(report)
                 await interaction.edit_original_response(embed=embed)
             except Exception:  # noqa: BLE001
                 _LOG.exception("RivaL stream proof unavailable")

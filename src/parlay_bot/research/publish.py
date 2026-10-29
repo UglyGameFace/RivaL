@@ -129,6 +129,8 @@ def _drive(settings: Settings) -> GoogleDriveArchiveClient:
             history=settings.rival_drive_history_folder_id,
             manifests=settings.rival_drive_manifests_folder_id,
             staging=settings.rival_drive_staging_folder_id,
+            models=settings.rival_drive_models_folder_id,
+            reports=settings.rival_drive_reports_folder_id,
         ),
         chunk_size_bytes=settings.rival_archive_chunk_mib * 1024 * 1024,
     )

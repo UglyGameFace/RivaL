@@ -86,7 +86,6 @@ def live_examples(
         prev_open = opened
 
     horizon_bars = horizon_minutes // interval
-    examples = []
     # A batch can reveal several historical candles at the same instant.
     # They are not independent live issuance opportunities. Keep only the
     # latest causally eligible window per real observation timestamp.

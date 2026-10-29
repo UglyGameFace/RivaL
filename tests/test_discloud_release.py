@@ -9,10 +9,13 @@ def test_discloud_release_only_after_verified_main_ci():
     text = (ROOT / ".github/workflows/discloud-deploy.yml").read_text()
     assert 'workflows: ["CI"]' in text
     assert "types: [completed]" in text
-    assert "github.event.workflow_run.conclusion == 'success'" in text
-    assert "github.event.workflow_run.event == 'push'" in text
-    assert "github.event.workflow_run.head_branch == 'main'" in text
-    assert "github.event.workflow_run.head_repository.full_name == github.repository" in text
+    assert "if: github.event.workflow_run.conclusion == 'success'" in text
+    assert 'RIVAL_SOURCE_EVENT: ${{ github.event.workflow_run.event }}' in text
+    assert 'RIVAL_SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}' in text
+    assert 'RIVAL_SOURCE_REPO: ${{ github.event.workflow_run.head_repository.full_name }}' in text
+    assert '[ "$RIVAL_SOURCE_EVENT" != "push" ]' in text
+    assert '[ "$RIVAL_SOURCE_BRANCH" != "main" ]' in text
+    assert '[ "$RIVAL_SOURCE_REPO" != "$GITHUB_REPOSITORY" ]' in text
     assert "ref: ${{ github.event.workflow_run.head_sha }}" in text
     assert "cancel-in-progress: false" in text
 

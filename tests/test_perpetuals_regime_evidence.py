@@ -8,7 +8,9 @@ import pytest
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.regime_evidence import (
-    VERSION, evaluate_regimes, issue_regime,
+    VERSION,
+    evaluate_regimes,
+    issue_regime,
 )
 from parlay_bot.storage.hot import SQLiteHotStore
 from tests.test_perpetuals_forward_accuracy import seed

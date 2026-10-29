@@ -429,11 +429,11 @@ class ForwardAccuracyMonitor:
                             )
                         issued += int(record.rowcount == 1)
                         metrics["duplicate_forecasts"] += int(record.rowcount == 0)
-            except (ValueError, TypeError, ArithmeticError):
+            except (ValueError, TypeError, ArithmeticError) as exc:
                 metrics["invalid_data"] += 1
                 _LOG.warning(
-                    "Prospective issue skipped invalid venue=%s contract=%s",
-                    venue, contract,
+                    "Prospective issue skipped invalid venue=%s contract=%s reason=%s: %s",
+                    venue, contract, type(exc).__name__, str(exc)[:240],
                 )
                 continue
         metrics["issued_forecasts"] = issued

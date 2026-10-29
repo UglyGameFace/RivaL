@@ -40,6 +40,9 @@ _SECTIONS = {
         ("fifteen", "15-minute results"),
         ("calibration", "Probability reliability"),
         ("gemini", "Gemini results"),
+        ("ledger", "Prediction ledger"),
+        ("regimes", "Market-regime skill"),
+        ("costs", "Actual cost proof"),
         ("method", "Scoring method"),
     ),
     "ai": (
@@ -65,6 +68,9 @@ _FIELD_GROUPS = {
         "calibration": ("Forward 5m calibration", "Forward 15m calibration"),
         "gemini": ("Gemini · independent forward outcomes",
                    "Independent track analytics"),
+        "ledger": ("Prospective prediction ledger",),
+        "regimes": ("Prospective skill by market regime",),
+        "costs": ("Execution cost verification", "How accuracy is audited"),
         "method": ("How accuracy is audited",),
     },
     "ai": {
@@ -1201,6 +1207,107 @@ class ResearchDashboard(discord.ui.View):
                                 "cause skipped cycles."
                             )[:1024],
                             inline=False,
+                        )
+                    # Only request expensive, detailed proof when the user
+                    # actually opens that page. This is a fresh DB query, not
+                    # a 5-minute stale widget or an LLM-generated number.
+                    if self.section == "ledger":
+                        try:
+                            issued = await asyncio.to_thread(
+                                ForwardAccuracyMonitor(self.market).recent_issued,
+                                asset=self.asset, limit=3,
+                            )
+                            lines = []
+                            for pred in issued:
+                                when = datetime.fromisoformat(
+                                    str(pred["issued_at"])
+                                )
+                                if when.utcoffset() is None:
+                                    continue
+                                done = (
+                                    "settled" if pred["settled_at"] else "awaiting outcome"
+                                )
+                                lines.append(
+                                    f"**{pred['horizon_minutes']}m** "
+                                    f"{pred['venue']} · P(up) "
+                                    f"**{float(pred['probability_up']):.3f}** · "
+                                    f"issued {discord.utils.format_dt(when, style='R')} "
+                                    f"· {done}"
+                                )
+                            embed.add_field(
+                                name="Prospective prediction ledger",
+                                value=(
+                                    "\n".join(lines) if lines else
+                                    "No pre-outcome mathematical predictions "
+                                    "have been issued yet. Do not fabricate signals."
+                                )[:1024],
+                                inline=False,
+                            )
+                        except Exception:  # noqa: BLE001
+                            _LOG.exception("RivaL forward prediction ledger unavailable")
+                            embed.add_field(
+                                name="Prospective prediction ledger",
+                                value="Database proof unavailable; no forecast inferred.",
+                                inline=False,
+                            )
+                    if self.section == "regimes":
+                        try:
+                            monitor = ForwardAccuracyMonitor(self.market)
+                            pieces = []
+                            for horizon in (5, 15):
+                                proof = await asyncio.to_thread(
+                                    monitor.regime_summary,
+                                    asset=self.asset, horizon_minutes=horizon,
+                                )
+                                lines = []
+                                for regime in ("quiet", "normal", "turbulent"):
+                                    part = proof["regimes"][regime]
+                                    gain = part["paired_brier_gain"]
+                                    gain_text = (
+                                        f"{gain:+.4f}" if gain is not None else "none"
+                                    )
+                                    lines.append(
+                                        f"{regime}: **{part['unique_targets']}** "
+                                        f"UTC targets / {part['utc_days']} days · "
+                                        f"paired Brier gain {gain_text}"
+                                    )
+                                pieces.append(
+                                    f"**{horizon}m** · "
+                                    f"{proof['status'].replace('_', ' ')} "
+                                    f"({proof['disputed_regime_targets']} disputed)\n"
+                                    + "\n".join(lines)
+                                )
+                            embed.add_field(
+                                name="Prospective skill by market regime",
+                                value=(
+                                    "\n\n".join(pieces)
+                                    + "\nRegimes were stamped BEFORE outcomes. "
+                                      "Multiple venues count once per target. "
+                                      "A stable shadow score is not trading profit."
+                                )[:1024], inline=False,
+                            )
+                        except Exception:  # noqa: BLE001
+                            _LOG.exception("RivaL regime-evidence query unavailable")
+                            embed.add_field(
+                                name="Prospective skill by market regime",
+                                value="Regime proof unavailable. No improvement claimed.",
+                                inline=False,
+                            )
+                    if self.section == "costs":
+                        embed.add_field(
+                            name="Execution cost verification",
+                            value=(
+                                "**NOT VERIFIED.** RivaL has no authenticated "
+                                "matched entry/exit fill receipts for these "
+                                "prospective forecasts, nor reconciled actual "
+                                "entry+exit fees, arrival-to-fill slippage, "
+                                "funding payments and liquidation costs. "
+                                "The 16/40/80 bps stress scenarios are "
+                                "assumptions, NOT measured execution costs. "
+                                "Positive historical candle movement or "
+                                "shadow-model skill cannot establish net "
+                                "profitability. No live orders are placed."
+                            ), inline=False,
                         )
                     embed.add_field(
                         name="How accuracy is audited",

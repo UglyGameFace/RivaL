@@ -19,6 +19,7 @@ from parlay_bot.discord_app.opportunities import (
 )
 from parlay_bot.discord_app.presentation import onboarding_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
+from parlay_bot.discord_app.signals import signal_embed
 from parlay_bot.discord_app.sports_discovery import sports_discovery_embed
 from parlay_bot.discord_app.targeting import DirectionTargetService, DirectionTargetStore
 from parlay_bot.discord_app.views import LocationView, OnboardingView
@@ -304,6 +305,45 @@ class RivalDiscordClient(discord.Client):
             await interaction.edit_original_response(
                 embed=await home.render(), view=home,
             )
+
+        @self.tree.command(
+            name="rival-signal",
+            description="Show a fresh crypto UP/DOWN watch or explain why no signal qualifies.",
+        )
+        @app_commands.choices(
+            coin=[
+                app_commands.Choice(name="Bitcoin (BTC)", value="BTC"),
+                app_commands.Choice(name="Ethereum (ETH)", value="ETH"),
+                app_commands.Choice(name="Solana (SOL)", value="SOL"),
+            ],
+            timeframe=[
+                app_commands.Choice(name="5 minutes", value=5),
+                app_commands.Choice(name="15 minutes", value=15),
+            ],
+        )
+        async def rival_signal(
+            interaction: discord.Interaction,
+            coin: app_commands.Choice[str],
+            timeframe: app_commands.Choice[int],
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                market = self.perp_collector.market if self.perp_collector else None
+                embed = await signal_embed(
+                    market, self.public_quotes,
+                    asset=coin.value, horizon_minutes=timeframe.value,
+                )
+            except Exception:  # noqa: BLE001 - never reveal backend details
+                _LOG.exception("RivaL verified signal rendering failed")
+                embed = discord.Embed(
+                    title="⏳ Signal temporarily unavailable",
+                    description=(
+                        "The current market and model evidence could not be "
+                        "verified. No trade instruction was issued."
+                    ),
+                    color=discord.Color.orange(),
+                )
+            await interaction.edit_original_response(embed=embed)
 
         @self.tree.command(
             name="rival-picks",

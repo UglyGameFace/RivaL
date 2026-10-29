@@ -343,3 +343,27 @@ async def test_collector_outage_changes_existing_up_card_to_wait(tmp_path, monke
         assert await service.cycle() == 0
     finally:
         store.close()
+
+
+def test_automatic_dm_does_not_show_weak_51_percent_as_a_green_buy_signal():
+    now = datetime.now(UTC)
+    weak = TargetSnapshot(
+        "BTC", 5, "UP", "Very weak model observation. Not an approved trade.",
+        venue="hyperliquid", probability=.514, price=81001,
+        issued_at=now, ends_at=now + timedelta(minutes=4),
+    )
+    message = target_embed(weak)
+    assert "NO SIGNAL" in message.title
+    assert "UP LEAN" in message.title
+    assert message.color == message.color.orange()
+    assert "very weak" in next(
+        f.value for f in message.fields if f.name == "Uncalibrated model strength"
+    )
+    strong = TargetSnapshot(
+        "BTC", 5, "DOWN", "Directional research. Not an approved trade.",
+        venue="hyperliquid", probability=.62, price=81001,
+        issued_at=now, ends_at=now + timedelta(minutes=4),
+    )
+    confident = target_embed(strong)
+    assert "DOWN WATCH" in confident.title
+    assert "Not an approved trade" in confident.description

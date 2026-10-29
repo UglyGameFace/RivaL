@@ -13,7 +13,8 @@ from parlay_bot.discord_app.presentation import (
     onboarding_embed,
     parlay_embed,
 )
-from parlay_bot.discord_app.targeting import target_embed, target_snapshot
+from parlay_bot.discord_app.signals import model_strength, signal_embed
+from parlay_bot.discord_app.targeting import target_snapshot
 from parlay_bot.jurisdiction.zip_lookup import ZipLookupError
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
@@ -36,11 +37,11 @@ EXPLAIN = {
     "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
     "slip": "A parlay combines picks. All legs must win for the parlay to win. No real wager is placed here.",
     "crypto": "Choose a coin and timeframe. UP/DOWN is a forecast, not permission to trade. A price target is a number to watch, not a predicted certainty.",
-    "forecast": "WAIT means there is no fresh, trustworthy forecast. A correct direction could still lose money after trading costs.",
+    "forecast": "A directional watch is research, not a proven profitable bet. Weak model probabilities are NO SIGNAL. Prices must match the forecast venue; genuine forward accuracy and expiry are shown.",
     "quote": "Ask is the price you might buy at; bid is the price you might sell at. These quotes are not guaranteed fills.",
     "practice": "Everything in Practice Money is fictional. Buying means you expect a rise; selling means you expect a fall. Fake gains never count as proven real profit.",
     "results": "Practice results are your own fake trades. Model accuracy is measured separately from later verified market outcomes. Real profit is not yet proven.",
-    "help": "Start at Home. For sports, select your state. For crypto, choose a coin and press See Forecast. To learn without real money, open Practice Money.",
+    "help": "Start at Home. For sports, select your state. For crypto, choose a coin and press Get Signal. To learn without real money, open Practice Money.",
     "advanced": "Advanced research shows models, provider diagnostics, costs, accuracy and historical data. No real bets or orders are placed.",
 }
 
@@ -199,7 +200,7 @@ class GuidedHome(discord.ui.View):
         elif p in ("crypto", "forecast", "quote"):
             self.add_item(_Coin(self.coin))
             self.add_item(_Horizon(self.horizon))
-            self._add("See Forecast", "forecast", 2, "📈", True)
+            self._add("Get Signal", "forecast", 2, "🎯", True)
             self._add("Follow in DM", "follow", 2, "🔔")
             self._add("Set Price Target", "target", 2, "🎯")
             self._add("See Buy/Sell Prices", "quote", 3, "💱")
@@ -329,75 +330,28 @@ class GuidedHome(discord.ui.View):
                 target_snapshot, self.market,
                 asset=self.coin, horizon_minutes=self.horizon,
             )
-            summary = {
-                "UP": "The latest model expects a price rise.",
-                "DOWN": "The latest model expects a price drop.",
-                "WAIT": "RivaL doesn't have enough fresh evidence for a call.",
-            }[snapshot.direction]
+            headline = (
+                f"{snapshot.direction} lean • raw "
+                f"{snapshot.probability:.1%} ({model_strength(snapshot.probability)})"
+                if snapshot.probability is not None else "NO CURRENT SIGNAL"
+            )
             embed = discord.Embed(
-                title=f"📈 Crypto | {self.coin}",
+                title=f"🎯 Crypto Signals | {self.coin}",
                 description=(
-                    "**Current forecast: "
-                    f"{snapshot.direction}**\n{summary}\n\n"
-                    "Choose a coin and timeframe above. Press "
-                    "**See Forecast** for the source and details, "
-                    "or **Follow in DM** for automatic private updates.\n\n"
-                    "A correct direction does not guarantee a profitable trade."
+                    f"**{headline}**\n\n"
+                    "Choose a coin and timeframe, then press **Get Signal** "
+                    "to check the matching-market price, expiry, signal "
+                    "strength, and measured forward accuracy.\n"
+                    "Or **Follow in DM** for automatic private model updates.\n\n"
+                    "A model lean is not a proven profitable entry."
                 ),
-                color=(discord.Color.blurple()
-                       if snapshot.direction != "WAIT"
-                       else discord.Color.orange()),
+                color=discord.Color.orange(),
             )
         elif p == "forecast":
-            prediction = await asyncio.to_thread(
-                target_snapshot, self.market,
+            embed = await signal_embed(
+                self.market, self.quotes,
                 asset=self.coin, horizon_minutes=self.horizon,
             )
-            embed = target_embed(prediction)
-            embed.title = f"📈 {self.coin} | {self.horizon}-Minute Forecast"
-            # A completed 5m candle is NOT a live price. Fetch timestamped
-            # bid/ask independently; exchange blocks must not hide the model
-            # status or invent a price from historical candles.
-            try:
-                live_quote = await self.quotes.get(self.coin)
-            except QuoteUnavailable:
-                try:
-                    alternative = await self.quotes.get_reference(self.coin)
-                except QuoteUnavailable:
-                    embed.add_field(
-                        name="Live bid/ask unavailable",
-                        value=(
-                            "Neither current exchange book is verified. The "
-                            "forecast above, if present, uses a completed "
-                            "candle, NOT a live trading price."
-                        ),
-                        inline=False,
-                    )
-                else:
-                    embed.add_field(
-                        name="Current Hyperliquid perp order book (USD reference)",
-                        value=(
-                            f"Bid **${alternative.bid:,.2f}** • "
-                            f"Ask **${alternative.ask:,.2f}** · "
-                            f"Exchange update "
-                            f"{discord.utils.format_dt(alternative.exchange_at, style='R')}. "
-                            "Separate market, reference only. NOT an "
-                            "executable Binance-USDT price or approved trade."
-                        ),
-                        inline=False,
-                    )
-            else:
-                embed.add_field(
-                    name=f"Current {live_quote.venue} bid / ask",
-                    value=(
-                        f"Bid **${live_quote.bid:,.2f}** · "
-                        f"Ask **${live_quote.ask:,.2f}**\\n"
-                        "Exchange update "
-                        f"{discord.utils.format_dt(live_quote.exchange_at, style='R')} "
-                        "· Snapshot only, not guaranteed fills"
-                    ),
-                    inline=False,
-                )
         elif p == "quote":
             try:
                 price = await self.quotes.get(self.coin)

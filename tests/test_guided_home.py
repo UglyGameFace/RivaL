@@ -273,62 +273,47 @@ async def test_actual_rival_slash_callback_opens_guided_private_home(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_forecast_clearly_separates_live_quote_from_five_minute_candle(tmp_path):
-    from parlay_bot.perpetuals.live_quotes import QuoteUnavailable
-
+async def test_private_signal_button_explains_no_forecast_without_fake_prices(tmp_path):
     bot = _client(tmp_path)
     home = _home(bot)
     try:
-        home.navigate("forecast")
-        bot.public_quotes.get = AsyncMock(
-            side_effect=QuoteUnavailable("Binance exchange rate limited"),
-        )
-        bot.public_quotes.get_reference = AsyncMock(
-            side_effect=QuoteUnavailable("Secondary exchange unavailable"),
-        )
-        unavailable = await home.render()
-        field = next(f for f in unavailable.fields if f.name == "Live bid/ask unavailable")
-        assert "NOT a live trading price" in field.value
-        assert "rate limited" not in unavailable.description
-
-        from parlay_bot.perpetuals.live_quotes import PerpReferenceBook
-
-        stamp = datetime.now(UTC)
-        bot.public_quotes.get_reference = AsyncMock(
-            return_value=PerpReferenceBook(
-                asset="BTC", venue="hyperliquid",
-                bid=81100.0, ask=81101.0,
-                bid_quantity=3.0, ask_quantity=5.0,
-                exchange_at=stamp, received_at=stamp,
-            ),
-        )
-        fallback = await home.render()
-        fallback_field = next(
-            f for f in fallback.fields if "Hyperliquid perp order book" in f.name
-        )
-        assert "reference only" in fallback_field.value.lower()
-        assert "$81,100.00" in fallback_field.value
-        assert all(f.name != "Live bid/ask unavailable" for f in fallback.fields)
-        home.navigate("quote")
-        fallback_page = await home.render()
-        assert "Live Perpetual Reference" in fallback_page.title
-        assert "DIFFERENT market" in fallback_page.description
-
-        home.navigate("forecast")
-        bot.public_quotes.get = AsyncMock(return_value=BookQuote(
-            asset="BTC", venue="binance_usdm", symbol="BTCUSDT",
-            bid=81100.12, bid_quantity=5.0,
-            ask=81100.23, ask_quantity=4.0,
-            exchange_at=stamp, received_at=stamp,
-        ))
-        available = await home.render()
-        quote = next(f for f in available.fields if f.name.endswith("bid / ask"))
-        assert "$81,100.12" in quote.value
-        assert "$81,100.23" in quote.value
-        assert "Snapshot only" in quote.value
-        assert all(f.name != "Live bid/ask unavailable" for f in available.fields)
+        home.navigate("crypto")
+        home._buttons()
+        assert "Get Signal" in _labels(home)
+        assert "See Forecast" not in _labels(home)
+        assert "NO CURRENT SIGNAL" in (await home.render()).description
+        i = _interaction()
+        await home.act(i, "forecast")
+        assert home.page == "forecast"
+        sent = i.edit_original_response.await_args.kwargs["embed"]
+        assert "NO LIVE SIGNAL" in sent.title
+        assert "Market collection is disconnected" in sent.description
+        assert "Home" in _labels(home)
     finally:
         home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_rival_signal_slash_command_is_private_and_uses_same_signal_engine(tmp_path):
+    from discord import app_commands
+
+    bot = _client(tmp_path)
+    try:
+        command = bot.tree.get_command("rival-signal")
+        assert command is not None
+        i = _interaction()
+        await command.callback(
+            i,
+            app_commands.Choice(name="Bitcoin (BTC)", value="BTC"),
+            app_commands.Choice(name="5 minutes", value=5),
+        )
+        i.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
+        i.edit_original_response.assert_awaited_once()
+        assert "NO LIVE SIGNAL" in i.edit_original_response.await_args.kwargs["embed"].title
+    finally:
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()

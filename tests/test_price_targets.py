@@ -1,6 +1,7 @@
 """Real exchange-candle target accounting; not made-up price-touch probabilities."""
 from __future__ import annotations
 
+import os
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -12,9 +13,15 @@ from parlay_bot.discord_app.price_targets import (
     price_embed,
     price_result,
 )
-from parlay_bot.discord_app.targeting import DirectionTargetService, DirectionTargetStore
+from parlay_bot.config import Settings
+from parlay_bot.discord_app.bot import RivalDiscordClient
+from parlay_bot.discord_app.targeting import (
+    DirectionTarget,
+    DirectionTargetService,
+    DirectionTargetStore,
+)
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
-from parlay_bot.storage.hot import SQLiteHotStore
+from parlay_bot.storage.hot import PostgresHotStore, SQLiteHotStore
 from tests.test_direction_target import DummyBot, DummyDM, DummyUser
 
 
@@ -248,11 +255,6 @@ def test_target_goal_schema_is_additive_and_sqlite_idempotent(tmp_path):
 
 
 def test_postgres_price_goal_migration_persists_and_retargets_atomically():
-    import os
-
-    from parlay_bot.discord_app.targeting import DirectionTarget
-    from parlay_bot.storage.hot import PostgresHotStore
-
     dsn = os.getenv("RIVAL_TEST_DATABASE_URL")
     if not dsn:
         pytest.skip("Postgres integration database unavailable")
@@ -290,3 +292,23 @@ def test_postgres_price_goal_migration_persists_and_retargets_atomically():
     finally:
         watcher.stop(user_id)
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_slash_command_keeps_direction_mode_and_adds_optional_price(tmp_path):
+    client = RivalDiscordClient(Settings(
+        _env_file=None, rival_storage_backend="sqlite",
+        rival_db_path=str(tmp_path / "slash.sqlite"), discord_token=None,
+    ))
+    try:
+        cmd = client.tree.get_command("rival-target")
+        assert cmd is not None
+        assert [p.name for p in cmd.parameters] == [
+            "coin", "timeframe", "target_price",
+        ]
+        assert cmd.parameters[-1].required is False
+        assert client.tree.get_command("rival-sports") is not None
+        assert client.tree.get_command("rival-stop") is not None
+    finally:
+        await client.zip_resolver.aclose()
+        client.store.close()

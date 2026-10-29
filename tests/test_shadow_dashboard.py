@@ -18,6 +18,7 @@ async def test_math_panel_discloses_automatic_shadow_status(tmp_path):
         venues=("hyperliquid",), shadow_enabled=True,
     )
     try:
+        dashboard.screen = "math"
         dashboard.section = "learning"
         dashboard._rebuild()
         rendered = (await dashboard.render()).to_dict()

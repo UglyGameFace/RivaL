@@ -12,7 +12,7 @@ from parlay_bot.discord_app.opportunities import (
 )
 from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.parlays.builder import ParlayBuilder
-from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor, MODEL
+from parlay_bot.perpetuals.forward_audit import MODEL, ForwardAccuracyMonitor
 from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore

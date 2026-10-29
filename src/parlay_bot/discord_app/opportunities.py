@@ -38,9 +38,10 @@ def _cash(price: float) -> str:
 def recent_watches(
     market: PerpetualMarketStore, *, asset: str,
     now: datetime | None = None, limit: int = 3,
+    dedupe_horizons: bool = True,
 ) -> list[dict]:
     """Only genuinely issued, still pending and fresh-venue forecasts."""
-    if asset not in ASSETS or not 1 <= limit <= 5:
+    if asset not in ASSETS or not 1 <= limit <= 40:
         raise ValueError("unsupported opportunity request")
     current = now or datetime.now(UTC)
     if current.utcoffset() is None:
@@ -116,7 +117,12 @@ def recent_watches(
             })
         except (KeyError, ValueError, TypeError, OverflowError):
             continue
-    # Keep only the strongest watch per horizon for clarity, no fake ranked edge.
+    # Signal selection needs all genuine venue alternatives to match a
+    # forecast to an actually reachable live order book. Legacy dashboards
+    # still show one candidate per horizon for a compact private screen.
+    if not dedupe_horizons:
+        return accepted[:limit]
+    # Keep newest (not necessarily strongest) watch per horizon.
     by_horizon: dict[int, dict] = {}
     for watch in accepted:
         by_horizon.setdefault(watch["horizon_minutes"], watch)

@@ -8,8 +8,11 @@ from typing import TYPE_CHECKING
 
 import discord
 
-from parlay_bot.discord_app.opportunities import crypto_desk_embed, sportsbook_desk_embed
-from parlay_bot.discord_app.presentation import onboarding_embed, parlay_embed
+from parlay_bot.discord_app.presentation import (
+    display_book,
+    onboarding_embed,
+    parlay_embed,
+)
 from parlay_bot.discord_app.targeting import target_embed, target_snapshot
 from parlay_bot.jurisdiction.zip_lookup import ZipLookupError
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
@@ -203,8 +206,8 @@ class GuidedHome(discord.ui.View):
             self._add("Stop My Alerts", "stop", 3, "🔕")
         elif p == "practice":
             self.add_item(_Coin(self.coin))
-            self._add("Practice Buy 25", "buy", 1, "📈", True)
-            self._add("Practice Sell 25", "sell", 1, "📉")
+            self._add("Practice Buy $25", "buy", 1, "📈", True)
+            self._add("Practice Sell $25", "sell", 1, "📉")
             self._add("Close Fake Trade", "close", 2, "✅")
             self._add("Set Fake Balance", "funds", 2, "💵")
             self._add("See My Results", "results", 3, "📊")
@@ -271,13 +274,41 @@ class GuidedHome(discord.ui.View):
                     "relevant sportsbooks. RivaL saves your state, not your ZIP."
                 )
             else:
-                embed = await asyncio.to_thread(
-                    sportsbook_desk_embed, self.builder,
-                    user_id=str(self.owner_id),
-                )
-                embed.title = "🏆 Sports & Odds"
+                try:
+                    slip = await asyncio.to_thread(
+                        self.builder.build_for_user,
+                        platform="discord", user_id=str(self.owner_id),
+                        leg_count=1, risk=RiskMode.BALANCED,
+                    )
+                    leg = slip.legs[0]
+                    label = (
+                        f"{leg.market_name}: {leg.outcome_name}"
+                        + (f" (line {leg.line_value:g})"
+                           if leg.line_value is not None else "")
+                    )
+                    embed = discord.Embed(
+                        title="🏆 Sports & Odds",
+                        description=(
+                            "**Here's one available sportsbook selection:**\n"
+                            f"**Game:** {leg.event_name}\n"
+                            f"**Pick:** {label}\n"
+                            f"**Sportsbook:** {display_book(slip.bookmaker)}\n"
+                            f"**Price:** {leg.price_american or f'{leg.price_decimal:.2f}'}\n\n"
+                            "Compare the price before making your own decision. "
+                            "This is not a proven winning bet."
+                        ), color=discord.Color.blurple(),
+                    )
+                except ParlayBuildError as exc:
+                    embed = discord.Embed(
+                        title="🏆 Sports & Odds",
+                        description=(
+                            "**PASS for now.** There isn't a verified selection "
+                            f"to show. Reason: {exc}\n"
+                            "You can refresh the odds or come back later."
+                        ), color=discord.Color.orange(),
+                    )
                 embed.add_field(
-                    name="Your Area", value=saved.state_name, inline=False,
+                    name="Your State", value=saved.state_name, inline=False,
                 )
         elif p == "slip":
             if self.slip is None:
@@ -294,17 +325,28 @@ class GuidedHome(discord.ui.View):
                     + "\n\n**No wager was placed. All legs must win.**"
                 )
         elif p == "crypto":
-            embed = await asyncio.to_thread(
-                crypto_desk_embed, self.market, asset=self.coin,
+            snapshot = await asyncio.to_thread(
+                target_snapshot, self.market,
+                asset=self.coin, horizon_minutes=self.horizon,
             )
-            embed.title = f"📈 Predict Crypto | {self.coin}"
-            embed.add_field(
-                name="Start Here",
-                value=(
-                    "Choose a coin and timeframe above, then press "
-                    "**See Forecast**. Press **Follow in DM** for "
-                    "automatic private updates."
-                ), inline=False,
+            summary = {
+                "UP": "The latest model expects a price rise.",
+                "DOWN": "The latest model expects a price drop.",
+                "WAIT": "RivaL doesn't have enough fresh evidence for a call.",
+            }[snapshot.direction]
+            embed = discord.Embed(
+                title=f"📈 Crypto | {self.coin}",
+                description=(
+                    "**Current forecast: "
+                    f"{snapshot.direction}**\n{summary}\n\n"
+                    "Choose a coin and timeframe above. Press "
+                    "**See Forecast** for the source and details, "
+                    "or **Follow in DM** for automatic private updates.\n\n"
+                    "A correct direction does not guarantee a profitable trade."
+                ),
+                color=(discord.Color.blurple()
+                       if snapshot.direction != "WAIT"
+                       else discord.Color.orange()),
             )
         elif p == "forecast":
             prediction = await asyncio.to_thread(

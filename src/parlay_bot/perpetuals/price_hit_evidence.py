@@ -120,7 +120,7 @@ def evaluate_price_hit_model(
         ascending = target > reference
         samples: list[_Sample] = []
         # Uncorrelated labels: take one reference per prediction horizon.
-        # A one-bar gap keeps the chronology split independent at the boundary.
+        # Nonoverlapping label windows; a boundary purge below excludes overlaps.
         for i in range(LOOKBACK, len(rows) - bars, bars + 1):
             history = rows[i - LOOKBACK:i + 1]
             future = rows[i + 1:i + 1 + bars]
@@ -190,8 +190,8 @@ def evaluate_price_hit_model(
                 "Too few nonoverlapping, truly observed future outcomes",
                 trained=len(samples),
             )
-        split = int(len(samples) * 0.70)
-        train, holdout = samples[:split], samples[split:]
+        split = len(samples) // 2
+        train, holdout = samples[:split - 1], samples[split:]
         days = len({s.day for s in holdout})
         if len(train) < MIN_TRAIN or len(holdout) < MIN_HOLDOUT or days < MIN_DAYS:
             return _insufficient(

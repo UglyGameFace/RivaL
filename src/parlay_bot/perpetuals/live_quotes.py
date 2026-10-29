@@ -161,10 +161,7 @@ class PublicBestQuoteClient:
         # Independent read-only fallback, used ONLY for display. Never feed
         # these USD perp prices into Binance-USDT paper/profit settlement.
         self._owns_reference = reference_client is None
-        self._reference_client = reference_client or httpx.AsyncClient(
-            base_url="https://api.hyperliquid.xyz",
-            timeout=httpx.Timeout(5.0),
-        )
+        self._reference_client = reference_client
         self._reference_cache: dict[str, tuple[float, PerpReferenceBook]] = {}
         self._reference_blocked_until = 0.0
         self._reference_lock = asyncio.Lock()
@@ -172,7 +169,7 @@ class PublicBestQuoteClient:
     async def aclose(self) -> None:
         if self._owns:
             await self.client.aclose()
-        if self._owns_reference:
+        if self._owns_reference and self._reference_client is not None:
             await self._reference_client.aclose()
 
     async def get(self, asset: str) -> BookQuote:
@@ -232,6 +229,11 @@ class PublicBestQuoteClient:
                 except QuoteUnavailable:
                     self._reference_cache.pop(asset, None)
             try:
+                if self._reference_client is None:
+                    self._reference_client = httpx.AsyncClient(
+                        base_url="https://api.hyperliquid.xyz",
+                        timeout=httpx.Timeout(5.0),
+                    )
                 response = await self._reference_client.post(
                     "/info", json={"type": "l2Book", "coin": asset},
                 )

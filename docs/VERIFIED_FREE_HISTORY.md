@@ -145,3 +145,75 @@ standardization by symbol+venue+contract+timeframe, genuine as-of
 information availability, chronological holds and forward evaluation,
 and measured after-cost performance. Historical data alone has zero
 prospective prediction accuracy.
+
+## End-to-end six-month warehouse and learning pipeline (PR #49)
+
+One command covers provider acquisition, calendar-exact continuity, research
+training and private Google Drive round-trip byte validation:
+
+```bash
+# No network, writes or credentials:
+python -m parlay_bot.research.production --months 6 --plan
+
+# Download all requested BTC/ETH/SOL archives, preserve actual source hashes,
+# check all six full UTC months per stream, train research candidates and
+# generate deterministic evidence reports. No live prediction changes:
+python -m parlay_bot.research.production --months 6 --max-new 100 \
+  --seasons \
+  --root data/research-history --report-dir data/research-reports
+
+# Same full pipeline plus real private Google Drive publication and SHA256
+# download verification. Requires separate bot-owned OAuth credentials:
+python -m parlay_bot.research.production --months 6 --max-new 100 \
+  --publish --root data/research-history --report-dir data/research-reports
+```
+
+Production publication now additionally needs
+`RIVAL_DRIVE_MODELS_FOLDER_ID` and `RIVAL_DRIVE_REPORTS_FOLDER_ID` beside
+the four original root/history/manifests/staging IDs and three private OAuth
+values. No secrets belong in GitHub commits, published reports, Discord
+screens, or ChatGPT messages. With incomplete requested source coverage the
+production command exits nonzero and withholds all-done status.
+
+RivaL's real public-provider GitHub workflow is
+`.github/workflows/verified-history.yml`. PR runs validate one real Binance
+hourly month and attempt Football-Data, plus a six-month public crypto history
+job covering BTC, ETH and SOL in `1m/5m/15m/1h/4h/1d`. This workflow stores
+raw provider-derived records in short-retention Actions artifacts only for
+the purpose of verified owner archival; it does not publish them into git.
+On main it can run the full pipeline and securely upload to the private Drive
+only when the bot-owned OAuth values have actually been configured.
+
+Historical candidates use immutable versions tied to source content hashes.
+For each asset and compatible horizon (5 minutes through seven days), all
+features precede the associated future label. The 60%/20%/20% chronological
+train/validation/test splits purge label overlap across boundaries, use a
+training-only base-rate comparator and report accuracy alongside Brier,
+log-loss, calibration error and daily score stability. Nonoverlapping target
+windows avoid multiplying overlapping multi-hour decisions.
+
+**Important:** This is an *offline historical* test. The bar-open clock is
+not a documented record of when RivaL knew the price. No retrospective score
+can be relabeled as an actual contemporaneous 46%-accuracy improvement, real
+fill profitability, a licensed sportsbook quote or a live deployable model.
+A future independent prospective shadow ledger and account-specific
+execution-cost receipts are separate required gates. The existing automatic
+prospective RivaL loop continues on its current controls, with no auto orders.
+
+### Verified external evidence
+
+- On October 29, 2026, a GitHub Actions runner independently fetched the
+  official Binance `BTCUSDT-1h-2026-09.zip`, checked its provided SHA-256,
+  validated **720 hourly candles with zero gaps**, and recorded the source and
+  normalized data digests. This is **one month of one stream**, not six months.
+- An authorized connected Drive transfer placed the verified normalized data
+  and JSON source manifest in the existing private RivaL `history/` and
+  `manifests/` folders. An independent download from Google Drive was
+  compared byte-for-byte; recovered research data SHA-256:
+  `183e0c42e1acab44d233b765f1166f52e6e8bea87ca12ed86f96e0dd612f6819`.
+  This proves the **connected owner Drive** archive round-trip, not the
+  deployed Discloud bot's separate OAuth access.
+- Football-Data's official CSV endpoint was unavailable from the GitHub
+  runner in the first source smoke. Other histories, prospective prediction
+  gains and actual betting profitability must not be marked verified.
+

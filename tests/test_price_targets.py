@@ -245,3 +245,48 @@ def test_target_goal_schema_is_additive_and_sqlite_idempotent(tmp_path):
             }
     finally:
         store.close()
+
+
+def test_postgres_price_goal_migration_persists_and_retargets_atomically():
+    import os
+
+    from parlay_bot.discord_app.targeting import DirectionTarget
+    from parlay_bot.storage.hot import PostgresHotStore
+
+    dsn = os.getenv("RIVAL_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("Postgres integration database unavailable")
+    store = PostgresHotStore(dsn)
+    watcher = DirectionTargetStore(store)
+    user_id = "983000005"
+    now = datetime.now(UTC).replace(microsecond=0)
+    first = PriceGoal("105", now, "gate", "BTC_USDT", "USDT", 100.0)
+    try:
+        watcher.initialize()
+        watcher.save(
+            DirectionTarget(user_id, "990001", "990002", "BTC", 15, "old", first),
+        )
+        reopened = DirectionTargetStore(PostgresHotStore(dsn))
+        restored = reopened.get(user_id)
+        assert restored is not None and restored.price_goal == first
+        assert len([x for x in reopened.active() if x.user_id == user_id]) == 1
+
+        # Retargeting preserves the original Discord message and does not
+        # append a second active user subscription.
+        second = PriceGoal("90", now, "gate", "BTC_USDT", "USDT", 100.0)
+        reopened.save(
+            DirectionTarget(user_id, "990001", "990002", "BTC", 5, "new", second),
+        )
+        assert reopened.get(user_id).price_goal == second
+        reopened.stop(user_id, message_id="wrong-old-message")
+        assert reopened.get(user_id) is not None
+        reopened.stop(user_id)
+        assert reopened.get(user_id) is None
+        with reopened.store.connect() as conn:
+            assert conn.execute(
+                "SELECT 1 FROM rival_price_goal_settings WHERE user_id=?",
+                (user_id,),
+            ).fetchone() is None
+    finally:
+        watcher.stop(user_id)
+        store.close()

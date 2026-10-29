@@ -117,6 +117,8 @@ class RivalDiscordClient(discord.Client):
             catalog=self.market_catalog,
         )
 
+        self.sports_refresh_status = 'Not attempted in this process'
+        self.sports_refresh_checked_at: datetime | None = None
         self.current_provider: SportsGameOddsClient | None = None
         self.current_collector: CurrentBoardCollector | None = None
         if settings.sportsgameodds_api_key is not None:
@@ -615,6 +617,7 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001
                 description = "Sportsbook refresh state unavailable"
             embed.add_field(name="Actual source status", value=description, inline=False)
+            embed.add_field(name="Latest refresh attempt", value=self.sports_refresh_status, inline=False)
             embed.set_footer(
                 text="Use /rival-quote and /rival-sport-proof for separate market/model evidence"
             )
@@ -1511,18 +1514,27 @@ class RivalDiscordClient(discord.Client):
         assert self.current_collector is not None
         while not self.is_closed():
             try:
-                await asyncio.wait_for(
+                result = await asyncio.wait_for(
                     self.current_collector.refresh_if_due(), timeout=45,
+                )
+                self.sports_refresh_status = (
+                    f"Completed: {result.events_seen} events, "
+                    f"{result.observations_seen} observations, "
+                    f"{result.pages_fetched} pages"
+                    if result.refreshed else "Skipped: refresh not due"
                 )
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
+                self.sports_refresh_status = "Failed: timed out after 45 seconds"
                 _LOG.warning(
                     "RivaL sportsbook refresh exceeded 45s; skipped this cycle "
                     "without marking the board fresh"
                 )
-            except Exception:  # noqa: BLE001 - provider outage cannot kill bot
+            except Exception as exc:  # noqa: BLE001 - provider outage cannot kill bot
+                self.sports_refresh_status = f"Failed: {type(exc).__name__}"
                 _LOG.exception("RivaL live sportsbook refresh failed safely")
+            self.sports_refresh_checked_at = datetime.now(UTC)
             await asyncio.sleep(self.settings.rival_current_refresh_seconds)
 
     async def _stream_shadow_loop(self) -> None:

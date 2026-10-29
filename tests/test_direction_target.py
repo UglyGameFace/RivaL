@@ -267,12 +267,26 @@ def test_fifteen_minute_target_does_not_expire_after_only_five(tmp_path):
         )
         assert live.direction == "DOWN"
         assert live.probability == pytest.approx(.76)
+        # The target candle opened 8m ago and closed 3m ago: this call
+        # should already be WAIT, not falsely valid for 15 more minutes.
+        assert live.direction == "WAIT"
+        with store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_forward_audit
+                   SET target_opened_at=?, issued_at=?
+                   WHERE asset='BTC' AND horizon_minutes=15""",
+                (
+                    (now + timedelta(minutes=2)).isoformat(),
+                    (now - timedelta(minutes=10)).isoformat(),
+                ),
+            )
+        live = target_snapshot(market, asset="BTC", horizon_minutes=15, now=now)
+        assert live.direction == "DOWN"
         assert live.ends_at == now + timedelta(minutes=7)
-        expired = target_snapshot(
+        assert target_snapshot(
             market, asset="BTC", horizon_minutes=15,
             now=now + timedelta(minutes=8),
-        )
-        assert expired.direction == "WAIT"
+        ).direction == "WAIT"
     finally:
         store.close()
 
@@ -304,3 +318,30 @@ def test_target_button_is_present_in_real_opportunities_view(tmp_path):
         }
     finally:
         client.store.close()
+
+
+@pytest.mark.asyncio
+async def test_collector_outage_changes_existing_up_card_to_wait(tmp_path, monkeypatch):
+    store = SQLiteHotStore(tmp_path / "offline.sqlite")
+    dm = DummyDM()
+    service = DirectionTargetService(
+        bot=DummyBot(dm), market=object(), store=DirectionTargetStore(store),
+    )
+    try:
+        monkeypatch.setattr(
+            "parlay_bot.discord_app.targeting.target_snapshot",
+            lambda _market, *, asset, horizon_minutes: TargetSnapshot(
+                asset, horizon_minutes, "UP", "Current model.", "gate", 0.64, 103.0,
+            ) if _market is not None else TargetSnapshot(
+                asset, horizon_minutes, "WAIT", "Collector unavailable.",
+            ),
+        )
+        assert (await service.follow(DummyUser(dm), asset="BTC", horizon_minutes=5))[0]
+        card = dm.messages[101]
+        assert "UP" in card.embed.title
+        service.market = None
+        assert await service.cycle() == 1
+        assert "WAIT" in card.embed.title
+        assert await service.cycle() == 0
+    finally:
+        store.close()

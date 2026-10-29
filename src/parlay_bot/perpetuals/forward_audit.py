@@ -345,10 +345,14 @@ class ForwardAccuracyMonitor:
                     if asset is None:
                         continue
                     target_open = utc(last.opened_at) + timedelta(minutes=horizon)
-                    # The forecast is written only while the target close is
-                    # still genuinely in the future. A late job cannot
-                    # retrospectively issue a 'prediction'.
-                    if stamp >= target_open + timedelta(minutes=5, milliseconds=-1):
+                    # Training can take time. Stamp actual issuance AFTER
+                    # fitting, not the timestamp captured at cycle start.
+                    # Retain explicit fixture clocks only for deterministic
+                    # historical tests; the production path passes no 'now'.
+                    issued_at = stamp if now is not None else datetime.now(UTC)
+                    if issued_at >= target_open + timedelta(
+                        minutes=5, milliseconds=-1,
+                    ):
                         metrics["target_expired"] += 1
                         continue
                     # Store regime and model fingerprints BEFORE the target
@@ -375,7 +379,7 @@ class ForwardAccuracyMonitor:
                             (
                                 venue, contract, quote, asset, horizon, MODEL,
                                 utc(last.opened_at).isoformat(), last.close_price,
-                                stamp.isoformat(), target_open.isoformat(),
+                                issued_at.isoformat(), target_open.isoformat(),
                                 probability, baseline, tested.evaluated,
                             ),
                         )
@@ -388,7 +392,7 @@ class ForwardAccuracyMonitor:
                                      feature_sha256,weights_sha256
                                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
                                 (venue, contract, quote, horizon, MODEL,
-                                 utc(last.opened_at).isoformat(), stamp.isoformat(),
+                                 utc(last.opened_at).isoformat(), issued_at.isoformat(),
                                  REGIME_VERSION, regime, features[2],
                                  feature_hash, weight_hash),
                             )

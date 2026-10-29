@@ -291,7 +291,10 @@ def evaluate(
     }
 
 
-def evaluate_directory(\n    root: Path, *, intervals: tuple[int, ...] = (5, 60, 1440),\n    qualified_streams: set[tuple[str, int]] | None = None,\n) -> dict:
+def evaluate_directory(
+    root: Path, *, intervals: tuple[int, ...] = (5, 60, 1440),
+    qualified_streams: set[tuple[str, int]] | None = None,
+) -> dict:
     groups: dict[tuple[str, int], list[Path]] = defaultdict(list)
     for path in (root / "binance_um_klines").glob("*.manifest.json"):
         meta = json.loads(path.read_text(encoding="utf-8"))

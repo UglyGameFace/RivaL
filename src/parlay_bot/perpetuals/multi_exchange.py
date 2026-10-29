@@ -455,12 +455,60 @@ class MultiExchangeResearch:
                    WHERE e.asset=? AND e.horizon_minutes=? AND e.issued_at>=?""",
                 (asset,horizon_minutes,start),
             ).fetchone()
+            daily_rows = conn.execute(
+                """SELECT substr(e.target_opened_at,1,10) AS day,
+                          COUNT(*) AS n,
+                          SUM(q.challenger_gross_bps) AS challenger_sum,
+                          SUM(q.incumbent_gross_bps) AS incumbent_sum,
+                          SUM(CASE WHEN e.probability_up>=0.56
+                                    OR e.probability_up<=0.44 THEN 1 ELSE 0 END)
+                             AS challenger_trades,
+                          SUM(CASE WHEN e.reference_probability_up>=0.56
+                                    OR e.reference_probability_up<=0.44
+                                   THEN 1 ELSE 0 END) AS incumbent_trades
+                   FROM perp_multi_quote_shadow AS q
+                   JOIN perp_multi_forward AS e
+                     ON e.asset=q.asset AND e.horizon_minutes=q.horizon_minutes
+                    AND e.target_opened_at=q.target_opened_at
+                   WHERE e.asset=? AND e.horizon_minutes=? AND e.issued_at>=?
+                     AND q.state='EXIT_QUOTED'
+                   GROUP BY substr(e.target_opened_at,1,10)
+                   ORDER BY day""",
+                (asset,horizon_minutes,start),
+            ).fetchall()
         n = int(aggregate["settled"] or 0)
         paired = int(quotes["paired"] or 0)
         ml = float(aggregate["challenger_loss"] or 0)/n if n else None
         bl = float(aggregate["incumbent_loss"] or 0)/n if n else None
         cost_results = {}
+        daily_stats = {}
         for label,bps in COST_SCENARIOS:
+            challenger_days = [
+                (float(x["challenger_sum"]) - bps*int(x["challenger_trades"]))
+                / int(x["n"])
+                for x in daily_rows
+            ]
+            incumbent_days = [
+                (float(x["incumbent_sum"]) - bps*int(x["incumbent_trades"]))
+                / int(x["n"])
+                for x in daily_rows
+            ]
+            diff_days = [x-y for x,y in zip(challenger_days,incumbent_days)]
+            count_days = len(challenger_days)
+
+            def lower(days: list[float]) -> float | None:
+                if len(days) < 2:
+                    return None
+                mean=sum(days)/len(days)
+                variance=sum((x-mean)**2 for x in days)/(len(days)-1)
+                return mean-2.58*math.sqrt(variance/len(days))
+
+            daily_stats[label] = {
+                "days":count_days,
+                "challenger_lower":lower(challenger_days),
+                "incremental_lower":lower(diff_days),
+                "positive_days":sum(x>0 for x in challenger_days),
+            }
             cost_results[label] = {
                 "challenger_mean_net_bps": (
                     (float(quotes["challenger_sum"] or 0) -
@@ -473,6 +521,32 @@ class MultiExchangeResearch:
                     if paired else None
                 ),
             }
+        coverage = paired/n if n else 0.0
+        severe = cost_results.get("severe", {})
+        severe_daily = daily_stats.get("severe", {})
+        incumbent_outperformed = (
+            n >= MIN_PAIRED_WINDOWS and
+            int(aggregate["days"] or 0) >= MIN_DAYS and
+            ml is not None and bl is not None and
+            bl-ml >= 0.005
+        )
+        cost_advantage = (
+            paired >= MIN_PAIRED_WINDOWS and coverage >= 0.80
+            and severe_daily.get("days", 0) >= MIN_DAYS
+            and severe.get("challenger_mean_net_bps") is not None
+            and severe["challenger_mean_net_bps"] > 0
+            and severe.get("incumbent_mean_net_bps") is not None
+            and severe["challenger_mean_net_bps"] >
+                severe["incumbent_mean_net_bps"]
+            and severe_daily.get("challenger_lower") is not None
+            and severe_daily["challenger_lower"] > 0
+            and severe_daily.get("incremental_lower") is not None
+            and severe_daily["incremental_lower"] > 0
+            and severe_daily["positive_days"] >= math.ceil(
+                severe_daily["days"]*0.8
+            )
+        )
+        shadow_candidate_qualified = incumbent_outperformed and cost_advantage
         return {
             "asset":asset,"horizon_minutes":horizon_minutes,
             "issued":int(aggregate["issued"] or 0),
@@ -483,7 +557,14 @@ class MultiExchangeResearch:
             "brier_improvement":bl-ml if n else None,
             "quote_pairs":paired,"quote_missed":int(quotes["missed"] or 0),
             "quote_entries":int(quotes["n"] or 0),
+            "quote_coverage": coverage,
             "after_cost":cost_results,
-            "status": "RESEARCH_ONLY_NOT_APPROVED",
+            "daily_stress": daily_stats,
+            "model_advantage_qualified":incumbent_outperformed,
+            "cost_advantage_qualified":cost_advantage,
+            "shadow_candidate_qualified":shadow_candidate_qualified,
+            "status": ("SHADOW_CANDIDATE_PASSED_NOT_DEPLOYED"
+                       if shadow_candidate_qualified
+                       else "RESEARCH_ONLY_NOT_APPROVED"),
             "replacement_authorized":False,
         }

@@ -24,7 +24,7 @@ if TYPE_CHECKING:
 
 HORIZONS = (5, 15)
 FRESHNESS = timedelta(minutes=10)
-MAX_PRICE = Decimal("1000000000000")
+MAX_PRICE = Decimal(1000000000000)
 
 
 def parse_price(value: float | str | Decimal) -> str:
@@ -33,7 +33,7 @@ def parse_price(value: float | str | Decimal) -> str:
         price = Decimal(str(value))
     except (InvalidOperation, ValueError, TypeError) as exc:
         raise ValueError("Enter a valid positive USDT price.") from exc
-    if not price.is_finite() or not Decimal("0") < price <= MAX_PRICE:
+    if not price.is_finite() or not Decimal(0) < price <= MAX_PRICE:
         raise ValueError("Enter a finite USDT price greater than zero.")
     if price.as_tuple().exponent < -8:
         raise ValueError("Use at most eight decimal places for the target price.")
@@ -164,12 +164,12 @@ def price_result(
     start = goal.started_at.astimezone(UTC)
     deadline = start + timedelta(minutes=horizon_minutes)
     direction = "UP" if target > Decimal(str(goal.reference_price)) else "DOWN"
-    base = dict(
-        asset=asset, horizon_minutes=horizon_minutes,
-        target_price=goal.price, reference_price=goal.reference_price,
-        required_direction=direction, venue=goal.venue,
-        started_at=start, deadline=deadline,
-    )
+    base = {
+        "asset": asset, "horizon_minutes": horizon_minutes,
+        "target_price": goal.price, "reference_price": goal.reference_price,
+        "required_direction": direction, "venue": goal.venue,
+        "started_at": start, "deadline": deadline,
+    }
     if market is None:
         return PriceResult(
             **base, status="WAIT", explanation="Live collector unavailable.",

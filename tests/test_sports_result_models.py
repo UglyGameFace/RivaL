@@ -1,6 +1,7 @@
 """Provider-finalized, immutable sports scores and causal sport model tests."""
 from __future__ import annotations
 
+import json
 import os
 from datetime import UTC, datetime, timedelta
 
@@ -165,4 +166,101 @@ def test_postgres_sports_final_source_survives_restart():
                 "DELETE FROM rival_sport_results WHERE event_id=?",
                 (event["eventID"],),
             )
+        store.close()
+
+
+def test_sports_forward_ledger_settles_only_pregame_and_keeps_result_identity(tmp_path):
+    store = SQLiteHotStore(tmp_path / "prospective.sqlite")
+    research = SportsResultStore(store)
+    event = _event(event_id="match-1142")
+    kickoff = datetime.fromisoformat(event["status"]["startsAt"])
+    issued = kickoff - timedelta(hours=2)
+    try:
+        research.initialize()
+        assert research.issue_forecast(
+            {
+                **event,
+                "status": {
+                    "started": False, "finalized": False,
+                    "startsAt": kickoff.isoformat(),
+                },
+            }, observed_at=issued,
+        ) == "not_qualified"
+        with store.connect() as conn:
+            conn.execute(
+                """INSERT INTO rival_sport_forecasts
+                   (event_id,sport,league,home_id,away_id,model_version,
+                    issued_at,starts_at,probability_json,baseline_json)
+                   VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "match-1142", "SOCCER", "EPL",
+                    "home-team", "away-team",
+                    "soccer-poisson-home-away-v1",
+                    issued.isoformat(), kickoff.isoformat(),
+                    json.dumps([0.6, 0.2, 0.2]),
+                    json.dumps([0.4, 0.3, 0.3]),
+                ),
+            )
+        assert research.save_finalized(
+            event, observed_at=kickoff + timedelta(hours=3),
+        ) == "inserted"
+        with store.connect() as conn:
+            settled = conn.execute(
+                "SELECT label,model_brier,baseline_brier FROM "
+                "rival_sport_forecasts WHERE event_id=?",
+                ("match-1142",),
+            ).fetchone()
+            assert settled["label"] == 0
+            assert settled["model_brier"] < settled["baseline_brier"]
+        assert research.save_finalized(
+            event, observed_at=kickoff + timedelta(hours=4),
+        ) == "unchanged"
+    finally:
+        store.close()
+
+
+def test_shadow_champion_promotes_only_prospective_scored_evidence_and_revokes(tmp_path):
+    store = SQLiteHotStore(tmp_path / "governance.sqlite")
+    research = SportsResultStore(store)
+    research.initialize()
+    at = datetime.now(UTC)
+    try:
+        empty = research.promotion_status(sport="SOCCER", league="EPL", now=at)
+        assert empty["status"] == "NOT_QUALIFIED"
+        with store.connect() as conn:
+            for day in range(20):
+                for i in range(5):
+                    start = at - timedelta(days=20 - day, hours=i)
+                    conn.execute(
+                        """INSERT INTO rival_sport_forecasts
+                           (event_id,sport,league,home_id,away_id,model_version,
+                            issued_at,starts_at,probability_json,baseline_json,
+                            settled_at,label,model_brier,baseline_brier)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            f"match-{day}-{i}", "SOCCER", "EPL",
+                            "h", "a", "soccer-poisson-home-away-v1",
+                            (start - timedelta(hours=2)).isoformat(),
+                            start.isoformat(),
+                            json.dumps([0.55, 0.2, 0.25]),
+                            json.dumps([0.4, 0.3, 0.3]),
+                            (start + timedelta(hours=2)).isoformat(),
+                            0, 0.20, 0.30,
+                        ),
+                    )
+        qualified = research.promotion_status(sport="SOCCER", league="EPL", now=at)
+        assert qualified["status"] == "SHADOW_CHAMPION"
+        assert qualified["settled_unique_events"] == 100
+        assert qualified["production_inference_changed"] is False
+        assert qualified["live_trading_approved"] is False
+        with store.connect() as conn:
+            conn.execute(
+                """UPDATE rival_sport_forecasts SET model_brier=0.5,
+                   baseline_brier=0.3 WHERE sport='SOCCER' AND league='EPL'"""
+            )
+        revoked = research.promotion_status(
+            sport="SOCCER", league="EPL", now=at + timedelta(days=1),
+        )
+        assert revoked["status"] == "REVOKED"
+    finally:
         store.close()

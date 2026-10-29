@@ -297,6 +297,28 @@ class PaperLedger:
                    FROM rival_paper_positions WHERE user_id=?""",
                 (user_id,),
             ).fetchone()
+            research = conn.execute(
+                """SELECT asset,side,COUNT(*) AS settled,
+                          SUM(CASE WHEN assumed_net_usdt>0 THEN 1 ELSE 0 END)
+                            AS paper_wins,
+                          AVG(assumed_net_usdt) AS mean_net_usdt,
+                          SUM(assumed_net_usdt) AS net_usdt
+                   FROM rival_paper_positions
+                   WHERE user_id=? AND closed_at IS NOT NULL
+                   GROUP BY asset,side ORDER BY settled DESC,asset,side LIMIT 12""",
+                (user_id,),
+            ).fetchall()
+        cohorts = [
+            {
+                "asset": str(x["asset"]), "side": str(x["side"]),
+                "settled": int(x["settled"]),
+                "wins": int(x["paper_wins"] or 0),
+                "mean_net_usdt": float(x["mean_net_usdt"]),
+                "net_usdt": float(x["net_usdt"]),
+            }
+            for x in research
+            if int(x["settled"]) >= 5
+        ]
         return {
             "open": int(row["open_count"] or 0),
             "closed": int(row["completed"] or 0),
@@ -307,6 +329,8 @@ class PaperLedger:
             "practice_feedback": {
                 "completed": balance["completed"],
                 "wins": balance["wins"], "losses": balance["losses"],
+                "validated_cohorts": cohorts,
+                "research_samples": balance["completed"],
                 "profitable_fraction": (
                     balance["wins"] / balance["completed"]
                     if balance["completed"] else None

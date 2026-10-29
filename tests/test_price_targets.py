@@ -6,6 +6,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from parlay_bot.config import Settings
+from parlay_bot.discord_app.bot import RivalDiscordClient
 from parlay_bot.discord_app.price_targets import (
     PriceGoal,
     create_price_goal,
@@ -13,8 +15,6 @@ from parlay_bot.discord_app.price_targets import (
     price_embed,
     price_result,
 )
-from parlay_bot.config import Settings
-from parlay_bot.discord_app.bot import RivalDiscordClient
 from parlay_bot.discord_app.targeting import (
     DirectionTarget,
     DirectionTargetService,

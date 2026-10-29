@@ -1,8 +1,8 @@
 """Point-in-time feature and outcome-gated online learning regression tests."""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 

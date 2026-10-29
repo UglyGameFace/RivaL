@@ -240,6 +240,35 @@ class SportsGameOddsClient:
             )
         return min(requested, safe_remaining)
 
+    async def get_result_events(self, event_ids: tuple[str, ...]) -> list[dict[str, Any]]:
+        """Bounded official eventID lookup for already observed fixtures.
+
+        The provider documents that an explicit eventID overrides started/
+        finalized filters. We therefore verify finalization on EACH result.
+        """
+        if not 1 <= len(event_ids) <= 8 or any(
+            not isinstance(e, str) or not 1 <= len(e) <= 128
+            or any(c in e for c in (",", " ", "\\n"))
+            for e in event_ids
+        ):
+            raise ValueError("Invalid bounded result lookup")
+        budget = await self._safe_event_limit(len(event_ids))
+        if budget < len(event_ids):
+            raise QuotaReserveReached("Results lookup blocked by provider quota reserve")
+        response = self._payload(await self._request(
+            "/events", params={"eventID": ",".join(event_ids), "limit": len(event_ids)},
+        ))
+        data = response.get("data")
+        if not isinstance(data, list) or len(data) > len(event_ids):
+            raise ProviderProtocolError("Malformed finalized event batch")
+        permitted = set(event_ids)
+        if any(
+            not isinstance(row, dict) or row.get("eventID") not in permitted
+            for row in data
+        ):
+            raise ProviderProtocolError("Unexpected event in results lookup")
+        return data
+
     async def get_events(
         self,
         *,

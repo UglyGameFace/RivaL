@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
@@ -1324,65 +1323,6 @@ class RivalDiscordClient(discord.Client):
             )
             await interaction.edit_original_response(
                 embed=await dashboard.render(), view=dashboard,
-            )
-
-        @tools_group.command(
-            name="health",
-            description="Private owner-only live data and collection diagnostics.",
-        )
-        async def rival_health(interaction: discord.Interaction) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            app = await interaction.client.application_info()
-            if app.owner is None or interaction.user.id != app.owner.id:
-                await interaction.edit_original_response(
-                    content="Only the application owner can view diagnostics.",
-                )
-                return
-
-            def read_health() -> tuple[list[str], float]:
-                started = time.monotonic()
-                with self.store.connect() as conn:
-                    sports = conn.execute(
-                        "SELECT COUNT(*) AS n, MAX(observed_at) AS newest "
-                        "FROM current_odds WHERE active=1"
-                    ).fetchone()
-                    fixtures = conn.execute(
-                        "SELECT COUNT(*) AS n, MAX(ingested_at) AS newest FROM fixtures"
-                    ).fetchone()
-                    quotes = conn.execute(
-                        "SELECT COUNT(DISTINCT bookmaker) AS n FROM current_odds "
-                        "WHERE active=1"
-                    ).fetchone()
-                return [
-                    f"Active odds rows: {sports['n']}",
-                    f"Newest odds observation: {sports['newest'] or 'none'}",
-                    f"Stored fixtures: {fixtures['n']}",
-                    f"Newest fixture ingestion: {fixtures['newest'] or 'none'}",
-                    f"Books with active odds: {quotes['n']}",
-                ], (time.monotonic() - started) * 1000
-
-            try:
-                lines, latency = await asyncio.wait_for(
-                    asyncio.to_thread(read_health), timeout=8,
-                )
-                lines.append(f"Database read: {latency:.0f} ms")
-            except TimeoutError:
-                lines = ["Database read timed out after 8 seconds"]
-            except Exception:  # noqa: BLE001
-                _LOG.exception("Owner health read failed")
-                lines = ["Database read failed; inspect server logs"]
-
-            lines.extend([
-                f"Sports API configured: {'yes' if self.current_provider else 'no'}",
-                f"Sports collector active: {'yes' if self._sports_task and not self._sports_task.done() else 'no'}",
-                f"Sports refresh running: {'yes' if self.current_collector and self.current_collector._lock.locked() else 'no'}",
-                f"Crypto collector active: {'yes' if self._perp_task and not self._perp_task.done() else 'no'}",
-                f"Discord ready: {'yes' if self.is_ready() else 'no'}",
-                "API reachability and individual exchange freshness require "
-                "verified collector results; configured does not mean working.",
-            ])
-            await interaction.edit_original_response(
-                content="**RivaL owner health (read-only)**\\n" + "\\n".join(lines),
             )
 
         self.tree.add_command(tools_group)

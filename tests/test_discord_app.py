@@ -295,3 +295,51 @@ async def test_opportunities_are_default_not_history_on_research_view(tmp_path) 
     displayed = (await view.render()).to_dict()
     assert "Opportunity Desk" in displayed["title"]
     assert "PASS" in displayed["description"]
+
+
+
+@pytest.mark.asyncio
+async def test_archive_autostarts_only_when_full_private_bot_drive_config_exists(
+    tmp_path,
+) -> None:
+    settings = Settings(
+        _env_file=None,
+        rival_storage_backend="sqlite",
+        rival_db_path=str(tmp_path / "rival.sqlite"),
+        rival_archive_enabled=False,
+        rival_perp_archive_enabled=False,
+        rival_archive_autostart_when_configured=True,
+        rival_drive_root_folder_id="test-root",
+        rival_drive_history_folder_id="test-history",
+        rival_drive_manifests_folder_id="test-manifests",
+        rival_drive_staging_folder_id="test-staging",
+        rival_drive_oauth_client_id="test-id",
+        rival_drive_oauth_client_secret="test-secret",
+        rival_drive_oauth_refresh_token="test-refresh",
+    )
+    client = RivalDiscordClient(settings)
+    try:
+        assert client.archive_runtime is not None
+        assert client.archive_runtime.perpetual_service is not None
+    finally:
+        await client.close()
+
+    not_authorized = settings.model_copy(update={
+        "rival_drive_oauth_refresh_token": None,
+        "rival_db_path": str(tmp_path / "missing.sqlite"),
+    })
+    missing = RivalDiscordClient(not_authorized)
+    try:
+        assert missing.archive_runtime is None
+    finally:
+        await missing.close()
+
+    disabled = settings.model_copy(update={
+        "rival_archive_autostart_when_configured": False,
+        "rival_db_path": str(tmp_path / "optout.sqlite"),
+    })
+    optout = RivalDiscordClient(disabled)
+    try:
+        assert optout.archive_runtime is None
+    finally:
+        await optout.close()

@@ -1,3 +1,11 @@
+## October 29, 2026: PERSONAL UP/DOWN TARGET WATCH (PR #51)
+
+- User-facing goal: choose a market/timeframe and see only UP, DOWN or WAIT; automatically edit the result if the prospective prediction changes. Implemented `/rival-target` BTC/ETH/SOL 5m/15m, `/rival-stop`, and one-tap **Follow 5m UP/DOWN** from the opportunity dashboard.
+- Persists one explicitly opted-in personal Discord DM card per user in RivaL's relational store; checks roughly every 60 seconds, detects fresh direction reversals, edits **one existing DM** rather than spamming, and survives bot restarts. Cancelling makes the existing DM visibly **Target stopped**. No opt-in -> no DMs. Per-user retarget edits the same card.
+- Source is the genuinely issued (pre-outcome) forward ledger plus live feed/candle, never imported historical data. No valid prediction, stale source, missing collector or tied model -> WAIT. 15m forecasts remain valid for their actual full future interval. Raw direction probabilities do not prove trading profitability or an executable quote.
+- New focused tests for seeded real forecast ledger, expiry, 15-minute horizon, restart, retarget, flip, missing feed, permissions and stop, plus existing full suite. Verify current CI and merge only exact tested head. Discloud production restart/Discord command sync remains externally unverified after GitHub merge.
+- No automatic real-money orders, fake profitable predictions, or extra PR split.
+
 ## October 29, 2026: TURN RIVAL INTO AN ACTUAL OPPORTUNITY FINDER (PR #50)
 
 - Owner rejects education-first UI, wants live opportunities, price-specific sports candidates and actionable yes/no decisions. One cohesive PR #50, preserve older research behind tabs rather than removing verification.

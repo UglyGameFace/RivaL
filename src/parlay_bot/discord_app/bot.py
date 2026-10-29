@@ -340,11 +340,12 @@ class RivalDiscordClient(discord.Client):
 
         @self.tree.command(
             name="rival-target",
-            description="Target a coin and get automatic UP, DOWN or WAIT updates in one DM.",
+            description="Watch UP/DOWN or an exact crypto USDT price, automatically.",
         )
         @app_commands.describe(
             coin="Which crypto perpetual market should RivaL monitor?",
-            timeframe="Predict the next 5 or 15 minutes using actual forward models.",
+            timeframe="Watch a 5m or 15m window.",
+            target_price="Optional: exact USDT price to watch for a verified hit.",
         )
         @app_commands.choices(
             coin=[
@@ -361,12 +362,14 @@ class RivalDiscordClient(discord.Client):
             interaction: discord.Interaction,
             coin: app_commands.Choice[str],
             timeframe: app_commands.Choice[int],
+            target_price: float | None = None,
         ) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
                 ok, message = await self.direction_targets.follow(
                     interaction.user,
                     asset=coin.value, horizon_minutes=timeframe.value,
+                    target_price=target_price,
                 )
             except ValueError as exc:
                 ok, message = False, str(exc)

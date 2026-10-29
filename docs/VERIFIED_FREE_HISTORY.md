@@ -217,3 +217,36 @@ prospective RivaL loop continues on its current controls, with no auto orders.
   runner in the first source smoke. Other histories, prospective prediction
   gains and actual betting profitability must not be marked verified.
 
+
+### Real six-calendar-month production evidence (October 29, 2026)
+
+The PR #49 GitHub Actions workflow #40806781762 **successfully fetched
+and checksum-validated every requested Binance USD-M month** from April to
+September 2026. Coverage: BTCUSDT, ETHUSDT and SOLUSDT, 1m, 5m, 15m,
+1h, 4h and 1d, for 108 independent monthly partitions with 1,018,395
+genuine observations and **zero UTC time-grid gaps**. Download attempts
+rejected: zero. A 26,673,248-byte ZIP holds the 108 NDJSON partitions plus
+108 per-partition source checksum manifests. ZIP SHA-256:
+`dafb560b27ab0816d3220e6833dc6c49a2b7976a62aa57d6c7725c1bc5826a2b`.
+
+Through the authorized user-connected Drive interface, the full normalized
+archive ZIP was stored under RivaL `history/`, its index under
+`manifests/`, the complete holdout report under `reports/`, and a
+versioned offline candidate registry under `models/`. All four objects
+were downloaded back from Drive and verified byte-for-byte, including
+the archive ZIP. The archive is recoverable by unzipping it and verifying
+the per-file SHA-256 fields. It is a bundled cold copy; it must not be
+mistaken for a verified production bot read-through deployment or a live
+PostgreSQL import.
+
+A first 42-model offline research screen covered compatible short-horizon
+combinations; 36 longer-horizon trials were withheld for insufficient
+non-overlapping, leak-free samples. **Zero candidates passed the strict
+Brier improvement gates.** Any raw hit-rate gains are not proven
+improvements over an independent probability baseline and did not cause
+model promotion. The preexisting live 46% accuracy is not redefined.
+
+The official football odds source was inaccessible from the Actions
+runner. A live Discloud OAuth grant, direct provider archive read-through,
+verified future prospective model performance and actual net betting
+profitability remain **NOT VERIFIED**. No automatic trading.

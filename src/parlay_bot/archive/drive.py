@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -429,6 +430,59 @@ class GoogleDriveArchiveClient:
             raise DriveArchiveError("Drive history promotion did not preserve boundary")
         self._verify_artifact(promoted, artifact)
         return promoted
+
+
+    async def verify_downloaded_artifact(
+        self,
+        *,
+        file_id: str,
+        parent_id: str,
+        artifact: ArchiveArtifact,
+        max_bytes: int = 64 * 1024 * 1024,
+    ) -> None:
+        """Read actual stored bytes back, not merely Drive object metadata."""
+        if parent_id not in {self.folders.history, self.folders.manifests}:
+            raise DriveArchiveError("restore verification outside archive folders")
+        if (
+            not file_id or any(char not in
+                               "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+                               for char in file_id)
+            or artifact.size_bytes <= 0
+            or artifact.size_bytes > max_bytes
+        ):
+            raise DriveArchiveError("invalid or oversized restore verification target")
+        await self._verify_folder_boundary()
+        headers = await self._headers()
+        response = await self._client.get(
+            f"{self.DRIVE_URL}/files/{file_id}",
+            params={"fields": "id,name,size,md5Checksum,parents,trashed"},
+            headers=headers, follow_redirects=False,
+        )
+        if response.status_code != 200:
+            raise DriveArchiveError("restore metadata inaccessible")
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("trashed"):
+            raise DriveArchiveError("restore object deleted or invalid")
+        obj = self._object(payload)
+        if obj.file_id != file_id or parent_id not in obj.parents:
+            raise DriveArchiveError("restore object outside configured warehouse")
+        self._verify_artifact(obj, artifact)
+        sha = hashlib.sha256()
+        size = 0
+        async with self._client.stream(
+            "GET", f"{self.DRIVE_URL}/files/{file_id}",
+            params={"alt": "media"}, headers=headers,
+            follow_redirects=False,
+        ) as downloaded:
+            if downloaded.status_code != 200:
+                raise DriveArchiveError("warehouse restore read failed")
+            async for chunk in downloaded.aiter_bytes():
+                size += len(chunk)
+                if size > max_bytes or size > artifact.size_bytes:
+                    raise DriveArchiveError("warehouse restore exceeds expected size")
+                sha.update(chunk)
+        if size != artifact.size_bytes or sha.hexdigest() != artifact.sha256:
+            raise DriveArchiveError("restored bytes failed SHA256 verification")
 
     async def ensure_manifest_file(
         self,

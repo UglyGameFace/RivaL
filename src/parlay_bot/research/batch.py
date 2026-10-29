@@ -14,8 +14,12 @@ from pathlib import Path
 import httpx
 
 from parlay_bot.research.free_history import (
-    ASSETS, INTERVALS, HistoryImportError,
-    ingest_binance, ingest_football,
+    ASSETS,
+    INTERVALS,
+    LEAGUES,
+    HistoryImportError,
+    ingest_binance,
+    ingest_football,
 )
 
 

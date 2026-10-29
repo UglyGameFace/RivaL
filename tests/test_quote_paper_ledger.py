@@ -85,7 +85,7 @@ def test_paper_short_assumed_pnl_and_top_book_rejection(tmp_path):
     ledger = PaperLedger(store)
     now = datetime.now(UTC)
     try:
-        with pytest.raises(ValueError, match="liquidity"):
+        with pytest.raises(ValueError, match="insufficient"):
             ledger.open(
                 user_id="123", position_id="12", side="long",
                 notional_usdt=200,

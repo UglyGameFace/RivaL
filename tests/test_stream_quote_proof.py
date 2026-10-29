@@ -346,3 +346,99 @@ async def test_websocket_subscription_reconnect_and_stop_without_network(monkeyp
         result = await asyncio.gather(task, return_exceptions=True)
         assert isinstance(result[0], asyncio.CancelledError)
         assert not hub.health()["hyperliquid"]["connected"]
+
+
+
+def test_proof_funnel_identifies_weak_model_instead_of_no_exchange_data(tmp_path):
+    store = SQLiteHotStore(tmp_path / "weak-funnel.sqlite")
+    ForwardAccuracyMonitor(PerpetualMarketStore(store)).initialize()
+    issued = datetime.now(UTC) - timedelta(minutes=6)
+    try:
+        forecast(store, issued, venue="hyperliquid", probability=.514)
+        proof = StreamShadowLedger(store).report(
+            asset="BTC", horizon_minutes=5,
+            now=issued + timedelta(minutes=9),
+        )
+        assert proof["issued_windows"] == 1
+        assert proof["weak_windows"] == 1
+        assert proof["eligible_windows"] == 0
+        assert proof["entries"] == 0
+        assert not proof["readiness"]["forward_windows"]
+        assert not proof["qualified_shadow"]
+    finally:
+        store.close()
+
+
+def test_two_exchanges_same_target_are_not_two_independent_trials(tmp_path):
+    store = SQLiteHotStore(tmp_path / "correlated.sqlite")
+    ForwardAccuracyMonitor(PerpetualMarketStore(store)).initialize()
+    issued = datetime.now(UTC) - timedelta(minutes=6)
+    book_time = issued + timedelta(seconds=20)
+    close_time = issued + timedelta(minutes=5, seconds=20)
+    ledger = StreamShadowLedger(store)
+    try:
+        for venue in ("hyperliquid", "binance"):
+            forecast(store, issued, venue=venue, probability=.70)
+        assert ledger.observe(hyper(book_time), now=book_time)["opened"] == 1
+        assert ledger.observe(binance(book_time), now=book_time)["opened"] == 1
+        assert ledger.observe(
+            hyper(close_time, bid=101, ask=101.1), now=close_time,
+        )["closed"] == 1
+        assert ledger.observe(
+            binance(close_time, bid=101, ask=101.1), now=close_time,
+        )["closed"] == 1
+        result = ledger.report(
+            asset="BTC", horizon_minutes=5, now=issued + timedelta(minutes=9),
+        )
+        assert result["issued_windows"] == 2
+        assert result["eligible_windows"] == 2
+        assert result["entries"] == result["closed"] == 2
+        assert result["distinct_target_windows"] == 1
+        assert result["needed_unique_exits"] == 149
+        assert result["readiness"]["distinct_target_windows"] is False
+        assert result["coverage"] == 1
+        assert result["qualified_shadow"] is False
+    finally:
+        store.close()
+
+
+def test_discord_proof_shows_all_gate_failures_and_explains_missing_data():
+    from parlay_bot.discord_app.stream_proof import stream_proof_embed
+
+    base = {
+        "status": "NOT_PROVEN", "asset": "BTC", "horizon_minutes": 5,
+        "issued_windows": 3, "weak_windows": 2,
+        "eligible_windows": 1, "entries": 0, "closed": 0,
+        "missed_exits": 0, "coverage": 0, "days": 0,
+        "distinct_target_windows": 0, "missing_entries": 1,
+        "needed_unique_exits": 150, "needed_days": 21,
+        "readiness": {
+            "forward_windows": False, "observed_exits": False,
+            "distinct_target_windows": False, "observed_days": False,
+            "quote_coverage": False, "after_cost_stress": False,
+        },
+        "costs": {
+            "conservative": {
+                "assumed_extra_cost_bps": 14, "mean_net_bps": None,
+                "daily_lower_bps": None, "positive_days": 0,
+            },
+            "severe": {
+                "assumed_extra_cost_bps": 80, "mean_net_bps": None,
+                "daily_lower_bps": None, "positive_days": 0,
+            },
+        },
+    }
+    embed = stream_proof_embed(base)
+    values = "\n".join(str(f.value) for f in embed.fields)
+    assert "Qualification progress" in [f.name for f in embed.fields]
+    assert "150 distinct target windows" in values
+    assert "Actual forecasts issued: **3**" in values
+    assert "Weak: **2**" in values
+    assert "Days still needed: **21**" in values
+    assert "No real-money profit" in embed.description
+    base["issued_windows"] = 0
+    base["weak_windows"] = 0
+    no_issued = stream_proof_embed(base)
+    assert any(
+        "No eligible issuer history" in str(f.value) for f in no_issued.fields
+    )

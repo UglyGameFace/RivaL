@@ -60,6 +60,13 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          name: verified-binance-public-history
+          path: public-evidence/binance_um_klines/
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
           name: public-history-smoke-reports
           path: public-evidence/quality.json
           if-no-files-found: ignore
@@ -106,6 +113,14 @@ jobs:
             --months "$months" --max-new 100 \
             --root data/research-history \
             --report-dir data/research-reports "${args[@]}"
+      - name: Retain checksum-validated public Binance research until private Drive transfer
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-binance-six-month-history
+          path: data/research-history/binance_um_klines/
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Publish public-safe report artifact, never raw provider history or secrets
         if: always()
         uses: actions/upload-artifact@v4

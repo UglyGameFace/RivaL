@@ -1,6 +1,8 @@
 """Exact calendar-partition continuity and cross-resolution source audit."""
 from __future__ import annotations
 
+import argparse
+import itertools
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -32,7 +34,7 @@ def audit_partition(path: Path) -> dict:
     stamps = [_as_datetime(r["opened_at"]) for r in rows]
     if any(t < start or t >= end for t in stamps):
         raise HistoryImportError("cross-month history partition")
-    if any(b <= a or (b - a) % step for a, b in zip(stamps, stamps[1:])):
+    if any(b <= a or (b - a) % step for a, b in itertools.pairwise(stamps)):
         raise HistoryImportError("duplicate, unordered or misaligned partition")
     if len(rows) > expected:
         raise HistoryImportError("too many candles for complete month")
@@ -65,7 +67,7 @@ def audit_partition(path: Path) -> dict:
 def audit_catalog(root: Path, *, months: list[str]) -> dict:
     if not months or len(months) != len(set(months)):
         raise ValueError("unique expected calendar months required")
-    if any(_next_month(a) != b for a, b in zip(months, months[1:])):
+    if any(_next_month(a) != b for a, b in itertools.pairwise(months)):
         raise ValueError("requested months are not contiguous")
     items = []
     failures = []
@@ -110,7 +112,6 @@ def audit_catalog(root: Path, *, months: list[str]) -> dict:
 
 
 def main() -> int:
-    import argparse
     from parlay_bot.research.batch import complete_months
 
     parser = argparse.ArgumentParser(description="Exact source continuity audit")

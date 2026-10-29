@@ -167,6 +167,8 @@ def test_same_book_compares_both_models_after_spread_and_costs(tmp_path):
         assert a.observe(book(entry),now=entry)["opened"] == 0
         assert a.observe(book(exit_time,bid=101,ask=101.1),now=exit_time)["closed"] == 1
         assert a.observe(book(exit_time,bid=101,ask=101.1),now=exit_time)["closed"] == 0
+        settle_anchor(store, now, target)
+        assert a.settle(now=exit_time+timedelta(minutes=1)) == 1
         proof = a.report(asset="BTC",horizon_minutes=5,now=exit_time+timedelta(minutes=1))
         assert proof["quote_pairs"] == 1
         assert proof["quote_missed"] == 0
@@ -186,13 +188,15 @@ def test_same_book_compares_both_models_after_spread_and_costs(tmp_path):
 def test_missing_exit_is_never_fabricated_from_future_candle(tmp_path):
     store = SQLiteHotStore(tmp_path / "missed.sqlite")
     now = datetime.now(UTC)
-    seed(store,now,venues=("hyperliquid","binance","dydx"))
+    target = seed(store,now,venues=("hyperliquid","binance","dydx"))
     a = MultiExchangeResearch(store)
     try:
         assert a.issue(now=now) == 1
         assert a.observe(book(now+timedelta(seconds=10)),
                          now=now+timedelta(seconds=10))["opened"] == 1
         assert a.expire(now=now+timedelta(minutes=10)) == 1
+        settle_anchor(store, now, target)
+        assert a.settle(now=now+timedelta(minutes=10)) == 1
         proof = a.report(asset="BTC",horizon_minutes=5,now=now+timedelta(minutes=10))
         assert proof["quote_pairs"] == 0
         assert proof["quote_missed"] == 1

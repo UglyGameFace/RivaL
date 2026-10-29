@@ -9,7 +9,6 @@ import pytest
 
 from parlay_bot.discord_app.price_targets import PriceGoal
 from parlay_bot.perpetuals.live_quotes import (
-    BookQuote,
     PublicBestQuoteClient,
     QuoteUnavailable,
     parse_book_quote,
@@ -134,8 +133,8 @@ def test_proof_is_not_qualified_without_real_forward_outcomes(tmp_path):
 
 def test_price_barrier_model_requires_source_matched_validated_chronology():
     from parlay_bot.perpetuals.price_hit_evidence import (
-        _Sample,
         _insufficient,
+        _Sample,
         _volatility,
     )
 

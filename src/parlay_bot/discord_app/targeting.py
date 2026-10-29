@@ -18,7 +18,6 @@ from typing import TYPE_CHECKING
 import discord
 
 from parlay_bot.discord_app.opportunities import ASSETS, _cash, _utc, recent_watches
-from parlay_bot.discord_app.signals import model_strength
 from parlay_bot.discord_app.price_targets import (
     PriceGoal,
     PriceResult,
@@ -26,6 +25,7 @@ from parlay_bot.discord_app.price_targets import (
     price_embed,
     price_result,
 )
+from parlay_bot.discord_app.signals import model_strength
 from parlay_bot.storage.hot import RelationalHotStore
 
 if TYPE_CHECKING:

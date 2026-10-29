@@ -1,3 +1,38 @@
+## October 28, 2026: prospective proof by market condition and hard real-cost gate
+
+- The current RivaL autonomous loop already stores immutable 5m/15m forward
+  math forecasts before outcomes and settles only subsequently observed bars.
+  Preserve this architecture and never reclassify backfilled history as
+  prospective evidence or place auto-execution orders.
+- For **new** forward forecasts, stamp quiet/normal/turbulent volatility
+  regime from strictly prior 5m candle features at issuance. Store SHA-256
+  fingerprints of the actual feature vector and logistic weight vector in a
+  new append-only linked table in the SAME transaction as forecast issuance.
+  Never retro-tag historical forecasts with hindsight.
+- Audit paired model-versus-baseline Brier by unique UTC target, regime,
+  actual settled outcomes and distinct later weeks. Multiple venues for
+  one target are correlated; conflicting regime labels exclude that target.
+  At least two regimes each with >=50 unique forward targets, >=7 UTC days,
+  >=2 weeks of adequate observations and positive paired skill are needed
+  even for a "consistent shadow skill" research label.
+- Add private Accuracy drilldowns for latest timestamped real forecast
+  records, genuine prospective regime skill, and explicit execution-cost
+  proof. Every screen retains the three-field phone layout and reads
+  PostgreSQL on demand, not Gemini-generated statistics.
+- The existing 16/40/80 bps stress assumptions are **not measured fills**.
+  Without authenticated entry+exit fill records, paid fee statements,
+  funding transfers and arrival-to-fill slippage, actual net profitability
+  and trading authorization remain **NOT VERIFIED**, regardless of shadow
+  Brier gains, model improvements or positive simulated return.
+- No broker account or private trading API integration is available yet.
+  Actual execution receipts cannot be measured by this read-only candle
+  collector. Keep that as a hard unresolved requirement rather than invent
+  a receipt, price, or profit result. No existing database rows overwritten.
+- Tests cover causal labeling, immutable hashes, target deduplication,
+  market-regime deterioration, real SQLite forecast issuance, PostgreSQL
+  restart and the compact private Discord proof pages. Merge only after
+  green Ruff, pytest, PostgreSQL 16 CI.
+
 ## October 28, 2026: causal probability reliability and calibration diagnostics
 
 - Existing prospective math model already issues immutable forward predictions,

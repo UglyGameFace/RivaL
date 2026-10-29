@@ -22,6 +22,7 @@ from parlay_bot.perpetuals.live_quotes import (
     QuoteUnavailable,
 )
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 
 _LOG = logging.getLogger(__name__)
 HORIZONS = (5, 15)
@@ -71,6 +72,7 @@ async def signal_embed(
     market: PerpetualMarketStore | None,
     quotes: PublicBestQuoteClient,
     *, asset: str, horizon_minutes: int, now: datetime | None = None,
+    stream_shadow: StreamShadowLedger | None = None,
 ) -> discord.Embed:
     """Refresh the selected market, its real book and measured forward results.
 
@@ -244,6 +246,35 @@ async def signal_embed(
         ),
         inline=False,
     )
+    if stream_shadow is not None:
+        try:
+            shadow = await asyncio.to_thread(
+                stream_shadow.report, asset=asset,
+                horizon_minutes=horizon_minutes, now=stamp,
+            )
+            severe = shadow["costs"]["severe"]["mean_net_bps"]
+            embed.add_field(
+                name="Source-matched after-cost proof",
+                value=(
+                    f"**{shadow['status']}** • "
+                    f"{shadow['closed']}/{shadow['eligible_windows']} "
+                    "prospective quote windows paired"
+                    f" • {shadow['days']} days"
+                    + (f" • Severe-cost mean {severe:+.1f} bps"
+                       if severe is not None else
+                       " • Too few observed exits")
+                    + "\\nOnly genuine later same-venue books; "
+                      "no authenticated fills or guaranteed returns."
+                ),
+                inline=False,
+            )
+        except Exception:  # noqa: BLE001 - missing proof must not halt signals
+            _LOG.exception("RivaL forward quote evidence unavailable")
+            embed.add_field(
+                name="Source-matched after-cost proof",
+                value="Cannot verify real forward quote evidence. NOT PROVEN.",
+                inline=False,
+            )
     embed.set_footer(
         text=(
             "Research watch only • Refresh to recheck • No approved "

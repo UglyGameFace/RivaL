@@ -3,8 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from parlay_bot.archive.drive import DriveArchiveFolders, GoogleDriveArchiveClient
-from parlay_bot.archive.queue import RelationalArchiveQueue
 from parlay_bot.archive.perpetual_candles import PerpetualColdArchiveService
+from parlay_bot.archive.queue import RelationalArchiveQueue
 from parlay_bot.archive.service import ColdArchiveService
 from parlay_bot.archive.writer import ParquetArchiveWriter
 from parlay_bot.config import Settings

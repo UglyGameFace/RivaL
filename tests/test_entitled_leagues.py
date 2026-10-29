@@ -4,8 +4,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.providers.errors import ProviderProtocolError
+from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 
 
 @pytest.mark.asyncio

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -66,7 +67,13 @@ class _Button(discord.ui.Button["GuidedHome"]):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         assert self.view is not None
-        await self.view.act(interaction, self.action)
+        started = time.monotonic()
+        try:
+            await self.view.act(interaction, self.action)
+        finally:
+            _LOG.info("Guided button action=%s total_ms=%.0f acknowledged=%s",
+                      self.action, (time.monotonic() - started) * 1000,
+                      interaction.response.is_done())
 
 
 class _Coin(discord.ui.Select["GuidedHome"]):
@@ -671,9 +678,18 @@ class GuidedHome(discord.ui.View):
         return embed
 
     async def redraw(self, interaction: discord.Interaction) -> None:
+        started = time.monotonic()
         self._buttons()
         try:
-            embed = await self.render()
+            embed = await asyncio.wait_for(self.render(), timeout=12)
+        except TimeoutError:
+            _LOG.warning("Guided render timed out page=%s elapsed_ms=%.0f",
+                         self.page, (time.monotonic() - started) * 1000)
+            embed = discord.Embed(
+                title="⏳ Still Loading",
+                description="This screen is taking longer than expected. Try again shortly.",
+                color=discord.Color.orange(),
+            )
         except (QuoteUnavailable, ValueError, ParlayBuildError) as exc:
             embed = discord.Embed(
                 title="⏳ Not Available Right Now",
@@ -687,6 +703,8 @@ class GuidedHome(discord.ui.View):
                 description="We couldn't verify these details. Try Home or Back.",
                 color=discord.Color.orange(),
             )
+        _LOG.info("Guided render page=%s elapsed_ms=%.0f",
+                  self.page, (time.monotonic() - started) * 1000)
         await interaction.edit_original_response(
             content=None, embed=embed, view=self,
         )
@@ -736,6 +754,7 @@ class GuidedHome(discord.ui.View):
             )
             return
         await interaction.response.defer()
+        _LOG.info("Guided interaction acknowledged action=%s", action)
         if action == "back":
             self.page = self.back_stack.pop() if self.back_stack else "home"
             self.note = None

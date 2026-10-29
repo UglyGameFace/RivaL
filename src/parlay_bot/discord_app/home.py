@@ -28,10 +28,10 @@ if TYPE_CHECKING:
     from parlay_bot.parlays.builder import ParlayBuilder
     from parlay_bot.perpetuals.live_quotes import PublicBestQuoteClient
     from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+    from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
     from parlay_bot.perpetuals.paper_ledger import PaperLedger
     from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
     from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
-    from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
 
 _LOG = logging.getLogger(__name__)
 COINS = ("BTC", "ETH", "SOL")

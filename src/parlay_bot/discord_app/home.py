@@ -264,8 +264,15 @@ class GuidedHome(discord.ui.View):
     async def _refresh_odds(self) -> None:
         if self.collector is None:
             return
+        # A background refresh may already hold the shared collector lock.
+        # Never queue another refresh behind it just to display cached odds.
+        if self.collector._lock.locked():
+            _LOG.debug("Beginner sports refresh already running; showing cached data")
+            return
         try:
             await asyncio.wait_for(self.collector.refresh_if_due(), timeout=15)
+        except TimeoutError:
+            _LOG.info("Beginner sports refresh exceeded 15s; showing cached data")
         except Exception:  # noqa: BLE001
             _LOG.warning("Beginner sports refresh failed, stale cache filtered", exc_info=True)
 

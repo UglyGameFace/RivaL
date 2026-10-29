@@ -253,8 +253,10 @@ class RelationalHotStore:
         connection: ConnectionLike,
         observation: MarketObservation,
         latest: dict[str, Any] | None = None,
+        *,
+        prefetched: bool = False,
     ) -> str:
-        if latest is None:
+        if latest is None and not prefetched:
             latest = connection.execute(
                 "SELECT id, state_fingerprint, provider_changed_at, last_seen, "
                 "occurrences FROM odds_changes WHERE selection_key = ? "
@@ -397,6 +399,7 @@ class RelationalHotStore:
             for observation in board.observations:
                 change_result = self._record_change(
                     connection, observation, latest_changes.get(observation.selection_key),
+                    prefetched=True,
                 )
                 if change_result == "new":
                     new_states += 1

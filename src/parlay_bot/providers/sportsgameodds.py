@@ -8,12 +8,12 @@ from typing import Any, Self
 
 import httpx
 
-from parlay_bot.providers.owner_limits import OwnerLimitStore
 from parlay_bot.providers.errors import (
     ProviderProtocolError,
     ProviderRateLimited,
     QuotaReserveReached,
 )
+from parlay_bot.providers.owner_limits import OwnerLimitStore
 
 
 @dataclass(frozen=True)

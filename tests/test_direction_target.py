@@ -238,3 +238,66 @@ async def test_targeting_never_creates_automatic_dm_without_opt_in(tmp_path):
         assert await service.stop(6789) is False
     finally:
         store.close()
+
+
+def test_fifteen_minute_target_does_not_expire_after_only_five(tmp_path):
+    now = datetime.now(UTC).replace(microsecond=0)
+    store, market = market_with_prediction(tmp_path, now)
+    try:
+        with store.connect() as conn:
+            conn.execute(
+                """INSERT INTO perp_forward_audit
+                   (venue,contract,quote,asset,horizon_minutes,model_version,
+                    reference_opened_at,reference_close,issued_at,target_opened_at,
+                    probability_up,baseline_up,training_evaluated)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "gate", "BTC_USDT", "USDT", "BTC", 15, MODEL,
+                    (now - timedelta(minutes=14)).isoformat(), 106.0,
+                    (now - timedelta(minutes=12)).isoformat(),
+                    (now - timedelta(minutes=8)).isoformat(),
+                    0.24, 0.5, 120,
+                ),
+            )
+        live = target_snapshot(
+            market, asset="BTC", horizon_minutes=15, now=now,
+        )
+        assert live.direction == "DOWN"
+        assert live.probability == pytest.approx(.76)
+        assert live.ends_at == now + timedelta(minutes=7)
+        expired = target_snapshot(
+            market, asset="BTC", horizon_minutes=15,
+            now=now + timedelta(minutes=8),
+        )
+        assert expired.direction == "WAIT"
+    finally:
+        store.close()
+
+
+def test_target_button_is_present_in_real_opportunities_view(tmp_path):
+    from parlay_bot.discord_app.bot import RivalDiscordClient
+    from parlay_bot.discord_app.research_dashboard import ResearchDashboard
+    from parlay_bot.config import Settings
+
+    client = RivalDiscordClient(Settings(
+        _env_file=None,
+        rival_storage_backend="sqlite",
+        rival_db_path=str(tmp_path / "controls.sqlite"),
+        discord_token=None,
+    ))
+    try:
+        view = ResearchDashboard(
+            owner_id=123, market=None, ai=None, venues=(),
+            target_service=client.direction_targets,
+        )
+        controls = {item.custom_id for item in view.children}
+        assert "rival:research:follow-target" in controls
+        assert client.tree.get_command("rival-target") is not None
+        assert client.tree.get_command("rival-stop") is not None
+        view.screen = "accuracy"
+        view._rebuild()
+        assert "rival:research:follow-target" not in {
+            item.custom_id for item in view.children
+        }
+    finally:
+        client.store.close()

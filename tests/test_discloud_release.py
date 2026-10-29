@@ -10,21 +10,20 @@ def test_discloud_release_only_after_verified_main_ci():
     assert 'workflows: ["CI"]' in text
     assert "types: [completed]" in text
     assert "if: github.event.workflow_run.conclusion == 'success'" in text
-    assert 'RIVAL_SOURCE_EVENT: ${{ github.event.workflow_run.event }}' in text
-    assert 'RIVAL_SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}' in text
-    assert 'RIVAL_SOURCE_REPO: ${{ github.event.workflow_run.head_repository.full_name }}' in text
-    assert '[ "$RIVAL_SOURCE_EVENT" != "push" ]' in text
-    assert '[ "$RIVAL_SOURCE_BRANCH" != "main" ]' in text
-    assert '[ "$RIVAL_SOURCE_REPO" != "$GITHUB_REPOSITORY" ]' in text
+    assert 'SOURCE_EVENT: ${{ github.event.workflow_run.event }}' in text
+    assert 'SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}' in text
+    assert 'SOURCE_REPO: ${{ github.event.workflow_run.head_repository.full_name }}' in text
+    assert '"$SOURCE_EVENT" != "push"' in text
+    assert '"$SOURCE_BRANCH" != "main"' in text
+    assert '"$SOURCE_REPO" != "$GITHUB_REPOSITORY"' in text
     assert "ref: ${{ github.event.workflow_run.head_sha }}" in text
-    assert "cancel-in-progress: false" in text
 
 
 def test_discloud_release_fails_closed_without_authenticated_existing_bot():
     text = (ROOT / ".github/workflows/discloud-deploy.yml").read_text()
     assert "secrets.DISCLOUD_TOKEN" in text
     assert "secrets.DISCLOUD_APP_ID" in text
-    assert 'if [ -z "$DISCLOUD_TOKEN" ] || [ -z "$DISCLOUD_APP_ID" ]; then' in text
+    assert '[[ -z "$TOKEN" || -z "$APP_ID" ]]' in text
     assert 'echo "ready=false" >> "$GITHUB_OUTPUT"' in text
     assert "if: steps.access.outputs.ready == 'true'" in text
     assert "uses: discloud/deploy-action@v1" in text

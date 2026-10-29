@@ -29,6 +29,61 @@ def stream_proof_embed(report: dict) -> discord.Embed:
         ),
         inline=False,
     )
+    gates = report.get("readiness")
+    if gates is not None:
+        descriptions = {
+            "forward_windows": "150 qualified forward forecasts",
+            "observed_exits": "150 completed entry/exit pairs",
+            "distinct_target_windows": "150 distinct target windows",
+            "observed_days": "21 days with real paired outcomes",
+            "quote_coverage": "At least 80% quote coverage",
+            "after_cost_stress": "Profitable after both cost stresses",
+        }
+        embed.add_field(
+            name="Qualification progress",
+            value="\n".join(
+                f"{'✅' if passed else '⏳'} {descriptions[key]}"
+                for key, passed in gates.items()
+            ),
+            inline=False,
+        )
+        issued = report.get("issued_windows", 0)
+        strong = report.get("eligible_windows", 0)
+        embed.add_field(
+            name="Where evidence is missing",
+            value=(
+                f"Actual forecasts issued: **{issued}** • "
+                f"Directional: **{strong}** • "
+                f"Weak: **{report.get('weak_windows', max(issued-strong,0))}**\n"
+                f"Qualified forecasts without entry: "
+                f"**{report.get('missing_entries', max(strong-report['entries'],0))}**\n"
+                f"Distinct complete target windows: "
+                f"**{report.get('distinct_target_windows', 0)}**"
+                f" • still needed: **{report.get('needed_unique_exits', 150)}**\n"
+                f"Days still needed: **{report.get('needed_days', 21)}**"
+            ),
+            inline=False,
+        )
+        if issued == 0:
+            embed.add_field(
+                name="Why the trial cannot progress",
+                value=(
+                    "No eligible issuer history for this exact coin, horizon "
+                    "and supported exchange. Check /rival-data, "
+                    "/rival-stream-status and autonomous collector health."
+                ),
+                inline=False,
+            )
+        elif strong == 0:
+            embed.add_field(
+                name="Why the trial cannot progress",
+                value=(
+                    "Models are issuing predictions, but none meets the "
+                    "predeclared 56% directional threshold. Do not lower the "
+                    "threshold just to make the sample look better."
+                ),
+                inline=False,
+            )
     for label, stats in report["costs"].items():
         mean = stats["mean_net_bps"]
         lower = stats["daily_lower_bps"]

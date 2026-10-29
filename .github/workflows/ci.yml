@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:  # Owner can retest and redeploy current main without dummy commits.
 
 permissions:
   contents: read

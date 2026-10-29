@@ -20,6 +20,7 @@ from parlay_bot.providers.errors import (
     ProviderRateLimited,
     QuotaReserveReached,
 )
+from parlay_bot.providers.owner_limits import OwnerLimitStore
 
 
 class _CooldownGate:
@@ -58,12 +59,14 @@ class OddsPapiClient:
         account_cache_seconds: int = 60,
         client: httpx.AsyncClient | None = None,
         cooldowns: Mapping[str, float] | None = None,
+        owner_limits: OwnerLimitStore | None = None,
     ) -> None:
         if not api_key:
             raise ValueError("OddsPapi API key is required")
         if quota_reserve < 0:
             raise ValueError("quota_reserve cannot be negative")
 
+        self._owner_limits = owner_limits
         self._api_key = api_key
         self._quota_reserve = quota_reserve
         self._account_cache_seconds = account_cache_seconds
@@ -205,6 +208,14 @@ class OddsPapiClient:
             raise ProviderQuotaExhausted(
                 f"OddsPapi quota exhausted ({account.request_limit}/{account.request_limit})"
             )
+        if self._owner_limits is not None:
+            owner = self._owner_limits.get("oddspapi")
+            if owner is not None:
+                observed = max(account.request_count, self._projected_request_count or 0)
+                if observed + owner.reserve_units >= owner.maximum_units:
+                    raise QuotaReserveReached(
+                        "Owner-configured OddsPapi request budget exhausted"
+                    )
         if remaining <= self._quota_reserve:
             raise QuotaReserveReached(
                 f"OddsPapi reserve protected: {remaining} requests remain; "

@@ -13,7 +13,6 @@ import discord
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
 from parlay_bot.discord_app.presentation import (
-    onboarding_embed,
     parlay_embed,
 )
 from parlay_bot.discord_app.signals import model_strength, signal_embed

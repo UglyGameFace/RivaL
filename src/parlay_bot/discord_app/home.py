@@ -276,13 +276,6 @@ class GuidedHome(discord.ui.View):
         collector = self.collector
         if collector._lock.locked():
             return
-        try:
-            due = await asyncio.to_thread(collector.is_due)
-        except Exception:  # noqa: BLE001
-            _LOG.exception("Unable to check sportsbook refresh schedule")
-            return
-        if not due:
-            return
         # The collector lock is shared across all views. Even if two users
         # schedule concurrently, only one task acquires it and fetches.
         async def refresh() -> None:

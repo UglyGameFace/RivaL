@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from parlay_bot.discord_app.manual_parlay import ManualParlayView
 from parlay_bot.discord_app.presentation import (
     display_book,
     onboarding_embed,
@@ -202,7 +203,8 @@ class GuidedHome(discord.ui.View):
             self._add("Choose State", "state", 0, "🗺️")
             self._add("Enter ZIP", "zip", 0, "📍")
             self._add("Refresh Odds", "refresh", 0, "🔄")
-            self._add("Build 3-Pick Slip", "slip", 1, "🎟️", True)
+            self._add("Choose My Picks", "manual", 1, "🎟️", True)
+            self._add("Auto-Suggest 3", "slip", 1, "🎲")
         elif p == "slip":
             self._add("Lower Risk", "lower", 0, "🛡️")
             self._add("Balanced", "balanced", 0, "⚖️")
@@ -650,6 +652,25 @@ class GuidedHome(discord.ui.View):
             return
         if action in ("zip", "state", "target", "funds"):
             await interaction.response.send_modal(_Entry(self, action))
+            return
+        if action == "manual":
+            saved = await asyncio.to_thread(
+                self.location.get_saved, platform="discord",
+                user_id=str(self.owner_id),
+            )
+            if saved is None:
+                await interaction.response.send_message(
+                    "Choose your betting state first.", ephemeral=True,
+                )
+                return
+            books = set(self.builder.registry.eligible_books(str(saved["state_code"])))
+            picker = await asyncio.to_thread(
+                ManualParlayView, owner_id=self.owner_id,
+                store=self.builder.store, eligible_books=books,
+            )
+            await interaction.response.send_message(
+                embed=picker.render(), view=picker, ephemeral=True,
+            )
             return
         await interaction.response.defer()
         if action == "back":

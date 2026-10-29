@@ -1,3 +1,12 @@
+## October 28–29, 2026: ONE PR #49 verified history -> training -> private Drive archive
+
+- Owner requires ONE cohesive PR, including real official source retrieval, exact six-month continuity, permanent private Drive storage+byte restore, multi-horizon research learning, honest independent evaluation and operational proof. PR #49 is the sole open integration branch for this goal; do not split follow-up PRs.
+- Implementation: `research/production.py` bounded acquisition and completeness, `research/audit.py` exact month/gap audits, `research/learning.py` immutable offline candidate training with purged chronological split and independent Brier/log-loss/accuracy/calibration/day checks, `archive/drive.py` private model/report storage plus SHA-256 readback, tests and `verified-history.yml` real-source GitHub runner. No changes to live order execution, bot credentials, forecast records or model promotion.
+- Evidence already produced by official public runner: Binance BTCUSDT USD-M 1h September 2026 720/720 real closed candles, zero gaps, SHA-256 companion verified. Uploaded normalized history and manifest to authorized RivaL Drive and independently read back exact bytes. Verified source data digest `183e0c42e1acab44d233b765f1166f52e6e8bea87ca12ed86f96e0dd612f6819`. This is one month/stream, not full six-month coverage. ChatGPT Drive connector access does NOT prove Discloud OAuth.
+- Football-Data official archive fetch failed on runner; do not fabricate an odds-history source. Preserve the failure and continue independently verified crypto coverage.
+- Independent real six-month archive job added to PR; inspect current GitHub Actions run, quality reports and actual archives before merge. Still UNVERIFIED until real: all requested months+streams, Drive model/report copy+SHA-256 restore under bot-owned OAuth, prospective post-deploy scores over future events, and after-cost profitability. Archive receipts are not trade permission.
+- Validation: same branch CI Ruff+pytest/PostgreSQL must be green at current head; never merge outdated head or call blocked operations completed. Continue integrating fixes in PR #49.
+
 ## October 28, 2026: verified free public history + bookmaker baseline
 
 - Owner authorized a free-first multi-horizon data-acquisition pipeline for RivaL.

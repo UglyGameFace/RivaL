@@ -143,7 +143,7 @@ def target_embed(snapshot: TargetSnapshot) -> discord.Embed:
     labels = {
         "UP": "📈 UP WATCH" if qualified_watch else "🟠 UP LEAN • NO SIGNAL",
         "DOWN": "📉 DOWN WATCH" if qualified_watch else "🟠 DOWN LEAN • NO SIGNAL",
-        "WAIT": "⏳ NO SIGNAL",
+        "WAIT": "⏳ WAIT • NO SIGNAL",
     }
     colors = {
         "UP": discord.Color.green() if qualified_watch else discord.Color.orange(),

@@ -69,6 +69,42 @@ def _probability(weights: tuple[float, ...], features: tuple[float, ...]) -> flo
     return 1.0 / (1.0 + math.exp(-value))
 
 
+def select_live_streams(
+    eligible: list[tuple[str, str, str]], *, slot: int,
+    limit: int = MAX_STREAMS_PER_CYCLE,
+) -> list[tuple[str, str, str]]:
+    """Bound each research cycle while including each available coin.
+
+    A ten-venue BTC block must not starve ETH/SOL predictions just because
+    the venue-ordered SQL result is sliced into fixed 15-minute groups.
+    Rotate each coin's venue list between cycles for source fairness.
+    """
+    if slot < 0 or not 1 <= limit <= MAX_STREAMS_PER_CYCLE:
+        raise ValueError("invalid live forecast selection")
+    buckets: dict[str, list[tuple[str, str, str]]] = {
+        "BTC": [], "ETH": [], "SOL": [],
+    }
+    for entry in eligible:
+        contract = entry[1]
+        asset = ("BTC" if contract.startswith(("BTC", "XBT"))
+                 else "ETH" if contract.startswith("ETH")
+                 else "SOL" if contract.startswith("SOL") else None)
+        if asset is not None:
+            buckets[asset].append(entry)
+    for asset, streams in buckets.items():
+        if streams:
+            offset = slot % len(streams)
+            buckets[asset] = streams[offset:] + streams[:offset]
+    selected: list[tuple[str, str, str]] = []
+    while len(selected) < limit and any(buckets.values()):
+        for asset in ("BTC", "ETH", "SOL"):
+            if buckets[asset]:
+                selected.append(buckets[asset].pop(0))
+                if len(selected) == limit:
+                    break
+    return selected
+
+
 class ForwardAccuracyMonitor:
     """Issue, settle and score immutable prospective research only."""
 
@@ -293,16 +329,11 @@ class ForwardAccuracyMonitor:
             now=stamp, limit=30,
         )
         metrics["discovered_streams"] = len(eligible)
-        # Rotate across source groups on UTC five-minute boundaries. This
-        # guarantees that a still-untrained market cannot continually block
-        # the other markets, even when the bot restarts.
-        groups = max(
-            1, (len(eligible) + MAX_STREAMS_PER_CYCLE - 1)
-            // MAX_STREAMS_PER_CYCLE,
+        # Always inspect each available asset every five-minute cycle.
+        # Fairly rotate its venues without exhausting the research budget.
+        selection = select_live_streams(
+            eligible, slot=int(stamp.timestamp() // 300),
         )
-        slot = int(stamp.timestamp() // 300) % groups
-        start = slot * MAX_STREAMS_PER_CYCLE
-        selection = eligible[start:start + MAX_STREAMS_PER_CYCLE]
         metrics["selected_streams"] = len(selection)
         for venue, contract, quote in selection:
             try:

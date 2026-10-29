@@ -40,6 +40,7 @@ from parlay_bot.perpetuals.live_quotes import (
     quote_embed,
 )
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
+from parlay_bot.perpetuals.paper_ledger import PaperLedger
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
@@ -235,6 +236,7 @@ class RivalDiscordClient(discord.Client):
         )
 
         self.public_quotes = PublicBestQuoteClient()
+        self.paper_ledger = PaperLedger(self.store)
         self.direction_targets = DirectionTargetService(
             bot=self,
             market=self.perp_collector.market if self.perp_collector else None,
@@ -439,6 +441,117 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL public best quote unavailable")
                 await interaction.edit_original_response(
                     content="⛔ Could not verify a live bid/ask. PASS.",
+                )
+
+        @self.tree.command(
+            name="rival-paper-open",
+            description="Open a limited, quote-based PAPER position (never a real order).",
+        )
+        @app_commands.describe(
+            coin="Paper BTC/ETH/SOL perpetual",
+            direction="Long expects price to rise, short expects price to fall",
+            notional_usdt="Paper notional in USDT, maximum 250",
+        )
+        @app_commands.choices(
+            coin=[
+                app_commands.Choice(name="BTC", value="BTC"),
+                app_commands.Choice(name="ETH", value="ETH"),
+                app_commands.Choice(name="SOL", value="SOL"),
+            ],
+            direction=[
+                app_commands.Choice(name="Long (paper)", value="long"),
+                app_commands.Choice(name="Short (paper)", value="short"),
+            ],
+        )
+        async def rival_paper_open(
+            interaction: discord.Interaction,
+            coin: app_commands.Choice[str],
+            direction: app_commands.Choice[str],
+            notional_usdt: float = 25.0,
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                quote = await self.public_quotes.get(coin.value)
+                message = await asyncio.to_thread(
+                    self.paper_ledger.open,
+                    user_id=str(interaction.user.id),
+                    position_id=str(interaction.id),
+                    quote=quote, side=direction.value,
+                    notional_usdt=notional_usdt,
+                )
+                await interaction.edit_original_response(content="🧪 " + message)
+            except (QuoteUnavailable, ValueError) as exc:
+                await interaction.edit_original_response(
+                    content=f"⛔ Paper position not opened: {exc}",
+                )
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL paper open unavailable")
+                await interaction.edit_original_response(
+                    content="⛔ Could not verify a paper entry. No real order.",
+                )
+
+        @self.tree.command(
+            name="rival-paper-close",
+            description="Close your quote-based PAPER position (not a real exchange trade).",
+        )
+        @app_commands.choices(coin=[
+            app_commands.Choice(name="BTC", value="BTC"),
+            app_commands.Choice(name="ETH", value="ETH"),
+            app_commands.Choice(name="SOL", value="SOL"),
+        ])
+        async def rival_paper_close(
+            interaction: discord.Interaction,
+            coin: app_commands.Choice[str],
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                quote = await self.public_quotes.get(coin.value)
+                closed = await asyncio.to_thread(
+                    self.paper_ledger.close,
+                    user_id=str(interaction.user.id), asset=coin.value,
+                    quote=quote,
+                )
+                await interaction.edit_original_response(content=(
+                    f"🧪 Paper {closed.side.upper()} {coin.value} closed. "
+                    f"Indicative entry ${closed.entry:,.4f}, exit "
+                    f"${closed.exit:,.4f}. Gross ${closed.gross_usdt:,.4f}; "
+                    f"assumed costs ${closed.assumed_cost_usdt:,.4f}; "
+                    f"**paper-only net ${closed.assumed_net_usdt:,.4f}**. "
+                    "No authenticated fills; not actual P&L."
+                ))
+            except (QuoteUnavailable, ValueError) as exc:
+                await interaction.edit_original_response(
+                    content=f"⛔ Paper close unavailable: {exc}",
+                )
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL paper close unavailable")
+                await interaction.edit_original_response(
+                    content="⛔ Paper close unavailable; position unchanged.",
+                )
+
+        @self.tree.command(
+            name="rival-paper-results",
+            description="Your isolated paper ledger, including losses and fees.",
+        )
+        async def rival_paper_results(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                result = await asyncio.to_thread(
+                    self.paper_ledger.summary, str(interaction.user.id),
+                )
+                await interaction.edit_original_response(
+                    content=(
+                        f"🧪 **Paper only:** {result['open']} open, "
+                        f"{result['closed']} closed. "
+                        f"After assumed fees and slippage: "
+                        f"**${result['assumed_net_usdt']:,.4f} USDT**. "
+                        "No fill receipts, verified trading P&L or real orders."
+                    ),
+                )
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL paper summary unavailable")
+                await interaction.edit_original_response(
+                    content="⛔ Paper ledger unavailable; no P&L asserted.",
                 )
 
         @self.tree.command(

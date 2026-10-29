@@ -14,9 +14,9 @@ from parlay_bot.archive.drive import (
     GoogleDriveArchiveClient,
 )
 from parlay_bot.archive.models import ArchiveArtifact
-from parlay_bot.research.audit import audit_catalog, audit_partition
+from parlay_bot.research.audit import audit_catalog
 from parlay_bot.research.free_history import HistoryImportError, _persist
-from parlay_bot.research.learning import evaluate, evaluate_directory
+from parlay_bot.research.learning import evaluate
 from parlay_bot.research.production import run_pipeline
 
 

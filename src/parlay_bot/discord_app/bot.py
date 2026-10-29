@@ -34,6 +34,12 @@ from parlay_bot.perpetuals.gemini_research import GeminiResearch
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
 from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
+from parlay_bot.perpetuals.live_quotes import (
+    PublicBestQuoteClient,
+    QuoteUnavailable,
+    quote_embed,
+)
+from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
@@ -228,6 +234,7 @@ class RivalDiscordClient(discord.Client):
             else None
         )
 
+        self.public_quotes = PublicBestQuoteClient()
         self.direction_targets = DirectionTargetService(
             bot=self,
             market=self.perp_collector.market if self.perp_collector else None,
@@ -356,6 +363,92 @@ class RivalDiscordClient(discord.Client):
                     collector_enabled=self.current_collector is not None,
                 ),
             )
+
+        @self.tree.command(
+            name="rival-quote",
+            description="Current verified perpetual bid/ask, spread and assumed cost (no trade).",
+        )
+        @app_commands.describe(
+            coin="BTC, ETH or SOL futures on Binance USD-M",
+            quantity="Optional asset quantity for checking top-of-book liquidity",
+        )
+        @app_commands.choices(coin=[
+            app_commands.Choice(name="Bitcoin (BTC)", value="BTC"),
+            app_commands.Choice(name="Ethereum (ETH)", value="ETH"),
+            app_commands.Choice(name="Solana (SOL)", value="SOL"),
+        ])
+        async def rival_quote(
+            interaction: discord.Interaction,
+            coin: app_commands.Choice[str],
+            quantity: float = 0.001,
+        ) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                quote = await self.public_quotes.get(coin.value)
+                embed = quote_embed(quote, quantity=quantity)
+                await interaction.edit_original_response(embed=embed)
+            except (QuoteUnavailable, ValueError) as exc:
+                await interaction.edit_original_response(
+                    content=f"⛔ Live quote unavailable: {exc} No substitute candle price."
+                )
+            except Exception:  # noqa: BLE001 - no provider/auth internals in Discord
+                _LOG.exception("RivaL public best quote unavailable")
+                await interaction.edit_original_response(
+                    content="⛔ Could not verify a live bid/ask. PASS.",
+                )
+
+        @self.tree.command(
+            name="rival-target-proof",
+            description="Independent forward evidence for your saved exact-price target.",
+        )
+        async def rival_target_proof(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                target = await asyncio.to_thread(
+                    self.direction_targets.store.get, str(interaction.user.id),
+                )
+                if target is None or target.price_goal is None:
+                    await interaction.edit_original_response(
+                        content="No saved exact-price target. Use /rival-target with target_price."
+                    )
+                    return
+                market = self.perp_collector.market if self.perp_collector else None
+                result = await asyncio.to_thread(
+                    evaluate_price_hit_model, market,
+                    goal=target.price_goal, horizon_minutes=target.horizon_minutes,
+                )
+                embed = discord.Embed(
+                    title=f"RivaL • {target.asset} {target.horizon_minutes}m target proof",
+                    description=result.reason,
+                    color=discord.Color.blurple() if result.qualified
+                          else discord.Color.orange(),
+                )
+                embed.add_field(
+                    name="Price-touch model",
+                    value=(f"Research P(HIT): **{result.probability:.1%}**"
+                           if result.qualified else
+                           "**NOT QUALIFIED** • No trustworthy target-hit probability"),
+                    inline=False,
+                )
+                embed.add_field(
+                    name="Independent chronological evaluation",
+                    value=(
+                        f"Train {result.trained} • Holdout {result.holdout} "
+                        f"across {result.holdout_days} UTC days\\n"
+                        f"Brier {result.brier if result.brier is not None else 'n/a'} "
+                        f"vs baseline "
+                        f"{result.baseline_brier if result.baseline_brier is not None else 'n/a'}"
+                    ), inline=False,
+                )
+                embed.set_footer(
+                    text="Shadow empirical research, not a cost-positive bet or model promotion."
+                )
+                await interaction.edit_original_response(embed=embed)
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL target research proof query unavailable")
+                await interaction.edit_original_response(
+                    content="⛔ Target probability research unavailable; no estimate published."
+                )
 
         @self.tree.command(
             name="rival-target",
@@ -719,6 +812,7 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        await self.public_quotes.aclose()
         if self._target_task is not None:
             self._target_task.cancel()
             with suppress(asyncio.CancelledError):

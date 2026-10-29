@@ -682,7 +682,7 @@ class GuidedHome(discord.ui.View):
                     "Choose your betting state first.", ephemeral=True,
                 )
                 return
-            books = set(self.builder.registry.eligible_books(str(saved["state_code"])))
+            books = set(saved.eligible_books)
             picker = await asyncio.to_thread(
                 ManualParlayView, owner_id=self.owner_id,
                 store=self.builder.store, eligible_books=books,

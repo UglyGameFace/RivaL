@@ -9,7 +9,9 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from parlay_bot.discord_app.api_limits import OwnerLimitsView
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
+from parlay_bot.providers.owner_limits import OwnerLimitStore
 from parlay_bot.discord_app.presentation import (
     display_book,
     onboarding_embed,
@@ -238,6 +240,7 @@ class GuidedHome(discord.ui.View):
             self._add("Are My Prices Fresh?", "feeds", 0, "📡")
             self._add("Is RivaL Improving?", "trust", 0, "📊")
             self._add("Technical Research", "research", 1, "🧪")
+            self._add("API Usage & Limits", "api-limits", 2, "🔒")
         elif p in ("feeds", "trust"):
             self.add_item(_Coin(self.coin))
             if p == "trust":
@@ -652,6 +655,22 @@ class GuidedHome(discord.ui.View):
             return
         if action in ("zip", "state", "target", "funds"):
             await interaction.response.send_modal(_Entry(self, action))
+            return
+        if action == "api-limits":
+            application = await interaction.client.application_info()
+            owner = application.owner
+            if owner is None or owner.id != interaction.user.id:
+                await interaction.response.send_message(
+                    "Only the application owner can edit API limits.", ephemeral=True,
+                )
+                return
+            limits = OwnerLimitStore(interaction.client.store)
+            view = OwnerLimitsView(store=limits, owner_id=owner.id)
+            await interaction.response.send_message(
+                "API Usage & Limits: choose a provider to set your safety ceiling. "
+                "This does not upgrade the provider subscription.",
+                view=view, ephemeral=True,
+            )
             return
         if action == "manual":
             saved = await asyncio.to_thread(

@@ -151,6 +151,8 @@ def test_autonomous_governance_counts_correlated_exchanges_once(tmp_path):
     supervisor.initialize()
     now = datetime.now(UTC)
     # 105 distinct 5m targets on 7 UTC dates, two correlated venues each.
+    # Fixed clock avoids local time-of-day/window-boundary flakes.
+    now = datetime(2026, 10, 29, 16, 0, tzinfo=UTC)
     today = now.replace(hour=12, minute=0, second=0, microsecond=0)
     if today > now:
         today -= timedelta(days=1)

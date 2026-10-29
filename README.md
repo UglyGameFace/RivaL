@@ -4,6 +4,34 @@
 
 RivaL is a provider-agnostic sports-odds intelligence and parlay-analysis project. It keeps sportsbook coverage, line comparison, historical movement, jurisdiction filtering, and parlay construction behind a simple Discord experience.
 
+
+### Funded practice simulator and verified sports models
+
+- `/rival-practice` provides a **fictional, privately isolated funded balance**:
+  10,000 USDT by default, configurable from 100 to 100,000 before your first
+  practice position. Nothing is deposited or paid out.
+- `/rival-paper-open`, `/rival-paper-close`, and `/rival-paper-results`
+  now reserve notional from the fictional bankroll, release it at close,
+  account for all quoted bid/ask losses and **assumed** fees/slippage, and
+  enforce a maximum 5% of starting funds in realized daily practice losses.
+  The account persists across restarts and cannot erase a losing track record
+  by increasing its starting balance after a trade. Practice results are
+  **not** independently verified actual fills or machine-learning labels.
+- `/rival-sport-proof` shows sport-specific **soccer Poisson** or
+  **basketball score-margin Gaussian** research with chronological outcome
+  evaluation, only from provider-finalized games with stable team IDs.
+  A low evidence count returns **NOT QUALIFIED**.
+- Autonomous sports result auditing checks only previously discovered matches
+  and enforces the provider's quota reserve. A pregame model prediction must
+  be saved before kickoff; the actual final outcome is stored and settled
+  later, never backfilled as a fake earlier prediction.
+- Qualified independent *prospective* sports results can automatically earn
+  or lose a **research-only** champion status. This never promotes unqualified
+  code to real-money wagering or changes live inference weights.
+- `/rival-health` exposes Discord command sync, process readiness, worker
+  states and last persisted sportsbook refresh. A code upload or running
+  worker is **not** the same as a verified external data feed.
+
 ## Current architecture
 
 ```text

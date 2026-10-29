@@ -256,7 +256,11 @@ class SportsGameOddsClient:
         if budget < len(event_ids):
             raise QuotaReserveReached("Results lookup blocked by provider quota reserve")
         response = self._payload(await self._request(
-            "/events", params={"eventID": ",".join(event_ids), "limit": len(event_ids)},
+            "/events", params={
+                ("eventID" if len(event_ids) == 1 else "eventIDs"):
+                    ",".join(event_ids),
+                "limit": len(event_ids),
+            },
         ))
         data = response.get("data")
         if not isinstance(data, list) or len(data) > len(event_ids):

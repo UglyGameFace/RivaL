@@ -5,48 +5,44 @@
 RivaL is a provider-agnostic sports-odds intelligence and parlay-analysis project. It keeps sportsbook coverage, line comparison, historical movement, jurisdiction filtering, and parlay construction behind a simple Discord experience.
 
 
-### Prospective quote-based profitability proof
+### Start in Discord
 
-- `/rival-profit-proof coin:BTC timeframe:5` reports the actual
-  **forward-stamped, later-verified executable bid/ask observations** RivaL
-  collected around pre-outcome predictions. Also tracks missed/late exits,
-  quote coverage, losing trades, and conservative/severe fee, funding,
-  and slippage assumptions. It is NOT a retrospective candle-close backtest.
-- Observations are collected automatically during the existing 5m
-  research cycle (up to BTC/ETH/SOL, single shared snapshot per asset),
-  stored durably in PostgreSQL, and resumed idempotently after restart.
-  Regional or quota restrictions fail closed without fabricated quotes.
-- **Quote-based paper results are not authenticated brokerage fills.**
-  Even passing stringent day-block after-cost tests cannot establish
-  verified *actual* profitability without independent account receipts.
-  See [profitability acceptance and source limitations](docs/RIVAL_PROFIT_PROOF.md).
+Type **`/rival`**. Everything ordinary users need is in one private menu:
 
-### Funded practice simulator and verified sports models
+- **Sports & Odds:** choose a state, compare game prices and build a fictional
+  three-pick slip. Nothing is placed.
+- **Predict Crypto:** select BTC, ETH or SOL, choose 5m/15m, then **Get Signal**.
+  Expect UP/DOWN research watches only when the evidence is fresh and strong;
+  otherwise **WAIT** is a correct answer. Follow in DM or set an optional price goal.
+- **Practice Money:** fake buy/sell/close trades using current exchange quotes.
+- **My Results:** personal fictional trade outcomes, plus a plain-English link
+  to **Can I Trust Predictions?**
+- **Advanced (optional):** **Are My Prices Fresh?**, **Is RivaL Improving?**,
+  and the existing technical research dashboard.
 
-- `/rival-practice` provides a **fictional, privately isolated funded balance**:
-  10,000 USDT by default, configurable from 100 to 100,000 before your first
-  practice position. Nothing is deposited or paid out.
-- `/rival-paper-open`, `/rival-paper-close`, and `/rival-paper-results`
-  now reserve notional from the fictional bankroll, release it at close,
-  account for all quoted bid/ask losses and **assumed** fees/slippage, and
-  enforce a maximum 5% of starting funds in realized daily practice losses.
-  The account persists across restarts and cannot erase a losing track record
-  by increasing its starting balance after a trade. Practice results are
-  **not** independently verified actual fills or machine-learning labels.
-- `/rival-sport-proof` shows sport-specific **soccer Poisson** or
-  **basketball score-margin Gaussian** research with chronological outcome
-  evaluation, only from provider-finalized games with stable team IDs.
-  A low evidence count returns **NOT QUALIFIED**.
-- Autonomous sports result auditing checks only previously discovered matches
-  and enforces the provider's quota reserve. A pregame model prediction must
-  be saved before kickoff; the actual final outcome is stored and settled
-  later, never backfilled as a fake earlier prediction.
-- Qualified independent *prospective* sports results can automatically earn
-  or lose a **research-only** champion status. This never promotes unqualified
-  code to real-money wagering or changes live inference weights.
-- `/rival-health` exposes Discord command sync, process readiness, worker
-  states and last persisted sportsbook refresh. A code upload or running
-  worker is **not** the same as a verified external data feed.
+Only **four top-level Discord commands** are registered:
+`/rival` (the menu), `/rival-signal` (quick crypto lookup),
+`/rival-stop` (cancel alerts), and `/rival-tools` (optional old/technical
+shortcuts). All twenty existing power-user actions are grouped under
+`/rival-tools <feature>` without deleting functionality or records.
+Examples: `/rival-tools data`, `/rival-tools source-health`,
+`/rival-tools multi-proof`, and `/rival-tools profit-proof`.
+The group is optional and not part of beginner onboarding.
+
+### What RivaL actually verifies
+
+RivaL collects up to 10 public perpetual-exchange five-minute candle feeds
+(BTC/ETH/SOL) and has two current best-book WebSocket integrations
+(Binance USD-M, Hyperliquid). Region blocks and provider outages mean
+configured is **not** the same as proven connected.
+The ten-source combined model is a **shadow challenger** and does not
+automatically replace the original model. Its forward predictions are scored
+only against later observed market results and compared on identical target
+times. Quote-based hypothetical returns include spread, simulated liquidity
+and conservative/severe cost assumptions, never authenticated real fills.
+
+For detail, see [profitability acceptance and source limitations](docs/RIVAL_PROFIT_PROOF.md).
+No reliable profitable edge, guaranteed wager, or real-money execution is claimed.
 
 ## Current architecture
 
@@ -129,72 +125,34 @@ The Discord result explicitly labels these values as market-consensus estimates 
 
 ## Simple RivaL Home (mobile and first-time users)
 
-Open `/rival`. It now opens a **private, button-driven home**, not
-the technical sportsbook screen:
+Start with `/rival`; use the buttons, no manual setup commands required.
+The Home, Back, and Explain This buttons stay on every page.
+Crypto signals, personal DM alerts, fictional practice, sports picks and
+basic reliability checks are private, separately navigable flows.
 
-- **Sports & Odds**: Pick your state or ZIP once, compare fresh prices,
-  and build a three-pick same-book parlay; adjust for lower risk or higher
-  payout. A PASS is explained and no wager is placed.
-- **Predict Crypto**: Choose Bitcoin (BTC), Ethereum (ETH), or Solana
-  (SOL), choose 5 or 15 minutes, then tap See Forecast, Follow in DM,
-  Set Price Target, See Buy/Sell Prices, or Stop My Alerts.
-- **Practice Money**: Start with 10,000 **fictional** USDT or choose a
-  different starting amount before your first trade. Use the ordinary
-  Practice Buy/Practice Sell/Close Fake Trade buttons for a fixed
-  25 USDT fake position subject to actual fresh quote and bankroll checks.
-  **No deposit, no exchange account, no real trades.**
-- **My Results**: Your individual practice balance, wins, losses and
-  estimated after-cost fake P&L; the bot's independently scored market
-  predictions and explicit unproven actual-profit status stay separate.
-- **Help Me Start**: Beginner instructions with no quantitative jargon.
-- **Advanced**: Historical data, models, trade-cost evaluation and
-  original detailed commands are still present, not deleted.
+Advanced is optional. It explains whether recent exchange candles are
+available and whether actual future combined-model scores have improved.
+It never equates historical backtests, fictional practice wins or
+successful deployments with real-money profitability.
 
-**Home, Back and Explain This** are accessible throughout the beginner
-menu. All controls are owner-checked and private, and the submenu edits
-the current screen instead of sending an endless stream of new messages.
-The advanced research button opens the already-existing research UI in
-a separate private panel so the original home stays available. New
-`/rival` screens require successful live Discord slash sync; a passing
-test or Discloud upload alone cannot prove a user interaction worked.
+For developers and expert users, `/rival-tools` groups the old shortcuts.
+The underlying quote, model, analysis, target, sports and database services
+remain functional; only their location in Discord's slash-command menu changed.
 
-Original `/rival-picks`, `/rival-research`, `/rival-data`,
-`/rival-target`, and all other power-user commands remain available.
-The simplified UI uses those authoritative services; it does not
-replace prediction or storage infrastructure.
+## Discord commands
 
-## Discord surface
+| Command | Who it's for | What it does |
+| --- | --- | --- |
+| `/rival` | Everyone | Opens the main private menu for sports, crypto, alerts, practice, results and Help |
+| `/rival-signal` | Optional shortcut | Checks a coin/timeframe and explains the directional research result or WAIT |
+| `/rival-stop` | Everyone | Immediately cancels the user's own private price/forecast alerts |
+| `/rival-tools` | Experienced users | Optional group of twenty old specialist actions, not required for normal use |
 
-RivaL is **opportunity-first**, and provides private, read-only decisions without
-pretending there is a guaranteed profitable trade:
-
-- `/rival`: private, guided beginner Home with Sports, Crypto, Practice, Results, Help and Advanced buttons.
-- `/rival-picks`: direct power-user jurisdiction-eligible sports odds comparison, or PASS.
-- `/rival-opportunities`: sportsbook opportunity plus BTC/ETH/SOL model watches.
-- `/rival-target`: choose BTC/ETH/SOL and a 5m/15m timeframe. Leave the
-  optional **target_price** empty for the existing private UP/DOWN/WAIT forward
-  forecast; enter an exact **USDT target price** for a separate completed-candle
-  **WATCH / HIT / EXPIRED / WAIT** price-touch card. This does not pretend
-  model direction equals the probability of hitting your exact price.
-  Both modes edit the same private DM on new verified evidence.
-- `/rival-sports`: discover actual supported sports/leagues from fresh,
-  unstarted sportsbook fixtures in the configured provider feed. No fictional
-  league coverage or unsupported sport-specific model predictions.
-- `/rival-leagues`: show the sports and leagues the current
-  SportsGameOdds API key really has access to, with one-hour metadata caching.
-- `/rival-quote`: verified timestamped BTC/ETH/SOL futures best bid/ask,
-  spread, top-book quantity and explicitly assumed round-trip costs.
-  If Binance USD-M denies access or quotes are stale, returns **unavailable**.
-- `/rival-target-proof`: show the independently heldout research evidence
-  for your saved exact-price goal. Outputs **NOT QUALIFIED** instead of
-  inventing a price-hit probability when model gates fail.
-- `/rival-paper-open`, `/rival-paper-close`, `/rival-paper-results`:
-  quote-to-quote paper positions with per-user limits and after-cost
-  hypothetical P&L. Absolutely no account orders or actual fills.
-- `/rival-stop`: cancel and clearly mark the old target card inactive.
-- `/rival-research`: simple opportunity summary; historical math, Gemini
-  and verified forward scores remain available behind advanced sections.
-- `/rival-data`: the detailed collector dashboard.
+No real wagers or orders are submitted. Existing alert preferences,
+historical results and practice balances survive the command migration.
+Discord updates global command menus after the bot successfully syncs;
+a GitHub green check or zip upload alone doesn't prove the running Discord
+command list has changed.
 
 [Verified quotes, heldout proof, source entitlements and paper accounting](docs/EVIDENCE_QUOTE_PAPER_GATES.md)
 and [price-target evidence and provider coverage](docs/RIVAL_PRICE_TARGETS.md)

@@ -307,7 +307,7 @@ def test_target_button_is_present_in_real_opportunities_view(tmp_path):
         )
         controls = {item.custom_id for item in view.children}
         assert "rival:research:follow-target" in controls
-        assert client.tree.get_command("rival-target") is not None
+        assert client.tree.get_command("rival-tools").get_command("target") is not None
         assert client.tree.get_command("rival-stop") is not None
         view.screen = "accuracy"
         view._rebuild()

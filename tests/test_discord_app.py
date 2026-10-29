@@ -125,11 +125,18 @@ async def test_discord_client_registers_rival_and_data_status_without_message_in
         assert command.description == (
             "Open RivaL\x27s simple private home: sports, crypto, practice and help."
         )
-        assert client.tree.get_command("rival-data") is not None
-        assert client.tree.get_command("rival-research") is not None
-        assert client.tree.get_command("rival-picks") is not None
-        assert client.tree.get_command("rival-opportunities") is not None
-        assert client.tree.get_command("rival-data").description == (
+        # Beginner-facing command discovery stays small. Previous niche
+        # commands remain as functional advanced subcommands.
+        assert {c.name for c in client.tree.get_commands()} == {
+            "rival", "rival-signal", "rival-stop", "rival-tools",
+        }
+        tools = client.tree.get_command("rival-tools")
+        assert {c.name for c in tools.commands} >= {
+            "data", "research", "picks", "opportunities",
+            "profit-proof", "source-health", "multi-proof",
+            "practice", "target", "sports", "paper-open",
+        }
+        assert tools.get_command("data").description == (
             "Open the private RivaL market data dashboard."
         )
         assert client.intents.message_content is False

@@ -18,6 +18,7 @@ from parlay_bot.discord_app.opportunities import (
 )
 from parlay_bot.discord_app.presentation import onboarding_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
+from parlay_bot.discord_app.sports_discovery import sports_discovery_embed
 from parlay_bot.discord_app.targeting import DirectionTargetService, DirectionTargetStore
 from parlay_bot.discord_app.views import LocationView, OnboardingView
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
@@ -339,12 +340,31 @@ class RivalDiscordClient(discord.Client):
             )
 
         @self.tree.command(
+            name="rival-sports",
+            description="Discover sports and leagues actually present in fresh odds feeds.",
+        )
+        async def rival_sports(interaction: discord.Interaction) -> None:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            await self._refresh_sports_for_pick()
+            await interaction.edit_original_response(
+                embed=await asyncio.to_thread(
+                    sports_discovery_embed, self.store,
+                    configured_leagues=(
+                        self.current_collector.league_ids
+                        if self.current_collector is not None else ()
+                    ),
+                    collector_enabled=self.current_collector is not None,
+                ),
+            )
+
+        @self.tree.command(
             name="rival-target",
-            description="Target a coin and get automatic UP, DOWN or WAIT updates in one DM.",
+            description="Watch UP/DOWN or an exact crypto USDT price, automatically.",
         )
         @app_commands.describe(
             coin="Which crypto perpetual market should RivaL monitor?",
-            timeframe="Predict the next 5 or 15 minutes using actual forward models.",
+            timeframe="Watch a 5m or 15m window.",
+            target_price="Optional: exact USDT price to watch for a verified hit.",
         )
         @app_commands.choices(
             coin=[
@@ -361,12 +381,14 @@ class RivalDiscordClient(discord.Client):
             interaction: discord.Interaction,
             coin: app_commands.Choice[str],
             timeframe: app_commands.Choice[int],
+            target_price: float | None = None,
         ) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             try:
                 ok, message = await self.direction_targets.follow(
                     interaction.user,
                     asset=coin.value, horizon_minutes=timeframe.value,
+                    target_price=target_price,
                 )
             except ValueError as exc:
                 ok, message = False, str(exc)

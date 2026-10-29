@@ -17,7 +17,14 @@ from typing import TYPE_CHECKING
 
 import discord
 
-from parlay_bot.discord_app.opportunities import ASSETS, _cash, recent_watches
+from parlay_bot.discord_app.opportunities import ASSETS, _cash, _utc, recent_watches
+from parlay_bot.discord_app.price_targets import (
+    PriceGoal,
+    PriceResult,
+    create_price_goal,
+    price_embed,
+    price_result,
+)
 from parlay_bot.storage.hot import RelationalHotStore
 
 if TYPE_CHECKING:
@@ -36,6 +43,7 @@ class DirectionTarget:
     asset: str
     horizon_minutes: int
     fingerprint: str
+    price_goal: PriceGoal | None = None
 
 
 @dataclass(frozen=True)
@@ -176,6 +184,15 @@ class DirectionTargetStore:
                      horizon_minutes INTEGER NOT NULL,
                      fingerprint TEXT NOT NULL,
                      updated_at TEXT NOT NULL
+                   );
+                   CREATE TABLE IF NOT EXISTS rival_price_goal_settings (
+                     user_id TEXT PRIMARY KEY,
+                     target_price TEXT NOT NULL,
+                     started_at TEXT NOT NULL,
+                     venue TEXT NOT NULL,
+                     contract TEXT NOT NULL,
+                     quote TEXT NOT NULL,
+                     reference_price DOUBLE PRECISION NOT NULL
                    );"""
             )
 
@@ -185,13 +202,25 @@ class DirectionTargetStore:
             str(row["user_id"]), str(row["channel_id"]),
             str(row["message_id"]), str(row["asset"]),
             int(row["horizon_minutes"]), str(row["fingerprint"]),
+            PriceGoal(
+                price=str(row["target_price"]),
+                started_at=_utc(str(row["started_at"])),
+                venue=str(row["target_venue"]), contract=str(row["target_contract"]),
+                quote=str(row["target_quote"]),
+                reference_price=float(row["reference_price"]),
+            ) if row.get("target_price") is not None else None,
         )
 
     def get(self, user_id: str) -> DirectionTarget | None:
         self.initialize()
         with self.store.connect() as conn:
             row = conn.execute(
-                "SELECT * FROM rival_direction_targets WHERE user_id=?",
+                """SELECT t.*,p.target_price,p.started_at,p.venue AS target_venue,
+                          p.contract AS target_contract,p.quote AS target_quote,
+                          p.reference_price
+                   FROM rival_direction_targets AS t
+                   LEFT JOIN rival_price_goal_settings AS p ON p.user_id=t.user_id
+                   WHERE t.user_id=?""",
                 (user_id,),
             ).fetchone()
         return self._target(dict(row)) if row else None
@@ -200,7 +229,12 @@ class DirectionTargetStore:
         self.initialize()
         with self.store.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM rival_direction_targets ORDER BY user_id LIMIT ?",
+                """SELECT t.*,p.target_price,p.started_at,p.venue AS target_venue,
+                          p.contract AS target_contract,p.quote AS target_quote,
+                          p.reference_price
+                   FROM rival_direction_targets AS t
+                   LEFT JOIN rival_price_goal_settings AS p ON p.user_id=t.user_id
+                   ORDER BY t.user_id LIMIT ?""",
                 (MAX_TARGETS,),
             ).fetchall()
         return [self._target(dict(row)) for row in rows]
@@ -257,6 +291,29 @@ class DirectionTargetStore:
                     datetime.now(UTC).isoformat(),
                 ),
             )
+            if target.price_goal is None:
+                conn.execute(
+                    "DELETE FROM rival_price_goal_settings WHERE user_id=?",
+                    (target.user_id,),
+                )
+            else:
+                goal = target.price_goal
+                conn.execute(
+                    """INSERT INTO rival_price_goal_settings
+                       (user_id,target_price,started_at,venue,contract,quote,reference_price)
+                       VALUES (?,?,?,?,?,?,?)
+                       ON CONFLICT(user_id) DO UPDATE SET
+                         target_price=excluded.target_price,
+                         started_at=excluded.started_at,
+                         venue=excluded.venue,
+                         contract=excluded.contract,
+                         quote=excluded.quote,
+                         reference_price=excluded.reference_price""",
+                    (
+                        target.user_id, goal.price, goal.started_at.isoformat(),
+                        goal.venue, goal.contract, goal.quote, goal.reference_price,
+                    ),
+                )
 
     def updated(self, previous: DirectionTarget, fingerprint: str) -> None:
         """No other target or message can inherit an old updater's digest."""
@@ -278,15 +335,27 @@ class DirectionTargetStore:
         with self.store.connect() as conn:
             if message_id is None:
                 conn.execute(
+                    "DELETE FROM rival_price_goal_settings WHERE user_id=?",
+                    (user_id,),
+                )
+                conn.execute(
                     "DELETE FROM rival_direction_targets WHERE user_id=?",
                     (user_id,),
                 )
             else:
-                conn.execute(
-                    """DELETE FROM rival_direction_targets
-                       WHERE user_id=? AND message_id=?""",
+                found = conn.execute(
+                    "SELECT 1 FROM rival_direction_targets WHERE user_id=? AND message_id=?",
                     (user_id, message_id),
-                )
+                ).fetchone()
+                if found:
+                    conn.execute(
+                        "DELETE FROM rival_price_goal_settings WHERE user_id=?",
+                        (user_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM rival_direction_targets WHERE user_id=? AND message_id=?",
+                        (user_id, message_id),
+                    )
 
 
 class DirectionTargetService:
@@ -300,7 +369,7 @@ class DirectionTargetService:
 
     async def follow(
         self, user: discord.abc.User, *, asset: str,
-        horizon_minutes: int,
+        horizon_minutes: int, target_price: float | None = None,
     ) -> tuple[bool, str]:
         """Only a direct /rival-target interaction opts a user into DMs."""
         if asset not in ASSETS or horizon_minutes not in HORIZONS:
@@ -309,9 +378,25 @@ class DirectionTargetService:
             existing = await asyncio.to_thread(self.store.get, str(user.id))
             if not await asyncio.to_thread(self.store.can_follow, str(user.id)):
                 return False, "Personal watch capacity is full. Try again later."
-            snapshot = await asyncio.to_thread(
-                target_snapshot, self.market,
-                asset=asset, horizon_minutes=horizon_minutes,
+            goal = (
+                await asyncio.to_thread(
+                    create_price_goal, self.market, asset=asset,
+                    horizon_minutes=horizon_minutes, target_price=target_price,
+                )
+                if target_price is not None else None
+            )
+            snapshot = (
+                await asyncio.to_thread(
+                    price_result, self.market,
+                    asset=asset, horizon_minutes=horizon_minutes, goal=goal,
+                ) if goal is not None else
+                await asyncio.to_thread(
+                    target_snapshot, self.market,
+                    asset=asset, horizon_minutes=horizon_minutes,
+                )
+            )
+            embed = price_embed(snapshot) if isinstance(snapshot, PriceResult) else (
+                target_embed(snapshot)
             )
             try:
                 channel = user.dm_channel or await user.create_dm()
@@ -319,18 +404,25 @@ class DirectionTargetService:
                 if existing is not None and str(channel.id) == existing.channel_id:
                     try:
                         message = await channel.fetch_message(int(existing.message_id))
-                        await message.edit(embed=target_embed(snapshot))
+                        await message.edit(embed=embed)
                     except discord.NotFound:
                         message = None
                 if message is None:
-                    message = await channel.send(embed=target_embed(snapshot))
+                    message = await channel.send(embed=embed)
             except (discord.Forbidden, discord.HTTPException):
                 return False, "I couldn't DM you. Enable DMs for RivaL, then retry."
             target = DirectionTarget(
                 str(user.id), str(channel.id), str(message.id),
-                asset, horizon_minutes, snapshot.fingerprint,
+                asset, horizon_minutes, snapshot.fingerprint, goal,
             )
             await asyncio.to_thread(self.store.save, target)
+            if goal is not None:
+                return True, (
+                    f"Monitoring **{asset} target ${goal.price} USDT** for "
+                    f"**{horizon_minutes} minutes** in your private DM. "
+                    "Only completed exchange candles can verify a hit. "
+                    "Use /rival-stop to cancel."
+                )
             return True, (
                 f"Watching **{asset} {horizon_minutes}m** in your DMs. "
                 "The same message will change to UP, DOWN, or WAIT when evidence changes. "
@@ -367,13 +459,22 @@ class DirectionTargetService:
             cache: dict[tuple[str, int], TargetSnapshot] = {}
             changed = 0
             for target in targets:
-                key = (target.asset, target.horizon_minutes)
-                if key not in cache:
-                    cache[key] = await asyncio.to_thread(
-                        target_snapshot, self.market,
+                if target.price_goal is not None:
+                    snapshot = await asyncio.to_thread(
+                        price_result, self.market,
                         asset=target.asset, horizon_minutes=target.horizon_minutes,
+                        goal=target.price_goal,
                     )
-                snapshot = cache[key]
+                    embed = price_embed(snapshot)
+                else:
+                    key = (target.asset, target.horizon_minutes)
+                    if key not in cache:
+                        cache[key] = await asyncio.to_thread(
+                            target_snapshot, self.market,
+                            asset=target.asset, horizon_minutes=target.horizon_minutes,
+                        )
+                    snapshot = cache[key]
+                    embed = target_embed(snapshot)
                 if snapshot.fingerprint == target.fingerprint:
                     continue
                 try:
@@ -381,7 +482,7 @@ class DirectionTargetService:
                     if channel is None:
                         channel = await self.bot.fetch_channel(int(target.channel_id))
                     message = await channel.fetch_message(int(target.message_id))
-                    await message.edit(embed=target_embed(snapshot))
+                    await message.edit(embed=embed)
                 except (discord.NotFound, discord.Forbidden):
                     # A DM was deleted or access revoked; no replacement spam.
                     await asyncio.to_thread(

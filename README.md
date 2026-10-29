@@ -90,13 +90,22 @@ pretending there is a guaranteed profitable trade:
 
 - `/rival` and `/rival-picks`: current jurisdiction-eligible sports odds comparison, or PASS.
 - `/rival-opportunities`: sportsbook opportunity plus BTC/ETH/SOL model watches.
-- `/rival-target`: choose BTC, ETH or SOL and a 5m/15m target. Get a private
-  **UP**, **DOWN**, or **WAIT** card. It updates its existing DM about once per
-  minute when the actual forward forecast or source conditions change.
+- `/rival-target`: choose BTC/ETH/SOL and a 5m/15m timeframe. Leave the
+  optional **target_price** empty for the existing private UP/DOWN/WAIT forward
+  forecast; enter an exact **USDT target price** for a separate completed-candle
+  **WATCH / HIT / EXPIRED / WAIT** price-touch card. This does not pretend
+  model direction equals the probability of hitting your exact price.
+  Both modes edit the same private DM on new verified evidence.
+- `/rival-sports`: discover actual supported sports/leagues from fresh,
+  unstarted sportsbook fixtures in the configured provider feed. No fictional
+  league coverage or unsupported sport-specific model predictions.
 - `/rival-stop`: cancel and clearly mark the old target card inactive.
 - `/rival-research`: simple opportunity summary; historical math, Gemini
   and verified forward scores remain available behind advanced sections.
 - `/rival-data`: the detailed collector dashboard.
+
+[Price-target evidence and provider coverage](docs/RIVAL_PRICE_TARGETS.md)
+document the exact source/time-window rules.
 
 The status is never a placed order or promise of profitable returns. The
 model's 15m horizon predicts the *future five-minute target candle*, not

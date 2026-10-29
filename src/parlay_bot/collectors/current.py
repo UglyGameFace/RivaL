@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.ingestion.sportsgameodds import normalize_event
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
+from parlay_bot.research.sports_results import SportsResultStore
 from parlay_bot.storage.hot import RelationalHotStore
 
 _STATE_KEY = "sportsgameodds:last_successful_refresh"
@@ -51,6 +52,7 @@ class CurrentBoardCollector:
 
         self.client = client
         self.store = store
+        self.results: SportsResultStore | None = None
         self.league_ids = league_ids
         self.bookmaker_ids = bookmaker_ids
         self.refresh_interval = refresh_interval
@@ -113,6 +115,16 @@ class CurrentBoardCollector:
                 for event in events:
                     board = normalize_event(event)
                     result = self.store.ingest_board(board)
+                    if self.results is not None:
+                        try:
+                            await asyncio.to_thread(
+                                self.results.issue_forecast, event,
+                                observed_at=datetime.now(UTC),
+                            )
+                        except Exception:  # noqa: BLE001 - odds intake must survive research failures
+                            # The future fixture remains available even if a
+                            # model cannot issue a trustworthy pregame call.
+                            pass
                     observations_seen += result.observations_seen
                     new_states += result.new_states
                     repeated_states += result.repeated_states

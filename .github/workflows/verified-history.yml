@@ -1,0 +1,116 @@
+name: Verified historical research
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/verified-history.yml"
+      - "src/parlay_bot/research/**"
+      - "src/parlay_bot/archive/drive.py"
+      - "tests/test_research_*.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/verified-history.yml"
+      - "src/parlay_bot/research/**"
+  workflow_dispatch:
+    inputs:
+      months:
+        description: "Complete historical calendar months (1..36)"
+        required: true
+        default: "6"
+      publish:
+        description: "Publish checksum-validated private history+models+reports to RivaL Drive"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-verified-history-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  public-source-smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Check official source access and integrity
+        id: provider
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          mkdir -p public-evidence
+          python -m parlay_bot.research.free_history \
+            --out public-evidence binance --asset BTC --interval 1h --month 2026-09
+          python -m parlay_bot.research.free_history \
+            --out public-evidence football --league E0 --season 2526
+          python -m parlay_bot.research.audit \
+            --root public-evidence --months 1 --out public-evidence/quality.json
+      - name: Mark external access as unverified if unavailable
+        if: steps.provider.outcome != 'success'
+        run: echo "::warning::Official provider access or full-month validation failed; do not claim real-source proof."
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-history-smoke-reports
+          path: public-evidence/quality.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  six-month-production-research:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install
+        run: python -m pip install -e ".[dev]"
+      - name: Collect six months, audit, train isolated candidates and verify warehouse copies
+        run: |
+          set -euo pipefail
+          months="${{ github.event.inputs.months || '6' }}"
+          case "$months" in
+            1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36) ;;
+            *) echo "Invalid month count"; exit 1 ;;
+          esac
+          args=()
+          if [[ "${{ github.event_name }}" == "push" || "${{ github.event.inputs.publish }}" == "true" ]]; then
+            if [[ -n "$RIVAL_DRIVE_ROOT_FOLDER_ID" && -n "$RIVAL_DRIVE_HISTORY_FOLDER_ID" && -n "$RIVAL_DRIVE_MANIFESTS_FOLDER_ID" && -n "$RIVAL_DRIVE_STAGING_FOLDER_ID" && -n "$RIVAL_DRIVE_MODELS_FOLDER_ID" && -n "$RIVAL_DRIVE_REPORTS_FOLDER_ID" && -n "$RIVAL_DRIVE_OAUTH_CLIENT_ID" && -n "$RIVAL_DRIVE_OAUTH_CLIENT_SECRET" && -n "$RIVAL_DRIVE_OAUTH_REFRESH_TOKEN" ]]; then
+              args+=(--publish)
+            else
+              echo "::warning::Missing bot-owned Drive OAuth or folder configuration; data collection is still attempted, warehouse verification cannot be claimed."
+            fi
+          fi
+          python -m parlay_bot.research.production \
+            --months "$months" --max-new 100 \
+            --root data/research-history \
+            --report-dir data/research-reports "${args[@]}"
+      - name: Publish public-safe report artifact, never raw provider history or secrets
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rival-verified-history-reports
+          path: data/research-reports/*.json
+          if-no-files-found: ignore
+          retention-days: 14

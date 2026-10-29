@@ -282,8 +282,8 @@ class ParlayBuilder:
             candidates = [c for c in candidates if c.price_edge >= 0.02]
         if not candidates:
             raise ParlayBuildError(
-                "No fresh, jurisdiction-eligible, positive-edge sportsbook prices "
-                "passed the current screen. PASS rather than force a bet."
+                "No current eligible sportsbook prices pass the fresh positive-edge screen. "
+                "PASS rather than force a bet."
             )
 
         by_book: dict[str, list[_PricedCandidate]] = defaultdict(list)

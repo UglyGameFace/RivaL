@@ -409,7 +409,8 @@ class GuidedHome(discord.ui.View):
                 description=(
                     "**What would you like to do?**\n"
                     "Choose a button below. Every result is checked against "
-                    "its real source, and a missing result is never invented."
+                    "its real source, and a missing result is never invented. "
+                    "No real bets or orders are placed."
                 ), color=discord.Color.blurple(),
             )
             embed.add_field(

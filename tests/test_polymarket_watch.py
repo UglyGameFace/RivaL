@@ -56,6 +56,13 @@ def test_polymarket_source_select_is_user_specific_persistent_and_stoppable(tmp_
 
 def test_polymarket_live_market_only_from_real_gamma_and_clob(monkeypatch):
     now = datetime.fromtimestamp(1793349000 + 60, UTC)
+    # Fixed clock keeps the real quote-age and expiry tests deterministic.
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(polymarket_watch, "datetime", Clock)
     slug = polymarket_watch.market_slug("BTC", 5, now)
     start = datetime.fromtimestamp(1793349000, UTC)
     expire = start + timedelta(minutes=5)

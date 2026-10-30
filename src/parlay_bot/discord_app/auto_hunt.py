@@ -3,6 +3,25 @@
 This is NOT a betting executor or a proof of profitable edge. The authoritative
 forecast ledger and venue-specific order book are reused. DB claims are written
 before each DM attempt, so a timeout never creates duplicate betting alerts.
+
+Two alert tiers, kept strictly separate:
+
+* EARLY_RESEARCH: fresh, future-issued forecasts without proven trading
+  edge. Never presented as actionable wagers, never with market terms
+  framed as a bet. This is what the original forecast path delivered.
+* QUALIFIED_WATCH: only the existing qualified WATCH verdict from the
+  tap-time signal (a venue's own directional forecast whose own 7-day
+  record beats the baseline), plus a fresh matching-source quote and
+  sufficient time remaining. Shown with its validated quote. It is
+  presented as a bet opportunity ONLY when actual market terms and a
+  positive estimated after-cost edge are both present; otherwise it stays
+  a qualified research watch, explicitly not a bet.
+
+Users toggle research, qualified, and Polymarket alerts independently.
+Legacy single-source preferences migrate additively: a "forecasts"
+subscriber keeps research alerts, a "polymarket" subscriber keeps
+Polymarket alerts, and qualified alerts start OFF for everyone, so no
+existing subscriber suddenly receives a new alert class.
 """
 from __future__ import annotations
 
@@ -28,6 +47,7 @@ from parlay_bot.discord_app.signals import (
     model_strength,
     signal_embed,
 )
+from parlay_bot.perpetuals.live_quotes import MAX_QUOTE_AGE
 from parlay_bot.perpetuals.promotion import multi_summary, promoted_engine
 from parlay_bot.storage.hot import RelationalHotStore
 
@@ -41,6 +61,15 @@ MAX_SPREAD_BPS = 25.0
 # New research alerts are deliberately distinct from qualified trade signals.
 # Don't silently discard every forecast just because live P&L is unproven.
 FORECAST_ALERT_MAX_AGE = timedelta(minutes=3)
+# Per-tier, per-user daily budgets. Research and qualified budgets are
+# separate, so a busy research day can never crowd out a qualified window.
+DAILY_CAP_PER_TIER = 12
+# Qualified delivery keys are prefixed so one forecast can yield a research
+# record and a qualified record without either claiming the other. Research
+# and Polymarket keys stay unprefixed, so pre-reconcile delivery rows keep
+# deduplicating exactly as before.
+QUALIFIED_KEY_PREFIX = "qualified|"
+TIERS = ("research", "qualified", "polymarket")
 
 
 def _instant(value: str) -> datetime:
@@ -64,6 +93,10 @@ class HuntCandidate:
     engine: str
     model_version: str
     screened: bool = False
+    # Source-matched after-cost evidence, when the signal's shadow ledger
+    # could supply it. None means unknown, never zero, never an edge.
+    after_cost_bps: float | None = None
+    after_cost_status: str | None = None
 
     @property
     def direction(self) -> str:
@@ -81,6 +114,11 @@ class HuntCandidate:
             f"{self.expires.isoformat()}"
         )
         return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+    @property
+    def window(self) -> tuple[str, int, datetime]:
+        """The market window this forecast covers, across venues."""
+        return (self.asset, self.horizon, self.expires)
 
 
 class AutoHuntStore:
@@ -118,8 +156,130 @@ class AutoHuntStore:
                    CREATE TABLE IF NOT EXISTS rival_hunt_source (
                        user_id TEXT PRIMARY KEY,
                        selected_source TEXT NOT NULL
+                   );
+                   CREATE TABLE IF NOT EXISTS rival_hunt_tiers (
+                       user_id TEXT PRIMARY KEY,
+                       research INTEGER NOT NULL DEFAULT 0,
+                       qualified INTEGER NOT NULL DEFAULT 0,
+                       polymarket INTEGER NOT NULL DEFAULT 0,
+                       updated_at TEXT NOT NULL
                    );"""
             )
+            # Additive migration, idempotent: legacy single-source rows
+            # become independent flags. "forecasts" keeps research alerts,
+            # "polymarket" keeps Polymarket alerts, qualified starts OFF
+            # for everyone so no existing subscriber gains a new alert
+            # class from the migration alone. Subscribers without a source
+            # row defaulted to "forecasts" under the old source() reader.
+            conn.execute(
+                """INSERT INTO rival_hunt_tiers
+                       (user_id, research, qualified, polymarket, updated_at)
+                   SELECT s.user_id,
+                          CASE WHEN COALESCE(p.selected_source, 'forecasts')
+                               = 'forecasts' THEN 1 ELSE 0 END,
+                          0,
+                          CASE WHEN p.selected_source = 'polymarket'
+                               THEN 1 ELSE 0 END,
+                          ?
+                   FROM rival_hunt_subscriptions s
+                   LEFT JOIN rival_hunt_source p ON p.user_id = s.user_id
+                   ON CONFLICT(user_id) DO NOTHING""",
+                (datetime.now(UTC).isoformat(),),
+            )
+
+    def set_tier(self, user_id: str, tier: str, enabled: bool) -> bool:
+        if tier not in TIERS:
+            raise ValueError("Unsupported alert tier")
+        # A first explicit toggle must not silently drop flags the user
+        # currently holds through the legacy fallback: seed the new row
+        # from the effective flags, then apply the one change.
+        current = self.tiers(user_id)
+        current[tier] = enabled
+        stamp = datetime.now(UTC).isoformat()
+        with self.store.connect() as conn:
+            conn.execute(
+                """INSERT INTO rival_hunt_tiers
+                       (user_id, research, qualified, polymarket, updated_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET
+                       research = excluded.research,
+                       qualified = excluded.qualified,
+                       polymarket = excluded.polymarket,
+                       updated_at = excluded.updated_at""",
+                (user_id, 1 if current["research"] else 0,
+                 1 if current["qualified"] else 0,
+                 1 if current["polymarket"] else 0, stamp),
+            )
+        return enabled
+
+    def tiers(self, user_id: str) -> dict:
+        """Independent flags, with the legacy single-source view as fallback."""
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT research, qualified, polymarket
+                   FROM rival_hunt_tiers WHERE user_id = ?""",
+                (user_id,),
+            ).fetchone()
+            if row is not None:
+                return {
+                    "research": int(row["research"]) == 1,
+                    "qualified": int(row["qualified"]) == 1,
+                    "polymarket": int(row["polymarket"]) == 1,
+                }
+            source = conn.execute(
+                """SELECT selected_source FROM rival_hunt_source
+                   WHERE user_id = ?""",
+                (user_id,),
+            ).fetchone()
+        legacy = str(source["selected_source"]) if source else "forecasts"
+        return {
+            "research": legacy == "forecasts",
+            "qualified": False,
+            "polymarket": legacy == "polymarket",
+        }
+
+    def count_sent_today(self, user_id: str, tier: str, now: datetime) -> int:
+        """Sent alerts today in one tier's budget. Research and qualified
+        budgets are separate; Polymarket rows are identified by venue."""
+        if tier not in TIERS:
+            raise ValueError("Unsupported alert tier")
+        day_start = now.replace(hour=0, minute=0, second=0,
+                                microsecond=0).isoformat()
+        if tier == "qualified":
+            condition = "forecast_key LIKE 'qualified|%'"
+            params: tuple = (user_id, day_start)
+        elif tier == "polymarket":
+            condition = "venue = 'polymarket'"
+            params = (user_id, day_start)
+        else:
+            condition = ("venue != 'polymarket' AND "
+                         "forecast_key NOT LIKE 'qualified|%'")
+            params = (user_id, day_start)
+        with self.store.connect() as conn:
+            row = conn.execute(
+                f"""SELECT COUNT(*) AS n FROM rival_hunt_delivery
+                    WHERE user_id = ? AND state = 'sent'
+                      AND attempted_at >= ? AND {condition}""",
+                params,
+            ).fetchone()
+        return int(row["n"])
+
+    def has_qualified_sent_window(self, user_id: str, asset: str,
+                                  horizon: int, expires: datetime) -> bool:
+        """True when a qualified DM already went out for this window.
+
+        Only 'sent' rows suppress: a failed qualified attempt leaves the
+        window open for a research fallback instead of duplicating it.
+        """
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT 1 FROM rival_hunt_delivery
+                   WHERE user_id = ? AND asset = ? AND horizon = ?
+                     AND expires_at = ? AND state = 'sent'
+                     AND forecast_key LIKE 'qualified|%'""",
+                (user_id, asset, horizon, expires.isoformat()),
+            ).fetchone()
+        return row is not None
 
     def subscribe(self, user_id: str, *, now: datetime | None = None) -> bool:
         stamp = (now or datetime.now(UTC)).isoformat()
@@ -173,7 +333,13 @@ class AutoHuntStore:
                 "UPDATE rival_hunt_subscriptions SET enabled=0 WHERE user_id=? AND enabled=1",
                 (user_id,),
             )
-            return updated.rowcount == 1
+            flags = conn.execute(
+                """UPDATE rival_hunt_tiers
+                   SET research=0, qualified=0, polymarket=0
+                   WHERE user_id=? AND (research=1 OR qualified=1 OR polymarket=1)""",
+                (user_id,),
+            )
+            return updated.rowcount == 1 or flags.rowcount == 1
 
     def enabled(self, user_id: str) -> bool:
         with self.store.connect() as conn:
@@ -187,16 +353,34 @@ class AutoHuntStore:
         with self.store.connect() as conn:
             rows = conn.execute(
                 """SELECT s.user_id,s.since_at,s.last_sent_at,
-                          COALESCE(p.selected_source,'forecasts') AS source
+                          COALESCE(p.selected_source,'forecasts') AS source,
+                          COALESCE(t.research,
+                              CASE WHEN COALESCE(p.selected_source,'forecasts')
+                                   = 'forecasts' THEN 1 ELSE 0 END) AS research,
+                          COALESCE(t.qualified, 0) AS qualified,
+                          COALESCE(t.polymarket,
+                              CASE WHEN p.selected_source = 'polymarket'
+                                   THEN 1 ELSE 0 END) AS polymarket
                    FROM rival_hunt_subscriptions s
                    LEFT JOIN rival_hunt_source p ON p.user_id=s.user_id
+                   LEFT JOIN rival_hunt_tiers t ON t.user_id=s.user_id
                    WHERE s.enabled=1 ORDER BY s.user_id LIMIT ?""",
                 (MAX_USERS,),
             ).fetchall()
             return [dict(row) for row in rows]
 
-    def claim(self, user_id: str, candidate: HuntCandidate, *, now: datetime) -> bool:
-        """Claim before network I/O. Even ambiguous DM errors are never retried."""
+    def claim(self, user_id: str, candidate: HuntCandidate, *, now: datetime,
+              key: str | None = None, apply_cooldown: bool = True) -> bool:
+        """Claim before network I/O. Even ambiguous DM errors are never retried.
+
+        key overrides the candidate's own key: qualified alerts claim under
+        a prefixed key so one forecast can hold a research record and a
+        qualified record without either claiming the other. apply_cooldown
+        is False only for qualified alerts: distinct qualified windows must
+        never be hidden by the research cooldown, and qualified sends never
+        consume the research budget's last-sent timestamp.
+        """
+        effective_key = key or candidate.key
         with self.store.connect() as conn:
             eligible = conn.execute(
                 """SELECT since_at,last_sent_at FROM rival_hunt_subscriptions
@@ -209,7 +393,7 @@ class AutoHuntStore:
                 _instant(eligible["since_at"]) > candidate.issued
             ):
                 return False
-            if eligible["last_sent_at"] and (
+            if apply_cooldown and eligible["last_sent_at"] and (
                 now - _instant(eligible["last_sent_at"]) < COOLDOWN
             ):
                 return False
@@ -220,24 +404,25 @@ class AutoHuntStore:
                    VALUES(?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(user_id,forecast_key) DO NOTHING""",
                 (
-                    user_id, candidate.key, candidate.asset, candidate.horizon,
+                    user_id, effective_key, candidate.asset, candidate.horizon,
                     candidate.venue, candidate.issued.isoformat(),
                     candidate.expires.isoformat(), now.isoformat(), "attempted",
                 ),
             )
             if result.rowcount != 1:
                 return False
-            # Rate limit even uncertain attempts; reconnect must not fan out.
-            conn.execute(
-                """UPDATE rival_hunt_subscriptions SET last_sent_at=?
-                   WHERE user_id=? AND enabled=1""",
-                (now.isoformat(), user_id),
-            )
+            if apply_cooldown:
+                # Rate limit even uncertain attempts; reconnect must not fan out.
+                conn.execute(
+                    """UPDATE rival_hunt_subscriptions SET last_sent_at=?
+                       WHERE user_id=? AND enabled=1""",
+                    (now.isoformat(), user_id),
+                )
             return True
 
     def finish(
         self, user_id: str, candidate: HuntCandidate, *, sent: bool,
-        message_id: str | None = None,
+        message_id: str | None = None, key: str | None = None,
     ) -> None:
         with self.store.connect() as conn:
             conn.execute(
@@ -246,7 +431,7 @@ class AutoHuntStore:
                 (
                     "sent" if sent else "failed", message_id,
                     datetime.now(UTC).isoformat() if sent else None,
-                    user_id, candidate.key,
+                    user_id, key or candidate.key,
                 ),
             )
 
@@ -435,8 +620,67 @@ async def new_forecast_watches(
     return sorted(candidates, key=lambda c: (-c.issued.timestamp(), c.expires))
 
 
+async def qualified_watches(
+    market, quotes, *, stream_shadow, now: datetime | None = None,
+) -> list[HuntCandidate]:
+    """QUALIFIED_WATCH candidates: exactly the tap-time qualified verdict.
+
+    Each slot reuses signal_embed and requires its decision to be a watch:
+    the venue's own directional forecast whose own 7-day record beats the
+    baseline, priced through that venue's validated book. The book in the
+    decision is re-checked for freshness here, so a slow scan can never
+    alert on a quote the signal itself would no longer validate. A slot
+    that is not a watch yields nothing; UNVERIFIED, LEAN, PASS, and WAIT
+    never become qualified alerts.
+    """
+    if market is None:
+        return []
+    stamp = now or datetime.now(UTC)
+    if stamp.utcoffset() is None:
+        raise ValueError("Auto-Hunt requires an aware clock")
+    stamp = stamp.astimezone(UTC)
+    picks: list[HuntCandidate] = []
+    for asset in ASSETS:
+        for horizon in HORIZONS:
+            decision: dict = {}
+            try:
+                await signal_embed(
+                    market, quotes, asset=asset, horizon_minutes=horizon,
+                    now=stamp, stream_shadow=stream_shadow,
+                    decision_out=decision,
+                )
+            except Exception:  # noqa: BLE001 - one slot never blocks the rest
+                _LOG.exception(
+                    "Auto-Hunt qualified slot %s/%dm evaluation failed",
+                    asset, horizon,
+                )
+                continue
+            if not decision.get("is_watch"):
+                continue
+            quote_at = decision.get("quote_at")
+            if (
+                quote_at is None
+                or not timedelta(0) <= stamp - quote_at <= MAX_QUOTE_AGE
+            ):
+                continue
+            picks.append(HuntCandidate(
+                asset=asset, horizon=horizon, venue=str(decision["venue"]),
+                issued=decision["issued"],
+                expires=decision["target"] + timedelta(minutes=5),
+                probability_up=float(decision["probability"]),
+                bid=decision.get("bid"), ask=decision.get("ask"),
+                quote_at=quote_at, engine=str(decision["engine"]),
+                model_version=str(decision["model_version"]),
+                screened=True,
+                after_cost_bps=decision.get("after_cost_bps"),
+                after_cost_status=decision.get("after_cost_status"),
+            ))
+    return sorted(picks, key=lambda c: (-c.strength, c.expires, c.asset))
+
+
 def hunt_embed(
     candidate: HuntCandidate | PolymarketNotice, *, observed_at: datetime,
+    tier: str | None = None,
 ) -> discord.Embed:
     if isinstance(candidate, PolymarketNotice):
         embed = discord.Embed(
@@ -456,6 +700,47 @@ def hunt_embed(
         embed.set_footer(text="Read-only global Polymarket data • /rival-stop")
         return embed
     seconds = max(0, int((candidate.expires - observed_at).total_seconds()))
+    if tier == "qualified" and candidate.screened:
+        # Bet-opportunity framing appears ONLY with actual market terms
+        # and a positive estimated after-cost edge. Anything else stays a
+        # qualified research watch, explicitly not a bet opportunity.
+        edge = candidate.after_cost_bps
+        if edge is not None and edge > 0:
+            edge_line = (
+                f"Bet opportunity terms: Bid **${candidate.bid:,.2f}** / "
+                f"Ask **${candidate.ask:,.2f}** • Estimated after-cost edge "
+                f"**+{edge:.1f} bps** (severe-cost mean, source-matched)."
+            )
+        else:
+            edge_line = (
+                "After-cost edge: not established — shown as a qualified "
+                "research watch, not a bet opportunity."
+            )
+        embed = discord.Embed(
+            title=(f"✅ Auto-Hunt • QUALIFIED WATCH • {candidate.asset} "
+                   f"{candidate.horizon}m • {candidate.direction}"),
+            description=(
+                "**Tier: QUALIFIED WATCH** — validated forecast evidence "
+                "with a fresh matching-source quote.\n"
+                f"Raw directional model strength: **{candidate.strength:.1%}** "
+                "(not calibrated odds).\n"
+                f"Forecast reference venue: **{candidate.venue}**.\n"
+                f"Validated {candidate.venue} book at "
+                f"<t:{int(candidate.quote_at.timestamp())}:R>: "
+                f"Bid **${candidate.bid:,.2f}** / "
+                f"Ask **${candidate.ask:,.2f}**.\n"
+                f"{edge_line}\n"
+                f"Issued <t:{int(candidate.issued.timestamp())}:R> • "
+                f"Expires <t:{int(candidate.expires.timestamp())}:R> "
+                f"(~{seconds}s remained at notification).\n\n"
+                "Not a guaranteed prediction or automatically executable "
+                "market. Refresh to review any current quote."
+            ),
+            color=discord.Color.green(),
+        )
+        embed.set_footer(
+            text="Opt-in only • No wagers or orders • /rival-stop to stop alerts")
+        return embed
     quote_line = (
         f"Validated {candidate.venue} book at "
         f"<t:{int(candidate.quote_at.timestamp())}:R>: "
@@ -468,6 +753,8 @@ def hunt_embed(
         title=f"🔎 Auto-Hunt • {candidate.asset} {candidate.horizon}m • {candidate.direction}",
         description=(
             "**New model forecast • research only**\n"
+            "**Tier: EARLY RESEARCH** — a fresh forecast without proven "
+            "edge. Never a wager.\n"
             f"Raw directional model strength: **{candidate.strength:.1%}** "
             "(not calibrated odds).\n"
             f"Forecast reference venue: **{candidate.venue}**.\n"
@@ -564,11 +851,13 @@ class AutoHuntActions(discord.ui.View):
 
 
 class AutoHuntService:
-    def __init__(self, *, bot: discord.Client, market, quotes, store: AutoHuntStore) -> None:
+    def __init__(self, *, bot: discord.Client, market, quotes, store: AutoHuntStore,
+                 stream_shadow=None) -> None:
         self.bot = bot
         self.market = market
         self.quotes = quotes
         self.store = store
+        self.stream_shadow = stream_shadow
         self.polymarket = PolymarketReader()
         self._user_locks: dict[str, asyncio.Lock] = {}
         self._cycle_lock = asyncio.Lock()
@@ -594,11 +883,12 @@ class AutoHuntService:
             return False, "Unsupported alert source."
         if source == "forecasts" and self.market is None:
             return False, "Live crypto forecasting unavailable; forecasts not enabled."
+        flag = "research" if source == "forecasts" else "polymarket"
         async with self._user_lock(str(user.id)):
             try:
                 enabled = await asyncio.to_thread(self.store.enabled, str(user.id))
-                current = await asyncio.to_thread(self.store.source, str(user.id))
-                if enabled and current == source:
+                flags = await asyncio.to_thread(self.store.tiers, str(user.id))
+                if enabled and flags[flag]:
                     return True, "Already following " + (
                         "Polymarket markets." if source == "polymarket" else
                         "RivaL forecasts."
@@ -613,6 +903,7 @@ class AutoHuntService:
                 if not enabled:
                     await asyncio.to_thread(self.store.subscribe, str(user.id))
                 await asyncio.to_thread(self.store.choose_source, str(user.id), source)
+                await asyncio.to_thread(self.store.set_tier, str(user.id), flag, True)
                 return True, (
                     "Now following Polymarket crypto markets with actual Up/Down "
                     "quotes, not invented model predictions."
@@ -632,6 +923,25 @@ class AutoHuntService:
         async with self._user_lock(str(user_id)):
             return await asyncio.to_thread(self.store.stop, str(user_id))
 
+    async def toggle_tier(self, user_id: int, tier: str) -> tuple[bool, str]:
+        """Flip one independent tier. Turning a tier ON subscribes the user
+        if needed; turning one OFF never touches the other tiers."""
+        if tier not in TIERS:
+            return False, "Unsupported alert tier."
+        async with self._user_lock(str(user_id)):
+            flags = await asyncio.to_thread(self.store.tiers, str(user_id))
+            new_state = not flags[tier]
+            if new_state:
+                enabled = await asyncio.to_thread(self.store.enabled, str(user_id))
+                if not enabled:
+                    await asyncio.to_thread(self.store.subscribe, str(user_id))
+            await asyncio.to_thread(self.store.set_tier, str(user_id), tier, new_state)
+            label = {"research": "Research", "qualified": "Qualified",
+                     "polymarket": "Polymarket"}[tier]
+            return new_state, (
+                f"{label} alerts {'ON' if new_state else 'OFF'}."
+            )
+
     async def status(self, user_id: int) -> str:
         try:
             active = await asyncio.to_thread(self.store.enabled, str(user_id))
@@ -639,9 +949,44 @@ class AutoHuntService:
             return "Status unavailable. No new alert confirmed."
         if not active:
             return "OFF • choose a source to start"
-        source = await asyncio.to_thread(self.store.source, str(user_id))
-        return ("ON • Polymarket 5m/15m markets"
-                if source == "polymarket" else "ON • RivaL new model forecasts")
+        flags = await asyncio.to_thread(self.store.tiers, str(user_id))
+        parts = " • ".join(
+            f"{label} {'on' if flags[tier] else 'off'}"
+            for tier, label in (("research", "Research"),
+                                ("qualified", "Qualified"),
+                                ("polymarket", "Polymarket"))
+        )
+        if not any(flags.values()):
+            return "OFF • all alert tiers off — choose one to start"
+        return "ON • " + parts
+
+    async def _send_dm(self, user_id: str, candidate, stamp: datetime,
+                       *, tier: str | None) -> object | None:
+        """One DM attempt. Returns the message, or None when unconfirmed.
+
+        The claim already exists by the time this runs, so an ambiguous
+        failure here is never retried: a restart will NOT send it again.
+        """
+        message = None
+        try:
+            user = self.bot.get_user(int(user_id))
+            if user is None:
+                user = await asyncio.wait_for(
+                    self.bot.fetch_user(int(user_id)),
+                    timeout=5,
+                )
+            channel = user.dm_channel or await user.create_dm()
+            message = await asyncio.wait_for(
+                channel.send(
+                    embed=hunt_embed(candidate, observed_at=stamp, tier=tier),
+                    view=AutoHuntActions(timeout=900),
+                ), timeout=8,
+            )
+        except (discord.HTTPException, TimeoutError, ValueError):
+            _LOG.warning("Auto-Hunt DM not confirmed user=%s", user_id)
+        except Exception:  # noqa: BLE001 - no ambiguous resend
+            _LOG.exception("Auto-Hunt DM failed")
+        return message
 
     async def cycle(self) -> int:
         # Only one scan and one candidate set per cycle, regardless of users.
@@ -649,20 +994,30 @@ class AutoHuntService:
             subscribers = await asyncio.to_thread(self.store.subscribers)
             if not subscribers:
                 return 0
-            sources = {sub.get("source", "forecasts") for sub in subscribers}
+            want_qualified = any(s.get("qualified") for s in subscribers)
+            want_research = any(s.get("research") for s in subscribers)
+            want_poly = any(s.get("polymarket") for s in subscribers)
+            qualified = (
+                await qualified_watches(
+                    self.market, self.quotes,
+                    stream_shadow=self.stream_shadow,
+                )
+                if want_qualified else []
+            )
             forecasts = (
                 await new_forecast_watches(self.market)
-                if "forecasts" in sources else []
+                if want_research else []
             )
             markets = (
                 await self.polymarket.active()
-                if "polymarket" in sources else []
+                if want_poly else []
             )
             _LOG.info(
-                "RivaL Auto-Hunt cycle subscribers=%d forecasts=%d poly_markets=%d",
-                len(subscribers), len(forecasts), len(markets),
+                "RivaL Auto-Hunt cycle subscribers=%d qualified=%d "
+                "forecasts=%d poly_markets=%d",
+                len(subscribers), len(qualified), len(forecasts), len(markets),
             )
-            if not forecasts and not markets:
+            if not qualified and not forecasts and not markets:
                 return 0
             # Shared bounded Discord/PG concurrency. Each user's own lock
             # serializes delivery with that user's stop and re-opt-in request.
@@ -671,61 +1026,156 @@ class AutoHuntService:
             async def deliver(subscriber: dict) -> int:
                 user_id = str(subscriber["user_id"])
                 since = _instant(str(subscriber["since_at"]))
-                source = subscriber.get("source", "forecasts")
-                candidates = markets if source == "polymarket" else forecasts
+                sent = 0
                 async with budget, self._user_lock(user_id):
-                    for candidate in candidates:
-                        stamp = datetime.now(UTC)
-                        if (
-                            (candidate.venue != "polymarket" and candidate.issued < since)
-                            or candidate.expires - stamp < MIN_REMAINING
-                        ):
-                            continue
-                        claimed = await asyncio.to_thread(
-                            self.store.claim, user_id, candidate, now=stamp,
-                        )
-                        if not claimed:
-                            continue
-                        message = None
-                        try:
-                            user = self.bot.get_user(int(user_id))
-                            if user is None:
-                                user = await asyncio.wait_for(
-                                    self.bot.fetch_user(int(user_id)),
-                                    timeout=5,
+                    # QUALIFIED first: every distinct window alerts, with no
+                    # cooldown and no per-cycle limit hiding a later window.
+                    # A window with a SENT qualified DM suppresses the
+                    # research alert for the same window, in this cycle and
+                    # later ones; a failed qualified attempt does not, so a
+                    # research fallback stays possible instead of duplicating.
+                    claimed_windows: set[tuple[str, int, datetime]] = set()
+                    if subscriber.get("qualified"):
+                        for candidate in qualified:
+                            stamp = datetime.now(UTC)
+                            if (
+                                candidate.issued < since
+                                or candidate.expires - stamp < MIN_REMAINING
+                            ):
+                                continue
+                            if await asyncio.to_thread(
+                                self.store.count_sent_today, user_id,
+                                "qualified", stamp,
+                            ) >= DAILY_CAP_PER_TIER:
+                                _LOG.info(
+                                    "RivaL auto-hunt daily cap user=%s tier=qualified",
+                                    user_id,
                                 )
-                            channel = user.dm_channel or await user.create_dm()
-                            message = await asyncio.wait_for(
-                                channel.send(
-                                    embed=hunt_embed(candidate, observed_at=stamp),
-                                    view=AutoHuntActions(timeout=900),
-                                ), timeout=8,
+                                break
+                            key = QUALIFIED_KEY_PREFIX + candidate.key
+                            claimed = await asyncio.to_thread(
+                                self.store.claim, user_id, candidate,
+                                now=stamp, key=key, apply_cooldown=False,
                             )
-                        except (discord.HTTPException, TimeoutError, ValueError):
-                            _LOG.warning(
-                                "Auto-Hunt DM not confirmed user=%s", user_id,
+                            if not claimed:
+                                continue
+                            message = await self._send_dm(
+                                user_id, candidate, stamp, tier="qualified")
+                            await asyncio.to_thread(
+                                self.store.finish, user_id, candidate,
+                                sent=message is not None,
+                                message_id=(
+                                    str(message.id) if message is not None
+                                    else None
+                                ),
+                                key=key,
                             )
-                        except Exception:  # noqa: BLE001 - no ambiguous resend
-                            _LOG.exception("Auto-Hunt DM failed")
-                        # Claim already exists. If this acknowledgement
-                        # fails, a restart will NOT send the same DM again.
-                        await asyncio.to_thread(
-                            self.store.finish, user_id, candidate,
-                            sent=message is not None,
-                            message_id=(
-                                str(message.id) if message is not None else None
-                            ),
-                        )
-                        _LOG.info(
-                            "RivaL hunt asset=%s horizon=%s venue=%s user=%s "
-                            "issue_to_attempt_ms=%d status=%s",
-                            candidate.asset, candidate.horizon,
-                            candidate.venue, user_id,
-                            int((stamp - candidate.issued).total_seconds() * 1000),
-                            "sent" if message is not None else "unconfirmed",
-                        )
-                        return int(message is not None)
-                return 0
+                            if message is not None:
+                                sent += 1
+                                claimed_windows.add(candidate.window)
+                            _LOG.info(
+                                "RivaL hunt asset=%s horizon=%s venue=%s user=%s "
+                                "issue_to_attempt_ms=%d status=%s tier=qualified",
+                                candidate.asset, candidate.horizon,
+                                candidate.venue, user_id,
+                                int((stamp - candidate.issued).total_seconds() * 1000),
+                                "sent" if message is not None else "unconfirmed",
+                            )
+                    # EARLY_RESEARCH: at most one per cycle per user, under
+                    # the existing 120-second cooldown, as before.
+                    if subscriber.get("research"):
+                        for candidate in forecasts:
+                            if candidate.window in claimed_windows:
+                                continue
+                            stamp = datetime.now(UTC)
+                            if (
+                                candidate.issued < since
+                                or candidate.expires - stamp < MIN_REMAINING
+                            ):
+                                continue
+                            if await asyncio.to_thread(
+                                self.store.has_qualified_sent_window,
+                                user_id, candidate.asset, candidate.horizon,
+                                candidate.expires,
+                            ):
+                                continue
+                            if await asyncio.to_thread(
+                                self.store.count_sent_today, user_id,
+                                "research", stamp,
+                            ) >= DAILY_CAP_PER_TIER:
+                                _LOG.info(
+                                    "RivaL auto-hunt daily cap user=%s tier=research",
+                                    user_id,
+                                )
+                                break
+                            claimed = await asyncio.to_thread(
+                                self.store.claim, user_id, candidate, now=stamp,
+                            )
+                            if not claimed:
+                                continue
+                            message = await self._send_dm(
+                                user_id, candidate, stamp, tier=None)
+                            await asyncio.to_thread(
+                                self.store.finish, user_id, candidate,
+                                sent=message is not None,
+                                message_id=(
+                                    str(message.id) if message is not None
+                                    else None
+                                ),
+                            )
+                            if message is not None:
+                                sent += 1
+                            _LOG.info(
+                                "RivaL hunt asset=%s horizon=%s venue=%s user=%s "
+                                "issue_to_attempt_ms=%d status=%s tier=research",
+                                candidate.asset, candidate.horizon,
+                                candidate.venue, user_id,
+                                int((stamp - candidate.issued).total_seconds() * 1000),
+                                "sent" if message is not None else "unconfirmed",
+                            )
+                            break
+                    # POLYMARKET: at most one per cycle per user, as before.
+                    if subscriber.get("polymarket"):
+                        for candidate in markets:
+                            stamp = datetime.now(UTC)
+                            if candidate.expires - stamp < MIN_REMAINING:
+                                continue
+                            if await asyncio.to_thread(
+                                self.store.count_sent_today, user_id,
+                                "polymarket", stamp,
+                            ) >= DAILY_CAP_PER_TIER:
+                                _LOG.info(
+                                    "RivaL auto-hunt daily cap user=%s tier=polymarket",
+                                    user_id,
+                                )
+                                break
+                            claimed = await asyncio.to_thread(
+                                self.store.claim, user_id, candidate, now=stamp,
+                            )
+                            if not claimed:
+                                continue
+                            message = await self._send_dm(
+                                user_id, candidate, stamp, tier=None)
+                            await asyncio.to_thread(
+                                self.store.finish, user_id, candidate,
+                                sent=message is not None,
+                                message_id=(
+                                    str(message.id) if message is not None
+                                    else None
+                                ),
+                            )
+                            if message is not None:
+                                sent += 1
+                            _LOG.info(
+                                "RivaL hunt asset=%s horizon=%s venue=%s user=%s "
+                                "issue_to_attempt_ms=%d status=%s tier=polymarket",
+                                candidate.asset, candidate.horizon,
+                                candidate.venue, user_id,
+                                int((stamp - candidate.issued).total_seconds() * 1000),
+                                "sent" if message is not None else "unconfirmed",
+                            )
+                            break
+                return sent
 
             outcomes = await asyncio.gather(
                 *(deliver(sub) for sub in subscribers), return_exceptions=True,

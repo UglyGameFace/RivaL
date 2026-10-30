@@ -110,6 +110,7 @@ def recent_watches(
                 "horizon_minutes": horizon,
                 "issued": issued, "target": target, "price": price,
                 "price_observed_at": observed,
+                "model_version": str(row["model_version"]),
                 "probability_up": probability,
                 "direction": "UP" if probability > 0.5 else "DOWN",
                 "direction_probability": max(probability, 1 - probability),

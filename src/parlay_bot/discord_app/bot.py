@@ -365,6 +365,7 @@ class RivalDiscordClient(discord.Client):
             bot=self,
             market=self.perp_collector.market if self.perp_collector else None,
             quotes=self.public_quotes, store=AutoHuntStore(self.store),
+            stream_shadow=self.stream_shadow,
         )
         self._hunt_event = asyncio.Event()
         self._hunt_task: asyncio.Task[None] | None = None

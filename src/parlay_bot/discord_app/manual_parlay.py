@@ -123,9 +123,9 @@ class ManualParlayView(discord.ui.View):
         elif not self.visible:
             lines.append("No matching selections. Try another game or category.")
         if self.rows:
-            lines.append(f"**Available:** {len(set(r['fixture_id'] for r in self.rows))} games, "
-                         f"{len(set(r['sport_name'] for r in self.rows))} sports, "
-                         f"{len(set(r['bookmaker'] for r in self.rows))} sportsbooks.")
+            lines.append(f"**Available:** {len({r['fixture_id'] for r in self.rows})} games, "
+                         f"{len({r['sport_name'] for r in self.rows})} sports, "
+                         f"{len({r['bookmaker'] for r in self.rows})} sportsbooks.")
         return discord.Embed(title="Build Your Own Parlay", description="\n\n".join(lines)[:4000])
 
     async def redraw(self, interaction):

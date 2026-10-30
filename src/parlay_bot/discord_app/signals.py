@@ -494,7 +494,8 @@ async def signal_embed(
             name="💱 Live matching-market bid / ask",
             value=(
                 f"**{quote_label}**\n"
-                f"Bid **${book.bid:,.2f}** · Ask **${book.ask:,.2f}**\n"
+                f"Bid **${book.bid:,.{price_decimals}f}** · "
+                f"Ask **${book.ask:,.{price_decimals}f}**\\n"
                 f"Observed {discord.utils.format_dt(book.exchange_at, style='R')} "
                 "• Not a guaranteed fill"
             ),

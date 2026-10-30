@@ -44,14 +44,14 @@ def test_live_predictions_are_immutable_deduped_and_settled_once(tmp_path):
     latest = seed(market, now=now)
     try:
         issued, settled = monitor.run_once(now=now)
-        assert issued == 2 and settled == 0
+        assert issued == 3 and settled == 0
         assert monitor.run_once(now=now) == (0, 0)
         with store.connect() as conn:
             records = conn.execute(
                 "SELECT * FROM perp_forward_audit ORDER BY horizon_minutes"
             ).fetchall()
-        assert len(records) == 2
-        assert {x["horizon_minutes"] for x in records} == {5, 15}
+        assert len(records) == 3
+        assert {x["horizon_minutes"] for x in records} == {5, 15, 60}
         assert all(0 < x["probability_up"] < 1 for x in records)
         assert all(int(x["training_evaluated"]) >= 20 for x in records)
         assert all(x["settled_at"] is None for x in records)
@@ -112,7 +112,7 @@ def test_prior_to_issue_outcome_cannot_settle_and_source_is_pinned(tmp_path):
     now = datetime.now(UTC)
     latest = seed(market, now=now)
     try:
-        assert monitor.run_once(now=now)[0] == 2
+        assert monitor.run_once(now=now)[0] == 3
         target = latest + timedelta(minutes=5)
         with store.connect() as conn:
             conn.execute(

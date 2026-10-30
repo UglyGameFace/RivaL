@@ -39,7 +39,7 @@ if TYPE_CHECKING:
     from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
 _LOG = logging.getLogger(__name__)
-HORIZONS = (5, 15)
+HORIZONS = (5, 15, 60)
 MAX_TARGETS = 100
 
 
@@ -93,7 +93,7 @@ def target_snapshot(
     horizon_minutes: int, now: datetime | None = None,
 ) -> TargetSnapshot:
     if asset not in ASSETS or horizon_minutes not in HORIZONS:
-        raise ValueError("choose BTC/ETH/SOL and 5m or 15m")
+        raise ValueError("choose BTC/ETH/SOL/XRP and 5m, 15m or 60m")
     stamp = now or datetime.now(UTC)
     if stamp.utcoffset() is None:
         raise ValueError("target clock requires timezone")

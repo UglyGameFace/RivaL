@@ -1,3 +1,16 @@
+## ACTIVE TASK: XRP/60m Causal Research + Strict Model Qualification + Delivery Outbox (2026-10-30)
+
+- **Live repo:** `UglyGameFace/RivaL`; `main` base `847fd1f08436dab92d5f30cb65753487a8616b31` (PR #105 merged, main CI passed). Current cohesive implementation branch `feat/rival-xrp-60m-validation-outbox-20261030`, PR #106. No overlapping open PRs at creation.
+- **Scope implemented:** Shared `markets.py` asset/horizon catalog adds XRP and 60m research; default collector assets 4, but existing env overrides remain authoritative. 5m OHLCV feeds stay venue-specific, 60m horizon targets the future 5-minute reference bar opened one hour ahead, never Polymarket 1h resolution. Point-in-time per-venue forecast issuance/settlement, ensemble, shadow training, freshness and read-only Discord signal permit XRP/60 if live data qualifies; absent feeds yield WAIT, no synthetic candles.
+- **Model proof:** `calibration_validation.py` checks 150 unique target times, 21 UTC days, 10-bin ECE, positive same-window Brier improvement and day-block lower bound. Multi-exchange shadow gate and `promotion.py` now fail closed unless stricter calibrated, liquidity/quote-coverage, severe-cost proof passes. Incumbent remains until evidence; no automatic real trades or fabricated guarantees.
+- **Outbox:** Additive `rival_hunt_delivery` retry state metadata; READY claims may retry strictly before send; network-bound SENDING can only finish SENT or UNKNOWN; restart marks abandoned sending UNKNOWN rather than resending ambiguously. Per-user daily caps, stop path and dedupe remain. New XRP/60 Auto-Hunt subscriber scope is not silently enabled; legacy subscribers keep original scope.
+- **Testing:** Python 3.11 Ruff plus full SQLite/PostgreSQL16 tests in PR #106. Existing tests for two horizons updated to three. Seeded 21-day stats tests are synthetic regression fixtures ONLY, **not** actual empirical prediction performance. Check exact final PR head before merge; then main CI and real Discloud/Discord validation separately.
+- **Limitations / blockers:** Historical/existing cloud hosting configuration and current collection health are not controllable from GitHub. No verified exchange reachability for XRP on Discloud; no 21 days of new deployed forward outcomes; no real-world profitability; no automated wagers. No actual Discord DM recipient delivery seen. Polymarket event-specific probabilities and separate market-resolution/oracle alignment remain absent. No new XRP/60 automated notifications without explicit opt-in.
+- **Rollback:** Squash revert PR #106 (additive DB columns preserve old data and legacy subscriptions) to base main above. Do not delete user data. Pending CI should keep PR open, not claim completion.
+- **Next:** Verify CI, merge if safe, separately check main CI and provider/dispatched runtime acceptance, update issue #6 with actual evidence, keep #66 open for owner quotas and guided builder.
+
+---
+
 ## ACTIVE TASK: RivaL Fourth-Pass Production Hardening (2026-10-30)
 
 - **Objective:** Fix confirmed menu dispatch race, misleading trade-edge terminology, parlay math, stale notification timestamps, subscription false confirmations, Polymarket quote depth, and Phemex historical requests in one cohesive reviewable PR. The owner explicitly authorized this priority.

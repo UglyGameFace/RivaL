@@ -21,6 +21,9 @@ from parlay_bot.jurisdiction.zip_lookup import ZipLookupError
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.live_quotes import QuoteUnavailable, quote_embed
+from parlay_bot.perpetuals.markets import ASSET_NAMES
+from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
+from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.providers.owner_limits import OwnerLimitStore
 
 if TYPE_CHECKING:
@@ -40,7 +43,7 @@ if TYPE_CHECKING:
     from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 
 _LOG = logging.getLogger(__name__)
-COINS = ("BTC", "ETH", "SOL")
+COINS = RESEARCH_ASSETS
 EXPLAIN = {
     "home": "Find crypto or sports research, choose private alerts, or inspect recorded results. No wagers are placed.",
     "discover": "Choose Predict Crypto for model research, Auto-Hunt for opt-in alerts, or Practice Money for simulated trades. No profits are established.",
@@ -82,7 +85,7 @@ class _Button(discord.ui.Button["GuidedHome"]):
 
 class _Coin(discord.ui.Select["GuidedHome"]):
     def __init__(self, selected: str) -> None:
-        names = {"BTC": "Bitcoin", "ETH": "Ethereum", "SOL": "Solana"}
+        names = ASSET_NAMES
         super().__init__(
             placeholder="Choose a coin", row=0, custom_id="rival:guided:coin",
             options=[
@@ -108,7 +111,7 @@ class _Horizon(discord.ui.Select["GuidedHome"]):
             options=[
                 discord.SelectOption(
                     label=f"{n} minutes", value=str(n), default=n == selected,
-                ) for n in (5, 15)
+                ) for n in RESEARCH_HORIZONS
             ],
         )
 
@@ -581,7 +584,7 @@ class GuidedHome(discord.ui.View):
                     "to check the matching-market price, expiry, signal "
                     "strength, and measured forward accuracy.\n"
                     "Or **Auto-Hunt** to receive new qualified research watches "
-                    "across all three coins without entering a target.\n"
+                    "without entering a target (new markets require validation).\n"
                     "**Follow in DM** still edits one personal forecast card.\n\n"
                     "A model lean is not a proven profitable entry."
                 ),
@@ -1384,6 +1387,7 @@ class _StaleCoin(discord.ui.Select["_StaleGuidedMenuBase"]):
                 discord.SelectOption(label=f"{name} ({code})", value=code)
                 for code, name in (
                     ("BTC", "Bitcoin"), ("ETH", "Ethereum"), ("SOL", "Solana"),
+                    ("XRP", "XRP"),
                 )
             ],
         )
@@ -1399,7 +1403,7 @@ class _StaleHorizon(discord.ui.Select["_StaleGuidedMenuBase"]):
             placeholder="Choose how far ahead", custom_id="rival:guided:horizon",
             options=[
                 discord.SelectOption(label=f"{n} minutes", value=str(n))
-                for n in (5, 15)
+                for n in RESEARCH_HORIZONS
             ],
         )
 
@@ -1425,7 +1429,7 @@ class _StaleGuidedMenuBase(discord.ui.View):
         home = self.home_factory(interaction.user.id)
         if coin is not None and coin in COINS:
             home.coin = coin
-        if horizon is not None and horizon in (5, 15):
+        if horizon is not None and horizon in RESEARCH_HORIZONS:
             home.horizon = horizon
         if action in _STALE_SAFE_PAGES:
             home.navigate(_STALE_SAFE_PAGES[action])

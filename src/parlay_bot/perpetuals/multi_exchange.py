@@ -11,6 +11,7 @@ import logging
 import math
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals.calibration_validation import unique_window_calibration
 from parlay_bot.perpetuals.forward_audit import MODEL as SOURCE_MODEL
 from parlay_bot.perpetuals.fusion import (
     SourceForecast,
@@ -19,6 +20,8 @@ from parlay_bot.perpetuals.fusion import (
     utc,
 )
 from parlay_bot.perpetuals.live_quotes import BookQuote, PerpReferenceBook
+from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
+from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.perpetuals.profit_proof import (
     COST_SCENARIOS,
     ENTRY_GRACE,
@@ -33,8 +36,8 @@ VENUES = frozenset({
     "hyperliquid", "dydx", "bitget", "gate", "okx",
     "kucoin", "deribit", "binance", "lighter", "phemex",
 })
-ASSETS = ("BTC", "ETH", "SOL")
-HORIZONS = (5, 15)
+ASSETS = RESEARCH_ASSETS
+HORIZONS = RESEARCH_HORIZONS
 MAX_SOURCE_AGE = timedelta(minutes=3)
 MIN_LIVE_REMAINING = timedelta(seconds=90)
 MIN_QUORUM = 3
@@ -428,6 +431,15 @@ class MultiExchangeResearch:
                    WHERE asset=? AND horizon_minutes=? AND issued_at>=?""",
                 (asset,horizon_minutes,start),
             ).fetchone()
+            calibrated_rows = conn.execute(
+                """SELECT target_opened_at, issued_at, settled_at,
+                          probability_up, reference_probability_up, outcome_up
+                   FROM perp_multi_forward
+                   WHERE asset=? AND horizon_minutes=? AND issued_at>=?
+                     AND settled_at IS NOT NULL
+                   ORDER BY target_opened_at LIMIT 10000""",
+                (asset, horizon_minutes, start),
+            ).fetchall()
             quotes = conn.execute(
                 """SELECT COUNT(*) AS n,
                     SUM(CASE WHEN q.state='EXIT_QUOTED' THEN 1 ELSE 0 END)
@@ -478,6 +490,13 @@ class MultiExchangeResearch:
                    ORDER BY day""",
                 (asset,horizon_minutes,start),
             ).fetchall()
+        try:
+            calibration = unique_window_calibration([dict(row) for row in calibrated_rows])
+        except (ValueError, TypeError, OverflowError):
+            calibration = {
+                "status": "invalid", "reason": "Invalid or duplicate recorded forward outcomes",
+                "unique_windows": 0, "utc_days": 0, "ece": None,
+            }
         n = int(aggregate["settled"] or 0)
         paired = int(quotes["paired"] or 0)
         ml = float(aggregate["challenger_loss"] or 0)/n if n else None
@@ -548,7 +567,10 @@ class MultiExchangeResearch:
                 severe_daily["days"]*0.8
             )
         )
-        shadow_candidate_qualified = incumbent_outperformed and cost_advantage
+        shadow_candidate_qualified = (
+            incumbent_outperformed and cost_advantage
+            and calibration["status"] == "research_screen_passed"
+        )
         return {
             "asset":asset,"horizon_minutes":horizon_minutes,
             "issued":int(aggregate["issued"] or 0),
@@ -561,6 +583,7 @@ class MultiExchangeResearch:
             "quote_entries":int(quotes["n"] or 0),
             "quote_coverage": coverage,
             "after_cost":cost_results,
+            "calibration":calibration,
             "daily_stress": daily_stats,
             "model_advantage_qualified":incumbent_outperformed,
             "cost_advantage_qualified":cost_advantage,

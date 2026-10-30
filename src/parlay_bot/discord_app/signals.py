@@ -33,11 +33,12 @@ from parlay_bot.perpetuals.live_quotes import (
     VenueBookQuote,
 )
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.perpetuals.promotion import multi_summary, promoted_engine
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 
 _LOG = logging.getLogger(__name__)
-HORIZONS = (5, 15)
+HORIZONS = RESEARCH_HORIZONS
 MIN_REMAINING = timedelta(seconds=90)
 WATCH_THRESHOLD = 0.56
 
@@ -113,7 +114,7 @@ async def signal_embed(
     not a watch.
     """
     if asset not in ASSETS or horizon_minutes not in HORIZONS:
-        raise ValueError("choose BTC, ETH or SOL and 5 or 15 minutes")
+        raise ValueError("choose BTC, ETH, SOL or XRP and 5, 15 or 60 minutes")
     stamp = now or datetime.now(UTC)
     if stamp.utcoffset() is None:
         raise ValueError("live signal clock requires timezone")

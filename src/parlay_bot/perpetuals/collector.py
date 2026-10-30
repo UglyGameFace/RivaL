@@ -25,6 +25,7 @@ from parlay_bot.perpetuals.hyperliquid import (
     MarketDataError,
 )
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
 from parlay_bot.perpetuals.next_venues import KucoinMarketClient, OkxMarketClient
 from parlay_bot.perpetuals.other_venues import BitgetMarketClient, GateMarketClient
 from parlay_bot.storage.hot import RelationalHotStore
@@ -104,7 +105,7 @@ class PerpetualMarketCollector:
         self,
         *,
         store: RelationalHotStore,
-        assets: tuple[str, ...] = ("BTC", "ETH", "SOL"),
+        assets: tuple[str, ...] = RESEARCH_ASSETS,
         interval_minutes: int = 5,
         bars: int = 48,
         providers: Mapping[str, PublicPerpProvider] | None = None,

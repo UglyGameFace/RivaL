@@ -18,7 +18,7 @@ import httpx
 if TYPE_CHECKING:
     from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
 
-ASSETS = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT"}
+ASSETS = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT", "XRP": "XRPUSDT"}
 MAX_QUOTE_AGE = timedelta(seconds=10)
 CACHE_SECONDS = 3.0
 BLOCK_SECONDS = 3600.0
@@ -296,7 +296,7 @@ class PublicBestQuoteClient:
 
     async def get(self, asset: str) -> BookQuote:
         if asset not in ASSETS:
-            raise QuoteUnavailable("Only BTC, ETH and SOL USDT futures supported.")
+            raise QuoteUnavailable("Only BTC, ETH, SOL and XRP USDT futures supported.")
         async with self._lock:
             if self.stream_hub is not None:
                 streamed = self.stream_hub.snapshot("binance", asset)
@@ -395,7 +395,7 @@ class PublicBestQuoteClient:
         price; the caller falls back to its WAIT verdict.
         """
         if asset not in ASSETS or venue not in VENUE_BOOK_SYMBOLS:
-            raise QuoteUnavailable("Only BTC, ETH and SOL venue books supported.")
+            raise QuoteUnavailable("Only BTC, ETH, SOL and XRP venue books supported.")
         symbol = VENUE_BOOK_SYMBOLS[venue][asset]
         async with self._venue_locks[venue]:
             clock = time.monotonic()

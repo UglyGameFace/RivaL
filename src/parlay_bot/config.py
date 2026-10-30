@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     # Automatic read-only perpetual observations start on the PostgreSQL bot.
     # A failed/blocked provider cannot stop Discord or the other venue.
     rival_perp_collection_enabled: bool = Field(default=True)
-    rival_perp_collection_assets: str = Field(default="BTC,ETH,SOL")
+    rival_perp_collection_assets: str = Field(default="BTC,ETH,SOL,XRP")
     rival_perp_collection_seconds: int = Field(default=300, ge=300, le=3600)
     rival_perp_collection_bars: int = Field(default=48, ge=2, le=48)
     # Shared, read-only websocket feeds; offload only verified quote samples

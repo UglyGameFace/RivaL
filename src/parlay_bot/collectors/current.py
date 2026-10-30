@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.ingestion.sportsgameodds import normalize_event
+from parlay_bot.providers.errors import QuotaReserveReached
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.research.sports_results import SportsResultStore
 from parlay_bot.storage.hot import RelationalHotStore
@@ -114,12 +115,26 @@ class CurrentBoardCollector:
 
             for _ in range(self.max_pages):
                 stage_start = time.monotonic()
-                events, next_cursor, page_notice = await self.client.get_events(
-                    league_ids=self.league_ids,
-                    bookmaker_ids=self.bookmaker_ids,
-                    limit=self.event_limit,
-                    cursor=cursor,
-                )
+                try:
+                    events, next_cursor, page_notice = await self.client.get_events(
+                        league_ids=self.league_ids,
+                        bookmaker_ids=self.bookmaker_ids,
+                        limit=self.event_limit,
+                        cursor=cursor,
+                    )
+                except QuotaReserveReached as exc:
+                    _LOG.warning("RivaL sports collection paused by provider quota reserve: %s", exc)
+                    return CurrentRefreshResult(
+                        refreshed=False,
+                        events_seen=events_seen,
+                        observations_seen=observations_seen,
+                        new_states=new_states,
+                        repeated_states=repeated_states,
+                        stale_states_ignored=stale_states_ignored,
+                        pages_fetched=pages_fetched,
+                        truncated=True,
+                        notice=str(exc),
+                    )
                 _LOG.info('RivaL sports events fetched count=%d seconds=%.2f', len(events), time.monotonic() - stage_start)
                 pages_fetched += 1
                 events_seen += len(events)

@@ -33,7 +33,10 @@ class ConnectionLike(Protocol):
 
 def _postgres_sql(sql: str) -> str:
     """Translate the project's qmark placeholders to psycopg placeholders."""
-    return sql.replace("?", "%s")
+    # Psycopg treats every percent sign as placeholder syntax when parameters
+    # are supplied. SQL LIKE patterns (e.g. qualified|%) must escape literal
+    # percent signs *before* qmark parameters are translated to %s.
+    return sql.replace("%", "%%").replace("?", "%s")
 
 
 class _Connection:

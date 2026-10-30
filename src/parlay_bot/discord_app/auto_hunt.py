@@ -1931,6 +1931,10 @@ class AutoHuntService:
                     _LOG.error(
                         "Auto-Hunt individual delivery failed safely: %s",
                         type(result).__name__,
+                        # gather(return_exceptions=True) loses the active
+                        # exception context. Preserve traceback lines so
+                        # future SQL/Discord failures identify their caller.
+                        exc_info=(type(result), result, result.__traceback__),
                     )
                 else:
                     total += result

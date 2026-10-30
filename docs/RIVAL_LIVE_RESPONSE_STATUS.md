@@ -31,3 +31,13 @@ Keep Discord menus responsive while PostgreSQL, perpetual-market collection, Aut
 - Successful /rival interactions, no Discord 3s acknowledgment failures, and signal timeout counts.
 - Every recovery cursor advances over time; no misclassified historical bars.
 - Polymarket provider timeouts distinguished from local DB issues.
+
+## October 30 post-#112 Discloud follow-up (15:28:47 -03 / 18:28:47 UTC)
+- Bot restarted, registered 4 guild commands, started two WebSocket markets and nine perpetual venue collectors, and reached READY.
+- Auto-Hunt BTC/15m qualified decision timed out while gathering venue-specific historical accuracy; this remains a separate measurable latency problem.
+- An Auto-Hunt subscriber's individual research delivery failed with psycopg `ProgrammingError` immediately after `forecasts=3`; an inspection of its suppression query found a literal SQL `LIKE 'qualified|%'` combined with parameters.
+- psycopg treats `%` as placeholder syntax even in bound SQL text. The shared database adapter failed to escape literal `%` before inserting `%s` placeholders. The patch escapes percent literals at the adapter boundary, with a PostgreSQL 16 integration test for the exact query and modulo operator.
+- `AutonomousResearch.initialize()` reran schema DDL during normal research work, allowing CREATE INDEX/INSERT lock inversions; it is now idempotent and its schemas are initialized before live workers are launched.
+- Delivery failure logging now includes the stored exception traceback, not just the exception class.
+- Earlier logs showed autovacuum ANALYZE cancellation, repeated client connection resets and a PostgreSQL database named `dankshield`. Those events may be from a different deployment epoch or shared database; this patch does not rename, purge or migrate production data.
+- PR #113 code tests ran successfully against SQLite and disposable PostgreSQL; hosted Discloud latency, boot SHA, alert delivery and provider reachability remain unverified until after redeployment.

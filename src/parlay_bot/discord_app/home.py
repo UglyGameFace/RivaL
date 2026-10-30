@@ -1249,6 +1249,7 @@ _STALE_SAFE_PAGES = {
     "home": "home",
     "sports": "sports",
     "crypto": "crypto",
+    "hunt": "hunt",
     "practice": "practice",
     "results": "results",
     "help": "help",
@@ -1267,13 +1268,14 @@ _STALE_NOTE = (
 
 # Button actions split across two views to stay under the 25-component limit.
 _STALE_BUTTONS_A = (
-    "sports", "crypto", "practice", "results", "help", "advanced",
+    "sports", "crypto", "hunt", "practice", "results", "help", "advanced",
     "state", "zip", "refresh", "manual", "slip", "lower", "balanced",
     "aggressive", "forecast", "follow", "target",
 )
 _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",
-    "feeds", "research", "api-limits", "home", "back", "explain",
+    "feeds", "research", "api-limits", "hunt-on", "hunt-off", "hunt-status",
+    "home", "back", "explain",
 )
 
 

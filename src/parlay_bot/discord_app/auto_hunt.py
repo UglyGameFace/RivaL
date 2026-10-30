@@ -1434,13 +1434,20 @@ class AutoHuntService:
     ) -> dict:
         async with self._user_lock(str(user_id)):
             if field in ("direction_changes", "live_shifts") and value == 1:
+                if field == "live_shifts" and getattr(self.bot, "live_stream", None) is None:
+                    raise ValueError(
+                        "Live WebSocket feeds are disabled. No live alerts enabled."
+                    )
                 enabled = await asyncio.to_thread(self.store.enabled, str(user_id))
                 preferences = await asyncio.to_thread(
                     self.store.preferences, str(user_id),
                 )
-                if not enabled or not preferences["direction_changes"]:
+                if not enabled or not preferences[field]:
                     await self._dm_opt_in_probe(
-                        user_id, label="live direction research alerts",
+                        user_id, label=(
+                            "live market price-shift alerts" if field == "live_shifts"
+                            else "new model direction-change alerts"
+                        ),
                     )
                     if not enabled:
                         await asyncio.to_thread(self.store.subscribe, str(user_id))

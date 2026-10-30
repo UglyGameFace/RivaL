@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
+
 import pytest
 
 from parlay_bot.parlays.builder import _PricedCandidate

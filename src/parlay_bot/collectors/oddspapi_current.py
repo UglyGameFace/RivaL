@@ -5,7 +5,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.ingestion.oddspapi import normalize_current_odds
-from parlay_bot.providers.errors import QuotaReserveReached, ProviderQuotaExhausted
+from parlay_bot.providers.errors import ProviderQuotaExhausted, QuotaReserveReached
 from parlay_bot.providers.oddspapi import OddsPapiClient
 from parlay_bot.storage.hot import RelationalHotStore
 

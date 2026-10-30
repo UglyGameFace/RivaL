@@ -10,6 +10,8 @@ from discord import app_commands
 
 from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_runtime
 from parlay_bot.collectors.current import CurrentBoardCollector
+from parlay_bot.collectors.oddspapi_current import OddsPapiCurrentCollector
+from parlay_bot.collectors.the_odds_api import TheOddsApiCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
 from parlay_bot.discord_app.home import GuidedHome
@@ -50,6 +52,7 @@ from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
+from parlay_bot.providers.oddspapi import OddsPapiClient
 from parlay_bot.providers.owner_limits import OwnerLimitStore
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.research.sports_results import (
@@ -136,6 +139,27 @@ class RivalDiscordClient(discord.Client):
                 refresh_interval=timedelta(seconds=settings.rival_current_refresh_seconds),
                 event_limit=settings.rival_current_event_limit,
                 max_pages=settings.rival_current_max_pages,
+            )
+
+        self.oddspapi_provider: OddsPapiClient | None = None
+        self.oddspapi_collector: OddsPapiCurrentCollector | None = None
+        if settings.oddspapi_api_key is not None:
+            self.oddspapi_provider = OddsPapiClient(
+                settings.oddspapi_api_key.get_secret_value(),
+                base_url=settings.oddspapi_base_url,
+                quota_reserve=settings.oddspapi_quota_reserve,
+                account_cache_seconds=settings.oddspapi_account_cache_seconds,
+                owner_limits=OwnerLimitStore(self.store),
+            )
+            self.oddspapi_collector = OddsPapiCurrentCollector(
+                client=self.oddspapi_provider, store=self.store,
+                refresh_interval=timedelta(seconds=settings.rival_current_refresh_seconds),
+            )
+
+        self.the_odds_api_collector: TheOddsApiCollector | None = None
+        if settings.the_odds_api_key is not None:
+            self.the_odds_api_collector = TheOddsApiCollector(
+                api_key=settings.the_odds_api_key.get_secret_value(), store=self.store,
             )
 
         # Enable archive and perpetual cold copies automatically once the
@@ -1331,10 +1355,15 @@ class RivalDiscordClient(discord.Client):
         self.tree.add_command(tools_group)
 
     async def _refresh_sports_for_pick(self) -> None:
-        if self.current_collector is None:
+        if self.current_collector is None and self.oddspapi_collector is None:
             return
         try:
-            await self.current_collector.refresh_if_due()
+            if self.current_collector is not None:
+                await self.current_collector.refresh_if_due()
+            if self.oddspapi_collector is not None:
+                await self.oddspapi_collector.refresh_if_due()
+            if self.the_odds_api_collector is not None:
+                await self.the_odds_api_collector.refresh_if_due()
         except Exception:  # noqa: BLE001 - stale bets are rejected by builder
             _LOG.exception("Current sportsbook refresh unavailable; fail closed if stale")
 
@@ -1343,7 +1372,7 @@ class RivalDiscordClient(discord.Client):
             self._target_task = asyncio.create_task(
                 self._target_loop(), name="rival-personal-direction-updates",
             )
-        if self.current_collector is not None and self._sports_task is None:
+        if (self.current_collector is not None or self.oddspapi_collector is not None or self.the_odds_api_collector is not None) and self._sports_task is None:
             self._sports_task = asyncio.create_task(
                 self._sports_loop(), name="rival-sports-current-refresh",
             )
@@ -1511,18 +1540,22 @@ class RivalDiscordClient(discord.Client):
         loop never places orders or auto-sends unsolicited Discord messages.
         """
         await self.wait_until_ready()
-        assert self.current_collector is not None
+        assert self.current_collector is not None or self.oddspapi_collector is not None
         while not self.is_closed():
             try:
-                result = await asyncio.wait_for(
-                    self.current_collector.refresh_if_due(), timeout=45,
-                )
-                self.sports_refresh_status = (
-                    f"Completed: {result.events_seen} events, "
-                    f"{result.observations_seen} observations, "
-                    f"{result.pages_fetched} pages"
-                    if result.refreshed else "Skipped: refresh not due"
-                )
+                statuses = []
+                if self.current_collector is not None:
+                    result = await asyncio.wait_for(
+                        self.current_collector.refresh_if_due(), timeout=45,
+                    )
+                    statuses.append(f"SportsGameOdds: {result.events_seen} events, {result.observations_seen} odds" if result.refreshed else f"SportsGameOdds: {result.notice or 'not due'}")
+                if self.oddspapi_collector is not None:
+                    status = await asyncio.wait_for(self.oddspapi_collector.refresh_if_due(), timeout=45)
+                    statuses.append(f"OddsPapi: {status}")
+                if self.the_odds_api_collector is not None:
+                    status = await asyncio.wait_for(self.the_odds_api_collector.refresh_if_due(), timeout=45)
+                    statuses.append(f"The Odds API: {status}")
+                self.sports_refresh_status = "; ".join(statuses)
             except asyncio.CancelledError:
                 raise
             except TimeoutError:

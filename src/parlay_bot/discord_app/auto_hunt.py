@@ -1606,9 +1606,19 @@ class AutoHuntService:
                 for tier, label in (
                     ("research", "Research"), ("qualified", "Qualified"),
                     ("polymarket", "Polymarket"),
-                ) if flags[tier]
+                    ("live_shift", "Live Mode"), ("flip", "Reversals"),
+                ) if (
+                    flags[tier] if tier in flags else preferences[
+                        "live_shifts" if tier == "live_shift"
+                        else "direction_changes"
+                    ]
+                )
             )
-            + f" • Resets <t:{int(reset.timestamp())}:R>"
+            + (
+                f" • Resets <t:{int(reset.timestamp())}:R>"
+                if preferences["daily_limit"] > 0 else
+                " • No daily reset needed"
+            )
             if today is not None else
             "\nToday's alert budget is temporarily unavailable."
         )
@@ -1616,8 +1626,13 @@ class AutoHuntService:
             "ON • " + parts + f" • Sent {health.get('sent', 0)} total"
             + (f" • Unconfirmed {uncertainty}" if uncertainty else "")
             + budget
-            + "\nDaily caps stop new alerts until reset. Future delivery "
-              "also requires a qualifying signal and working DMs."
+            + (
+                "\nUnlimited removes RivaL's daily cap, not duplicate "
+                "protection. "
+                if preferences["daily_limit"] == 0 else
+                "\nDaily caps pause additional notifications until UTC reset. "
+            )
+            + "A qualifying signal and working DMs are still required."
         )
 
     async def _send_dm(self, user_id: str, candidate, stamp: datetime,

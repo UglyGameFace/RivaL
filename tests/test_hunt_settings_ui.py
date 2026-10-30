@@ -24,7 +24,8 @@ def test_settings_view_is_small_and_exposes_real_controls(tmp_path):
         selects = [x for x in view.children if isinstance(x, discord.ui.Select)]
         buttons = [x for x in view.children if isinstance(x, discord.ui.Button)]
         assert len(selects) == 3
-        assert len(buttons) == 4
+        assert len(buttons) == 5
+        assert "Daily cap: 12" in [x.label for x in buttons]
         assert len(view.children) <= 25
         assert all(x.row <= 4 for x in view.children)
         assert any(x.label == "XRP" for x in selects[0].options)
@@ -68,6 +69,7 @@ def test_postgresql_stores_and_restores_settings_additively():
         store.set_preference(owner, "side", "down")
         store.set_preference(owner, "max_ask_pct", 50)
         store.set_preference(owner, "live_shifts", 1)
+        store.set_preference(owner, "daily_limit", 0)
         restarted = AutoHuntStore(hot)
         restarted.initialize()
         value = restarted.preferences(owner)
@@ -75,6 +77,7 @@ def test_postgresql_stores_and_restores_settings_additively():
         assert value["side"] == "down"
         assert value["max_ask_pct"] == 50
         assert value["live_shifts"] is True
+        assert value["daily_limit"] == 0
         assert all(x['user_id'] != owner for x in restarted.subscribers())
     finally:
         with hot.connect() as conn:

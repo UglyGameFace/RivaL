@@ -309,3 +309,128 @@ def test_forecast_alerts_reject_late_or_already_expired(monkeypatch):
     assert run(auto_hunt.new_forecast_watches(market, now=now)) == []
     watches[:] = [{**_mock_watch(now), "target": now - timedelta(minutes=5)}]
     assert run(auto_hunt.new_forecast_watches(market, now=now)) == []
+
+
+def test_daily_alert_budgets_separate_research_live_trends_and_sources(hunt_store):
+    now = datetime(2026, 10, 30, 18, 0, tzinfo=UTC)
+    user = "budget-100"
+    hunt_store.subscribe(user, now=now - timedelta(minutes=5))
+    cases = (
+        ("research", candidate(now, venue="binance", model_version="research"), None),
+        ("qualified", candidate(now, venue="hyperliquid", model_version="qualified"),
+         "qualified|confirmed"),
+        ("polymarket", candidate(now, venue="polymarket", model_version="poly"), None),
+        ("flip", candidate(now, venue="okx", model_version="flip"),
+         "flip|reversal"),
+        ("live_shift", candidate(now, venue="live_trend", model_version="shift"),
+         None),
+    )
+    for tier, watch, key in cases:
+        assert hunt_store.claim(
+            user, watch, now=now, key=key, apply_cooldown=False,
+        ), tier
+        hunt_store.finish(
+            user, watch, key=key, sent=True,
+            message_id=f"test-{tier}",
+        )
+    counts = hunt_store.daily_sent_counts(user, now=now)
+    assert counts == {
+        "research": 1, "qualified": 1, "polymarket": 1,
+        "flip": 1, "live_shift": 1,
+    }
+    for tier in counts:
+        assert hunt_store.count_sent_today(user, tier, now) == 1
+    assert all(
+        n == 0 for n in hunt_store.daily_sent_counts(
+            user, now=now + timedelta(days=1),
+        ).values()
+    )
+
+
+def test_alert_status_explains_daily_limits_and_reset(hunt_store):
+    user_id = 33331
+    hunt_store.subscribe(str(user_id))
+    service = auto_hunt.AutoHuntService(
+        bot=SimpleNamespace(), market=object(), quotes=object(),
+        store=hunt_store,
+    )
+    result = run(service.status(user_id))
+    assert "Today's sent alerts (UTC)" in result
+    assert "Research 0/12" in result
+    assert "Qualified off" in result
+    assert "Qualified 0/12" not in result
+    assert "Resets <t:" in result
+    assert "Sent 0 total" in result
+
+
+def test_capped_subscribers_do_not_trigger_expensive_external_scans(
+    hunt_store, monkeypatch,
+):
+    user = "capped-100"
+    hunt_store.subscribe(user, now=datetime.now(UTC) - timedelta(minutes=1))
+    hunt_store.set_tier(user, "qualified", True)
+    hunt_store.set_tier(user, "polymarket", True)
+    monkeypatch.setattr(
+        hunt_store, "daily_sent_counts_many",
+        lambda users, *, now=None: {
+            user: {
+                "research": 12, "qualified": 12, "polymarket": 12,
+                "flip": 12, "live_shift": 0,
+            }
+            for user in users
+        },
+    )
+    scans = (AsyncMock(side_effect=AssertionError("network scan under cap")),
+             AsyncMock(side_effect=AssertionError("model scan under cap")),
+             AsyncMock(side_effect=AssertionError("Polymarket scan under cap")),
+             AsyncMock(side_effect=AssertionError("flip scan under cap")))
+    monkeypatch.setattr(auto_hunt, "qualified_watches", scans[0])
+    monkeypatch.setattr(auto_hunt, "new_forecast_watches", scans[1])
+    monkeypatch.setattr(auto_hunt, "direction_change_watches", scans[3])
+    service = auto_hunt.AutoHuntService(
+        bot=SimpleNamespace(), market=object(), quotes=object(),
+        store=hunt_store,
+    )
+    monkeypatch.setattr(service.polymarket, "active", scans[2])
+    assert run(service.cycle()) == 0
+    assert all(scan.await_count == 0 for scan in scans)
+
+
+def test_daily_alert_cap_option_persists_and_is_not_global(hunt_store):
+    user = "user-with-unlimited"
+    other = "user-with-default"
+    assert hunt_store.preferences(user)["daily_limit"] == 12
+    assert hunt_store.preferences(other)["daily_limit"] == 12
+    assert hunt_store.set_preference(user, "daily_limit", 0)["daily_limit"] == 0
+    assert hunt_store.preferences(other)["daily_limit"] == 12
+    for limit in (12, 24, 48, 0):
+        hunt_store.set_preference(user, "daily_limit", limit)
+        restarted = auto_hunt.AutoHuntStore(hunt_store.store)
+        restarted.initialize()
+        assert restarted.preferences(user)["daily_limit"] == limit
+    for unsupported in (-1, 1, 999, "0"):
+        with pytest.raises(ValueError):
+            hunt_store.set_preference(user, "daily_limit", unsupported)
+    assert auto_hunt._cap_reached(12, 12)
+    assert not auto_hunt._cap_reached(120, 0)
+    assert not auto_hunt._cap_reached(12, 24)
+
+
+def test_live_mode_only_is_reported_on_without_enabling_forecast_tiers(hunt_store):
+    user = "8675309"
+    hunt_store.subscribe(user)
+    hunt_store.set_tier(user, "research", False)
+    hunt_store.set_preference(user, "live_shifts", 1)
+    hunt_store.set_preference(user, "daily_limit", 0)
+    assert hunt_store.tiers(user) == {
+        "research": False, "qualified": False, "polymarket": False,
+    }
+    service = auto_hunt.AutoHuntService(
+        bot=SimpleNamespace(live_stream=object()),
+        market=None, quotes=None, store=hunt_store,
+    )
+    status = run(service.status(int(user)))
+    assert status.startswith("ON")
+    assert "Live trends on" in status
+    assert "Live Mode 0/Unlimited" in status
+    assert "No daily reset needed" in status

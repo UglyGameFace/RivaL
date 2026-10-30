@@ -64,7 +64,7 @@ async def test_beginner_home_begins_simple_and_keeps_advanced_features(tmp_path)
         assert home.page == "home"
         assert set(_labels(home)) == {
             "Find Opportunities", "My Alerts", "Sports & Odds",
-            "My Results", "Home", "Back", "Explain This",
+            "My Results", "Live Mode", "Home", "Back", "Explain This",
         }
         assert len(home.children) <= 25
         assert max(item.row for item in home.children) <= 4
@@ -84,7 +84,7 @@ async def test_every_page_has_home_back_explain_without_dead_buttons(tmp_path):
     home = _home(bot)
     try:
         for page in ("discover", "sports", "crypto", "practice", "results",
-                     "help", "advanced", "slip", "forecast", "quote",
+                     "help", "advanced", "live", "slip", "forecast", "quote",
                      "feeds", "trust"):
             home.navigate("home")
             home.navigate(page)
@@ -500,4 +500,55 @@ def test_every_legacy_tool_is_grouped_without_duplicate_global_commands(tmp_path
                 "target", "stream-status", "profit-proof"}.issubset(names)
         assert all(not name.startswith("rival-") for name in names)
     finally:
+        bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
+    bot = _client(tmp_path)
+    home = _home(bot)
+    service = SimpleNamespace(
+        bot=SimpleNamespace(live_stream=object()),
+        store=SimpleNamespace(
+            enabled=lambda _id: False,
+            preferences=lambda _id: {
+                "assets": ("BTC", "ETH"), "daily_limit": 12,
+                "live_shifts": False,
+            },
+        ),
+        update_preference=AsyncMock(
+            return_value={"assets": ("BTC", "ETH"), "daily_limit": 12,
+                          "live_shifts": True},
+        ),
+    )
+    home.auto_hunt = service
+    try:
+        assert "Live Mode" in _labels(home)
+        interaction = _interaction()
+        await home.act(interaction, "live")
+        shown = interaction.edit_original_response.await_args.kwargs["view"]
+        assert "Enable Live Alerts" in _labels(shown)
+        assert "Disable Live Alerts" in _labels(shown)
+        assert "live exchange WebSocket prices" in (await home.render()).description
+        assert "OFF" in (await home.render()).description
+        await home.act(interaction, "live-on")
+        service.update_preference.assert_awaited_once_with(
+            home.owner_id, "live_shifts", 1,
+        )
+        assert "enabled" in home.note
+        assert home.page == "live"
+        service.update_preference.reset_mock()
+        service.update_preference.return_value = {
+            "assets": ("BTC", "ETH"), "daily_limit": 0, "live_shifts": False,
+        }
+        await home.act(interaction, "live-off")
+        service.update_preference.assert_awaited_once_with(
+            home.owner_id, "live_shifts", 0,
+        )
+        assert "disabled" in home.note
+        assert home.page == "live"
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
         bot.store.close()

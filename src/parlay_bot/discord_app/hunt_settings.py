@@ -81,6 +81,11 @@ class HuntSettingsView(discord.ui.View):
                 else f"Min Time: {prefs['min_remaining_seconds']}s",
                 "min_remaining_seconds", 3,
             ))
+            self.add_item(_Preference(
+                "Daily cap: " + (
+                    str(prefs["daily_limit"]) if prefs["daily_limit"] else "Unlimited"
+                ), "daily_limit", 3,
+            ))
             self.add_item(_Preference("Direction Alerts", "shifts", 4))
             self.add_item(_Preference("Done", "done", 4))
         else:
@@ -106,7 +111,9 @@ class HuntSettingsView(discord.ui.View):
                 f"Coins: **{assets}** • Windows: **{horizons}**\n"
                 f"Polymarket sides: **{self.prefs['side']}** • "
                 f"Maximum ask: **{self.prefs['max_ask_pct']}%** • "
-                f"Time remaining: **{self.prefs['min_remaining_seconds']}s**\n\n"
+                f"Time remaining: **{self.prefs['min_remaining_seconds']}s**\n"
+                f"Daily limit per alert type: **"
+                f"{self.prefs['daily_limit'] or 'Unlimited'}**\n\n"
                 "Polymarket has listed BTC/ETH/SOL 5m/15m markets; XRP requires its own live market feed. "
                 "The max ask is a PRICE filter (not a probability "
                 "estimate); it does not establish profitable odds. "
@@ -171,6 +178,8 @@ class HuntSettingsView(discord.ui.View):
                 (0 if old else 1) if action in ("live_shifts", "direction_changes")
                 else {100: 75, 75: 50, 50: 25, 25: 100}[old]
                 if action == "max_ask_pct"
+                else {0: 12, 12: 24, 24: 48, 48: 0}[old]
+                if action == "daily_limit"
                 else {90: 180, 180: 300, 300: 90}[old]
             )
             try:

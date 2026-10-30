@@ -1,6 +1,8 @@
 """Regression coverage for PostgreSQL startup DDL and batched candle writes."""
+import logging
 import os
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -129,3 +131,35 @@ def test_autonomous_schema_is_initialized_once_even_across_threads(tmp_path, mon
     assert first > 0
     research.initialize()
     assert len(calls) == first
+
+
+def test_lighter_revision_is_aggregated_and_reports_real_changed_fields(
+    tmp_path, caplog,
+) -> None:
+    market = PerpetualMarketStore(SQLiteHotStore(tmp_path / "lighter.sqlite"))
+    original = _batch(length=6)
+    market.ingest(original)
+    # Same OHLC close, different later-exchange-reported volume. Never
+    # overwrite immutable evidence, but don't log six misleading warnings.
+    revised = MarketBatch(
+        original.contexts,
+        tuple(replace(c, volume_base=c.volume_base + 0.25)
+              for c in original.candles),
+        original.interval_minutes, original.observed_at,
+    )
+    with caplog.at_level(logging.WARNING):
+        result = market.ingest(revised)
+    assert result.inserted_candles == 0
+    assert result.conflicted_candles == 6
+    messages = [r.message for r in caplog.records
+                if "immutable candle conflicts skipped" in r.message]
+    assert len(messages) == 1
+    assert "bars=6" in messages[0]
+    assert "volume_base:6" in messages[0]
+    assert "close_price" not in messages[0]
+    stored = market.recent_candles(
+        venue="hyperliquid", contract="BTC", quote="USD",
+        interval_minutes=5, count=6,
+    )
+    assert len(stored) == 6
+    assert all(float(c["volume_base"]) == 1.0 for c in stored)

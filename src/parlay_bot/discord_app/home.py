@@ -943,3 +943,168 @@ class GuidedHome(discord.ui.View):
             await interaction.followup.send(
                 "Something went wrong. Press Home or type /rival.", ephemeral=True,
             )
+
+
+# ---------------------------------------------------------------------------
+# Stale-menu recovery: persistent fallback views for guided menus.
+#
+# A live GuidedHome view dies two ways: its 15-minute timeout lapses, or the
+# bot restarts (every Discloud deploy) and the in-memory view is gone. Either
+# way Discord still delivers the tap, discord.py finds no view for it, and the
+# tap is silently discarded -- the user sees "This interaction failed" and
+# the menu looks dead. These persistent views (timeout=None, registered with
+# bot.add_view at startup) carry the SAME custom_ids as the live menu, so
+# discord.py falls back to them when the live view is gone. They never
+# execute a stateful action from stale state: navigation and read-only pages
+# reopen on a fresh menu, and anything that would place, change, or stop
+# something (trades, alerts, slips, location, limits) just reopens a fresh
+# home menu with an honest note. A view holds at most 25 components, and the
+# guided menu has 33 custom_ids, so the fallback is split across two views;
+# discord.py matches by custom_id across every registered persistent view.
+# ---------------------------------------------------------------------------
+
+# Pages a stale tap may safely reopen on a fresh menu. Everything else is a
+# stateful action and is never run from stale state.
+_STALE_SAFE_PAGES = {
+    "home": "home",
+    "sports": "sports",
+    "crypto": "crypto",
+    "practice": "practice",
+    "results": "results",
+    "help": "help",
+    "advanced": "advanced",
+    "feeds": "feeds",
+    "trust": "trust",
+    "back": "home",
+    "forecast": "forecast",
+    "quote": "quote",
+}
+
+_STALE_NOTE = (
+    "This menu expired, so it was refreshed. Your last tap did not place, "
+    "change, or stop anything. Use this fresh menu."
+)
+
+# Button actions split across two views to stay under the 25-component limit.
+_STALE_BUTTONS_A = (
+    "sports", "crypto", "practice", "results", "help", "advanced",
+    "state", "zip", "refresh", "manual", "slip", "lower", "balanced",
+    "aggressive", "forecast", "follow", "target",
+)
+_STALE_BUTTONS_B = (
+    "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",
+    "feeds", "research", "api-limits", "home", "back", "explain",
+)
+
+
+class _StaleButton(discord.ui.Button["_StaleGuidedMenuBase"]):
+    """Dispatch-only button: never rendered, only matched by custom_id."""
+
+    def __init__(self, action: str) -> None:
+        super().__init__(
+            label=action, custom_id=f"rival:guided:{action}",
+            style=discord.ButtonStyle.secondary,
+        )
+        self.action = action
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        await self.view.recover(interaction, action=self.action)
+
+
+class _StaleCoin(discord.ui.Select["_StaleGuidedMenuBase"]):
+    def __init__(self) -> None:
+        super().__init__(
+            placeholder="Choose a coin", custom_id="rival:guided:coin",
+            options=[
+                discord.SelectOption(label=f"{name} ({code})", value=code)
+                for code, name in (
+                    ("BTC", "Bitcoin"), ("ETH", "Ethereum"), ("SOL", "Solana"),
+                )
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        await self.view.recover(interaction, coin=self.values[0])
+
+
+class _StaleHorizon(discord.ui.Select["_StaleGuidedMenuBase"]):
+    def __init__(self) -> None:
+        super().__init__(
+            placeholder="Choose how far ahead", custom_id="rival:guided:horizon",
+            options=[
+                discord.SelectOption(label=f"{n} minutes", value=str(n))
+                for n in (5, 15)
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        await self.view.recover(
+            interaction, horizon=int(self.values[0]),
+        )
+
+
+class _StaleGuidedMenuBase(discord.ui.View):
+    """Persistent fallback for one slice of the guided menu's custom_ids."""
+
+    def __init__(self, home_factory: Callable[[int], GuidedHome]) -> None:
+        super().__init__(timeout=None)
+        self.home_factory = home_factory
+
+    async def recover(
+        self, interaction: discord.Interaction, *, action: str | None = None,
+        coin: str | None = None, horizon: int | None = None,
+    ) -> None:
+        await interaction.response.defer()
+        home = self.home_factory(interaction.user.id)
+        if coin is not None and coin in COINS:
+            home.coin = coin
+        if horizon is not None and horizon in (5, 15):
+            home.horizon = horizon
+        if action in _STALE_SAFE_PAGES:
+            home.navigate(_STALE_SAFE_PAGES[action])
+        elif coin is not None or horizon is not None:
+            home.navigate("crypto")
+        home.note = _STALE_NOTE
+        _LOG.info(
+            "Stale guided menu recovered action=%s user_id=%s",
+            action or f"select coin={coin} horizon={horizon}",
+            interaction.user.id,
+        )
+        await home.redraw(interaction)
+
+
+class StaleGuidedMenuViewA(_StaleGuidedMenuBase):
+    """First slice of the stale-menu fallback (17 button custom_ids)."""
+
+    def __init__(self, home_factory: Callable[[int], GuidedHome]) -> None:
+        super().__init__(home_factory)
+        for action in _STALE_BUTTONS_A:
+            self.add_item(_StaleButton(action))
+
+
+class StaleGuidedMenuViewB(_StaleGuidedMenuBase):
+    """Second slice (14 buttons + coin/horizon selects)."""
+
+    def __init__(self, home_factory: Callable[[int], GuidedHome]) -> None:
+        super().__init__(home_factory)
+        for action in _STALE_BUTTONS_B:
+            self.add_item(_StaleButton(action))
+        self.add_item(_StaleCoin())
+        self.add_item(_StaleHorizon())
+
+
+def build_stale_guided_menu_views(
+    home_factory: Callable[[int], GuidedHome],
+) -> tuple[StaleGuidedMenuViewA, StaleGuidedMenuViewB]:
+    """Persistent fallback views covering every guided-menu custom_id.
+
+    Register both with bot.add_view at startup. discord.py routes a tap on
+    an expired or pre-restart menu to the matching fallback view.
+    """
+    return (
+        StaleGuidedMenuViewA(home_factory),
+        StaleGuidedMenuViewB(home_factory),
+    )

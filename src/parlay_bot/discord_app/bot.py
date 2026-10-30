@@ -14,7 +14,10 @@ from parlay_bot.collectors.oddspapi_current import OddsPapiCurrentCollector
 from parlay_bot.collectors.the_odds_api import TheOddsApiCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
-from parlay_bot.discord_app.home import GuidedHome
+from parlay_bot.discord_app.home import (
+    GuidedHome,
+    build_stale_guided_menu_views,
+)
 from parlay_bot.discord_app.multi_proof import multi_proof_embed
 from parlay_bot.discord_app.opportunities import (
     crypto_desk_embed,
@@ -317,6 +320,38 @@ class RivalDiscordClient(discord.Client):
     def _csv_tuple(value: str) -> tuple[str, ...]:
         return tuple(item.strip() for item in value.split(",") if item.strip())
 
+    def _build_guided_home(self, owner_id: int) -> GuidedHome:
+        """One fresh private menu for a user; shared by /rival and the
+        stale-menu fallback so a recovered menu is built identically."""
+        collector = self.perp_collector
+
+        def research_factory(owner_id: int) -> ResearchDashboard:
+            return ResearchDashboard(
+                owner_id=owner_id,
+                market=collector.market if collector is not None else None,
+                ai=self.gemini_research,
+                venues=tuple(collector.providers) if collector is not None else (),
+                shadow_enabled=self.shadow_monitor is not None,
+                target_service=self.direction_targets,
+            )
+
+        return GuidedHome(
+            owner_id=owner_id,
+            location=self.location_service,
+            builder=self.parlay_builder,
+            collector=self.current_collector,
+            refresh_sports=self._request_sports_refresh,
+            market=collector.market if collector is not None else None,
+            targets=self.direction_targets,
+            paper=self.paper_ledger,
+            quotes=self.public_quotes,
+            profit=self.quote_profit,
+            research_factory=research_factory,
+            stream_shadow=self.stream_shadow,
+            multi=self.autonomous.multi if self.autonomous is not None else None,
+            venues=tuple(collector.providers) if collector is not None else (),
+        )
+
     def _register_commands(self) -> None:
         # Three obvious shortcuts plus one optional tools namespace.
         # All legacy operations remain available; ordinary users navigate
@@ -331,34 +366,7 @@ class RivalDiscordClient(discord.Client):
         )
         async def rival(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
-            collector = self.perp_collector
-
-            def research_factory(owner_id: int) -> ResearchDashboard:
-                return ResearchDashboard(
-                    owner_id=owner_id,
-                    market=collector.market if collector is not None else None,
-                    ai=self.gemini_research,
-                    venues=tuple(collector.providers) if collector is not None else (),
-                    shadow_enabled=self.shadow_monitor is not None,
-                    target_service=self.direction_targets,
-                )
-
-            home = GuidedHome(
-                owner_id=interaction.user.id,
-                location=self.location_service,
-                builder=self.parlay_builder,
-                collector=self.current_collector,
-                refresh_sports=self._request_sports_refresh,
-                market=collector.market if collector is not None else None,
-                targets=self.direction_targets,
-                paper=self.paper_ledger,
-                quotes=self.public_quotes,
-                profit=self.quote_profit,
-                research_factory=research_factory,
-                stream_shadow=self.stream_shadow,
-                multi=self.autonomous.multi if self.autonomous is not None else None,
-                venues=tuple(collector.providers) if collector is not None else (),
-            )
+            home = self._build_guided_home(interaction.user.id)
             await interaction.edit_original_response(
                 embed=await home.render(), view=home,
             )
@@ -1362,6 +1370,12 @@ class RivalDiscordClient(discord.Client):
         return
 
     async def setup_hook(self) -> None:
+        # Persistent fallback for guided menus that outlived their live view
+        # (15-minute timeout or bot restart). Without this, taps on those
+        # menus are silently discarded and the menu looks dead.
+        for stale_view in build_stale_guided_menu_views(self._build_guided_home):
+            self.add_view(stale_view)
+        _LOG.info("RivaL stale guided-menu fallback views registered")
         if self._target_task is None:
             self._target_task = asyncio.create_task(
                 self._target_loop(), name="rival-personal-direction-updates",

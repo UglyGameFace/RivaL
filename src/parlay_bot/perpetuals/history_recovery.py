@@ -51,8 +51,10 @@ def contiguous_forward_next(
     complete: the cursor advances past the contiguous prefix only. A
     leading gap (no bar at the cursor) jumps to the first received bar
     so a genuinely absent region cannot stall the cursor forever; the
-    auditor still counts those bars as missing, honestly. An empty page
-    advances to the window end, as before.
+    auditor still counts those bars as missing, honestly. Callers must
+    handle an empty page before calling this (upstream_empty, no
+    advance); an empty stamp list here still returns the window end
+    for the callers that already filtered empties.
     """
     stamps = sorted({stamp for stamp in opened if cursor <= stamp < until})
     if not stamps:
@@ -162,7 +164,36 @@ class GateHistoryRecovery:
                 (asset,),
             ).fetchone()
             if existing is not None:
-                return dict(existing)
+                row = dict(existing)
+                if (
+                    row.get("status") == "caught_up"
+                    and not row.get("inserted_bars")
+                    and (row.get("empty_windows") or 0) > 0
+                ):
+                    # Vacuous backfill: the old advance-on-empty logic
+                    # marched this cursor to caught_up through empty
+                    # windows without ever inserting a bar, so the audit
+                    # can never fill. Reset to the original seed; empty
+                    # pages no longer advance, so a reset row cannot
+                    # re-march to a vacuous caught_up, and legitimately
+                    # caught-up rows (empty_windows == 0) are untouched.
+                    conn.execute(
+                        """UPDATE perp_history_recovery SET
+                           next_opened_at=started_from, status='progress',
+                           retry_after=NULL, empty_windows=0
+                           WHERE venue='gate' AND asset=?""",
+                        (asset,),
+                    )
+                    _LOG.warning(
+                        "RivaL Gate vacuous backfill reset asset=%s seed=%s",
+                        asset, row.get("started_from"),
+                    )
+                    row = dict(conn.execute(
+                        """SELECT * FROM perp_history_recovery
+                           WHERE venue='gate' AND asset=?""",
+                        (asset,),
+                    ).fetchone())
+                return row
             initial = six_months_prior(now).replace(
                 minute=six_months_prior(now).minute // 5 * 5,
                 second=0, microsecond=0,
@@ -273,6 +304,20 @@ class GateHistoryRecovery:
                     observed, op, high, low, close,
                     _num(row.get("v")) * multiplier, -1,
                 ))
+            if not rows:
+                # Never advance past an empty window: an upstream page
+                # with no bars is an API gap, not coverage. Retrying
+                # later preserves the cursor (mirrors OKX).
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=None,
+                    empty=True, status="upstream_empty",
+                    retry_after=clock + timedelta(hours=6),
+                )
+                _LOG.warning(
+                    "RivaL Gate historical recovery empty page asset=%s",
+                    asset,
+                )
+                return 0
             added = 0
             if candles:
                 batch = MarketBatch((), tuple(candles), 5, observed)

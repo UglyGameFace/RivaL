@@ -189,3 +189,51 @@ async def test_kucoin_history_progress_visible_in_research_menu(tmp_path):
         await worker.aclose()
         view.stop()
         store.close()
+
+
+def empty_reply(req: httpx.Request) -> httpx.Response:
+    assert "authorization" not in req.headers
+    if "/contracts/" in req.url.path:
+        symbol = req.url.path.rsplit("/", 1)[-1]
+        return httpx.Response(200, json={
+            "code": "200000", "data": {
+                "symbol": symbol,
+                "baseCurrency": "XBT" if symbol.startswith("XBT") else symbol[:-5],
+                "quoteCurrency": "USDT", "settleCurrency": "USDT",
+                "status": "Open", "expireDate": None, "isInverse": False,
+                "multiplier": "0.001",
+            },
+        })
+    assert req.url.host == "api.kucoin.com"
+    assert req.url.path.endswith("/api/ua/v2/market/kline")
+    return httpx.Response(200, json={
+        "code": "200000",
+        "data": {
+            "tradeType": "FUTURES", "symbol": "XBTUSDTM", "list": [],
+        },
+    })
+
+
+@pytest.mark.asyncio
+async def test_kucoin_empty_page_does_not_advance_cursor(tmp_path):
+    from parlay_bot.perpetuals.history_inventory import six_months_prior
+
+    store = SQLiteHotStore(tmp_path / "kucoin-empty.sqlite")
+    market = PerpetualMarketStore(store)
+    raw = httpx.AsyncClient(transport=httpx.MockTransport(empty_reply))
+    worker = KucoinHistoryRecovery(
+        market, assets=("BTC",), page_bars=12, client=raw,
+    )
+    try:
+        assert await worker.run_once(now=NOW) == 0
+        row = worker.progress()[0]
+        seed = six_months_prior(NOW).replace(
+            minute=six_months_prior(NOW).minute // 5 * 5,
+            second=0, microsecond=0)
+        assert row["next_opened_at"] == seed.isoformat()
+        assert row["status"] == "upstream_empty"
+        assert row["retry_after"] == (NOW + timedelta(hours=6)).isoformat()
+        assert row["empty_windows"] == 1
+        assert row["inserted_bars"] == 0
+    finally:
+        await worker.aclose()

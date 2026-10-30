@@ -180,3 +180,42 @@ async def test_bitget_history_page_bounds_and_compact_progress(tmp_path):
             await worker.aclose()
     finally:
         store.close()
+
+
+def empty_response(request: httpx.Request) -> httpx.Response:
+    assert "authorization" not in request.headers
+    assert request.url.host == "api.bitget.com"
+    if request.url.path.endswith("/instruments"):
+        asset = request.url.params["symbol"][:-4]
+        return httpx.Response(200, json={"code": "00000", "data": [{
+            "symbol": f"{asset}USDT", "category": "USDT-FUTURES",
+            "type": "perpetual", "status": "online",
+            "baseCoin": asset, "quoteCoin": "USDT",
+        }]})
+    assert request.url.path.endswith("/history-candles")
+    return httpx.Response(200, json={"code": "00000", "data": []})
+
+
+@pytest.mark.asyncio
+async def test_bitget_empty_page_does_not_advance_cursor(tmp_path):
+    from parlay_bot.perpetuals.history_inventory import six_months_prior
+
+    store = SQLiteHotStore(tmp_path / "bitget-empty.sqlite")
+    market = PerpetualMarketStore(store)
+    raw = httpx.AsyncClient(transport=httpx.MockTransport(empty_response))
+    worker = BitgetHistoryRecovery(
+        market, assets=("BTC",), page_bars=12, client=raw,
+    )
+    try:
+        assert await worker.run_once(now=NOW) == 0
+        row = worker.progress()[0]
+        seed = six_months_prior(NOW).replace(
+            minute=six_months_prior(NOW).minute // 5 * 5,
+            second=0, microsecond=0)
+        assert row["next_opened_at"] == seed.isoformat()
+        assert row["status"] == "upstream_empty"
+        assert row["retry_after"] == (NOW + timedelta(hours=6)).isoformat()
+        assert row["empty_windows"] == 1
+        assert row["inserted_bars"] == 0
+    finally:
+        await worker.aclose()

@@ -194,6 +194,11 @@ class ForwardAccuracyMonitor:
                     ON perp_forward_audit (settled_at,target_opened_at);
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_asset_horizon
                     ON perp_forward_audit (asset,horizon_minutes,issued_at);
+                -- Serves recent_watches exactly: asset + issued range for
+                -- still-pending forecasts, ordered newest first.
+                CREATE INDEX IF NOT EXISTS idx_perp_forward_asset_issued
+                    ON perp_forward_audit (asset,issued_at)
+                    WHERE settled_at IS NULL;
                 """
             )
 

@@ -37,6 +37,9 @@ MAX_USERS = 100
 COOLDOWN = timedelta(seconds=120)
 MAX_ISSUE_AGE = timedelta(seconds=90)
 MAX_SPREAD_BPS = 25.0
+# New research alerts are deliberately distinct from qualified trade signals.
+# Don't silently discard every forecast just because live P&L is unproven.
+FORECAST_ALERT_MAX_AGE = timedelta(minutes=3)
 
 
 def _instant(value: str) -> datetime:
@@ -54,11 +57,12 @@ class HuntCandidate:
     issued: datetime
     expires: datetime
     probability_up: float
-    bid: float
-    ask: float
-    quote_at: datetime
+    bid: float | None
+    ask: float | None
+    quote_at: datetime | None
     engine: str
     model_version: str
+    screened: bool = False
 
     @property
     def direction(self) -> str:
@@ -321,22 +325,105 @@ async def eligible_research_watches(
     return sorted(picks, key=lambda c: (-c.strength, c.expires, c.asset))
 
 
+async def new_forecast_watches(
+    market, *, now: datetime | None = None,
+) -> list[HuntCandidate]:
+    """Notify genuine newly issued model forecasts even when not trade-qualified.
+
+    This path is intentionally cheap. It does NOT wait for costly model
+    backtesting, historical recovery, or a network quote to say that a
+    directional forecast has been published. Any unverified model is explicitly
+    labeled research-only, NEVER an executable market opportunity.
+    """
+    if market is None:
+        return []
+    stamp = now or datetime.now(UTC)
+    if stamp.utcoffset() is None:
+        raise ValueError("Auto-Hunt requires an aware clock")
+    stamp = stamp.astimezone(UTC)
+
+    async def by_asset(asset: str) -> list[HuntCandidate]:
+        try:
+            # Mirror the actual promoted model policy used by /rival-signal.
+            picks: list[HuntCandidate] = []
+            for horizon in HORIZONS:
+                engine = await asyncio.to_thread(
+                    promoted_engine, market.store, asset=asset,
+                    horizon=horizon, now=stamp,
+                )
+                reader = recent_multi_watches if engine == "multi" else recent_watches
+                watches = await asyncio.to_thread(
+                    reader, market, asset=asset, now=stamp,
+                    limit=40, dedupe_horizons=False,
+                )
+                for watch in watches:
+                    if int(watch["horizon_minutes"]) != horizon:
+                        continue
+                    issued = watch["issued"]
+                    expires = watch["target"] + timedelta(minutes=5)
+                    probability = float(watch["probability_up"])
+                    if (
+                        issued > stamp
+                        or stamp - issued > FORECAST_ALERT_MAX_AGE
+                        or expires - stamp < MIN_REMAINING
+                        or not math.isfinite(probability)
+                        or not 0 < probability < 1
+                    ):
+                        continue
+                    picks.append(HuntCandidate(
+                        asset=asset, horizon=horizon, venue=str(watch["venue"]),
+                        issued=issued, expires=expires,
+                        probability_up=probability, bid=None, ask=None,
+                        quote_at=None, engine=engine,
+                        model_version=str(watch.get("model_version", "live")),
+                    ))
+                    # Only newest honest forecast per asset/horizon, not all
+                    # ten correlated exchanges reported as ten bets.
+                    break
+            return picks
+        except Exception:  # noqa: BLE001 - one lagging feed must not stall others
+            _LOG.exception("Auto-Hunt forecast lookup failed asset=%s", asset)
+            return []
+
+    results = await asyncio.gather(
+        *(by_asset(asset) for asset in ASSETS), return_exceptions=True,
+    )
+    candidates: list[HuntCandidate] = []
+    for result in results:
+        if isinstance(result, BaseException):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            _LOG.warning("Auto-Hunt forecast scan unavailable")
+        else:
+            candidates.extend(result)
+    # Prefer recently issued forecasts and earliest actionable expiry,
+    # not raw model strength mistaken for a calibrated win probability.
+    return sorted(candidates, key=lambda c: (-c.issued.timestamp(), c.expires))
+
+
 def hunt_embed(candidate: HuntCandidate, *, observed_at: datetime) -> discord.Embed:
     seconds = max(0, int((candidate.expires - observed_at).total_seconds()))
+    quote_line = (
+        f"Validated {candidate.venue} book at "
+        f"<t:{int(candidate.quote_at.timestamp())}:R>: "
+        f"Bid **${candidate.bid:,.2f}** / Ask **${candidate.ask:,.2f}**."
+        if candidate.screened and candidate.quote_at is not None
+        and candidate.bid is not None and candidate.ask is not None
+        else "Live executable quote and after-cost advantage: **NOT VERIFIED**."
+    )
     embed = discord.Embed(
         title=f"🔎 Auto-Hunt • {candidate.asset} {candidate.horizon}m • {candidate.direction}",
         description=(
-            f"**Fresh research watch**, not a trade instruction.\n"
-            f"Raw model direction strength: **{candidate.strength:.1%}** "
-            "(not a calibrated win chance).\n"
-            f"Matching venue: **{candidate.venue}** • "
-            f"Bid **${candidate.bid:,.2f}** / Ask **${candidate.ask:,.2f}**\n"
-            f"Quote observed <t:{int(candidate.quote_at.timestamp())}:R> • "
-            f"Forecast issued <t:{int(candidate.issued.timestamp())}:R>\n"
+            "**New model forecast • research only**\n"
+            f"Raw directional model strength: **{candidate.strength:.1%}** "
+            "(not calibrated odds).\n"
+            f"Forecast reference venue: **{candidate.venue}**.\n"
+            f"{quote_line}\n"
+            f"Issued <t:{int(candidate.issued.timestamp())}:R> • "
             f"Expires <t:{int(candidate.expires.timestamp())}:R> "
-            f"(~{seconds}s remained at screening).\n\n"
-            "This is NOT a market strike, executable odds, or verified after-cost edge. "
-            "Review a fresh market before making any independent decision."
+            f"(~{seconds}s remained at notification).\n\n"
+            "Not a betting recommendation, trade signal, guaranteed prediction, "
+            "or automatically executable market. Refresh to review any current quote."
         ),
         color=discord.Color.blurple(),
     )
@@ -474,7 +561,11 @@ class AutoHuntService:
             subscribers = await asyncio.to_thread(self.store.subscribers)
             if not subscribers:
                 return 0
-            candidates = await eligible_research_watches(self.market, self.quotes)
+            candidates = await new_forecast_watches(self.market)
+            _LOG.info(
+                "RivaL Auto-Hunt cycle subscribers=%d fresh_forecasts=%d",
+                len(subscribers), len(candidates),
+            )
             if not candidates:
                 return 0
             # Shared bounded Discord/PG concurrency. Each user's own lock

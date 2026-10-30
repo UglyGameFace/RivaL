@@ -4,10 +4,35 @@ import math
 from collections.abc import Iterable
 
 
-def implied_probability(decimal_odds: float) -> float:
-    if decimal_odds <= 1:
+def _finite(value: float, name: str) -> float:
+    """Reject nonnumeric, boolean, NaN and infinite provider/model values."""
+    if isinstance(value, bool):
+        raise ValueError(f"{name} must be finite")
+    try:
+        number = float(value)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError(f"{name} must be finite") from exc
+    if not math.isfinite(number):
+        raise ValueError(f"{name} must be finite")
+    return number
+
+
+def valid_decimal_odds(value: float) -> float:
+    number = _finite(value, "decimal odds")
+    if number <= 1:
         raise ValueError("decimal odds must be greater than 1")
-    return 1.0 / decimal_odds
+    return number
+
+
+def valid_probability(value: float) -> float:
+    number = _finite(value, "probability")
+    if not 0 <= number <= 1:
+        raise ValueError("probabilities must be between 0 and 1")
+    return number
+
+
+def implied_probability(decimal_odds: float) -> float:
+    return 1.0 / valid_decimal_odds(decimal_odds)
 
 
 def no_vig_probabilities(decimal_prices: Iterable[float]) -> list[float]:
@@ -15,30 +40,35 @@ def no_vig_probabilities(decimal_prices: Iterable[float]) -> list[float]:
     if len(implied) < 2:
         raise ValueError("no-vig normalization needs at least two outcomes")
     total = sum(implied)
-    if total <= 0:
+    if not math.isfinite(total) or total <= 0:
         raise ValueError("invalid implied probability total")
     return [value / total for value in implied]
 
 
 def combined_decimal_odds(prices: Iterable[float]) -> float:
-    values = list(prices)
+    values = [valid_decimal_odds(value) for value in prices]
     if not values:
         raise ValueError("at least one price is required")
-    return math.prod(values)
+    combined = math.prod(values)
+    if not math.isfinite(combined):
+        raise ValueError("combined decimal odds overflow")
+    return combined
 
 
 def independent_joint_probability(probabilities: Iterable[float]) -> float:
-    values = list(probabilities)
+    values = [valid_probability(value) for value in probabilities]
     if not values:
         raise ValueError("at least one probability is required")
-    if any(value < 0 or value > 1 for value in values):
-        raise ValueError("probabilities must be between 0 and 1")
-    return math.prod(values)
+    result = math.prod(values)
+    if not math.isfinite(result):
+        raise ValueError("invalid combined probability")
+    return result
 
 
 def expected_return_edge(*, fair_probability: float, decimal_odds: float) -> float:
-    if fair_probability < 0 or fair_probability > 1:
-        raise ValueError("fair_probability must be between 0 and 1")
-    if decimal_odds <= 1:
-        raise ValueError("decimal_odds must be greater than 1")
-    return fair_probability * decimal_odds - 1.0
+    probability = valid_probability(fair_probability)
+    odds = valid_decimal_odds(decimal_odds)
+    result = probability * odds - 1.0
+    if not math.isfinite(result):
+        raise ValueError("invalid expected return")
+    return result

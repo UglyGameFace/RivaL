@@ -245,7 +245,7 @@ class ParlayBuilder:
 
             price = float(row["price_decimal"])
             edge = expected_return_edge(fair_probability=fair, decimal_odds=price)
-            if edge < -0.025:
+            if edge <= 0:
                 diagnostics["negative_edge"] += 1
                 continue
 
@@ -361,6 +361,13 @@ class ParlayBuilder:
                 fair_probability=joint_probability,
                 decimal_odds=combined_price,
             )
+            # These are indicative no-vig consensus probabilities, not a
+            # calibrated guarantee. Never auto-suggest a losing-price slip.
+            if combined_edge <= 0:
+                self.last_diagnostics["negative_combined_edge"] = (
+                    self.last_diagnostics.get("negative_combined_edge", 0) + 1
+                )
+                continue
 
             legs = [
                 ParlayLeg(

@@ -27,13 +27,13 @@ def hunt_store(tmp_path):
 
 def candidate(now=None, **replace):
     now = now or datetime.now(UTC)
-    args = dict(
-        asset="BTC", horizon=5, venue="binance",
-        issued=now - timedelta(seconds=10),
-        expires=now + timedelta(minutes=3),
-        probability_up=0.64, bid=100.0, ask=100.1,
-        quote_at=now, engine="live", model_version="forecast-v1",
-    )
+    args = {
+        "asset": "BTC", "horizon": 5, "venue": "binance",
+        "issued": now - timedelta(seconds=10),
+        "expires": now + timedelta(minutes=3),
+        "probability_up": 0.64, "bid": 100.0, "ask": 100.1,
+        "quote_at": now, "engine": "live", "model_version": "forecast-v1",
+    }
     args.update(replace)
     return auto_hunt.HuntCandidate(**args)
 
@@ -90,12 +90,12 @@ def test_hunt_user_bound_review_receipts(hunt_store):
 
 
 def _mock_watch(now, *, probability=0.64, venue="binance", issued_delta=5):
-    return dict(
-        venue=venue, asset="BTC", horizon_minutes=5,
-        issued=now - timedelta(seconds=issued_delta),
-        target=now + timedelta(minutes=3),
-        probability_up=probability, price=100.0,
-    )
+    return {
+        "venue": venue, "asset": "BTC", "horizon_minutes": 5,
+        "issued": now - timedelta(seconds=issued_delta),
+        "target": now + timedelta(minutes=3),
+        "probability_up": probability, "price": 100.0,
+    }
 
 
 def test_hunt_forecasts_require_fresh_matching_quote_and_true_evidence(monkeypatch):

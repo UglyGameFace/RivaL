@@ -24,10 +24,8 @@ _COMPLETE = "https://openrouter.ai/api/v1/chat/completions"
 # Curated for code/analysis tasks; these are NOT trading-accuracy benchmarks.
 # A listed model is always catalog-verified, never assumed available.
 _CODING_MODELS = (
+    "recursive/flint-v1.0:free",
     "cohere/north-mini-code:free",
-    "poolside/laguna-s-2.1:free",
-    "qwen/qwen3-coder:free",
-    "mistralai/devstral-2512:free",
 )
 _BUDGET_ID = "rival-openrouter-free-coding"
 _FREE_DAILY_MAX = 18  # Below standard OpenRouter 50/day :free quota.
@@ -68,15 +66,20 @@ def eligible_free_coding_models(payload: object, *, now: datetime) -> tuple[str,
             continue
         price = item.get("pricing")
         architecture = item.get("architecture")
-        endpoints = item.get("endpoints")
+        # The official /models schema advertises links.details, NOT
+        # an "endpoints" list. Text chat support is exercised by the
+        # actual (strictly pinned :free) generation call.
+        links = item.get("links")
         if (
             not isinstance(price, dict)
             or not all(_zero(price.get(k)) for k in ("prompt", "completion"))
             or not _zero(price.get("request", "0"))
             or not isinstance(architecture, dict)
+            or "text" not in architecture.get("input_modalities", [])
             or "text" not in architecture.get("output_modalities", [])
-            or not isinstance(endpoints, list)
-            or "/api/v1/chat/completions" not in endpoints
+            or not isinstance(links, dict)
+            or not isinstance(links.get("details"), str)
+            or not links["details"].startswith("/api/v1/models/")
             or not _unexpired(item.get("expiration_date"), now)
         ):
             continue

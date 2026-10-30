@@ -538,13 +538,9 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title="RivaL | Betting Genie",
                 description=(
-                    "**Choose where to start.**\n"
-                    "📈 **Crypto:** live prediction markets or exchange forecasts.\n"
-                    "🏆 **Sports:** games and odds.\n"
-                    "🔔 **Notifications:** manage all your updates.\n"
-                    "📊 **My Results:** recorded outcomes.\n"
-                    "💵 **Practice:** simulated trades.\n\n"
-                    "No real bets or orders are placed."
+                    "Find a live crypto market, compare sports odds, or "
+                    "manage your personal tracking.\n"
+                    "Private research only. No real bets or orders are placed."
                 ), color=discord.Color.blurple(),
             )
         elif p == "discover":

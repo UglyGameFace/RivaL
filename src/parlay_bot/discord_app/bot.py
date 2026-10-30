@@ -1355,17 +1355,9 @@ class RivalDiscordClient(discord.Client):
         self.tree.add_command(tools_group)
 
     async def _refresh_sports_for_pick(self) -> None:
-        if self.current_collector is None and self.oddspapi_collector is None:
-            return
-        try:
-            if self.current_collector is not None:
-                await self.current_collector.refresh_if_due()
-            if self.oddspapi_collector is not None:
-                await self.oddspapi_collector.refresh_if_due()
-            if self.the_odds_api_collector is not None:
-                await self.the_odds_api_collector.refresh_if_due()
-        except Exception:  # noqa: BLE001 - stale bets are rejected by builder
-            _LOG.exception("Current sportsbook refresh unavailable; fail closed if stale")
+        # Use cached quotes for Discord interactions; stale selections fail
+        # closed in the parlay builder. Remote collection runs in background.
+        return
 
     async def setup_hook(self) -> None:
         if self._target_task is None:

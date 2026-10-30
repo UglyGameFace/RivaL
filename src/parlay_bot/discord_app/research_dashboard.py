@@ -84,7 +84,7 @@ _FIELD_GROUPS = {
         "method": ("How accuracy is audited",),
     },
     "ai": {
-        "limits": ("Gemini model & request limits",),
+        "limits": ("Gemini model & request limits", "OpenRouter free model & request limits"),
         "analysis": ("Gemini assessment", "Analysis status"),
     },
 }
@@ -1394,7 +1394,7 @@ class ResearchDashboard(discord.ui.View):
         embed.add_field(
             name="AI evidence",
             value=(
-                "Gemini analyzes **all currently healthy distinct exchanges**, "
+                "The optional AI reviewer reads **all healthy exchanges**, "
                 "for a **5-minute forecast**, with available 5m, 15m, "
                 "1h, 4h and 24h returns and volatility "
                 "features. Unavailable sources are excluded and disclosed."
@@ -1404,7 +1404,7 @@ class ResearchDashboard(discord.ui.View):
             try:
                 quota = await self.ai.request_status()
                 reasons = {
-                    "provider_error_pause": "A previous Google API error caused a pause",
+                    "provider_error_pause": "A previous AI provider error caused a pause",
                     "minimum_spacing": "RivaL's minimum interval between AI requests",
                     "daily_budget_exhausted": "RivaL's daily safety limit is reached",
                 }
@@ -1426,22 +1426,30 @@ class ResearchDashboard(discord.ui.View):
                             + ")"
                         )
                 embed.add_field(
-                    name="AI model & request limits",
+                    name=(
+                        "OpenRouter free model & request limits"
+                        if isinstance(self.ai, OpenRouterResearch)
+                        else "Gemini model & request limits"
+                    ),
                     value=(
                         f"Model: **{model}**\n"
                         f"RivaL usage: **{quota['requests_today']}/"
                         f"{quota['rival_daily_limit']}** requests today "
-                        "(not Google's account-wide limit)\n"
+                        "(not provider account-wide limit)\n"
                         f"{state}"
                     )[:1024],
                     inline=False,
                 )
             except Exception:  # noqa: BLE001 - no secrets in UI
-                _LOG.warning("RivaL Gemini quota status read unavailable")
+                _LOG.warning("RivaL AI quota status read unavailable")
                 embed.add_field(
-                    name="Gemini model & request limits",
+                    name=(
+                        "OpenRouter free model & request limits"
+                        if isinstance(self.ai, OpenRouterResearch)
+                        else "Gemini model & request limits"
+                    ),
                     value="The stored request budget could not be read. "
-                          "No Google API request was made to check it.",
+                          "No provider request was made to check it.",
                     inline=False,
                 )
         if self.opinion is not None and self.opinion.asset == self.asset:
@@ -1462,10 +1470,10 @@ class ResearchDashboard(discord.ui.View):
                 name="Analysis status",
                 value=(
                     self.message or (
-                        f"Gemini **{self.ai.model}** is configured for "
+                        f"AI reviewer **{self.ai.model}** is configured for "
                         "on-demand, cached analysis."
                         if self.ai is not None and self.ai.available else
-                        "No Gemini API key is visible to this RivaL process."
+                        "No AI reviewer key is visible to this RivaL process."
                     )
                 ), inline=False,
             )

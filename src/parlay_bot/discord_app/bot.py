@@ -1559,16 +1559,6 @@ class RivalDiscordClient(discord.Client):
                                 "RivaL finalized sports result withheld: conflicting "
                                 "or incomplete provider evidence"
                             )
-                    try:
-                        reconciled = await asyncio.to_thread(
-                            self.sports_results.reconcile_unsettled, limit=100,
-                        )
-                        for sport, league in reconciled:
-                            affected.add((sport, league))
-                    except Exception:  # noqa: BLE001
-                        _LOG.exception(
-                            "RivaL sports settlement reconciliation failed"
-                        )
                     await asyncio.to_thread(
                         self.sports_results.mark_checked, due, now=seen,
                     )
@@ -1593,6 +1583,33 @@ class RivalDiscordClient(discord.Client):
                 raise
             except Exception:  # noqa: BLE001 - quota/provider faults never block Discord
                 _LOG.exception("RivaL sports result verification unavailable")
+            # This is local PostgreSQL work, not another provider request.
+            # Run it even when no fixtures were due, the provider is down,
+            # or the quota reserve prevented fetching any results.
+            try:
+                reconciled = await asyncio.to_thread(
+                    self.sports_results.reconcile_unsettled, limit=100,
+                )
+                if reconciled:
+                    _LOG.info(
+                        "RivaL sports backlog repaired events=%d leagues=%d",
+                        len(reconciled), len(set(reconciled)),
+                    )
+                for sport, league in set(reconciled):
+                    review = await asyncio.to_thread(
+                        self.sports_results.promotion_status,
+                        sport=sport, league=league, now=datetime.now(UTC),
+                    )
+                    _LOG.info(
+                        "RivaL recovered sports governance sport=%s league=%s "
+                        "status=%s settled=%d",
+                        sport, league, review["status"],
+                        review["settled_unique_events"],
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - repair must not block Discord
+                _LOG.exception("RivaL sports settlement reconciliation failed")
             await asyncio.sleep(21600)
 
     async def _target_loop(self) -> None:

@@ -261,6 +261,7 @@ class GuidedHome(discord.ui.View):
         multi: MultiExchangeResearch | None = None,
         venues: tuple[str, ...] = (),
         auto_hunt: AutoHuntService | None = None,
+        training_status: Callable[[str, int], dict] | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
@@ -278,6 +279,7 @@ class GuidedHome(discord.ui.View):
         self.multi = multi
         self.venues = venues
         self.research_factory = research_factory
+        self.training_status = training_status
         self.page = "home"
         self.back_stack: list[str] = []
         self.coin = "BTC"
@@ -917,6 +919,78 @@ class GuidedHome(discord.ui.View):
                         value="Accuracy evidence is unavailable. No improvement claimed.",
                         inline=False,
                     )
+            if self.training_status is not None:
+                try:
+                    state = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.training_status, self.coin, self.horizon,
+                        ), timeout=2.5,
+                    )
+                    latest = state.get("live_learning")
+                    last_live = (
+                        str(latest.get("completed_at"))
+                        if isinstance(latest, dict) else "Not recorded",
+                    )
+                    if isinstance(last_live, tuple):
+                        last_live = last_live[0]
+                    embed.add_field(
+                        name="Live training and active model",
+                        value=(
+                            f"Active engine: **{state['live_engine']}**\n"
+                            f"Latest live learning cycle: **{last_live}**\n"
+                            "Historical candidate activation: **NO** "
+                            "(separate feature contracts)."
+                        ),
+                        inline=False,
+                    )
+                    candidate = state.get("candidate")
+                    if candidate:
+                        accuracy = candidate.get("holdout_accuracy")
+                        accuracy_display = (
+                            f"{accuracy:.1%}" if accuracy is not None
+                            else "Unavailable"
+                        )
+                        embed.add_field(
+                            name="Six-month offline research",
+                            value=(
+                                f"Data version: **{candidate['data_version'][:12]}**\n"
+                                f"Source months: **{candidate['source_months']}**\n"
+                                f"Historical test accuracy: **{accuracy_display}**\n"
+                                f"Last verified import: "
+                                f"**{candidate['first_imported_at']}**\n"
+                                "This is retrospective only, NOT measured live accuracy."
+                            ),
+                            inline=False,
+                        )
+                    else:
+                        embed.add_field(
+                            name="Six-month offline research",
+                            value=(
+                                "No checksum-verified offline candidate loaded "
+                                "for this coin/timeframe yet. "
+                                "A completed archive upload is not a trained "
+                                "live model."
+                            ),
+                            inline=False,
+                        )
+                    embed.add_field(
+                        name="Historical data read status",
+                        value=(
+                            f"Drive: **{state['drive_status']}**\n"
+                            "Last historical workflow completion: **not "
+                            "verified from this bot**. Scheduled workflow "
+                            "and live model promotion are separate."
+                        ),
+                        inline=False,
+                    )
+                except (TimeoutError, Exception):  # noqa: BLE001
+                    _LOG.exception("Training provenance status unavailable")
+                    embed.add_field(
+                        name="Historical training status",
+                        value="Unverified right now. No active historical "
+                              "candidate claimed.",
+                        inline=False,
+                    )
         elif p == "help":
             embed = discord.Embed(
                 title="❓ Getting Started",
@@ -966,6 +1040,7 @@ class GuidedHome(discord.ui.View):
             research_factory=self.research_factory,
             stream_shadow=self.stream_shadow, multi=self.multi,
             venues=self.venues, auto_hunt=self.auto_hunt,
+            training_status=self.training_status,
         )
         view.page = self.page
         view.back_stack = list(self.back_stack)

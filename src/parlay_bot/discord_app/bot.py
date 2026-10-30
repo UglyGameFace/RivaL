@@ -429,6 +429,7 @@ class RivalDiscordClient(discord.Client):
             stream_shadow=self.stream_shadow,
             multi=self.autonomous.multi if self.autonomous is not None else None,
             venues=tuple(collector.providers) if collector is not None else (),
+            training_status=self.training_status,
         )
 
     def _register_commands(self) -> None:

@@ -458,7 +458,10 @@ async def signal_embed(
     embed = discord.Embed(
         title=f"{asset} | {horizon_minutes}m • {verdict}",
         description=message,
-        color=discord.Color.blurple() if is_watch else discord.Color.orange(),
+        # Only verified watches receive directional colours. Unproven leans stay amber.
+        color=(discord.Color.green() if is_watch and direction == "UP"
+               else discord.Color.red() if is_watch and direction == "DOWN"
+               else discord.Color.orange()),
     )
     embed.add_field(
         name="Model and expiry",
@@ -486,8 +489,9 @@ async def signal_embed(
         quote_label = quote_labels.get(
             chosen["venue"], f"{chosen['venue']} contract",
         )
+        price_decimals = 4 if asset == "XRP" else 2
         embed.add_field(
-            name="Fresh matching-market bid / ask",
+            name="💱 Live matching-market bid / ask",
             value=(
                 f"**{quote_label}**\n"
                 f"Bid **${book.bid:,.2f}** · Ask **${book.ask:,.2f}**\n"
@@ -523,6 +527,19 @@ async def signal_embed(
             f"{chosen['venue']} venue record not evaluated "
             "(no matching book)."
         )
+    # Historical win rate is a measured outcome, NOT the raw model lean.
+    venue_settled = int(venue_evidence["settled"]) if venue_evidence else 0
+    venue_accuracy = venue_evidence.get("hit_rate") if venue_evidence else None
+    embed.add_field(
+        name="📊 Measured direction accuracy",
+        value=(
+            f"{venue_accuracy:.1%} from {venue_settled} settled forecasts "
+            "(last 7 days)"
+            if venue_accuracy is not None and venue_settled >= 50
+            else f"Not enough verified outcomes ({venue_settled} settled)"
+        ),
+        inline=False,
+    )
     global_hit = evidence.get("hit_rate")
     global_count = int(evidence["settled"])
     if engine == "multi":

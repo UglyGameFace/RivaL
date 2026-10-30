@@ -414,3 +414,23 @@ def test_daily_alert_cap_option_persists_and_is_not_global(hunt_store):
     assert auto_hunt._cap_reached(12, 12)
     assert not auto_hunt._cap_reached(120, 0)
     assert not auto_hunt._cap_reached(12, 24)
+
+
+def test_live_mode_only_is_reported_on_without_enabling_forecast_tiers(hunt_store):
+    user = "8675309"
+    hunt_store.subscribe(user)
+    hunt_store.set_tier(user, "research", False)
+    hunt_store.set_preference(user, "live_shifts", 1)
+    hunt_store.set_preference(user, "daily_limit", 0)
+    assert hunt_store.tiers(user) == {
+        "research": False, "qualified": False, "polymarket": False,
+    }
+    service = auto_hunt.AutoHuntService(
+        bot=SimpleNamespace(live_stream=object()),
+        market=None, quotes=None, store=hunt_store,
+    )
+    status = run(service.status(int(user)))
+    assert status.startswith("ON")
+    assert "Live trends on" in status
+    assert "Live Mode 0/Unlimited" in status
+    assert "No daily reset needed" in status

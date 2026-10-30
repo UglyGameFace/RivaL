@@ -21,6 +21,7 @@ from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS, HORIZONS
 from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
+from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 
 _LOG = logging.getLogger(__name__)
 SLOT_HOURS = 4
@@ -41,7 +42,7 @@ class AutonomousResearch:
 
     def __init__(
         self, market: PerpetualMarketStore,
-        *, ai: GeminiResearch | None, venues: tuple[str, ...],
+        *, ai: GeminiResearch | OpenRouterResearch | None, venues: tuple[str, ...],
         assets: tuple[str, ...] = ASSETS,
         auto_ai: bool = True,
     ) -> None:

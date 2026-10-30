@@ -34,7 +34,6 @@ from datetime import UTC, datetime, timedelta
 import discord
 
 from parlay_bot.discord_app.opportunities import (
-    ASSETS,
     recent_multi_watches,
     recent_watches,
 )
@@ -47,11 +46,16 @@ from parlay_bot.discord_app.signals import (
     signal_embed,
 )
 from parlay_bot.perpetuals.live_quotes import MAX_QUOTE_AGE
+from parlay_bot.perpetuals.markets import LEGACY_ALERT_ASSETS, LEGACY_ALERT_HORIZONS
 from parlay_bot.perpetuals.promotion import multi_summary, promoted_engine
 from parlay_bot.storage.hot import RelationalHotStore
 
 _LOG = logging.getLogger(__name__)
-HORIZONS = (5, 15)
+# Existing subscriptions never silently expand to XRP/60m notifications.
+ASSETS = LEGACY_ALERT_ASSETS
+HORIZONS = LEGACY_ALERT_HORIZONS
+RETRY_DELAY = timedelta(seconds=20)
+MAX_SAFE_RETRIES = 3
 BOOK_VENUES = ("hyperliquid", "binance", "okx", "bitget")
 MAX_USERS = 100
 COOLDOWN = timedelta(seconds=120)
@@ -163,6 +167,25 @@ class AutoHuntStore:
                        polymarket INTEGER NOT NULL DEFAULT 0,
                        updated_at TEXT NOT NULL
                    );"""
+            )
+            # Additive, SQLite/PostgreSQL compatible outbox metadata. Legacy
+            # attempted rows remain at-most-once and are never re-sent.
+            columns = self.store.database.column_names(conn, "rival_hunt_delivery")
+            for column, definition in (
+                ("attempt_count", "INTEGER NOT NULL DEFAULT 0"),
+                ("next_attempt_at", "TEXT"),
+            ):
+                if column not in columns:
+                    conn.execute(
+                        f"ALTER TABLE rival_hunt_delivery ADD COLUMN {column} {definition}"
+                    )
+            # A process crash after claiming network dispatch is ambiguous.
+            # Preserve the record rather than replaying a possibly sent DM.
+            conn.execute(
+                """UPDATE rival_hunt_delivery SET state='unknown'
+                   WHERE state IN ('sending','in_flight','attempted')
+                     AND attempted_at<?""",
+                ((datetime.now(UTC)-timedelta(minutes=2)).isoformat(),),
             )
             # Additive migration, idempotent: legacy single-source rows
             # become independent flags. "forecasts" keeps research alerts,
@@ -370,21 +393,17 @@ class AutoHuntStore:
 
     def claim(self, user_id: str, candidate: HuntCandidate, *, now: datetime,
               key: str | None = None, apply_cooldown: bool = True) -> bool:
-        """Claim before network I/O. Even ambiguous DM errors are never retried.
+        """Atomically reserve a DM, including only safely retryable preflight.
 
-        key overrides the candidate's own key: qualified alerts claim under
-        a prefixed key so one forecast can hold a research record and a
-        qualified record without either claiming the other. apply_cooldown
-        is False only for qualified alerts: distinct qualified windows must
-        never be hidden by the research cooldown, and qualified sends never
-        consume the research budget's last-sent timestamp.
+        A previously SENT, UNKNOWN, FAILED, SENDING or legacy ATTEMPTED
+        record can never be claimed again. Only a READY record that has
+        never attempted message creation may be retried, with strict expiry.
         """
         effective_key = key or candidate.key
         with self.store.connect() as conn:
             eligible = conn.execute(
                 """SELECT since_at,last_sent_at FROM rival_hunt_subscriptions
-                   WHERE user_id=? AND enabled=1""",
-                (user_id,),
+                   WHERE user_id=? AND enabled=1""", (user_id,),
             ).fetchone()
             if eligible is None:
                 return False
@@ -392,26 +411,52 @@ class AutoHuntStore:
                 _instant(eligible["since_at"]) > candidate.issued
             ):
                 return False
+            old = conn.execute(
+                """SELECT state,attempt_count,next_attempt_at
+                   FROM rival_hunt_delivery
+                   WHERE user_id=? AND forecast_key=?""",
+                (user_id, effective_key),
+            ).fetchone()
+            if old is not None:
+                if (
+                    old["state"] != "ready"
+                    or int(old["attempt_count"]) >= MAX_SAFE_RETRIES
+                    or candidate.expires - now < MIN_REMAINING
+                    or (
+                        old["next_attempt_at"] is not None
+                        and now < _instant(str(old["next_attempt_at"]))
+                    )
+                ):
+                    return False
+                # The per-user lock serializes local retries. SQL updates
+                # nevertheless guard the row against competing processes.
+                changed = conn.execute(
+                    """UPDATE rival_hunt_delivery
+                       SET state='ready',next_attempt_at=?
+                       WHERE user_id=? AND forecast_key=? AND state='ready'
+                         AND attempt_count<?""",
+                    ((now+RETRY_DELAY).isoformat(), user_id, effective_key,
+                     MAX_SAFE_RETRIES),
+                )
+                return changed.rowcount == 1
             if apply_cooldown and eligible["last_sent_at"] and (
                 now - _instant(eligible["last_sent_at"]) < COOLDOWN
             ):
                 return False
-            result = conn.execute(
+            created = conn.execute(
                 """INSERT INTO rival_hunt_delivery
                    (user_id,forecast_key,asset,horizon,venue,issued_at,expires_at,
-                    attempted_at,state)
-                   VALUES(?,?,?,?,?,?,?,?,?)
+                    attempted_at,state,attempt_count,next_attempt_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,0,?)
                    ON CONFLICT(user_id,forecast_key) DO NOTHING""",
-                (
-                    user_id, effective_key, candidate.asset, candidate.horizon,
-                    candidate.venue, candidate.issued.isoformat(),
-                    candidate.expires.isoformat(), now.isoformat(), "attempted",
-                ),
+                (user_id, effective_key, candidate.asset, candidate.horizon,
+                 candidate.venue, candidate.issued.isoformat(),
+                 candidate.expires.isoformat(), now.isoformat(), "ready",
+                 (now+RETRY_DELAY).isoformat()),
             )
-            if result.rowcount != 1:
+            if created.rowcount != 1:
                 return False
             if apply_cooldown:
-                # Rate limit even uncertain attempts; reconnect must not fan out.
                 conn.execute(
                     """UPDATE rival_hunt_subscriptions SET last_sent_at=?
                        WHERE user_id=? AND enabled=1""",
@@ -419,20 +464,65 @@ class AutoHuntStore:
                 )
             return True
 
+    def begin_delivery(
+        self, user_id: str, candidate: HuntCandidate, *,
+        key: str | None = None, now: datetime | None = None,
+    ) -> bool:
+        """Cross the one-way network boundary only after preflight succeeds."""
+        stamp = now or datetime.now(UTC)
+        with self.store.connect() as conn:
+            result = conn.execute(
+                """UPDATE rival_hunt_delivery
+                   SET state='sending', attempted_at=?,
+                       attempt_count=attempt_count+1, next_attempt_at=NULL
+                   WHERE user_id=? AND forecast_key=? AND state='ready'
+                     AND attempt_count<? AND expires_at>?
+                     AND EXISTS (
+                         SELECT 1 FROM rival_hunt_subscriptions
+                         WHERE user_id=? AND enabled=1
+                     )""",
+                (stamp.isoformat(), user_id, key or candidate.key,
+                 MAX_SAFE_RETRIES, stamp.isoformat(), user_id),
+            )
+            return result.rowcount == 1
+
+    def defer_preflight(
+        self, user_id: str, candidate: HuntCandidate, *,
+        key: str | None = None, now: datetime | None = None,
+    ) -> None:
+        """Retry safely later only if channel.send was NEVER called."""
+        stamp = now or datetime.now(UTC)
+        with self.store.connect() as conn:
+            conn.execute(
+                """UPDATE rival_hunt_delivery SET next_attempt_at=?
+                   WHERE user_id=? AND forecast_key=? AND state='ready'""",
+                ((stamp+RETRY_DELAY).isoformat(), user_id, key or candidate.key),
+            )
+
     def finish(
         self, user_id: str, candidate: HuntCandidate, *, sent: bool,
         message_id: str | None = None, key: str | None = None,
     ) -> None:
         with self.store.connect() as conn:
             conn.execute(
-                """UPDATE rival_hunt_delivery SET state=?,message_id=?,delivered_at=?
-                   WHERE user_id=? AND forecast_key=? AND state='attempted'""",
-                (
-                    "sent" if sent else "failed", message_id,
-                    datetime.now(UTC).isoformat() if sent else None,
-                    user_id, key or candidate.key,
-                ),
+                """UPDATE rival_hunt_delivery SET
+                       state=?,message_id=?,delivered_at=?
+                   WHERE user_id=? AND forecast_key=?
+                     AND state IN ('sending','attempted')""",
+                ("sent" if sent else "unknown", message_id,
+                 datetime.now(UTC).isoformat() if sent else None,
+                 user_id, key or candidate.key),
             )
+
+    def delivery_health(self, user_id: str) -> dict:
+        """Actual recorded results, never inferred success from an ON switch."""
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """SELECT state,COUNT(*) AS n
+                   FROM rival_hunt_delivery WHERE user_id=?
+                   GROUP BY state""", (user_id,),
+            ).fetchall()
+        return {str(row["state"]): int(row["n"]) for row in rows}
 
     def reviewed(self, user_id: str, message_id: str) -> bool:
         with self.store.connect() as conn:
@@ -983,7 +1073,16 @@ class AutoHuntService:
         )
         if not any(flags.values()):
             return "OFF • all alert tiers off — choose one to start"
-        return "ON • " + parts + " • Delivery is not guaranteed"
+        try:
+            health = await asyncio.to_thread(self.store.delivery_health, str(user_id))
+        except Exception:  # noqa: BLE001
+            return "ON • " + parts + " • Delivery health unavailable"
+        uncertainty = sum(health.get(state, 0) for state in ("unknown", "sending", "attempted"))
+        return (
+            "ON • " + parts + f" • Sent {health.get('sent', 0)}"
+            + (f" • Unconfirmed {uncertainty}" if uncertainty else "")
+            + " • Future delivery not guaranteed"
+        )
 
     async def _send_dm(self, user_id: str, candidate, stamp: datetime,
                        *, tier: str | None) -> object | None:
@@ -993,6 +1092,8 @@ class AutoHuntService:
         failure here is never retried: a restart will NOT send it again.
         """
         message = None
+        key = QUALIFIED_KEY_PREFIX + candidate.key if tier == "qualified" else candidate.key
+        dispatch_started = False
         try:
             user = self.bot.get_user(int(user_id))
             if user is None:
@@ -1017,6 +1118,12 @@ class AutoHuntService:
             ):
                 _LOG.info("Auto-Hunt Polymarket book expired before send")
                 return None
+            dispatch_started = await asyncio.to_thread(
+                self.store.begin_delivery, user_id, candidate,
+                key=key, now=dispatch_at,
+            )
+            if not dispatch_started:
+                return None
             message = await asyncio.wait_for(
                 channel.send(
                     embed=hunt_embed(candidate, observed_at=stamp, tier=tier),
@@ -1024,8 +1131,16 @@ class AutoHuntService:
                 ), timeout=8,
             )
         except (discord.HTTPException, TimeoutError, ValueError):
+            if not dispatch_started:
+                await asyncio.to_thread(
+                    self.store.defer_preflight, user_id, candidate, key=key,
+                )
             _LOG.warning("Auto-Hunt DM not confirmed user=%s", user_id)
         except Exception:  # noqa: BLE001 - no ambiguous resend
+            if not dispatch_started:
+                await asyncio.to_thread(
+                    self.store.defer_preflight, user_id, candidate, key=key,
+                )
             _LOG.exception("Auto-Hunt DM failed")
         return message
 

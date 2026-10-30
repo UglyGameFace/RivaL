@@ -163,7 +163,7 @@ def live_polymarket_embed(
             f"[Open verified event]({listing.url}) • "
             + ("Accepting orders" if listing.accepting_orders else
                "Order acceptance unverified")
-            + f" • Closes <t:{int(listing.closes.timestamp())}:R>\\n"
+            + f" • Closes <t:{int(listing.closes.timestamp())}:R>\n"
             + "Price to beat: "
             + (
                 f"${listing.price_to_beat:,.4f} (Gamma metadata)"
@@ -174,12 +174,12 @@ def live_polymarket_embed(
         if board.current_quote:
             quote = board.current_quote
             current += (
-                f"\\n**Up ask {quote.up_ask:.1%}** • "
+                f"\n**Up ask {quote.up_ask:.1%}** • "
                 f"**Down ask {quote.down_ask:.1%}** "
                 f"• Book <t:{int(quote.quote_at.timestamp())}:R>"
             )
         else:
-            current += "\\nNo fresh verified CLOB book."
+            current += "\nNo fresh verified CLOB book."
     embed.add_field(name="Current event", value=current, inline=False)
     if board is None or board.next_window is None:
         upcoming = "Not yet confirmed listed; automatically checking again."
@@ -187,7 +187,7 @@ def live_polymarket_embed(
         nxt = board.next_window
         upcoming = (
             f"[Open next listed event]({nxt.url})"
-            f" • Opens <t:{int(nxt.opens.timestamp())}:R>\\n"
+            f" • Opens <t:{int(nxt.opens.timestamp())}:R>\n"
             "Next price to beat unknown until Polymarket publishes it."
         )
     embed.add_field(name="Next event", value=upcoming, inline=False)
@@ -234,7 +234,7 @@ class LivePolymarketBoardService:
                 return await asyncio.wait_for(
                     self.reader.window_board(asset, horizon), timeout=4.6,
                 )
-            except (TimeoutError, ValueError, Exception):  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 _LOG.warning(
                     "Live Polymarket verified window unavailable asset=%s "
                     "horizon=%dm", asset, horizon,
@@ -249,7 +249,7 @@ class LivePolymarketBoardService:
                         asset=asset, horizon_minutes=horizon,
                     ), timeout=2.5,
                 )
-            except (TimeoutError, ValueError, Exception):  # noqa: BLE001
+            except Exception:  # noqa: BLE001
                 _LOG.warning(
                     "Live Polymarket forecast evidence unavailable asset=%s "
                     "horizon=%dm", asset, horizon,

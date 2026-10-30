@@ -22,6 +22,10 @@ from parlay_bot.discord_app.home import (
     install_view_dispatch_logging,
 )
 from parlay_bot.discord_app.multi_proof import multi_proof_embed
+from parlay_bot.discord_app.polymarket_live_board import (
+    LivePolymarketBoardService,
+    LivePolymarketBoardStore,
+)
 from parlay_bot.discord_app.opportunities import (
     crypto_desk_embed,
     sportsbook_desk_embed,
@@ -412,6 +416,13 @@ class RivalDiscordClient(discord.Client):
         )
         self._hunt_event = asyncio.Event()
         self._hunt_task: asyncio.Task[None] | None = None
+        self.polymarket_board = LivePolymarketBoardService(
+            bot=self,
+            store=LivePolymarketBoardStore(self.store),
+            reader=self.auto_hunt.polymarket,
+            market=self.perp_collector.market if self.perp_collector else None,
+        )
+        self._poly_board_task: asyncio.Task[None] | None = None
 
         self._register_commands()
 
@@ -1497,6 +1508,7 @@ class RivalDiscordClient(discord.Client):
         self.add_view(AutoHuntActions())
         _LOG.info("RivaL stale guided-menu and restart-safe hunt views registered")
         await asyncio.to_thread(self.auto_hunt.store.initialize)
+        await asyncio.to_thread(self.polymarket_board.store.initialize)
         # Install read/forecast schemas before starting any collection,
         # notification or learning workers. Creating indexes while another
         # worker inserts predictions caused live PostgreSQL deadlocks.
@@ -1511,6 +1523,10 @@ class RivalDiscordClient(discord.Client):
         if self._target_task is None:
             self._target_task = asyncio.create_task(
                 self._target_loop(), name="rival-personal-direction-updates",
+            )
+        if self._poly_board_task is None:
+            self._poly_board_task = asyncio.create_task(
+                self._poly_board_loop(), name="rival-auto-polymarket-board",
             )
         if (self.current_collector is not None or self.oddspapi_collector is not None or self.the_odds_api_collector is not None) and self._sports_task is None:
             self._sports_task = asyncio.create_task(
@@ -1803,6 +1819,25 @@ class RivalDiscordClient(discord.Client):
             except TimeoutError:
                 pass
             self._hunt_event.clear()
+
+    async def _poly_board_loop(self) -> None:
+        """Automatically roll verified markets and forecasts in existing DMs."""
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                changed = await self.polymarket_board.cycle()
+                if changed:
+                    _LOG.info(
+                        "RivaL verified live Polymarket boards updated=%d",
+                        changed,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL Polymarket live board cycle failed safely")
+            # Distinct from the 1s RAM-only live direction scanner. CLOB
+            # requests are rate-bounded and grouped by asset/window.
+            await asyncio.sleep(15)
 
     async def _target_loop(self) -> None:
         """Update user-opted-in private forecast cards without flooding DMs."""
@@ -2197,6 +2232,11 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self._poly_board_task is not None:
+            self._poly_board_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._poly_board_task
+            self._poly_board_task = None
         if self._live_direction_task is not None:
             self._live_direction_task.cancel()
             with suppress(asyncio.CancelledError):

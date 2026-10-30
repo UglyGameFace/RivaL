@@ -324,8 +324,8 @@ def crypto_snapshot_card(
         ("💰 Reference price", price),
         ("⏱️ Expires", expiry),
         ("⚡ Strength", strength),
-        ("📊 Accuracy", "Refresh Signal checks the same-venue 7-day "
-         "settled record and its sample size"),
+        ("📊 Accuracy", ("Refresh Signal checks the same-venue 7-day "
+         "settled record and its sample size")),
     )
     for heading, value in fields:
         embed.add_field(name=heading, value=value, inline=True)

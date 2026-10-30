@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import queue
 import sqlite3
 import threading
+import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import TracebackType
@@ -11,6 +13,8 @@ from typing import Any, Literal, Protocol, Self
 import psycopg
 from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
+
+_LOG = logging.getLogger(__name__)
 
 BackendName = Literal["sqlite", "postgres"]
 
@@ -148,11 +152,39 @@ class PostgresDatabase(RelationalDatabase):
         self._lock = threading.Lock()
         self._total = 0
         self._closed = False
+        # Diagnostic only: track checkout ages, never SQL/credentials.
+        self._borrowers: dict[int, tuple[float, str]] = {}
 
     def connect(self) -> _Connection:
-        return _Connection(
-            self._checkout(), self.backend, on_exit=self._checkin,
-        )
+        started = time.monotonic()
+        raw = self._checkout()
+        held_since = time.monotonic()
+        with self._lock:
+            self._borrowers[id(raw)] = (
+                held_since, threading.current_thread().name,
+            )
+            checked_out = len(self._borrowers)
+        waited = held_since - started
+        if waited >= 1.0:
+            _LOG.warning(
+                "RivaL PostgreSQL checkout slow wait=%.2fs checked_out=%d max=%d",
+                waited, checked_out, self._max_size,
+            )
+
+        def release(connection: Any) -> None:
+            try:
+                self._checkin(connection)
+            finally:
+                with self._lock:
+                    self._borrowers.pop(id(connection), None)
+                held = time.monotonic() - held_since
+                if held >= 5.0:
+                    _LOG.warning(
+                        "RivaL PostgreSQL connection held %.2fs worker=%s",
+                        held, threading.current_thread().name,
+                    )
+
+        return _Connection(raw, self.backend, on_exit=release)
 
     def _checkout(self) -> Any:
         while True:
@@ -188,6 +220,19 @@ class PostgresDatabase(RelationalDatabase):
             try:
                 raw = self._idle.get(timeout=self._checkout_timeout)
             except queue.Empty:
+                with self._lock:
+                    ages = [
+                        (time.monotonic() - borrowed, worker)
+                        for borrowed, worker in self._borrowers.values()
+                    ]
+                oldest_age, oldest_worker = max(
+                    ages, default=(0.0, "unknown"),
+                )
+                _LOG.error(
+                    "RivaL PostgreSQL pool exhausted max=%d checked_out=%d "
+                    "oldest_held=%.1fs oldest_worker=%s",
+                    self._max_size, len(ages), oldest_age, oldest_worker,
+                )
                 raise TimeoutError(
                     "PostgreSQL connection pool exhausted "
                     f"(max_size={self._max_size}); all connections are "

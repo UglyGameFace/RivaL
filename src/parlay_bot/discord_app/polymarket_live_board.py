@@ -146,113 +146,145 @@ def live_polymarket_embed(
     board: PolymarketWindowBoard | None, snapshot: TargetSnapshot | None, *,
     asset: str, horizon: int,
 ) -> discord.Embed:
-    """Never present exchange-candle model research as Polymarket-specific odds."""
-    embed = discord.Embed(
-        title=f"⚡ Live Polymarket Tracker | {asset} {horizon}m",
-        description=(
-            "**Auto-updating** current/next verified global Polymarket "
-            "markets and separate RivaL forward research. "
-            "This does not place a bet, establish an edge, or promise a win."
-        ), color=discord.Color.blurple(),
-    )
-    if board is None or board.current is None:
-        current = "No current listing verified. No invented target or price."
-    else:
-        listing = board.current
-        current = (
-            f"[Open verified event]({listing.url}) • "
-            + ("Accepting orders" if listing.accepting_orders else
-               "Order acceptance unverified")
-            + f" • Closes <t:{int(listing.closes.timestamp())}:R>\n"
-            + "Price to beat: "
-            + (
-                f"${listing.price_to_beat:,.4f} (Gamma metadata)"
-                if listing.price_to_beat is not None
-                else "Not verified by Polymarket"
-            )
-        )
-        if board.current_quote:
-            quote = board.current_quote
-            current += (
-                f"\n**Up ask ${quote.up_ask:.2f}/share** • "
-                f"**Down ask ${quote.down_ask:.2f}/share** "
-                f"• Book <t:{int(quote.quote_at.timestamp())}:R>"
-            )
-        else:
-            current += "\nNo fresh verified CLOB book."
-    embed.add_field(name="Current event", value=current, inline=False)
-    if board is None or board.next_window is None:
-        upcoming = "Not yet confirmed listed; automatically checking again."
-    else:
-        nxt = board.next_window
-        upcoming = (
-            f"[Open next listed event]({nxt.url})"
-            f" • Opens <t:{int(nxt.opens.timestamp())}:R>\n"
-            "Next price to beat unknown until Polymarket publishes it."
-        )
-    embed.add_field(name="Next event", value=upcoming, inline=False)
-    # The incumbent exchange model predicts a FUTURE FIVE-MINUTE candle,
-    # even when its parameter horizon is 15m. That is not the same target
-    # as the 15m Polymarket contract. No model in this path has been
-    # calibrated against Polymarket's settlement oracle/contract outcomes.
-    # Raw exchange model strength must NEVER become a Polymarket win %.
-    embed.add_field(
-        name="RivaL Polymarket decision",
-        value=(
-            "**WAIT • no verified Polymarket-specific edge.** "
-            "Up/Down asks are share purchase prices, **not predictions**. "
-            "A separate exchange-candle model cannot justify a real-money "
-            "direction until market timing, settlement rules, and "
-            "forward-tested calibration match."
-        ),
-        inline=False,
-    )
+    """One compact live card; exchange direction never masquerades as oracle odds.
+
+    5m/15m Polymarket settles on the contract's Chainlink BTC/USD etc TWAP.
+    The existing exchange model predicts a FIVE-minute candle at a target
+    that can be 5 or 15 minutes away, not that contract's oracle outcome.
+    """
     current = board.current if board is not None else None
-    aligned = (
-        current is not None
-        and current.accepting_orders
-        and board.current_quote is not None
-        and snapshot is not None
+    observed = board.checked_at if board is not None else datetime.now(UTC)
+    valid_lean = (
+        snapshot is not None
         and snapshot.status == "ok"
         and snapshot.asset == asset
-        and snapshot.horizon_minutes == horizon == 5
+        and snapshot.horizon_minutes == horizon
         and snapshot.direction in ("UP", "DOWN")
         and snapshot.probability is not None
         and 0.5 < snapshot.probability < 1
         and snapshot.issued_at is not None
-        and snapshot.issued_at <= board.checked_at < current.closes
-        and snapshot.ends_at == current.closes
+        and snapshot.issued_at <= observed
+        and snapshot.ends_at is not None
+        and snapshot.ends_at > observed
+        and bool(snapshot.venue)
     )
-    if aligned:
-        forecast = (
-            f"Separate 5m exchange-candle model lean: "
-            f"{snapshot.direction} • raw directional score "
-            f"{snapshot.probability:.1%} • source {snapshot.venue}\\n"
-            "Same 5m closing boundary verified; **not calibrated "
-            "to this Polymarket outcome or its oracle**."
-        )
-    elif horizon == 15:
-        forecast = (
-            "WAIT • RivaL's 15m-horizon forecast predicts a future "
-            "**5-minute candle**, not this 15-minute Polymarket "
-            "settlement window. Its direction is intentionally hidden."
+    direction = snapshot.direction if valid_lean else "WAIT"
+    embed = discord.Embed(
+        title=f"⚡ {asset} • {horizon} min | Polymarket WAIT",
+        description=(
+            f"**Exchange model: {direction} "
+            + ("LEAN (research only)**" if valid_lean
+               else "• NO FRESH FORECAST**")
+            + "\n**Polymarket contract: WAIT (edge unverified).** "
+            "A model lean is not a calibrated contract win probability."
+        ),
+        color=discord.Color.orange(),
+    )
+    if current is not None and current.price_to_beat is not None:
+        reference = f"${current.price_to_beat:,.4f} • Polymarket strike"
+    elif current is not None and board.current_quote is not None:
+        reference = (
+            f"Up ${board.current_quote.up_ask:.2f}/share • "
+            f"Down ${board.current_quote.down_ask:.2f}/share"
         )
     else:
-        forecast = (
-            "WAIT • No fresh source-matched forecast ending at this "
-            "Polymarket market's closing boundary. No old or unrelated "
-            "direction estimate reused."
+        reference = "Price not verified"
+    expiry = (
+        f"<t:{int(current.closes.timestamp())}:R>"
+        if current is not None else "No verified market"
+    )
+    strength = (
+        f"{snapshot.probability:.1%} raw model score"
+        if valid_lean else "No fresh model score"
+    )
+    # A 7-day exchange-candle hit rate and a contract-specific win record
+    # are different metrics. No contract-outcome ledger exists in this path,
+    # so showing 58% 'accuracy' from unrelated labels would be dishonest.
+    accuracy = "Polymarket: not validated"
+    for name, value in (
+        ("💰 Price / Share Cost", reference),
+        ("⏱️ Expires", expiry),
+        ("⚡ Model Strength", strength),
+        ("📊 Accuracy", accuracy),
+    ):
+        embed.add_field(name=name, value=value, inline=True)
+    if current is None:
+        market = "No current verified Gamma listing."
+    else:
+        market = (
+            f"[Current verified event]({current.url}) • "
+            + ("Accepting orders" if current.accepting_orders
+               else "Order acceptance unverified")
         )
+        if board.current_quote is not None:
+            market += (
+                f"\nLive asks: Up ${board.current_quote.up_ask:.2f}/share"
+                f" • Down ${board.current_quote.down_ask:.2f}/share"
+                f" • observed <t:{int(board.current_quote.quote_at.timestamp())}:R>"
+            )
+        else:
+            market += "\nNo fresh verified order book."
+    embed.add_field(name="📊 Current Market", value=market, inline=False)
+    if board is None or board.next_window is None:
+        future = "Next window not listed or not verified yet."
+    else:
+        next_window = board.next_window
+        future = (
+            f"[Next verified event]({next_window.url})"
+            f" • Opens <t:{int(next_window.opens.timestamp())}:R>"
+            " • Next strike unknown until Polymarket publishes it"
+        )
+    embed.add_field(name="⏭️ Next Market", value=future, inline=False)
+
+    if valid_lean:
+        aligned = (
+            current is not None
+            and current.accepting_orders
+            and board.current_quote is not None
+            and horizon == 5
+            and snapshot.ends_at == current.closes
+            and current.opens <= snapshot.issued_at < current.closes
+        )
+        target = discord.utils.format_dt(snapshot.ends_at, style="R")
+        if aligned:
+            evidence = (
+                f"**{direction}** research lean for a 5m exchange candle "
+                f"with the same closing time ({target})."
+            )
+        else:
+            evidence = (
+                f"**{direction}** research lean for a separate future "
+                f"5m exchange candle ending {target}, **not this "
+                f"{horizon}m Polymarket contract**."
+            )
+        evidence += (
+            f" Source: {snapshot.venue}. "
+            "Oracle and settlement calibration not established."
+        )
+    else:
+        reason = (
+            snapshot.detail if snapshot is not None else
+            "Forecast lookup unavailable"
+        )
+        evidence = f"**WAIT • {reason}** No stale direction reused."
     embed.add_field(
-        name="Separate model evidence (not market odds)",
-        value=forecast, inline=False,
+        name="🧠 RivaL Model Research (separate from Polymarket)",
+        value=evidence, inline=False,
+    )
+    embed.add_field(
+        name="What determines an actual contract call?",
+        value=(
+            "Verified Chainlink TWAP settlement labels, correctly matched "
+            "market windows, prospective calibrated predictions and "
+            "after-cost results. Until those exist, contract verdict is WAIT. "
+            "Share asks are prices, not odds generated by RivaL."
+        ),
+        inline=False,
     )
     embed.set_footer(
-        text="Auto-updates ~15s • Follow markets, not betting advice • "
-             "Stop via /rival → Live Mode",
+        text="Automatic ~15s updates • No bet placed or profitable edge proven",
     )
     return embed
-
 
 class LivePolymarketBoardService:
     def __init__(

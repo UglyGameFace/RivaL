@@ -11,6 +11,7 @@ from discord import app_commands
 from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_runtime
 from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.collectors.oddspapi_current import OddsPapiCurrentCollector
+from parlay_bot.collectors.the_odds_api import TheOddsApiCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
 from parlay_bot.discord_app.home import GuidedHome
@@ -153,6 +154,12 @@ class RivalDiscordClient(discord.Client):
             self.oddspapi_collector = OddsPapiCurrentCollector(
                 client=self.oddspapi_provider, store=self.store,
                 refresh_interval=timedelta(seconds=settings.rival_current_refresh_seconds),
+            )
+
+        self.the_odds_api_collector: TheOddsApiCollector | None = None
+        if settings.the_odds_api_key is not None:
+            self.the_odds_api_collector = TheOddsApiCollector(
+                api_key=settings.the_odds_api_key.get_secret_value(), store=self.store,
             )
 
         # Enable archive and perpetual cold copies automatically once the
@@ -1355,6 +1362,8 @@ class RivalDiscordClient(discord.Client):
                 await self.current_collector.refresh_if_due()
             if self.oddspapi_collector is not None:
                 await self.oddspapi_collector.refresh_if_due()
+            if self.the_odds_api_collector is not None:
+                await self.the_odds_api_collector.refresh_if_due()
         except Exception:  # noqa: BLE001 - stale bets are rejected by builder
             _LOG.exception("Current sportsbook refresh unavailable; fail closed if stale")
 
@@ -1363,7 +1372,7 @@ class RivalDiscordClient(discord.Client):
             self._target_task = asyncio.create_task(
                 self._target_loop(), name="rival-personal-direction-updates",
             )
-        if (self.current_collector is not None or self.oddspapi_collector is not None) and self._sports_task is None:
+        if (self.current_collector is not None or self.oddspapi_collector is not None or self.the_odds_api_collector is not None) and self._sports_task is None:
             self._sports_task = asyncio.create_task(
                 self._sports_loop(), name="rival-sports-current-refresh",
             )
@@ -1543,6 +1552,9 @@ class RivalDiscordClient(discord.Client):
                 if self.oddspapi_collector is not None:
                     status = await asyncio.wait_for(self.oddspapi_collector.refresh_if_due(), timeout=45)
                     statuses.append(f"OddsPapi: {status}")
+                if self.the_odds_api_collector is not None:
+                    status = await asyncio.wait_for(self.the_odds_api_collector.refresh_if_due(), timeout=45)
+                    statuses.append(f"The Odds API: {status}")
                 self.sports_refresh_status = "; ".join(statuses)
             except asyncio.CancelledError:
                 raise

@@ -1135,18 +1135,18 @@ def hunt_embed(
     if isinstance(candidate, PolymarketNotice):
         fill_line = (
             "10-share depth-weighted ask before fees: "
-            + (f"Up **{candidate.up_average_ask:.1%}**"
+            + (f"Up **${candidate.up_average_ask:.2f}/share**"
                if candidate.up_average_ask is not None else "Up **insufficient depth**")
             + " • "
-            + (f"Down **{candidate.down_average_ask:.1%}**"
+            + (f"Down **${candidate.down_average_ask:.2f}/share**"
                if candidate.down_average_ask is not None else "Down **insufficient depth**")
         )
         embed = discord.Embed(
             title=f"📊 Polymarket • {candidate.asset} {candidate.horizon}m market",
             description=(
                 "**Listed Polymarket market, not a RivaL prediction.**\n"
-                f"Up ask: **{candidate.up_ask:.1%}** per share • "
-                f"Down ask: **{candidate.down_ask:.1%}** per share.\n"
+                f"Up ask: **${candidate.up_ask:.2f}/share** per share • "
+                f"Down ask: **${candidate.down_ask:.2f}/share** per share.\n"
                 f"{fill_line}\n"
                 f"Book received <t:{int(candidate.quote_at.timestamp())}:R>.\n"
                 f"Market closes <t:{int(candidate.expires.timestamp())}:R>.\n"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -71,6 +72,9 @@ class OddsPapiClient:
         self._quota_reserve = quota_reserve
         self._account_cache_seconds = account_cache_seconds
         self._owns_client = client is None
+        # httpx INFO request logs include query strings; OddsPapi uses an
+        # apiKey query parameter. Silence request-line logging for this client.
+        logging.getLogger("httpx").setLevel(logging.WARNING)
         self._client = client or httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=httpx.Timeout(30.0),

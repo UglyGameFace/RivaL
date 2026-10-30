@@ -47,7 +47,7 @@ COINS = RESEARCH_ASSETS
 EXPLAIN = {
     "home": "Find crypto or sports research, choose private alerts, or inspect recorded results. No wagers are placed.",
     "discover": "Choose Predict Crypto for model research, Auto-Hunt for opt-in alerts, or Practice Money for simulated trades. No profits are established.",
-    "live": "Start Auto-Track once to receive a private, automatically edited current/next Polymarket market card with the newest separately verified RivaL forward-model direction. The exchange-model forecast is not a Polymarket win probability or a guaranteed bet.",
+    "live": "Start Auto-Track once for one automatically updated private market card. Current and next Polymarket events are separate from their share prices and from exchange-candle model research. Because no Polymarket-specific calibrated edge is verified, the decision is WAIT, never a share price misrepresented as a prediction.",
     "hunt": "Live Mode is the main market tracker. Optional price, model, qualified-watch and shift notifications retain their settings under Other Alert Types. Market share prices are not win probabilities.",
     "hunt-tools": "Advanced optional notifications: Polymarket prices are not predictions; model research and shift alerts are not calibrated Polymarket outcomes. All saved preferences are preserved until you deliberately change them.",
     "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
@@ -343,7 +343,7 @@ class GuidedHome(discord.ui.View):
                 "Refresh Prediction" if p == "forecast" else "Get Signal",
                 "forecast", 2, "🔄" if p == "forecast" else "🎯", True,
             )
-            self._add("Follow in DM", "follow", 2, "🔔")
+            self._add("Follow Exchange Forecast", "follow", 2, "🔔")
             self._add("Auto-Hunt", "hunt", 2, "🔔")
             self._add("See Buy/Sell Prices", "quote", 3, "💱")
             self._add("Stop My Alerts", "stop", 3, "🔕")
@@ -1744,8 +1744,7 @@ _STALE_BUTTONS_B = (
 
 
 _STALE_BUTTONS_C = (
-    "live", "live-on", "live-off", "poly-refresh", "poly-start", "poly-stop",
-    "hunt-tools",
+    "live", "live-on", "live-off", "poly-start", "poly-stop", "hunt-tools",
 )
 
 

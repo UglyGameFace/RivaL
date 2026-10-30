@@ -552,3 +552,81 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_live_mode_shows_verified_current_next_polymarket_links(tmp_path):
+    from parlay_bot.discord_app.polymarket_watch import (
+        PolymarketListedWindow,
+        PolymarketNotice,
+        PolymarketWindowBoard,
+    )
+
+    bot = _client(tmp_path)
+    home = _home(bot)
+    stamp = datetime.now(UTC)
+    start = stamp.replace(second=0, microsecond=0)
+    start = datetime.fromtimestamp(
+        int(start.timestamp()) // 300 * 300, tz=UTC,
+    )
+    slug = f"btc-updown-5m-{int(start.timestamp())}"
+    next_slug = f"btc-updown-5m-{int(start.timestamp())+300}"
+    current = PolymarketListedWindow(
+        asset="BTC", horizon=5, slug=slug,
+        opens=start, closes=start+timedelta(minutes=5),
+        accepting_orders=True, price_to_beat=None,
+    )
+    next_market = PolymarketListedWindow(
+        asset="BTC", horizon=5, slug=next_slug,
+        opens=start+timedelta(minutes=5),
+        closes=start+timedelta(minutes=10),
+        accepting_orders=False, price_to_beat=None,
+    )
+    current_quote = PolymarketNotice(
+        asset="BTC", horizon=5, issued=start,
+        expires=start+timedelta(minutes=5),
+        slug=slug, up_ask=0.57, down_ask=0.45,
+        quote_at=stamp,
+    )
+    board = PolymarketWindowBoard(
+        checked_at=stamp, current=current, next_window=next_market,
+        current_quote=current_quote,
+    )
+    market_reader = SimpleNamespace(window_board=AsyncMock(return_value=board))
+    home.auto_hunt = SimpleNamespace(
+        bot=SimpleNamespace(live_stream=object()),
+        store=SimpleNamespace(
+            enabled=lambda _id: True,
+            preferences=lambda _id: {
+                "assets": ("BTC",), "daily_limit": 12,
+                "live_shifts": True,
+            },
+        ),
+        polymarket=market_reader,
+    )
+    try:
+        home.navigate("live")
+        labels = _labels(home)
+        assert "Follow Polymarket" in labels
+        assert "Check Current & Next" in labels
+        assert any(isinstance(i, discord.ui.Select) for i in home.children)
+        embed = await home.render()
+        text = "\n".join(str(field.value) for field in embed.fields)
+        assert next_slug in text
+        assert slug in text
+        assert "Price to beat: **Not yet verified by Polymarket**" in text
+        assert "Up ask **57.0%**" in text
+        assert "no predicted strike" in text
+        assert "Close" not in text
+        market_reader.window_board.assert_awaited_once_with(
+            "BTC", 5, refresh=False,
+        )
+        interaction = _interaction()
+        await home.act(interaction, "poly-refresh")
+        assert market_reader.window_board.await_args.kwargs["refresh"] is True
+        assert home.page == "live"
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()

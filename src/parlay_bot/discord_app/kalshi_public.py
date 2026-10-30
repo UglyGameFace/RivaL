@@ -33,7 +33,7 @@ def _date(value: object) -> datetime | None:
     if not isinstance(value, str):
         return None
     try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(value)
         if parsed.utcoffset() is not None:
             return parsed.astimezone(UTC)
     except ValueError:
@@ -55,7 +55,7 @@ def matching_series(payload: object, *, asset: str) -> tuple[str, ...]:
     if asset not in _SYMBOLS:
         raise ValueError("Unknown Kalshi asset")
     if not isinstance(payload, dict) or not isinstance(payload.get("series"), list):
-        raise ValueError("Unverified Kalshi series response")
+        raise TypeError("Unverified Kalshi series response")
     selected = []
     for row in payload["series"]:
         if not isinstance(row, dict):
@@ -98,7 +98,7 @@ class KalshiSnapshot:
 
 def parse_markets(payload: object, *, now: datetime) -> tuple[KalshiMarket, ...]:
     if not isinstance(payload, dict) or not isinstance(payload.get("markets"), list):
-        raise ValueError("Unverified Kalshi markets response")
+        raise TypeError("Unverified Kalshi markets response")
     entries = []
     for row in payload["markets"]:
         if not isinstance(row, dict) or row.get("status") not in ("active", "open"):

@@ -174,8 +174,8 @@ def live_polymarket_embed(
         if board.current_quote:
             quote = board.current_quote
             current += (
-                f"\n**Up ask {quote.up_ask:.1%}** • "
-                f"**Down ask {quote.down_ask:.1%}** "
+                f"\n**Up ask ${quote.up_ask:.2f}/share** • "
+                f"**Down ask ${quote.down_ask:.2f}/share** "
                 f"• Book <t:{int(quote.quote_at.timestamp())}:R>"
             )
         else:

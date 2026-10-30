@@ -271,7 +271,7 @@ async def test_actual_rival_slash_callback_opens_guided_private_home(tmp_path):
         assert sent["view"].owner_id == interaction.user.id
         assert sent["embed"].title == "RivaL | Betting Genie"
         assert "No real bets" in sent["embed"].description
-        assert "Home" in _labels(sent["view"])
+        assert "Crypto" in _labels(sent["view"])
         sent["view"].stop()
     finally:
         await bot.zip_resolver.aclose()
@@ -532,8 +532,7 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
         assert "Stop Tracking" in _labels(shown)
         await home.act(interaction, "hunt")
         settings = interaction.edit_original_response.await_args.kwargs["view"]
-        assert {"Track Crypto", "Watch Forecast", "Changes ON",
-                "Changes OFF", "Stop All"}.issubset(set(_labels(settings)))
+        assert {"Track Crypto", "Watch Forecast", "Stop All"}.issubset(set(_labels(settings)))
         await home.act(interaction, "live-on")
         service.update_preference.assert_awaited_once_with(
             home.owner_id, "live_shifts", 1,

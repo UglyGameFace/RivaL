@@ -97,6 +97,9 @@ class ParlayBuilder:
         now = datetime.now(UTC)
         freshest = now - self.max_price_age
         with self.store.connect() as connection:
+            # A missing start time proves nothing about whether the event
+            # has started, so unknown-start fixtures never qualify as
+            # pregame picks, even when their odds look attractive.
             rows = connection.execute(
                 f"""
                 SELECT
@@ -112,7 +115,7 @@ class ParlayBuilder:
                   AND c.main_line = 1
                   AND c.bookmaker IN ({placeholders})
                   AND c.observed_at >= ?
-                  AND (f.start_time IS NULL OR f.start_time > ?)
+                  AND f.start_time > ?
                 """,
                 (*sorted(eligible_books), freshest.isoformat(), now.isoformat()),
             ).fetchall()
@@ -158,7 +161,7 @@ class ParlayBuilder:
 
         probability_samples: dict[
             tuple[str, str, str, str, float | None],
-            list[float],
+            list[tuple[str, float]],
         ] = defaultdict(list)
         seen_vectors: dict[
             tuple[str, str, str, float | None],
@@ -202,7 +205,7 @@ class ParlayBuilder:
                     player_id,
                     line_group_value,
                 )
-                probability_samples[logical].append(probability)
+                probability_samples[logical].append((_book, probability))
 
         candidates: list[_PricedCandidate] = []
         minimum = _RISK_MIN_PROBABILITY[risk]
@@ -223,7 +226,19 @@ class ParlayBuilder:
                 diagnostics["insufficient_reference_books"] += 1
                 continue
 
-            fair = statistics.median(samples)
+            # Leave-one-book-out benchmark: the candidate's own bookmaker
+            # never counts toward its own reference set. With only two
+            # configured books the benchmark is the single external book;
+            # that is independent, if noisy, and the slip labels the count
+            # honestly as external references.
+            external = [
+                probability for book, probability in samples
+                if book != str(row["bookmaker"])
+            ]
+            if not external:
+                diagnostics["insufficient_reference_books"] += 1
+                continue
+            fair = statistics.median(external)
             if fair < minimum:
                 diagnostics["below_minimum_probability"] += 1
                 continue
@@ -276,7 +291,7 @@ class ParlayBuilder:
                     price_american=row["price_american"],
                     fair_probability=fair,
                     price_edge=edge,
-                    reference_books=len(samples),
+                    reference_books=len(external),
                     score=self._score(
                         probability=fair,
                         edge=edge,

@@ -1,3 +1,15 @@
+## ACTIVE FORCE SWITCH: Auto-Hunt opt-in alerts (2026-10-30)
+
+- **Current single task:** Owner explicitly prioritized implementing RivaL Auto-Hunt. Preserve the previous beginner slash-command simplification/production acceptance as a suspended checkpoint, not a parallel change. Do not modify Dank Shield or unrelated projects from this RivaL task.
+- **Goal:** Make Auto-Hunt reachable from the existing /rival private home. Scan genuinely newly issued BTC/ETH/SOL 5m/15m forward forecasts and send *new* opt-in research-alert DMs when source-specific history, direction threshold, enough time and a matching fresh exchange bid/ask qualify. No user-entered target. Keep legacy manual price target in Advanced and legacy Follow in DM independent.
+- **Single authoritative runtime:** Existing autonomous collector persists original forecasts. New AutoHuntService is only a consumer of recent_watches / recent_multi_watches, promoted_engine, venue_summary and existing _venue_book. Event wake from research issuance plus bounded 15-second fallback, no extra order-book provider, manual order, crypto execution, fake strike, model retraining or sports API.
+- **Safety:** No messages until per-user explicit DM opt-in. Persistent SQLite/PG delivery claim before network send, no ambiguous retransmission, 120s per-user cooldown and bounded 100-user budget, active-status and source/expiry/quote checks, unsubscribe from home or /rival-stop. Persistent DM buttons revalidate viewer and fresh live signal.
+- **Release:** CI Ruff and full pytest+PostgreSQL16 on *exact PR head*, verify intact legacy commands/guided home, no duplicate listens; owner merge only after checks, then guarded Discloud release and real Android/DM/nonmember tests. Unverified production performance and profitability are NOT PROVEN. Future Sports Scout and Early Warning require independent genuine market/margin evidence, do not ship fake buttons.
+- **Rollback:** Previous main `d2b173be9c59f4a173015947d8aeac9f6b9e5ff3`; maintain old model, alerts and DB. No changes to existing member/ticket data.
+- **Previous active task suspended:** Oct 29 beginner command simplification on main; four global commands persisted, actual Discord login and live usability acceptance still require verification.
+
+---
+
 ## October 29, 2026: Simplify RivaL Discord commands and beginner experience
 
 - **Owner feedback:** Too many commands and unfamiliar research terms. Audited original main `673f8560`: **23 global slash commands** accumulated across sports, crypto, practice, alerts, streaming, source diagnostics, after-cost proof and shadow governance; beginner users do not benefit from twenty direct technical commands.

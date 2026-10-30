@@ -74,7 +74,7 @@ class _Connection:
             elapsed = time.monotonic() - started
             self.query_count += 1
             self.query_seconds += elapsed
-            if elapsed > self.max_query_seconds:
+            if self.query_count == 1 or elapsed > self.max_query_seconds:
                 self.max_query_seconds = elapsed
                 self.slowest_operation = operation
             self.active_operation = "none"

@@ -214,18 +214,25 @@ def test_settlement_queue_prefers_oldest_eligible_outcomes_after_downtime(tmp_pa
         assert monitor._settle(now) == MAX_PENDING_SETTLEMENTS
         with store.connect() as conn:
             rows = conn.execute(
-                "SELECT settled_at FROM perp_forward_audit ORDER BY target_opened_at"
+                "SELECT settled_at,outcome_up FROM perp_forward_audit ORDER BY target_opened_at"
             ).fetchall()
             assert rows[20]["settled_at"] is not None
             assert rows[-1]["settled_at"] is None
-            assert all(r["settled_at"] is None for r in rows[:20])
+            # Missing targets and retrospectively observed outcomes never
+            # settle. Flat closes DO settle now, as NOT UP: a tie is a
+            # known completed target, not an unresolved one.
+            assert all(r["settled_at"] is None for r in rows[:12])
+            assert all(r["settled_at"] is None for r in rows[17:20])
+            assert all(r["settled_at"] is not None for r in rows[12:17])
+            assert all(int(r["outcome_up"]) == 0 for r in rows[12:17])
         restarted = ForwardAccuracyMonitor(market)
-        assert restarted._settle(now) == total - 20 - MAX_PENDING_SETTLEMENTS
+        assert restarted._settle(now) == total - 15 - MAX_PENDING_SETTLEMENTS
         assert restarted._settle(now) == 0
         with store.connect() as conn:
             scored = conn.execute(
                 """SELECT model_brier,baseline_brier,outcome_up
-                   FROM perp_forward_audit WHERE settled_at IS NOT NULL LIMIT 1"""
+                   FROM perp_forward_audit WHERE settled_at IS NOT NULL
+                   AND outcome_up=1 LIMIT 1"""
             ).fetchone()
             assert scored["outcome_up"] == 1
             assert abs(scored["model_brier"] - .1225) < 1e-9

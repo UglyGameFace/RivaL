@@ -251,6 +251,51 @@ class ForwardAccuracyMonitor:
                 (slot, stamp.isoformat(), *(metrics[x] for x in columns)),
             )
 
+    def _settle_rows(self, now: datetime, pending) -> int:
+        resolved = 0
+        for pred in pending:
+            try:
+                observed = utc(datetime.fromisoformat(
+                    str(pred["outcome_observed_at"])
+                ))
+                issued = utc(datetime.fromisoformat(str(pred["issued_at"])))
+                close = utc(datetime.fromisoformat(
+                    str(pred["outcome_closed_at"])
+                ))
+                if observed <= issued or observed > now or close >= now:
+                    continue
+                value = float(pred["outcome_close"])
+                previous = float(pred["reference_close"])
+                if not math.isfinite(value) or value <= 0:
+                    continue
+                # UP is a strict price increase. A flat close settles as
+                # NOT UP instead of staying pending forever: leaving a
+                # known completed target unresolved corrupts the issued
+                # versus resolved accounting, and training labels ties
+                # the same way so train and serve stay consistent.
+                label = int(value > previous)
+                p = float(pred["probability_up"])
+                b = float(pred["baseline_up"])
+                with self.store.connect() as conn:
+                    result = conn.execute(
+                        """UPDATE perp_forward_audit
+                           SET settled_at=?, outcome_up=?, realized_close=?,
+                               model_brier=?,baseline_brier=?
+                           WHERE venue=? AND contract=? AND quote=?
+                             AND horizon_minutes=? AND model_version=?
+                             AND reference_opened_at=? AND settled_at IS NULL""",
+                        (
+                            now.isoformat(), label, value, (p - label) ** 2,
+                            (b - label) ** 2, pred["venue"], pred["contract"],
+                            pred["quote"], pred["horizon_minutes"],
+                            pred["model_version"], pred["reference_opened_at"],
+                        ),
+                    )
+                    resolved += int(result.rowcount == 1)
+            except (ValueError, TypeError, ArithmeticError):
+                _LOG.warning("Prospective settlement skipped corrupt market row")
+        return resolved
+
     def _settle(self, now: datetime) -> int:
         # Recover the OLDEST genuinely settleable outcomes first. The old
         # DESC/LIMIT queue could repeatedly skip valid old forecasts after
@@ -276,7 +321,6 @@ class ForwardAccuracyMonitor:
                      AND c.first_observed_at>f.issued_at
                      AND c.first_observed_at<=?
                      AND c.closed_at<?
-                     AND c.close_price<>f.reference_close
                    ORDER BY f.target_opened_at ASC,f.venue,f.contract,
                             f.horizon_minutes
                    LIMIT ?""",
@@ -287,44 +331,54 @@ class ForwardAccuracyMonitor:
                     MAX_PENDING_SETTLEMENTS,
                 ),
             ).fetchall()
-        resolved = 0
-        for pred in pending:
-            try:
-                observed = utc(datetime.fromisoformat(
-                    str(pred["outcome_observed_at"])
-                ))
-                issued = utc(datetime.fromisoformat(str(pred["issued_at"])))
-                close = utc(datetime.fromisoformat(
-                    str(pred["outcome_closed_at"])
-                ))
-                if observed <= issued or observed > now or close >= now:
-                    continue
-                value = float(pred["outcome_close"])
-                previous = float(pred["reference_close"])
-                if not math.isfinite(value) or value <= 0 or value == previous:
-                    continue  # Flat moves remain unresolved, never forced to up/down.
-                label = int(value > previous)
-                p = float(pred["probability_up"])
-                b = float(pred["baseline_up"])
-                with self.store.connect() as conn:
-                    result = conn.execute(
-                        """UPDATE perp_forward_audit
-                           SET settled_at=?, outcome_up=?, realized_close=?,
-                               model_brier=?,baseline_brier=?
-                           WHERE venue=? AND contract=? AND quote=?
-                             AND horizon_minutes=? AND model_version=?
-                             AND reference_opened_at=? AND settled_at IS NULL""",
-                        (
-                            now.isoformat(), label, value, (p - label) ** 2,
-                            (b - label) ** 2, pred["venue"], pred["contract"],
-                            pred["quote"], pred["horizon_minutes"],
-                            pred["model_version"], pred["reference_opened_at"],
-                        ),
-                    )
-                    resolved += int(result.rowcount == 1)
-            except (ValueError, TypeError, ArithmeticError):
-                _LOG.warning("Prospective settlement skipped corrupt market row")
-        return resolved
+        return self._settle_rows(now, pending)
+
+    def reconcile_stale_settlements(
+        self, now: datetime, *, limit: int = 200,
+    ) -> int:
+        """Settle forecasts stranded beyond the normal two-day scan.
+
+        An exchange outage or a late historical recovery can leave a
+        valid outcome candle available only after the target aged past
+        the fast scan's window. This bounded pass revisits those rows,
+        oldest first, under the SAME prospective guards as the fast scan:
+        the outcome candle must have been first observed after issuance,
+        so retrospectively imported outcomes never rewrite the audit as
+        information available earlier. Settlement time is the actual
+        reconciliation time, never backdated.
+        """
+        if limit < 1:
+            raise ValueError("reconciliation limit must be positive")
+        with self.store.connect() as conn:
+            pending = conn.execute(
+                """SELECT f.venue,f.contract,f.quote,f.asset,f.horizon_minutes,
+                          f.model_version,f.reference_opened_at,
+                          f.reference_close,f.issued_at,f.target_opened_at,
+                          f.probability_up,f.baseline_up,
+                          c.close_price AS outcome_close,
+                          c.first_observed_at AS outcome_observed_at,
+                          c.closed_at AS outcome_closed_at
+                   FROM perp_forward_audit AS f
+                   JOIN perp_market_candles AS c
+                     ON c.venue=f.venue AND c.contract=f.contract
+                    AND c.quote=f.quote AND c.interval_minutes=5
+                    AND c.opened_at=f.target_opened_at
+                   WHERE f.settled_at IS NULL
+                     AND f.target_opened_at<?
+                     AND f.target_opened_at<?
+                     AND c.first_observed_at>f.issued_at
+                     AND c.first_observed_at<=?
+                     AND c.closed_at<?
+                   ORDER BY f.target_opened_at ASC,f.venue,f.contract,
+                            f.horizon_minutes
+                   LIMIT ?""",
+                (
+                    (now - timedelta(minutes=5)).isoformat(),
+                    (now - timedelta(days=2)).isoformat(),
+                    now.isoformat(), now.isoformat(), limit,
+                ),
+            ).fetchall()
+        return self._settle_rows(now, pending)
 
     def run_once(self, *, now: datetime | None = None) -> tuple[int, int]:
         stamp = utc(now or datetime.now(UTC))
@@ -332,6 +386,16 @@ class ForwardAccuracyMonitor:
             raise ValueError("prospective forecast time cannot be in the future")
         self.initialize()
         settled = self._settle(stamp)
+        if stamp.minute < 5:
+            try:
+                reconciled = self.reconcile_stale_settlements(stamp)
+                if reconciled:
+                    _LOG.info(
+                        "RivaL stale settlement reconciliation settled=%d",
+                        reconciled,
+                    )
+            except Exception:  # noqa: BLE001 - background repair never blocks issuance
+                _LOG.exception("RivaL stale settlement reconciliation failed")
         issued = 0
         metrics = {
             "discovered_streams": 0, "selected_streams": 0,

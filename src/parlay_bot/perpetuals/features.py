@@ -215,8 +215,9 @@ def live_examples(
                 [x.volume_base for x in extended],
             ),
         )
-        if target.close_price == current.close_price:
-            continue
+        # UP is a strict price increase. A flat target is NOT UP, not a
+        # dropped sample: settlement labels ties the same way, so train
+        # and serve stay consistent instead of drifting apart.
         example = LabeledExample(
             venue=first.venue, contract=first.contract, quote=first.quote,
             horizon_minutes=horizon_minutes, issued_at=issued,

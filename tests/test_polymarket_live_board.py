@@ -170,15 +170,15 @@ def test_live_market_and_model_predictions_are_clearly_separate():
     assert "Polymarket WAIT" in embed.title
     assert "Exchange model: UP" in embed.description
     assert "Polymarket contract: WAIT" in embed.description
-    names = [field.name for field in embed.fields[:4]]
+    names = [field.name for field in embed.fields[:6]]
     assert names == [
-        "💰 Price / Share Cost", "⏱️ Expires",
-        "⚡ Model Strength", "📊 Accuracy",
+        "💰 Price / Share Cost", "⏱️ Expires", "\u200b",
+        "⚡ Model Strength", "📊 Accuracy", "\u200b",
     ]
     assert "Up $0.61/share" in embed.fields[0].value
     assert "Down $0.45/share" in embed.fields[0].value
-    assert "59.0% raw model score" in embed.fields[2].value
-    assert "Polymarket: not validated" in embed.fields[3].value
+    assert "59.0% raw model score" in embed.fields[3].value
+    assert "Polymarket: not validated" in embed.fields[4].value
     full = "\n".join(str(x.value) for x in embed.fields)
     assert "Same 5m" not in full or "same closing time" in full
     assert "UP" in embed.fields[-2].value

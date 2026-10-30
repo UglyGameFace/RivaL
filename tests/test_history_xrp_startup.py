@@ -27,7 +27,7 @@ from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
 from parlay_bot.perpetuals.phemex_history_recovery import PhemexHistoryRecovery
-from parlay_bot.storage.hot import PostgresHotStore, SQLiteHotStore
+from parlay_bot.storage.hot import SQLiteHotStore
 
 RECOVERY_TYPES = (
     GateHistoryRecovery, KucoinHistoryRecovery, BitgetHistoryRecovery,

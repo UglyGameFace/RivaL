@@ -463,8 +463,8 @@ class GuidedHome(discord.ui.View):
             self._add("Stop My Alerts", "stop", 3, "🔕")
         elif p == "live":
             self.add_item(_Coin(self.coin))
-            self.add_item(_PolymarketHorizon(self.horizon))
             if self.live_source == "polymarket":
+                self.add_item(_PolymarketHorizon(self.horizon))
                 self._add("Start Auto-Track", "poly-start", 2, "⚡", True)
                 self._add("Stop Auto-Track", "poly-stop", 2, "🔕")
             elif self.live_source == "kalshi":
@@ -625,7 +625,10 @@ class GuidedHome(discord.ui.View):
                 "draftkings": "DraftKings Predictions",
             }.get(source, "Polymarket Global")
             embed = discord.Embed(
-                title=f"⚡ Live Markets | {provider} • {self.coin} {self.horizon}m",
+                title=(
+                    f"⚡ Live Markets | {provider} • {self.coin}"
+                    + (f" {self.horizon}m" if source == "polymarket" else "")
+                ),
                 description=(
                     "**Live contract call: WAIT** • no verified, "
                     "forward-tested profitable market edge.\n"

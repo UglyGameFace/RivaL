@@ -1,7 +1,7 @@
 """Regression coverage for PostgreSQL startup DDL and batched candle writes."""
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
-import os
 
 import pytest
 

@@ -5,6 +5,7 @@ from datetime import timedelta
 import pytest
 
 from parlay_bot.collectors.current import CurrentBoardCollector
+from parlay_bot.providers.errors import QuotaReserveReached
 from parlay_bot.storage.hot import SQLiteHotStore
 from tests.sgo_samples import sample_sgo_event
 
@@ -78,3 +79,43 @@ async def test_force_refresh_bypasses_refresh_gate(tmp_path) -> None:
     assert forced.refreshed is True
     assert client.calls == 2
     assert forced.repeated_states == 6
+
+
+class QuotaReserveClient:
+    async def get_events(
+        self,
+        *,
+        league_ids,
+        bookmaker_ids=None,
+        limit=25,
+        cursor=None,
+    ):
+        raise QuotaReserveReached(
+            "SportsGameOdds monthly entity reserve protected: "
+            "250 entities remain; reserve is 250"
+        )
+
+
+@pytest.mark.asyncio
+async def test_quota_pause_notice_persists_until_success(tmp_path) -> None:
+    store = SQLiteHotStore(tmp_path / "rival.sqlite")
+    collector = CurrentBoardCollector(
+        client=QuotaReserveClient(),
+        store=store,
+        refresh_interval=timedelta(minutes=10),
+    )
+
+    result = await collector.refresh_if_due(force=True)
+
+    assert result.refreshed is False
+    assert result.notice is not None
+    assert "reserve" in collector._last_notice()
+    # A fresh collector instance reads the same persisted notice.
+    reread = CurrentBoardCollector(client=QuotaReserveClient(), store=store)
+    assert reread._last_notice() == collector._last_notice()
+
+    good = CurrentBoardCollector(
+        client=FakeSportsGameOddsClient(), store=store,
+    )
+    await good.refresh_if_due(force=True)
+    assert good._last_notice() is None

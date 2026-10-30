@@ -73,6 +73,10 @@ class ParlayBuilder:
         self.catalog = catalog or MarketCatalogStore(store)
         self.max_price_age = max_price_age
         self.minimum_reference_books = minimum_reference_books
+        # Counts from the most recent _candidates() run, kept for the UI so
+        # a PASS can name the gate that eliminated everything. This is
+        # diagnostics only; it never changes which slips are built.
+        self.last_diagnostics: dict[str, int] = {}
 
     @staticmethod
     def _score(*, probability: float, edge: float, price: float, risk: RiskMode) -> float:
@@ -116,6 +120,19 @@ class ParlayBuilder:
 
     def _candidates(self, *, eligible_books: set[str], risk: RiskMode) -> list[_PricedCandidate]:
         rows = self._rows(eligible_books)
+        diagnostics = {
+            "rows_seen": len(rows),
+            "single_outcome_groups": 0,
+            "invalid_probability": 0,
+            "duplicate_vectors": 0,
+            "insufficient_reference_books": 0,
+            "below_minimum_probability": 0,
+            "negative_edge": 0,
+            "below_advertised_edge": 0,
+            "duplicate_fixture_skips": 0,
+            "books_short_of_legs": 0,
+        }
+        self.last_diagnostics = diagnostics
         if not rows:
             return []
 
@@ -156,6 +173,7 @@ class ParlayBuilder:
             line_group_value,
         ), group in by_book_market.items():
             if len(group) < 2:
+                diagnostics["single_outcome_groups"] += 1
                 continue
             ordered = sorted(group, key=lambda row: str(row["outcome_id"]))
             try:
@@ -163,6 +181,7 @@ class ParlayBuilder:
                     float(row["price_decimal"]) for row in ordered
                 )
             except ValueError:
+                diagnostics["invalid_probability"] += 1
                 continue
 
             vector = tuple(
@@ -171,6 +190,7 @@ class ParlayBuilder:
             )
             vector_key = (fixture, market_id, player_id, line_group_value)
             if vector in seen_vectors[vector_key]:
+                diagnostics["duplicate_vectors"] += 1
                 continue
             seen_vectors[vector_key].add(vector)
 
@@ -200,15 +220,18 @@ class ParlayBuilder:
             )
             samples = probability_samples.get(logical, [])
             if len(samples) < self.minimum_reference_books:
+                diagnostics["insufficient_reference_books"] += 1
                 continue
 
             fair = statistics.median(samples)
             if fair < minimum:
+                diagnostics["below_minimum_probability"] += 1
                 continue
 
             price = float(row["price_decimal"])
             edge = expected_return_edge(fair_probability=fair, decimal_odds=price)
             if edge < -0.025:
+                diagnostics["negative_edge"] += 1
                 continue
 
             market_meta = catalog.get(str(row["market_id"]), {})
@@ -279,6 +302,9 @@ class ParlayBuilder:
         if leg_count == 1:
             # A profitable-looking price must beat the cross-book benchmark;
             # negative-edge prices are never advertised as single opportunities.
+            self.last_diagnostics["below_advertised_edge"] = sum(
+                1 for c in candidates if c.price_edge < 0.02
+            )
             candidates = [c for c in candidates if c.price_edge >= 0.02]
         if not candidates:
             raise ParlayBuildError(
@@ -301,6 +327,7 @@ class ParlayBuilder:
                 reverse=True,
             ):
                 if candidate.fixture_id in used_fixtures:
+                    self.last_diagnostics["duplicate_fixture_skips"] += 1
                     continue
                 selected.append(candidate)
                 used_fixtures.add(candidate.fixture_id)
@@ -308,6 +335,7 @@ class ParlayBuilder:
                     break
 
             if len(selected) != leg_count:
+                self.last_diagnostics["books_short_of_legs"] += 1
                 continue
 
             prices = [item.price_decimal for item in selected]

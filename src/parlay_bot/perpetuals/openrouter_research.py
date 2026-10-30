@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import math
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 

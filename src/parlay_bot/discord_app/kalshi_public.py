@@ -101,7 +101,7 @@ def parse_markets(payload: object, *, now: datetime) -> tuple[KalshiMarket, ...]
         raise ValueError("Unverified Kalshi markets response")
     entries = []
     for row in payload["markets"]:
-        if not isinstance(row, dict) or row.get("status") != "open":
+        if not isinstance(row, dict) or row.get("status") not in ("active", "open"):
             continue
         ticker = row.get("ticker")
         title = row.get("title")

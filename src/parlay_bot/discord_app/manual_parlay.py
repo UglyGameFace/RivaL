@@ -44,6 +44,8 @@ class ManualParlayView(discord.ui.View):
         self.legs: list[dict] = []
         self.sport = None
         self.book = None
+        self.game = None
+        self.category = None
         self.page = 0
         self.refresh_components()
 
@@ -57,9 +59,22 @@ class ManualParlayView(discord.ui.View):
     def visible(self):
         rows = [r for r in self.rows if
                 (self.sport is None or r["sport_name"] == self.sport) and
+                (self.game is None or r["fixture_id"] == self.game) and
+                (self.category is None or self._category(r) == self.category) and
                 (self.book is None or r["bookmaker"] == self.book) and
                 (not self.legs or r["bookmaker"] == self.legs[0]["bookmaker"])]
         return rows[self.page * 25:(self.page + 1) * 25]
+
+    @staticmethod
+    def _category(row):
+        name = str(row.get("market_name") or row.get("market_id") or "").lower()
+        if row.get("player_name") or "player" in name:
+            return "Player Props"
+        if "quarter" in name:
+            return "Quarter Bets"
+        if "half" in name:
+            return "Half Bets"
+        return "Full Game"
 
     def refresh_components(self):
         self.clear_items()
@@ -68,7 +83,16 @@ class ManualParlayView(discord.ui.View):
             self.add_item(_Filter(self, "sport", sports))
             books = sorted({r["bookmaker"] for r in self.rows})
             self.add_item(_Filter(self, "book", books))
-            if self.visible:
+            games = {}
+            for r in self.rows:
+                if (self.sport is None or r["sport_name"] == self.sport) and (self.book is None or r["bookmaker"] == self.book):
+                    games.setdefault(r["fixture_id"], r["event_name"])
+            if games:
+                self.add_item(_Filter(self, "game", list(games.items())))
+            if self.game is not None:
+                categories = sorted({self._category(r) for r in self.rows if r["fixture_id"] == self.game})
+                self.add_item(_Filter(self, "category", categories))
+            if self.game is not None and self.category is not None and self.visible:
                 self.add_item(_Pick(self))
         self.add_item(_Action(self, "Previous", "prev"))
         self.add_item(_Action(self, "Next", "next"))
@@ -77,7 +101,7 @@ class ManualParlayView(discord.ui.View):
 
     def render(self) -> discord.Embed:
         lines = [
-            "Choose a sport, sportsbook, then a game/pick.",
+            "Choose sport → sportsbook → game → bet category → pick.",
             "All prices come from cached observations. No API calls are made by this menu.",
             "Market-implied percentages are **not** model predictions.",
         ]
@@ -97,7 +121,11 @@ class ManualParlayView(discord.ui.View):
         if not self.rows:
             lines.append("No fresh eligible upcoming prices. PASS; try again after the next scheduled refresh.")
         elif not self.visible:
-            lines.append("No selections on this page or filter.")
+            lines.append("No matching selections. Try another game or category.")
+        if self.rows:
+            lines.append(f"**Available:** {len(set(r['fixture_id'] for r in self.rows))} games, "
+                         f"{len(set(r['sport_name'] for r in self.rows))} sports, "
+                         f"{len(set(r['bookmaker'] for r in self.rows))} sportsbooks.")
         return discord.Embed(title="Build Your Own Parlay", description="\n\n".join(lines)[:4000])
 
     async def redraw(self, interaction):
@@ -110,9 +138,9 @@ class _Filter(discord.ui.Select):
         self.parent_picker = parent
         self.kind = kind
         super().__init__(
-            placeholder="Choose sport" if kind == "sport" else "Choose sportsbook",
+            placeholder={"sport": "1. Choose sport", "book": "2. Choose sportsbook", "game": "3. Choose game", "category": "4. Choose bet category"}[kind],
             options=[discord.SelectOption(label="All", value="__all__")]
-                    + [discord.SelectOption(label=v[:100], value=v) for v in values[:24]],
+                    + [discord.SelectOption(label=(v[1] if kind == "game" else v)[:100], value=(v[0] if kind == "game" else v)) for v in values[:24]],
         )
 
     async def callback(self, interaction):
@@ -120,13 +148,21 @@ class _Filter(discord.ui.Select):
         value = None if self.values[0] == "__all__" else self.values[0]
         if self.kind == "sport":
             parent.sport = value
-        else:
+        elif self.kind == "book":
             if parent.legs and value not in (None, parent.legs[0]["bookmaker"]):
                 await interaction.response.send_message(
                     "Clear your slip before switching sportsbooks.", ephemeral=True,
                 )
                 return
             parent.book = value
+        elif self.kind == "game":
+            parent.game = value
+            parent.category = None
+        elif self.kind == "category":
+            parent.category = value
+        if self.kind in ("sport", "book"):
+            parent.game = None
+            parent.category = None
         parent.page = 0
         await parent.redraw(interaction)
 

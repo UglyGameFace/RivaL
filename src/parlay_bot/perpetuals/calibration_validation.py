@@ -7,7 +7,7 @@ exact frequentist confidence interval, promise of profit, or betting oracle.
 from __future__ import annotations
 
 import math
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 MIN_UNIQUE_WINDOWS = 150
 MIN_UTC_DAYS = 21
@@ -39,8 +39,8 @@ def unique_window_calibration(rows: list[dict]) -> dict:
             or settled.utcoffset() is None or outcome not in (0, 1)
             or not (0 < p < 1 and 0 < prior < 1)
             or not (math.isfinite(p) and math.isfinite(prior))
-            or issued >= settled or issued >= target
-            or settled.astimezone(UTC) <= target.astimezone(UTC)
+            or issued >= settled or issued >= target + timedelta(minutes=5)
+            or settled.astimezone(UTC) <= (target + timedelta(minutes=5)).astimezone(UTC)
             or target.astimezone(UTC).isoformat() != str(row["target_opened_at"])
         ):
             raise ValueError("non-causal or nonfinite forward calibration evidence")

@@ -1400,20 +1400,27 @@ class RivalDiscordClient(discord.Client):
             self._sports_results_task = asyncio.create_task(
                 self._sports_results_loop(), name="rival-sports-final-results",
             )
-        if self.settings.rival_dev_guild_id is not None:
-            guild = discord.Object(id=self.settings.rival_dev_guild_id)
-            self.tree.copy_global_to(guild=guild)
-            synced = await self.tree.sync(guild=guild)
-            _LOG.info(
-                "RivaL synced %d command(s) to development guild %s",
-                len(synced),
-                guild.id,
-            )
+        # A sync failure must not abort the workers below: data collection
+        # and DM follows keep working, and the missing commands are visible
+        # as sync_count=0 / sync not confirmed instead of a half-started bot.
+        try:
+            if self.settings.rival_dev_guild_id is not None:
+                guild = discord.Object(id=self.settings.rival_dev_guild_id)
+                self.tree.copy_global_to(guild=guild)
+                synced = await self.tree.sync(guild=guild)
+                _LOG.info(
+                    "RivaL synced %d command(s) to development guild %s",
+                    len(synced),
+                    guild.id,
+                )
+            else:
+                synced = await self.tree.sync()
+                _LOG.info("RivaL synced %d global command(s)", len(synced))
+        except (discord.HTTPException, TimeoutError):
+            _LOG.warning("RivaL command sync failed; workers still starting")
+            synced = []
         else:
-            synced = await self.tree.sync()
-            _LOG.info("RivaL synced %d global command(s)", len(synced))
-
-        self.command_synced_at = datetime.now(UTC)
+            self.command_synced_at = datetime.now(UTC)
         self.command_sync_count = len(synced)
         _LOG.info(
             "RivaL actual Discord slash command sync verified count=%d",

@@ -18,6 +18,7 @@ from parlay_bot.perpetuals.additional_venues import (
 )
 from parlay_bot.perpetuals.dydx import DydxMarketClient
 from parlay_bot.perpetuals.final_venues import LighterMarketClient, PhemexMarketClient
+from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.hyperliquid import (
     HyperliquidMarketClient,
     MarketBatch,
@@ -33,6 +34,35 @@ _LOG = logging.getLogger(__name__)
 # Do not retry blocked exchange endpoints every five minutes.
 _PAUSES = {"blocked": timedelta(days=7), "rate_limited": timedelta(minutes=20)}
 _PROVIDER_TIMEOUT_SECONDS = 12  # Cap each network operation; no source stalls a full candle.
+
+# A completed candle is trusted once it closed this long before the batch
+# was observed. The collector already runs 15s past each candle boundary,
+# so this binds only on off-schedule runs; it never shifts the forecast
+# target back an interval the way the old one-bar holdback did.
+CANDLE_SETTLEMENT_MARGIN = timedelta(seconds=10)
+
+
+def _retain_settled_candles(batch: MarketBatch) -> MarketBatch:
+    """Drop candles too fresh to trust; never invent or shift a target.
+
+    Unfinished candles (closed_at after observed_at) and candles closed
+    within the margin are withheld for the next cycle, when they are old
+    enough to qualify. Single-bar batches pass through whole.
+    """
+    if len(batch.candles) <= 1:
+        return batch
+    observed = utc(batch.observed_at)
+    settled = tuple(
+        candle for candle in batch.candles
+        if utc(candle.closed_at) + CANDLE_SETTLEMENT_MARGIN <= observed
+    )
+    if not settled:
+        raise MarketDataError("No completed candles past settlement margin")
+    if len(settled) == len(batch.candles):
+        return batch
+    return MarketBatch(
+        batch.contexts, settled, batch.interval_minutes, batch.observed_at,
+    )
 
 
 class PublicPerpProvider(Protocol):
@@ -168,24 +198,21 @@ class PerpetualMarketCollector:
                         if fetch_error is not None:
                             raise fetch_error
                         assert batch is not None
-                        # Settlement margin: a bar that just closed may
-                        # still be revised by the exchange. Ingesting it
-                        # risks a CandleConflictError on the next cycle
-                        # that rejects the whole batch every cycle until
-                        # the bar ages out. Hold back the single newest
-                        # bar; it is ingested on the next cycle once
-                        # settled. Single-bar batches are kept whole so a
-                        # thin venue can never starve.
-                        if len(batch.candles) > 1:
-                            newest = max(c.closed_at for c in batch.candles)
-                            settled = tuple(
-                                c for c in batch.candles if c.closed_at < newest
-                            )
-                            if settled:
-                                batch = MarketBatch(
-                                    batch.contexts, settled,
-                                    batch.interval_minutes, batch.observed_at,
-                                )
+                        # Settlement rule: keep completed candles that
+                        # closed at least CANDLE_SETTLEMENT_MARGIN before
+                        # the batch was observed. The previous one-bar
+                        # holdback systematically expired every 5m
+                        # forecast: holding the newest completed candle
+                        # pushed the forecast target one interval back,
+                        # so issued_at always landed past target_open +
+                        # 5min for horizon 5 (expired=27, issued=27 per
+                        # cycle: all 5m expired, only 15m issued).
+                        # Unfinished candles (closed_at in the future)
+                        # never pass the margin. Single-bar batches are
+                        # kept whole so a thin venue can never starve;
+                        # any later revision is caught by per-bar
+                        # conflict isolation in ingest.
+                        batch = _retain_settled_candles(batch)
                         result = await asyncio.to_thread(self.market.ingest, batch)
                         await asyncio.to_thread(
                             self.market.record_feed_health,

@@ -260,8 +260,14 @@ def live_polymarket_embed(
                 f"{horizon}m Polymarket contract**."
             )
         evidence += (
-            f" Source: {snapshot.venue}. "
-            "Oracle and settlement calibration not established."
+            f" Source: {snapshot.venue}."
+            + (
+                f" {snapshot.training_evaluated} walk-forward examples"
+                " evaluated on exchange candles."
+                if snapshot.training_evaluated else
+                " Walk-forward example count not verified."
+            )
+            + " Oracle and settlement calibration not established."
         )
     else:
         reason = (

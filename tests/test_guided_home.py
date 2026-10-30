@@ -10,7 +10,8 @@ import pytest
 
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.bot import RivalDiscordClient
-from parlay_bot.discord_app.home import EXPLAIN, GuidedHome
+from parlay_bot.discord_app.home import EXPLAIN, GuidedHome, crypto_snapshot_card
+from parlay_bot.discord_app.targeting import TargetSnapshot
 from parlay_bot.perpetuals.live_quotes import BookQuote
 
 
@@ -612,3 +613,45 @@ async def test_live_mode_opens_one_automatic_tracker_without_extra_market_polls(
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()
+
+
+def test_crypto_card_restores_four_visible_metrics_without_fake_accuracy():
+    now = datetime(2026, 10, 30, 18, 0, tzinfo=UTC)
+    available = TargetSnapshot(
+        asset="BTC", horizon_minutes=5, direction="UP",
+        detail="Research only", venue="hyperliquid",
+        probability=0.59, price=78000.0,
+        issued_at=now - timedelta(seconds=10),
+        ends_at=now + timedelta(minutes=5),
+        status="ok",
+    )
+    embed = crypto_snapshot_card(
+        available, asset="BTC", horizon=5, checked_at=now,
+    )
+    assert "UP LEAN" in embed.title
+    assert len(embed.fields) == 4
+    assert all(f.inline for f in embed.fields)
+    assert [f.name for f in embed.fields] == [
+        "💰 Reference price", "⏱️ Expires",
+        "⚡ Strength", "📊 Accuracy",
+    ]
+    assert "$78,000.00" in embed.fields[0].value
+    assert "59.0% raw" in embed.fields[2].value
+    assert "Refresh Signal" in embed.fields[3].value
+    assert "58%" not in str(embed.to_dict())
+    assert "not a Polymarket" in embed.description
+
+    expired = TargetSnapshot(
+        asset="BTC", horizon_minutes=5, direction="UP",
+        detail="old model", venue="hyperliquid",
+        probability=0.98, price=78000.0,
+        issued_at=now-timedelta(minutes=10),
+        ends_at=now-timedelta(seconds=1),
+        status="ok",
+    )
+    stale = crypto_snapshot_card(
+        expired, asset="BTC", horizon=5, checked_at=now,
+    )
+    assert "WAIT" in stale.title
+    assert "98.0%" not in str(stale.to_dict())
+    assert "Unavailable" == stale.fields[0].value

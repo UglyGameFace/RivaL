@@ -309,7 +309,11 @@ def crypto_snapshot_card(
             + ". This is not a Polymarket win prediction."
             if current else
             "**No verified current direction.** "
-            + _crypto_preview_headline(snapshot)
+            + (
+                "The previous forecast has expired; checking for a new window."
+                if snapshot is not None and snapshot.status == "ok"
+                else _crypto_preview_headline(snapshot)
+            )
         ),
         color=discord.Color.orange(),
     )

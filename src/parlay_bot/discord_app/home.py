@@ -391,13 +391,16 @@ class GuidedHome(discord.ui.View):
             )
         elif p == "forecast":
             try:
+                # The render itself is capped at 12s; leave headroom so a
+                # slow-but-successful signal still delivers instead of
+                # timing out into SIGNAL DELAYED.
                 embed = await asyncio.wait_for(
                     signal_embed(
                         self.market, self.quotes,
                         asset=self.coin, horizon_minutes=self.horizon,
                         stream_shadow=self.stream_shadow,
                     ),
-                    timeout=7,
+                    timeout=10,
                 )
             except TimeoutError:
                 embed = discord.Embed(

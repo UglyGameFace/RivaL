@@ -352,6 +352,8 @@ class RivalDiscordClient(discord.Client):
         )
         self._stream_shadow_task: asyncio.Task[None] | None = None
         self._live_direction_task: asyncio.Task[None] | None = None
+        self._live_delivery_task: asyncio.Task[None] | None = None
+        self._live_shift_queue: asyncio.Queue | None = None
         self.live_direction = (
             LiveDirectionScanner(self.live_stream)
             if self.live_stream is not None else None
@@ -1507,6 +1509,11 @@ class RivalDiscordClient(discord.Client):
         if self.live_stream is not None:
             self.live_stream.start()
             if self.live_direction is not None and self._live_direction_task is None:
+                self._live_shift_queue = asyncio.Queue(maxsize=32)
+                self._live_delivery_task = asyncio.create_task(
+                    self._live_shift_delivery_loop(),
+                    name="rival-live-alert-delivery",
+                )
                 self._live_direction_task = asyncio.create_task(
                     self._live_direction_loop(), name="rival-live-direction-scanner",
                 )
@@ -1674,28 +1681,52 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(21600)
 
     async def _live_direction_loop(self) -> None:
-        """Read WebSocket books every 5s, independent of Discord interactions.
+        """Evaluate locally cached live books each second, no REST requests.
 
-        No REST polling or additional sockets. Alerts only after both
-        exchanges confirm a meaningful reversal, for explicitly opted-in users.
+        Sending Discord DMs is detached, so one slow user cannot pause
+        the actual trend scanner for eight seconds or more.
         """
         await self.wait_until_ready()
         assert self.live_direction is not None
-        _LOG.info("RivaL live market direction scanning enabled every 5 seconds")
+        assert self._live_shift_queue is not None
+        _LOG.info("RivaL live market direction scanner sample_period=1s")
         while not self.is_closed():
+            started = asyncio.get_running_loop().time()
             try:
                 notices = self.live_direction.observe()
-                if notices:
-                    _LOG.info(
-                        "RivaL independently confirmed live trend shifts=%d",
-                        len(notices),
-                    )
-                    await self.auto_hunt.live_cycle(notices)
+                for notice in notices:
+                    try:
+                        self._live_shift_queue.put_nowait(notice)
+                    except asyncio.QueueFull:
+                        _LOG.warning(
+                            "RivaL live alert queue saturated; skipped alert "
+                            "asset=%s (no ambiguous notification delivered)",
+                            notice.asset,
+                        )
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - stream/signal never stops Discord
-                _LOG.exception("RivaL live trend scanner cycle failed safely")
-            await asyncio.sleep(5)
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL live trend scanner failed safely")
+            elapsed = asyncio.get_running_loop().time() - started
+            await asyncio.sleep(max(0.1, 1.0 - elapsed))
+
+    async def _live_shift_delivery_loop(self) -> None:
+        """Bounded independent Discord network delivery of scanner events."""
+        await self.wait_until_ready()
+        assert self._live_shift_queue is not None
+        while not self.is_closed():
+            try:
+                candidate = await self._live_shift_queue.get()
+                try:
+                    await asyncio.wait_for(
+                        self.auto_hunt.live_cycle([candidate]), timeout=20,
+                    )
+                finally:
+                    self._live_shift_queue.task_done()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL live trend delivery failed safely")
 
     async def _hunt_loop(self) -> None:
         """Inspect fresh persisted forecasts without waiting for slow research work."""
@@ -2124,6 +2155,12 @@ class RivalDiscordClient(discord.Client):
             with suppress(asyncio.CancelledError):
                 await self._live_direction_task
             self._live_direction_task = None
+        if self._live_delivery_task is not None:
+            self._live_delivery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._live_delivery_task
+            self._live_delivery_task = None
+        self._live_shift_queue = None
         if self.live_stream is not None:
             await self.live_stream.aclose()
         if self._stream_shadow_task is not None:

@@ -50,7 +50,7 @@ class LiveDirectionScanner:
         self.hub = hub
         self.threshold_bps = threshold_bps
         self._observations: dict[str, deque[tuple[datetime, float, float]]] = {
-            asset: deque(maxlen=60) for asset in ASSETS
+            asset: deque(maxlen=240) for asset in ASSETS
         }
         self._confirmed: dict[str, str] = {}
         self._pending: dict[str, tuple[str, datetime]] = {}

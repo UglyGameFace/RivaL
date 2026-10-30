@@ -122,6 +122,11 @@ async def signal_embed(
     # Choose a forecast with its OWN current market book. A different venue's
     # quote cannot be substituted just to display a made-up executable setup.
     # Prefer Hyperliquid when Binance USDM is blocked in the hosting region.
+    # The venue loop keeps its priority short-circuit: at most one quote
+    # request per supported venue, and Binance is never queried once a
+    # Hyperliquid book validates. The book fetch runs concurrently with the
+    # independent forward-evidence lookups below instead of before them, so
+    # a slow database no longer stretches every tap by its own round trip.
     prioritized = sorted(
         live,
         key=lambda row: (
@@ -130,38 +135,57 @@ async def signal_embed(
             -row["issued"].timestamp(),
         ),
     )
-    chosen = None
-    book = None
-    checked_venues: set[str] = set()
-    for watch in prioritized:
-        venue = watch["venue"]
-        if venue not in ("hyperliquid", "binance") or venue in checked_venues:
-            continue
-        checked_venues.add(venue)
-        try:
-            candidate_book = await _venue_book(quotes, asset=asset, venue=venue)
-            candidate_book.validate(now=stamp if now is not None else datetime.now(UTC))
-        except QuoteUnavailable:
-            continue
-        chosen = watch
-        book = candidate_book
-        break
 
-    if chosen is None:
-        chosen = prioritized[0]
+    async def _pick_book() -> tuple[dict, BookQuote | PerpReferenceBook | None]:
+        checked_venues: set[str] = set()
+        for watch in prioritized:
+            venue = watch["venue"]
+            if venue not in ("hyperliquid", "binance") or venue in checked_venues:
+                continue
+            checked_venues.add(venue)
+            try:
+                candidate_book = await _venue_book(quotes, asset=asset, venue=venue)
+                candidate_book.validate(now=stamp if now is not None else datetime.now(UTC))
+            except QuoteUnavailable:
+                continue
+            return watch, candidate_book
+        return prioritized[0], None
+
+    async def _proof_or_default() -> dict:
+        try:
+            return await asyncio.to_thread(
+                _proof, market, asset=asset, horizon=horizon_minutes, now=stamp,
+            )
+        except Exception:  # noqa: BLE001
+            _LOG.exception("RivaL signal forward-evidence lookup unavailable")
+            return {"settled": 0, "hit_rate": None, "model_beats_baseline": None}
+
+    async def _shadow_or_none() -> dict | None:
+        if stream_shadow is None:
+            return None
+        try:
+            return await asyncio.to_thread(
+                stream_shadow.report, asset=asset,
+                horizon_minutes=horizon_minutes, now=stamp,
+            )
+        except Exception:  # noqa: BLE001 - missing proof must not halt signals
+            _LOG.exception("RivaL forward quote evidence unavailable")
+            return None
+
+    book_outcome, evidence, shadow = await asyncio.gather(
+        _pick_book(), _proof_or_default(), _shadow_or_none(),
+        return_exceptions=True,
+    )
+    if isinstance(book_outcome, Exception):
+        raise book_outcome
+    if isinstance(evidence, Exception):  # pragma: no cover - helper already guards
+        evidence = {"settled": 0, "hit_rate": None, "model_beats_baseline": None}
+    chosen, book = book_outcome
     probability = float(chosen["probability_up"])
     strength = model_strength(probability)
     direction = "UP" if probability > 0.5 else (
         "DOWN" if probability < 0.5 else "FLAT"
     )
-    try:
-        evidence = await asyncio.to_thread(
-            _proof, market, asset=asset, horizon=horizon_minutes, now=stamp,
-        )
-    except Exception:  # noqa: BLE001
-        _LOG.exception("RivaL signal forward-evidence lookup unavailable")
-        evidence = {"settled": 0, "hit_rate": None, "model_beats_baseline": None}
-
     count = int(evidence["settled"])
     fails_baseline = evidence.get("model_beats_baseline") is False
     is_watch = (
@@ -247,34 +271,37 @@ async def signal_embed(
         inline=False,
     )
     if stream_shadow is not None:
-        try:
-            shadow = await asyncio.to_thread(
-                stream_shadow.report, asset=asset,
-                horizon_minutes=horizon_minutes, now=stamp,
-            )
-            severe = shadow["costs"]["severe"]["mean_net_bps"]
-            embed.add_field(
-                name="Source-matched after-cost proof",
-                value=(
-                    f"**{shadow['status']}** • "
-                    f"{shadow['closed']}/{shadow['eligible_windows']} "
-                    "prospective quote windows paired"
-                    f" • {shadow['days']} days"
-                    + (f" • Severe-cost mean {severe:+.1f} bps"
-                       if severe is not None else
-                       " • Too few observed exits")
-                    + "\\nOnly genuine later same-venue books; "
-                      "no authenticated fills or guaranteed returns."
-                ),
-                inline=False,
-            )
-        except Exception:  # noqa: BLE001 - missing proof must not halt signals
-            _LOG.exception("RivaL forward quote evidence unavailable")
+        if shadow is None:
             embed.add_field(
                 name="Source-matched after-cost proof",
                 value="Cannot verify real forward quote evidence. NOT PROVEN.",
                 inline=False,
             )
+        else:
+            try:
+                severe = shadow["costs"]["severe"]["mean_net_bps"]
+                embed.add_field(
+                    name="Source-matched after-cost proof",
+                    value=(
+                        f"**{shadow['status']}** • "
+                        f"{shadow['closed']}/{shadow['eligible_windows']} "
+                        "prospective quote windows paired"
+                        f" • {shadow['days']} days"
+                        + (f" • Severe-cost mean {severe:+.1f} bps"
+                           if severe is not None else
+                           " • Too few observed exits")
+                        + "\\nOnly genuine later same-venue books; "
+                          "no authenticated fills or guaranteed returns."
+                    ),
+                    inline=False,
+                )
+            except Exception:  # noqa: BLE001 - missing proof must not halt signals
+                _LOG.exception("RivaL forward quote evidence unavailable")
+                embed.add_field(
+                    name="Source-matched after-cost proof",
+                    value="Cannot verify real forward quote evidence. NOT PROVEN.",
+                    inline=False,
+                )
     embed.set_footer(
         text=(
             "Research watch only • Refresh to recheck • No approved "

@@ -18,6 +18,7 @@ from parlay_bot.research.sports_results import (
     MODELS,
     ResultIntegrityError,
     SportsResultStore,
+    parse_final_score,
 )
 from parlay_bot.storage.hot import SQLiteHotStore
 
@@ -114,6 +115,28 @@ def test_contradicting_redelivery_still_raises(tmp_path):
             research.save_finalized(
                 event(home=3), observed_at=KICKOFF + timedelta(hours=3),
             )
+    finally:
+        store.close()
+
+
+def test_active_transaction_settlement_does_not_reinitialize(tmp_path, monkeypatch):
+    """An existing transaction must not open a nested DDL connection."""
+    store = SQLiteHotStore(tmp_path / "active-transaction.sqlite")
+    research = SportsResultStore(store)
+    try:
+        research.initialize()
+        insert_pending_forecast(store)
+        score = parse_final_score(
+            event(), observed_at=KICKOFF + timedelta(hours=2),
+        )
+
+        def forbidden_initialize():
+            pytest.fail("Reinitialized schema inside an active transaction")
+
+        monkeypatch.setattr(research, "initialize", forbidden_initialize)
+        with store.connect() as conn:
+            assert research.settle_forecast(score, conn=conn)
+        assert forecast_row(store)["settled_at"] is not None
     finally:
         store.close()
 

@@ -2011,114 +2011,39 @@ class RivalDiscordClient(discord.Client):
         await self.wait_until_ready()
         await asyncio.sleep(20)
         last_audited_hour: int | None = None
+        # Backfills are bulk research, not a live signal dependency. The old
+        # loop ran nine providers x four assets in one startup burst, holding
+        # the shared PostgreSQL pool while users were pressing Get Signal.
+        # Rotate at most two providers each cycle; cursors remain durable.
+        recovery_jobs = tuple(
+            (name, recovery) for name, recovery in (
+                ("Gate", self.history_recovery),
+                ("KuCoin", self.kucoin_history_recovery),
+                ("Bitget", self.bitget_history_recovery),
+                ("OKX", self.okx_history_recovery),
+                ("Hyperliquid", self.hyperliquid_history_recovery),
+                ("Deribit", self.deribit_history_recovery),
+                ("Lighter", self.lighter_history_recovery),
+                ("dYdX", self.dydx_history_recovery),
+                ("Phemex", self.phemex_history_recovery),
+            ) if recovery is not None
+        )
+        recovery_cursor = 0
         while not self.is_closed():
-            if self.history_recovery is not None:
+            for _ in range(min(2, len(recovery_jobs))):
+                name, recovery = recovery_jobs[recovery_cursor % len(recovery_jobs)]
+                recovery_cursor += 1
                 try:
-                    inserted = await self.history_recovery.run_once()
+                    inserted = await recovery.run_once()
                     if inserted:
-                        _LOG.info("RivaL verified historical Gate recovery inserted=%d", inserted)
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL historical recovery failed safely")
-            if self.kucoin_history_recovery is not None:
-                try:
-                    added = await self.kucoin_history_recovery.run_once()
-                    if added:
                         _LOG.info(
-                            "RivaL verified historical KuCoin recovery inserted=%d",
-                            added,
+                            "RivaL verified historical %s recovery inserted=%d",
+                            name, inserted,
                         )
                 except asyncio.CancelledError:
                     raise
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL KuCoin history recovery failed safely")
-            if self.bitget_history_recovery is not None:
-                try:
-                    added = await self.bitget_history_recovery.run_once()
-                    if added:
-                        _LOG.info(
-                            "RivaL verified historical Bitget recovery inserted=%d",
-                            added,
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL Bitget history recovery failed safely")
-            if self.okx_history_recovery is not None:
-                try:
-                    added = await self.okx_history_recovery.run_once()
-                    if added:
-                        _LOG.info(
-                            "RivaL verified historical OKX recovery inserted=%d",
-                            added,
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL OKX history recovery failed safely")
-            if self.hyperliquid_history_recovery is not None:
-                try:
-                    added = await self.hyperliquid_history_recovery.run_once()
-                    if added:
-                        _LOG.info(
-                            "RivaL verified historical Hyperliquid recovery "
-                            "inserted=%d",
-                            added,
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001
-                    _LOG.exception(
-                        "RivaL Hyperliquid history recovery failed safely")
-            if self.deribit_history_recovery is not None:
-                try:
-                    added = await self.deribit_history_recovery.run_once()
-                    if added:
-                        _LOG.info(
-                            "RivaL verified historical Deribit recovery inserted=%d",
-                            added,
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL Deribit history recovery failed safely")
-            if self.lighter_history_recovery is not None:
-                try:
-                    added = await self.lighter_history_recovery.run_once()
-                    if added:
-                        _LOG.info(
-                            "RivaL verified historical Lighter recovery inserted=%d",
-                            added,
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL Lighter history recovery failed safely")
-            if self.dydx_history_recovery is not None:
-                try:
-                    added = await self.dydx_history_recovery.run_once()
-                    if added:
-                        _LOG.info(
-                            "RivaL verified historical dYdX recovery inserted=%d",
-                            added,
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL dYdX history recovery failed safely")
-            if self.phemex_history_recovery is not None:
-                try:
-                    added = await self.phemex_history_recovery.run_once()
-                    if added:
-                        _LOG.info(
-                            "RivaL verified historical Phemex recovery inserted=%d",
-                            added,
-                        )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL Phemex history recovery failed safely")
+                except Exception:  # noqa: BLE001 - independent recovery providers
+                    _LOG.exception("RivaL historical %s recovery failed safely", name)
             if self.history_auditor is not None and self.perp_collector is not None:
                 now = datetime.now(UTC)
                 hour = int(now.timestamp() // 3600)

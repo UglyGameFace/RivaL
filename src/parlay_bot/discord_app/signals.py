@@ -134,6 +134,13 @@ async def signal_embed(
     ) -> _T:
         """Every stage uses the SAME monotonic deadline, not fresh budgets."""
         if not decision_only or deadline is None:
+            # Preserve the preexisting per-venue quote timeout for manual
+            # menus and standalone decision checks without a shared budget.
+            if stage.startswith("quote:"):
+                try:
+                    return await asyncio.wait_for(work(), timeout=max_seconds)
+                except TimeoutError as exc:
+                    raise SignalStageTimeout(stage) from exc
             return await work()
         remaining = deadline - time.monotonic() - 0.15
         if remaining <= 0:

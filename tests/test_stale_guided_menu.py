@@ -70,7 +70,8 @@ def _guided_custom_ids(bot):
     try:
         found: set[str] = set()
         for page in ("home", "discover", "sports", "slip", "crypto", "forecast", "quote",
-                     "practice", "results", "help", "advanced", "feeds", "trust", "hunt"):
+                     "practice", "results", "help", "advanced", "feeds", "trust",
+                     "hunt", "live"):
             home.navigate("home")
             home.navigate(page)
             home._buttons()
@@ -307,3 +308,28 @@ def test_detached_non_guided_item_is_not_mutated():
     ))
     assert result is stale
     assert views[123][key] is stale
+
+
+@pytest.mark.asyncio
+async def test_stale_live_mode_recovers_navigation_but_not_toggle(tmp_path):
+    bot = _client(tmp_path)
+    try:
+        views = build_stale_guided_menu_views(lambda owner: _home(bot, owner))
+        live = _interaction()
+        await _item_by_custom_id(views[1], "rival:guided:live").callback(live)
+        fresh = live.edit_original_response.await_args.kwargs["view"]
+        assert fresh.page == "live"
+        assert fresh.note == _STALE_NOTE
+        fresh.stop()
+        toggle = _interaction()
+        await _item_by_custom_id(
+            views[1], "rival:guided:live-on",
+        ).callback(toggle)
+        fresh = toggle.edit_original_response.await_args.kwargs["view"]
+        assert fresh.page == "home"
+        assert fresh.note == _STALE_NOTE
+        fresh.stop()
+    finally:
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()

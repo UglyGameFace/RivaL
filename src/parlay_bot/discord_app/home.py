@@ -345,13 +345,13 @@ class GuidedHome(discord.ui.View):
             self._add("See Buy/Sell Prices", "quote", 3, "💱")
             self._add("Stop My Alerts", "stop", 3, "🔕")
         elif p == "hunt":
-            self._add("Enable Polymarket Alerts", "hunt-poly", 0, "📊", True)
-            self._add("Enable Model Forecast Alerts", "hunt-on", 0, "📈")
-            self._add("Customize Alerts", "hunt-config", 1, "⚙️", True)
+            self._add("Follow Polymarket", "hunt-poly", 0, "📊", True)
+            self._add("Follow Model Forecasts", "hunt-on", 0, "📈")
+            self._add("Alert Settings", "hunt-config", 1, "⚙️", True)
             self._add("Stop All Alerts", "hunt-off", 2, "🔕")
             self._add("Check Status", "hunt-status", 2, "🔎")
-            self._add("Research alerts", "hunt-research", 3, "🔔")
-            self._add("Qualified alerts", "hunt-qualified", 3, "✅")
+            self._add("Early Research", "hunt-research", 3, "🔔")
+            self._add("Qualified Watches", "hunt-qualified", 3, "✅")
         elif p == "practice":
             self.add_item(_Coin(self.coin))
             self._add("Practice Buy $25", "buy", 1, "📈", True)
@@ -407,14 +407,36 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title="RivaL | Betting Genie",
                 description=(
-                    "**Welcome! What would you like to do?**\n"
-                    "🔎 **Find Opportunities**: Choose crypto research or practice.\n"
-                    "🔔 **My Alerts**: Choose new forecasts or markets to follow.\n"
-                    "🏆 **Sports & Odds**: Compare currently available prices.\n"
-                    "📊 **My Results**: Check accuracy and practice results.\n\n"
-                    "Source availability is checked inside each section.\n"
-                    "**No real bets or orders are placed.**"
+                    "**What would you like to do?**\n"
+                    "Choose a button below. Every result is checked against "
+                    "its real source, and a missing result is never invented. "
+                    "No real bets or orders are placed."
                 ), color=discord.Color.blurple(),
+            )
+            embed.add_field(
+                name="🔎 Find Opportunities",
+                value="Crypto forecasts, practice, and research watches",
+                inline=True,
+            )
+            embed.add_field(
+                name="🔔 My Alerts",
+                value="Follow verified markets and manage notifications",
+                inline=True,
+            )
+            embed.add_field(
+                name="🏆 Sports & Odds",
+                value="Compare available sportsbook prices",
+                inline=True,
+            )
+            embed.add_field(
+                name="📊 My Results",
+                value="Measured prediction accuracy and practice results",
+                inline=True,
+            )
+            embed.add_field(
+                name="Private research only",
+                value="No real bets or orders are placed.",
+                inline=False,
             )
         elif p == "discover":
             embed = discord.Embed(
@@ -439,26 +461,34 @@ class GuidedHome(discord.ui.View):
             except (TimeoutError, Exception):  # noqa: BLE001
                 status = "Alert status is busy; your preferences were not changed."
             embed = discord.Embed(
-                title="🔔 Auto-Hunt | Find Research Opportunities",
-                description=(
-                    "**" + status + "**\n\n"
-                    "**Enable Polymarket Alerts** receives fresh listed "
-                    "Up/Down market quotes, NOT predictions. "
-                    "**Enable Model Forecast Alerts** receives genuine new "
-                    "model forecasts, NOT guaranteed bets.\n\n"
-                    "Press **Customize Alerts** to choose coins, 5m/15m "
-                    "windows, Polymarket Up/Down side, maximum share ask, "
-                    "time remaining, and independent live-trend/model-reversal "
-                    "notifications. All changes are private to you.\n\n"
-                    "The global Polymarket market feed differs from "
-                    "Polymarket US; access depends on your location.\n\n"
-                    "**RivaL model forecasts**: new genuine model direction "
-                    "predictions even when future profitability is unproven.\n\n"
-                    "Switch anytime. You do not need to type a target.\n"
-                    "**No automated real-money bets, guaranteed winning odds, "
-                    "or verified profitable entry are implied.**"
-                ),
+                title="🔔 My Alerts | Auto-Hunt",
+                description="**Your alert status**\n" + status,
                 color=discord.Color.blurple(),
+            )
+            embed.add_field(
+                name="📊 Polymarket",
+                value="Get notices for real listed Up/Down market prices. "
+                      "A market price is **not** a predicted win rate.",
+                inline=False,
+            )
+            embed.add_field(
+                name="📈 RivaL forecasts",
+                value="Get new model research, or choose separately "
+                      "screened qualified watches. Neither guarantees a win.",
+                inline=False,
+            )
+            embed.add_field(
+                name="⚙️ Your filters",
+                value="Customize coins, 5m/15m alerts, Up/Down, price limit, "
+                      "time remaining, and direction changes.",
+                inline=False,
+            )
+            embed.add_field(
+                name="Important",
+                value="Alerts have daily limits and require working DMs. "
+                      "The global Polymarket feed is not Polymarket US. "
+                      "No real bets are placed.",
+                inline=False,
             )
         elif p == "sports":
             # Browsing the sports menu is not a bet recommendation. In

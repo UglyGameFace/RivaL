@@ -235,12 +235,17 @@ def test_two_opted_in_members_receive_concurrent_bounded_alerts(hunt_store, monk
     )
     simultaneous = 0
     peak = 0
+    both_sending = asyncio.Event()
 
     async def send(**kwargs):
         nonlocal simultaneous, peak
         simultaneous += 1
         peak = max(peak, simultaneous)
-        await asyncio.sleep(0.03)
+        if simultaneous == 2:
+            both_sending.set()
+        # Assert actual concurrent delivery rather than relying on a 30 ms
+        # scheduler window under variable PostgreSQL/CI worker load.
+        await asyncio.wait_for(both_sending.wait(), timeout=3)
         simultaneous -= 1
         return SimpleNamespace(id=1000 + peak)
 

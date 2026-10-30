@@ -55,6 +55,12 @@ class _Connection:
             self._raw.executescript(script)
             return
 
+        # IF NOT EXISTS is not concurrency-safe when two independent workers
+        # create the same PostgreSQL catalog entry at the same instant.
+        # A transaction-scoped advisory lock serializes startup DDL across
+        # threads, store instances, and even overlapping bot processes.
+        # It is released automatically at commit/rollback; no permanent lock.
+        self._raw.execute("SELECT pg_advisory_xact_lock(72649113001)")
         statements = [part.strip() for part in script.split(";") if part.strip()]
         for statement in statements:
             self._raw.execute(statement)
@@ -76,7 +82,7 @@ class _Connection:
                         try:
                             self._raw.rollback()
                         except Exception:  # noqa: BLE001
-                            pass
+                            _LOG.warning("RivaL PostgreSQL rollback failed during exception cleanup")
                     else:
                         self._raw.commit()
                 result = False

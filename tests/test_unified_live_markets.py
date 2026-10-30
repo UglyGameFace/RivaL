@@ -82,7 +82,7 @@ async def test_live_desk_shows_actual_verified_market_and_switches_provider_in_p
         home.navigate("live")
         home._buttons()
         poly = await home.render()
-        assert "Live Markets" in poly.title
+        assert "Crypto Markets" in poly.title
         assert "Polymarket Global" in poly.title
         summary = "\n".join(f.value for f in poly.fields)
         assert "76000" in summary or "76,000" in summary

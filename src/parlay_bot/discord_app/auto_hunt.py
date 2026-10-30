@@ -20,6 +20,7 @@ from parlay_bot.discord_app.opportunities import (
     recent_multi_watches,
     recent_watches,
 )
+from parlay_bot.discord_app.polymarket_watch import PolymarketNotice, PolymarketReader
 from parlay_bot.discord_app.signals import (
     MIN_REMAINING,
     _venue_book,
@@ -27,7 +28,6 @@ from parlay_bot.discord_app.signals import (
     model_strength,
     signal_embed,
 )
-from parlay_bot.discord_app.polymarket_watch import PolymarketNotice, PolymarketReader
 from parlay_bot.perpetuals.promotion import multi_summary, promoted_engine
 from parlay_bot.storage.hot import RelationalHotStore
 

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+import itertools
+import time
 from datetime import timedelta
 
 import pytest
@@ -87,3 +90,50 @@ async def test_service_returns_none_when_no_closed_states_are_ready(tmp_path) ->
     )
 
     assert result is None
+
+
+class _SlowQueue(SQLiteArchiveQueue):
+    """Simulates the slow production GROUP BY: blocks its thread, not the loop."""
+
+    def next_batch(self, *, cutoff, max_rows):
+        time.sleep(1.0)
+        return super().next_batch(cutoff=cutoff, max_rows=max_rows)
+
+
+@pytest.mark.asyncio
+async def test_archive_one_never_blocks_the_event_loop(tmp_path) -> None:
+    """A slow archive query must not freeze Discord heartbeats/interactions.
+
+    Regression test for the post-deploy heartbeat block: the cold archive
+    ran its synchronous database calls on the event loop, stalling gateway
+    heartbeats for 10+ seconds. A ticker task must keep running with no
+    long stall while a deliberately slow next_batch executes.
+    """
+    store, now = _seed_closed_state(tmp_path / "rival.sqlite")
+    queue = _SlowQueue(store.path)
+    writer = ParquetArchiveWriter(tmp_path / "archive")
+    service = ColdArchiveService(queue=queue, writer=writer, drive=FakeDrive())
+
+    ticks: list[float] = []
+    stop = asyncio.Event()
+
+    async def ticker() -> None:
+        while not stop.is_set():
+            ticks.append(time.monotonic())
+            await asyncio.sleep(0.01)
+
+    task = asyncio.create_task(ticker())
+    started = time.monotonic()
+    try:
+        result = await service.archive_one(
+            cutoff=now - timedelta(hours=1),
+            max_rows=100,
+        )
+    finally:
+        ended = time.monotonic()
+        stop.set()
+        await task
+    assert result is not None
+    marks = [started, *(t for t in ticks if started < t < ended), ended]
+    longest_stall = max(b - a for a, b in itertools.pairwise(marks))
+    assert longest_stall < 0.5, f"event loop stalled {longest_stall:.2f}s"

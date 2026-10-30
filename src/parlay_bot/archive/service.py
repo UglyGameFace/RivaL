@@ -29,7 +29,15 @@ class ColdArchiveService:
         cutoff: datetime,
         max_rows: int,
     ) -> ArchiveCompletion | None:
-        batch = self.queue.next_batch(cutoff=cutoff, max_rows=max_rows)
+        # Every queue call below is synchronous database I/O (psycopg).
+        # Running any of them on the event loop freezes Discord: gateway
+        # heartbeats stall and no interaction is handled until the query
+        # returns. The heavy next_batch GROUP BY did exactly that after a
+        # restart, blocking the loop for 10+ seconds. Keep all of them in
+        # worker threads, mirroring the perpetual archive service.
+        batch = await asyncio.to_thread(
+            self.queue.next_batch, cutoff=cutoff, max_rows=max_rows,
+        )
         if batch is None:
             return None
 
@@ -40,7 +48,9 @@ class ColdArchiveService:
                 artifact=history,
                 batch_id=batch.batch_id,
             )
-            self.queue.set_history_file(batch.batch_id, history_obj.file_id)
+            await asyncio.to_thread(
+                self.queue.set_history_file, batch.batch_id, history_obj.file_id,
+            )
 
             manifest = await asyncio.to_thread(
                 self.writer.write_manifest,
@@ -52,10 +62,13 @@ class ColdArchiveService:
                 artifact=manifest,
                 batch_id=batch.batch_id,
             )
-            self.queue.set_manifest_file(batch.batch_id, manifest_obj.file_id)
+            await asyncio.to_thread(
+                self.queue.set_manifest_file, batch.batch_id, manifest_obj.file_id,
+            )
 
             completed_at = datetime.now(UTC)
-            self.queue.mark_complete(
+            await asyncio.to_thread(
+                self.queue.mark_complete,
                 batch_id=batch.batch_id,
                 row_ids=batch.row_ids,
                 completed_at=completed_at,
@@ -67,7 +80,9 @@ class ColdArchiveService:
                 completed_at=completed_at,
             )
         finally:
-            record = self.queue.batch_record(batch.batch_id)
+            record = await asyncio.to_thread(
+                self.queue.batch_record, batch.batch_id,
+            )
             if record is not None and record.get("status") == "complete":
                 history.path.unlink(missing_ok=True)
                 if manifest is not None:

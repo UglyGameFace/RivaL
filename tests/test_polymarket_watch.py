@@ -168,3 +168,117 @@ def test_polymarket_alert_works_without_rival_collector(tmp_path):
         assert run(service.cycle()) == 0
     finally:
         hot.close()
+
+
+def test_verified_current_and_next_polymarket_targets_without_fabrication(monkeypatch):
+    now = datetime.fromtimestamp(1793349000 + 271, UTC)
+    start = datetime.fromtimestamp(1793349000, UTC)
+    next_start = start + timedelta(minutes=5)
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now if tz is not None else now.replace(tzinfo=None)
+
+    monkeypatch.setattr(polymarket_watch, "datetime", Clock)
+    requested = []
+    tokens = ["1" * 60, "2" * 60]
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        url = str(req.url)
+        requested.append(url)
+        if req.url.host == "gamma-api.polymarket.com":
+            slug = url.rsplit("/", 1)[-1]
+            if not slug.endswith((
+                str(int(start.timestamp())),
+                str(int(next_start.timestamp())),
+            )):
+                return httpx.Response(404)
+            opened = (
+                next_start if slug.endswith(str(int(next_start.timestamp())))
+                else start
+            )
+            return httpx.Response(200, json={
+                "slug": slug, "active": True, "closed": False, "archived": False,
+                "eventStartTime": opened.isoformat(),
+                "endDate": (opened + timedelta(minutes=5)).isoformat(),
+                "eventMetadata": (
+                    {"priceToBeat": "75050.25", "other": "ignored"}
+                    if opened == start else {"priceToBeat": "999999"}
+                ),
+                "markets": [{
+                    "active": True, "closed": False,
+                    "acceptingOrders": True, "enableOrderBook": True,
+                    "outcomes": json.dumps(["Up", "Down"]),
+                    "clobTokenIds": json.dumps(tokens),
+                }],
+            })
+        if req.url.host == "clob.polymarket.com":
+            token = req.url.params["token_id"]
+            return httpx.Response(200, json={
+                "timestamp": str(int(now.timestamp() * 1000)),
+                "asks": [{"price": "0.61" if token == tokens[0] else "0.42",
+                          "size": "20"}],
+            })
+        return httpx.Response(400)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        polymarket_watch.httpx, "AsyncClient",
+        lambda *a, **kw: real_client(
+            transport=httpx.MockTransport(handler), timeout=kw["timeout"],
+        ),
+    )
+    reader = polymarket_watch.PolymarketReader()
+    board = run(reader.window_board("XRP", 5, now=now))
+    assert board.current is not None
+    assert board.next_window is not None
+    assert board.current.price_to_beat == 75050.25
+    assert board.current.accepting_orders
+    assert board.current_quote is not None
+    assert board.current_quote.up_ask == 0.61
+    assert board.current_quote.down_ask == 0.42
+    assert board.next_window.price_to_beat is None
+    assert board.next_window.accepting_orders is False
+    assert board.next_window.url.endswith(
+        f"/xrp-updown-5m-{int(next_start.timestamp())}"
+    )
+    assert len([x for x in requested if "/book?" in x]) == 2
+    assert len([x for x in requested if "/events/slug/" in x]) == 3
+    # The informational late-window quote must not bypass the original
+    # >= 90-second alerting rule or populate its notification cache.
+    assert run(reader.market("XRP", 5, now=now)) is None
+
+
+def test_next_polymarket_listing_never_invented_when_gamma_disagrees(monkeypatch):
+    now = datetime.fromtimestamp(1793349000 + 20, UTC)
+    start = datetime.fromtimestamp(1793349000, UTC)
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        slug = str(req.url).rsplit("/", 1)[-1]
+        opened = start + timedelta(minutes=5)
+        return httpx.Response(200, json={
+            "slug": slug, "closed": False, "archived": False,
+            "eventStartTime": (opened + timedelta(seconds=15)).isoformat(),
+            "endDate": (opened + timedelta(minutes=5)).isoformat(),
+            "markets": [{
+                "closed": False,
+                "outcomes": '["Up","Down"]',
+            }],
+        })
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        polymarket_watch.httpx, "AsyncClient",
+        lambda *a, **kw: real_client(
+            transport=httpx.MockTransport(handler), timeout=kw["timeout"],
+        ),
+    )
+    reader = polymarket_watch.PolymarketReader()
+    result = run(reader.listed(
+        "BTC", 5, start + timedelta(minutes=5), now=now,
+    ))
+    assert result is None
+    assert run(reader.listed(
+        "BTC", 5, start + timedelta(minutes=5), now=now,
+    )) is None

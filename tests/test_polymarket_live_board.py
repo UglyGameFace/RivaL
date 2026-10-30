@@ -169,8 +169,8 @@ def test_live_market_and_model_predictions_are_clearly_separate():
     )
     embed = live_polymarket_embed(board, model, asset="BTC", horizon=5)
     full_text = "\n".join(str(field.value) for field in embed.fields)
-    assert "Up ask 61.0%" in full_text
-    assert "Down ask 45.0%" in full_text
+    assert "Up ask $0.61/share" in full_text
+    assert "Down ask $0.45/share" in full_text
     assert "Price to beat: Not verified" in full_text
     assert "Next price to beat unknown" in full_text
     assert "Same 5m closing boundary verified" in full_text

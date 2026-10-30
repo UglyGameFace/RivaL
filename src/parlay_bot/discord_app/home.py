@@ -125,6 +125,28 @@ class _Horizon(discord.ui.Select["GuidedHome"]):
         await self.view.redraw(interaction)
 
 
+class _PolymarketHorizon(discord.ui.Select["GuidedHome"]):
+    """Only show timeframes that the verified Polymarket reader supports."""
+
+    def __init__(self, selected: int) -> None:
+        super().__init__(
+            placeholder="Choose a listed market window", row=1,
+            custom_id="rival:guided:horizon",
+            options=[
+                discord.SelectOption(
+                    label=f"{n} minutes", value=str(n), default=n == selected,
+                ) for n in (5, 15)
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        self.view.horizon = int(self.values[0])
+        self.view.note = None
+        await interaction.response.defer()
+        await self.view.redraw(interaction)
+
+
 class _Entry(discord.ui.Modal):
     def __init__(self, home: GuidedHome, kind: str) -> None:
         settings = {
@@ -349,7 +371,7 @@ class GuidedHome(discord.ui.View):
             self._add("Stop My Alerts", "stop", 3, "🔕")
         elif p == "live":
             self.add_item(_Coin(self.coin))
-            self.add_item(_Horizon(self.horizon))
+            self.add_item(_PolymarketHorizon(self.horizon))
             self._add("Start Auto-Track", "poly-start", 2, "⚡", True)
             self._add("Stop Auto-Track", "poly-stop", 2, "🔕")
             self._add("Notification Options", "hunt", 3, "⚙️")
@@ -409,6 +431,8 @@ class GuidedHome(discord.ui.View):
             self.back_stack.append(self.page)
             self.back_stack = self.back_stack[-12:]
         self.page = page
+        if page == "live" and self.horizon not in (5, 15):
+            self.horizon = 5
         self.note = None
 
     async def _refresh_odds(self) -> str:

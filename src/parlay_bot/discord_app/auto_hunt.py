@@ -389,29 +389,39 @@ class AutoHuntStore:
     def daily_sent_counts(
         self, user_id: str, *, now: datetime | None = None,
     ) -> dict[str, int]:
-        """Single-query UTC alert budget, matching the actual delivery cap.
+        """Today's confirmed alerts, using exactly the delivery cap clock."""
+        return self.daily_sent_counts_many((user_id,), now=now)[user_id]
 
-        This uses the same attempted_at and sent-state semantics as
-        count_sent_today. A live-price trend must not consume the research
-        budget, and unconfirmed messages must not be reported as delivered.
-        """
+    def daily_sent_counts_many(
+        self, user_ids: tuple[str, ...], *, now: datetime | None = None,
+    ) -> dict[str, dict[str, int]]:
+        """One indexed query for all subscribers, not one connection per user."""
+        users = tuple(dict.fromkeys(user_ids))
+        if not users:
+            return {}
+        if len(users) > MAX_USERS or any(not user for user in users):
+            raise ValueError("Invalid Auto-Hunt daily budget request")
         clock = now or datetime.now(UTC)
         if clock.utcoffset() is None:
             raise ValueError("Daily budget requires an aware clock")
         midnight = clock.astimezone(UTC).replace(
             hour=0, minute=0, second=0, microsecond=0,
         )
+        placeholders = ",".join("?" for _ in users)
         with self.store.connect() as conn:
-            row = conn.execute(
-                """SELECT venue,forecast_key FROM rival_hunt_delivery
-                   WHERE user_id=? AND state='sent' AND attempted_at>=?
-                     AND attempted_at<?""",
-                (user_id, midnight.isoformat(),
+            rows = conn.execute(
+                "SELECT user_id,venue,forecast_key FROM rival_hunt_delivery "
+                "WHERE user_id IN (" + placeholders + ") "
+                "AND state='sent' AND attempted_at>=? AND attempted_at<?",
+                (*users, midnight.isoformat(),
                  (midnight + timedelta(days=1)).isoformat()),
             ).fetchall()
-        counters = {tier: 0 for tier in
-                    ("research", "qualified", "polymarket", "flip", "live_shift")}
-        for record in row:
+        counters = {
+            user: {tier: 0 for tier in (
+                "research", "qualified", "polymarket", "flip", "live_shift",
+            )} for user in users
+        }
+        for record in rows:
             key = str(record["forecast_key"])
             venue = str(record["venue"])
             if venue == "polymarket":
@@ -424,7 +434,7 @@ class AutoHuntStore:
                 tier = "flip"
             else:
                 tier = "research"
-            counters[tier] += 1
+            counters[str(record["user_id"])][tier] += 1
         return counters
 
     def has_qualified_sent_window(self, user_id: str, asset: str,
@@ -1746,13 +1756,12 @@ class AutoHuntService:
             # every follower of that tier is already at the sent-alert cap.
             # Delivery still rechecks caps after the scan for race safety.
             scan_at = datetime.now(UTC)
-            counts = await asyncio.gather(*(
-                asyncio.to_thread(
-                    self.store.daily_sent_counts, str(sub["user_id"]),
-                    now=scan_at,
-                )
-                for sub in subscribers
-            ))
+            daily = await asyncio.to_thread(
+                self.store.daily_sent_counts_many,
+                tuple(str(sub["user_id"]) for sub in subscribers),
+                now=scan_at,
+            )
+            counts = [daily[str(sub["user_id"])] for sub in subscribers]
             want_qualified = any(
                 s.get("qualified") and count["qualified"] < DAILY_CAP_PER_TIER
                 for s, count in zip(subscribers, counts, strict=True)

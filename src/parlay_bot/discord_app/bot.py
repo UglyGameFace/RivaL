@@ -1987,7 +1987,6 @@ class RivalDiscordClient(discord.Client):
                         "math_settled=%s ai_issued=%s",
                         issued, settled, ai_issued,
                     )
-                    if issued:
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001

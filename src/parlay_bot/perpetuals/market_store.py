@@ -44,8 +44,8 @@ class PerpetualMarketStore:
         # Shared by the collector, research worker, and Discord signal readers.
         self._schema_lock = threading.Lock()
         self._schema_ready = False
-        self._forward_read_lock = threading.Lock()
-        self._forward_read_ready = False
+        self._forward_schema_lock = threading.Lock()
+        self._forward_schema_ready = False
 
     def initialize(self) -> None:
         if self._schema_ready:

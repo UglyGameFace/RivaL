@@ -1783,8 +1783,8 @@ class RivalDiscordClient(discord.Client):
                 )
                 budget = asyncio.Semaphore(2)
 
-                async def study(notice) -> bool:
-                    async with budget:
+                async def study(notice, limiter=budget) -> bool:
+                    async with limiter:
                         try:
                             await asyncio.wait_for(
                                 asyncio.to_thread(

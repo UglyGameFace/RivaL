@@ -51,8 +51,8 @@ COINS = RESEARCH_ASSETS
 EXPLAIN = {
     "home": "Choose Crypto, Sports, Notifications, Results, or Practice. No bets are placed.",
     "discover": "Old menus can open Crypto or Practice. No actual trades are placed.",
-    "live": "Track one verified Polymarket contract DM. Share prices are not win probabilities. Exchange forecasts remain separate research.",
-    "hunt": "Track live Polymarket or an exchange forecast; opt in separately to confirmed price changes. Stop All disables personal notifications.",
+    "live": "Track one verified Polymarket contract DM, updated only on meaningful changes. Contract AI calls are labeled separately and market prices are not win probabilities.",
+    "hunt": "Track Polymarket in one live DM or follow an exchange forecast. Old price-shift DMs have been retired; Stop All cancels personal updates.",
     "hunt-tools": "Old Auto-Hunt notifications retired. Use Notifications.",
     "kalshi": "Kalshi is a different US prediction exchange. Its public prices and settlement rules must not inherit Polymarket Global forecast signals.",
     "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
@@ -474,9 +474,7 @@ class GuidedHome(discord.ui.View):
         elif p == "hunt":
             self._add("Track Crypto", "live", 0, "📈", True)
             self._add("Watch Forecast", "crypto", 0, "🎯")
-            self._add("Changes ON", "live-on", 1, "🔔")
-            self._add("Changes OFF", "live-off", 1, "🔕")
-            self._add("Stop All", "stop-all", 2, "🛑")
+            self._add("Stop All", "stop-all", 1, "🛑")
         elif p == "kalshi":
             self._add("Polymarket", "live", 0, "📈", True)
         elif p == "hunt-tools":
@@ -764,9 +762,11 @@ class GuidedHome(discord.ui.View):
             prefs = await current(
                 self.auto_hunt.store.preferences if self.auto_hunt else None
             )
-            shifts = (
-                "ON" if prefs.get("live_shifts") else "OFF"
-            ) if isinstance(prefs, dict) else "Unavailable"
+            legacy = (
+                "Legacy price-shift alerts have been retired."
+                if prefs is not None else
+                "Old alert preferences unavailable."
+            )
 
             def status(value):
                 if value == "unknown":
@@ -778,10 +778,10 @@ class GuidedHome(discord.ui.View):
                 description=(
                     f"**Polymarket tracking:** {status(market)}\n"
                     f"**Exchange forecast watch:** {status(exchange)}\n"
-                    f"**Price direction changes:** {shifts}\n\n"
-                    "Tracking updates a single private message. Optional "
-                    "price-change alerts are separate. Old Auto-Hunt alerts "
-                    "have been retired. **Stop All** cancels every personal update."
+                    f"{legacy}\n\n"
+                    "Tracking updates one private message. No price-change "
+                    "or Auto-Hunt notification spam. Background model training "
+                    "does not DM you. **Stop All** cancels your personal updates."
                 ),
                 color=discord.Color.blurple(),
             )
@@ -1705,25 +1705,10 @@ class GuidedHome(discord.ui.View):
                     self.note = "Could not confirm stopping the live tracker."
         elif action in ("live-on", "live-off"):
             self.navigate("hunt")
-            if self.auto_hunt is None:
-                self.note = "Live alerts are unavailable; no change saved."
-            else:
-                try:
-                    prefs = await self.auto_hunt.update_preference(
-                        self.owner_id, "live_shifts",
-                        1 if action == "live-on" else 0,
-                    )
-                    self.note = (
-                        "Live price-shift DMs enabled. You will only get "
-                        "confirmed changes that pass your filters."
-                        if prefs["live_shifts"] else
-                        "Live price-shift DMs disabled. Other alert types are unchanged."
-                    )
-                except (ValueError, TimeoutError, discord.HTTPException) as exc:
-                    self.note = f"Live alerts unchanged: {exc}"
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("Live alert preference failed")
-                    self.note = "Live alerts unchanged; unable to save preference."
+            self.note = (
+                "Legacy price-shift DMs were retired because they are not "
+                "predictions. Tracking and background learning are unaffected."
+            )
         elif action in ("hunt-on", "hunt-poly", "hunt-off", "hunt-status",
                          "hunt-research", "hunt-qualified"):
             self.navigate("hunt")

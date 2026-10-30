@@ -169,7 +169,9 @@ def seed_strict_21_day_paired_proof(store, now):
 
 
 def test_qualified_challenger_with_quote_proof_promotes(tmp_path):
-    now = datetime.now(UTC).replace(microsecond=0)
+    # Keep synthetic 5-minute windows inside complete UTC days. Near
+    # midnight a one-sample partial UTC day can falsely fail day-block stress.
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "promo.sqlite")
     try:
         seed_strict_21_day_paired_proof(store, now)
@@ -221,7 +223,9 @@ def test_qualified_brier_but_thin_quotes_hold(tmp_path):
 
 
 def test_promotion_demotes_when_evidence_collapses(tmp_path):
-    now = datetime.now(UTC).replace(microsecond=0)
+    # Keep synthetic 5-minute windows inside complete UTC days. Near
+    # midnight a one-sample partial UTC day can falsely fail day-block stress.
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "demote.sqlite")
     try:
         seed_strict_21_day_paired_proof(store, now)
@@ -298,7 +302,9 @@ def test_challenger_trading_at_loss_does_not_beat_cash(tmp_path):
 
 
 def test_stale_promotion_falls_back_to_live(tmp_path):
-    now = datetime.now(UTC).replace(microsecond=0)
+    # Keep synthetic 5-minute windows inside complete UTC days. Near
+    # midnight a one-sample partial UTC day can falsely fail day-block stress.
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "stale.sqlite")
     try:
         seed_strict_21_day_paired_proof(store, now)

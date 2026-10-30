@@ -41,9 +41,12 @@ def test_forward_read_schema_initialized_only_once_across_threads(tmp_path, monk
     def initialize(_self):
         calls.append(1)
 
-    monkeypatch.setattr(opportunities.ForwardAccuracyMonitor, "initialize", initialize)
+    monkeypatch.setattr(opportunities.ForwardAccuracyMonitor, "_initialize_schema", initialize)
     with ThreadPoolExecutor(max_workers=6) as executor:
-        list(executor.map(opportunities._ensure_forward_read_schema, [market] * 12))
+        list(executor.map(
+            lambda _: opportunities.ForwardAccuracyMonitor(market).initialize(),
+            range(12),
+        ))
     assert len(calls) == 1
 
 

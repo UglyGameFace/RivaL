@@ -119,6 +119,41 @@ A returned parlay:
 
 The Discord result explicitly labels these values as market-consensus estimates rather than guaranteed outcomes or model predictions.
 
+### XRP and 60-minute forecast research
+
+The read-only forward market catalog now includes **BTC, ETH, SOL and XRP**
+and horizons **5, 15, 60 minutes**. The extra hour means a forecast for the
+direction of the five-minute reference candle that *opens one hour after the
+source candle*, **not** an hourly candle, a one-hour average or a Polymarket
+Up/Down outcome. Four-asset data collection is the **default configuration**;
+existing deployed environment overrides may still collect only three assets.
+A venue must actually list the perpetual and produce fresh, causally
+observed candles before the model can issue a new genuine prediction. Until
+the new asset/horizon accumulates its own settled track record, it is
+research-only and displays WAIT/UNVERIFIED instead of invented accuracy.
+
+Existing private Auto-Hunt subscriptions retain their old BTC/ETH/SOL,
+5m/15m notification coverage. New XRP/60m predictions can be inspected
+from the main crypto signal screen, but expanding automatic notifications
+requires a separately authorized opt-in, not an unannounced scope change.
+
+### Automatic model qualification and alert delivery
+
+Champion promotion now requires the paired short-window model tests **and**
+21 distinct UTC days, at least 150 unique outcome windows, usable matched
+quote coverage, strict calibration and positive conservative/severe
+simulated-cost evidence. Each outcome window is counted once, not once per
+exchange. Historical market backfill never becomes a newly issued forecast.
+The qualification is a conservative **research** gate, not a guaranteed
+return or a market-specific binary win probability.
+
+The Auto-Hunt outbox stores claim, READY, SENDING, SENT and UNKNOWN state
+transitions in existing SQLite/PostgreSQL tables through additive columns.
+Only failures definitely **before** Discord message creation are eligible
+for bounded retries; timeouts during or after sending remain UNKNOWN to
+avoid unwanted duplicate notifications. Subscription ON and verified DM
+delivery are separate. No new wallet or wagering permissions are requested.
+
 ### Research alerts and quoted prices
 
 A severe-cost historical simulated trading mean is **not** an expected betting

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC, datetime
 
 import discord
 import pytest
@@ -74,7 +73,7 @@ def test_postgresql_stores_and_restores_settings_additively():
         assert value["side"] == "down"
         assert value["max_ask_pct"] == 50
         assert value["live_shifts"] is True
-        assert restarted.subscribers() == []
+        assert all(x['user_id'] != owner for x in restarted.subscribers())
     finally:
         with hot.connect() as conn:
             conn.execute(

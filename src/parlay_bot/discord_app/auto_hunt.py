@@ -238,9 +238,6 @@ async def eligible_research_watches(
     stamp = stamp.astimezone(UTC)
 
     async def inspect_asset(asset: str) -> list[HuntCandidate]:
-        engine = await asyncio.to_thread(
-            promoted_engine, market.store, asset=asset, horizon=5, now=stamp,
-        )
         # Promotion can differ by horizon, so read each horizon's actual owner.
         rows: list[tuple[str, dict]] = []
         for horizon in HORIZONS:
@@ -256,7 +253,6 @@ async def eligible_research_watches(
             for watch in watches:
                 if watch["horizon_minutes"] == horizon:
                     rows.append((selected, watch))
-        del engine
         winners: list[HuntCandidate] = []
         seen: set[tuple[int, str]] = set()
         for selected, watch in sorted(
@@ -301,7 +297,7 @@ async def eligible_research_watches(
                     continue
                 if expires - check_at < MIN_REMAINING:
                     continue
-            except (Exception,):  # noqa: BLE001 - bad source cannot stop others
+            except Exception:  # noqa: BLE001 - bad source cannot stop others
                 _LOG.info("Auto-Hunt source not qualified asset=%s venue=%s", asset, venue)
                 continue
             winners.append(HuntCandidate(
@@ -334,7 +330,7 @@ def hunt_embed(candidate: HuntCandidate, *, observed_at: datetime) -> discord.Em
             f"Raw model direction strength: **{candidate.strength:.1%}** "
             "(not a calibrated win chance).\n"
             f"Matching venue: **{candidate.venue}** • "
-            f"Bid **\${candidate.bid:,.2f}** / Ask **\${candidate.ask:,.2f}**\n"
+            f"Bid **${candidate.bid:,.2f}** / Ask **${candidate.ask:,.2f}**\n"
             f"Quote observed <t:{int(candidate.quote_at.timestamp())}:R> • "
             f"Forecast issued <t:{int(candidate.issued.timestamp())}:R>\n"
             f"Expires <t:{int(candidate.expires.timestamp())}:R> "
@@ -377,7 +373,7 @@ class AutoHuntActions(discord.ui.View):
                     stream_shadow=getattr(interaction.client, "stream_shadow", None),
                 ), timeout=12,
             )
-        except (Exception,):  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             embed = discord.Embed(
                 title="Market review unavailable",
                 description="No currently verified quote. Do not act on an old alert.",

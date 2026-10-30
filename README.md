@@ -13,12 +13,12 @@ private forecast page first shows a loading screen, then updates only if
 that page is still current. Model-proof lookups have short timeouts and
 unexpected view failures open a new usable private Home menu.
 
-The shared WebSocket scanner now samples its existing market-book cache
-**once per second** without opening extra exchange sockets or polling REST.
-A separate bounded delivery queue prevents slow Discord DMs from delaying
-market checks. The 60–150-second trend confirmation and two independent
-fresh exchange books remain required; 1-second sampling is not a
-new second-by-second ML prediction or accuracy guarantee.
+The WebSocket feeds still supply genuine market-book data and forward
+cost research. Old momentum-signal DMs and duplicate Auto-Hunt delivery
+workers were retired: market-price notices are **not prediction calls**.
+RivaL silently studies verified listed Polymarket contracts without sending
+DMs or consuming AI quota. A first contract observation is stored for
+later exact terminal payout labeling. This is not a claim of better accuracy.
 
 Historical training status: **/rival → My Results → Can I Trust Predictions?**
 shows saved/reused live weights, actual learning cycles, Polymarket outcome
@@ -51,63 +51,39 @@ on exchange candle labels or AI confidence. See
 [continuous calls and learning](docs/RIVAL_CONTINUOUS_LEARNING.md) for measured
 results and production acceptance limits.
 
-### Continuous direction scanning and personalized Discord alerts
+### One notification center, no price-change DM spam
 
-A website is **not needed** for the automatic research alert system:
-the Discloud bot uses the two already-configured public WebSocket streams
-(Hyperliquid and Binance USD-M) and reads current quotes **every five seconds
-in memory**. The live scanner requires both venues to provide recent,
-reasonably aligned bid/ask books, a meaningful shared momentum move of
-at least 15 basis points over roughly 60-150 seconds, and two confirmations.
-It sends a **Live Price Shift** only after the previously established
-direction reverses. A new starting trend is not misreported as a flip.
-If a stream is blocked, stale, crosses a large venue basis or has a wide
-bid/ask spread, the live scanner **does not invent a signal**.
+Open **/rival → Notifications**. Track a verified Polymarket market in
+**one continuously edited private DM**, or deliberately follow a separate
+exchange research forecast. **Stop All** and **/rival-stop** cancel all
+personal tracking, including old Auto-Hunt subscriptions. Existing historical
+delivery/audit rows and preferences are preserved for integrity and rollback,
+but the retired standalone Auto-Hunt notices and price-reversal DM workers
+do not run.
 
-The existing completed-5-minute-candle forecast still updates at its
-real issuance cadence. **New Model Reversal** is a **different** opt-in
-alert that compares two genuinely prospectively issued model records
-on distinct future target windows, including a previously settled record.
-It requires raw UP forecast scores to cross opposite sides of a
-0.38/0.62 buffer, not a merely volatile tick. Neither a market momentum
-flip nor a raw ML probability is proof of profitable after-cost trading.
-
-In **/rival → My Alerts → Customize Alerts**, choose BTC/ETH/SOL/XRP
-for supported live feeds, 5m/15m market windows, Polymarket **Up/Down**
-outcomes, a maximum *ask price* (not win probability), and minimum
-time remaining. Open **Direction Alerts** for independent switches:
-**Live Price Shifts** and **New Model Reversals**. All new alert types
-are OFF by default until the recipient explicitly enables them and
-the bot confirms DMs can be created. The two live WebSockets are shared;
-no additional network feed is opened per member. Delivery uses the
-existing persistent at-most-once outbox with daily caps. No orders.
-
-A **Review Fresh Signal** DM button now opens a **Refresh Again**
-button that can be pressed repeatedly; Polymarket refresh verifies the
-next actual listed market when an earlier window expires, never
-relabeling an old quote. Discord restarts can expire a private
-interactive review; the original persistent DM button can reopen it.
-Real exchange access and completed user DM delivery need hosted proof.
+The **Unlimited** setting previously removed the daily cap independently
+for multiple old tiers. It did **not** produce additional mathematical or AI
+predictions. Background market observation now proceeds silently.
+A contract AI/model **UP, DOWN or WAIT** may be displayed only if genuinely
+issued for the exact verified Polymarket contract; current UP/DOWN share
+asks remain market prices, never calibrated model probabilities.
 
 ### Start in Discord
 
-Type **`/rival`**. The top-level private menu has just four choices:
+Type **`/rival`**. The beginner menu shows:
 
-- **Find Opportunities:** Predict Crypto (BTC, ETH, SOL, 5m/15m), Auto-Hunt research alerts, Practice Money, and beginner Help. Research results can be **WAIT/NO SIGNAL**; none promise a betting advantage.
-- **My Alerts:** choose genuinely available Polymarket market listings or new RivaL model forecasts, with a confirmed DM delivery probe before enabling a new tier. You can stop alerts anytime; later delivery can still fail.
-- **Sports & Odds:** choose a state, compare current eligible sportsbook prices and request a screened, fictional three-leg slip. Nonpositive indicative edges are rejected, and uncertain correlation is not treated as proven independence.
-- **My Results:** review actually settled model accuracy and fictional practice results; optional **Advanced Tools** stays available here.
+- **Crypto:** current verified Polymarket contracts and a separate exchange
+  research forecast path.
+- **Sports:** available games, sportsbook prices, and research-only slips.
+- **Notifications:** see whether personal trackers are on and stop all of them.
+- **My Results:** verified forward outcomes and fake-money practice results.
+- **Practice:** simulated, non-executable trades.
+- **Help:** plain-language instructions.
 
-Every page has **Home**, **Back**, and **Explain This**. Power-user features have not been deleted.
-
-Only **four top-level Discord commands** are registered:
-`/rival` (the menu), `/rival-signal` (quick crypto lookup),
-`/rival-stop` (cancel alerts), and `/rival-tools` (optional old/technical
-shortcuts). All twenty existing power-user actions are grouped under
-`/rival-tools <feature>` without deleting functionality or records.
-Examples: `/rival-tools data`, `/rival-tools source-health`,
-`/rival-tools multi-proof`, and `/rival-tools profit-proof`.
-The group is optional and not part of beginner onboarding.
+Use **Home** or **Back** to navigate. Technical options live in
+`/rival-tools`, not the beginner flow. No wagers or trade orders are placed.
+The public commands remain `/rival`, `/rival-signal`, `/rival-stop`,
+and the optional `/rival-tools` group.
 
 ### What RivaL actually verifies
 

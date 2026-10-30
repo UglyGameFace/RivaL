@@ -72,7 +72,7 @@ class ShadowLearningMonitor:
                         ON perp_shadow_evaluations (asset, evaluated_at);
                     """
                 )
-            setattr(self.store, "_shadow_schema_ready", True)
+            self.store._shadow_schema_ready = True
 
     def _eligible_streams(
         self, *, now: datetime, limit: int = MAX_STREAMS,

@@ -14,18 +14,19 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 
 _LOG = logging.getLogger(__name__)
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
-HORIZONS = (5, 15)
+HORIZONS = (5, 15, 60)
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 MAX_BOOK_AGE = timedelta(seconds=25)
 MIN_SECONDS_LEFT = 90
 REFERENCE_SHARES = 10.0
-READ_TIMEOUT = 4.0
+READ_TIMEOUT = 8.0
 
 
 class MarketUnavailable(ValueError):
@@ -60,6 +61,14 @@ class PolymarketNotice:
     up_average_ask: float | None = None  # depth for ten shares, before fees
     down_average_ask: float | None = None
     received_at: datetime | None = None  # local receipt, NOT the CLOB timestamp
+    condition_id: str | None = None
+    up_token_id: str | None = None
+    down_token_id: str | None = None
+    resolution_source: str | None = None
+    price_to_beat: float | None = None
+    research: object | None = None
+    research_note: str | None = None
+    rules: str | None = None
 
     @property
     def venue(self) -> str:
@@ -82,6 +91,13 @@ def market_slug(asset: str, horizon: int, opened: datetime) -> str:
         raise ValueError("Unsupported Polymarket watch")
     period = horizon * 60
     bucket = int(opened.astimezone(UTC).timestamp()) // period * period
+    if horizon == 60:
+        local = datetime.fromtimestamp(bucket, UTC).astimezone(ZoneInfo("America/New_York"))
+        months = ("january", "february", "march", "april", "may", "june",
+                  "july", "august", "september", "october", "november", "december")
+        name = {"BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana", "XRP": "xrp"}[asset]
+        hour = f"{local.hour % 12 or 12}{'am' if local.hour < 12 else 'pm'}"
+        return f"{name}-up-or-down-{months[local.month - 1]}-{local.day}-{local.year}-{hour}-et"
     return f"{asset.lower()}-updown-{horizon}m-{bucket}"
 
 
@@ -195,7 +211,7 @@ class PolymarketReader:
         self._cache: dict[
             tuple[str, int], tuple[datetime, str, PolymarketNotice | None]
         ] = {}
-        self._locks: dict[tuple[str, int], asyncio.Lock] = {}
+        self._quote_pending: dict[str, asyncio.Task] = {}
         self._event_cache: dict[str, tuple[datetime, dict | None]] = {}
         self._event_pending: dict[str, asyncio.Task] = {}
         self._reasons: dict[tuple[str, int], tuple[str, str]] = {}
@@ -210,10 +226,11 @@ class PolymarketReader:
         return self._client
 
     async def aclose(self) -> None:
-        pending = list(self._event_pending.values())
+        pending = list(self._quote_pending.values()) + list(self._event_pending.values())
         for task in pending:
             task.cancel()
         await asyncio.gather(*pending, return_exceptions=True)
+        self._quote_pending.clear()
         self._event_pending.clear()
         if self._client is not None:
             await self._client.aclose()
@@ -281,6 +298,10 @@ class PolymarketReader:
             raise MarketUnavailable("market_closed")
         if _decode_array(market.get("outcomes")) != ["Up", "Down"]:
             raise MarketUnavailable("outcome_mapping")
+        if horizon == 60 and market.get("resolutionSource") != (
+            f"https://www.binance.com/en/trade/{asset}_USDT"
+        ):
+            raise MarketUnavailable("hourly_settlement_source")
         active = (
             event.get("active") is True and market.get("active") is True
             and market.get("acceptingOrders") is True
@@ -339,7 +360,7 @@ class PolymarketReader:
     ) -> PolymarketWindowBoard:
         stamp = (now or datetime.now(UTC)).astimezone(UTC)
         if asset not in ASSETS or horizon not in HORIZONS:
-            raise ValueError("Choose BTC, ETH, SOL or XRP and 5m/15m")
+            raise ValueError("Choose BTC, ETH, SOL or XRP and 5m/15m/1h")
         period = horizon * 60
         start = datetime.fromtimestamp(int(stamp.timestamp()) // period * period, tz=UTC)
         current, upcoming, quote = await asyncio.gather(
@@ -376,56 +397,69 @@ class PolymarketReader:
         instant = (now or datetime.now(UTC)).astimezone(UTC)
         slug = market_slug(asset, horizon, opened or instant)
         key = (asset, horizon)
-        started = time.monotonic()
-        async with self._locks.setdefault(key, asyncio.Lock()):
-            checked = now or datetime.now(UTC)
-            cached = self._cache.get(key)
-            if (
-                not refresh and opened is None and cached is not None
-                and cached[0] > checked and cached[1] == slug
-            ):
-                candidate = cached[2]
-                if candidate is None:
-                    return None
-                if self._usable(candidate, now=checked, display_only=display_only):
-                    return candidate
-                # Do not refresh a display quote just to bypass alert timing.
-                if candidate.expires - checked < timedelta(seconds=MIN_SECONDS_LEFT) and not display_only:
-                    self._reasons[key] = (slug, "too_late")
-                    return None
-            try:
-                # Validate one book snapshot for both callers. Eligibility for
-                # a late-window alert is checked separately, never cached as
-                # "no market" over an otherwise valid display-only snapshot.
-                notice = await asyncio.wait_for(
-                    self._lookup(slug=slug, asset=asset, horizon=horizon,
-                                 now=checked, refresh=refresh or opened is not None),
-                    timeout=READ_TIMEOUT,
-                )
-                self._reasons.pop(key, None)
-            except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError) as exc:
-                reason = self._reason(exc)
-                self._reasons[key] = (slug, reason)
-                _LOG.info(
-                    "Polymarket read-only market unavailable asset=%s horizon=%s reason=%s request_ms=%d",
-                    asset, horizon, reason, int((time.monotonic() - started) * 1000),
-                )
-                notice = None
-            if opened is None:
-                self._cache[key] = (checked + timedelta(seconds=5), slug, notice)
-            completed = now or datetime.now(UTC)
-            if notice is not None and self._usable(notice, now=completed, display_only=display_only):
-                return notice
-            if notice is not None:
-                self._reasons[key] = (slug, "too_late" if not display_only else "book_stale")
-            return None
+        cached = self._cache.get(key)
+        candidate = None
+        if (
+            not refresh and opened is None and cached is not None
+            and cached[0] > instant and cached[1] == slug
+        ):
+            candidate = cached[2]
+        else:
+            pending = self._quote_pending.get(slug)
+            if pending is None:
+                async def read() -> PolymarketNotice | None:
+                    started = time.monotonic()
+                    try:
+                        notice = await asyncio.wait_for(
+                            self._lookup(slug=slug, asset=asset, horizon=horizon,
+                                         now=instant, opened=opened,
+                                         refresh=refresh or opened is not None),
+                            timeout=READ_TIMEOUT,
+                        )
+                        self._reasons.pop(key, None)
+                    except (httpx.HTTPError, TimeoutError, ValueError, KeyError, TypeError) as exc:
+                        reason = self._reason(exc)
+                        self._reasons[key] = (slug, reason)
+                        _LOG.info(
+                            "Polymarket read-only market unavailable asset=%s horizon=%s "
+                            "reason=%s request_ms=%d",
+                            asset, horizon, reason, int((time.monotonic() - started) * 1000),
+                        )
+                        notice = None
+                    completed = now or datetime.now(UTC)
+                    if opened is None:
+                        self._cache[key] = (completed + timedelta(seconds=5), slug, notice)
+                    return notice
+
+                pending = asyncio.create_task(read())
+                self._quote_pending[slug] = pending
+
+                def finished(task: asyncio.Task) -> None:
+                    if self._quote_pending.get(slug) is task:
+                        self._quote_pending.pop(slug, None)
+                    if not task.cancelled():
+                        task.exception()
+
+                pending.add_done_callback(finished)
+            # Menu/interaction cancellation only abandons its own wait.
+            # The shared source request finishes and warms the next render.
+            candidate = await asyncio.shield(pending)
+        checked = now or datetime.now(UTC)
+        if candidate is not None and self._usable(candidate, now=checked, display_only=display_only):
+            return candidate
+        if candidate is not None:
+            reason = "too_late" if candidate.expires - checked < timedelta(seconds=90) else "book_stale"
+            self._reasons[key] = (slug, reason)
+        return None
 
     async def _lookup(
         self, *, slug: str, asset: str, horizon: int, now: datetime,
+        opened: datetime | None = None,
         refresh: bool = False,
     ) -> PolymarketNotice:
         event = await self._event(slug, now=now, refresh=refresh)
-        start = datetime.fromtimestamp(int(slug.rsplit("-", 1)[-1]), tz=UTC)
+        period = horizon * 60
+        start = datetime.fromtimestamp(int((opened or now).timestamp()) // period * period, UTC)
         window = self._window(event, asset=asset, horizon=horizon, start=start, now=now)
         if not start <= now < window.closes:
             raise MarketUnavailable("window_not_open")
@@ -471,6 +505,11 @@ class PolymarketReader:
             down_ask=_best_ask(down_book, now=received), quote_at=quoted,
             up_average_ask=_average_ask(up_book, now=received),
             down_average_ask=_average_ask(down_book, now=received), received_at=received,
+            condition_id=condition, up_token_id=tokens[0], down_token_id=tokens[1],
+            resolution_source=market.get("resolutionSource") or event.get("resolutionSource"),
+            price_to_beat=window.price_to_beat,
+            rules=(market["description"][:2000]
+                   if isinstance(market.get("description"), str) else None),
         )
 
     async def active(self, *, now: datetime | None = None) -> list[PolymarketNotice]:

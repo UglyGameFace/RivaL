@@ -206,22 +206,11 @@ def test_live_market_and_model_predictions_are_clearly_separate():
         ends_at=current.closes, status="ok",
     )
     embed = live_polymarket_embed(board, model, asset="BTC", horizon=5)
-    assert "Polymarket WAIT" in embed.title
-    assert "Exchange model: UP" in embed.description
-    assert "Polymarket contract: WAIT" in embed.description
-    names = [field.name for field in embed.fields[:6]]
-    assert names == [
-        "💰 Price / Share Cost", "⏱️ Expires", "\u200b",
-        "⚡ Model Strength", "📊 Accuracy", "\u200b",
-    ]
-    assert "Up $0.61/share" in embed.fields[0].value
-    assert "Down $0.45/share" in embed.fields[0].value
-    assert "59.0% raw model score" in embed.fields[3].value
-    assert "Polymarket: not validated" in embed.fields[4].value
-    full = "\n".join(str(x.value) for x in embed.fields)
-    assert "Same 5m" not in full or "same closing time" in full
-    assert "UP" in embed.fields[-2].value
-    assert "current" in embed.fields[6].name.lower()
+    assert "Polymarket AI WAIT" in embed.title
+    assert "No current contract-specific AI call" in embed.description
+    full = str(embed.to_dict())
+    assert "UP $0.61" in full and "DOWN $0.45" in full
+    assert "hyperliquid" not in full and "59.0%" not in full
     assert next_window.slug in full
     assert "~15s" in embed.footer.text
 
@@ -248,15 +237,10 @@ def test_15m_model_leans_up_for_a_different_five_minute_candle_only():
         ends_at=current.closes, status="ok",
     )
     embed = live_polymarket_embed(board, model, asset="BTC", horizon=15)
-    assert "Polymarket WAIT" in embed.title
-    assert "Polymarket contract: WAIT" in embed.description
-    research = embed.fields[-2].value
-    assert "**UP** research lean" in research
-    assert "5m exchange candle" in research
-    assert "not this 15m Polymarket contract" in research
-    assert "95.0%" not in embed.fields[4].value
-    assert "95.0% raw model score" in embed.fields[3].value
-    assert "Polymarket: not validated" in embed.fields[4].value
+    assert "Polymarket AI WAIT" in embed.title
+    full = str(embed.to_dict())
+    assert "No current contract-specific AI call" in full
+    assert "hyperliquid" not in full and "95.0%" not in full
 
 
 def test_stale_or_unavailable_model_never_becomes_directional_call():
@@ -281,7 +265,6 @@ def test_stale_or_unavailable_model_never_becomes_directional_call():
         ),
     ):
         embed = live_polymarket_embed(board, snapshot, asset="BTC", horizon=5)
-        assert "Exchange model: WAIT" in embed.description
-        assert "Polymarket WAIT" in embed.title
-        assert "WAIT" in embed.fields[-2].value
+        assert "No current contract-specific AI call" in embed.description
+        assert "Polymarket AI WAIT" in embed.title
         assert "99.0%" not in str(embed.to_dict())

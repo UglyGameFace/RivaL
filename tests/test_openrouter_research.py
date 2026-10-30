@@ -198,3 +198,70 @@ async def test_openrouter_payment_and_quota_errors_pause_but_never_fallback(
 def test_openrouter_budget_cannot_exceed_free_tier():
     with pytest.raises(ValueError, match="<=18"):
         module.OpenRouterResearch(FakeMarket(), api_key="x", daily_max=50)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("returned_slug", ["selected-contract", "unrelated-contract"])
+async def test_contract_review_uses_selected_target_and_rejects_foreign_reply(returned_slug):
+    import json
+
+    market = FakeMarket()
+    payloads = []
+
+    def respond(req):
+        if req.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [model("recursive/flint-v1.0:free")]})
+        body = json.loads(req.content)
+        payloads.append(body)
+        assert body["model"] == "recursive/flint-v1.0:free"
+        assert json.loads(body["messages"][1]["content"])["target"] == "polymarket"
+        assert "exchange candles" not in body["messages"][1]["content"]
+        return httpx.Response(200, json={"model": body["model"], "choices": [{"message": {
+            "content": json.dumps({"slug": returned_slug, "direction": "down", "confidence": "low",
+                                   "thesis": "Selected-contract research", "risk": "Unvalidated"})}}]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        reviewer = module.OpenRouterResearch(market, api_key="test-secret", client=client)
+        if returned_slug == "selected-contract":
+            result = await reviewer.review_contract({"target": "polymarket", "slug": "selected-contract"})
+            assert result["direction"] == "down"
+        else:
+            with pytest.raises(ResearchUnavailable, match="did not match"):
+                await reviewer.review_contract({"target": "polymarket", "slug": "selected-contract"})
+    assert market.calls == 1 and len(payloads) == 1
+    assert market.saved == []  # never write contract calls to the perp-candle ledger
+
+
+@pytest.mark.asyncio
+async def test_contract_and_exchange_reviews_share_one_persisted_quota(tmp_path, monkeypatch):
+    import json
+
+    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+    from parlay_bot.storage.hot import SQLiteHotStore
+
+    hot = SQLiteHotStore(tmp_path / "one-budget.sqlite")
+    market = PerpetualMarketStore(hot)
+    completions = []
+
+    def respond(req):
+        if req.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [model("recursive/flint-v1.0:free")]})
+        completions.append(req)
+        return httpx.Response(200, json={"model": "recursive/flint-v1.0:free", "choices": [{"message": {
+            "content": json.dumps({"slug": "one-market", "direction": "up", "confidence": "low",
+                                   "thesis": "Contract research", "risk": "Unvalidated"})}}]})
+
+    monkeypatch.setattr(module, "build_evidence", lambda *a, **kw: ({"sources": [1, 2, 3]}, "x" * 64))
+    try:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+            one = module.OpenRouterResearch(market, api_key="test-secret", client=client)
+            await one.review_contract({"target": "polymarket", "slug": "one-market"})
+            restarted = module.OpenRouterResearch(market, api_key="test-secret", client=client)
+            with pytest.raises(ResearchUnavailable, match="budget/cooldown"):
+                await restarted.ask(asset="BTC", venues=("a", "b", "c"))
+        assert len(completions) == 1
+        with hot.connect() as conn:
+            rows = conn.execute("SELECT model,used FROM perp_ai_quota").fetchall()
+        assert len(rows) == 1 and rows[0]["used"] == 1
+    finally:
+        hot.close()

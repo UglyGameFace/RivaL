@@ -64,10 +64,12 @@ from parlay_bot.perpetuals.live_quotes import (
     QuoteUnavailable,
     quote_embed,
 )
+from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 from parlay_bot.perpetuals.paper_ledger import PaperLedger
 from parlay_bot.perpetuals.phemex_history_recovery import PhemexHistoryRecovery
+from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
@@ -367,19 +369,22 @@ class RivalDiscordClient(discord.Client):
         # has priority when configured, but there is never a paid fallback.
         free_secret = settings.open_router_api_key or settings.openrouter_api_key
         google_secret = settings.gemini_api_key or settings.google_api_key
-        if self.perp_collector is None or settings.rival_ai_provider == "disabled":
+        if settings.rival_ai_provider == "disabled":
             self.gemini_research: GeminiResearch | OpenRouterResearch | None = None
         elif settings.rival_ai_provider == "openrouter":
             # No Gemini/paid fallback when a free coding model or the key
             # is unavailable. Only explicit legacy Gemini mode can use it.
             self.gemini_research = OpenRouterResearch(
-                self.perp_collector.market,
+                self.perp_collector.market if self.perp_collector is not None
+                else PerpetualMarketStore(self.store),
                 api_key=(free_secret.get_secret_value()
                          if free_secret is not None else None),
                 daily_max=settings.rival_openrouter_daily_max,
                 cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
             )
             _LOG.info("RivaL optional AI reviewer: free-only OpenRouter coding")
+        elif self.perp_collector is None:
+            self.gemini_research = None
         else:
             self.gemini_research = GeminiResearch(
                 self.perp_collector.market,
@@ -442,12 +447,18 @@ class RivalDiscordClient(discord.Client):
         self._hunt_event = asyncio.Event()
         self._hunt_task: asyncio.Task[None] | None = None
         self._poly_hunt_task: asyncio.Task[None] | None = None
+        self.polymarket_research = PolymarketResearch(
+            self.store, ai=self.gemini_research
+            if isinstance(self.gemini_research, OpenRouterResearch) else None,
+        )
+        self.auto_hunt.contract_research = self.polymarket_research
         self.kalshi_browser = KalshiCryptoBrowser()
         self.polymarket_board = LivePolymarketBoardService(
             bot=self,
             store=LivePolymarketBoardStore(self.store),
             reader=self.auto_hunt.polymarket,
             market=self.perp_collector.market if self.perp_collector else None,
+            research=self.polymarket_research,
         )
         self._poly_board_task: asyncio.Task[None] | None = None
 
@@ -1537,6 +1548,12 @@ class RivalDiscordClient(discord.Client):
         _LOG.info("RivaL stale guided-menu and restart-safe hunt views registered")
         await asyncio.to_thread(self.auto_hunt.store.initialize)
         await asyncio.to_thread(self.polymarket_board.store.initialize)
+        await asyncio.to_thread(self.polymarket_research.initialize)
+        _LOG.info(
+            "RivaL Polymarket contract AI wired free_key_configured=%s; "
+            "exact 5m/15m/1h contracts, experimental calls only",
+            self.polymarket_research.ai is not None and self.polymarket_research.ai.available,
+        )
         # Install read/forecast schemas before starting any collection,
         # notification or learning workers. Creating indexes while another
         # worker inserts predictions caused live PostgreSQL deadlocks.
@@ -1859,6 +1876,7 @@ class RivalDiscordClient(discord.Client):
             started = time.monotonic()
             try:
                 count = await self.auto_hunt.cycle(scope="polymarket")
+                self.polymarket_research.maybe_settle(self.auto_hunt.polymarket)
                 if count:
                     _LOG.info("RivaL Polymarket private alerts delivered=%d", count)
             except asyncio.CancelledError:
@@ -2317,7 +2335,9 @@ class RivalDiscordClient(discord.Client):
             with suppress(asyncio.CancelledError):
                 await self._hunt_task
             self._hunt_task = None
-        await self.auto_hunt.polymarket.aclose()
+        await self.polymarket_board.aclose()
+        await self.auto_hunt.aclose()
+        await self.polymarket_research.aclose()
         await self.public_quotes.aclose()
         if self._target_task is not None:
             self._target_task.cancel()

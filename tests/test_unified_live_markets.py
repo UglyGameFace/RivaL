@@ -20,7 +20,7 @@ from parlay_bot.discord_app.polymarket_watch import (
     PolymarketWindowBoard,
     market_slug,
 )
-from parlay_bot.discord_app.targeting import TargetSnapshot
+from parlay_bot.perpetuals.polymarket_research import ContractCall
 
 
 def _home(bot):
@@ -66,12 +66,10 @@ async def test_live_desk_shows_actual_verified_market_and_switches_provider_in_p
         checked_at=now, current=current, next_window=nxt,
         current_quote=notice,
     )
-    research = TargetSnapshot(
-        asset="BTC", horizon_minutes=5, direction="UP",
-        detail="Exchange research", venue="hyperliquid",
-        probability=0.61, price=76000.0,
-        issued_at=start, ends_at=current.closes,
-        status="ok", training_evaluated=500,
+    research = ContractCall(
+        slug=slug, asset="BTC", horizon=5, direction="UP", issued_at=now,
+        expires=current.closes, model="free-test", thesis="Verified contract research",
+        risk="Unvalidated", evidence_sha256="a" * 64,
     )
     service = SimpleNamespace(
         store=SimpleNamespace(get=lambda *_: None),
@@ -91,9 +89,10 @@ async def test_live_desk_shows_actual_verified_market_and_switches_provider_in_p
         assert "UP ask $0.61" in summary
         assert "DOWN ask $0.41" in summary
         assert "Next verified contract" in "\n".join(f.name for f in poly.fields)
-        assert "UP exchange-candle lean" in summary
-        assert "Not a proven Polymarket contract prediction" in summary
-        assert "Live contract call: WAIT" in poly.description
+        assert "**UP**" in summary
+        assert "exchange-candle lean" not in summary
+        assert "Verified contract research" in summary
+        assert "Polymarket AI: UP" in poly.description
         assert "Browse Kalshi" not in [
             x.label for x in home.children if hasattr(x, "label")
         ]

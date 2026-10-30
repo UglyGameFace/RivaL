@@ -21,10 +21,10 @@ from parlay_bot.perpetuals.features import (
     persisted_candles,
 )
 from parlay_bot.perpetuals.fusion import utc
-from parlay_bot.perpetuals.learning import walk_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS, asset_for_contract
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
+from parlay_bot.perpetuals.model_checkpoints import LiveModelCheckpoints
 from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
@@ -132,6 +132,9 @@ class ForwardAccuracyMonitor:
         with self.market._forward_schema_lock:
             if self.market._forward_schema_ready:
                 return
+            if self.market.live_model_checkpoints is None:
+                self.market.live_model_checkpoints = LiveModelCheckpoints(self.store)
+            self.market.live_model_checkpoints.initialize()
             self._initialize_schema()
             self.market._forward_schema_ready = True
 
@@ -449,9 +452,7 @@ class ForwardAccuracyMonitor:
                     if len(samples) < MIN_PREVIOUS_EVALUATED + 20:
                         metrics["insufficient_causal_labels"] += 1
                         continue
-                    tested = walk_forward(
-                        samples, as_of=stamp, minimum_evaluated=50,
-                    )
+                    tested = self.market.live_model_checkpoints.fit(samples, as_of=stamp)
                     if tested.evaluated < MIN_PREVIOUS_EVALUATED:
                         metrics["insufficient_training"] += 1
                         continue

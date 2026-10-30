@@ -13,6 +13,7 @@ import discord
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
+from parlay_bot.discord_app.polymarket_live_board import matching_call
 from parlay_bot.discord_app.polymarket_watch import unavailable_text
 from parlay_bot.discord_app.presentation import (
     parlay_embed,
@@ -145,8 +146,8 @@ class _PolymarketHorizon(discord.ui.Select["GuidedHome"]):
             custom_id="rival:guided:horizon",
             options=[
                 discord.SelectOption(
-                    label=f"{n} minutes", value=str(n), default=n == selected,
-                ) for n in (5, 15)
+                    label="1 hour" if n == 60 else f"{n} minutes", value=str(n), default=n == selected,
+                ) for n in (5, 15, 60)
             ],
         )
 
@@ -408,6 +409,7 @@ class GuidedHome(discord.ui.View):
         # Shared across rendered generations to prevent a slow old forecast
         # from overwriting a newer coin selection or Home navigation.
         self._render_revision = {"value": 0}
+        self._live_completion = {"task": None}
         self._buttons()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -536,7 +538,7 @@ class GuidedHome(discord.ui.View):
             self.back_stack.append(self.page)
             self.back_stack = self.back_stack[-12:]
         self.page = page
-        if page == "live" and self.horizon not in (5, 15):
+        if page == "live" and self.horizon not in (5, 15, 60):
             self.horizon = 5
         self.note = None
 
@@ -617,7 +619,7 @@ class GuidedHome(discord.ui.View):
                     _LOG.info("Market desk tracker status busy")
             status = (
                 f"**TRACKING {tracker.asset} {tracker.horizon}m** "
-                "• private message updates automatically"
+                "• your DM updates automatically"
                 if tracker else "**OFF** • Start Auto-Track for one updated private message"
             )
             provider = {
@@ -671,6 +673,11 @@ class GuidedHome(discord.ui.View):
                         ),
                         inline=False,
                     )
+                    if self.horizon == 60:
+                        embed.add_field(name="Hourly settlement rule", value=(
+                            f"This Polymarket contract uses Binance {self.coin}/USDT's "
+                            "hourly candle. It is not a Bitget forecast."
+                        ), inline=False)
                     if board.next_window is not None:
                         nxt = board.next_window
                         embed.add_field(
@@ -698,26 +705,30 @@ class GuidedHome(discord.ui.View):
                         ),
                         inline=False,
                     )
-                aligned = (
-                    model is not None and model.status == "ok"
-                    and model.asset == self.coin
-                    and model.horizon_minutes == self.horizon
-                    and model.issued_at is not None
-                    and model.ends_at is not None
-                    and model.issued_at <= datetime.now(UTC) < model.ends_at
-                    and model.direction in ("UP", "DOWN")
+                aligned = matching_call(board, model, asset=self.coin, horizon=self.horizon)
+                research = getattr(service, "research", None)
+                reason = (
+                    research.status(board.current.slug)
+                    if research is not None and board is not None and board.current is not None
+                    else "Waiting for verified Polymarket inputs and available free AI."
                 )
+                refresh_note = (
+                    research.refresh_note(board.current.slug)
+                    if aligned and research is not None else None
+                )
+                embed.description = (
+                    f"**Polymarket AI: {model.direction} (experimental research)**\n"
+                    if aligned else "**Polymarket AI: no current call**\n"
+                ) + status + "\nAccuracy and profitable edge are unverified."
                 embed.add_field(
-                    name="🧠 RivaL research (NOT contract odds)",
+                    name="🧠 AI for this Polymarket contract",
                     value=(
-                        f"{model.direction} exchange-candle lean • "
-                        f"{model.venue} • expires "
-                        f"{discord.utils.format_dt(model.ends_at, style='R')}\n"
-                        "Not a proven Polymarket contract prediction"
-                        if aligned else
-                        "WAIT • no fresh, correctly timed exchange-model forecast"
-                    ),
-                    inline=False,
+                        f"**{model.direction}** • {model.thesis}\n"
+                        f"Call issued {discord.utils.format_dt(model.issued_at, style='R')} "
+                        f"for this exact event; expires {discord.utils.format_dt(model.expires, style='R')}."
+                        + ("\n" + refresh_note if refresh_note else "")
+                        if aligned else reason
+                    ), inline=False,
                 )
             elif source == "kalshi":
                 if self.kalshi is None:
@@ -1432,10 +1443,14 @@ class GuidedHome(discord.ui.View):
         view.live_source = self.live_source
         view._redraw_lock = self._redraw_lock
         view._render_revision = self._render_revision
+        view._live_completion = self._live_completion
         view._buttons()  # only the new, never-registered view is cleared
         return view
 
     async def redraw(self, interaction: discord.Interaction) -> None:
+        old_completion = self._live_completion["task"]
+        if old_completion is not None and not old_completion.done():
+            old_completion.cancel()
         async with self._redraw_lock:
             self._render_revision["value"] += 1
             revision = self._render_revision["value"]
@@ -1469,6 +1484,35 @@ class GuidedHome(discord.ui.View):
                 )
                 return
             await self._redraw_locked(interaction)
+            if self.page == "live" and self.live_source == "polymarket":
+                service = getattr(getattr(self.auto_hunt, "bot", None), "polymarket_board", None)
+                if callable(getattr(service, "wait_ready", None)):
+                    self._live_completion["task"] = asyncio.create_task(
+                        self._finish_live_preview(interaction, revision, service),
+                        name="rival-live-market-details",
+                    )
+
+    async def _finish_live_preview(self, interaction, revision: int, service) -> None:
+        end = time.monotonic() + 14 * 60  # Discord interaction tokens last 15 min
+        previous = None
+        try:
+            while time.monotonic() < end:
+                await service.wait_ready(self.coin, self.horizon)
+                async with self._redraw_lock:
+                    if self._render_revision["value"] != revision:
+                        return
+                    embed = await asyncio.wait_for(self.render(), timeout=3)
+                    fingerprint = str(embed.to_dict())
+                    if fingerprint != previous:
+                        await asyncio.wait_for(interaction.edit_original_response(
+                            embed=embed, view=self._display_generation(),
+                        ), timeout=5)
+                        previous = fingerprint
+                await asyncio.sleep(15)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a closed menu cannot stop source collection
+            _LOG.info("Live market completion unavailable; shared tracking continues")
 
     async def _finish_forecast(
         self, interaction: discord.Interaction, revision: int,

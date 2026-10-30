@@ -1,3 +1,18 @@
+## ACTIVE TASK: RivaL Fast Interactions and Verified Offline Research Intake (2026-10-30)
+
+- **Objective:** Remove observed Discord 3-second pre-ack timeout exposure, unblock responsive crypto menus and live scanner sampling, and provide an honest, verifiable route from archived six-month research to candidate visibility without falsely activating incompatible live models.
+- **Repo/branch:** `UglyGameFace/RivaL`, base main `9eeb6c00819ff9d2c6b10aadd6814e535dd2cff3`, branch `fix/rival-responsive-interactions-history-gate-20261030`, PR #109. No overlapping open PRs at start.
+- **Interaction fix:** Acknowledge Auto-Hunt settings/owner limits/manual builder before DB or Discord I/O; quick truthful forecast loading with background view replacement gated on shared generation, timeboxed proof and status; recover component errors with usable private Home rather than generic failure text.
+- **Live scan:** Evaluate already-subscribed Hyperliquid/Binance books every 1 second (not additional REST requests); 240-sample memory history retains the 60–150s confirmation window. Independent bounded queue + consumer and shutdown cancellation isolate slow DM fanout from scanning. No guaranteed alerts when region blocks either feed.
+- **Historical workflow:** `verified-history.yml` scheduled job requires `RIVAL_HISTORY_MONTHLY_ENABLED=true`. Owner explicitly must configure variable to enable November 8 monthly job. Manual dispatch remains possible; GH Actions smoke `continue-on-error` not proof of archive auth or model activation. Job summary spells out research-only status.
+- **Import:** New isolated OAuth Drive reader for models folder and bounded SHA verified source; copy-once PostgreSQL offline candidate metadata with historical version, months, out-of-sample accuracy and immutable status. Models-folder permission issue cannot wedge existing cold archive. Reverify candidate checksum + canonical spec digest; never use candidate weights to issue live forecasts.
+- **UI:** My Results → Can I Trust Predictions? displays active engine and latest live learning heartbeat separately from offline candidate version/holdout metrics and last verified Drive read; no false live promotion.
+- **Tests:** CI full pytest + PostgreSQL16 + Ruff. New tests cover Drive byte/source forgery, 6-month validation, immutable offline registry, fast interaction ack, race-safe rendering, scope. Exact final head and production Discloud must be checked; hosted read success, live DM responsiveness, and real forward performance remain unverified until logs.
+- **Limitations:** Offline retrospective and live causal feature contracts still differ, so production autoadoption cannot be responsibly enabled. Need compatible time-indexed candidate scorer for 150 paired unique forward outcomes over 21d, cost-stress and calibration checks before actual promotion. Cannot configure repo owner variable with current GitHub connector. No real-money orders.
+- **Rollback:** Revert PR #109. Additive offline tables remain inert; no deletes of archived history/credentials/live model.
+
+---
+
 ## ACTIVE TASK: Five-Second Live Direction, Model Reversals & Custom Alerts (2026-10-30)
 
 - **Owner requests:** Existing Discord screenshots show one-time Review Fresh Signal, generic fallback "Something went wrong", excessive Polymarket notices and no useful source customization. Owner explicitly wants constant scanning and private direction change alerts, no mandatory website. Keep separate from trading entry odds.

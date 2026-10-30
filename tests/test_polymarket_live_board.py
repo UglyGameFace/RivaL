@@ -178,7 +178,7 @@ def test_live_market_and_model_predictions_are_clearly_separate():
     assert "source hyperliquid" in full_text
     assert "WAIT • no verified Polymarket-specific edge" in full_text
     assert "not calibrated" in full_text
-    assert "every 15s" in embed.footer.text
+    assert "~15s" in embed.footer.text
 
 
 def test_15m_model_cannot_be_presented_as_15m_polymarket_prediction():

@@ -225,6 +225,8 @@ async def test_okx_forecast_can_watch_with_its_own_book(tmp_path) -> None:
     })()
     try:
         _seed_okx_prediction(market, now, probability=.61)
+        from tests.test_rival_signal_decisions import seed_settled
+        seed_settled(market, now, venue="okx")
         signal = await signal_embed(
             market, quotes, asset="BTC", horizon_minutes=5, now=now,
         )

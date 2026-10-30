@@ -58,6 +58,35 @@ def seed_prediction(market, now, *, venue, probability, expires_in=420):
         )
 
 
+def seed_settled(market, now, *, venue, count=50, beating=True, correct=30,
+                 model_brier=None):
+    """Settled rows deciding one venue's 7-day verdict (50+ to qualify)."""
+    ForwardAccuracyMonitor(market).initialize()
+    with market.store.connect() as conn:
+        for i in range(count):
+            issued = now - timedelta(days=1) + timedelta(minutes=i)
+            conn.execute(
+                """INSERT INTO perp_forward_audit
+                   (venue,contract,quote,asset,horizon_minutes,model_version,
+                    reference_opened_at,reference_close,issued_at,target_opened_at,
+                    probability_up,baseline_up,training_evaluated,
+                    settled_at,outcome_up,model_brier,baseline_brier)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    venue, "BTC", "USDC", "BTC", 5,
+                    "prospective-logistic-shadow-v2",
+                    (issued - timedelta(minutes=5)).isoformat(), 81001,
+                    issued.isoformat(),
+                    (issued + timedelta(minutes=5)).isoformat(),
+                    .7, .5, 120,
+                    (issued + timedelta(minutes=10)).isoformat(),
+                    1 if i < correct else 0,
+                    (model_brier if model_brier is not None
+                     else (.20 if beating else .30)), .25,
+                ),
+            )
+
+
 def books(now):
     hyper = PerpReferenceBook(
         asset="BTC", venue="hyperliquid", bid=81000, ask=81001,
@@ -95,6 +124,7 @@ async def test_strong_forward_watch_uses_matching_hyperliquid_quote(tmp_path):
     quotes = mock_quotes(now)
     try:
         seed_prediction(market, now, venue="hyperliquid", probability=.61)
+        seed_settled(market, now, venue="hyperliquid")
         signal = await signal_embed(market, quotes, asset="BTC", horizon_minutes=5, now=now)
         assert "UP WATCH" in signal.title
         assert "RESEARCH ONLY" in signal.title
@@ -136,6 +166,7 @@ async def test_blocked_exchange_uses_only_another_forecasts_matching_book(tmp_pa
     try:
         seed_prediction(market, now, venue="hyperliquid", probability=.62)
         seed_prediction(market, now, venue="binance", probability=.63)
+        seed_settled(market, now, venue="binance")
         signal = await signal_embed(market, quotes, asset="BTC",
                                     horizon_minutes=5, now=now)
         assert "UP WATCH" in signal.title
@@ -232,6 +263,7 @@ async def test_signal_venues_are_raced_not_tried_one_after_another(tmp_path, cap
     try:
         seed_prediction(market, now, venue="hyperliquid", probability=.61)
         seed_prediction(market, now, venue="binance", probability=.58)
+        seed_settled(market, now, venue="hyperliquid")
         with caplog.at_level(_logging.INFO, logger="parlay_bot.discord_app.signals"):
             signal = await signal_embed(
                 market, RacedQuotes(), asset="BTC", horizon_minutes=5, now=now,

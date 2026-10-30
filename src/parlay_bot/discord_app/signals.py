@@ -72,6 +72,15 @@ def _proof(
     ][horizon]
 
 
+def _venue_proof(
+    market: PerpetualMarketStore, *, asset: str, horizon: int, venue: str,
+    now: datetime,
+) -> dict:
+    return ForwardAccuracyMonitor(market).venue_summary(
+        asset=asset, venue=venue, horizon=horizon, now=now,
+    )
+
+
 async def signal_embed(
     market: PerpetualMarketStore | None,
     quotes: PublicBestQuoteClient,
@@ -127,16 +136,20 @@ async def signal_embed(
 
     # Choose a forecast with its OWN current market book. A different venue's
     # quote cannot be substituted just to display a made-up executable setup.
-    # Prefer Hyperliquid when Binance USDM is blocked in the hosting region.
     # The venues are raced, not tried one after another: a slow first venue
     # used to consume the whole signal budget before the fallback was even
     # tried, which produced SIGNAL DELAYED on otherwise healthy markets.
-    # Priority is still Hyperliquid first, then Binance, then OKX, then
-    # Bitget, among the books that actually validate. At most one quote
-    # request per supported venue.
-    # The book fetch runs concurrently with the independent forward-evidence
-    # lookups below instead of before them, so a slow database no longer
-    # stretches every tap by its own round trip.
+    # Selection policy (deterministic, documented): among the venues with a
+    # validated book, a venue is QUALIFIED only if its own forecast is a
+    # directional watch AND its own venue-specific 7-day record beats the
+    # baseline (50+ settled forecasts). The chosen venue is the first
+    # qualified venue in priority order (Hyperliquid, Binance, OKX, Bitget);
+    # venue priority breaks ties among qualified venues, it never overrides
+    # qualification. When nothing qualifies, the fallback is the first
+    # priority venue with a validated book, and its own verdict applies:
+    # PASS when its venue trails the baseline, UNVERIFIED when its venue
+    # record is unknown, LEAN when its forecast is too weak. A fallback is
+    # never a WATCH. Other validated venues are listed, not hidden.
     prioritized = sorted(
         live,
         key=lambda row: (
@@ -147,37 +160,53 @@ async def signal_embed(
             -row["issued"].timestamp(),
         ),
     )
+    candidate_venues: list[str] = []
+    for watch in prioritized:
+        venue = watch["venue"]
+        if (venue in ("hyperliquid", "binance", "okx", "bitget")
+                and venue not in candidate_venues):
+            candidate_venues.append(venue)
 
-    async def _pick_book() -> tuple[dict, BookQuote | PerpReferenceBook | VenueBookQuote | None]:
-        candidates: list[tuple[str, dict]] = []
-        seen_venues: set[str] = set()
-        for watch in prioritized:
-            venue = watch["venue"]
-            if venue in ("hyperliquid", "binance", "okx", "bitget") and venue not in seen_venues:
-                seen_venues.add(venue)
-                candidates.append((venue, watch))
-        if not candidates:
-            return prioritized[0], None
+    async def _pick_books() -> dict[str, tuple[dict, BookQuote | PerpReferenceBook | VenueBookQuote]]:
+        if not candidate_venues:
+            return {}
         started = time.monotonic()
+        watch_by_venue = {
+            venue: next(w for w in prioritized if w["venue"] == venue)
+            for venue in candidate_venues
+        }
         outcomes = await asyncio.gather(
             *(_venue_book(quotes, asset=asset, venue=venue)
-              for venue, _ in candidates),
+              for venue in candidate_venues),
             return_exceptions=True,
         )
         marks["book_ms"] = (time.monotonic() - started) * 1000
         validated: dict[str, tuple[dict, BookQuote | PerpReferenceBook | VenueBookQuote]] = {}
-        for (venue, watch), outcome in zip(candidates, outcomes):
+        for venue, outcome in zip(candidate_venues, outcomes, strict=True):
             if isinstance(outcome, Exception):
                 continue
             try:
                 outcome.validate(now=stamp if now is not None else datetime.now(UTC))
             except QuoteUnavailable:
                 continue
-            validated[venue] = (watch, outcome)
-        for venue in ("hyperliquid", "binance", "okx", "bitget"):
-            if venue in validated:
-                return validated[venue]
-        return prioritized[0], None
+            validated[venue] = (watch_by_venue[venue], outcome)
+        return validated
+
+    def _default_evidence() -> dict:
+        return {"settled": 0, "hit_rate": None, "model_beats_baseline": None}
+
+    async def _venue_proof_or_default(venue: str) -> dict:
+        started = time.monotonic()
+        try:
+            return await asyncio.to_thread(
+                _venue_proof, market, asset=asset, horizon=horizon_minutes,
+                venue=venue, now=stamp,
+            )
+        except Exception:  # noqa: BLE001
+            _LOG.exception("RivaL signal venue evidence lookup unavailable")
+            return _default_evidence()
+        finally:
+            marks[f"proof_{venue}_ms"] = (time.monotonic() - started) * 1000
 
     async def _proof_or_default() -> dict:
         started = time.monotonic()
@@ -187,7 +216,7 @@ async def signal_embed(
             )
         except Exception:  # noqa: BLE001
             _LOG.exception("RivaL signal forward-evidence lookup unavailable")
-            return {"settled": 0, "hit_rate": None, "model_beats_baseline": None}
+            return _default_evidence()
         finally:
             marks["proof_ms"] = (time.monotonic() - started) * 1000
 
@@ -206,29 +235,73 @@ async def signal_embed(
         finally:
             marks["shadow_ms"] = (time.monotonic() - started) * 1000
 
-    book_outcome, evidence, shadow = await asyncio.gather(
-        _pick_book(), _proof_or_default(), _shadow_or_none(),
+    gathered = await asyncio.gather(
+        _pick_books(),
+        *(_venue_proof_or_default(venue) for venue in candidate_venues),
+        _proof_or_default(), _shadow_or_none(),
         return_exceptions=True,
     )
-    if isinstance(book_outcome, Exception):
-        raise book_outcome
+    validated = gathered[0] if not isinstance(gathered[0], Exception) else {}
+    venue_proofs: dict[str, dict] = {}
+    for venue, outcome in zip(
+        candidate_venues, gathered[1:1 + len(candidate_venues)], strict=True,
+    ):
+        venue_proofs[venue] = (
+            outcome if not isinstance(outcome, Exception)
+            else _default_evidence()
+        )
+    evidence = gathered[-2]
     if isinstance(evidence, Exception):  # pragma: no cover - helper already guards
-        evidence = {"settled": 0, "hit_rate": None, "model_beats_baseline": None}
-    chosen, book = book_outcome
+        evidence = _default_evidence()
+    shadow = gathered[-1] if not isinstance(gathered[-1], Exception) else None
+
+    def _direction(probability: float) -> str:
+        return "UP" if probability > 0.5 else (
+            "DOWN" if probability < 0.5 else "FLAT"
+        )
+
+    qualified_venues = [
+        venue for venue in candidate_venues
+        if venue in validated
+        and model_strength(float(validated[venue][0]["probability_up"]))
+        == "directional watch"
+        and venue_proofs[venue].get("model_beats_baseline") is True
+        and _direction(float(validated[venue][0]["probability_up"])) != "FLAT"
+    ]
+    if qualified_venues:
+        chosen_venue = qualified_venues[0]
+        selection = "qualified"
+    elif validated:
+        chosen_venue = next(
+            venue for venue in candidate_venues if venue in validated
+        )
+        selection = "fallback"
+    else:
+        chosen_venue = None
+        selection = "none"
+    if chosen_venue is not None:
+        chosen, book = validated[chosen_venue]
+        venue_evidence = venue_proofs[chosen_venue]
+    else:
+        chosen, book = prioritized[0], None
+        venue_evidence = venue_proofs.get(chosen["venue"])
     probability = float(chosen["probability_up"])
     strength = model_strength(probability)
-    direction = "UP" if probability > 0.5 else (
-        "DOWN" if probability < 0.5 else "FLAT"
+    direction = _direction(probability)
+    venue_beats = (
+        venue_evidence.get("model_beats_baseline")
+        if venue_evidence is not None else None
     )
-    count = int(evidence["settled"])
-    fails_baseline = evidence.get("model_beats_baseline") is False
     is_watch = (
-        book is not None and strength == "directional watch"
-        and not fails_baseline and direction != "FLAT"
+        selection == "qualified" and book is not None
+        and strength == "directional watch" and direction != "FLAT"
     )
-    if fails_baseline:
+    if venue_beats is False:
         verdict = "⛔ PASS • MODEL UNDERPERFORMING"
-        message = "Recent forward scores do not beat a simple baseline."
+        message = (
+            f"Recent {chosen['venue']} forward scores do not beat a simple "
+            "baseline."
+        )
     elif book is None:
         verdict = "⏳ WAIT • MARKET PRICE UNAVAILABLE"
         message = (
@@ -242,6 +315,15 @@ async def signal_embed(
             + ("higher" if direction == "UP" else "lower")
             + ". This is an observed directional watch, not a validated "
               "profitable entry or a trade recommendation."
+        )
+    elif (strength == "directional watch" and venue_beats is None
+            and direction != "FLAT"):
+        verdict = f"🔎 {direction} RESEARCH • UNVERIFIED"
+        message = (
+            f"The {chosen['venue']} track record could not be verified: "
+            "too few settled forecasts for this venue, or the lookup "
+            "failed. This raw direction is shown as research only, never "
+            "as an evidence-qualified watch."
         )
     else:
         verdict = f"🟠 {direction} LEAN • NO SIGNAL" if direction != "FLAT" else (
@@ -297,18 +379,62 @@ async def signal_embed(
             ),
             inline=False,
         )
-    hit = evidence.get("hit_rate")
+    track_lines: list[str] = []
+    if venue_evidence is not None:
+        venue_hit = venue_evidence.get("hit_rate")
+        venue_count = int(venue_evidence["settled"])
+        track_lines.append(
+            f"{venue_count} settled {chosen['venue']} forecasts"
+            + (f" • Direction correct {venue_hit:.1%}"
+               if venue_hit is not None else " • Not enough scored outcomes")
+            + (" • Beats baseline" if venue_beats is True else
+               " • Trails baseline" if venue_beats is False else
+               " • Unverified (needs 50 settled)")
+        )
+    else:
+        track_lines.append(
+            f"{chosen['venue']} venue record not evaluated "
+            "(no matching book)."
+        )
+    global_hit = evidence.get("hit_rate")
+    global_count = int(evidence["settled"])
+    track_lines.append(
+        f"All venues: {global_count} settled"
+        + (f" • Direction correct {global_hit:.1%}"
+           if global_hit is not None else " • Not enough scored outcomes")
+    )
+    track_lines.append(
+        "Cross-exchange outcomes are correlated. Neither an "
+        "independent edge nor after-cost profitability is established."
+    )
     embed.add_field(
         name="Model track record (last 7 days)",
-        value=(
-            f"{count} settled source forecasts"
-            + (f" • Direction correct {hit:.1%}" if hit is not None else
-               " • Not enough scored outcomes")
-            + "\nCross-exchange outcomes are correlated. Neither an "
-              "independent edge nor after-cost profitability is established."
-        ),
+        value="\n".join(track_lines),
         inline=False,
     )
+    alternatives: list[str] = []
+    for venue in candidate_venues:
+        if venue == chosen_venue or venue not in validated:
+            continue
+        alt_watch, _ = validated[venue]
+        alt_prob = float(alt_watch["probability_up"])
+        alt_beats = venue_proofs[venue].get("model_beats_baseline")
+        alt_state = (
+            "qualified"
+            if alt_beats is True
+            and model_strength(alt_prob) == "directional watch"
+            else "unqualified" if alt_beats is False else "unverified"
+        )
+        alternatives.append(
+            f"{venue} {_direction(alt_prob)} "
+            f"{max(alt_prob, 1 - alt_prob):.0%} • {alt_state}"
+        )
+    if alternatives:
+        embed.add_field(
+            name="Other venues with verified books",
+            value="\n".join(alternatives),
+            inline=False,
+        )
     if stream_shadow is not None:
         if shadow is None:
             embed.add_field(
@@ -349,10 +475,14 @@ async def signal_embed(
     )
     _LOG.info(
         "RivaL signal asset=%s horizon=%d watches_ms=%.0f book_ms=%.0f "
-        "book_venue=%s proof_ms=%.0f shadow_ms=%.0f",
+        "book_venue=%s proof_ms=%.0f shadow_ms=%.0f selection=%s "
+        "alternatives=%d venue_beats=%s",
         asset, horizon_minutes, marks.get("watches_ms", -1),
         marks.get("book_ms", -1),
         chosen["venue"] if book is not None else "none",
         marks.get("proof_ms", -1), marks.get("shadow_ms", -1),
+        selection, len(alternatives),
+        ("true" if venue_beats is True else
+         "false" if venue_beats is False else "none"),
     )
     return embed

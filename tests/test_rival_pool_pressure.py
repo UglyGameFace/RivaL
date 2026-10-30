@@ -173,7 +173,6 @@ def test_postgres_pool_releases_connections_after_context_exit(monkeypatch):
             # Real psycopg3 Connection.__exit__ closes the socket when _pool
             # is unset; _Connection.__exit__ must commit/rollback directly.
             self.closed = True
-            return None
 
         def commit(self):
             self.commits += 1

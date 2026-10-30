@@ -503,14 +503,25 @@ class GuidedHome(discord.ui.View):
                     + "\n\n**No wager was placed. All legs must win.**"
                 )
         elif p == "crypto":
-            snapshot = await asyncio.to_thread(
-                target_snapshot, self.market,
-                asset=self.coin, horizon_minutes=self.horizon,
-            )
+            # Loading the crypto menu must never wait for a contended
+            # PostgreSQL pool or a full research query. Get Signal performs
+            # the authoritative refresh separately, on demand.
+            try:
+                snapshot = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        target_snapshot, self.market,
+                        asset=self.coin, horizon_minutes=self.horizon,
+                    ),
+                    timeout=1.5,
+                )
+            except (TimeoutError, Exception):  # noqa: BLE001 - keep navigation alive
+                _LOG.warning("RivaL crypto menu preview unavailable (non-blocking)")
+                snapshot = None
             headline = (
                 f"{snapshot.direction} lean • raw "
                 f"{snapshot.probability:.1%} ({model_strength(snapshot.probability)})"
-                if snapshot.probability is not None else "NO CURRENT SIGNAL"
+                if snapshot is not None and snapshot.probability is not None
+                else "Preview pending • Get Signal checks the live forecast"
             )
             embed = discord.Embed(
                 title=f"🎯 Crypto Signals | {self.coin}",
@@ -1437,11 +1448,31 @@ def install_view_dispatch_logging(client: object) -> None:
                     message_id, custom_id,
                 )
             elif item.view is None:
-                _LOG.warning(
-                    "RivaL view dispatch DISCARDED detached item "
-                    "message_id=%s custom_id=%s found_under=%s item=%r",
-                    message_id, custom_id, found_under, item,
-                )
+                # discord.py looks up the message-specific item BEFORE the
+                # registered persistent view. A rebuild/timeout can leave a
+                # detached item in that slot and shadow the healthy fallback.
+                # Drop ONLY that unusable message-specific guided entry; then
+                # let the original dispatcher find the normal safe fallback.
+                fallback = views.get(None, {}).get(key)
+                if (
+                    found_under == "message"
+                    and custom_id.startswith("rival:guided:")
+                    and fallback is not None
+                    and fallback.view is not None
+                    and views.get(message_id, {}).get(key) is item
+                ):
+                    del views[message_id][key]
+                    _LOG.warning(
+                        "RivaL repaired detached guided component "
+                        "message_id=%s custom_id=%s; persistent fallback ready",
+                        message_id, custom_id,
+                    )
+                else:
+                    _LOG.warning(
+                        "RivaL view dispatch DISCARDED detached item "
+                        "message_id=%s custom_id=%s found_under=%s item=%r",
+                        message_id, custom_id, found_under, item,
+                    )
         except Exception:  # noqa: BLE001 - logging must never break dispatch
             _LOG.exception("RivaL view dispatch logging failed")
         return original(component_type, custom_id, interaction)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -9,7 +10,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from parlay_bot.discord_app import auto_hunt
-from parlay_bot.storage.hot import SQLiteHotStore
+from parlay_bot.storage.hot import PostgresHotStore, SQLiteHotStore
 
 
 def run(coro):
@@ -175,3 +176,33 @@ def test_auto_hunt_is_no_wager_and_has_restart_safe_button_ids():
     text = Path(auto_hunt.__file__).read_text()
     assert ".place_order(" not in text
     assert "submit_bet(" not in text
+
+
+def test_postgres_auto_hunt_subscription_claim_and_stop_survive_restart():
+    dsn = os.getenv("RIVAL_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("PostgreSQL16 integration database unavailable")
+    hot = PostgresHotStore(dsn)
+    store = auto_hunt.AutoHuntStore(hot)
+    user_id = "990000000009900001"
+    now = datetime.now(UTC)
+    watch = candidate(now)
+    try:
+        store.initialize()
+        store.stop(user_id)
+        with hot.connect() as conn:
+            conn.execute("DELETE FROM rival_hunt_delivery WHERE user_id=?", (user_id,))
+        assert store.subscribe(user_id, now=now - timedelta(minutes=1))
+        assert store.claim(user_id, watch, now=now)
+        resumed = auto_hunt.AutoHuntStore(hot)
+        resumed.initialize()
+        assert not resumed.claim(user_id, watch, now=now + timedelta(seconds=3))
+        resumed.finish(user_id, watch, sent=True, message_id="99988")
+        assert resumed.reviewed(user_id, "99988")
+        assert resumed.stop(user_id)
+        assert resumed.subscribers() == []
+    finally:
+        with hot.connect() as conn:
+            conn.execute("DELETE FROM rival_hunt_delivery WHERE user_id=?", (user_id,))
+            conn.execute("DELETE FROM rival_hunt_subscriptions WHERE user_id=?", (user_id,))
+        hot.close()

@@ -72,6 +72,13 @@ DAILY_CAP_PER_TIER = 12
 # and Polymarket keys stay unprefixed, so pre-reconcile delivery rows keep
 # deduplicating exactly as before.
 QUALIFIED_KEY_PREFIX = "qualified|"
+FLIP_KEY_PREFIX = "flip|"
+# A change must cross BOTH sides of the neutral region on separate,
+# prospectively issued 5-minute reference windows. This is not a tick
+# fluctuation, and 0.62 is a model score, not a win probability.
+FLIP_UP = 0.62
+FLIP_DOWN = 0.38
+FLIP_MAX_PREVIOUS_AGE = timedelta(minutes=35)
 TIERS = ("research", "qualified", "polymarket")
 
 
@@ -100,6 +107,8 @@ class HuntCandidate:
     # could supply it. None means unknown, never zero, never an edge.
     after_cost_bps: float | None = None
     after_cost_status: str | None = None
+    previous_probability: float | None = None
+    previous_issued: datetime | None = None
 
     @property
     def direction(self) -> str:
@@ -159,6 +168,15 @@ class AutoHuntStore:
                    CREATE TABLE IF NOT EXISTS rival_hunt_source (
                        user_id TEXT PRIMARY KEY,
                        selected_source TEXT NOT NULL
+                   );
+                   CREATE TABLE IF NOT EXISTS rival_hunt_preferences (
+                       user_id TEXT PRIMARY KEY,
+                       assets TEXT NOT NULL DEFAULT 'BTC,ETH,SOL',
+                       horizons TEXT NOT NULL DEFAULT '5,15',
+                       side TEXT NOT NULL DEFAULT 'both',
+                       max_ask_pct INTEGER NOT NULL DEFAULT 100,
+                       min_remaining_seconds INTEGER NOT NULL DEFAULT 90,
+                       direction_changes INTEGER NOT NULL DEFAULT 0
                    );
                    CREATE TABLE IF NOT EXISTS rival_hunt_tiers (
                        user_id TEXT PRIMARY KEY,
@@ -260,14 +278,80 @@ class AutoHuntStore:
             "polymarket": legacy == "polymarket",
         }
 
+    def preferences(self, user_id: str) -> dict:
+        """Read per-user filters. Legacy followers retain unchanged scope."""
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT assets,horizons,side,max_ask_pct,
+                          min_remaining_seconds,direction_changes
+                   FROM rival_hunt_preferences WHERE user_id=?""",
+                (user_id,),
+            ).fetchone()
+        data = dict(row) if row else {}
+        return {
+            "assets": tuple(str(data.get("assets", "BTC,ETH,SOL")).split(",")),
+            "horizons": tuple(int(x) for x in str(
+                data.get("horizons", "5,15")
+            ).split(",")),
+            "side": str(data.get("side", "both")),
+            "max_ask_pct": int(data.get("max_ask_pct", 100)),
+            "min_remaining_seconds": int(data.get("min_remaining_seconds", 90)),
+            "direction_changes": bool(data.get("direction_changes", 0)),
+        }
+
+    def set_preference(self, user_id: str, field: str, value: object) -> dict:
+        """Strict allowlist, atomic updates; no widening from old opt-ins."""
+        from parlay_bot.perpetuals.markets import ASSETS as ALL_ASSETS
+        from parlay_bot.perpetuals.markets import HORIZONS as ALL_HORIZONS
+
+        allowed = {
+            "assets": {"BTC", "ETH", "SOL", "XRP"},
+            "horizons": {"5", "15", "60"},
+            "side": {"both", "up", "down"},
+            "max_ask_pct": {25, 50, 75, 100},
+            "min_remaining_seconds": {90, 180, 300},
+            "direction_changes": {0, 1},
+        }
+        if field not in allowed:
+            raise ValueError("Unknown Auto-Hunt preference")
+        if field in ("assets", "horizons"):
+            if not isinstance(value, (tuple, list)) or not value:
+                raise ValueError("Select at least one market")
+            values = tuple(dict.fromkeys(str(x) for x in value))
+            if any(x not in allowed[field] for x in values):
+                raise ValueError("Unsupported market selection")
+            order = ALL_ASSETS if field == "assets" else tuple(
+                str(x) for x in ALL_HORIZONS
+            )
+            stored: str | int = ",".join(x for x in order if x in values)
+        else:
+            if value not in allowed[field]:
+                raise ValueError("Unsupported notification setting")
+            stored = value
+        with self.store.connect() as conn:
+            conn.execute(
+                "INSERT INTO rival_hunt_preferences(user_id) VALUES (?) "
+                "ON CONFLICT(user_id) DO NOTHING",
+                (user_id,),
+            )
+            # field is verified against a fixed allowlist, never user SQL.
+            conn.execute(
+                f"UPDATE rival_hunt_preferences SET {field}=? WHERE user_id=?",
+                (stored, user_id),
+            )
+        return self.preferences(user_id)
+
     def count_sent_today(self, user_id: str, tier: str, now: datetime) -> int:
         """Sent alerts today in one tier's budget. Research and qualified
         budgets are separate; Polymarket rows are identified by venue."""
-        if tier not in TIERS:
+        if tier not in (*TIERS, "flip"):
             raise ValueError("Unsupported alert tier")
         day_start = now.replace(hour=0, minute=0, second=0,
                                 microsecond=0).isoformat()
-        if tier == "qualified":
+        if tier == "flip":
+            condition = "forecast_key LIKE 'flip|%'"
+            params = (user_id, day_start)
+        elif tier == "qualified":
             condition = "forecast_key LIKE 'qualified|%'"
             params: tuple = (user_id, day_start)
         elif tier == "polymarket":
@@ -275,7 +359,8 @@ class AutoHuntStore:
             params = (user_id, day_start)
         else:
             condition = ("venue != 'polymarket' AND "
-                         "forecast_key NOT LIKE 'qualified|%'")
+                         "forecast_key NOT LIKE 'qualified|%' AND "
+                         "forecast_key NOT LIKE 'flip|%'")
             params = (user_id, day_start)
         with self.store.connect() as conn:
             row = conn.execute(
@@ -1034,6 +1119,25 @@ class AutoHuntService:
                 _LOG.exception("Auto-Hunt subscribe failed")
                 return False, "Could not save Auto-Hunt. No subscription confirmed."
 
+    async def update_preference(
+        self, user_id: int, field: str, value: object,
+    ) -> dict:
+        async with self._user_lock(str(user_id)):
+            if field == "direction_changes" and value == 1:
+                enabled = await asyncio.to_thread(self.store.enabled, str(user_id))
+                preferences = await asyncio.to_thread(
+                    self.store.preferences, str(user_id),
+                )
+                if not enabled or not preferences["direction_changes"]:
+                    await self._dm_opt_in_probe(
+                        user_id, label="direction-change research alerts",
+                    )
+                    if not enabled:
+                        await asyncio.to_thread(self.store.subscribe, str(user_id))
+            return await asyncio.to_thread(
+                self.store.set_preference, str(user_id), field, value,
+            )
+
     async def stop(self, user_id: int) -> bool:
         # A slow DM to a DIFFERENT user can never delay this cancellation.
         async with self._user_lock(str(user_id)):
@@ -1082,6 +1186,12 @@ class AutoHuntService:
             health = await asyncio.to_thread(self.store.delivery_health, str(user_id))
         except Exception:  # noqa: BLE001
             return "ON • " + parts + " • Delivery health unavailable"
+        preferences = await asyncio.to_thread(self.store.preferences, str(user_id))
+        parts += (
+            f" • Direction changes {'on' if preferences['direction_changes'] else 'off'}"
+            f" • Coins {','.join(preferences['assets'])}"
+            f" • {','.join(str(h) + 'm' for h in preferences['horizons'])}"
+        )
         uncertainty = sum(health.get(state, 0) for state in ("unknown", "sending", "attempted"))
         return (
             "ON • " + parts + f" • Sent {health.get('sent', 0)}"
@@ -1097,7 +1207,11 @@ class AutoHuntService:
         failure here is never retried: a restart will NOT send it again.
         """
         message = None
-        key = QUALIFIED_KEY_PREFIX + candidate.key if tier == "qualified" else candidate.key
+        key = (
+            QUALIFIED_KEY_PREFIX + candidate.key if tier == "qualified"
+            else FLIP_KEY_PREFIX + candidate.key if tier == "flip"
+            else candidate.key
+        )
         dispatch_started = False
         try:
             user = self.bot.get_user(int(user_id))

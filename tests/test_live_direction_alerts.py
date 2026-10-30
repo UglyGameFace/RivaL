@@ -10,9 +10,9 @@ import pytest
 from parlay_bot.discord_app.auto_hunt import (
     AutoHuntService,
     AutoHuntStore,
+    HuntCandidate,
     candidate_allowed,
     confirmed_direction_change,
-    HuntCandidate,
 )
 from parlay_bot.discord_app.polymarket_watch import PolymarketNotice
 from parlay_bot.perpetuals.live_direction import (

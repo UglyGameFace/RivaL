@@ -300,6 +300,9 @@ def test_postgres_checkout_reports_owner_query_and_commit_not_values(
         closed = False
         info = SimpleNamespace(transaction_status=TransactionStatus.IDLE)
 
+        def __enter__(self):
+            return self
+
         def execute(self, sql, params=()):
             assert "SELECT" in sql
             return SimpleNamespace(fetchone=lambda: {"ok": 1})

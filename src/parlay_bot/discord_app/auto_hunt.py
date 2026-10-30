@@ -347,23 +347,26 @@ def hunt_embed(candidate: HuntCandidate, *, observed_at: datetime) -> discord.Em
 class AutoHuntActions(discord.ui.View):
     """Stateless registered view: old DM buttons still work after a restart."""
 
-    def __init__(self) -> None:
-        super().__init__(timeout=None)
+    def __init__(self, *, timeout: float | None = None) -> None:
+        super().__init__(timeout=timeout)
 
     @discord.ui.button(
         label="Review Fresh Signal", custom_id="rival:hunt:review",
         style=discord.ButtonStyle.primary,
     )
     async def review(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        # Discord requires an acknowledgment within ~3s. Quote research can
+        # take longer, so defer BEFORE any database or exchange I/O.
+        await interaction.response.defer(ephemeral=True, thinking=True)
         service = getattr(interaction.client, "auto_hunt", None)
         if service is None or interaction.message is None:
-            await interaction.response.send_message("Review temporarily unavailable.", ephemeral=True)
+            await interaction.followup.send("Review temporarily unavailable.", ephemeral=True)
             return
         user_id = str(interaction.user.id)
         message_id = str(interaction.message.id)
         row = await asyncio.to_thread(service.delivery_for_message, user_id, message_id)
         if row is None:
-            await interaction.response.send_message("This is not your saved alert.", ephemeral=True)
+            await interaction.followup.send("This is not your saved alert.", ephemeral=True)
             return
         try:
             embed = await asyncio.wait_for(
@@ -378,7 +381,7 @@ class AutoHuntActions(discord.ui.View):
                 title="Market review unavailable",
                 description="No currently verified quote. Do not act on an old alert.",
             )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         await asyncio.to_thread(service.store.reviewed, user_id, message_id)
 
     @discord.ui.button(
@@ -386,18 +389,19 @@ class AutoHuntActions(discord.ui.View):
         style=discord.ButtonStyle.secondary,
     )
     async def dismiss(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await interaction.response.defer(thinking=False)
         service = getattr(interaction.client, "auto_hunt", None)
         if service is None or interaction.message is None:
-            await interaction.response.send_message("Alert unavailable.", ephemeral=True)
+            await interaction.followup.send("Alert unavailable.", ephemeral=True)
             return
         row = await asyncio.to_thread(
             service.delivery_for_message, str(interaction.user.id),
             str(interaction.message.id),
         )
         if row is None:
-            await interaction.response.send_message("This is not your alert.", ephemeral=True)
+            await interaction.followup.send("This is not your alert.", ephemeral=True)
             return
-        await interaction.response.edit_message(view=None)
+        await interaction.message.edit(view=None)
 
 
 class AutoHuntService:
@@ -491,7 +495,7 @@ class AutoHuntService:
                         message = await asyncio.wait_for(
                             channel.send(
                                 embed=hunt_embed(candidate, observed_at=stamp),
-                                view=AutoHuntActions(),
+                                view=AutoHuntActions(timeout=900),
                             ), timeout=8,
                         )
                     except (discord.HTTPException, TimeoutError, ValueError):

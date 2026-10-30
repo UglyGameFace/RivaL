@@ -16,6 +16,7 @@ from parlay_bot.collectors.the_odds_api import TheOddsApiCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.auto_hunt import AutoHuntActions, AutoHuntService, AutoHuntStore
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
+from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.home import (
     GuidedHome,
     build_stale_guided_menu_views,
@@ -433,6 +434,7 @@ class RivalDiscordClient(discord.Client):
         )
         self._hunt_event = asyncio.Event()
         self._hunt_task: asyncio.Task[None] | None = None
+        self.kalshi_browser = KalshiCryptoBrowser()
         self.polymarket_board = LivePolymarketBoardService(
             bot=self,
             store=LivePolymarketBoardStore(self.store),
@@ -479,6 +481,7 @@ class RivalDiscordClient(discord.Client):
             multi=self.autonomous.multi if self.autonomous is not None else None,
             venues=tuple(collector.providers) if collector is not None else (),
             training_status=self.training_status,
+            kalshi=self.kalshi_browser,
         )
 
     def _register_commands(self) -> None:
@@ -2249,6 +2252,7 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        await self.kalshi_browser.aclose()
         if self._poly_board_task is not None:
             self._poly_board_task.cancel()
             with suppress(asyncio.CancelledError):

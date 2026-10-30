@@ -5,8 +5,6 @@ buttons. No Discord elevated server permissions or separate website.
 """
 from __future__ import annotations
 
-import asyncio
-
 import discord
 
 from parlay_bot.discord_app.auto_hunt import AutoHuntService

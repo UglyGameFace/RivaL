@@ -45,7 +45,7 @@ from parlay_bot.discord_app.signals import (
     model_strength,
     signal_embed,
 )
-from parlay_bot.perpetuals.live_direction import LiveDirectionScanner, LiveShiftNotice
+from parlay_bot.perpetuals.live_direction import LiveShiftNotice
 from parlay_bot.perpetuals.live_quotes import MAX_QUOTE_AGE
 from parlay_bot.perpetuals.markets import LEGACY_ALERT_ASSETS, LEGACY_ALERT_HORIZONS
 from parlay_bot.perpetuals.promotion import multi_summary, promoted_engine
@@ -1125,7 +1125,7 @@ def hunt_embed(
 
 
 
-async def current_alert_review(service: "AutoHuntService", row: dict) -> discord.Embed:
+async def current_alert_review(service: AutoHuntService, row: dict) -> discord.Embed:
     """Re-query actual current market, never replay an old quote as fresh."""
     try:
         if row["venue"] == "polymarket":

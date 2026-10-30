@@ -1,7 +1,6 @@
 """Regression coverage for the shared PostgreSQL pool pressure incident."""
 from __future__ import annotations
 
-import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -10,6 +9,7 @@ import pytest
 
 from parlay_bot.discord_app import auto_hunt, opportunities, signals
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.storage.database import PostgresDatabase
 from parlay_bot.storage.hot import SQLiteHotStore
 
 
@@ -153,3 +153,38 @@ async def test_qualified_hunt_requests_lightweight_decision(monkeypatch):
     assert len(calls) == len(auto_hunt.ASSETS) * len(auto_hunt.HORIZONS)
     assert len(watches) == 1
     assert watches[0].asset == auto_hunt.ASSETS[0]
+
+def test_postgres_pool_releases_connections_after_context_exit(monkeypatch):
+    """A saturated pool must recover without increasing the server's limit."""
+    from psycopg.pq import TransactionStatus
+
+    class DummyConnection:
+        closed = False
+        info = SimpleNamespace(transaction_status=TransactionStatus.IDLE)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def close(self):
+            self.closed = True
+
+    created = []
+    def fake_connect(*_args, **_kwargs):
+        connection = DummyConnection()
+        created.append(connection)
+        return connection
+
+    monkeypatch.setattr("parlay_bot.storage.database.psycopg.connect", fake_connect)
+    database = PostgresDatabase(
+        "postgresql://example.invalid/rival", max_size=1, checkout_timeout=0.01,
+    )
+    with database.connect():
+        with pytest.raises(TimeoutError, match="pool exhausted"):
+            database.connect()
+    with database.connect():
+        assert len(created) == 1
+    database.close()
+    assert created[0].closed

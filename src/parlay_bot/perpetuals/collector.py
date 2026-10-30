@@ -168,6 +168,24 @@ class PerpetualMarketCollector:
                         if fetch_error is not None:
                             raise fetch_error
                         assert batch is not None
+                        # Settlement margin: a bar that just closed may
+                        # still be revised by the exchange. Ingesting it
+                        # risks a CandleConflictError on the next cycle
+                        # that rejects the whole batch every cycle until
+                        # the bar ages out. Hold back the single newest
+                        # bar; it is ingested on the next cycle once
+                        # settled. Single-bar batches are kept whole so a
+                        # thin venue can never starve.
+                        if len(batch.candles) > 1:
+                            newest = max(c.closed_at for c in batch.candles)
+                            settled = tuple(
+                                c for c in batch.candles if c.closed_at < newest
+                            )
+                            if settled:
+                                batch = MarketBatch(
+                                    batch.contexts, settled,
+                                    batch.interval_minutes, batch.observed_at,
+                                )
                         result = await asyncio.to_thread(self.market.ingest, batch)
                         await asyncio.to_thread(
                             self.market.record_feed_health,
@@ -200,8 +218,8 @@ class PerpetualMarketCollector:
                                 name, asset,
                             )
                         _LOG.warning(
-                            "RivaL perp collection FAILED venue=%s asset=%s reason=%s",
-                            name, asset, kind,
+                            "RivaL perp collection FAILED venue=%s asset=%s reason=%s error=%s",
+                            name, asset, kind, type(error).__name__,
                         )
                         if kind in _PAUSES:
                             self._pauses[name] = datetime.now(UTC) + _PAUSES[kind]

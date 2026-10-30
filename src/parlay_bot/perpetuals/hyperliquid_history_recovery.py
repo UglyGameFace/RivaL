@@ -194,6 +194,20 @@ class HyperliquidHistoryRecovery(GateHistoryRecovery):
                     opened + _STEP - timedelta(milliseconds=1),
                     observed, op, high, low, close, volume, trades,
                 ))
+            if not candles:
+                # Never advance past an empty window: an upstream page
+                # with no in-window bars is an API gap, not coverage.
+                # Retrying later preserves the cursor (mirrors OKX).
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=None,
+                    empty=True, status="upstream_empty",
+                    retry_after=clock + timedelta(hours=6),
+                )
+                _LOG.warning(
+                    "RivaL Hyperliquid historical recovery empty page asset=%s",
+                    asset,
+                )
+                return 0
             added = 0
             if candles:
                 batch = MarketBatch((), tuple(candles), 5, observed)

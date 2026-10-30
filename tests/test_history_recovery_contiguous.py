@@ -134,3 +134,99 @@ async def test_okx_partial_page_advances_only_past_top_run(tmp_path):
         assert progress["status"] == "progress"
     finally:
         await worker.aclose()
+
+
+def _gate_empty_response(req: httpx.Request) -> httpx.Response:
+    assert req.url.host == "api.gateio.ws"
+    if req.url.path.endswith("/contracts/BTC_USDT"):
+        return httpx.Response(200, json={
+            "name": "BTC_USDT", "type": "direct", "status": "trading",
+            "in_delisting": False, "quanto_multiplier": "1",
+        })
+    assert req.url.path.endswith("/candlesticks")
+    return httpx.Response(200, json=[])
+
+
+@pytest.mark.asyncio
+async def test_gate_empty_page_does_not_advance_cursor(tmp_path):
+    store = SQLiteHotStore(tmp_path / "gate-empty.sqlite")
+    market = PerpetualMarketStore(store)
+    seed = six_months_prior(NOW).replace(
+        minute=six_months_prior(NOW).minute // 5 * 5, second=0, microsecond=0)
+    raw = httpx.AsyncClient(transport=httpx.MockTransport(_gate_empty_response))
+    worker = GateHistoryRecovery(market, assets=("BTC",), page_bars=12, client=raw)
+    try:
+        assert await worker.run_once(now=NOW) == 0
+        row = worker.progress()[0]
+        assert row["next_opened_at"] == seed.isoformat()
+        assert row["status"] == "upstream_empty"
+        assert row["retry_after"] == (NOW + timedelta(hours=6)).isoformat()
+        assert row["empty_windows"] == 1
+        assert row["inserted_bars"] == 0
+        # The 6h cooldown holds: no refetch, no cursor move.
+        assert await worker.run_once(now=NOW + timedelta(minutes=5)) == 0
+        assert worker.progress()[0]["next_opened_at"] == seed.isoformat()
+    finally:
+        await worker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gate_vacuous_caught_up_row_resets_to_seed(tmp_path):
+    store = SQLiteHotStore(tmp_path / "gate-vacuous.sqlite")
+    market = PerpetualMarketStore(store)
+    seed = six_months_prior(NOW).replace(
+        minute=six_months_prior(NOW).minute // 5 * 5, second=0, microsecond=0)
+    seeder = GateHistoryRecovery(
+        market, assets=("BTC",), page_bars=12,
+        client=httpx.AsyncClient(
+            transport=httpx.MockTransport(_gate_response_factory(seed))),
+    )
+    seeder.initialize()
+    with store.connect() as conn:
+        conn.execute(
+            """INSERT INTO perp_history_recovery
+               (venue,asset,started_from,next_opened_at,
+                inserted_bars,empty_windows,status)
+               VALUES ('gate','BTC',?,?,0,3,'caught_up')""",
+            (seed.isoformat(), NOW.isoformat()),
+        )
+    raw = seeder._client
+    worker = GateHistoryRecovery(market, assets=("BTC",), page_bars=12, client=raw)
+    try:
+        assert await worker.run_once(now=NOW) == 10
+        row = worker.progress()[0]
+        assert row["next_opened_at"] == (seed + 5 * STEP).isoformat()
+        assert row["status"] == "progress"
+    finally:
+        await raw.aclose()
+
+
+@pytest.mark.asyncio
+async def test_gate_legitimate_caught_up_row_is_not_reset(tmp_path):
+    store = SQLiteHotStore(tmp_path / "gate-legit.sqlite")
+    market = PerpetualMarketStore(store)
+    seed = six_months_prior(NOW).replace(
+        minute=six_months_prior(NOW).minute // 5 * 5, second=0, microsecond=0)
+    def _no_calls(req: httpx.Request) -> httpx.Response:
+        raise AssertionError("legitimately caught-up row must not fetch")
+
+    raw = httpx.AsyncClient(transport=httpx.MockTransport(_no_calls))
+    seeder = GateHistoryRecovery(market, assets=("BTC",), page_bars=12, client=raw)
+    seeder.initialize()
+    with store.connect() as conn:
+        conn.execute(
+            """INSERT INTO perp_history_recovery
+               (venue,asset,started_from,next_opened_at,
+                inserted_bars,empty_windows,status)
+               VALUES ('gate','BTC',?,?,100,0,'caught_up')""",
+            (seed.isoformat(), NOW.isoformat()),
+        )
+    worker = GateHistoryRecovery(market, assets=("BTC",), page_bars=12, client=raw)
+    try:
+        assert await worker.run_once(now=NOW) == 0
+        row = worker.progress()[0]
+        assert row["next_opened_at"] == NOW.isoformat()
+        assert row["status"] == "caught_up"
+        assert row["inserted_bars"] == 100
+    finally:
+        await raw.aclose()

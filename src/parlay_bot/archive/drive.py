@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -9,6 +10,8 @@ from typing import Any
 import httpx
 
 from parlay_bot.archive.models import ArchiveArtifact, DriveObject
+
+_LOG = logging.getLogger(__name__)
 
 
 class DriveArchiveError(RuntimeError):
@@ -269,6 +272,33 @@ class GoogleDriveArchiveClient:
                 f"Drive checksum mismatch for {artifact.file_name}"
             )
 
+    async def _trash_file(self, obj: DriveObject) -> None:
+        """Move a divergent remote object to Drive trash (recoverable).
+
+        Trash is not delete: the object stays recoverable for 30 days,
+        and the bounded search already filters trashed files, so a
+        trashed object can never be found again by _find_batch_object.
+        """
+        if not obj.file_id or any(
+            char not in
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+            for char in obj.file_id
+        ):
+            raise DriveArchiveError("refusing to trash a Drive object with an invalid id")
+        response = await self._client.patch(
+            f"{self.DRIVE_URL}/files/{obj.file_id}",
+            params={"fields": "id,trashed"},
+            json={"trashed": True},
+            headers=await self._headers(),
+        )
+        if response.status_code != 200:
+            raise DriveArchiveError(
+                f"Drive trash failed with {response.status_code}"
+            )
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("trashed") is not True:
+            raise DriveArchiveError("Drive trash was not confirmed")
+
     async def _upload_resumable(
         self,
         *,
@@ -287,8 +317,29 @@ class GoogleDriveArchiveClient:
             kind=kind,
         )
         if existing is not None:
-            self._verify_artifact(existing, artifact)
-            return existing
+            try:
+                self._verify_artifact(existing, artifact)
+            except DriveArchiveError:
+                # Manifests are regenerable indexes, not source data: the
+                # local manifest is rebuilt from the same queued batch
+                # and history file every cycle, so a divergent remote
+                # manifest (e.g. an interrupted cycle uploaded one build
+                # and died before mark_complete; the next rebuild carries
+                # a new created_at timestamp) must not wedge the batch
+                # forever. Trash the divergent remote copy (recoverable,
+                # and invisible to future searches) and upload fresh.
+                # Immutable artifacts keep failing loudly: a history,
+                # model, or report mismatch is genuine divergence.
+                if kind != "manifest" or parent_id != self.folders.manifests:
+                    raise
+                await self._trash_file(existing)
+                _LOG.warning(
+                    "RivaL manifest mismatch trashed remote file_id=%s "
+                    "batch=%s; re-uploading fresh manifest",
+                    existing.file_id, batch_id,
+                )
+            else:
+                return existing
 
         headers = await self._headers()
         headers.update(

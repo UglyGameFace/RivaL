@@ -462,7 +462,13 @@ class DirectionTargetService:
             return True
 
     async def cycle(self) -> int:
-        """Bounded read-only forecast snapshots; edit only changed existing DMs."""
+        """Bounded read-only forecast snapshots; edit only changed existing DMs.
+
+        A price target that reaches HIT or EXPIRED is stopped after its
+        outcome edit lands: the DM keeps its final embed, but the row
+        must not linger forever consuming a follow slot and a recompute
+        every minute. Direction watches never terminate on their own.
+        """
         # Even without the collector, old cards must turn to WAIT. Never
         # leave a green/red forecast frozen after a production outage.
         async with self.lock:
@@ -506,4 +512,21 @@ class DirectionTargetService:
                         self.store.updated, target, snapshot.fingerprint,
                     )
                     changed += 1
+                    if (
+                        isinstance(snapshot, PriceResult)
+                        and snapshot.status in ("HIT", "EXPIRED")
+                    ):
+                        # Outcome delivered; stop the row so it cannot
+                        # linger as a dead watch. The DM keeps its final
+                        # HIT/EXPIRED embed; a later follow starts fresh.
+                        await asyncio.to_thread(
+                            self.store.stop, target.user_id,
+                            message_id=target.message_id,
+                        )
+                        _LOG.info(
+                            "RivaL target reached terminal state asset=%s "
+                            "horizon=%s status=%s",
+                            target.asset, target.horizon_minutes,
+                            snapshot.status,
+                        )
             return changed

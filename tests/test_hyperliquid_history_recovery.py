@@ -88,3 +88,31 @@ async def test_hyperliquid_six_month_history_recovers_restart_safe(tmp_path):
             await restarted.aclose()
     finally:
         await worker.aclose()
+
+
+def empty_response(req: httpx.Request) -> httpx.Response:
+    assert req.url.host == "api.hyperliquid.xyz"
+    return httpx.Response(200, json=[])
+
+
+@pytest.mark.asyncio
+async def test_hyperliquid_empty_page_does_not_advance_cursor(tmp_path):
+    store = SQLiteHotStore(tmp_path / "hl-empty.sqlite")
+    market = PerpetualMarketStore(store)
+    raw = httpx.AsyncClient(transport=httpx.MockTransport(empty_response))
+    worker = HyperliquidHistoryRecovery(
+        market, assets=("BTC",), page_bars=12, client=raw,
+    )
+    try:
+        assert await worker.run_once(now=NOW) == 0
+        row = worker.progress()[0]
+        seed = six_months_prior(NOW).replace(
+            minute=six_months_prior(NOW).minute // 5 * 5,
+            second=0, microsecond=0)
+        assert row["next_opened_at"] == seed.isoformat()
+        assert row["status"] == "upstream_empty"
+        assert row["retry_after"] == (NOW + timedelta(hours=6)).isoformat()
+        assert row["empty_windows"] == 1
+        assert row["inserted_bars"] == 0
+    finally:
+        await worker.aclose()

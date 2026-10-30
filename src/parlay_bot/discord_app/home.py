@@ -667,14 +667,19 @@ class GuidedHome(discord.ui.View):
         async with self._redraw_lock:
             await self._redraw_locked(interaction)
 
-    async def _redraw_locked(self, interaction: discord.Interaction) -> None:
+    async def _redraw_locked(
+        self, interaction: discord.Interaction, *,
+        _background_retry: bool = False,
+    ) -> None:
         started = time.monotonic()
         self._buttons()
+        render_timed_out = False
         try:
             embed = await asyncio.wait_for(self.render(), timeout=12)
         except TimeoutError:
             _LOG.warning("Guided render timed out page=%s elapsed_ms=%.0f",
                          self.page, (time.monotonic() - started) * 1000)
+            render_timed_out = True
             embed = discord.Embed(
                 title="⏳ Still Loading",
                 description="This screen is taking longer than expected. Try again shortly.",
@@ -702,6 +707,10 @@ class GuidedHome(discord.ui.View):
             )
         except (TimeoutError, discord.HTTPException) as exc:
             _LOG.warning("Guided menu edit failed page=%s error=%s", self.page, type(exc).__name__)
+            if _background_retry:
+                # A background retry must never spam the user: the
+                # loading embed is still there, and the next tap retries.
+                return
             # The interaction was already acknowledged. Keep the user informed
             # without turning an edit failure into a silent dead menu.
             try:
@@ -711,6 +720,26 @@ class GuidedHome(discord.ui.View):
                 )
             except discord.HTTPException:
                 _LOG.warning("Guided menu fallback message unavailable")
+        if render_timed_out and not _background_retry:
+            # One self-healing attempt: a timed-out render left a "Still
+            # Loading" embed with no recovery. Re-render once after a
+            # short pause; the redraw lock serializes it against the
+            # user's next tap, and the retry itself never retries again.
+            asyncio.create_task(self._retry_timed_out_render(interaction))
+
+    async def _retry_timed_out_render(
+        self, interaction: discord.Interaction,
+    ) -> None:
+        try:
+            await asyncio.sleep(2)
+            async with self._redraw_lock:
+                await self._redraw_locked(
+                    interaction, _background_retry=True,
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - a retry must never break the loop
+            _LOG.exception("Guided background render retry failed")
 
     async def act(self, interaction: discord.Interaction, action: str) -> None:
         if action == "explain":
@@ -1111,3 +1140,64 @@ def build_stale_guided_menu_views(
         StaleGuidedMenuViewA(home_factory),
         StaleGuidedMenuViewB(home_factory),
     )
+
+
+def install_view_dispatch_logging(client: object) -> None:
+    """Log-only wrapper around discord.py's ViewStore.dispatch_view.
+
+    A tap that discord.py discards ("View interaction referencing unknown
+    view") never reaches bot code, so its trigger could never be proven:
+    the warning carries no message_id. This wrapper re-reads the same
+    lookup before delegating and logs the message_id, custom_id, and
+    whether the found item was detached (view is None) or unknown. It
+    never changes dispatch behavior: any failure inside the logging
+    leaves the original dispatch untouched, and double-install is a no-op.
+    """
+    try:
+        store = client._connection._view_store  # type: ignore[attr-defined]
+    except AttributeError:
+        _LOG.warning("RivaL view dispatch logging unavailable: no view store")
+        return
+    if getattr(store, "_rival_dispatch_logging", False):
+        return
+    original = store.dispatch_view
+    if not callable(original) or not hasattr(store, "_views"):
+        _LOG.warning("RivaL view dispatch logging unavailable: unexpected store")
+        return
+
+    def _logged_dispatch(component_type: int, custom_id: str, interaction) -> None:
+        try:
+            message = getattr(interaction, "message", None)
+            message_id = message.id if message is not None else None
+            key = (component_type, custom_id)
+            views = store._views
+            item = None
+            found_under = None
+            if message_id is not None:
+                item = views.get(message_id, {}).get(key)
+                if item is not None:
+                    found_under = "message"
+            if item is None:
+                item = views.get(None, {}).get(key)
+                if item is not None:
+                    found_under = "persistent"
+            if item is None:
+                _LOG.info(
+                    "RivaL view dispatch unknown message_id=%s custom_id=%s",
+                    message_id, custom_id,
+                )
+            elif item.view is None:
+                _LOG.warning(
+                    "RivaL view dispatch DISCARDED detached item "
+                    "message_id=%s custom_id=%s found_under=%s item=%r",
+                    message_id, custom_id, found_under, item,
+                )
+        except Exception:  # noqa: BLE001 - logging must never break dispatch
+            _LOG.exception("RivaL view dispatch logging failed")
+        return original(component_type, custom_id, interaction)
+
+    try:
+        store.dispatch_view = _logged_dispatch
+        store._rival_dispatch_logging = True
+    except (AttributeError, TypeError):
+        _LOG.warning("RivaL view dispatch logging could not be installed")

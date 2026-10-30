@@ -459,7 +459,7 @@ async def test_polymarket_is_disabled_by_default_and_flag_gated(
     assert await service.cycle() == 1
     assert len(channel.sends) == 1
     assert "Polymarket" in channel.sends[0].title
-    assert "not a RivaL prediction" in channel.sends[0].description
+    assert "Polymarket AI: no current call" in channel.sends[0].description
 
 
 @pytest.mark.asyncio

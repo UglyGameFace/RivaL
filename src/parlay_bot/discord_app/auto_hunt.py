@@ -30,7 +30,7 @@ import logging
 import math
 import time
 from contextlib import AsyncExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 import discord
@@ -51,6 +51,7 @@ from parlay_bot.discord_app.signals import (
 from parlay_bot.perpetuals.live_direction import LiveShiftNotice
 from parlay_bot.perpetuals.live_quotes import MAX_QUOTE_AGE
 from parlay_bot.perpetuals.markets import LEGACY_ALERT_ASSETS, LEGACY_ALERT_HORIZONS
+from parlay_bot.perpetuals.polymarket_research import ContractCall
 from parlay_bot.perpetuals.promotion import multi_summary, promoted_engine
 from parlay_bot.storage.hot import RelationalHotStore
 
@@ -1152,6 +1153,18 @@ def hunt_embed(
         embed.set_footer(text="Opt-in market shift • /rival-stop")
         return embed
     if isinstance(candidate, PolymarketNotice):
+        call = candidate.research
+        valid_call = (
+            isinstance(call, ContractCall) and call.slug == candidate.slug
+            and call.asset == candidate.asset and call.horizon == candidate.horizon
+            and call.expires == candidate.expires and call.issued_at <= observed_at < call.expires
+        )
+        call_line = (
+            f"**Polymarket AI: {call.direction} • experimental research**\n"
+            f"{call.thesis}\nCall issued <t:{int(call.issued_at.timestamp())}:R>.\n"
+            if valid_call else "**Polymarket AI: no current call**\n"
+            + (candidate.research_note or "No verified contract AI response yet.") + "\n"
+        )
         fill_line = (
             "10-share depth-weighted ask before fees: "
             + (f"Up **${candidate.up_average_ask:.2f}/share**"
@@ -1163,9 +1176,9 @@ def hunt_embed(
         embed = discord.Embed(
             title=f"📊 Polymarket • {candidate.asset} {candidate.horizon}m market",
             description=(
-                "**Listed Polymarket market, not a RivaL prediction.**\n"
-                f"Up ask: **${candidate.up_ask:.2f}/share** per share • "
-                f"Down ask: **${candidate.down_ask:.2f}/share** per share.\n"
+                call_line + "**Live Polymarket share prices:**\n"
+                f"Up ask: **${candidate.up_ask:.2f}/share** • "
+                f"Down ask: **${candidate.down_ask:.2f}/share**.\n"
                 f"{fill_line}\n"
                 f"Book received <t:{int(candidate.quote_at.timestamp())}:R>.\n"
                 f"Market closes <t:{int(candidate.expires.timestamp())}:R>.\n"
@@ -1322,6 +1335,7 @@ async def current_alert_review(service: AutoHuntService, row: dict) -> discord.E
                                 "not reused as new market prices.",
                     color=discord.Color.orange(),
                 )
+            notice = service.annotate_contract(notice)
             embed = hunt_embed(notice, observed_at=datetime.now(UTC))
             if notice.issued != _instant(row["issued_at"]):
                 embed.add_field(
@@ -1380,6 +1394,8 @@ class RepeatReviewView(discord.ui.View):
                 ephemeral=True,
             )
             return
+        if await service.open_contract_review(interaction, row, self.message_id):
+            return
         embed = await current_alert_review(service, row)
         await interaction.edit_original_response(
             embed=embed, view=RepeatReviewView(self.owner_id, self.message_id),
@@ -1409,6 +1425,8 @@ class AutoHuntActions(discord.ui.View):
         row = await asyncio.to_thread(service.delivery_for_message, user_id, message_id)
         if row is None:
             await interaction.followup.send("This is not your saved alert.", ephemeral=True)
+            return
+        if await service.open_contract_review(interaction, row, message_id):
             return
         embed = await current_alert_review(service, row)
         await interaction.followup.send(
@@ -1447,10 +1465,60 @@ class AutoHuntService:
         self.store = store
         self.stream_shadow = stream_shadow
         self.polymarket = PolymarketReader()
+        self.contract_research = None
+        self._contract_update_tasks: set[asyncio.Task] = set()
         self._user_locks: dict[str, asyncio.Lock] = {}
         self._cycle_lock = asyncio.Lock()
         self._poly_cycle_lock = asyncio.Lock()
         self._delivery_budget = asyncio.Semaphore(8)
+
+    async def open_contract_review(self, interaction, row: dict, message_id: str) -> bool:
+        factory = getattr(self.bot, "_build_guided_home", None)
+        if row["venue"] != "polymarket" or not callable(factory):
+            return False
+        home = factory(interaction.user.id)
+        home.coin, home.horizon = row["asset"], int(row["horizon"])
+        home.navigate("live")
+        await home.redraw(interaction)
+        await asyncio.to_thread(self.store.reviewed, str(interaction.user.id), message_id)
+        return True
+
+    def annotate_contract(self, notice: PolymarketNotice) -> PolymarketNotice:
+        if self.contract_research is None:
+            return notice
+        call = self.contract_research.observe(notice)
+        return replace(notice, research=call,
+                       research_note=self.contract_research.status(notice.slug))
+
+    async def _complete_contract_dm(self, user_id, message, notice) -> None:
+        try:
+            call = await self.contract_research.wait(notice.slug)
+            if call is None:
+                return
+            current = await self.polymarket.market(
+                notice.asset, notice.horizon, opened=notice.issued, display_only=True,
+            )
+            if current is None or current.slug != call.slug:
+                return
+            async with self._user_lock(user_id):
+                if not await asyncio.to_thread(self.store.enabled, user_id):
+                    return
+                if not (await asyncio.to_thread(self.store.tiers, user_id))["polymarket"]:
+                    return
+                await asyncio.wait_for(message.edit(embed=hunt_embed(
+                    replace(current, research=call), observed_at=datetime.now(UTC),
+                )), timeout=5)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - same message only, never a resend
+            _LOG.info("Polymarket AI DM completion unavailable user=%s", user_id)
+
+    async def aclose(self) -> None:
+        pending = list(self._contract_update_tasks)
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
+        await self.polymarket.aclose()
 
     def _user_lock(self, user_id: str) -> asyncio.Lock:
         # Bounded at MAX_USERS while enabled; retained lock objects are small.
@@ -1672,6 +1740,8 @@ class AutoHuntService:
         )
         dispatch_started = False
         message = None
+        if isinstance(candidate, PolymarketNotice):
+            candidate = self.annotate_contract(candidate)
 
         def fresh(at: datetime) -> bool:
             if candidate.expires - at < MIN_REMAINING:
@@ -1736,6 +1806,12 @@ class AutoHuntService:
             if not dispatch_started:
                 await asyncio.to_thread(self.store.defer_preflight, user_id, candidate, key=key)
             _LOG.exception("Auto-Hunt DM failed")
+        if (message is not None and isinstance(candidate, PolymarketNotice)
+            and candidate.research is None and self.contract_research is not None
+            and len(self._contract_update_tasks) < MAX_USERS):
+            task = asyncio.create_task(self._complete_contract_dm(user_id, message, candidate))
+            self._contract_update_tasks.add(task)
+            task.add_done_callback(self._contract_update_tasks.discard)
         return message
 
     async def live_cycle(self, notices: list[LiveShiftNotice]) -> int:

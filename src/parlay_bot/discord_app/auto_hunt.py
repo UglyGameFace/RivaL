@@ -434,9 +434,10 @@ class AutoHuntStore:
                     """UPDATE rival_hunt_delivery
                        SET state='ready',next_attempt_at=?
                        WHERE user_id=? AND forecast_key=? AND state='ready'
-                         AND attempt_count<?""",
+                         AND attempt_count<?
+                         AND (next_attempt_at IS NULL OR next_attempt_at<=?)""",
                     ((now+RETRY_DELAY).isoformat(), user_id, effective_key,
-                     MAX_SAFE_RETRIES),
+                     MAX_SAFE_RETRIES, now.isoformat()),
                 )
                 return changed.rowcount == 1
             if apply_cooldown and eligible["last_sent_at"] and (
@@ -494,9 +495,12 @@ class AutoHuntStore:
         stamp = now or datetime.now(UTC)
         with self.store.connect() as conn:
             conn.execute(
-                """UPDATE rival_hunt_delivery SET next_attempt_at=?
-                   WHERE user_id=? AND forecast_key=? AND state='ready'""",
-                ((stamp+RETRY_DELAY).isoformat(), user_id, key or candidate.key),
+                """UPDATE rival_hunt_delivery
+                   SET next_attempt_at=?,attempt_count=attempt_count+1
+                   WHERE user_id=? AND forecast_key=? AND state='ready'
+                     AND attempt_count<?""",
+                ((stamp+RETRY_DELAY).isoformat(), user_id, key or candidate.key,
+                 MAX_SAFE_RETRIES),
             )
 
     def finish(

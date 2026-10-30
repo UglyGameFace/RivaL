@@ -502,7 +502,7 @@ class GuidedHome(discord.ui.View):
                     "current/next event card automatically updated every ~15s. "
                     "It includes RivaL's newest unexpired **exchange-model** "
                     "direction when available, separate from Polymarket quotes. "
-                    "No button refresh is required.\\n\\n"
+                    "No button refresh is required.\n\n"
                     "**Enable Shift DMs** is a separate WebSocket momentum alert "
                     "and **Follow Polymarket** sends distinct new-market alerts. "
                     "None guarantees a winning bet."
@@ -591,20 +591,20 @@ class GuidedHome(discord.ui.View):
                             )
                             current = (
                                 f"[Open event]({board.current.url})"
-                                f" • {now_open}\\n"
+                                f" • {now_open}\n"
                                 f"Closes <t:{int(board.current.closes.timestamp())}:R>"
                                 f" • Price to beat: **{target}**"
                             )
                             if board.current_quote is not None:
                                 quote = board.current_quote
                                 current += (
-                                    f"\\nUp ask **{quote.up_ask:.1%}** "
+                                    f"\nUp ask **{quote.up_ask:.1%}** "
                                     f"• Down ask **{quote.down_ask:.1%}** "
                                     f"• Book checked <t:{int(quote.quote_at.timestamp())}:R>"
                                 )
                             else:
                                 current += (
-                                    "\\nFresh Up/Down order books unavailable "
+                                    "\nFresh Up/Down order books unavailable "
                                     "(not an executable quote)."
                                 )
                         embed.add_field(
@@ -621,7 +621,7 @@ class GuidedHome(discord.ui.View):
                             nxt = board.next_window
                             upcoming = (
                                 f"[Open next event]({nxt.url}) • Starts "
-                                f"<t:{int(nxt.opens.timestamp())}:R>\\n"
+                                f"<t:{int(nxt.opens.timestamp())}:R>\n"
                                 "Price to beat: pending window opening; "
                                 "**no predicted strike**."
                             )

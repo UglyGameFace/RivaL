@@ -569,7 +569,7 @@ async def signal_embed(
         f"Ask ${book.ask:,.{4 if asset == 'XRP' else 2}f}"
         if book is not None else "Not verified"
     )
-    for name, value in (
+    for index, (name, value) in enumerate((
         ("💱 Same-venue live price", matched_quote),
         ("⏱️ Expires", discord.utils.format_dt(
             chosen["target"] + timedelta(minutes=5), style="R",
@@ -577,8 +577,10 @@ async def signal_embed(
         ("⚡ Model strength", (f"{max(probability, 1-probability):.1%} raw\n"
                              f"{strength} • not calibrated")),
         ("📊 Measured direction accuracy", measured),
-    ):
+    )):
         embed.add_field(name=name, value=value, inline=True)
+        if index in (1, 3):
+            embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(
         name="Model and expiry",
         value=(

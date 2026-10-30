@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from parlay_bot.perpetuals.hyperliquid import HyperliquidMarketClient, MarketDataError
-from parlay_bot.perpetuals.market_store import CandleConflictError, PerpetualMarketStore
+from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore
 
 NOW = datetime(2026, 10, 28, 0, 13, tzinfo=UTC)
@@ -123,8 +123,12 @@ async def test_store_idempotent_replay_and_conflicting_revisions(tmp_path, clien
         conn.execute(
             "UPDATE perp_market_candles SET close_price=105 WHERE contract='BTC'"
         )
-    with pytest.raises(CandleConflictError):
-        market.ingest(batch)
+    # A conflicting bar is skipped and counted, never overwriting stored
+    # values and never rejecting the rest of the batch.
+    third = market.ingest(batch)
+    assert third.inserted_candles == 0
+    assert third.conflicted_candles == 2
+    assert third.unchanged_candles == 4
     with store.connect() as conn:
         assert conn.execute(
             "SELECT close_price FROM perp_market_candles WHERE contract='BTC' LIMIT 1"

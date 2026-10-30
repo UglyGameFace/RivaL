@@ -456,6 +456,18 @@ class ForwardAccuracyMonitor:
                 continue
         metrics["issued_forecasts"] = issued
         self._record_cycle(stamp, metrics)
+        # The table alone does not explain a bare menu: log the gate
+        # breakdown so the next empty-signal report names its cause.
+        _LOG.info(
+            "RivaL forward cycle discovered=%d selected=%d short=%d "
+            "stale=%d insufficient_labels=%d insufficient_training=%d "
+            "expired=%d duplicate=%d issued=%d",
+            metrics["discovered_streams"], metrics["selected_streams"],
+            metrics["short_history"], metrics["stale_last_candle"],
+            metrics["insufficient_causal_labels"],
+            metrics["insufficient_training"], metrics["target_expired"],
+            metrics["duplicate_forecasts"], metrics["issued_forecasts"],
+        )
         _LOG.info(
             "RivaL prospective shadow audit issued=%s settled=%s",
             issued, settled,

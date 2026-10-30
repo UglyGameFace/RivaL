@@ -1,6 +1,7 @@
 """Immutable, venue-specific perpetual observations in the existing RivaL store."""
 from __future__ import annotations
 
+import logging
 import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -13,8 +14,18 @@ if TYPE_CHECKING:
     from parlay_bot.storage.hot import RelationalHotStore
 
 
+_LOG = logging.getLogger(__name__)
+
+
 class CandleConflictError(RuntimeError):
-    """Closed historical data changed unexpectedly; refuse a silent overwrite."""
+    """Closed historical data changed unexpectedly.
+
+    Retained for import compatibility. ingest no longer raises it: a
+    conflicting bar is skipped and counted instead, so one revised bar
+    cannot reject a whole batch every cycle (the observed kucoin-ETH /
+    deribit-ETH+SOL pattern, which the settlement margin alone did not
+    stop because exchanges revise bars beyond the newest one).
+    """
 
 
 @dataclass(frozen=True)
@@ -22,6 +33,7 @@ class MarketWriteResult:
     inserted_candles: int
     unchanged_candles: int
     context_count: int
+    conflicted_candles: int = 0
 
 
 class PerpetualMarketStore:
@@ -99,7 +111,12 @@ class PerpetualMarketStore:
             )
 
     def ingest(self, batch: MarketBatch) -> MarketWriteResult:
-        """Atomically insert closed candles; retries cannot rewrite historical prices."""
+        """Atomically insert closed candles; retries cannot rewrite historical prices.
+
+        A bar whose stored values differ from the batch is skipped, not
+        overwritten, and counted in conflicted_candles: one exchange
+        revision must not reject the other bars in the batch.
+        """
         if not batch.candles:
             raise ValueError("batch requires closed candles")
         keys = {(x.venue, x.contract, x.quote) for x in batch.contexts}
@@ -139,6 +156,7 @@ class PerpetualMarketStore:
         self.initialize()
         inserted = 0
         unchanged = 0
+        conflicted = 0
         with self.store.connect() as conn:
             for candle in batch.candles:
                 values = (
@@ -176,9 +194,17 @@ class PerpetualMarketStore:
                     float(old["close_price"]), float(old["volume_base"]),
                     int(old["trades"]),
                 ) != (values[5], *values[7:]):
-                    raise CandleConflictError(
-                        "historical candle changed; manual investigation required"
+                    # Keep the stored values, skip only this bar, and let
+                    # the rest of the batch land. The warning preserves the
+                    # corruption signal without stalling the venue.
+                    conflicted += 1
+                    _LOG.warning(
+                        "RivaL conflicting candle skipped venue=%s "
+                        "contract=%s opened_at=%s; stored values kept",
+                        candle.venue, candle.contract,
+                        utc(candle.opened_at).isoformat(),
                     )
+                    continue
                 unchanged += 1
             for context in batch.contexts:
                 conn.execute(
@@ -195,7 +221,9 @@ class PerpetualMarketStore:
                         context.open_interest_base,
                     ),
                 )
-        return MarketWriteResult(inserted, unchanged, len(batch.contexts))
+        return MarketWriteResult(
+            inserted, unchanged, len(batch.contexts), conflicted,
+        )
 
     def recent_candles(
         self, *, venue: str, contract: str, quote: str,

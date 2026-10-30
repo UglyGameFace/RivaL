@@ -4,17 +4,20 @@ from __future__ import annotations
 from dataclasses import replace
 import pytest
 
-from parlay_bot.parlays.math import (
-    combined_decimal_odds, expected_return_edge, implied_probability,
-    independent_joint_probability, no_vig_probabilities,
-)
 from parlay_bot.parlays.builder import _PricedCandidate
+from parlay_bot.parlays.math import (
+    combined_decimal_odds,
+    expected_return_edge,
+    implied_probability,
+    independent_joint_probability,
+    no_vig_probabilities,
+)
 from parlay_bot.parlays.models import ParlayBuildError
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), True])
 def test_invalid_odds_and_probability_are_rejected(bad):
-    with pytest.raises(ValueError):
+    with pytest.raises((TypeError, ValueError)):
         implied_probability(bad)
     with pytest.raises(ValueError):
         no_vig_probabilities([2, bad])

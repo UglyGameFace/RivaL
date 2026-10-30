@@ -348,6 +348,7 @@ class RivalDiscordClient(discord.Client):
                 location=self.location_service,
                 builder=self.parlay_builder,
                 collector=self.current_collector,
+                refresh_sports=self._request_sports_refresh,
                 market=collector.market if collector is not None else None,
                 targets=self.direction_targets,
                 paper=self.paper_ledger,
@@ -1528,41 +1529,52 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL target refresh cycle failed safely")
             await asyncio.sleep(60)
 
-    async def _sports_loop(self) -> None:
-        """Keep bet candidates fresh in the background when a paid API exists.
+    def _request_sports_refresh(self) -> str:
+        if getattr(self, "_sports_manual_task", None) is not None and not self._sports_manual_task.done():
+            return "Refresh already running. No new odds confirmed."
+        self._sports_manual_task = asyncio.create_task(
+            self._refresh_all_sports(), name="rival-manual-sports-refresh",
+        )
+        return "Checking all three odds providers in background. No new odds confirmed yet."
 
-        Provider quota protections remain inside CurrentBoardCollector. The
-        loop never places orders or auto-sends unsolicited Discord messages.
-        """
+    async def _refresh_all_sports(self) -> str:
+        """Refresh providers independently so one quota/error cannot starve others."""
+        sources = (
+            ("SportsGameOdds", self.current_collector),
+            ("OddsPapi", self.oddspapi_collector),
+            ("The Odds API", self.the_odds_api_collector),
+        )
+        async def check(name, collector):
+            if collector is None:
+                return f"{name}: disabled"
+            try:
+                result = await asyncio.wait_for(collector.refresh_if_due(), timeout=45)
+                if isinstance(result, str):
+                    return f"{name}: {result}"
+                if result.refreshed:
+                    return f"{name}: {result.events_seen} events, {result.observations_seen} odds"
+                return f"{name}: {result.notice or 'not due'}"
+            except TimeoutError:
+                return f"{name}: timed out (no fresh odds confirmed)"
+            except Exception as exc:  # noqa: BLE001
+                _LOG.warning("RivaL %s refresh failed: %s", name, type(exc).__name__)
+                return f"{name}: unavailable ({type(exc).__name__})"
+
+        statuses = await asyncio.gather(*(check(name, source) for name, source in sources))
+        self.sports_refresh_status = "; ".join(statuses)
+        self.sports_refresh_checked_at = datetime.now(UTC)
+        return self.sports_refresh_status
+
+    async def _sports_loop(self) -> None:
+        """Refresh each sportsbook source without blocking Discord interactions."""
         await self.wait_until_ready()
-        assert self.current_collector is not None or self.oddspapi_collector is not None
         while not self.is_closed():
             try:
-                statuses = []
-                if self.current_collector is not None:
-                    result = await asyncio.wait_for(
-                        self.current_collector.refresh_if_due(), timeout=45,
-                    )
-                    statuses.append(f"SportsGameOdds: {result.events_seen} events, {result.observations_seen} odds" if result.refreshed else f"SportsGameOdds: {result.notice or 'not due'}")
-                if self.oddspapi_collector is not None:
-                    status = await asyncio.wait_for(self.oddspapi_collector.refresh_if_due(), timeout=45)
-                    statuses.append(f"OddsPapi: {status}")
-                if self.the_odds_api_collector is not None:
-                    status = await asyncio.wait_for(self.the_odds_api_collector.refresh_if_due(), timeout=45)
-                    statuses.append(f"The Odds API: {status}")
-                self.sports_refresh_status = "; ".join(statuses)
+                await self._refresh_all_sports()
             except asyncio.CancelledError:
                 raise
-            except TimeoutError:
-                self.sports_refresh_status = "Failed: timed out after 45 seconds"
-                _LOG.warning(
-                    "RivaL sportsbook refresh exceeded 45s; skipped this cycle "
-                    "without marking the board fresh"
-                )
-            except Exception as exc:  # noqa: BLE001 - provider outage cannot kill bot
-                self.sports_refresh_status = f"Failed: {type(exc).__name__}"
-                _LOG.exception("RivaL live sportsbook refresh failed safely")
-            self.sports_refresh_checked_at = datetime.now(UTC)
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL sportsbook scheduler unavailable")
             await asyncio.sleep(self.settings.rival_current_refresh_seconds)
 
     async def _stream_shadow_loop(self) -> None:

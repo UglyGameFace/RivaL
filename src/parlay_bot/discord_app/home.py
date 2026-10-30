@@ -1064,46 +1064,63 @@ class GuidedHome(discord.ui.View):
             await interaction.response.send_modal(_Entry(self, action))
             return
         if action == "hunt-config":
+            # Discord must be acknowledged BEFORE PostgreSQL pool access.
+            await interaction.response.defer(ephemeral=True, thinking=True)
             if self.auto_hunt is None:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Auto-Hunt is unavailable.", ephemeral=True,
                 )
                 return
             from parlay_bot.discord_app.hunt_settings import HuntSettingsView
 
-            prefs = await asyncio.to_thread(
-                self.auto_hunt.store.preferences, str(self.owner_id),
-            )
-            settings_view = HuntSettingsView(
-                self.owner_id, self.auto_hunt, prefs,
-            )
-            await interaction.response.send_message(
-                settings_view.render(), ephemeral=True, view=settings_view,
-            )
+            try:
+                prefs = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.auto_hunt.store.preferences, str(self.owner_id),
+                    ), timeout=2,
+                )
+                view = HuntSettingsView(self.owner_id, self.auto_hunt, prefs)
+                await interaction.edit_original_response(
+                    content=view.render(), view=view,
+                )
+            except (TimeoutError, Exception):  # noqa: BLE001
+                _LOG.exception("RivaL Auto-Hunt settings slow or unavailable")
+                await interaction.edit_original_response(
+                    content="Settings are busy. The previous preferences "
+                            "were not changed; open Customize Alerts again.",
+                )
             return
         if action == "api-limits":
-            application = await interaction.client.application_info()
+            # Owner lookup is a remote Discord request. Acknowledge
+            # immediately, then use the followup to open the settings.
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            application = await asyncio.wait_for(
+                interaction.client.application_info(), timeout=3,
+            )
             owner = application.owner
             if owner is None or owner.id != interaction.user.id:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Only the application owner can edit API limits.", ephemeral=True,
                 )
                 return
             limits = OwnerLimitStore(interaction.client.store)
             view = OwnerLimitsView(store=limits, owner_id=owner.id)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "API Usage & Limits: choose a provider to set your safety ceiling. "
                 "This does not upgrade the provider subscription.",
                 view=view, ephemeral=True,
             )
             return
         if action == "manual":
-            saved = await asyncio.to_thread(
-                self.location.get_saved, platform="discord",
-                user_id=str(self.owner_id),
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            saved = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.location.get_saved, platform="discord",
+                    user_id=str(self.owner_id),
+                ), timeout=3,
             )
             if saved is None:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Choose your betting state first.", ephemeral=True,
                 )
                 return
@@ -1112,7 +1129,7 @@ class GuidedHome(discord.ui.View):
                 ManualParlayView, owner_id=self.owner_id,
                 store=self.builder.store, eligible_books=books,
             )
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=picker.render(), view=picker, ephemeral=True,
             )
             return

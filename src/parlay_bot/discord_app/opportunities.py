@@ -129,6 +129,108 @@ def recent_watches(
     return list(by_horizon.values())[:limit]
 
 
+def recent_multi_watches(
+    market: PerpetualMarketStore, *, asset: str,
+    now: datetime | None = None, limit: int = 3,
+    dedupe_horizons: bool = True,
+) -> list[dict]:
+    """Promoted fused-challenger forecasts, under the same freshness gates.
+
+    A fused forecast is priced through its reference venue's live book,
+    never another venue's quote, and only when that venue's feed and
+    latest candle are fresh. The returned dicts match recent_watches
+    plus engine provenance; fused rows carry no walk-forward training
+    count, so training_evaluated is 0 and the contributor count is the
+    provenance that matters.
+    """
+    from parlay_bot.perpetuals.multi_exchange import MODEL as MULTI_MODEL
+
+    if asset not in ASSETS or not 1 <= limit <= 40:
+        raise ValueError("unsupported opportunity request")
+    current = now or datetime.now(UTC)
+    if current.utcoffset() is None:
+        raise ValueError("current time must be aware")
+    instant = current.astimezone(UTC)
+    monitor = ForwardAccuracyMonitor(market)
+    monitor.initialize()
+    with market.store.connect() as connection:
+        rows = connection.execute(
+            """SELECT asset,horizon_minutes,target_opened_at,issued_at,
+                      model_version,probability_up,reference_venue,
+                      reference_contract,reference_quote,contributor_count
+               FROM perp_multi_forward
+               WHERE asset=? AND settled_at IS NULL
+                 AND model_version=?
+                 AND issued_at<=? AND issued_at>=?
+               ORDER BY issued_at DESC LIMIT 40""",
+            (asset, MULTI_MODEL, instant.isoformat(),
+             (instant - timedelta(minutes=20)).isoformat()),
+        ).fetchall()
+    feeds = {
+        (str(x["venue"]), str(x["asset"])): x
+        for x in market.feed_health()
+    }
+    accepted: list[dict] = []
+    for row in rows:
+        try:
+            issued = _utc(str(row["issued_at"]))
+            target = _utc(str(row["target_opened_at"]))
+            horizon = int(row["horizon_minutes"])
+            probability = float(row["probability_up"])
+            venue = str(row["reference_venue"])
+            if (
+                horizon not in (5, 15)
+                or not 0 < probability < 1
+                or not math.isfinite(probability)
+                or instant >= target + timedelta(minutes=5)
+                or _source_identity(venue, asset) != (
+                    str(row["reference_contract"]), str(row["reference_quote"])
+                )
+            ):
+                continue
+            health = feeds.get((venue, asset))
+            if health is None or health.get("status") != "ok":
+                continue
+            last_poll = _utc(str(health["last_success_at"]))
+            if not timedelta(0) <= instant - last_poll <= timedelta(minutes=10):
+                continue
+            candles = market.recent_candles(
+                venue=venue, contract=str(row["reference_contract"]),
+                quote=str(row["reference_quote"]), interval_minutes=5,
+                count=1, as_of=instant,
+            )
+            if not candles:
+                continue
+            candle = candles[-1]
+            observed = _utc(str(candle["first_observed_at"]))
+            if not timedelta(0) <= instant - observed <= timedelta(minutes=10):
+                continue
+            price = float(candle["close_price"])
+            if not math.isfinite(price) or price <= 0:
+                continue
+            accepted.append({
+                "asset": asset, "venue": venue,
+                "horizon_minutes": horizon,
+                "issued": issued, "target": target, "price": price,
+                "price_observed_at": observed,
+                "probability_up": probability,
+                "direction": "UP" if probability > 0.5 else "DOWN",
+                "direction_probability": max(probability, 1 - probability),
+                "training_evaluated": 0,
+                "engine": "multi",
+                "model_version": str(row["model_version"]),
+                "contributor_count": int(row["contributor_count"]),
+            })
+        except (KeyError, ValueError, TypeError, OverflowError):
+            continue
+    if not dedupe_horizons:
+        return accepted[:limit]
+    by_horizon: dict[int, dict] = {}
+    for watch in accepted:
+        by_horizon.setdefault(watch["horizon_minutes"], watch)
+    return list(by_horizon.values())[:limit]
+
+
 def crypto_desk_embed(
     market: PerpetualMarketStore | None, *, asset: str = "BTC",
     proof: bool = False, now: datetime | None = None,

@@ -231,3 +231,41 @@ def live_examples(
             by_issuance[issued] = example
             ordered_by_open[issued] = current.opened_at
     return tuple(by_issuance[key] for key in sorted(by_issuance))
+
+
+def feature_vector(candles) -> tuple[float, ...]:
+    """Match the causal feature vector in live_examples() for the last bar."""
+    window = tuple(candles[-INDICATOR_BARS:])
+    if len(window) != INDICATOR_BARS:
+        raise ValueError("not enough point-in-time candles")
+    for left, right in itertools.pairwise(window):
+        if (
+            (utc(right.opened_at) - utc(left.opened_at)).total_seconds() != 300
+            or (left.venue, left.contract, left.quote) !=
+            (right.venue, right.contract, right.quote)
+        ):
+            raise ValueError("latest feature window is not continuous")
+    recent = window[-LOOKBACK - 1:]
+    closes = [x.close_price for x in recent]
+    if any(not math.isfinite(x) or x <= 0 for x in closes):
+        raise ValueError("invalid prospective prices")
+    returns = [math.log(b / a) for a, b in itertools.pairwise(closes)]
+    avg = sum(returns) / len(returns)
+    variance = sum((v - avg) ** 2 for v in returns) / len(returns)
+    current = window[-1]
+    volume_avg = sum(x.volume_base for x in recent[:-1]) / LOOKBACK
+    return (
+        max(-5.0, min(5.0, returns[-1] * 100)),
+        max(-5.0, min(5.0, math.log(closes[-1] / closes[0]) * 100)),
+        max(0.0, min(5.0, math.sqrt(variance) * 100)),
+        max(0.0, min(5.0, (current.high_price - current.low_price)
+                         / current.close_price * 100)),
+        max(-2.0, min(2.0, math.log((current.volume_base + 1)
+                                   / (volume_avg + 1)))),
+        *indicator_features(
+            [x.close_price for x in window],
+            [x.high_price for x in window],
+            [x.low_price for x in window],
+            [x.volume_base for x in window],
+        ),
+    )

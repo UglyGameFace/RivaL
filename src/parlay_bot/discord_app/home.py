@@ -717,11 +717,11 @@ class GuidedHome(discord.ui.View):
                     if aligned and research is not None else None
                 )
                 embed.description = (
-                    f"**Polymarket AI: {model.direction} (experimental research)**\n"
+                    f"**Polymarket {model.kind}: {model.direction} (experimental research)**\n"
                     if aligned else "**Polymarket AI: no current call**\n"
                 ) + status + "\nAccuracy and profitable edge are unverified."
                 embed.add_field(
-                    name="🧠 AI for this Polymarket contract",
+                    name=f"🧠 {model.kind if aligned else 'AI'} for this Polymarket contract",
                     value=(
                         f"**{model.direction}** • {model.thesis}\n"
                         f"Call issued {discord.utils.format_dt(model.issued_at, style='R')} "
@@ -1327,11 +1327,25 @@ class GuidedHome(discord.ui.View):
                         value=(
                             f"Active engine: **{state['live_engine']}**\n"
                             f"Latest live learning cycle: **{last_live}**\n"
-                            "Historical candidate activation: **NO** "
-                            "(separate feature contracts)."
+                            f"Historical challenger serving: **{'YES' if state.get('active_offline_model') else 'NO'}**\n"
+                            f"{state.get('reason', 'No qualified historical challenger')}"
                         ),
                         inline=False,
                     )
+                    checkpoint = state.get("model_checkpoints")
+                    if checkpoint:
+                        embed.add_field(name="Persistent learned weights", value=(
+                            f"Saved checkpoints: **{checkpoint['persisted_checkpoints']}** • "
+                            f"reused this process: **{checkpoint['reused_this_process']}**\n"
+                            "New resolved observations update the saved model once."
+                        ), inline=False)
+                    contract_learning = state.get("polymarket_learning")
+                    if contract_learning:
+                        embed.add_field(name="Polymarket outcome learning", value=(
+                            f"Verified outcomes learned: **{contract_learning['learned_contracts']}**\n"
+                            f"Settled model forecasts: **{contract_learning['settled_forward_contracts']}**\n"
+                            "Exchange outcomes and AI confidence are excluded from these labels."
+                        ), inline=False)
                     candidate = state.get("candidate")
                     if candidate:
                         accuracy = candidate.get("holdout_accuracy")

@@ -74,7 +74,7 @@ def seed_settled(market, now, *, venue, count=50, beating=True, correct=30,
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     venue, "BTC", "USDC", "BTC", 5,
-                    "prospective-logistic-shadow-v2",
+                    "prospective-logistic-persistent-v3",
                     (issued - timedelta(minutes=5)).isoformat(), 81001,
                     issued.isoformat(),
                     (issued + timedelta(minutes=5)).isoformat(),

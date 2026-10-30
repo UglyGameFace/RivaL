@@ -116,12 +116,11 @@ jobs:
           if-no-files-found: ignore
 
   six-month-production-research:
-    # An unattended multi-asset six-month job is expensive. Enforce the
-    # documented owner-controlled repository variable, not merely a comment.
-    # Manual dispatch remains available to deliberately verify the pipeline.
+    # The owner requested automatic historical training. Enabled by default;
+    # an explicit false variable remains an operational stop switch.
     if: >-
-      (github.event_name == 'schedule' &&
-       vars.RIVAL_HISTORY_MONTHLY_ENABLED == 'true') ||
+      ((github.event_name == 'schedule' || github.event_name == 'push') &&
+       vars.RIVAL_HISTORY_MONTHLY_ENABLED != 'false') ||
       github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 120

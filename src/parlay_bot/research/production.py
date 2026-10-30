@@ -20,6 +20,7 @@ from parlay_bot.research.audit import audit_catalog
 from parlay_bot.research.batch import _already_present, collect, complete_months, targets
 from parlay_bot.research.free_history import ASSETS, INTERVALS, LEAGUES, HistoryImportError
 from parlay_bot.research.learning import evaluate_directory
+from parlay_bot.research.live_training import evaluate_directory as evaluate_live_contracts
 from parlay_bot.research.publish import _artifact, _drive, prepare, publish
 
 DEFAULT_INTERVALS = ("1m", "5m", "15m", "1h", "4h", "1d")
@@ -62,7 +63,9 @@ async def _archive(
         batch_id="report-" + report_artifact.sha256[:24], kind="report",
     )
     models = []
-    for evaluation in research.get("evaluations", []):
+    # Publish compatible artifacts last so bounded startup reads find the
+    # nine current serving scopes before legacy experimental formats.
+    for evaluation in research.get("evaluations", []) + research.get("compatible_evaluations", []):
         spec = evaluation["model_spec"]
         data = {
             "research_only": True, "live_model_promoted": False,
@@ -154,6 +157,9 @@ async def run_pipeline(
     research = evaluate_directory(
         root, intervals=tuple(sorted({INTERVALS[i] for i in intervals})),
         qualified_streams=valid & expected_streams,
+    )
+    research["compatible_evaluations"] = evaluate_live_contracts(
+        root, qualified_streams=valid & expected_streams,
     )
     data_complete = (
         quality["all_requested_streams_qualified"]

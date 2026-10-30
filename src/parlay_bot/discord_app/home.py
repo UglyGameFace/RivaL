@@ -1567,7 +1567,19 @@ class GuidedHome(discord.ui.View):
 
     async def act(self, interaction: discord.Interaction, action: str) -> None:
         if action == "hunt-tools":
-            action = "hunt"
+            # Old navigation controls can open the one notification center
+            # without touching PostgreSQL or the shared redraw lock.
+            fresh = self._display_generation()
+            fresh.navigate("hunt")
+            fresh._buttons()
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="🔔 Notifications",
+                    description="Track Crypto, watch an exchange forecast, or Stop All.",
+                    color=discord.Color.blurple(),
+                ), view=fresh, ephemeral=True,
+            )
+            return
         if action == "explain":
             await interaction.response.send_message(
                 EXPLAIN[self.page], ephemeral=True,
@@ -1577,7 +1589,11 @@ class GuidedHome(discord.ui.View):
             await interaction.response.send_modal(_Entry(self, action))
             return
         if action == "hunt-config":
-            action = "hunt"
+            # Acknowledge old settings-button interactions before any read.
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            self.navigate("hunt")
+            await self.redraw(interaction)
+            return
         if action == "api-limits":
             # Owner lookup is a remote Discord request. Acknowledge
             # immediately, then use the followup to open the settings.

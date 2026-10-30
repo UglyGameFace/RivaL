@@ -45,6 +45,7 @@ from parlay_bot.discord_app.signals import (
     model_strength,
     signal_embed,
 )
+from parlay_bot.perpetuals.live_direction import LiveShiftNotice
 from parlay_bot.perpetuals.live_quotes import MAX_QUOTE_AGE
 from parlay_bot.perpetuals.markets import LEGACY_ALERT_ASSETS, LEGACY_ALERT_HORIZONS
 from parlay_bot.perpetuals.promotion import multi_summary, promoted_engine
@@ -72,6 +73,13 @@ DAILY_CAP_PER_TIER = 12
 # and Polymarket keys stay unprefixed, so pre-reconcile delivery rows keep
 # deduplicating exactly as before.
 QUALIFIED_KEY_PREFIX = "qualified|"
+FLIP_KEY_PREFIX = "flip|"
+# A change must cross BOTH sides of the neutral region on separate,
+# prospectively issued 5-minute reference windows. This is not a tick
+# fluctuation, and 0.62 is a model score, not a win probability.
+FLIP_UP = 0.62
+FLIP_DOWN = 0.38
+FLIP_MAX_PREVIOUS_AGE = timedelta(minutes=35)
 TIERS = ("research", "qualified", "polymarket")
 
 
@@ -100,6 +108,8 @@ class HuntCandidate:
     # could supply it. None means unknown, never zero, never an edge.
     after_cost_bps: float | None = None
     after_cost_status: str | None = None
+    previous_probability: float | None = None
+    previous_issued: datetime | None = None
 
     @property
     def direction(self) -> str:
@@ -160,6 +170,16 @@ class AutoHuntStore:
                        user_id TEXT PRIMARY KEY,
                        selected_source TEXT NOT NULL
                    );
+                   CREATE TABLE IF NOT EXISTS rival_hunt_preferences (
+                       user_id TEXT PRIMARY KEY,
+                       assets TEXT NOT NULL DEFAULT 'BTC,ETH,SOL',
+                       horizons TEXT NOT NULL DEFAULT '5,15',
+                       side TEXT NOT NULL DEFAULT 'both',
+                       max_ask_pct INTEGER NOT NULL DEFAULT 100,
+                       min_remaining_seconds INTEGER NOT NULL DEFAULT 90,
+                       direction_changes INTEGER NOT NULL DEFAULT 0,
+                       live_shifts INTEGER NOT NULL DEFAULT 0
+                   );
                    CREATE TABLE IF NOT EXISTS rival_hunt_tiers (
                        user_id TEXT PRIMARY KEY,
                        research INTEGER NOT NULL DEFAULT 0,
@@ -168,6 +188,14 @@ class AutoHuntStore:
                        updated_at TEXT NOT NULL
                    );"""
             )
+            prefs_columns = self.store.database.column_names(
+                conn, "rival_hunt_preferences",
+            )
+            if "live_shifts" not in prefs_columns:
+                conn.execute(
+                    "ALTER TABLE rival_hunt_preferences ADD COLUMN "
+                    "live_shifts INTEGER NOT NULL DEFAULT 0"
+                )
             # Additive, SQLite/PostgreSQL compatible outbox metadata. Legacy
             # attempted rows remain at-most-once and are never re-sent.
             columns = self.store.database.column_names(conn, "rival_hunt_delivery")
@@ -260,14 +288,85 @@ class AutoHuntStore:
             "polymarket": legacy == "polymarket",
         }
 
+    def preferences(self, user_id: str) -> dict:
+        """Read per-user filters. Legacy followers retain unchanged scope."""
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT assets,horizons,side,max_ask_pct,
+                          min_remaining_seconds,direction_changes,live_shifts
+                   FROM rival_hunt_preferences WHERE user_id=?""",
+                (user_id,),
+            ).fetchone()
+        data = dict(row) if row else {}
+        return {
+            "assets": tuple(str(data.get("assets", "BTC,ETH,SOL")).split(",")),
+            "horizons": tuple(int(x) for x in str(
+                data.get("horizons", "5,15")
+            ).split(",")),
+            "side": str(data.get("side", "both")),
+            "max_ask_pct": int(data.get("max_ask_pct", 100)),
+            "min_remaining_seconds": int(data.get("min_remaining_seconds", 90)),
+            "direction_changes": bool(data.get("direction_changes", 0)),
+            "live_shifts": bool(data.get("live_shifts", 0)),
+        }
+
+    def set_preference(self, user_id: str, field: str, value: object) -> dict:
+        """Strict allowlist, atomic updates; no widening from old opt-ins."""
+        from parlay_bot.perpetuals.markets import ASSETS as ALL_ASSETS
+        from parlay_bot.perpetuals.markets import HORIZONS as ALL_HORIZONS
+
+        allowed = {
+            "assets": {"BTC", "ETH", "SOL", "XRP"},
+            "horizons": {"5", "15", "60"},
+            "side": {"both", "up", "down"},
+            "max_ask_pct": {25, 50, 75, 100},
+            "min_remaining_seconds": {90, 180, 300},
+            "direction_changes": {0, 1},
+            "live_shifts": {0, 1},
+        }
+        if field not in allowed:
+            raise ValueError("Unknown Auto-Hunt preference")
+        if field in ("assets", "horizons"):
+            if not isinstance(value, (tuple, list)) or not value:
+                raise ValueError("Select at least one market")
+            values = tuple(dict.fromkeys(str(x) for x in value))
+            if any(x not in allowed[field] for x in values):
+                raise ValueError("Unsupported market selection")
+            order = ALL_ASSETS if field == "assets" else tuple(
+                str(x) for x in ALL_HORIZONS
+            )
+            stored: str | int = ",".join(x for x in order if x in values)
+        else:
+            if value not in allowed[field]:
+                raise ValueError("Unsupported notification setting")
+            stored = value
+        with self.store.connect() as conn:
+            conn.execute(
+                "INSERT INTO rival_hunt_preferences(user_id) VALUES (?) "
+                "ON CONFLICT(user_id) DO NOTHING",
+                (user_id,),
+            )
+            # field is verified against a fixed allowlist, never user SQL.
+            conn.execute(
+                f"UPDATE rival_hunt_preferences SET {field}=? WHERE user_id=?",
+                (stored, user_id),
+            )
+        return self.preferences(user_id)
+
     def count_sent_today(self, user_id: str, tier: str, now: datetime) -> int:
         """Sent alerts today in one tier's budget. Research and qualified
         budgets are separate; Polymarket rows are identified by venue."""
-        if tier not in TIERS:
+        if tier not in (*TIERS, "flip", "live_shift"):
             raise ValueError("Unsupported alert tier")
         day_start = now.replace(hour=0, minute=0, second=0,
                                 microsecond=0).isoformat()
-        if tier == "qualified":
+        if tier == "live_shift":
+            condition = "venue = 'live_trend'"
+            params = (user_id, day_start)
+        elif tier == "flip":
+            condition = "forecast_key LIKE 'flip|%'"
+            params = (user_id, day_start)
+        elif tier == "qualified":
             condition = "forecast_key LIKE 'qualified|%'"
             params: tuple = (user_id, day_start)
         elif tier == "polymarket":
@@ -275,7 +374,8 @@ class AutoHuntStore:
             params = (user_id, day_start)
         else:
             condition = ("venue != 'polymarket' AND "
-                         "forecast_key NOT LIKE 'qualified|%'")
+                         "forecast_key NOT LIKE 'qualified|%' AND "
+                         "forecast_key NOT LIKE 'flip|%'")
             params = (user_id, day_start)
         with self.store.connect() as conn:
             row = conn.execute(
@@ -351,6 +451,10 @@ class AutoHuntStore:
 
     def stop(self, user_id: str) -> bool:
         with self.store.connect() as conn:
+            conn.execute(
+                "UPDATE rival_hunt_preferences SET direction_changes=0, "
+                "live_shifts=0 WHERE user_id=?", (user_id,),
+            )
             updated = conn.execute(
                 "UPDATE rival_hunt_subscriptions SET enabled=0 WHERE user_id=? AND enabled=1",
                 (user_id,),
@@ -773,10 +877,189 @@ async def qualified_watches(
     return sorted(picks, key=lambda c: (-c.strength, c.expires, c.asset))
 
 
+
+def confirmed_direction_change(latest: HuntCandidate, previous: HuntCandidate,
+                               *, now: datetime) -> bool:
+    """True only for opposite strong models on distinct future candle windows."""
+    if (
+        latest.asset != previous.asset
+        or latest.horizon != previous.horizon
+        or latest.engine != previous.engine
+        or not previous.issued < latest.issued <= now
+        or previous.expires >= latest.expires
+        or latest.issued - previous.issued > FLIP_MAX_PREVIOUS_AGE
+        or now - latest.issued > FORECAST_ALERT_MAX_AGE
+        or latest.expires - now < MIN_REMAINING
+    ):
+        return False
+    before, after = previous.probability_up, latest.probability_up
+    if not all(math.isfinite(p) and 0 < p < 1 for p in (before, after)):
+        return False
+    return (before <= FLIP_DOWN and after >= FLIP_UP) or (
+        before >= FLIP_UP and after <= FLIP_DOWN
+    )
+
+
+def _causal_direction_pair(
+    market, *, asset: str, horizon: int, engine: str, now: datetime,
+) -> tuple[HuntCandidate, HuntCandidate] | None:
+    """Read both forecast windows INCLUDING a settled previous outcome.
+
+    The public recent_watches() viewer intentionally hides settled/expired
+    historical rows. It therefore cannot be used for reversal detection:
+    5m/15m prior windows may already have settled when the new issue arrives.
+    """
+    from parlay_bot.perpetuals.forward_audit import MODEL as LIVE_MODEL
+    from parlay_bot.perpetuals.multi_exchange import MODEL as MULTI_MODEL
+
+    if engine == "multi":
+        sql = (
+            "SELECT reference_venue AS venue, horizon_minutes, "
+            "target_opened_at, issued_at, probability_up, model_version "
+            "FROM perp_multi_forward WHERE asset=? AND horizon_minutes=? "
+            "AND model_version=? AND issued_at>=? AND issued_at<=? "
+            "ORDER BY issued_at DESC LIMIT 100"
+        )
+        version = MULTI_MODEL
+    else:
+        sql = (
+            "SELECT venue, horizon_minutes, target_opened_at, issued_at, "
+            "probability_up, model_version FROM perp_forward_audit "
+            "WHERE asset=? AND horizon_minutes=? AND model_version=? "
+            "AND issued_at>=? AND issued_at<=? "
+            "ORDER BY issued_at DESC LIMIT 100"
+        )
+        version = LIVE_MODEL
+    start = (now-FLIP_MAX_PREVIOUS_AGE).isoformat()
+    with market.store.connect() as conn:
+        records = conn.execute(
+            sql, (asset, horizon, version, start, now.isoformat()),
+        ).fetchall()
+    # Use the same source and model on both sides, and distinct targets.
+    # No vote-counting of correlated venue replicas.
+    latest_by_venue: dict[str, HuntCandidate] = {}
+    for raw in records:
+        try:
+            row = dict(raw)
+            issued = _instant(str(row["issued_at"]))
+            target = _instant(str(row["target_opened_at"]))
+            venue = str(row["venue"])
+            p = float(row["probability_up"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if (
+            not math.isfinite(p) or not 0 < p < 1
+            or not issued < target + timedelta(minutes=5)
+            or issued > now or target > now + timedelta(minutes=65)
+        ):
+            continue
+        candidate = HuntCandidate(
+            asset=asset, horizon=horizon, venue=venue,
+            issued=issued, expires=target+timedelta(minutes=5),
+            probability_up=p, bid=None, ask=None, quote_at=None,
+            engine=engine, model_version=version,
+        )
+        newer = latest_by_venue.get(venue)
+        if newer is None:
+            if (
+                now - issued > FORECAST_ALERT_MAX_AGE
+                or candidate.expires - now < MIN_REMAINING
+            ):
+                continue
+            latest_by_venue[venue] = candidate
+        elif candidate.expires < newer.expires:
+            return newer, candidate
+    return None
+
+
+async def direction_change_watches(market, *,
+                                   now: datetime | None = None) -> list[HuntCandidate]:
+    """Compare two truly issued forecast windows, settled previous allowed."""
+    if market is None:
+        return []
+    from dataclasses import replace
+
+    stamp = (now or datetime.now(UTC)).astimezone(UTC)
+
+    async def scan(asset: str) -> list[HuntCandidate]:
+        findings = []
+        for horizon in HORIZONS:
+            try:
+                engine = await asyncio.to_thread(
+                    promoted_engine, market.store, asset=asset,
+                    horizon=horizon, now=stamp,
+                )
+                pair = await asyncio.to_thread(
+                    _causal_direction_pair, market, asset=asset, horizon=horizon,
+                    engine=engine, now=stamp,
+                )
+                if pair and confirmed_direction_change(
+                    pair[0], pair[1], now=stamp,
+                ):
+                    findings.append(replace(
+                        pair[0], previous_probability=pair[1].probability_up,
+                        previous_issued=pair[1].issued,
+                    ))
+            except Exception:  # noqa: BLE001
+                _LOG.exception(
+                    "Direction-change watch failed asset=%s horizon=%s",
+                    asset, horizon,
+                )
+        return findings
+
+    result = await asyncio.gather(
+        *(scan(asset) for asset in ASSETS), return_exceptions=True,
+    )
+    findings = []
+    for item in result:
+        if isinstance(item, asyncio.CancelledError):
+            raise item
+        if isinstance(item, list):
+            findings.extend(item)
+    return findings
+
+
+def candidate_allowed(candidate, preferences: dict, *, now: datetime) -> bool:
+    """Apply explicit per-person filters before DB claim or DM send."""
+    if (candidate.asset not in preferences["assets"]
+        or candidate.horizon not in preferences["horizons"]):
+        return False
+    if isinstance(candidate, PolymarketNotice):
+        if (candidate.expires - now).total_seconds() < preferences[
+            "min_remaining_seconds"
+        ]:
+            return False
+        ceiling = preferences["max_ask_pct"] / 100
+        side = preferences["side"]
+        return (
+            (side in ("both", "up") and candidate.up_ask <= ceiling)
+            or (side in ("both", "down") and candidate.down_ask <= ceiling)
+        )
+    return True
+
+
 def hunt_embed(
     candidate: HuntCandidate | PolymarketNotice, *, observed_at: datetime,
     tier: str | None = None,
 ) -> discord.Embed:
+    if isinstance(candidate, LiveShiftNotice):
+        embed = discord.Embed(
+            title=f"🔄 Live market trend changed • {candidate.asset} {candidate.direction}",
+            description=(
+                f"Two independent perpetual order books confirm a "
+                f"**{candidate.direction}** price move of "
+                f"**{candidate.move_bps:+.1f} basis points** "
+                f"over approximately **{candidate.lookback_seconds} seconds**.\n"
+                "Both venues crossed a 15-basis-point direction threshold "
+                "and held confirmation across multiple checks.\n"
+                f"Observed <t:{int(candidate.issued.timestamp())}:R>.\n\n"
+                "**Live price momentum only.** This is not a new "
+                "five-minute ML prediction, a calibrated chance of winning, "
+                "or a verified betting opportunity. No wager placed."
+            ), color=discord.Color.orange(),
+        )
+        embed.set_footer(text="Opt-in market shift • /rival-stop")
+        return embed
     if isinstance(candidate, PolymarketNotice):
         fill_line = (
             "10-share depth-weighted ask before fees: "
@@ -805,6 +1088,26 @@ def hunt_embed(
         embed.set_footer(text="Read-only global Polymarket data • /rival-stop")
         return embed
     seconds = max(0, int((candidate.expires - observed_at).total_seconds()))
+    if tier == "flip" and candidate.previous_probability is not None:
+        old = "UP" if candidate.previous_probability > 0.5 else "DOWN"
+        embed = discord.Embed(
+            title=f"🔄 RivaL direction changed • {candidate.asset} {candidate.horizon}m",
+            description=(
+                f"Earlier model issue: **{old}** "
+                f"({candidate.previous_probability:.1%} raw UP score).\\n"
+                f"Newest model issue: **{candidate.direction}** "
+                f"({candidate.probability_up:.1%} raw UP score).\\n"
+                f"New issue <t:{int(candidate.issued.timestamp())}:R> • "
+                f"Expires <t:{int(candidate.expires.timestamp())}:R>.\\n\\n"
+                "Two real forecasts on distinct 5-minute reference windows "
+                "crossed opposite sides of a confidence buffer. Not an "
+                "intrabar recalculation, calibrated win probability, or "
+                "profitable trading opportunity. No order placed."
+            ),
+            color=discord.Color.orange(),
+        )
+        embed.set_footer(text="Opt-in model reversal research • /rival-stop")
+        return embed
     if tier == "qualified" and candidate.screened:
         # Historic perpetual simulation is not contract-specific bet EV.
         edge = candidate.after_cost_bps
@@ -873,6 +1176,125 @@ def hunt_embed(
     return embed
 
 
+
+async def current_alert_review(service: AutoHuntService, row: dict) -> discord.Embed:
+    """Re-query actual current market, never replay an old quote as fresh."""
+    try:
+        if row["venue"] == "live_trend":
+            scanner = getattr(service.bot, "live_direction", None)
+            stream = getattr(service.bot, "live_stream", None)
+            now = datetime.now(UTC)
+            trend = scanner._confirmed.get(row["asset"]) if scanner else None
+            hyper = stream.snapshot("hyperliquid", row["asset"], now=now) if stream else None
+            binance = stream.snapshot("binance", row["asset"], now=now) if stream else None
+            if hyper is None or binance is None or trend is None:
+                return discord.Embed(
+                    title="Live market direction unavailable",
+                    description="Both fresh exchange books and an established "
+                                "confirmed trend are required. No prior quote "
+                                "is reused and no new prediction is invented.",
+                    color=discord.Color.orange(),
+                )
+            return discord.Embed(
+                title=f"📡 Current live trend • {row['asset']}",
+                description=(
+                    f"Most recent confirmed two-exchange price momentum: "
+                    f"**{trend}**.\\n"
+                    f"Hyperliquid bid/ask: **{hyper.bid:,.4f} / {hyper.ask:,.4f}**.\\n"
+                    f"Binance USD-M bid/ask: "
+                    f"**{binance.bid:,.4f} / {binance.ask:,.4f}**.\\n"
+                    "Research-only live momentum, NOT the ML model's "
+                    "latest candle-based prediction."
+                ), color=discord.Color.blurple(),
+            )
+        if row["venue"] == "polymarket":
+            notice = await asyncio.wait_for(
+                service.polymarket.market(
+                    row["asset"], int(row["horizon"]),
+                    opened=_instant(row["issued_at"]),
+                ), timeout=10,
+            )
+            if notice is None:
+                # The button must keep working after the old 5m/15m
+                # window expires. Advance only to a separately verified
+                # real current market, never relabel the old quote as new.
+                notice = await asyncio.wait_for(
+                    service.polymarket.market(
+                        row["asset"], int(row["horizon"]),
+                    ), timeout=10,
+                )
+            if notice is None:
+                return discord.Embed(
+                    title="Market window closed or unavailable",
+                    description="No currently listed matching event has a "
+                                "verified fresh orderbook. Old quotes are "
+                                "not reused as new market prices.",
+                    color=discord.Color.orange(),
+                )
+            embed = hunt_embed(notice, observed_at=datetime.now(UTC))
+            if notice.issued != _instant(row["issued_at"]):
+                embed.add_field(
+                    name="New market window",
+                    value="The previous event expired. This is a newly "
+                          "verified event with its own independent orderbook.",
+                    inline=False,
+                )
+            return embed
+        return await asyncio.wait_for(
+            signal_embed(
+                service.market, service.quotes,
+                asset=row["asset"], horizon_minutes=int(row["horizon"]),
+                stream_shadow=getattr(service.bot, "stream_shadow", None),
+            ), timeout=12,
+        )
+    except Exception:  # noqa: BLE001 - old quotes must not look current
+        _LOG.exception("RivaL fresh review failed")
+        return discord.Embed(
+            title="Current market review unavailable",
+            description="Unable to validate a newer live quote or forecast. "
+                        "The previous alert is not a new trading signal.",
+            color=discord.Color.orange(),
+        )
+
+
+class RepeatReviewView(discord.ui.View):
+    """Private, repeatable refresh without consuming the original DM button."""
+
+    def __init__(self, owner_id: int, message_id: str):
+        super().__init__(timeout=900)
+        self.owner_id = owner_id
+        self.message_id = message_id
+
+    @discord.ui.button(label="Refresh Again", emoji="🔄",
+                       style=discord.ButtonStyle.primary)
+    async def refresh(self, interaction: discord.Interaction,
+                      _: discord.ui.Button) -> None:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "Only the alert recipient can review this.", ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        service = getattr(interaction.client, "auto_hunt", None)
+        row = (
+            await asyncio.to_thread(
+                service.delivery_for_message,
+                str(self.owner_id), self.message_id,
+            )
+            if service is not None else None
+        )
+        if row is None:
+            await interaction.followup.send(
+                "This alert is no longer saved. Open /rival for a new one.",
+                ephemeral=True,
+            )
+            return
+        embed = await current_alert_review(service, row)
+        await interaction.edit_original_response(
+            embed=embed, view=RepeatReviewView(self.owner_id, self.message_id),
+        )
+
+
 class AutoHuntActions(discord.ui.View):
     """Stateless registered view: old DM buttons still work after a restart."""
 
@@ -897,39 +1319,12 @@ class AutoHuntActions(discord.ui.View):
         if row is None:
             await interaction.followup.send("This is not your saved alert.", ephemeral=True)
             return
-        try:
-            if row["venue"] == "polymarket":
-                opened = _instant(row["issued_at"])
-                fresh = await asyncio.wait_for(
-                    service.polymarket.market(
-                        row["asset"], int(row["horizon"]), opened=opened,
-                    ), timeout=10,
-                )
-                if fresh is None:
-                    embed = discord.Embed(
-                        title="Polymarket market no longer verified",
-                        description=(
-                            "The listed market is expired, unavailable, or "
-                            "lacks a fresh book. The original alert is NOT "
-                            "a current quote. No order was placed."
-                        ),
-                    )
-                else:
-                    embed = hunt_embed(fresh, observed_at=datetime.now(UTC))
-            else:
-                embed = await asyncio.wait_for(
-                    signal_embed(
-                        service.market, service.quotes,
-                        asset=row["asset"], horizon_minutes=int(row["horizon"]),
-                        stream_shadow=getattr(interaction.client, "stream_shadow", None),
-                    ), timeout=12,
-                )
-        except Exception:  # noqa: BLE001 - no stale quote masquerades as current
-            embed = discord.Embed(
-                title="Market review unavailable",
-                description="No currently verified quote. Do not act on an old alert.",
-            )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        embed = await current_alert_review(service, row)
+        await interaction.followup.send(
+            embed=embed,
+            view=RepeatReviewView(interaction.user.id, message_id),
+            ephemeral=True,
+        )
         await asyncio.to_thread(service.store.reviewed, user_id, message_id)
 
     @discord.ui.button(
@@ -1034,6 +1429,37 @@ class AutoHuntService:
                 _LOG.exception("Auto-Hunt subscribe failed")
                 return False, "Could not save Auto-Hunt. No subscription confirmed."
 
+    async def update_preference(
+        self, user_id: int, field: str, value: object,
+    ) -> dict:
+        async with self._user_lock(str(user_id)):
+            if field in ("direction_changes", "live_shifts") and value == 1:
+                if field == "live_shifts" and getattr(self.bot, "live_stream", None) is None:
+                    raise ValueError(
+                        "Live WebSocket feeds are disabled. No live alerts enabled."
+                    )
+                enabled = await asyncio.to_thread(self.store.enabled, str(user_id))
+                preferences = await asyncio.to_thread(
+                    self.store.preferences, str(user_id),
+                )
+                if not enabled or not preferences[field]:
+                    await self._dm_opt_in_probe(
+                        user_id, label=(
+                            "live market price-shift alerts" if field == "live_shifts"
+                            else "new model direction-change alerts"
+                        ),
+                    )
+                    if not enabled:
+                        await asyncio.to_thread(self.store.subscribe, str(user_id))
+                        # A live-alert opt-in must NOT silently enable
+                        # legacy model research notifications as a side effect.
+                        await asyncio.to_thread(
+                            self.store.set_tier, str(user_id), "research", False,
+                        )
+            return await asyncio.to_thread(
+                self.store.set_preference, str(user_id), field, value,
+            )
+
     async def stop(self, user_id: int) -> bool:
         # A slow DM to a DIFFERENT user can never delay this cancellation.
         async with self._user_lock(str(user_id)):
@@ -1082,6 +1508,13 @@ class AutoHuntService:
             health = await asyncio.to_thread(self.store.delivery_health, str(user_id))
         except Exception:  # noqa: BLE001
             return "ON • " + parts + " • Delivery health unavailable"
+        preferences = await asyncio.to_thread(self.store.preferences, str(user_id))
+        parts += (
+            f" • Model reversals {'on' if preferences['direction_changes'] else 'off'}"
+            f" • Live trends {'on' if preferences['live_shifts'] else 'off'}"
+            f" • Coins {','.join(preferences['assets'])}"
+            f" • {','.join(str(h) + 'm' for h in preferences['horizons'])}"
+        )
         uncertainty = sum(health.get(state, 0) for state in ("unknown", "sending", "attempted"))
         return (
             "ON • " + parts + f" • Sent {health.get('sent', 0)}"
@@ -1097,7 +1530,11 @@ class AutoHuntService:
         failure here is never retried: a restart will NOT send it again.
         """
         message = None
-        key = QUALIFIED_KEY_PREFIX + candidate.key if tier == "qualified" else candidate.key
+        key = (
+            QUALIFIED_KEY_PREFIX + candidate.key if tier == "qualified"
+            else FLIP_KEY_PREFIX + candidate.key if tier == "flip"
+            else candidate.key
+        )
         dispatch_started = False
         try:
             user = self.bot.get_user(int(user_id))
@@ -1115,6 +1552,11 @@ class AutoHuntService:
                 or candidate.expires - dispatch_at < MIN_REMAINING
             ):
                 _LOG.info("Auto-Hunt qualified quote expired before send")
+                return None
+            if isinstance(candidate, LiveShiftNotice) and (
+                dispatch_at - candidate.issued > timedelta(seconds=20)
+            ):
+                _LOG.info("RivaL market shift expired before DM")
                 return None
             if isinstance(candidate, PolymarketNotice) and (
                 not timedelta(0) <= dispatch_at - candidate.quote_at
@@ -1149,6 +1591,69 @@ class AutoHuntService:
             _LOG.exception("Auto-Hunt DM failed")
         return message
 
+    async def live_cycle(self, notices: list[LiveShiftNotice]) -> int:
+        """Deliver new live market shifts from one shared five-second scan.
+
+        The scanner reads cached WebSocket order books only. This method
+        does not fetch price data per Discord member or change model forecasts.
+        """
+        if not notices:
+            return 0
+        subs = await asyncio.to_thread(self.store.subscribers)
+        total = 0
+        budget = asyncio.Semaphore(5)
+
+        async def deliver(sub: dict) -> int:
+            user_id = str(sub["user_id"])
+            async with budget, self._user_lock(user_id):
+                prefs = await asyncio.to_thread(self.store.preferences, user_id)
+                if not prefs["live_shifts"]:
+                    return 0
+                sent = 0
+                for notice in notices:
+                    now = datetime.now(UTC)
+                    if (
+                        notice.issued < _instant(str(sub["since_at"]))
+                        or notice.expires <= now
+                        or (now - notice.issued).total_seconds() > 20
+                        or notice.asset not in prefs["assets"]
+                    ):
+                        continue
+                    if await asyncio.to_thread(
+                        self.store.count_sent_today,
+                        user_id, "live_shift", now,
+                    ) >= DAILY_CAP_PER_TIER:
+                        break
+                    claimed = await asyncio.to_thread(
+                        self.store.claim, user_id, notice,
+                        now=now, apply_cooldown=False,
+                    )
+                    if not claimed:
+                        continue
+                    message = await self._send_dm(
+                        user_id, notice, now, tier="live_shift",
+                    )
+                    await asyncio.to_thread(
+                        self.store.finish, user_id, notice,
+                        sent=message is not None,
+                        message_id=str(message.id) if message else None,
+                    )
+                    if message is not None:
+                        sent += 1
+                return sent
+
+        results = await asyncio.gather(
+            *(deliver(sub) for sub in subs), return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, int):
+                total += result
+            else:
+                _LOG.warning("Live trend alert delivery failed safely")
+        return total
+
     async def cycle(self) -> int:
         # Only one scan and one candidate set per cycle, regardless of users.
         async with self._cycle_lock:
@@ -1158,6 +1663,15 @@ class AutoHuntService:
             want_qualified = any(s.get("qualified") for s in subscribers)
             want_research = any(s.get("research") for s in subscribers)
             want_poly = any(s.get("polymarket") for s in subscribers)
+            configs = await asyncio.gather(*(
+                asyncio.to_thread(self.store.preferences, str(sub["user_id"]))
+                for sub in subscribers
+            ))
+            pref_by_user = {
+                str(sub["user_id"]): prefs
+                for sub, prefs in zip(subscribers, configs, strict=True)
+            }
+            want_flips = any(prefs["direction_changes"] for prefs in configs)
             qualified = (
                 await qualified_watches(
                     self.market, self.quotes,
@@ -1173,12 +1687,16 @@ class AutoHuntService:
                 await self.polymarket.active()
                 if want_poly else []
             )
+            flips = (
+                await direction_change_watches(self.market)
+                if want_flips else []
+            )
             _LOG.info(
                 "RivaL Auto-Hunt cycle subscribers=%d qualified=%d "
                 "forecasts=%d poly_markets=%d",
                 len(subscribers), len(qualified), len(forecasts), len(markets),
             )
-            if not qualified and not forecasts and not markets:
+            if not qualified and not forecasts and not markets and not flips:
                 return 0
             # Shared bounded Discord/PG concurrency. Each user's own lock
             # serializes delivery with that user's stop and re-opt-in request.
@@ -1188,6 +1706,7 @@ class AutoHuntService:
                 user_id = str(subscriber["user_id"])
                 since = _instant(str(subscriber["since_at"]))
                 sent = 0
+                preferences = pref_by_user[user_id]
                 async with budget, self._user_lock(user_id):
                     # QUALIFIED first: every distinct window alerts, with no
                     # cooldown and no per-cycle limit hiding a later window.
@@ -1198,6 +1717,10 @@ class AutoHuntService:
                     claimed_windows: set[tuple[str, int, datetime]] = set()
                     if subscriber.get("qualified"):
                         for candidate in qualified:
+                            if not candidate_allowed(
+                                candidate, preferences, now=datetime.now(UTC),
+                            ):
+                                continue
                             stamp = datetime.now(UTC)
                             if (
                                 candidate.issued < since
@@ -1252,6 +1775,10 @@ class AutoHuntService:
                     # the existing 120-second cooldown, as before.
                     if subscriber.get("research"):
                         for candidate in forecasts:
+                            if not candidate_allowed(
+                                candidate, preferences, now=datetime.now(UTC),
+                            ):
+                                continue
                             if candidate.window in claimed_windows:
                                 continue
                             stamp = datetime.now(UTC)
@@ -1301,9 +1828,49 @@ class AutoHuntService:
                                 "sent" if message is not None else "unconfirmed",
                             )
                             break
+                    # A model reversal is not every tick. It requires distinct
+                    # newly issued source-backed forecasts on 5m candle windows.
+                    if preferences["direction_changes"]:
+                        for candidate in flips:
+                            stamp = datetime.now(UTC)
+                            if (
+                                candidate.issued < since
+                                or candidate.expires - stamp < MIN_REMAINING
+                                or not candidate_allowed(
+                                    candidate, preferences, now=stamp,
+                                )
+                            ):
+                                continue
+                            if await asyncio.to_thread(
+                                self.store.count_sent_today, user_id, "flip", stamp,
+                            ) >= DAILY_CAP_PER_TIER:
+                                break
+                            key = FLIP_KEY_PREFIX + candidate.key
+                            claimed = await asyncio.to_thread(
+                                self.store.claim, user_id, candidate,
+                                now=stamp, key=key, apply_cooldown=False,
+                            )
+                            if not claimed:
+                                continue
+                            message = await self._send_dm(
+                                user_id, candidate, stamp, tier="flip",
+                            )
+                            await asyncio.to_thread(
+                                self.store.finish, user_id, candidate,
+                                sent=message is not None,
+                                message_id=str(message.id) if message else None,
+                                key=key,
+                            )
+                            if message is not None:
+                                sent += 1
+                            break
                     # POLYMARKET: at most one per cycle per user, as before.
                     if subscriber.get("polymarket"):
                         for candidate in markets:
+                            if not candidate_allowed(
+                                candidate, preferences, now=datetime.now(UTC),
+                            ):
+                                continue
                             stamp = datetime.now(UTC)
                             if candidate.expires - stamp < MIN_REMAINING:
                                 continue

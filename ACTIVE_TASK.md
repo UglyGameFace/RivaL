@@ -1,3 +1,16 @@
+## ACTIVE TASK: Five-Second Live Direction, Model Reversals & Custom Alerts (2026-10-30)
+
+- **Owner requests:** Existing Discord screenshots show one-time Review Fresh Signal, generic fallback "Something went wrong", excessive Polymarket notices and no useful source customization. Owner explicitly wants constant scanning and private direction change alerts, no mandatory website. Keep separate from trading entry odds.
+- **Source:** main `3cfaee10b6acbb71f7d8a6ba56bc5d4e3df1ae6d` (PR #107 merged/startup crash repaired); branch `feat/rival-refresh-reversal-polymarket-settings-20261030`, PR #108. No overlapping open PR on branch creation.
+- **Built:** Owner-locked private Refresh Again replacing one-time ephemeral review; when a Polymarket event closes, refresh only the newly verified next event's live book. Existing /rival Get Signal changes label to Refresh Prediction on signal page; stale persistent menu registration stays within Discord 5-row limits.
+- **Market notifications:** Additive PostgreSQL/SQLite per-user settings (coins, 5m/15m windows, Up/Down side, maximum ASK, minimum time, model reversals and live shifts), simple selectors and cycle buttons under My Alerts. Preserve legacy subscriptions; no widening existing notifications without opt-in. Stop disables both change alerts; separate DM probe needed to activate.
+- **Continuous scanning:** Existing Hyperliquid/Binance sockets every 5s, no per-user feeds; two fresh books, aligned markets, sane spread, >=15 bps same-direction movement across 60-150s, >=10s confirmation, established prior direction. No fabricated prediction probability or per-tick model retraining. New private alerts only on reversals, daily cap and persistent delivery dedupe.
+- **Model direction changes:** Compare genuinely issued model ledger rows on two distinct 5m reference windows, including a settled prior outcome hidden from the current-only UI; require opposite raw 0.38/0.62 directional buffers. Separate from intrabar live price trend.
+- **Safety/proof:** Failure/no source => no alert; no trade/order keys. CI Ruff, full SQLite/PostgreSQL16 suite at exact PR head, later main CI then gated Discloud upload. **Real Discord runtime/provider health and actual delivered change alerts are NOT proven by CI alone.** Binance stream may be region-blocked; two-source requirement intentionally refuses unsupported one-source claims.
+- **Recovery:** Revert PR #108 without deleting additive preference columns; original outbox, model research and old tiers survive. Keep issue #6 open until hosted samples and accuracy evidence exist.
+
+---
+
 ## ACTIVE TASK: XRP/60m Causal Research + Strict Model Qualification + Delivery Outbox (2026-10-30)
 
 - **Live repo:** `UglyGameFace/RivaL`; `main` base `847fd1f08436dab92d5f30cb65753487a8616b31` (PR #105 merged, main CI passed). Current cohesive implementation branch `feat/rival-xrp-60m-validation-outbox-20261030`, PR #106. No overlapping open PRs at creation.

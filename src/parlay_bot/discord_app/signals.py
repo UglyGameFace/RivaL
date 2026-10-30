@@ -574,8 +574,8 @@ async def signal_embed(
         ("⏱️ Expires", discord.utils.format_dt(
             chosen["target"] + timedelta(minutes=5), style="R",
         )),
-        ("⚡ Model strength", f"{max(probability, 1-probability):.1%} raw\n"
-                             f"{strength} • not calibrated"),
+        ("⚡ Model strength", (f"{max(probability, 1-probability):.1%} raw\n"
+                             f"{strength} • not calibrated")),
         ("📊 Measured direction accuracy", measured),
     ):
         embed.add_field(name=name, value=value, inline=True)

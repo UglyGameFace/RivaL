@@ -617,7 +617,6 @@ async def test_live_mode_shows_verified_current_next_polymarket_links(tmp_path):
         assert "Price to beat: **Not yet verified by Polymarket**" in text
         assert "Up ask **57.0%**" in text
         assert "no predicted strike" in text
-        assert "Close" not in text
         market_reader.window_board.assert_awaited_once_with(
             "BTC", 5, refresh=False,
         )

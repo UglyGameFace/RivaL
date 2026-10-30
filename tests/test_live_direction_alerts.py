@@ -203,9 +203,9 @@ async def test_model_flip_recovers_recent_settled_previous_window(
     try:
         with hot.connect() as conn:
             for issued, target, p, settled in (
-                (now-timedelta(minutes=6),
-                 now-timedelta(minutes=5), .76,
-                 now-timedelta(seconds=10)),
+                (now-timedelta(minutes=11),
+                 now-timedelta(minutes=6), .76,
+                 now-timedelta(seconds=30)),
                 (now-timedelta(seconds=15),
                  now+timedelta(minutes=5), .22, None),
             ):

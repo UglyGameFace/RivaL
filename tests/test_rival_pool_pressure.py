@@ -147,7 +147,6 @@ async def test_qualified_hunt_requests_lightweight_decision(monkeypatch):
                 "quote_at": stamp, "bid": 100.0, "ask": 100.1,
                 "after_cost_bps": None, "after_cost_status": None,
             })
-        return None
 
     monkeypatch.setattr(auto_hunt, "signal_embed", fake_embed)
     watches = await auto_hunt.qualified_watches(
@@ -184,9 +183,8 @@ def test_postgres_pool_releases_connections_after_context_exit(monkeypatch):
     database = PostgresDatabase(
         "postgresql://example.invalid/rival", max_size=1, checkout_timeout=0.01,
     )
-    with database.connect():
-        with pytest.raises(TimeoutError, match="pool exhausted"):
-            database.connect()
+    with database.connect(), pytest.raises(TimeoutError, match="pool exhausted"):
+        database.connect()
     with database.connect():
         assert len(created) == 1
     database.close()

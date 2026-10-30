@@ -16,12 +16,12 @@ from parlay_bot.collectors.the_odds_api import TheOddsApiCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.auto_hunt import AutoHuntActions, AutoHuntService, AutoHuntStore
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
-from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.home import (
     GuidedHome,
     build_stale_guided_menu_views,
     install_view_dispatch_logging,
 )
+from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.multi_proof import multi_proof_embed
 from parlay_bot.discord_app.opportunities import (
     crypto_desk_embed,

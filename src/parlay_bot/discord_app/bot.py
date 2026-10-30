@@ -42,6 +42,9 @@ from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import GeminiResearch
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
+from parlay_bot.perpetuals.hyperliquid_history_recovery import (
+    HyperliquidHistoryRecovery,
+)
 from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
 from parlay_bot.perpetuals.live_quotes import (
     PublicBestQuoteClient,
@@ -248,6 +251,13 @@ class RivalDiscordClient(discord.Client):
         )
         self.okx_history_recovery: OkxHistoryRecovery | None = (
             OkxHistoryRecovery(
+                self.perp_collector.market, assets=self.perp_collector.assets,
+            )
+            if self.perp_collector is not None
+            and settings.rival_history_recovery_enabled else None
+        )
+        self.hyperliquid_history_recovery: HyperliquidHistoryRecovery | None = (
+            HyperliquidHistoryRecovery(
                 self.perp_collector.market, assets=self.perp_collector.assets,
             )
             if self.perp_collector is not None
@@ -1435,7 +1445,8 @@ class RivalDiscordClient(discord.Client):
              or self.history_recovery is not None
              or self.kucoin_history_recovery is not None
              or self.bitget_history_recovery is not None
-             or self.okx_history_recovery is not None)
+             or self.okx_history_recovery is not None
+             or self.hyperliquid_history_recovery is not None)
             and self._history_task is None
         ):
             self._history_task = asyncio.create_task(
@@ -1762,6 +1773,20 @@ class RivalDiscordClient(discord.Client):
                     raise
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL OKX history recovery failed safely")
+            if self.hyperliquid_history_recovery is not None:
+                try:
+                    added = await self.hyperliquid_history_recovery.run_once()
+                    if added:
+                        _LOG.info(
+                            "RivaL verified historical Hyperliquid recovery "
+                            "inserted=%d",
+                            added,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOG.exception(
+                        "RivaL Hyperliquid history recovery failed safely")
             if self.history_auditor is not None and self.perp_collector is not None:
                 now = datetime.now(UTC)
                 hour = int(now.timestamp() // 3600)
@@ -1778,9 +1803,15 @@ class RivalDiscordClient(discord.Client):
                         )
                         _LOG.info(
                             "RivaL six-month history audit asset=%s streams=%d "
-                            "complete=%d",
+                            "complete=%d incomplete=[%s]",
                             asset, len(report),
                             sum(x["status"] == "complete" for x in report),
+                            "; ".join(
+                                f"{x['venue']}:missing={x['missing_bars']}/"
+                                f"gaps={x['gap_segments']}/"
+                                f"invalid={x['invalid_observations']}"
+                                for x in report if x["status"] != "complete"
+                            ),
                         )
                     except asyncio.CancelledError:
                         raise

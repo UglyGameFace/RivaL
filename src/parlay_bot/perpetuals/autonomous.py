@@ -260,10 +260,16 @@ class AutonomousResearch:
     async def run_auto_ai(self, *, now: datetime | None = None) -> int:
         """One bounded slot, max 18 potential AI requests/day for 3 assets."""
         current = _utc(now or datetime.now(UTC))
+        in_slot = current.hour % SLOT_HOURS == 0 and current.minute % 20 < 5
         if (
             not self.auto_ai or self.ai is None or not self.ai.available
-            or current.hour % SLOT_HOURS or current.minute % 20 >= 5
+            or not in_slot
         ):
+            if in_slot:
+                _LOG.info(
+                    "RivaL auto Gemini slot blocked reason=%s",
+                    "auto_ai_disabled" if not self.auto_ai else "ai_unavailable",
+                )
             return 0
         # Global Gemini API spacing is 15 minutes, so never dispatch BTC,
         # ETH and SOL back-to-back. Use UTC minute 00/20/40 and persist
@@ -363,6 +369,14 @@ class AutonomousResearch:
                          current.isoformat(), audit.targets, audit.days,
                          audit.model_brier, audit.baseline_brier,
                          audit.status, reason),
+                    )
+                    _LOG.info(
+                        "RivaL governance asset=%s horizon=%s status=%s "
+                        "paired_gain=%s days=%d targets=%d",
+                        asset, horizon, audit.status,
+                        f"{audit.paired_gain:.5f}"
+                        if audit.paired_gain is not None else "none",
+                        audit.days, audit.targets,
                     )
                     count += 1
         return count

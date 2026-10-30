@@ -41,6 +41,60 @@ def _num(value: Any, *, positive: bool = False) -> float:
     return number
 
 
+def contiguous_forward_next(
+    cursor: datetime, until: datetime, opened: list[datetime],
+) -> datetime:
+    """Next forward cursor after a page: only past contiguous bars.
+
+    A page that returns fewer bars than its window must not skip the
+    missing bars, or the six-month auditor can never report the stream
+    complete: the cursor advances past the contiguous prefix only. A
+    leading gap (no bar at the cursor) jumps to the first received bar
+    so a genuinely absent region cannot stall the cursor forever; the
+    auditor still counts those bars as missing, honestly. An empty page
+    advances to the window end, as before.
+    """
+    stamps = sorted({stamp for stamp in opened if cursor <= stamp < until})
+    if not stamps:
+        return until
+    expected = int((until - cursor) / _STEP)
+    prefix = 0
+    for stamp in stamps:
+        if stamp == cursor + prefix * _STEP:
+            prefix += 1
+        elif stamp > cursor + prefix * _STEP:
+            break
+    if prefix >= expected:
+        return until
+    if prefix > 0:
+        return cursor + prefix * _STEP
+    return stamps[0]
+
+
+def contiguous_backward_next(
+    cursor: datetime, opened: list[datetime],
+) -> datetime:
+    """Next backward cursor after a page: only past the top-contiguous run.
+
+    The cursor is an exclusive upper bound. Advance to the oldest bar of
+    the contiguous run ending just below the cursor; if the run is empty
+    (a gap at the top), jump to the oldest fetched bar so a genuine gap
+    cannot stall the cursor. Skipped bars stay missing in the audit.
+    """
+    stamps = sorted({stamp for stamp in opened if stamp < cursor}, reverse=True)
+    if not stamps:
+        return cursor
+    run_start: datetime | None = None
+    expect = cursor - _STEP
+    for stamp in stamps:
+        if stamp == expect:
+            run_start = stamp
+            expect -= _STEP
+        elif stamp < expect:
+            break
+    return run_start if run_start is not None else stamps[-1]
+
+
 class GateHistoryRecovery:
     def __init__(
         self, market: PerpetualMarketStore, *,
@@ -224,15 +278,18 @@ class GateHistoryRecovery:
                 batch = MarketBatch((), tuple(candles), 5, observed)
                 result = await asyncio.to_thread(self.market.ingest, batch)
                 added = result.inserted_candles
+            next_open = contiguous_forward_next(
+                cursor, until, [candle.opened_at for candle in candles],
+            )
             await asyncio.to_thread(
-                self._advance, asset, now=clock, next_open=until,
+                self._advance, asset, now=clock, next_open=next_open,
                 inserted=added, empty=not bool(rows),
                 status="progress",
             )
             _LOG.info(
                 "RivaL Gate historical recovery asset=%s received=%d "
                 "inserted=%d through=%s",
-                asset, len(rows), added, until.date(),
+                asset, len(rows), added, next_open.date(),
             )
             return added
         except asyncio.CancelledError:

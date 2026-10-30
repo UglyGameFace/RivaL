@@ -20,6 +20,7 @@ from parlay_bot.perpetuals.history_recovery import (
     GateHistoryRecovery,
     _num,
     _utc,
+    contiguous_backward_next,
 )
 from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle, MarketDataError
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -231,10 +232,16 @@ class OkxHistoryRecovery(GateHistoryRecovery):
                     MarketBatch((), tuple(candles), 5, observed),
                 )
                 added = result.inserted_candles
+            next_cursor = (
+                contiguous_backward_next(
+                    cursor, [candle.opened_at for candle in candles],
+                )
+                if candles else oldest
+            )
             await asyncio.to_thread(
-                self._advance, asset, now=clock, next_open=oldest,
+                self._advance, asset, now=clock, next_open=next_cursor,
                 inserted=added,
-                status="caught_up" if oldest <= start else "progress",
+                status="caught_up" if next_cursor <= start else "progress",
             )
             _LOG.info(
                 "RivaL OKX historical recovery asset=%s rows=%d inserted=%d",

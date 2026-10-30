@@ -20,6 +20,7 @@ from parlay_bot.perpetuals.history_recovery import (
     GateHistoryRecovery,
     _num,
     _utc,
+    contiguous_forward_next,
 )
 from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle, MarketDataError
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -208,8 +209,11 @@ class BitgetHistoryRecovery(GateHistoryRecovery):
                     MarketBatch((), tuple(candles), 5, observed),
                 )
                 added = saved.inserted_candles
+            next_open = contiguous_forward_next(
+                cursor, until, [candle.opened_at for candle in candles],
+            )
             await asyncio.to_thread(
-                self._advance, asset, now=clock, next_open=until,
+                self._advance, asset, now=clock, next_open=next_open,
                 inserted=added, empty=not bool(candles), status="progress",
             )
             _LOG.info(

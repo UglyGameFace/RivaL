@@ -12,17 +12,16 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import httpx
 
 _LOG = logging.getLogger(__name__)
 _ROOT = "https://external-api.kalshi.com/trade-api/v2"
 _SYMBOLS = {
-    "BTC": (r"\\bBTC\\b", r"\\bBITCOIN\\b"),
-    "ETH": (r"\\bETH\\b", r"\\bETHEREUM\\b"),
-    "SOL": (r"\\bSOL\\b", r"\\bSOLANA\\b"),
-    "XRP": (r"\\bXRP\\b",),
+    "BTC": (r"\bBTC\b", r"\bBITCOIN\b"),
+    "ETH": (r"\bETH\b", r"\bETHEREUM\b"),
+    "SOL": (r"\bSOL\b", r"\bSOLANA\b"),
+    "XRP": (r"\bXRP\b",),
 }
 # Series may include several tickers sharing a theme. Only the official
 # discovery response determines what exists. Avoid hardcoded market IDs.
@@ -61,7 +60,7 @@ def matching_series(payload: object, *, asset: str) -> tuple[str, ...]:
     for row in payload["series"]:
         if not isinstance(row, dict):
             continue
-        title = row.get("title")
+        title = row.get("title") or row.get("yes_sub_title")
         ticker = row.get("ticker")
         categories = row.get("categories")
         if (

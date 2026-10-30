@@ -1238,8 +1238,8 @@ class GuidedHome(discord.ui.View):
 # execute a stateful action from stale state: navigation and read-only pages
 # reopen on a fresh menu, and anything that would place, change, or stop
 # something (trades, alerts, slips, location, limits) just reopens a fresh
-# home menu with an honest note. A view holds at most 25 components, and the
-# guided menu has 33 custom_ids, so the fallback is split across two views;
+# home menu with an honest note. A view has five rows. A fallback with two full-width selects must use at
+# most 15 buttons; we split these custom_ids across two views;
 # discord.py matches by custom_id across every registered persistent view.
 # ---------------------------------------------------------------------------
 
@@ -1270,12 +1270,12 @@ _STALE_NOTE = (
 _STALE_BUTTONS_A = (
     "sports", "crypto", "hunt", "practice", "results", "help", "advanced",
     "state", "zip", "refresh", "manual", "slip", "lower", "balanced",
-    "aggressive", "forecast", "follow", "target",
+    "aggressive", "forecast", "follow", "target", "home", "back",
 )
 _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",
     "feeds", "research", "api-limits", "hunt-on", "hunt-off", "hunt-status",
-    "home", "back", "explain",
+    "explain",
 )
 
 
@@ -1359,7 +1359,7 @@ class _StaleGuidedMenuBase(discord.ui.View):
 
 
 class StaleGuidedMenuViewA(_StaleGuidedMenuBase):
-    """First slice of the stale-menu fallback (17 button custom_ids)."""
+    """First slice of the stale-menu fallback (20 button custom_ids)."""
 
     def __init__(self, home_factory: Callable[[int], GuidedHome]) -> None:
         super().__init__(home_factory)
@@ -1368,7 +1368,7 @@ class StaleGuidedMenuViewA(_StaleGuidedMenuBase):
 
 
 class StaleGuidedMenuViewB(_StaleGuidedMenuBase):
-    """Second slice (14 buttons + coin/horizon selects)."""
+    """Second slice (15 buttons + coin/horizon selects)."""
 
     def __init__(self, home_factory: Callable[[int], GuidedHome]) -> None:
         super().__init__(home_factory)

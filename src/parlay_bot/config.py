@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     oddspapi_quota_reserve: int = Field(default=20, ge=0)
     oddspapi_account_cache_seconds: int = Field(default=60, ge=0)
 
+    # Sports is OPTIONAL. Key presence must never start sports polling.
+    rival_sports_background_enabled: bool = Field(default=False)
+    rival_sports_archive_enabled: bool = Field(default=False)
     sportsgameodds_api_key: SecretStr | None = Field(default=None)
     sportsgameodds_base_url: str = Field(default="https://api.sportsgameodds.com/v2")
     sportsgameodds_monthly_entity_reserve: int = Field(default=250, ge=0)

@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import queue
 import sqlite3
+import sys
 import threading
 import time
 from collections.abc import Callable, Sequence
@@ -43,15 +44,47 @@ class _Connection:
     def __init__(
         self, raw: Any, backend: BackendName,
         on_exit: Callable[[Any], None] | None = None,
+        origin: str = "unknown",
     ) -> None:
         self._raw = raw
         self.backend = backend
         self._on_exit = on_exit
+        # Only operation names and timings, never SQL text, parameters,
+        # URLs, API tokens or database values, enter diagnostics.
+        self.origin = origin
+        self.query_count = 0
+        self.query_seconds = 0.0
+        self.max_query_seconds = 0.0
+        self.slowest_operation = "none"
+        self.active_operation = "none"
+        self.active_started = 0.0
+        self.commit_seconds = 0.0
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> CursorLike:
-        if self.backend == "postgres":
-            sql = _postgres_sql(sql)
-        return self._raw.execute(sql, tuple(params))
+        if self.backend != "postgres":
+            return self._raw.execute(sql, tuple(params))
+        operation = sql.lstrip().split(None, 1)[0].upper() if sql.strip() else "UNKNOWN"
+        # The live owner may be monitored by another thread at pool timeout.
+        started = time.monotonic()
+        self.active_operation = operation
+        self.active_started = started
+        try:
+            return self._raw.execute(_postgres_sql(sql), tuple(params))
+        finally:
+            elapsed = time.monotonic() - started
+            self.query_count += 1
+            self.query_seconds += elapsed
+            if self.query_count == 1 or elapsed > self.max_query_seconds:
+                self.max_query_seconds = elapsed
+                self.slowest_operation = operation
+            self.active_operation = "none"
+            self.active_started = 0.0
+            if elapsed >= 2.0:
+                _LOG.warning(
+                    "RivaL PostgreSQL slow operation owner=%s operation=%s "
+                    "duration=%.2fs (SQL/parameters omitted)",
+                    self.origin, operation, elapsed,
+                )
 
     def executescript(self, script: str) -> None:
         if self.backend == "sqlite":
@@ -63,10 +96,10 @@ class _Connection:
         # A transaction-scoped advisory lock serializes startup DDL across
         # threads, store instances, and even overlapping bot processes.
         # It is released automatically at commit/rollback; no permanent lock.
-        self._raw.execute("SELECT pg_advisory_xact_lock(72649113001)")
+        self.execute("SELECT pg_advisory_xact_lock(72649113001)")
         statements = [part.strip() for part in script.split(";") if part.strip()]
         for statement in statements:
-            self._raw.execute(statement)
+            self.execute(statement)
 
     def __enter__(self) -> Self:
         self._raw.__enter__()
@@ -87,7 +120,11 @@ class _Connection:
                         except Exception:  # noqa: BLE001
                             _LOG.warning("RivaL PostgreSQL rollback failed during exception cleanup")
                     else:
-                        self._raw.commit()
+                        started = time.monotonic()
+                        try:
+                            self._raw.commit()
+                        finally:
+                            self.commit_seconds += time.monotonic() - started
                 result = False
             else:
                 result = self._raw.__exit__(exc_type, exc, tb)
@@ -173,15 +210,35 @@ class PostgresDatabase(RelationalDatabase):
         self._total = 0
         self._closed = False
         # Diagnostic only: track checkout ages, never SQL/credentials.
-        self._borrowers: dict[int, tuple[float, str]] = {}
+        self._borrowers: dict[int, tuple[float, str, _Connection]] = {}
+
+    @staticmethod
+    def _checkout_origin() -> str:
+        """Find the first application caller above storage without stack payloads."""
+        frame = sys._getframe(1)
+        for _ in range(16):
+            if frame is None:
+                break
+            module = str(frame.f_globals.get("__name__", ""))
+            if (module.startswith("parlay_bot.")
+                    and module not in (
+                        "parlay_bot.storage.database",
+                        "parlay_bot.storage.hot",
+                    )):
+                return (f"{module.rsplit('.', 1)[-1]}."
+                        f"{frame.f_code.co_name}:{frame.f_lineno}")
+            frame = frame.f_back
+        return "unattributed"
 
     def connect(self) -> _Connection:
         started = time.monotonic()
         raw = self._checkout()
         held_since = time.monotonic()
+        owner = self._checkout_origin()
+        borrowed = _Connection(raw, self.backend, origin=owner)
         with self._lock:
             self._borrowers[id(raw)] = (
-                held_since, threading.current_thread().name,
+                held_since, threading.current_thread().name, borrowed,
             )
             checked_out = len(self._borrowers)
         waited = held_since - started
@@ -200,11 +257,18 @@ class PostgresDatabase(RelationalDatabase):
                 held = time.monotonic() - held_since
                 if held >= 5.0:
                     _LOG.warning(
-                        "RivaL PostgreSQL connection held %.2fs worker=%s",
-                        held, threading.current_thread().name,
+                        "RivaL PostgreSQL connection held %.2fs owner=%s "
+                        "worker=%s queries=%d sql_total=%.2fs "
+                        "slowest=%s:%.2fs commit_total=%.2fs "
+                        "(SQL/parameters omitted)",
+                        held, borrowed.origin, threading.current_thread().name,
+                        borrowed.query_count, borrowed.query_seconds,
+                        borrowed.slowest_operation, borrowed.max_query_seconds,
+                        borrowed.commit_seconds,
                     )
 
-        return _Connection(raw, self.backend, on_exit=release)
+        borrowed._on_exit = release
+        return borrowed
 
     def _checkout(self) -> Any:
         while True:
@@ -242,16 +306,29 @@ class PostgresDatabase(RelationalDatabase):
             except queue.Empty:
                 with self._lock:
                     ages = [
-                        (time.monotonic() - borrowed, worker)
-                        for borrowed, worker in self._borrowers.values()
+                        (time.monotonic() - started, worker, borrowed)
+                        for started, worker, borrowed in self._borrowers.values()
                     ]
-                oldest_age, oldest_worker = max(
-                    ages, default=(0.0, "unknown"),
+                oldest_age, oldest_worker, oldest_connection = max(
+                    ages, key=lambda item: item[0],
+                    default=(0.0, "unknown", None),
+                )
+                active = (
+                    oldest_connection.active_operation
+                    if oldest_connection is not None else "none"
+                )
+                active_seconds = (
+                    max(0.0, time.monotonic() - oldest_connection.active_started)
+                    if oldest_connection is not None
+                    and oldest_connection.active_started else 0.0
                 )
                 _LOG.error(
                     "RivaL PostgreSQL pool exhausted max=%d checked_out=%d "
-                    "oldest_held=%.1fs oldest_worker=%s",
+                    "oldest_held=%.1fs oldest_worker=%s owner=%s "
+                    "active_operation=%s active_seconds=%.1fs",
                     self._max_size, len(ages), oldest_age, oldest_worker,
+                    oldest_connection.origin if oldest_connection else "unknown",
+                    active, active_seconds,
                 )
                 raise TimeoutError(
                     "PostgreSQL connection pool exhausted "

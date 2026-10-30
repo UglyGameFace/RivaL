@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -285,3 +287,116 @@ async def test_qualified_signal_does_not_wait_for_stalled_exchange_dns(monkeypat
     assert "NO LIVE SIGNAL" in response.title
     assert not decision
     assert loop.time() - started < 4.0
+
+
+def test_postgres_checkout_reports_owner_query_and_commit_not_values(
+    monkeypatch, caplog,
+):
+    from psycopg.pq import TransactionStatus
+
+    from parlay_bot.storage import database as db_module
+
+    class DummyConnection:
+        closed = False
+        info = SimpleNamespace(transaction_status=TransactionStatus.IDLE)
+
+        def __enter__(self):
+            return self
+
+        def execute(self, sql, params=()):
+            assert "SELECT" in sql
+            return SimpleNamespace(fetchone=lambda: {"ok": 1})
+
+        def commit(self):
+            pass
+
+        def rollback(self):
+            pass
+
+        def close(self):
+            self.closed = True
+
+    monkeypatch.setattr(db_module.psycopg, "connect",
+                        lambda *_a, **_kw: DummyConnection())
+    clock = {"now": 100.0}
+    monkeypatch.setattr(db_module.time, "monotonic", lambda: clock["now"])
+    db = PostgresDatabase(
+        "postgresql://fake.test/fake", max_size=1,
+    )
+    try:
+        with caplog.at_level(logging.WARNING), db.connect() as conn:
+            conn.execute("SELECT ? AS injected", ("SUPER-SECRET-VALUE",))
+            assert conn.query_count == 1
+            assert conn.slowest_operation == "SELECT"
+            clock["now"] = 106.25
+        records = [r.message for r in caplog.records
+                   if "connection held" in r.message]
+        assert len(records) == 1
+        assert "6.25s" in records[0]
+        assert "queries=1" in records[0]
+        assert "slowest=SELECT" in records[0]
+        assert "owner=" in records[0]
+        assert "SUPER-SECRET-VALUE" not in caplog.text
+        assert "fake.test" not in caplog.text
+    finally:
+        db.close()
+
+
+@pytest.mark.asyncio
+async def test_background_qualified_deadline_identifies_stalled_forecast_read(
+    monkeypatch,
+):
+    stamp = datetime(2026, 10, 30, 18, 0, tzinfo=UTC)
+    monkeypatch.setattr(signals, "promoted_engine", lambda *_a, **_kw: "live")
+
+    def read_forecasts(*_a, **_kw):
+        time.sleep(0.3)
+        return []
+
+    monkeypatch.setattr(signals, "recent_watches", read_forecasts)
+    decision = {}
+    started = time.monotonic()
+    with pytest.raises(signals.SignalStageTimeout) as failure:
+        await signals.signal_embed(
+            SimpleNamespace(store=object()), object(),
+            asset="BTC", horizon_minutes=15, now=stamp,
+            decision_only=True, decision_out=decision,
+            deadline=time.monotonic() + 0.22,
+        )
+    assert failure.value.stage == "forecast-read"
+    assert not decision
+    assert time.monotonic() - started < 0.3
+
+
+@pytest.mark.asyncio
+async def test_qualified_quote_uses_remaining_deadline_and_fails_closed(
+    monkeypatch,
+):
+    stamp = datetime(2026, 10, 30, 18, 0, tzinfo=UTC)
+    monkeypatch.setattr(signals, "promoted_engine", lambda *_a, **_kw: "live")
+    monkeypatch.setattr(signals, "recent_watches", lambda *_a, **_kw: [{
+        "venue": "okx", "horizon_minutes": 15,
+        "probability_up": 0.72, "issued": stamp - timedelta(seconds=15),
+        "target": stamp + timedelta(minutes=4),
+        "model_version": "test-model",
+    }])
+    monkeypatch.setattr(signals, "_venue_proof", lambda *_a, **_kw: {
+        "settled": 65, "hit_rate": 0.65, "model_beats_baseline": True,
+    })
+
+    async def slow_quote(*_a, **_kw):
+        await asyncio.sleep(0.6)
+        raise AssertionError("quote timeout must cancel incomplete result")
+
+    monkeypatch.setattr(signals, "_venue_book", slow_quote)
+    decision = {}
+    started = time.monotonic()
+    embed = await signals.signal_embed(
+        SimpleNamespace(store=object()), object(),
+        asset="BTC", horizon_minutes=15, now=stamp,
+        decision_only=True, decision_out=decision,
+        deadline=time.monotonic() + 0.28,
+    )
+    assert "NO LIVE SIGNAL" in embed.title
+    assert decision == {}
+    assert time.monotonic() - started < 0.4

@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import logging
 import math
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -40,6 +41,7 @@ from parlay_bot.discord_app.opportunities import (
 from parlay_bot.discord_app.polymarket_watch import PolymarketNotice, PolymarketReader
 from parlay_bot.discord_app.signals import (
     MIN_REMAINING,
+    SignalStageTimeout,
     _venue_book,
     _venue_proof,
     model_strength,
@@ -909,12 +911,28 @@ async def qualified_watches(
     async def evaluate(asset: str, horizon: int) -> HuntCandidate | None:
         async with budget:
             decision: dict = {}
+            started = time.monotonic()
             try:
                 await asyncio.wait_for(signal_embed(
                     market, quotes, asset=asset, horizon_minutes=horizon,
                     now=scan_at, stream_shadow=stream_shadow,
                     decision_out=decision, decision_only=True,
+                    deadline=started + 6.5,
                 ), timeout=7)
+            except SignalStageTimeout as exc:
+                _LOG.warning(
+                    "Auto-Hunt qualified slot %s/%dm timed out at %s "
+                    "elapsed=%.2fs; no unverified alert issued",
+                    asset, horizon, exc.stage, time.monotonic() - started,
+                )
+                return None
+            except TimeoutError:
+                _LOG.warning(
+                    "Auto-Hunt qualified slot %s/%dm exceeded overall "
+                    "deadline elapsed=%.2fs; no unverified alert issued",
+                    asset, horizon, time.monotonic() - started,
+                )
+                return None
             except Exception:  # noqa: BLE001 - one failed slot cannot block others
                 _LOG.exception("Auto-Hunt qualified slot %s/%dm failed", asset, horizon)
                 return None

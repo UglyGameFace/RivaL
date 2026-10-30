@@ -10,7 +10,9 @@ import asyncio
 import logging
 import math
 import time
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
+from typing import TypeVar
 
 import discord
 
@@ -41,6 +43,17 @@ _LOG = logging.getLogger(__name__)
 HORIZONS = RESEARCH_HORIZONS
 MIN_REMAINING = timedelta(seconds=90)
 WATCH_THRESHOLD = 0.56
+_T = TypeVar("_T")
+
+
+class SignalStageTimeout(TimeoutError):
+    """A safe no-watch result: this named stage exceeded the shared budget."""
+
+    def __init__(self, stage: str) -> None:
+        self.stage = stage
+        super().__init__(f"Qualified signal stage {stage} exceeded its deadline")
+
+
 
 
 def model_strength(probability: float) -> str:
@@ -99,6 +112,7 @@ async def signal_embed(
     stream_shadow: StreamShadowLedger | None = None,
     decision_out: dict | None = None,
     decision_only: bool = False,
+    deadline: float | None = None,
 ) -> discord.Embed:
     """Refresh the selected market, its real book and measured forward results.
 
@@ -115,6 +129,29 @@ async def signal_embed(
     not a watch. Background decision_only skips presentation-only proof
     and quote-shadow reports, not the source/venue/watch qualification.
     """
+    async def bounded(
+        stage: str, work: Callable[[], Awaitable[_T]], *, max_seconds: float,
+    ) -> _T:
+        """Every stage uses the SAME monotonic deadline, not fresh budgets."""
+        if not decision_only or deadline is None:
+            # Preserve the preexisting per-venue quote timeout for manual
+            # menus and standalone decision checks without a shared budget.
+            if stage.startswith("quote:"):
+                try:
+                    return await asyncio.wait_for(work(), timeout=max_seconds)
+                except TimeoutError as exc:
+                    raise SignalStageTimeout(stage) from exc
+            return await work()
+        remaining = deadline - time.monotonic() - 0.15
+        if remaining <= 0:
+            raise SignalStageTimeout(stage)
+        try:
+            return await asyncio.wait_for(
+                work(), timeout=min(max_seconds, remaining),
+            )
+        except TimeoutError as exc:
+            raise SignalStageTimeout(stage) from exc
+
     if asset not in ASSETS or horizon_minutes not in HORIZONS:
         raise ValueError("choose BTC, ETH, SOL or XRP and 5, 15 or 60 minutes")
     stamp = now or datetime.now(UTC)
@@ -127,19 +164,35 @@ async def signal_embed(
     try:
         watches_started = time.monotonic()
         try:
-            engine = await asyncio.to_thread(
-                promoted_engine, market.store, asset=asset,
-                horizon=horizon_minutes, now=stamp,
+            engine = await bounded(
+                "promotion",
+                lambda: asyncio.to_thread(
+                    promoted_engine, market.store, asset=asset,
+                    horizon=horizon_minutes, now=stamp,
+                ),
+                max_seconds=1.5,
             )
+        except SignalStageTimeout:
+            raise
         except Exception:  # noqa: BLE001 - promotion lookup never blocks signals
-            _LOG.exception("RivaL promotion lookup unavailable; serving live model")
+            _LOG.exception("RivaL promotion lookup unavailable")
+            if decision_only:
+                return _no_signal(
+                    asset, horizon_minutes, "Model promotion evidence unavailable.",
+                )
             engine = "live"
         reader = recent_multi_watches if engine == "multi" else recent_watches
-        watches = await asyncio.to_thread(
-            reader, market, asset=asset, now=stamp,
-            limit=40, dedupe_horizons=False,
+        watches = await bounded(
+            "forecast-read",
+            lambda: asyncio.to_thread(
+                reader, market, asset=asset, now=stamp,
+                limit=40, dedupe_horizons=False,
+            ),
+            max_seconds=2.5,
         )
         marks = {"watches_ms": (time.monotonic() - watches_started) * 1000}
+    except SignalStageTimeout:
+        raise
     except Exception:  # noqa: BLE001 - do not leak DB details into Discord
         _LOG.exception("RivaL signal ledger cannot be inspected")
         return _no_signal(
@@ -215,11 +268,17 @@ async def signal_embed(
             # entire seven-second background Auto-Hunt decision budget.
             # Missing quotes fail closed; no cross-venue substitution.
             try:
-                return await asyncio.wait_for(
-                    _venue_book(quotes, asset=asset, venue=venue),
-                    timeout=2.5 if decision_only else 4.5,
+                return await bounded(
+                    f"quote:{venue}",
+                    lambda: _venue_book(quotes, asset=asset, venue=venue),
+                    max_seconds=2.5 if decision_only else 4.5,
                 )
-            except TimeoutError as exc:
+            except SignalStageTimeout as exc:
+                _LOG.info(
+                    "RivaL qualified quote timeout asset=%s horizon=%dm "
+                    "venue=%s stage=%s; no stale quote substituted",
+                    asset, horizon_minutes, venue, exc.stage,
+                )
                 raise QuoteUnavailable(
                     "Source-matched order book timed out"
                 ) from exc
@@ -250,10 +309,21 @@ async def signal_embed(
             return shared_multi_proof
         started = time.monotonic()
         try:
-            return await asyncio.to_thread(
-                _venue_proof, market, asset=asset, horizon=horizon_minutes,
-                venue=venue, now=stamp,
+            return await bounded(
+                f"venue-proof:{venue}",
+                lambda: asyncio.to_thread(
+                    _venue_proof, market, asset=asset, horizon=horizon_minutes,
+                    venue=venue, now=stamp,
+                ),
+                max_seconds=2.5,
             )
+        except SignalStageTimeout as exc:
+            _LOG.info(
+                "RivaL qualified evidence timeout asset=%s horizon=%dm "
+                "stage=%s; venue not qualified",
+                asset, horizon_minutes, exc.stage,
+            )
+            return _default_evidence()
         except Exception:  # noqa: BLE001
             _LOG.exception("RivaL signal venue evidence lookup unavailable")
             return _default_evidence()
@@ -291,10 +361,17 @@ async def signal_embed(
 
     if engine == "multi":
         try:
-            shared_multi_proof = await asyncio.to_thread(
-                multi_summary, market.store, asset=asset,
-                horizon=horizon_minutes, now=stamp,
+            shared_multi_proof = await bounded(
+                "multi-proof",
+                lambda: asyncio.to_thread(
+                    multi_summary, market.store, asset=asset,
+                    horizon=horizon_minutes, now=stamp,
+                ),
+                max_seconds=2.5,
             )
+        except SignalStageTimeout as exc:
+            _LOG.info("RivaL multi-source evidence timed out stage=%s", exc.stage)
+            shared_multi_proof = _default_evidence()
         except Exception:  # noqa: BLE001
             _LOG.exception("RivaL multi proof lookup unavailable")
             shared_multi_proof = _default_evidence()

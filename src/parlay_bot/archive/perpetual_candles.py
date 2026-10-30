@@ -204,36 +204,75 @@ class PerpetualColdArchiveService:
         return _artifact(output, len(batch.rows))
 
     def _mark_archived(self, batch: CandleArchiveBatch, when: datetime) -> None:
+        """Verify immutable source and commit every receipt in bounded groups.
+
+        The former per-row SELECT + INSERT made up to 10,000 network round
+        trips while holding ONE PostgreSQL connection for a 5,000-row batch.
+        It plausibly explains the observed 86.79s checkout. Verification
+        and all receipt writes remain in one atomic transaction: nothing
+        gets certified if even one source row changed or a receipt collides.
+        """
         stamp = when.astimezone(UTC).isoformat()
         with self.store.connect() as conn:
-            for row in batch.rows:
-                # A simultaneous writer or correction must not certify an
-                # unmatched export. Read the authoritative data before the
-                # receipt; immutable ingest forbids updates, but verify anyway.
-                current = conn.execute(
-                    """
-                    SELECT venue,contract,quote,interval_minutes,opened_at,
-                           closed_at,first_observed_at,open_price,high_price,
-                           low_price,close_price,volume_base,trades
-                    FROM perp_market_candles
-                    WHERE venue=? AND contract=? AND quote=?
-                      AND interval_minutes=? AND opened_at=?
-                    """,
-                    tuple(row[k] for k in _ID),
-                ).fetchone()
-                if current is None or dict(current) != row:
-                    raise RuntimeError("perpetual archive source changed; refusing receipt")
-                result = conn.execute(
-                    """
-                    INSERT INTO perp_candle_archive_receipts
-                      (venue,contract,quote,interval_minutes,opened_at,batch_id,archived_at)
-                    VALUES (?,?,?,?,?,?,?)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    (*tuple(row[k] for k in _ID), batch.batch_id, stamp),
+            for offset in range(0, len(batch.rows), 100):
+                chunk = batch.rows[offset:offset + 100]
+                opened = tuple(str(row["opened_at"]) for row in chunk)
+                if len(set(opened)) != len(opened):
+                    raise RuntimeError("duplicate source keys in archive batch")
+                if any(
+                    (row["venue"], row["contract"], row["quote"],
+                     row["interval_minutes"]) != (
+                        batch.venue, batch.contract, batch.quote,
+                        batch.interval_minutes,
+                    ) for row in chunk
+                ):
+                    raise RuntimeError("archive batch mixes source streams")
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    "SELECT " + ",".join(_COLUMNS)
+                    + " FROM perp_market_candles WHERE venue=? AND contract=? "
+                    "AND quote=? AND interval_minutes=? AND opened_at IN ("
+                    + placeholders + ")",
+                    (
+                        batch.venue, batch.contract, batch.quote,
+                        batch.interval_minutes, *opened,
+                    ),
+                ).fetchall()
+                actual = {str(row["opened_at"]): dict(row) for row in rows}
+                if (
+                    len(actual) != len(chunk)
+                    or any(actual.get(str(row["opened_at"])) != row
+                           for row in chunk)
+                ):
+                    raise RuntimeError(
+                        "perpetual archive source changed; refusing receipt"
+                    )
+                markers = ",".join(
+                    "(" + ",".join("?" for _ in range(7)) + ")"
+                    for _ in chunk
                 )
-                if result.rowcount != 1:
-                    raise RuntimeError("perpetual archive receipt collision; refusing commit")
+                params = tuple(
+                    item
+                    for row in chunk
+                    for item in (
+                        *(row[k] for k in _ID), batch.batch_id, stamp,
+                    )
+                )
+                inserted = conn.execute(
+                    "INSERT INTO perp_candle_archive_receipts "
+                    "(venue,contract,quote,interval_minutes,opened_at,"
+                    "batch_id,archived_at) VALUES " + markers
+                    + " ON CONFLICT DO NOTHING RETURNING opened_at",
+                    params,
+                ).fetchall()
+                if (
+                    len(inserted) != len(chunk)
+                    or {str(row["opened_at"]) for row in inserted}
+                    != set(opened)
+                ):
+                    raise RuntimeError(
+                        "perpetual archive receipt collision; refusing commit"
+                    )
 
     async def archive_ready(
         self, *, now: datetime, keep_hot_days: int,

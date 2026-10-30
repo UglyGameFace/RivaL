@@ -12,7 +12,9 @@ from parlay_bot.config import Settings
 from parlay_bot.discord_app.bot import RivalDiscordClient
 from parlay_bot.discord_app.home import GuidedHome
 from parlay_bot.discord_app.kalshi_public import (
-    KalshiCryptoBrowser, matching_series, parse_markets,
+    KalshiCryptoBrowser,
+    matching_series,
+    parse_markets,
 )
 
 

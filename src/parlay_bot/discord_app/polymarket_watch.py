@@ -106,7 +106,7 @@ class PolymarketReader:
 
     def __init__(self) -> None:
         self._cache: dict[tuple[str, int], tuple[datetime, PolymarketNotice | None]] = {}
-        self._lock = asyncio.Lock()
+        self._locks: dict[tuple[str, int], asyncio.Lock] = {}
 
     async def market(
         self, asset: str, horizon: int, *, now: datetime | None = None,
@@ -116,7 +116,10 @@ class PolymarketReader:
         target = opened or instant
         slug = market_slug(asset, horizon, target)
         key = (asset, horizon)
-        async with self._lock:
+        # Different asset/horizon reads run concurrently; one sluggish
+        # market never blocks all other Polymarket notifications.
+        lock = self._locks.setdefault(key, asyncio.Lock())
+        async with lock:
             cached = self._cache.get(key)
             if (
                 opened is None and cached is not None

@@ -150,7 +150,13 @@ def test_polymarket_alert_works_without_rival_collector(tmp_path):
     service = auto_hunt.AutoHuntService(
         bot=bot, market=None, quotes=None, store=hunt,
     )
-    service.polymarket.active = AsyncMock(return_value=[_notice(now)])
+    # Exercise delivery with a valid mocked window irrespective of the
+    # wall-clock position near a 5-minute boundary. Real market validation
+    # and expiry rejection are covered independently.
+    from dataclasses import replace
+
+    current = replace(_notice(now), expires=now + timedelta(minutes=4))
+    service.polymarket.active = AsyncMock(return_value=[current])
     try:
         assert run(service.cycle()) == 1
         assert run(service.cycle()) == 0

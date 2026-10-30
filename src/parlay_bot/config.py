@@ -14,6 +14,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    the_odds_api_key: SecretStr | None = Field(default=None)
     oddspapi_api_key: SecretStr | None = Field(default=None)
     oddspapi_base_url: str = Field(default="https://api.oddspapi.io")
     oddspapi_quota_reserve: int = Field(default=20, ge=0)

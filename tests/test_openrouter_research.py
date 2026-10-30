@@ -1,7 +1,6 @@
 """Mock-transport coverage: the OpenRouter coding reviewer must NEVER bill."""
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime, timedelta
 
 import httpx

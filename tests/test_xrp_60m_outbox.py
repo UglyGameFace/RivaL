@@ -132,3 +132,31 @@ def test_outbox_preflight_retries_after_restart_but_unknown_send_never_retries(t
         )
     finally:
         store.close()
+
+
+def test_failed_preflight_stays_retryable_but_network_timeout_never_replays(tmp_path):
+    store = SQLiteHotStore(tmp_path / "delivery-boundary.sqlite")
+    store.initialize()
+    hunt = auto_hunt.AutoHuntStore(store)
+    hunt.initialize()
+    now = datetime.now(UTC).replace(microsecond=0)
+    candidate = auto_hunt.HuntCandidate(
+        asset="BTC", horizon=5, venue="binance",
+        issued=now-timedelta(seconds=10), expires=now+timedelta(minutes=4),
+        probability_up=.6, bid=100, ask=100.01,
+        quote_at=now, engine="live", model_version="boundary",
+    )
+    try:
+        hunt.subscribe("404", now=now-timedelta(minutes=1))
+        assert hunt.claim("404", candidate, now=now)
+        hunt.defer_preflight("404", candidate, now=now)
+        # The cycle calls finish(sent=False) even when no send started.
+        hunt.finish("404", candidate, sent=False)
+        assert hunt.delivery_health("404").get("ready") == 1
+        assert hunt.claim("404", candidate, now=now+timedelta(seconds=21))
+        assert hunt.begin_delivery("404", candidate, now=now+timedelta(seconds=21))
+        hunt.finish("404", candidate, sent=False)
+        assert hunt.delivery_health("404").get("unknown") == 1
+        assert not hunt.claim("404", candidate, now=now+timedelta(seconds=60))
+    finally:
+        store.close()

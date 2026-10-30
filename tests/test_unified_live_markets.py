@@ -201,5 +201,5 @@ async def test_concurrent_gamma_listing_uses_one_shared_request(monkeypatch):
         reader.listed("BTC", 5, opened, now=now),
     )
     assert left is not None
-    assert right is left
+    assert right == left
     assert len(requests) == 1

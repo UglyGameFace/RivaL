@@ -29,6 +29,7 @@ import hashlib
 import logging
 import math
 import time
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -1448,6 +1449,8 @@ class AutoHuntService:
         self.polymarket = PolymarketReader()
         self._user_locks: dict[str, asyncio.Lock] = {}
         self._cycle_lock = asyncio.Lock()
+        self._poly_cycle_lock = asyncio.Lock()
+        self._delivery_budget = asyncio.Semaphore(8)
 
     def _user_lock(self, user_id: str) -> asyncio.Lock:
         # Bounded at MAX_USERS while enabled; retained lock objects are small.
@@ -1661,70 +1664,77 @@ class AutoHuntService:
 
     async def _send_dm(self, user_id: str, candidate, stamp: datetime,
                        *, tier: str | None) -> object | None:
-        """One DM attempt. Returns the message, or None when unconfirmed.
-
-        The claim already exists by the time this runs, so an ambiguous
-        failure here is never retried: a restart will NOT send it again.
-        """
-        message = None
+        """One attempt after bounded preflight; ambiguous sends never replay."""
         key = (
             QUALIFIED_KEY_PREFIX + candidate.key if tier == "qualified"
             else FLIP_KEY_PREFIX + candidate.key if tier == "flip"
             else candidate.key
         )
         dispatch_started = False
+        message = None
+
+        def fresh(at: datetime) -> bool:
+            if candidate.expires - at < MIN_REMAINING:
+                return False
+            if tier == "qualified":
+                return candidate.quote_at is not None and (
+                    timedelta(0) <= at - candidate.quote_at <= MAX_QUOTE_AGE
+                )
+            if isinstance(candidate, LiveShiftNotice):
+                return timedelta(0) <= at - candidate.issued <= timedelta(seconds=20)
+            if isinstance(candidate, PolymarketNotice):
+                return timedelta(0) <= at - candidate.quote_at <= timedelta(seconds=25)
+            return True
+
         try:
             user = self.bot.get_user(int(user_id))
             if user is None:
-                user = await asyncio.wait_for(
-                    self.bot.fetch_user(int(user_id)),
-                    timeout=5,
-                )
-            channel = user.dm_channel or await user.create_dm()
-            # User lookup and DM creation can take longer than quote validity.
-            dispatch_at = datetime.now(UTC)
-            if tier == "qualified" and (
-                candidate.quote_at is None
-                or not timedelta(0) <= dispatch_at - candidate.quote_at <= MAX_QUOTE_AGE
-                or candidate.expires - dispatch_at < MIN_REMAINING
-            ):
-                _LOG.info("Auto-Hunt qualified quote expired before send")
-                return None
-            if isinstance(candidate, LiveShiftNotice) and (
-                dispatch_at - candidate.issued > timedelta(seconds=20)
-            ):
-                _LOG.info("RivaL market shift expired before DM")
-                return None
-            if isinstance(candidate, PolymarketNotice) and (
-                not timedelta(0) <= dispatch_at - candidate.quote_at
-                <= timedelta(seconds=25)
-                or candidate.expires - dispatch_at < MIN_REMAINING
-            ):
-                _LOG.info("Auto-Hunt Polymarket book expired before send")
+                user = await asyncio.wait_for(self.bot.fetch_user(int(user_id)), timeout=5)
+            channel = user.dm_channel or await asyncio.wait_for(user.create_dm(), timeout=5)
+            if not fresh(datetime.now(UTC)):
+                _LOG.info("Auto-Hunt candidate expired during preflight venue=%s", candidate.venue)
                 return None
             dispatch_started = await asyncio.to_thread(
-                self.store.begin_delivery, user_id, candidate,
-                key=key, now=dispatch_at,
+                self.store.begin_delivery, user_id, candidate, key=key, now=datetime.now(UTC),
             )
             if not dispatch_started:
                 return None
-            message = await asyncio.wait_for(
-                channel.send(
-                    embed=hunt_embed(candidate, observed_at=stamp, tier=tier),
-                    view=AutoHuntActions(timeout=900),
-                ), timeout=8,
-            )
+            # PostgreSQL checkout can stall AFTER the first freshness check.
+            # Recheck immediately before channel.send crosses the network boundary.
+            attempted = datetime.now(UTC)
+            if not fresh(attempted):
+                _LOG.info("Auto-Hunt candidate expired during outbox claim venue=%s", candidate.venue)
+                return None
+            started = time.monotonic()
+            status = "unconfirmed"
+            try:
+                message = await asyncio.wait_for(
+                    channel.send(
+                        embed=hunt_embed(candidate, observed_at=attempted, tier=tier),
+                        view=AutoHuntActions(timeout=900),
+                    ), timeout=8,
+                )
+                status = "sent"
+            finally:
+                if isinstance(candidate, PolymarketNotice):
+                    received = candidate.received_at or candidate.quote_at
+                    _LOG.info(
+                        "RivaL hunt asset=%s horizon=%s user=%s tier=polymarket "
+                        "window_age_ms=%d observed_to_attempt_ms=%d source_quote_age_ms=%d "
+                        "delivery_ms=%d status=%s",
+                        candidate.asset, candidate.horizon, user_id,
+                        int((attempted - candidate.issued).total_seconds() * 1000),
+                        int((attempted - received).total_seconds() * 1000),
+                        int((attempted - candidate.quote_at).total_seconds() * 1000),
+                        int((time.monotonic() - started) * 1000), status,
+                    )
         except (discord.HTTPException, TimeoutError, ValueError):
             if not dispatch_started:
-                await asyncio.to_thread(
-                    self.store.defer_preflight, user_id, candidate, key=key,
-                )
+                await asyncio.to_thread(self.store.defer_preflight, user_id, candidate, key=key)
             _LOG.warning("Auto-Hunt DM not confirmed user=%s", user_id)
         except Exception:  # noqa: BLE001 - no ambiguous resend
             if not dispatch_started:
-                await asyncio.to_thread(
-                    self.store.defer_preflight, user_id, candidate, key=key,
-                )
+                await asyncio.to_thread(self.store.defer_preflight, user_id, candidate, key=key)
             _LOG.exception("Auto-Hunt DM failed")
         return message
 
@@ -1738,7 +1748,7 @@ class AutoHuntService:
             return 0
         subs = await asyncio.to_thread(self.store.subscribers)
         total = 0
-        budget = asyncio.Semaphore(5)
+        budget = self._delivery_budget
 
         async def deliver(sub: dict) -> int:
             user_id = str(sub["user_id"])
@@ -1792,20 +1802,24 @@ class AutoHuntService:
                 _LOG.warning("Live trend alert delivery failed safely")
         return total
 
-    async def cycle(self) -> int:
+    async def cycle(self, *, scope: str = "all") -> int:
         # Only one scan and one candidate set per cycle, regardless of users.
-        async with self._cycle_lock:
+        if scope not in ("all", "forecasts", "polymarket"):
+            raise ValueError("Unsupported alert scan scope")
+        async with AsyncExitStack() as locks:
+            if scope != "polymarket":
+                await locks.enter_async_context(self._cycle_lock)
+            if scope != "forecasts":
+                await locks.enter_async_context(self._poly_cycle_lock)
             subscribers = await asyncio.to_thread(self.store.subscribers)
+            if scope == "polymarket":
+                subscribers = [sub for sub in subscribers if sub.get("polymarket")]
             if not subscribers:
                 return 0
             configs = await asyncio.gather(*(
                 asyncio.to_thread(self.store.preferences, str(sub["user_id"]))
                 for sub in subscribers
             ))
-            pref_by_user = {
-                str(sub["user_id"]): prefs
-                for sub, prefs in zip(subscribers, configs, strict=True)
-            }
             # Avoid live quote DNS, Polymarket HTTP and evidence reads when
             # every follower of that tier is already at the sent-alert cap.
             # Delivery still rechecks caps after the scan for race safety.
@@ -1840,42 +1854,95 @@ class AutoHuntService:
                 )
                 for prefs, count in zip(configs, counts, strict=True)
             )
-            qualified = (
-                await qualified_watches(
-                    self.market, self.quotes,
-                    stream_shadow=self.stream_shadow,
+            if scope == "polymarket":
+                want_qualified = want_research = want_flips = False
+            elif scope == "forecasts":
+                want_poly = False
+            # All enabled producers start together. Polymarket has its own
+            # delivery pipeline, so exchange evidence/DB work cannot hold a
+            # fresh contract notice behind unrelated scans.
+            budget = self._delivery_budget
+
+            async def scan(name, producer):
+                started = time.monotonic()
+                try:
+                    return await producer
+                except Exception:  # noqa: BLE001 - independent source isolation
+                    _LOG.exception("RivaL Auto-Hunt producer failed source=%s", name)
+                    return []
+                finally:
+                    _LOG.info("RivaL Auto-Hunt scan source=%s scan_ms=%d", name,
+                              int((time.monotonic() - started) * 1000))
+
+            async def polymarket_pipeline() -> int:
+                if not want_poly:
+                    return 0
+                markets = await scan("polymarket", self.polymarket.active())
+                _LOG.info("RivaL Auto-Hunt poly_markets=%d", len(markets))
+
+                async def deliver_poly(subscriber: dict) -> int:
+                    if not subscriber.get("polymarket"):
+                        return 0
+                    user_id = str(subscriber["user_id"])
+                    async with budget, self._user_lock(user_id):
+                        if not (await asyncio.to_thread(self.store.tiers, user_id))["polymarket"]:
+                            return 0
+                        preferences = await asyncio.to_thread(self.store.preferences, user_id)
+                        for candidate in markets:
+                            stamp = datetime.now(UTC)
+                            if (
+                                not candidate_allowed(candidate, preferences, now=stamp)
+                                or not self.polymarket._usable(
+                                    candidate, now=stamp, display_only=False,
+                                )
+                            ):
+                                continue
+                            if preferences["daily_limit"] > 0 and _cap_reached(
+                                await asyncio.to_thread(
+                                    self.store.count_sent_today, user_id, "polymarket", stamp,
+                                ), preferences["daily_limit"],
+                            ):
+                                break
+                            if not await asyncio.to_thread(
+                                self.store.claim, user_id, candidate, now=stamp,
+                            ):
+                                continue
+                            message = await self._send_dm(user_id, candidate, stamp, tier=None)
+                            await asyncio.to_thread(
+                                self.store.finish, user_id, candidate,
+                                sent=message is not None,
+                                message_id=str(message.id) if message is not None else None,
+                            )
+                            return int(message is not None)
+                    return 0
+
+                outcomes = await asyncio.gather(
+                    *(deliver_poly(sub) for sub in subscribers), return_exceptions=True,
                 )
-                if want_qualified else []
-            )
-            forecasts = (
-                await new_forecast_watches(self.market)
-                if want_research else []
-            )
-            markets = (
-                await self.polymarket.active()
-                if want_poly else []
-            )
-            flips = (
-                await direction_change_watches(self.market)
-                if want_flips else []
-            )
-            _LOG.info(
-                "RivaL Auto-Hunt cycle subscribers=%d qualified=%d "
-                "forecasts=%d poly_markets=%d",
-                len(subscribers), len(qualified), len(forecasts), len(markets),
-            )
-            if not qualified and not forecasts and not markets and not flips:
-                return 0
-            # Shared bounded Discord/PG concurrency. Each user's own lock
-            # serializes delivery with that user's stop and re-opt-in request.
-            budget = asyncio.Semaphore(8)
+                return delivered(outcomes)
+
+            def delivered(outcomes) -> int:
+                total = 0
+                for result in outcomes:
+                    if isinstance(result, BaseException):
+                        if isinstance(result, asyncio.CancelledError):
+                            raise result
+                        _LOG.error(
+                            "Auto-Hunt individual delivery failed safely: %s",
+                            type(result).__name__,
+                            exc_info=(type(result), result, result.__traceback__),
+                        )
+                    else:
+                        total += result
+                return total
 
             async def deliver(subscriber: dict) -> int:
                 user_id = str(subscriber["user_id"])
                 since = _instant(str(subscriber["since_at"]))
                 sent = 0
-                preferences = pref_by_user[user_id]
                 async with budget, self._user_lock(user_id):
+                    tiers = await asyncio.to_thread(self.store.tiers, user_id)
+                    preferences = await asyncio.to_thread(self.store.preferences, user_id)
                     # QUALIFIED first: every distinct window alerts, with no
                     # cooldown and no per-cycle limit hiding a later window.
                     # A window with a SENT qualified DM suppresses the
@@ -1883,7 +1950,7 @@ class AutoHuntService:
                     # later ones; a failed qualified attempt does not, so a
                     # research fallback stays possible instead of duplicating.
                     claimed_windows: set[tuple[str, int, datetime]] = set()
-                    if subscriber.get("qualified"):
+                    if tiers.get("qualified"):
                         for candidate in qualified:
                             if not candidate_allowed(
                                 candidate, preferences, now=datetime.now(UTC),
@@ -1943,7 +2010,7 @@ class AutoHuntService:
                             )
                     # EARLY_RESEARCH: at most one per cycle per user, under
                     # the existing 120-second cooldown, as before.
-                    if subscriber.get("research"):
+                    if tiers.get("research"):
                         for candidate in forecasts:
                             if not candidate_allowed(
                                 candidate, preferences, now=datetime.now(UTC),
@@ -2039,71 +2106,41 @@ class AutoHuntService:
                             if message is not None:
                                 sent += 1
                             break
-                    # POLYMARKET: at most one per cycle per user, as before.
-                    if subscriber.get("polymarket"):
-                        for candidate in markets:
-                            if not candidate_allowed(
-                                candidate, preferences, now=datetime.now(UTC),
-                            ):
-                                continue
-                            stamp = datetime.now(UTC)
-                            if candidate.expires - stamp < MIN_REMAINING:
-                                continue
-                            if preferences["daily_limit"] > 0 and _cap_reached(
-                                await asyncio.to_thread(
-                                    self.store.count_sent_today, user_id, "polymarket", stamp,
-                                ),
-                                preferences["daily_limit"],
-                            ):
-                                _LOG.info(
-                                    "RivaL auto-hunt daily cap user=%s tier=polymarket",
-                                    user_id,
-                                )
-                                break
-                            claimed = await asyncio.to_thread(
-                                self.store.claim, user_id, candidate, now=stamp,
-                            )
-                            if not claimed:
-                                continue
-                            message = await self._send_dm(
-                                user_id, candidate, stamp, tier=None)
-                            await asyncio.to_thread(
-                                self.store.finish, user_id, candidate,
-                                sent=message is not None,
-                                message_id=(
-                                    str(message.id) if message is not None
-                                    else None
-                                ),
-                            )
-                            if message is not None:
-                                sent += 1
-                            _LOG.info(
-                                "RivaL hunt asset=%s horizon=%s venue=%s user=%s "
-                                "issue_to_attempt_ms=%d status=%s tier=polymarket",
-                                candidate.asset, candidate.horizon,
-                                candidate.venue, user_id,
-                                int((stamp - candidate.issued).total_seconds() * 1000),
-                                "sent" if message is not None else "unconfirmed",
-                            )
-                            break
                 return sent
 
-            outcomes = await asyncio.gather(
-                *(deliver(sub) for sub in subscribers), return_exceptions=True,
-            )
-            total = 0
-            for result in outcomes:
-                if isinstance(result, BaseException):
-                    if isinstance(result, asyncio.CancelledError):
-                        raise result
-                    _LOG.error(
-                        "Auto-Hunt individual delivery failed safely: %s",
-                        type(result).__name__,
-                        # gather(return_exceptions=True) loses the active
-                        # exception context. Preserve traceback lines so
-                        # future SQL/Discord failures identify their caller.
-                        exc_info=(type(result), result, result.__traceback__),
+            async def forecast_pipeline() -> int:
+                jobs = {}
+                if want_qualified:
+                    jobs["qualified"] = qualified_watches(
+                        self.market, self.quotes, stream_shadow=self.stream_shadow,
                     )
-                else:
-                    total += result
-            return total
+                if want_research:
+                    jobs["research"] = new_forecast_watches(self.market)
+                if want_flips:
+                    jobs["flip"] = direction_change_watches(self.market)
+                results = await asyncio.gather(*(scan(name, job) for name, job in jobs.items()))
+                by_tier = dict(zip(jobs, results, strict=True))
+                # Qualified and early-research must finish together: a qualified
+                # window retains priority and suppresses its duplicate research DM.
+                nonlocal qualified, forecasts, flips
+                qualified = by_tier.get("qualified", [])
+                forecasts = by_tier.get("research", [])
+                flips = by_tier.get("flip", [])
+                _LOG.info(
+                    "RivaL Auto-Hunt cycle subscribers=%d qualified=%d forecasts=%d",
+                    len(subscribers), len(qualified), len(forecasts),
+                )
+                if not qualified and not forecasts and not flips:
+                    return 0
+                outcomes = await asyncio.gather(
+                    *(deliver(sub) for sub in subscribers), return_exceptions=True,
+                )
+                return delivered(outcomes)
+
+            qualified, forecasts, flips = [], [], []
+            # Structured concurrency cancels both delivery pipelines together on
+            # shutdown. Outbox claims retain the existing no-ambiguous-replay rule.
+            async with asyncio.TaskGroup() as group:
+                poly_task = group.create_task(polymarket_pipeline())
+                forecast_task = group.create_task(forecast_pipeline())
+            return poly_task.result() + forecast_task.result()

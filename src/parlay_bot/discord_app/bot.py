@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
@@ -440,6 +441,7 @@ class RivalDiscordClient(discord.Client):
         )
         self._hunt_event = asyncio.Event()
         self._hunt_task: asyncio.Task[None] | None = None
+        self._poly_hunt_task: asyncio.Task[None] | None = None
         self.kalshi_browser = KalshiCryptoBrowser()
         self.polymarket_board = LivePolymarketBoardService(
             bot=self,
@@ -1546,6 +1548,10 @@ class RivalDiscordClient(discord.Client):
             self._hunt_task = asyncio.create_task(
                 self._hunt_loop(), name="rival-auto-hunt-selected-source-alerts",
             )
+        if self._poly_hunt_task is None:
+            self._poly_hunt_task = asyncio.create_task(
+                self._poly_hunt_loop(), name="rival-auto-hunt-polymarket-alerts",
+            )
         if self._target_task is None:
             self._target_task = asyncio.create_task(
                 self._target_loop(), name="rival-personal-direction-updates",
@@ -1833,7 +1839,7 @@ class RivalDiscordClient(discord.Client):
         await self.wait_until_ready()
         while not self.is_closed():
             try:
-                count = await self.auto_hunt.cycle()
+                count = await self.auto_hunt.cycle(scope="forecasts")
                 if count:
                     _LOG.info("RivaL Auto-Hunt new private alerts delivered=%d", count)
             except asyncio.CancelledError:
@@ -1846,10 +1852,26 @@ class RivalDiscordClient(discord.Client):
                 pass
             self._hunt_event.clear()
 
+    async def _poly_hunt_loop(self) -> None:
+        """Public market notices keep polling during slow exchange/DB research."""
+        await self.wait_until_ready()
+        while not self.is_closed():
+            started = time.monotonic()
+            try:
+                count = await self.auto_hunt.cycle(scope="polymarket")
+                if count:
+                    _LOG.info("RivaL Polymarket private alerts delivered=%d", count)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL Polymarket alert cycle failed safely")
+            await asyncio.sleep(max(0.1, 15 - (time.monotonic() - started)))
+
     async def _poly_board_loop(self) -> None:
         """Automatically roll verified markets and forecasts in existing DMs."""
         await self.wait_until_ready()
         while not self.is_closed():
+            started = time.monotonic()
             try:
                 changed = await self.polymarket_board.cycle()
                 if changed:
@@ -1863,7 +1885,7 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL Polymarket live board cycle failed safely")
             # Distinct from the 1s RAM-only live direction scanner. CLOB
             # requests are rate-bounded and grouped by asset/window.
-            await asyncio.sleep(15)
+            await asyncio.sleep(max(0.1, 15 - (time.monotonic() - started)))
 
     async def _target_loop(self) -> None:
         """Update user-opted-in private forecast cards without flooding DMs."""
@@ -2262,6 +2284,11 @@ class RivalDiscordClient(discord.Client):
 
     async def close(self) -> None:
         await self.kalshi_browser.aclose()
+        if self._poly_hunt_task is not None:
+            self._poly_hunt_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._poly_hunt_task
+            self._poly_hunt_task = None
         if self._poly_board_task is not None:
             self._poly_board_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -2290,6 +2317,7 @@ class RivalDiscordClient(discord.Client):
             with suppress(asyncio.CancelledError):
                 await self._hunt_task
             self._hunt_task = None
+        await self.auto_hunt.polymarket.aclose()
         await self.public_quotes.aclose()
         if self._target_task is not None:
             self._target_task.cancel()

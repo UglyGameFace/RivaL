@@ -13,6 +13,7 @@ import discord
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
+from parlay_bot.discord_app.polymarket_watch import unavailable_text
 from parlay_bot.discord_app.presentation import (
     parlay_embed,
 )
@@ -665,7 +666,7 @@ class GuidedHome(discord.ui.View):
                                 f"DOWN ask ${quote.down_ask:.2f} "
                                 f"({discord.utils.format_dt(quote.quote_at, style='R')})"
                                 if quote is not None
-                                else "No fresh verified UP/DOWN order book"
+                                else unavailable_text(board.quote_unavailable_reason)
                             )
                         ),
                         inline=False,

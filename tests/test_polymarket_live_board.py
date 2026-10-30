@@ -1,6 +1,7 @@
 """Automatic live Polymarket DM keeps one private message current."""
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -11,6 +12,7 @@ import pytest
 from parlay_bot.discord_app.polymarket_live_board import (
     LivePolymarketBoardService,
     LivePolymarketBoardStore,
+    LivePolymarketTracker,
     live_polymarket_embed,
 )
 from parlay_bot.discord_app.polymarket_watch import (
@@ -20,6 +22,43 @@ from parlay_bot.discord_app.polymarket_watch import (
 )
 from parlay_bot.discord_app.targeting import TargetSnapshot
 from parlay_bot.storage.hot import SQLiteHotStore
+
+
+@pytest.mark.asyncio
+async def test_slow_market_cannot_hold_other_boards_or_stop(tmp_path, monkeypatch):
+    hot, store, service, _channel, user, edited = _setup(tmp_path)
+    slow_started, release, fast_edited = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    store.save(LivePolymarketTracker(str(user.id), "BTC", 5, "555", "901", "old"))
+    store.save(LivePolymarketTracker("987654321", "ETH", 5, "556", "902", "old"))
+
+    async def observe(asset, horizon):
+        if asset == "BTC":
+            slow_started.set()
+            await release.wait()
+        return discord.Embed(title=asset), "new"
+
+    async def edit(**kw):
+        if kw["embed"].title == "ETH":
+            fast_edited.set()
+
+    edited.side_effect = edit
+    monkeypatch.setattr(service, "_observation", observe)
+    cycle = asyncio.create_task(service.cycle())
+    try:
+        await asyncio.wait_for(slow_started.wait(), timeout=1)
+        await asyncio.wait_for(fast_edited.wait(), timeout=1)
+        # Stop does not wait for another market's slow read, and that read
+        # cannot restore the card after it completes.
+        assert await asyncio.wait_for(service.stop(user.id), timeout=1)
+    finally:
+        release.set()
+    try:
+        assert await cycle == 1
+        assert all(call.kwargs["embed"].title != "BTC" for call in edited.await_args_list)
+        assert store.get(str(user.id)) is None
+        assert store.get("987654321").fingerprint == "new"
+    finally:
+        hot.close()
 
 
 def _setup(tmp_path):

@@ -900,9 +900,81 @@ def confirmed_direction_change(latest: HuntCandidate, previous: HuntCandidate,
     )
 
 
+def _causal_direction_pair(
+    market, *, asset: str, horizon: int, engine: str, now: datetime,
+) -> tuple[HuntCandidate, HuntCandidate] | None:
+    """Read both forecast windows INCLUDING a settled previous outcome.
+
+    The public recent_watches() viewer intentionally hides settled/expired
+    historical rows. It therefore cannot be used for reversal detection:
+    5m/15m prior windows may already have settled when the new issue arrives.
+    """
+    from parlay_bot.perpetuals.forward_audit import MODEL as LIVE_MODEL
+    from parlay_bot.perpetuals.multi_exchange import MODEL as MULTI_MODEL
+
+    if engine == "multi":
+        sql = (
+            "SELECT reference_venue AS venue, horizon_minutes, "
+            "target_opened_at, issued_at, probability_up, model_version "
+            "FROM perp_multi_forward WHERE asset=? AND horizon_minutes=? "
+            "AND model_version=? AND issued_at>=? AND issued_at<=? "
+            "ORDER BY issued_at DESC LIMIT 100"
+        )
+        version = MULTI_MODEL
+    else:
+        sql = (
+            "SELECT venue, horizon_minutes, target_opened_at, issued_at, "
+            "probability_up, model_version FROM perp_forward_audit "
+            "WHERE asset=? AND horizon_minutes=? AND model_version=? "
+            "AND issued_at>=? AND issued_at<=? "
+            "ORDER BY issued_at DESC LIMIT 100"
+        )
+        version = LIVE_MODEL
+    start = (now-FLIP_MAX_PREVIOUS_AGE).isoformat()
+    with market.store.connect() as conn:
+        records = conn.execute(
+            sql, (asset, horizon, version, start, now.isoformat()),
+        ).fetchall()
+    # Use the same source and model on both sides, and distinct targets.
+    # No vote-counting of correlated venue replicas.
+    latest_by_venue: dict[str, HuntCandidate] = {}
+    for raw in records:
+        try:
+            row = dict(raw)
+            issued = _instant(str(row["issued_at"]))
+            target = _instant(str(row["target_opened_at"]))
+            venue = str(row["venue"])
+            p = float(row["probability_up"])
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+        if (
+            not math.isfinite(p) or not 0 < p < 1
+            or not issued < target + timedelta(minutes=5)
+            or issued > now or target > now + timedelta(minutes=65)
+        ):
+            continue
+        candidate = HuntCandidate(
+            asset=asset, horizon=horizon, venue=venue,
+            issued=issued, expires=target+timedelta(minutes=5),
+            probability_up=p, bid=None, ask=None, quote_at=None,
+            engine=engine, model_version=version,
+        )
+        newer = latest_by_venue.get(venue)
+        if newer is None:
+            if (
+                now - issued > FORECAST_ALERT_MAX_AGE
+                or candidate.expires - now < MIN_REMAINING
+            ):
+                continue
+            latest_by_venue[venue] = candidate
+        elif candidate.expires < newer.expires:
+            return newer, candidate
+    return None
+
+
 async def direction_change_watches(market, *,
-                                    now: datetime | None = None) -> list[HuntCandidate]:
-    """Read newly issued prospective forecasts, not tick-level prices."""
+                                   now: datetime | None = None) -> list[HuntCandidate]:
+    """Compare two truly issued forecast windows, settled previous allowed."""
     if market is None:
         return []
     from dataclasses import replace
@@ -917,36 +989,16 @@ async def direction_change_watches(market, *,
                     promoted_engine, market.store, asset=asset,
                     horizon=horizon, now=stamp,
                 )
-                reader = recent_multi_watches if engine == "multi" else recent_watches
-                watches = await asyncio.to_thread(
-                    reader, market, asset=asset, now=stamp,
-                    limit=40, dedupe_horizons=False,
+                pair = await asyncio.to_thread(
+                    _causal_direction_pair, market, asset=asset, horizon=horizon,
+                    engine=engine, now=stamp,
                 )
-                seen: set[datetime] = set()
-                distinct = []
-                for row in sorted(watches, key=lambda x: x["issued"], reverse=True):
-                    if int(row["horizon_minutes"]) != horizon:
-                        continue
-                    if row["target"] in seen:
-                        continue
-                    seen.add(row["target"])
-                    distinct.append(HuntCandidate(
-                        asset=asset, horizon=horizon, venue=str(row["venue"]),
-                        issued=row["issued"],
-                        expires=row["target"] + timedelta(minutes=5),
-                        probability_up=float(row["probability_up"]),
-                        bid=None, ask=None, quote_at=None, engine=engine,
-                        model_version=str(row.get("model_version", "live")),
-                    ))
-                    if len(distinct) == 2:
-                        break
-                if len(distinct) == 2 and confirmed_direction_change(
-                    distinct[0], distinct[1], now=stamp,
+                if pair and confirmed_direction_change(
+                    pair[0], pair[1], now=stamp,
                 ):
                     findings.append(replace(
-                        distinct[0],
-                        previous_probability=distinct[1].probability_up,
-                        previous_issued=distinct[1].issued,
+                        pair[0], previous_probability=pair[1].probability_up,
+                        previous_issued=pair[1].issued,
                     ))
             except Exception:  # noqa: BLE001
                 _LOG.exception(

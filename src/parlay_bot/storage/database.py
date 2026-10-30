@@ -82,7 +82,7 @@ class _Connection:
                         try:
                             self._raw.rollback()
                         except Exception:  # noqa: BLE001
-                            pass
+                            _LOG.warning("RivaL PostgreSQL rollback failed during exception cleanup")
                     else:
                         self._raw.commit()
                 result = False

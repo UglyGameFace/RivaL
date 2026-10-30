@@ -180,6 +180,7 @@ class GuidedHome(discord.ui.View):
         self.risk = RiskMode.BALANCED
         self.slip = None
         self.note: str | None = None
+        self._redraw_lock = asyncio.Lock()
         self._buttons()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -646,6 +647,10 @@ class GuidedHome(discord.ui.View):
         return embed
 
     async def redraw(self, interaction: discord.Interaction) -> None:
+        async with self._redraw_lock:
+            await self._redraw_locked(interaction)
+
+    async def _redraw_locked(self, interaction: discord.Interaction) -> None:
         started = time.monotonic()
         self._buttons()
         try:

@@ -2,14 +2,18 @@
 
 Qualification needs BOTH paired proofs: the governance Brier screens on
 shared target windows (100 targets, 7 days, minimum gain, consistent
-days, positive stress bound) and at least 20 paired quote exits with the
-challenger no worse than the incumbent. Anything else holds or demotes,
-and a stale promotion falls back to the incumbent live model.
+days, positive stress bound) and a paired after-cost quote proof: at
+least 20 real challenger trades with a positive paired after-cost
+improvement. Cash-vs-cash windows prove nothing and never count.
+Anything else holds or demotes, and a stale promotion falls back to the
+incumbent live model.
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from parlay_bot.perpetuals.multi_exchange import MODEL as MULTI_MODEL
 from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
@@ -32,6 +36,8 @@ def seed_multi_settled(
     base_offset_days=6,
     step_minutes=None,
     start_index=0,
+    probability=.7,
+    reference=.6,
 ):
     """Settled fused rows across calendar days, one per target window."""
     MultiExchangeResearch(store).initialize()
@@ -58,8 +64,8 @@ def seed_multi_settled(
                     target.isoformat(),
                     issued.isoformat(),
                     MULTI_MODEL,
-                    0.7,
-                    0.6,
+                    probability,
+                    reference,
                     "hyperliquid",
                     "BTC",
                     "USDC",
@@ -183,6 +189,60 @@ def test_promotion_demotes_when_evidence_collapses(tmp_path):
         row = evaluate_promotion(store, asset="BTC", horizon=5, now=later)
         assert row["status"] == "demoted"
         assert promoted_engine(store, asset="BTC", horizon=5, now=later) == "live"
+    finally:
+        store.close()
+
+
+def test_no_trade_windows_cannot_promote(tmp_path):
+    """Twenty cash-vs-cash windows prove no executable skill (P0)."""
+    now = datetime.now(UTC).replace(microsecond=0)
+    store = SQLiteHotStore(tmp_path / "notrade.sqlite")
+    try:
+        seed_multi_settled(
+            store, now, count=100, probability=.5, reference=.5,
+        )
+        seed_quote_closes(
+            store, now, count=20, challenger_gross=0.0, incumbent_gross=0.0,
+        )
+        row = evaluate_promotion(store, asset="BTC", horizon=5, now=now)
+        assert row["status"] == "held"
+        assert row["challenger_trades"] == 0
+        assert "trades" in row["reason"]
+        assert promoted_engine(store, asset="BTC", horizon=5, now=now) == "live"
+    finally:
+        store.close()
+
+
+def test_challenger_losing_after_costs_holds(tmp_path):
+    now = datetime.now(UTC).replace(microsecond=0)
+    store = SQLiteHotStore(tmp_path / "loses.sqlite")
+    try:
+        seed_multi_settled(store, now, count=100)
+        seed_quote_closes(
+            store, now, count=20, challenger_gross=10.0, incumbent_gross=12.0,
+        )
+        row = evaluate_promotion(store, asset="BTC", horizon=5, now=now)
+        assert row["status"] == "held"
+        assert row["challenger_net_bps"] == pytest.approx(-4.0)
+        assert row["incumbent_net_bps"] == pytest.approx(-2.0)
+    finally:
+        store.close()
+
+
+def test_challenger_trading_at_loss_does_not_beat_cash(tmp_path):
+    """A challenger that trades at a loss does not beat a cash incumbent."""
+    now = datetime.now(UTC).replace(microsecond=0)
+    store = SQLiteHotStore(tmp_path / "cash.sqlite")
+    try:
+        seed_multi_settled(
+            store, now, count=100, probability=.7, reference=.5,
+        )
+        seed_quote_closes(
+            store, now, count=20, challenger_gross=10.0, incumbent_gross=0.0,
+        )
+        row = evaluate_promotion(store, asset="BTC", horizon=5, now=now)
+        assert row["status"] == "held"
+        assert row["incumbent_trades"] == 0
     finally:
         store.close()
 

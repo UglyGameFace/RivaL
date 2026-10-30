@@ -10,10 +10,14 @@ paired proofs, both on the challenger's own settled history:
   by the same governance rules as review_model (100 targets, 7 days,
   minimum gain, 80% positive days, positive day-block stress bound).
 - Paired after-cost proof: same-venue quote-shadow windows where both
-  the challenger and the incumbent priced the same book. Promotion needs
-  at least 20 paired exits with the challenger no worse than the
-  incumbent on gross basis points. Costs hit both sides of the same book
-  equally, so the gross difference is the net difference.
+  the challenger and the incumbent priced the same book. A window only
+  counts as trading evidence when a model actually took a position
+  (directional strength at or above the 56% trade threshold); a window
+  where both models stayed in cash proves nothing and never counts
+  toward promotion. Promotion needs at least 20 real challenger trades
+  and a positive paired after-cost improvement: each traded window's
+  gross minus the house conservative per-trade cost, with cash windows
+  contributing zero, averaged over all paired windows.
 
 Promotion is per (asset, horizon): six independent slots. A slot serves
 the challenger only while its latest promotion row says "promoted", for
@@ -35,11 +39,17 @@ from parlay_bot.perpetuals.multi_exchange import (
 from parlay_bot.perpetuals.multi_exchange import (
     MODEL as MULTI_MODEL,
 )
+from parlay_bot.perpetuals.profit_proof import COST_SCENARIOS
 
 _LOG = logging.getLogger(__name__)
 
 MIN_QUOTE_WINDOWS = 20
+MIN_QUOTE_TRADES = 20
 PROMOTION_FRESHNESS = timedelta(hours=48)
+# The multi quote shadow's gross already embeds the quoted spread (entry
+# at the ask, exit at the bid). The cost subtracted here is the house's
+# conservative beyond-spread per-trade cost from the legacy profit proof.
+TRADE_COST_BPS = dict(COST_SCENARIOS)["conservative"]
 
 
 def initialize(store) -> None:
@@ -67,6 +77,18 @@ def initialize(store) -> None:
                  ON perp_model_promotion (asset, horizon_minutes, evaluated_at);
             """
         )
+        columns = store.database.column_names(conn, "perp_model_promotion")
+        for column, definition in (
+            ("challenger_trades", "INTEGER"),
+            ("incumbent_trades", "INTEGER"),
+            ("challenger_net_bps", "DOUBLE PRECISION"),
+            ("incumbent_net_bps", "DOUBLE PRECISION"),
+        ):
+            if column not in columns:
+                conn.execute(
+                    f"ALTER TABLE perp_model_promotion ADD COLUMN "
+                    f"{column} {definition}"
+                )
 
 
 def _utc(value: str) -> datetime:
@@ -108,9 +130,8 @@ def evaluate_promotion(
             ),
         ).fetchall()
         quotes = conn.execute(
-            """SELECT COUNT(*) AS n,
-                      SUM(q.challenger_gross_bps) AS challenger_sum,
-                      SUM(q.incumbent_gross_bps) AS incumbent_sum
+            """SELECT q.challenger_gross_bps,q.incumbent_gross_bps,
+                      e.probability_up,e.reference_probability_up
                FROM perp_multi_quote_shadow AS q
                JOIN perp_multi_forward AS e
                  ON e.asset=q.asset AND e.horizon_minutes=q.horizon_minutes
@@ -125,7 +146,7 @@ def evaluate_promotion(
                 (stamp - timedelta(days=7)).isoformat(),
                 stamp.isoformat(),
             ),
-        ).fetchone()
+        ).fetchall()
         previous = conn.execute(
             """SELECT status FROM perp_model_promotion
                WHERE asset=? AND horizon_minutes=?
@@ -146,33 +167,75 @@ def evaluate_promotion(
     except (ValueError, TypeError, OverflowError) as exc:
         audit = None
         audit_reason = f"corrupt forward scores: {type(exc).__name__}"
-    quote_windows = int(quotes["n"] or 0)
-    challenger_gross = float(quotes["challenger_sum"]) / quote_windows if quote_windows else None
-    incumbent_gross = float(quotes["incumbent_sum"]) / quote_windows if quote_windows else None
+    def _traded(probability: float) -> bool:
+        # Mirrors the shadow ledger's trade rule: a directional strength
+        # below 56% takes no position and records zero gross.
+        return probability <= 0.44 or probability >= 0.56
+
+    def _net(gross: float, traded: bool) -> float:
+        return gross - TRADE_COST_BPS if traded else 0.0
+
+    quote_windows = len(quotes)
+    challenger_trades = sum(
+        1 for row in quotes if _traded(float(row["probability_up"]))
+    )
+    incumbent_trades = sum(
+        1 for row in quotes if _traded(float(row["reference_probability_up"]))
+    )
+    challenger_gross = (
+        sum(float(row["challenger_gross_bps"]) for row in quotes) / quote_windows
+        if quote_windows else None
+    )
+    incumbent_gross = (
+        sum(float(row["incumbent_gross_bps"]) for row in quotes) / quote_windows
+        if quote_windows else None
+    )
+    challenger_net = (
+        sum(
+            _net(float(row["challenger_gross_bps"]),
+                 _traded(float(row["probability_up"])))
+            for row in quotes
+        ) / quote_windows
+        if quote_windows else None
+    )
+    incumbent_net = (
+        sum(
+            _net(float(row["incumbent_gross_bps"]),
+                 _traded(float(row["reference_probability_up"])))
+            for row in quotes
+        ) / quote_windows
+        if quote_windows else None
+    )
+    net_gain = (
+        challenger_net - incumbent_net
+        if challenger_net is not None and incumbent_net is not None
+        else None
+    )
     quote_ok = (
         quote_windows >= MIN_QUOTE_WINDOWS
-        and challenger_gross is not None
-        and incumbent_gross is not None
-        and challenger_gross >= incumbent_gross
+        and challenger_trades >= MIN_QUOTE_TRADES
+        and net_gain is not None
+        and net_gain > 0
     )
     was_promoted = previous is not None and str(previous["status"]) == "promoted"
     if audit is not None and audit.status == "qualified_shadow" and quote_ok:
         status, engine = "promoted", "multi"
         reason = (
             f"{audit.reason}; quote_windows={quote_windows} "
-            f"challenger_gross={challenger_gross:.1f}bps "
-            f"incumbent_gross={incumbent_gross:.1f}bps"
+            f"challenger_trades={challenger_trades} "
+            f"challenger_net={challenger_net:.1f}bps "
+            f"incumbent_net={incumbent_net:.1f}bps"
         )
     elif audit is not None and audit.status == "qualified_shadow":
         status, engine = "held", "live"
         reason = (
             f"Brier qualified but quote proof insufficient: "
-            f"windows={quote_windows} (need {MIN_QUOTE_WINDOWS})"
+            f"windows={quote_windows} (need {MIN_QUOTE_WINDOWS}) "
+            f"challenger_trades={challenger_trades} "
+            f"(need {MIN_QUOTE_TRADES})"
             + (
-                f" challenger_gross={challenger_gross:.1f}bps "
-                f"incumbent_gross={incumbent_gross:.1f}bps"
-                if challenger_gross is not None
-                else ""
+                f" net_gain={net_gain:.1f}bps (need >0)"
+                if net_gain is not None else ""
             )
         )
     elif was_promoted:
@@ -195,6 +258,10 @@ def evaluate_promotion(
         "quote_windows": quote_windows,
         "challenger_gross_bps": challenger_gross,
         "incumbent_gross_bps": incumbent_gross,
+        "challenger_trades": challenger_trades,
+        "incumbent_trades": incumbent_trades,
+        "challenger_net_bps": challenger_net,
+        "incumbent_net_bps": incumbent_net,
         "status": status,
         "reason": reason,
     }
@@ -204,8 +271,10 @@ def evaluate_promotion(
                (asset,horizon_minutes,engine,model_version,evaluated_at,
                 unique_target_windows,calendar_days,paired_gain,
                 challenger_brier,incumbent_brier,quote_windows,
-                challenger_gross_bps,incumbent_gross_bps,status,reason)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                challenger_gross_bps,incumbent_gross_bps,
+                challenger_trades,incumbent_trades,
+                challenger_net_bps,incumbent_net_bps,status,reason)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT DO NOTHING""",
             tuple(
                 row[key]
@@ -223,6 +292,10 @@ def evaluate_promotion(
                     "quote_windows",
                     "challenger_gross_bps",
                     "incumbent_gross_bps",
+                    "challenger_trades",
+                    "incumbent_trades",
+                    "challenger_net_bps",
+                    "incumbent_net_bps",
                     "status",
                     "reason",
                 )
@@ -231,7 +304,8 @@ def evaluate_promotion(
     if status != (previous["status"] if previous else None):
         _LOG.info(
             "RivaL promotion asset=%s horizon=%d status=%s engine=%s "
-            "targets=%d days=%d paired_gain=%s quote_windows=%d",
+            "targets=%d days=%d paired_gain=%s quote_windows=%d "
+            "challenger_trades=%d net_gain=%s",
             asset,
             horizon,
             status,
@@ -240,6 +314,8 @@ def evaluate_promotion(
             row["calendar_days"],
             f"{row['paired_gain']:.5f}" if row["paired_gain"] is not None else "none",
             quote_windows,
+            challenger_trades,
+            f"{net_gain:.1f}" if net_gain is not None else "none",
         )
     return row
 

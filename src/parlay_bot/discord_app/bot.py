@@ -340,7 +340,7 @@ class RivalDiscordClient(discord.Client):
         self.live_stream: StreamingBookHub | None = (
             StreamingBookHub(assets=tuple(
                 asset for asset in self.perp_collector.assets
-                if asset in ("BTC", "ETH", "SOL")
+                if asset in ("BTC", "ETH", "SOL", "XRP")
             ))
             if self.perp_collector is not None and settings.rival_stream_enabled
             else None
@@ -437,10 +437,12 @@ class RivalDiscordClient(discord.Client):
                 app_commands.Choice(name="Bitcoin (BTC)", value="BTC"),
                 app_commands.Choice(name="Ethereum (ETH)", value="ETH"),
                 app_commands.Choice(name="Solana (SOL)", value="SOL"),
+                app_commands.Choice(name="XRP", value="XRP"),
             ],
             timeframe=[
                 app_commands.Choice(name="5 minutes", value=5),
                 app_commands.Choice(name="15 minutes", value=15),
+                app_commands.Choice(name="60 minutes", value=60),
             ],
         )
         async def rival_signal(

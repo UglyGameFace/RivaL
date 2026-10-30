@@ -13,6 +13,7 @@ from parlay_bot.perpetuals.features import live_examples, persisted_candles
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.learning import walk_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.markets import ASSETS, HORIZONS
 
 _MIN_ROWS = 65
 _MIN_SAMPLES = 40
@@ -48,7 +49,7 @@ def forecast_readiness(
     Eligibility is NOT a guarantee that the scheduling cycle issued a
     prediction, nor a claim of a profitable/approved model.
     """
-    if asset not in ("BTC", "ETH", "SOL"):
+    if asset not in ASSETS:
         raise ValueError("unsupported perp asset")
     current = utc(now or datetime.now(UTC))
     status = {
@@ -63,8 +64,8 @@ def forecast_readiness(
         record = {
             "venue": venue, "status": "not_collecting",
             "observations": 0, "recent_live_streak": 0,
-            "causal_5m": 0, "causal_15m": 0,
-            "evaluated_5m": 0, "evaluated_15m": 0,
+            **{f"causal_{h}m": 0 for h in HORIZONS},
+            **{f"evaluated_{h}m": 0 for h in HORIZONS},
         }
         health = status.get((venue, asset))
         if health is None or health.get("status") != "ok":
@@ -117,7 +118,7 @@ def forecast_readiness(
                 record["status"] = "needs_live_history"
                 records.append(record)
                 continue
-            for horizon in (5, 15):
+            for horizon in HORIZONS:
                 samples = live_examples(candles, horizon_minutes=horizon)
                 record[f"causal_{horizon}m"] = len(samples)
                 if len(samples) < _MIN_SAMPLES:
@@ -126,7 +127,7 @@ def forecast_readiness(
                     samples, as_of=current, minimum_evaluated=50,
                 )
                 record[f"evaluated_{horizon}m"] = model.evaluated
-            if min(record["evaluated_5m"], record["evaluated_15m"]) >= _MIN_EVALUATED:
+            if min(record[f"evaluated_{h}m"] for h in HORIZONS) >= _MIN_EVALUATED:
                 record["status"] = "eligible_shadow"
             else:
                 record["status"] = "needs_matured_labels"

@@ -87,7 +87,7 @@ def parse_stream_message(
 class StreamingBookHub:
     """One bounded socket per provider, no per-user subscription fanout."""
 
-    def __init__(self, *, assets: tuple[str, ...] = ("BTC", "ETH", "SOL")) -> None:
+    def __init__(self, *, assets: tuple[str, ...] = ("BTC", "ETH", "SOL", "XRP")) -> None:
         if not assets or len(set(assets)) != len(assets) or any(
             asset not in ASSETS for asset in assets
         ):

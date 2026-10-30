@@ -15,9 +15,10 @@ from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS, HORIZONS
 from parlay_bot.perpetuals.readiness import _source_identity
 
-ASSETS = ("BTC", "ETH", "SOL")
+ASSETS = RESEARCH_ASSETS
 
 
 def _utc(value: str) -> datetime:
@@ -74,7 +75,7 @@ def recent_watches(
             probability = float(row["probability_up"])
             venue = str(row["venue"])
             if (
-                horizon not in (5, 15)
+                horizon not in HORIZONS
                 or not 0 < probability < 1
                 or not math.isfinite(probability)
                 # Outcomes always settle from the target FIVE-minute candle. The
@@ -180,7 +181,7 @@ def recent_multi_watches(
             probability = float(row["probability_up"])
             venue = str(row["reference_venue"])
             if (
-                horizon not in (5, 15)
+                horizon not in HORIZONS
                 or not 0 < probability < 1
                 or not math.isfinite(probability)
                 or instant >= target + timedelta(minutes=5)

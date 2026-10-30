@@ -149,6 +149,7 @@ class GuidedHome(discord.ui.View):
     def __init__(
         self, *, owner_id: int, location: LocationOnboardingService,
         builder: ParlayBuilder, collector: CurrentBoardCollector | None,
+        refresh_sports: Callable[[], str] | None = None,
         market: PerpetualMarketStore | None, targets: DirectionTargetService,
         paper: PaperLedger, quotes: PublicBestQuoteClient,
         profit: ProspectiveQuoteProfitMonitor | None,
@@ -162,6 +163,7 @@ class GuidedHome(discord.ui.View):
         self.location = location
         self.builder = builder
         self.collector = collector
+        self.refresh_sports = refresh_sports
         self.market = market
         self.targets = targets
         self.paper = paper
@@ -266,27 +268,10 @@ class GuidedHome(discord.ui.View):
         self.page = page
         self.note = None
 
-    async def _refresh_odds(self) -> None:
-        if self.collector is None:
-            return
-        # One shared refresh runs in the background. Menu interactions never
-        # wait for sportsbook HTTP calls or PostgreSQL ingestion.
-        collector = self.collector
-        if collector._lock.locked():
-            return
-        # The collector lock is shared across all views. Even if two users
-        # schedule concurrently, only one task acquires it and fetches.
-        async def refresh() -> None:
-            if collector._lock.locked():
-                return
-            try:
-                await asyncio.wait_for(collector.refresh_if_due(), timeout=60)
-            except TimeoutError:
-                _LOG.warning("Background sportsbook refresh timed out")
-            except Exception:  # noqa: BLE001
-                _LOG.exception("Background sportsbook refresh failed")
-
-        asyncio.create_task(refresh())
+    async def _refresh_odds(self) -> str:
+        if self.refresh_sports is not None:
+            return self.refresh_sports()
+        return "Automatic sportsbook refresh unavailable. No new odds confirmed."
 
     async def render(self) -> discord.Embed:
         p = self.page
@@ -747,8 +732,7 @@ class GuidedHome(discord.ui.View):
             if action == "sports":
                 await self._refresh_odds()
         elif action == "refresh":
-            await self._refresh_odds()
-            self.note = "Checked the current sportsbook data."
+            self.note = await self._refresh_odds()
         elif action in ("slip", "lower", "balanced", "aggressive"):
             self.risk = {
                 "lower": RiskMode.LOWER, "balanced": RiskMode.BALANCED,

@@ -1,15 +1,15 @@
-"""Collector settlement margin: a just-closed bar may still be revised.
+"""Collector settlement rule: trust a completed candle once it is old enough.
 
-A bar stored prematurely and then revised by the exchange used to
-reject the whole asset batch every cycle until the bar aged out of the
-48-bar window (the observed kucoin-ETH / deribit-ETH+SOL storage_error
-pattern). The margin is the first layer: holding back the single newest
-bar per batch means a revised bar is first stored once settled, so a
-revision can never conflict with a premature row. The second layer is
-ingest conflict isolation (see test_collector_conflict_isolation.py):
-any conflict that still occurs is skipped per bar instead of failing
-the batch.
+The previous one-bar holdback systematically expired every 5m forecast:
+holding the newest completed candle pushed the forecast target one
+interval back, so issued_at always landed past target_open + 5min for
+horizon 5 (live cycles showed expired=27, issued=27: all 5m expired,
+only 15m issued). The settlement rule keeps a completed candle once it
+closed at least 10s before the batch was observed; unfinished candles
+(closed_at in the future) never pass. Per-bar conflict isolation in
+ingest remains the safety net for any later exchange revision.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
@@ -73,7 +73,10 @@ def _stored(collector):
 
 
 @pytest.mark.asyncio
-async def test_newest_bar_is_held_back_one_cycle(tmp_path):
+async def test_settled_newest_bar_is_kept(tmp_path):
+    # Regression for the 5m expiry: under the old holdback the newest
+    # bar was dropped and every 5m forecast expired. Settled bars,
+    # including the newest, must all land.
     store = SQLiteHotStore(tmp_path / "margin.sqlite")
     bars = [_bar("deribit", BASE + i * timedelta(minutes=5), 100 + i)
             for i in range(3)]
@@ -85,23 +88,49 @@ async def test_newest_bar_is_held_back_one_cycle(tmp_path):
     try:
         await collector.collect_once()
         stored = _stored(collector)
-        assert [row["close_price"] for row in stored] == [100, 101]
+        assert [row["close_price"] for row in stored] == [100, 101, 102]
         health = collector.market.feed_health()
         assert len(health) == 1 and health[0]["status"] == "ok"
-        assert health[0]["total_new_candles"] == 2
+        assert health[0]["total_new_candles"] == 3
     finally:
         await collector.aclose()
         store.close()
 
 
 @pytest.mark.asyncio
-async def test_revised_newest_bar_cannot_conflict(tmp_path):
+async def test_just_closed_bar_is_held_until_settled(tmp_path):
+    # A bar that closed within the 10s margin is withheld; the older
+    # bars in the same batch still land.
+    store = SQLiteHotStore(tmp_path / "margin-fresh.sqlite")
+    old = _bar("deribit", BASE, 100)
+    just_closed = _bar(
+        "deribit", datetime.now(UTC) - timedelta(minutes=5), 200,
+    )
+    provider = ScriptedProvider("deribit", [[old, just_closed]])
+    collector = PerpetualMarketCollector(
+        store=store, assets=("BTC",),
+        providers={"deribit": provider},
+    )
+    try:
+        await collector.collect_once()
+        stored = _stored(collector)
+        assert [row["close_price"] for row in stored] == [100]
+        health = collector.market.feed_health()
+        assert health[0]["status"] == "ok"
+    finally:
+        await collector.aclose()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_revised_newest_bar_is_skipped_not_batch_failing(tmp_path):
+    # Cycle 1 stores the newest bar (settlement keeps it). Cycle 2
+    # revises that newest bar and adds a newer one: the revision is
+    # skipped per bar by ingest isolation, the new bar lands, and the
+    # feed stays healthy instead of failing every cycle.
     store = SQLiteHotStore(tmp_path / "margin-revise.sqlite")
     first = [_bar("deribit", BASE + i * timedelta(minutes=5), 100 + i)
              for i in range(3)]
-    # The newest bar of cycle 1 is revised before cycle 2, and a newer
-    # bar arrives. Without the margin, cycle 1 would store the premature
-    # values and cycle 2 would raise CandleConflictError.
     revised = [_bar("deribit", BASE + i * timedelta(minutes=5), 100 + i)
                for i in range(3)]
     revised[2] = _bar("deribit", BASE + timedelta(minutes=10), 999)
@@ -115,27 +144,9 @@ async def test_revised_newest_bar_cannot_conflict(tmp_path):
         await collector.collect_once()
         await collector.collect_once()
         stored = _stored(collector)
-        assert [row["close_price"] for row in stored] == [100, 101, 999]
+        assert [row["close_price"] for row in stored] == [100, 101, 102, 103]
         health = collector.market.feed_health()
         assert health[0]["status"] == "ok"
-    finally:
-        await collector.aclose()
-        store.close()
-
-
-@pytest.mark.asyncio
-async def test_single_bar_batch_is_kept_whole(tmp_path):
-    store = SQLiteHotStore(tmp_path / "margin-single.sqlite")
-    provider = ScriptedProvider("deribit", [[_bar("deribit", BASE, 100)]])
-    collector = PerpetualMarketCollector(
-        store=store, assets=("BTC",),
-        providers={"deribit": provider},
-    )
-    try:
-        await collector.collect_once()
-        stored = _stored(collector)
-        assert [row["close_price"] for row in stored] == [100]
-        assert collector.market.feed_health()[0]["status"] == "ok"
     finally:
         await collector.aclose()
         store.close()

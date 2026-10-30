@@ -351,8 +351,9 @@ class GateHistoryRecovery:
                 self._advance, asset, now=clock, next_open=None,
                 status=reason, retry_after=clock + pause,
             )
-            _LOG.warning("RivaL Gate historical recovery failed asset=%s reason=%s",
-                         asset, reason)
+            _LOG.warning("RivaL Gate historical recovery failed asset=%s reason=%s "
+                         "error=%s",
+                         asset, reason, type(exc).__name__)
             return 0
 
     async def run_once(self, *, now: datetime | None = None) -> int:

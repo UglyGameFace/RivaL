@@ -198,11 +198,16 @@ class PerpetualMarketStore:
                     # the rest of the batch land. The warning preserves the
                     # corruption signal without stalling the venue.
                     conflicted += 1
+                    stored_close = (
+                        float(old["close_price"]) if old is not None else None
+                    )
                     _LOG.warning(
                         "RivaL conflicting candle skipped venue=%s "
-                        "contract=%s opened_at=%s; stored values kept",
+                        "contract=%s opened_at=%s stored_close=%s "
+                        "batch_close=%s; stored values kept",
                         candle.venue, candle.contract,
                         utc(candle.opened_at).isoformat(),
+                        stored_close, candle.close_price,
                     )
                     continue
                 unchanged += 1

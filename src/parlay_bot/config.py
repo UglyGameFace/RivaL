@@ -12,6 +12,10 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
+        # A blank variable in .env.example (notably RIVAL_DEV_GUILD_ID=)
+        # must mean "unset", not "" passed to an int field: without this,
+        # pydantic-settings raises int_parsing before the bot starts.
+        env_ignore_empty=True,
     )
 
     the_odds_api_key: SecretStr | None = Field(default=None)

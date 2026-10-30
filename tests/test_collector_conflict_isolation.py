@@ -80,9 +80,9 @@ async def test_revised_mid_window_bar_skipped_rest_lands(tmp_path):
             venue="deribit", contract="BTC_USDC-PERPETUAL", quote="USDC",
             interval_minutes=5, count=10,
         )
-        # The revised middle bar keeps its stored value; the bar held by
-        # the margin last cycle lands, and the batch stays healthy.
-        assert [row["close_price"] for row in stored] == [100, 101, 102, 103]
+        # The revised middle bar keeps its stored value; every settled
+        # bar lands, including the new one, and the batch stays healthy.
+        assert [row["close_price"] for row in stored] == [100, 101, 102, 103, 104]
         health = collector.market.feed_health()
         assert len(health) == 1 and health[0]["status"] == "ok"
     finally:

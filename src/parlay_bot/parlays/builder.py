@@ -245,7 +245,7 @@ class ParlayBuilder:
 
             price = float(row["price_decimal"])
             edge = expected_return_edge(fair_probability=fair, decimal_odds=price)
-            if edge <= 0:
+            if edge < -0.025:
                 diagnostics["negative_edge"] += 1
                 continue
 
@@ -321,6 +321,13 @@ class ParlayBuilder:
                 1 for c in candidates if c.price_edge < 0.02
             )
             candidates = [c for c in candidates if c.price_edge >= 0.02]
+        else:
+            # Preserve single-leg diagnostics; never auto-suggest negative
+            # individual prices in multi-leg combinations.
+            self.last_diagnostics["nonpositive_multi_leg"] = sum(
+                1 for c in candidates if c.price_edge <= 0
+            )
+            candidates = [c for c in candidates if c.price_edge > 0]
         if not candidates:
             raise ParlayBuildError(
                 "No current eligible sportsbook prices pass the fresh positive-edge screen. "

@@ -417,8 +417,11 @@ class SportsResultStore:
         return affected
 
     def settle_forecast(self, result: FinalScore, *, conn=None) -> bool:
-        self.initialize()
+        # A caller supplying an active connection has already initialized
+        # the schema. Reopening a separate connection here can block on
+        # its uncommitted result INSERT or on transaction-held DDL locks.
         if conn is None:
+            self.initialize()
             with self.store.connect() as owned:
                 return self._settle_forecast(owned, result)
         return self._settle_forecast(conn, result)

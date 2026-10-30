@@ -326,6 +326,10 @@ def crypto_snapshot_card(
     strength = (
         f"{snapshot.probability:.1%} raw score\n"
         f"{model_strength(snapshot.probability)}"
+        + (
+            f" • {snapshot.training_evaluated} walk-forward examples"
+            if snapshot.training_evaluated else ""
+        )
         if current and snapshot.probability is not None else "Unverified"
     )
     fields = (

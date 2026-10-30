@@ -15,6 +15,7 @@ from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.collectors.oddspapi_current import OddsPapiCurrentCollector
 from parlay_bot.collectors.the_odds_api import TheOddsApiCollector
 from parlay_bot.config import Settings
+from parlay_bot.discord_app.alert_control import stop_all_notifications
 from parlay_bot.discord_app.auto_hunt import AutoHuntActions, AutoHuntService, AutoHuntStore
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
 from parlay_bot.discord_app.home import (
@@ -444,9 +445,6 @@ class RivalDiscordClient(discord.Client):
             quotes=self.public_quotes, store=AutoHuntStore(self.store),
             stream_shadow=self.stream_shadow,
         )
-        self._hunt_event = asyncio.Event()
-        self._hunt_task: asyncio.Task[None] | None = None
-        self._poly_hunt_task: asyncio.Task[None] | None = None
         self.polymarket_research = PolymarketResearch(
             self.store, ai=self.gemini_research
             if isinstance(self.gemini_research, OpenRouterResearch) else None,
@@ -1276,34 +1274,16 @@ class RivalDiscordClient(discord.Client):
 
         @self.tree.command(
             name="rival-stop",
-            description="Stop all personal forecast and Auto-Hunt DM alerts.",
+            description="Stop all your personal RivaL notifications and tracking.",
         )
         async def rival_stop(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
-            # Revoke both independently. A broken old target message must
-            # never prevent canceling the new Auto-Hunt subscription.
-            failures = []
-            hunt = watch = False
-            try:
-                hunt = await self.auto_hunt.stop(interaction.user.id)
-            except Exception:  # noqa: BLE001 - preserve the other cancel path
-                _LOG.exception("RivaL Auto-Hunt cancellation failed")
-                failures.append("Auto-Hunt")
-            try:
-                watch = await self.direction_targets.stop(interaction.user.id)
-            except Exception:  # noqa: BLE001 - preserve the other cancel path
-                _LOG.exception("RivaL personal target cancellation failed")
-                failures.append("personal target")
-            if failures:
-                message = (
-                    "Could not confirm stopping " + ", ".join(failures) +
-                    ". Please retry /rival-stop. Other alert stops were applied."
-                )
-            else:
-                message = (
-                    "All personal alerts stopped." if watch or hunt else
-                    "No active personal alerts."
-                )
+            message = await stop_all_notifications(
+                interaction.user.id,
+                auto_hunt=self.auto_hunt,
+                targets=self.direction_targets,
+                tracker=self.polymarket_board,
+            )
             await interaction.edit_original_response(content=message)
 
         @tools_group.command(
@@ -1559,16 +1539,8 @@ class RivalDiscordClient(discord.Client):
         # worker inserts predictions caused live PostgreSQL deadlocks.
         if self.autonomous is not None:
             await asyncio.to_thread(self.autonomous.initialize)
-        # Polymarket market watching is independent of the crypto candle
-        # collector. The worker itself stays idle until a user opts in.
-        if self._hunt_task is None:
-            self._hunt_task = asyncio.create_task(
-                self._hunt_loop(), name="rival-auto-hunt-selected-source-alerts",
-            )
-        if self._poly_hunt_task is None:
-            self._poly_hunt_task = asyncio.create_task(
-                self._poly_hunt_loop(), name="rival-auto-hunt-polymarket-alerts",
-            )
+        # Retired duplicated Auto-Hunt alert producers. Live Polymarket
+        # tracking and optional verified direction-shift notices continue.
         if self._target_task is None:
             self._target_task = asyncio.create_task(
                 self._target_loop(), name="rival-personal-direction-updates",
@@ -1851,40 +1823,6 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001
                 _LOG.exception("RivaL live trend delivery failed safely")
 
-    async def _hunt_loop(self) -> None:
-        """Inspect fresh persisted forecasts without waiting for slow research work."""
-        await self.wait_until_ready()
-        while not self.is_closed():
-            try:
-                count = await self.auto_hunt.cycle(scope="forecasts")
-                if count:
-                    _LOG.info("RivaL Auto-Hunt new private alerts delivered=%d", count)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - alert outages cannot stop collector
-                _LOG.exception("RivaL Auto-Hunt check failed safely")
-            try:
-                await asyncio.wait_for(self._hunt_event.wait(), timeout=15.0)
-            except TimeoutError:
-                pass
-            self._hunt_event.clear()
-
-    async def _poly_hunt_loop(self) -> None:
-        """Public market notices keep polling during slow exchange/DB research."""
-        await self.wait_until_ready()
-        while not self.is_closed():
-            started = time.monotonic()
-            try:
-                count = await self.auto_hunt.cycle(scope="polymarket")
-                self.polymarket_research.maybe_settle(self.auto_hunt.polymarket)
-                if count:
-                    _LOG.info("RivaL Polymarket private alerts delivered=%d", count)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                _LOG.exception("RivaL Polymarket alert cycle failed safely")
-            await asyncio.sleep(max(0.1, 15 - (time.monotonic() - started)))
-
     async def _poly_board_loop(self) -> None:
         """Automatically roll verified markets and forecasts in existing DMs."""
         await self.wait_until_ready()
@@ -1892,6 +1830,12 @@ class RivalDiscordClient(discord.Client):
             started = time.monotonic()
             try:
                 changed = await self.polymarket_board.cycle()
+                # Receipt settlement is still required for learning even
+                # though duplicated Polymarket Auto-Hunt notices are retired.
+                await asyncio.to_thread(
+                    self.polymarket_research.maybe_settle,
+                    self.auto_hunt.polymarket,
+                )
                 if changed:
                     _LOG.info(
                         "RivaL verified live Polymarket boards updated=%d",
@@ -2044,7 +1988,6 @@ class RivalDiscordClient(discord.Client):
                         issued, settled, ai_issued,
                     )
                     if issued:
-                        self._hunt_event.set()
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001
@@ -2309,11 +2252,6 @@ class RivalDiscordClient(discord.Client):
 
     async def close(self) -> None:
         await self.kalshi_browser.aclose()
-        if self._poly_hunt_task is not None:
-            self._poly_hunt_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._poly_hunt_task
-            self._poly_hunt_task = None
         if self._poly_board_task is not None:
             self._poly_board_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -2337,11 +2275,6 @@ class RivalDiscordClient(discord.Client):
             with suppress(asyncio.CancelledError):
                 await self._stream_shadow_task
             self._stream_shadow_task = None
-        if self._hunt_task is not None:
-            self._hunt_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._hunt_task
-            self._hunt_task = None
         await self.polymarket_board.aclose()
         await self.auto_hunt.aclose()
         await self.polymarket_research.aclose()

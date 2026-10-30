@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from parlay_bot.discord_app.alert_control import stop_all_notifications
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
@@ -73,7 +74,7 @@ class _Button(discord.ui.Button["GuidedHome"]):
                  emoji: str | None = None, primary: bool = False) -> None:
         if action == "forecast":
             style = discord.ButtonStyle.success
-        elif action in ("stop", "hunt-off", "poly-stop"):
+        elif action in ("stop", "hunt-off", "poly-stop", "stop-all"):
             style = discord.ButtonStyle.danger
         else:
             style = (
@@ -428,20 +429,18 @@ class GuidedHome(discord.ui.View):
         self.clear_items()
         p = self.page
         if p == "home":
-            items = (
-                ("Find Opportunities", "discover", 0, "🔎"),
-                ("My Alerts", "hunt", 0, "🔔"),
-                ("Sports & Odds", "sports", 1, "🏆"),
+            for title, action, row, emoji in (
+                ("Crypto", "live", 0, "📈"),
+                ("Sports", "sports", 0, "🏆"),
+                ("Notifications", "hunt", 1, "🔔"),
                 ("My Results", "results", 1, "📊"),
-                ("Live Mode", "live", 2, "⚡"),
-            )
-            for title, action, row, emoji in items:
-                self._add(title, action, row, emoji, action == "sports")
+                ("Practice", "practice", 2, "💵"),
+            ):
+                self._add(title, action, row, emoji, action == "live")
+            self._add("Help", "help", 3, "❓")
         elif p == "discover":
-            self._add("Predict Crypto", "crypto", 0, "📈", True)
-            self._add("Auto-Hunt Alerts", "hunt", 0, "🔔")
-            self._add("Practice Money", "practice", 1, "💵")
-            self._add("Help Me Start", "help", 1, "❓")
+            self._add("Crypto", "live", 0, "📈", True)
+            self._add("Practice", "practice", 0, "💵")
         elif p == "sports":
             self._add("Choose State", "state", 0, "🗺️")
             self._add("Enter ZIP", "zip", 0, "📍")
@@ -456,46 +455,32 @@ class GuidedHome(discord.ui.View):
         elif p in ("crypto", "forecast", "quote"):
             self.add_item(_Coin(self.coin))
             self.add_item(_Horizon(self.horizon))
-            self._add(
-                "Refresh Signal" if p == "forecast" else "Get Signal",
-                "forecast", 2, "🔄" if p == "forecast" else "🎯", True,
-            )
-            self._add("Follow Exchange Forecast", "follow", 2, "🔔")
-            self._add("Auto-Hunt", "hunt", 2, "🔔")
-            self._add("See Buy/Sell Prices", "quote", 3, "💱")
-            self._add("Stop My Alerts", "stop", 3, "🔕")
+            self._add("Refresh Forecast" if p == "forecast" else "Get Signal",
+                      "forecast", 2, "🔄" if p == "forecast" else "🎯", True)
+            self._add("Watch Forecast", "follow", 2, "🔔")
+            self._add("Live Markets", "live", 3, "⚡")
         elif p == "live":
             self.add_item(_Coin(self.coin))
             if self.live_source == "polymarket":
                 self.add_item(_PolymarketHorizon(self.horizon))
-                self._add("Start Auto-Track", "poly-start", 2, "⚡", True)
-                self._add("Stop Auto-Track", "poly-stop", 2, "🔕")
-            elif self.live_source == "kalshi":
-                self._add("Update Kalshi", "kalshi-refresh", 2, "🔄")
-            self._add("Alert Settings", "hunt-tools", 2, "⚙️")
-            self._add("Polymarket", "live-poly", 3, "⚡",
-                      self.live_source == "polymarket")
-            self._add("Kalshi", "live-kalshi", 3, "📊",
-                      self.live_source == "kalshi")
-            self._add("DraftKings", "live-dk", 3, "🔒")
+                self._add("Track in DMs", "poly-start", 2, "🔔", True)
+                self._add("Stop Tracking", "poly-stop", 2, "🔕")
+                self._add("Exchange Forecast", "crypto", 3, "📈")
+                if self.kalshi is not None:
+                    self._add("Kalshi", "live-kalshi", 3, "📊")
+            else:
+                self._add("Refresh Markets", "kalshi-refresh", 2, "🔄", True)
+                self._add("Polymarket", "live-poly", 3, "📈")
         elif p == "hunt":
-            self._add("Live Mode", "live", 0, "⚡", True)
-            self._add("Alert Status", "hunt-status", 0, "🔎")
-            self._add("Notification Filters", "hunt-config", 1, "⚙️")
-            self._add("Other Alert Types", "hunt-tools", 1, "🔔")
-            self._add("Stop Old Alerts", "hunt-off", 2, "🔕")
+            self._add("Track Crypto", "live", 0, "📈", True)
+            self._add("Watch Forecast", "crypto", 0, "🎯")
+            self._add("Changes ON", "live-on", 1, "🔔")
+            self._add("Changes OFF", "live-off", 1, "🔕")
+            self._add("Stop All", "stop-all", 2, "🛑")
         elif p == "kalshi":
-            self.add_item(_Coin(self.coin))
-            self._add("Refresh Kalshi", "kalshi-refresh", 2, "🔄", True)
-            self._add("Polymarket Live", "live", 2, "⚡")
+            self._add("Polymarket", "live", 0, "📈", True)
         elif p == "hunt-tools":
-            self._add("Polymarket Price Notices", "hunt-poly", 0, "📊")
-            self._add("Model Research", "hunt-on", 0, "📈")
-            self._add("Research Toggle", "hunt-research", 1, "🔔")
-            self._add("Qualified Watches Toggle", "hunt-qualified", 1, "✅")
-            self._add("Live Shift Alerts ON", "live-on", 2, "⚡")
-            self._add("Live Shift Alerts OFF", "live-off", 2, "🔕")
-            self._add("Notification Filters", "hunt-config", 3, "⚙️")
+            self._add("Notifications", "hunt", 0, "🔔", True)
         elif p == "practice":
             self.add_item(_Coin(self.coin))
             self._add("Practice Buy $25", "buy", 1, "📈", True)
@@ -525,9 +510,9 @@ class GuidedHome(discord.ui.View):
             if p == "trust":
                 self.add_item(_Horizon(self.horizon))
             self._add("Refresh", p, 2, "🔄", True)
-        self._add("Home", "home", 4, "🏠")
-        self._add("Back", "back", 4, "↩️")
-        self._add("Explain This", "explain", 4, "❓")
+        if p != "home":
+            self._add("Home", "home", 4, "🏠")
+            self._add("Back", "back", 4, "↩️")
 
     def navigate(self, page: str) -> None:
         if page == self.page:

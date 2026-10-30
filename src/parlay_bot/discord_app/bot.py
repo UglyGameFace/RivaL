@@ -1,4 +1,3 @@
-from parlay_bot.providers.errors import QuotaReserveReached
 from __future__ import annotations
 
 import asyncio
@@ -54,6 +53,7 @@ from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 from parlay_bot.providers.oddspapi import OddsPapiClient
+from parlay_bot.providers.errors import QuotaReserveReached
 from parlay_bot.providers.owner_limits import OwnerLimitStore
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.research.sports_results import (

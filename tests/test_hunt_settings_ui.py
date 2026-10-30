@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import os
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import discord
 import pytest
 
-from parlay_bot.discord_app.auto_hunt import AutoHuntStore
+from parlay_bot.discord_app.auto_hunt import AutoHuntService, AutoHuntStore
 from parlay_bot.discord_app.hunt_settings import HuntSettingsView
 from parlay_bot.storage.hot import PostgresHotStore, SQLiteHotStore
 
@@ -79,4 +81,48 @@ def test_postgresql_stores_and_restores_settings_additively():
             conn.execute(
                 "DELETE FROM rival_hunt_preferences WHERE user_id=?", (owner,),
             )
+        hot.close()
+
+
+@pytest.mark.asyncio
+async def test_adding_live_alerts_never_silently_enables_other_tiers(tmp_path):
+    hot = SQLiteHotStore(tmp_path / "separate-consent.sqlite")
+    hot.initialize()
+    store = AutoHuntStore(hot)
+    store.initialize()
+    service = AutoHuntService(
+        bot=SimpleNamespace(live_stream=object()),
+        market=None, quotes=None, store=store,
+    )
+    service._dm_opt_in_probe = AsyncMock(return_value=None)
+    try:
+        prefs = await service.update_preference(8003, "live_shifts", 1)
+        assert prefs["live_shifts"]
+        assert store.enabled("8003")
+        assert store.tiers("8003") == {
+            "research": False, "qualified": False, "polymarket": False,
+        }
+        prefs = await service.update_preference(8003, "direction_changes", 1)
+        assert prefs["direction_changes"]
+        assert service._dm_opt_in_probe.await_count == 2
+    finally:
+        hot.close()
+
+
+@pytest.mark.asyncio
+async def test_disabled_live_feeds_reject_false_positive_alert_enable(tmp_path):
+    hot = SQLiteHotStore(tmp_path / "no-stream.sqlite")
+    hot.initialize()
+    store = AutoHuntStore(hot)
+    store.initialize()
+    service = AutoHuntService(
+        bot=SimpleNamespace(live_stream=None),
+        market=None, quotes=None, store=store,
+    )
+    try:
+        with pytest.raises(ValueError, match="disabled"):
+            await service.update_preference(9001, "live_shifts", 1)
+        assert not store.enabled("9001")
+        assert not store.preferences("9001")["live_shifts"]
+    finally:
         hot.close()

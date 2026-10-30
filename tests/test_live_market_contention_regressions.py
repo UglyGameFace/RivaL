@@ -5,8 +5,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
+from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.database import PostgresDatabase, _Connection, _postgres_sql
 from parlay_bot.storage.hot import SQLiteHotStore

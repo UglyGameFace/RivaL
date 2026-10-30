@@ -623,7 +623,7 @@ def test_crypto_card_restores_four_visible_metrics_without_fake_accuracy():
         probability=0.59, price=78000.0,
         issued_at=now - timedelta(seconds=10),
         ends_at=now + timedelta(minutes=5),
-        status="ok",
+        status="ok", training_evaluated=600,
     )
     embed = crypto_snapshot_card(
         available, asset="BTC", horizon=5, checked_at=now,

@@ -285,7 +285,7 @@ async def test_private_signal_button_explains_no_forecast_without_fake_prices(tm
         home._buttons()
         assert "Get Signal" in _labels(home)
         assert "See Forecast" not in _labels(home)
-        assert "NO CURRENT SIGNAL" in (await home.render()).description
+        assert "Collector unavailable — signals paused" in (await home.render()).description
         i = _interaction()
         await home.act(i, "forecast")
         assert home.page == "forecast"

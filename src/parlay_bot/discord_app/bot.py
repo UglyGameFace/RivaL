@@ -1497,6 +1497,11 @@ class RivalDiscordClient(discord.Client):
         self.add_view(AutoHuntActions())
         _LOG.info("RivaL stale guided-menu and restart-safe hunt views registered")
         await asyncio.to_thread(self.auto_hunt.store.initialize)
+        # Install read/forecast schemas before starting any collection,
+        # notification or learning workers. Creating indexes while another
+        # worker inserts predictions caused live PostgreSQL deadlocks.
+        if self.autonomous is not None:
+            await asyncio.to_thread(self.autonomous.initialize)
         # Polymarket market watching is independent of the crypto candle
         # collector. The worker itself stays idle until a user opts in.
         if self._hunt_task is None:

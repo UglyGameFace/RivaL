@@ -20,8 +20,12 @@ MIN_DISTINCT_REGIMES = 2
 
 
 def issue_regime(features: tuple[float, ...]) -> str:
-    """Predeclared thresholds on five-minute log-return volatility in pct."""
-    if len(features) != 5 or any(not math.isfinite(v) for v in features):
+    """Predeclared thresholds on five-minute log-return volatility in pct.
+
+    Only the first five features (the original return/volatility vector)
+    decide the regime; later indicator features are ignored here.
+    """
+    if len(features) < 5 or any(not math.isfinite(v) for v in features):
         raise ValueError("invalid point-in-time features")
     volatility_pct = features[2]
     if volatility_pct < 0:

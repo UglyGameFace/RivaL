@@ -30,12 +30,12 @@ def candle(index: int, *, backfilled: bool = False, contract: str = "BTC-USD"):
 
 
 def test_live_features_do_not_read_future_candles():
-    candles = [candle(i) for i in range(50)]
-    for horizon, count in ((5, 44), (15, 42), (60, 33)):
+    candles = [candle(i) for i in range(120)]
+    for horizon, count in ((5, 80), (15, 78), (60, 69)):
         samples = live_examples(candles, horizon_minutes=horizon)
         assert len(samples) == count
         assert all(x.label_known_at > x.issued_at for x in samples)
-        assert all(len(x.features) == 5 for x in samples)
+        assert all(len(x.features) == 10 for x in samples)
         assert all(x.venue == "dydx" and x.quote == "USD" for x in samples)
         assert all(x.label_up == 1 for x in samples)
     with pytest.raises(ValueError, match="horizon"):
@@ -43,21 +43,23 @@ def test_live_features_do_not_read_future_candles():
 
 
 def test_same_time_backfill_is_not_misrepresented_as_live_history():
-    candles = [candle(i, backfilled=True) for i in range(50)]
+    candles = [candle(i, backfilled=True) for i in range(120)]
     assert live_examples(candles, horizon_minutes=5) == ()
 
 
 def test_feature_extraction_rejects_gaps_duplicates_and_mismatched_venues():
-    original = [candle(i) for i in range(30)]
+    original = [candle(i) for i in range(120)]
     with pytest.raises(ValueError, match="chronology"):
         live_examples([*original, original[-1]], horizon_minutes=5)
     modified = [*original]
     modified[12] = candle(12, contract="ETH-USD")
     with pytest.raises(ValueError, match="provenance"):
         live_examples(modified, horizon_minutes=5)
+    full = live_examples(original, horizon_minutes=5)
+    assert len(full) == 80
     with_gap = [item for idx, item in enumerate(original) if idx != 8]
     examples = live_examples(with_gap, horizon_minutes=5)
-    assert len(examples) < 24
+    assert len(examples) < len(full)
     assert all(x.label_known_at > x.issued_at for x in examples)
 
 
@@ -131,7 +133,7 @@ def test_walkforward_rejects_mismatched_or_leaking_labels():
 def test_batched_observations_create_only_one_live_example_per_timestamp():
     # Multiple previously closed candles can arrive together, but are one
     # real observation event, not several independent live predictions.
-    candles = [candle(i) for i in range(70)]
+    candles = [candle(i) for i in range(120)]
     for index in range(10, 14):
         candles[index] = replace(
             candles[index], observed_at=candles[13].observed_at,

@@ -13,7 +13,13 @@ import logging
 import math
 from datetime import UTC, datetime, timedelta
 
-from parlay_bot.perpetuals.features import LOOKBACK, live_examples, persisted_candles
+from parlay_bot.perpetuals.features import (
+    INDICATOR_BARS,
+    LOOKBACK,
+    indicator_features,
+    live_examples,
+    persisted_candles,
+)
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.learning import walk_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -22,7 +28,7 @@ from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 
 _LOG = logging.getLogger(__name__)
-MODEL = "prospective-logistic-shadow-v1"
+MODEL = "prospective-logistic-shadow-v2"
 HORIZONS = (5, 15)
 MIN_PREVIOUS_EVALUATED = 20
 MAX_STREAMS_PER_CYCLE = 30
@@ -31,8 +37,8 @@ MAX_PENDING_SETTLEMENTS = 120
 
 def _features(candles) -> tuple[float, ...]:
     """Match the causal feature vector in live_examples() for the last bar."""
-    window = tuple(candles[-LOOKBACK - 1:])
-    if len(window) != LOOKBACK + 1:
+    window = tuple(candles[-INDICATOR_BARS:])
+    if len(window) != INDICATOR_BARS:
         raise ValueError("not enough point-in-time candles")
     for left, right in itertools.pairwise(window):
         if (
@@ -41,14 +47,15 @@ def _features(candles) -> tuple[float, ...]:
             (right.venue, right.contract, right.quote)
         ):
             raise ValueError("latest feature window is not continuous")
-    closes = [x.close_price for x in window]
+    recent = window[-LOOKBACK - 1:]
+    closes = [x.close_price for x in recent]
     if any(not math.isfinite(x) or x <= 0 for x in closes):
         raise ValueError("invalid prospective prices")
     returns = [math.log(b / a) for a, b in itertools.pairwise(closes)]
     avg = sum(returns) / len(returns)
     variance = sum((v - avg) ** 2 for v in returns) / len(returns)
     current = window[-1]
-    volume_avg = sum(x.volume_base for x in window[:-1]) / LOOKBACK
+    volume_avg = sum(x.volume_base for x in recent[:-1]) / LOOKBACK
     return (
         max(-5.0, min(5.0, returns[-1] * 100)),
         max(-5.0, min(5.0, math.log(closes[-1] / closes[0]) * 100)),
@@ -57,6 +64,12 @@ def _features(candles) -> tuple[float, ...]:
                          / current.close_price * 100)),
         max(-2.0, min(2.0, math.log((current.volume_base + 1)
                                    / (volume_avg + 1)))),
+        *indicator_features(
+            [x.close_price for x in window],
+            [x.high_price for x in window],
+            [x.low_price for x in window],
+            [x.volume_base for x in window],
+        ),
     )
 
 

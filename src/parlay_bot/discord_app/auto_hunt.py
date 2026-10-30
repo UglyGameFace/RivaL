@@ -1091,6 +1091,80 @@ def hunt_embed(
     return embed
 
 
+
+async def current_alert_review(service: "AutoHuntService", row: dict) -> discord.Embed:
+    """Re-query actual current market, never replay an old quote as fresh."""
+    try:
+        if row["venue"] == "polymarket":
+            notice = await asyncio.wait_for(
+                service.polymarket.market(
+                    row["asset"], int(row["horizon"]),
+                    opened=_instant(row["issued_at"]),
+                ), timeout=10,
+            )
+            if notice is None:
+                return discord.Embed(
+                    title="Market window closed or unavailable",
+                    description="This Polymarket window no longer has a verified "
+                                "live orderbook. No old quote is reused.",
+                    color=discord.Color.orange(),
+                )
+            return hunt_embed(notice, observed_at=datetime.now(UTC))
+        return await asyncio.wait_for(
+            signal_embed(
+                service.market, service.quotes,
+                asset=row["asset"], horizon_minutes=int(row["horizon"]),
+                stream_shadow=getattr(service.bot, "stream_shadow", None),
+            ), timeout=12,
+        )
+    except Exception:  # noqa: BLE001 - old quotes must not look current
+        _LOG.exception("RivaL fresh review failed")
+        return discord.Embed(
+            title="Current market review unavailable",
+            description="Unable to validate a newer live quote or forecast. "
+                        "The previous alert is not a new trading signal.",
+            color=discord.Color.orange(),
+        )
+
+
+class RepeatReviewView(discord.ui.View):
+    """Private, repeatable refresh without consuming the original DM button."""
+
+    def __init__(self, owner_id: int, message_id: str):
+        super().__init__(timeout=900)
+        self.owner_id = owner_id
+        self.message_id = message_id
+
+    @discord.ui.button(label="Refresh Again", emoji="🔄",
+                       style=discord.ButtonStyle.primary)
+    async def refresh(self, interaction: discord.Interaction,
+                      _: discord.ui.Button) -> None:
+        if interaction.user.id != self.owner_id:
+            await interaction.response.send_message(
+                "Only the alert recipient can review this.", ephemeral=True,
+            )
+            return
+        await interaction.response.defer()
+        service = getattr(interaction.client, "auto_hunt", None)
+        row = (
+            await asyncio.to_thread(
+                service.delivery_for_message,
+                str(self.owner_id), self.message_id,
+            )
+            if service is not None else None
+        )
+        if row is None:
+            await interaction.followup.send(
+                "This alert is no longer saved. Open /rival for a new one.",
+                ephemeral=True,
+            )
+            return
+        embed = await current_alert_review(service, row)
+        await interaction.edit_original_response(
+            embed=embed, view=RepeatReviewView(self.owner_id, self.message_id),
+        )
+
+
 class AutoHuntActions(discord.ui.View):
     """Stateless registered view: old DM buttons still work after a restart."""
 
@@ -1115,39 +1189,12 @@ class AutoHuntActions(discord.ui.View):
         if row is None:
             await interaction.followup.send("This is not your saved alert.", ephemeral=True)
             return
-        try:
-            if row["venue"] == "polymarket":
-                opened = _instant(row["issued_at"])
-                fresh = await asyncio.wait_for(
-                    service.polymarket.market(
-                        row["asset"], int(row["horizon"]), opened=opened,
-                    ), timeout=10,
-                )
-                if fresh is None:
-                    embed = discord.Embed(
-                        title="Polymarket market no longer verified",
-                        description=(
-                            "The listed market is expired, unavailable, or "
-                            "lacks a fresh book. The original alert is NOT "
-                            "a current quote. No order was placed."
-                        ),
-                    )
-                else:
-                    embed = hunt_embed(fresh, observed_at=datetime.now(UTC))
-            else:
-                embed = await asyncio.wait_for(
-                    signal_embed(
-                        service.market, service.quotes,
-                        asset=row["asset"], horizon_minutes=int(row["horizon"]),
-                        stream_shadow=getattr(interaction.client, "stream_shadow", None),
-                    ), timeout=12,
-                )
-        except Exception:  # noqa: BLE001 - no stale quote masquerades as current
-            embed = discord.Embed(
-                title="Market review unavailable",
-                description="No currently verified quote. Do not act on an old alert.",
-            )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        embed = await current_alert_review(service, row)
+        await interaction.followup.send(
+            embed=embed,
+            view=RepeatReviewView(interaction.user.id, message_id),
+            ephemeral=True,
+        )
         await asyncio.to_thread(service.store.reviewed, user_id, message_id)
 
     @discord.ui.button(

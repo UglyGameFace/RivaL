@@ -422,11 +422,21 @@ class AutoHuntStore:
             hour=0, minute=0, second=0, microsecond=0,
         )
         placeholders = ",".join("?" for _ in users)
+        # Keep the snapshot bounded to 5 rows per subscriber even when a
+        # user has selected Unlimited. DB aggregation avoids hauling every
+        # previously sent DM over the connection every 15 seconds.
         with self.store.connect() as conn:
             rows = conn.execute(
-                "SELECT user_id,venue,forecast_key FROM rival_hunt_delivery "
+                "SELECT user_id, "
+                "CASE WHEN venue='polymarket' THEN 'polymarket' "
+                "WHEN venue='live_trend' THEN 'live_shift' "
+                "WHEN forecast_key LIKE 'qualified|%' THEN 'qualified' "
+                "WHEN forecast_key LIKE 'flip|%' THEN 'flip' "
+                "ELSE 'research' END AS tier, COUNT(*) AS n "
+                "FROM rival_hunt_delivery "
                 "WHERE user_id IN (" + placeholders + ") "
-                "AND state='sent' AND attempted_at>=? AND attempted_at<?",
+                "AND state='sent' AND attempted_at>=? AND attempted_at<? "
+                "GROUP BY user_id, tier",
                 (*users, midnight.isoformat(),
                  (midnight + timedelta(days=1)).isoformat()),
             ).fetchall()
@@ -435,20 +445,8 @@ class AutoHuntStore:
                 "research", "qualified", "polymarket", "flip", "live_shift",
             )} for user in users
         }
-        for record in rows:
-            key = str(record["forecast_key"])
-            venue = str(record["venue"])
-            if venue == "polymarket":
-                tier = "polymarket"
-            elif venue == "live_trend":
-                tier = "live_shift"
-            elif key.startswith(QUALIFIED_KEY_PREFIX):
-                tier = "qualified"
-            elif key.startswith(FLIP_KEY_PREFIX):
-                tier = "flip"
-            else:
-                tier = "research"
-            counters[str(record["user_id"])][tier] += 1
+        for row in rows:
+            counters[str(row["user_id"])][str(row["tier"])] = int(row["n"])
         return counters
 
     def has_qualified_sent_window(self, user_id: str, asset: str,
@@ -1719,10 +1717,9 @@ class AutoHuntService:
                         or notice.asset not in prefs["assets"]
                     ):
                         continue
-                    if _cap_reached(
+                    if prefs["daily_limit"] > 0 and _cap_reached(
                         await asyncio.to_thread(
-                            self.store.count_sent_today,
-                            user_id, "live_shift", now,
+                            self.store.count_sent_today, user_id, "live_shift", now,
                         ), prefs["daily_limit"],
                     ):
                         break
@@ -1859,11 +1856,11 @@ class AutoHuntService:
                                 or candidate.expires - stamp < MIN_REMAINING
                             ):
                                 continue
-                            if _cap_reached(
+                            if preferences["daily_limit"] > 0 and _cap_reached(
                                 await asyncio.to_thread(
-                                self.store.count_sent_today, user_id,
-                                "qualified", stamp,
-                            ), preferences["daily_limit"],
+                                    self.store.count_sent_today, user_id, "qualified", stamp,
+                                ),
+                                preferences["daily_limit"],
                             ):
                                 _LOG.info(
                                     "RivaL auto-hunt daily cap user=%s tier=qualified",
@@ -1927,11 +1924,11 @@ class AutoHuntService:
                                 candidate.expires,
                             ):
                                 continue
-                            if _cap_reached(
+                            if preferences["daily_limit"] > 0 and _cap_reached(
                                 await asyncio.to_thread(
-                                self.store.count_sent_today, user_id,
-                                "research", stamp,
-                            ), preferences["daily_limit"],
+                                    self.store.count_sent_today, user_id, "research", stamp,
+                                ),
+                                preferences["daily_limit"],
                             ):
                                 _LOG.info(
                                     "RivaL auto-hunt daily cap user=%s tier=research",
@@ -1977,10 +1974,11 @@ class AutoHuntService:
                                 )
                             ):
                                 continue
-                            if _cap_reached(
+                            if preferences["daily_limit"] > 0 and _cap_reached(
                                 await asyncio.to_thread(
-                                self.store.count_sent_today, user_id, "flip", stamp,
-                            ), preferences["daily_limit"],
+                                    self.store.count_sent_today, user_id, "flip", stamp,
+                                ),
+                                preferences["daily_limit"],
                             ):
                                 break
                             key = FLIP_KEY_PREFIX + candidate.key
@@ -2012,11 +2010,11 @@ class AutoHuntService:
                             stamp = datetime.now(UTC)
                             if candidate.expires - stamp < MIN_REMAINING:
                                 continue
-                            if _cap_reached(
+                            if preferences["daily_limit"] > 0 and _cap_reached(
                                 await asyncio.to_thread(
-                                self.store.count_sent_today, user_id,
-                                "polymarket", stamp,
-                            ), preferences["daily_limit"],
+                                    self.store.count_sent_today, user_id, "polymarket", stamp,
+                                ),
+                                preferences["daily_limit"],
                             ):
                                 _LOG.info(
                                     "RivaL auto-hunt daily cap user=%s tier=polymarket",

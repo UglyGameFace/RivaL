@@ -1574,13 +1574,19 @@ class AutoHuntService:
                                 ("qualified", "Qualified"),
                                 ("polymarket", "Polymarket"))
         )
-        if not any(flags.values()):
-            return "OFF • all alert tiers off — choose one to start"
+        preferences = await asyncio.to_thread(
+            self.store.preferences, str(user_id),
+        )
+        if not (
+            any(flags.values())
+            or preferences["live_shifts"]
+            or preferences["direction_changes"]
+        ):
+            return "OFF • all alert types off — choose one to start"
         try:
             health = await asyncio.to_thread(self.store.delivery_health, str(user_id))
         except Exception:  # noqa: BLE001
             return "ON • " + parts + " • Delivery health unavailable"
-        preferences = await asyncio.to_thread(self.store.preferences, str(user_id))
         try:
             today = await asyncio.to_thread(
                 self.store.daily_sent_counts, str(user_id),

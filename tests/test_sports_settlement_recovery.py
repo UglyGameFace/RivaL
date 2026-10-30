@@ -142,6 +142,7 @@ async def test_background_reconciliation_runs_with_no_due_fixtures(tmp_path, mon
                 return self.closed
 
         bot = OneCycleBot()
+        bot.store = store
         original_sleep = asyncio.sleep
 
         async def finish_cycle(delay):

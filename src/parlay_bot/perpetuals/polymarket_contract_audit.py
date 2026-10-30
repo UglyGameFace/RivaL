@@ -194,8 +194,8 @@ def audit_contract_predictions(
     else:
         status, reason = (
             "research_only",
-            "Candidate passes descriptive screens; provenance and "
-            "independent forward validation still required",
+            ("Candidate passes descriptive screens; provenance and "
+             "independent forward validation still required"),
         )
     return ContractAudit(
         status=status, reason=reason, unique_windows=n, days=days,

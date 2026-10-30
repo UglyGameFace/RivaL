@@ -1663,6 +1663,7 @@ _STALE_SAFE_PAGES = {
     "sports": "sports",
     "crypto": "crypto",
     "hunt": "hunt",
+    "live": "live",
     "practice": "practice",
     "results": "results",
     "help": "help",
@@ -1690,7 +1691,7 @@ _STALE_BUTTONS_A = (
 _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",
     "feeds", "research", "api-limits", "hunt-on",
-    "hunt-off", "hunt-status", "explain",
+    "hunt-off", "hunt-status", "live", "live-on", "live-off", "explain",
 )
 
 

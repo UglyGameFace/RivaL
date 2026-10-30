@@ -13,7 +13,8 @@ from parlay_bot.perpetuals.features import live_examples, persisted_candles
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.learning import walk_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
-from parlay_bot.perpetuals.markets import ASSETS, HORIZONS as RESEARCH_HORIZONS, asset_for_contract
+from parlay_bot.perpetuals.markets import ASSETS, asset_for_contract
+from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 
 if TYPE_CHECKING:
     from parlay_bot.storage.hot import RelationalHotStore

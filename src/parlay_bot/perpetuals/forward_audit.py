@@ -23,7 +23,8 @@ from parlay_bot.perpetuals.features import (
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.learning import walk_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
-from parlay_bot.perpetuals.markets import ASSETS, HORIZONS as RESEARCH_HORIZONS, asset_for_contract
+from parlay_bot.perpetuals.markets import ASSETS, asset_for_contract
+from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor

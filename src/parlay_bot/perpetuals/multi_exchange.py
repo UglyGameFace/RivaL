@@ -19,7 +19,8 @@ from parlay_bot.perpetuals.fusion import (
     utc,
 )
 from parlay_bot.perpetuals.live_quotes import BookQuote, PerpReferenceBook
-from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS, HORIZONS as RESEARCH_HORIZONS
+from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
+from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.perpetuals.profit_proof import (
     COST_SCENARIOS,
     ENTRY_GRACE,

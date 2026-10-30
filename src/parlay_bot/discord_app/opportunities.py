@@ -15,7 +15,8 @@ from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
-from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS, HORIZONS
+from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
+from parlay_bot.perpetuals.markets import HORIZONS
 from parlay_bot.perpetuals.readiness import _source_identity
 
 ASSETS = RESEARCH_ASSETS

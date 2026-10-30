@@ -1290,10 +1290,11 @@ _STALE_BUTTONS_A = (
     "sports", "crypto", "hunt", "practice", "results", "help", "advanced",
     "state", "zip", "refresh", "manual", "slip", "lower", "balanced",
     "aggressive", "forecast", "follow", "target", "home", "back",
+    "hunt-poly",
 )
 _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",
-    "feeds", "research", "api-limits", "hunt-on", "hunt-poly",
+    "feeds", "research", "api-limits", "hunt-on",
     "hunt-off", "hunt-status", "explain",
 )
 

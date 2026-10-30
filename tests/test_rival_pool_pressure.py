@@ -1,6 +1,8 @@
 """Regression coverage for the shared PostgreSQL pool pressure incident."""
 from __future__ import annotations
 
+import asyncio
+
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -251,3 +253,36 @@ async def test_background_signal_skips_books_for_weak_or_unqualified_forecasts(
     )
     assert decision == {}
 
+
+
+@pytest.mark.asyncio
+async def test_qualified_signal_does_not_wait_for_stalled_exchange_dns(monkeypatch):
+    stamp = datetime(2026, 10, 30, 18, 0, tzinfo=UTC)
+    watches = [{
+        "venue": "okx", "horizon_minutes": 15,
+        "probability_up": 0.72, "issued": stamp - timedelta(seconds=15),
+        "target": stamp + timedelta(minutes=4),
+        "model_version": "test-model",
+    }]
+    monkeypatch.setattr(signals, "promoted_engine", lambda *_a, **_kw: "live")
+    monkeypatch.setattr(signals, "recent_watches", lambda *_a, **_kw: watches)
+    monkeypatch.setattr(signals, "_venue_proof", lambda *_a, **_kw: {
+        "settled": 85, "hit_rate": 0.62, "model_beats_baseline": True,
+    })
+
+    async def stalled_book(*_a, **_kw):
+        await asyncio.sleep(10)
+        raise AssertionError("stalled exchange should have timed out")
+
+    monkeypatch.setattr(signals, "_venue_book", stalled_book)
+    decision = {}
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    response = await signals.signal_embed(
+        SimpleNamespace(store=object()), object(),
+        asset="BTC", horizon_minutes=15, now=stamp,
+        decision_only=True, decision_out=decision,
+    )
+    assert "NO LIVE SIGNAL" in response.title
+    assert not decision
+    assert loop.time() - started < 4.0

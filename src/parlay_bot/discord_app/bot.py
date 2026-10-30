@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import discord
 from discord import app_commands
 
+from parlay_bot.archive.drive import DriveArchiveFolders, GoogleDriveArchiveClient
 from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_runtime
 from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.collectors.oddspapi_current import OddsPapiCurrentCollector
@@ -221,11 +222,31 @@ class RivalDiscordClient(discord.Client):
             store=self.store,
         )
         self._archive_task: asyncio.Task[None] | None = None
+        # Keep the offline candidate reader separate from the working
+        # hourly archive uploader. A blocked models folder MUST NOT stop
+        # normal PostgreSQL->Drive cold archive writes.
+        self.research_drive: GoogleDriveArchiveClient | None = None
+        if (
+            self.archive_runtime is not None
+            and settings.rival_drive_models_folder_id
+        ):
+            self.research_drive = GoogleDriveArchiveClient(
+                client_id=str(settings.rival_drive_oauth_client_id),
+                client_secret=settings.rival_drive_oauth_client_secret.get_secret_value(),
+                refresh_token=settings.rival_drive_oauth_refresh_token.get_secret_value(),
+                folders=DriveArchiveFolders(
+                    root=str(settings.rival_drive_root_folder_id),
+                    history=str(settings.rival_drive_history_folder_id),
+                    manifests=str(settings.rival_drive_manifests_folder_id),
+                    staging=str(settings.rival_drive_staging_folder_id),
+                    models=str(settings.rival_drive_models_folder_id),
+                    reports=settings.rival_drive_reports_folder_id,
+                ),
+                chunk_size_bytes=settings.rival_archive_chunk_mib * 1024 * 1024,
+            )
         self.offline_registry: ResearchCandidateRegistry | None = (
             ResearchCandidateRegistry(self.store)
-            if self.archive_runtime is not None
-            and self.archive_runtime.drive.folders.models is not None
-            else None
+            if self.research_drive is not None else None
         )
         self.candidate_sync_checked_at: datetime | None = None
         self.candidate_sync_status = (
@@ -2138,12 +2159,12 @@ class RivalDiscordClient(discord.Client):
         promotion records, and never exposes OAuth material in logs.
         """
         await self.wait_until_ready()
-        assert self.archive_runtime is not None
+        assert self.research_drive is not None
         assert self.offline_registry is not None
         while not self.is_closed():
             try:
                 items = await asyncio.wait_for(
-                    self.archive_runtime.drive.read_verified_research_candidates(
+                    self.research_drive.read_verified_research_candidates(
                         limit=10,
                     ), timeout=45,
                 )
@@ -2313,6 +2334,8 @@ class RivalDiscordClient(discord.Client):
                 await self._archive_task
             self._archive_task = None
 
+        if self.research_drive is not None:
+            await self.research_drive.aclose()
         if self.archive_runtime is not None:
             await self.archive_runtime.drive.aclose()
         if self.current_provider is not None:

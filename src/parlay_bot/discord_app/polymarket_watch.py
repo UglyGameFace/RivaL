@@ -189,6 +189,14 @@ class PolymarketReader:
             tz=UTC,
         ):
             raise ValueError("Unaligned window")
+        # Bound the per-contract locks over months of 5-minute rollover.
+        # Never evict an active lock (which may have concurrent waiters).
+        if len(self._listed_locks) > 64:
+            for old, active in list(self._listed_locks.items()):
+                if not active.locked():
+                    self._listed_locks.pop(old, None)
+                if len(self._listed_locks) <= 32:
+                    break
         # Gamma listing checks from the live board and Auto-Hunt share a
         # slug-keyed request, even when both start during the same second.
         async with self._listed_locks.setdefault(slug, asyncio.Lock()):

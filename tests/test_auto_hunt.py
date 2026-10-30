@@ -357,7 +357,8 @@ def test_alert_status_explains_daily_limits_and_reset(hunt_store):
     result = run(service.status(user_id))
     assert "Today's sent alerts (UTC)" in result
     assert "Research 0/12" in result
-    assert "Qualified" not in result
+    assert "Qualified off" in result
+    assert "Qualified 0/12" not in result
     assert "Resets <t:" in result
     assert "Sent 0 total" in result
 

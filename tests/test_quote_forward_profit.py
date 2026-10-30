@@ -24,7 +24,7 @@ def _quote(asset, at, *, bid=100.0, ask=100.1, liquidity=100.0):
 
 
 def _forecast(store, *, asset, issued, horizon=5, probability=0.75,
-              venue="gate", contract="BTC_USDT"):
+              venue="binance", contract="BTCUSDT"):
     ref_open = issued - timedelta(minutes=5)
     # An issued five-minute target closes exactly five minutes after its
     # *future* target bar opens. Here it is a genuinely later outcome.
@@ -188,7 +188,7 @@ def test_postgres_forward_quote_ledger_restart_and_idempotence():
         profit.initialize()
         _forecast(
             store, asset="BTC", issued=issued, probability=0.8,
-            venue="gate", contract="BTC_USDT",
+            venue="binance", contract="BTCUSDT",
         )
         entry = issued + timedelta(seconds=2)
         assert profit.observe(_quote("BTC", entry), now=entry)["opened"] == 1
@@ -210,8 +210,8 @@ def test_postgres_forward_quote_ledger_restart_and_idempotence():
                 ((issued + timedelta(minutes=5)).isoformat(),),
             )
             conn.execute(
-                "DELETE FROM perp_forward_audit WHERE venue='gate' "
-                "AND contract='BTC_USDT' AND reference_opened_at=?",
+                "DELETE FROM perp_forward_audit WHERE venue='binance' "
+                "AND contract='BTCUSDT' AND reference_opened_at=?",
                 ((issued - timedelta(minutes=5)).isoformat(),),
             )
         store.close()

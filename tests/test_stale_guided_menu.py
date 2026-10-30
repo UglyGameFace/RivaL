@@ -246,6 +246,8 @@ async def test_signal_evidence_runs_concurrently_with_book_fetch(tmp_path):
 
     try:
         _seed_watch(market, now)
+        from tests.test_rival_signal_decisions import seed_settled
+        seed_settled(market, now, venue="hyperliquid")
         embed = await signal_embed(
             market, SlowQuotes(), asset="BTC", horizon_minutes=5, now=now,
             stream_shadow=SlowShadow(),

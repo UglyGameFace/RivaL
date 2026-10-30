@@ -47,10 +47,11 @@ def _retain_settled_candles(batch: MarketBatch) -> MarketBatch:
 
     Unfinished candles (closed_at after observed_at) and candles closed
     within the margin are withheld for the next cycle, when they are old
-    enough to qualify. Single-bar batches pass through whole.
+    enough to qualify. Every batch passes the same rule, including
+    single-bar batches: a just-closed single candle is held one cycle,
+    not ingested unsettled. A batch with no qualifying candle raises
+    MarketDataError, an explicit insufficient-settlement state.
     """
-    if len(batch.candles) <= 1:
-        return batch
     observed = utc(batch.observed_at)
     settled = tuple(
         candle for candle in batch.candles
@@ -208,10 +209,10 @@ class PerpetualMarketCollector:
                         # 5min for horizon 5 (expired=27, issued=27 per
                         # cycle: all 5m expired, only 15m issued).
                         # Unfinished candles (closed_at in the future)
-                        # never pass the margin. Single-bar batches are
-                        # kept whole so a thin venue can never starve;
-                        # any later revision is caught by per-bar
-                        # conflict isolation in ingest.
+                        # never pass the margin, and neither does a
+                        # just-closed single candle: it is held one
+                        # cycle, then qualifies. Any later revision is
+                        # caught by per-bar conflict isolation in ingest.
                         batch = _retain_settled_candles(batch)
                         result = await asyncio.to_thread(self.market.ingest, batch)
                         await asyncio.to_thread(

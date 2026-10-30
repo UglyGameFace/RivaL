@@ -180,7 +180,12 @@ class ProspectiveQuoteProfitMonitor:
                 )
                 result["closed"] += updated.rowcount
             # Pick the chronologically FIRST eligible pre-outcome forecast
-            # from each horizon and UTC target, not the winning venue.
+            # from each horizon and UTC target, from the SAME venue and
+            # contract the quote prices. A Binance quote must never price
+            # a Bitget (or any other venue's) forecast: that mixes a
+            # forecast with an execution price from a different exchange.
+            # Binance is not a default candle collector, so this path
+            # stays quiet until a genuine Binance forecast exists.
             forecasts = conn.execute(
                 """SELECT asset,venue,contract,quote,horizon_minutes,
                           model_version,issued_at,target_opened_at,
@@ -188,10 +193,12 @@ class ProspectiveQuoteProfitMonitor:
                    FROM perp_forward_audit
                    WHERE asset=? AND model_version=? AND issued_at<=?
                      AND issued_at>=? AND probability_up IS NOT NULL
+                     AND venue='binance' AND contract=?
                    ORDER BY issued_at ASC,venue ASC LIMIT 90""",
                 (
                     quote.asset, MODEL, quote.exchange_at.isoformat(),
                     (quote.exchange_at - ENTRY_GRACE).isoformat(),
+                    quote.symbol,
                 ),
             ).fetchall()
             inspected: set[tuple[int, str]] = set()

@@ -529,8 +529,9 @@ class ForwardAccuracyMonitor:
     def summary(self, *, asset: str, now: datetime | None = None) -> dict:
         """Aggregate source-scored accuracy inside PostgreSQL, not in Discord.
 
-        Across ten exchanges, two horizons and two weeks this otherwise
+        Across nine collecting exchanges, two horizons and two weeks this otherwise
         returns hundreds of thousands of old forecast rows for one click.
+        (Binance is quote-only, not a tenth collector.)
         """
         if asset not in ("BTC", "ETH", "SOL"):
             raise ValueError("invalid asset")
@@ -595,4 +596,53 @@ class ForwardAccuracyMonitor:
             "asset": asset, "as_of": stamp, "model": MODEL,
             "last_7d": cohorts["recent"], "prior_7d": cohorts["prior"],
             "threshold": 50, "independent_trials": False,
+        }
+
+    def venue_summary(
+        self, *, asset: str, venue: str, horizon: int,
+        now: datetime | None = None,
+    ) -> dict:
+        """Seven-day accuracy for ONE source; this is the WATCH gate.
+
+        The portfolio summary groups all venues together. Applying its
+        verdict to one venue lets a bad source inherit good sources'
+        record, or a good source get blocked by bad ones. A venue with
+        fewer than 50 settled forecasts reports model_beats_baseline=None:
+        insufficient evidence, never a pass and never a watch.
+        """
+        if asset not in ("BTC", "ETH", "SOL"):
+            raise ValueError("invalid asset")
+        if horizon not in HORIZONS:
+            raise ValueError("invalid horizon")
+        stamp = utc(now or datetime.now(UTC))
+        start = (stamp - timedelta(days=7)).isoformat()
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT COUNT(*) AS issued,
+                          SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END) AS settled,
+                          SUM(CASE WHEN settled_at IS NOT NULL
+                                    AND probability_up<>0.5 THEN 1 ELSE 0 END) AS decided,
+                          SUM(CASE WHEN settled_at IS NOT NULL
+                                    AND ((probability_up>0.5 AND outcome_up=1)
+                                    OR (probability_up<0.5 AND outcome_up=0))
+                                   THEN 1 ELSE 0 END) AS correct,
+                          SUM(CASE WHEN settled_at IS NOT NULL
+                                   THEN model_brier ELSE 0 END) AS model_sum,
+                          SUM(CASE WHEN settled_at IS NOT NULL
+                                   THEN baseline_brier ELSE 0 END) AS baseline_sum
+                   FROM perp_forward_audit
+                   WHERE asset=? AND venue=? AND horizon_minutes=?
+                     AND issued_at>=? AND issued_at<=?""",
+                (asset, venue, horizon, start, stamp.isoformat()),
+            ).fetchone()
+        n = int(row["settled"] or 0)
+        decided = int(row["decided"] or 0)
+        brier = float(row["model_sum"]) / n if n else None
+        baseline = float(row["baseline_sum"]) / n if n else None
+        return {
+            "issued": int(row["issued"]), "settled": n,
+            "hit_rate": int(row["correct"] or 0) / decided if decided else None,
+            "brier": brier, "baseline_brier": baseline,
+            "model_beats_baseline": brier < baseline if n >= 50 else None,
         }

@@ -40,27 +40,36 @@ def _cash(price: float) -> str:
 def recent_watches(
     market: PerpetualMarketStore, *, asset: str,
     now: datetime | None = None, limit: int = 3,
-    dedupe_horizons: bool = True,
+    dedupe_horizons: bool = True, horizon_minutes: int | None = None,
 ) -> list[dict]:
     """Only genuinely issued, still pending and fresh-venue forecasts."""
-    if asset not in ASSETS or not 1 <= limit <= 40:
+    if (asset not in ASSETS or not 1 <= limit <= 40
+            or (horizon_minutes is not None and horizon_minutes not in HORIZONS)):
         raise ValueError("unsupported opportunity request")
     current = now or datetime.now(UTC)
     if current.utcoffset() is None:
         raise ValueError("current time must be aware")
     instant = current.astimezone(UTC)
     ForwardAccuracyMonitor(market).initialize()
+    # A constant, bound-column predicate lets PostgreSQL use the existing
+    # (asset,horizon_minutes,issued_at) index. Avoid an OR/NULL predicate,
+    # which may force a scan across unrelated timeframes under load.
+    horizon_filter = " AND horizon_minutes=?" if horizon_minutes is not None else ""
+    params = (
+        asset, *((horizon_minutes,) if horizon_minutes is not None else ()),
+        instant.isoformat(), (instant - timedelta(minutes=20)).isoformat(),
+    )
     with market.store.connect() as connection:
         rows = connection.execute(
             """SELECT venue,contract,quote,asset,horizon_minutes,
                       model_version,issued_at,target_opened_at,
                       reference_close,probability_up,training_evaluated
                FROM perp_forward_audit
-               WHERE asset=? AND settled_at IS NULL
-                 AND issued_at<=? AND issued_at>=?
-               ORDER BY issued_at DESC LIMIT 40""",
-            (asset, instant.isoformat(),
-             (instant - timedelta(minutes=20)).isoformat()),
+               WHERE asset=? AND settled_at IS NULL"""
+            + horizon_filter
+            + """ AND issued_at<=? AND issued_at>=?
+                ORDER BY issued_at DESC LIMIT 40""",
+            params,
         ).fetchall()
     if not rows:
         return []
@@ -81,6 +90,7 @@ def recent_watches(
             venue = str(row["venue"])
             if (
                 horizon not in HORIZONS
+                or (horizon_minutes is not None and horizon != horizon_minutes)
                 or not 0 < probability < 1
                 or not math.isfinite(probability)
                 # Outcomes always settle from the target FIVE-minute candle. The
@@ -141,7 +151,7 @@ def recent_watches(
 def recent_multi_watches(
     market: PerpetualMarketStore, *, asset: str,
     now: datetime | None = None, limit: int = 3,
-    dedupe_horizons: bool = True,
+    dedupe_horizons: bool = True, horizon_minutes: int | None = None,
 ) -> list[dict]:
     """Promoted fused-challenger forecasts, under the same freshness gates.
 
@@ -154,13 +164,20 @@ def recent_multi_watches(
     """
     from parlay_bot.perpetuals.multi_exchange import MODEL as MULTI_MODEL
 
-    if asset not in ASSETS or not 1 <= limit <= 40:
+    if (asset not in ASSETS or not 1 <= limit <= 40
+            or (horizon_minutes is not None and horizon_minutes not in HORIZONS)):
         raise ValueError("unsupported opportunity request")
     current = now or datetime.now(UTC)
     if current.utcoffset() is None:
         raise ValueError("current time must be aware")
     instant = current.astimezone(UTC)
     ForwardAccuracyMonitor(market).initialize()
+    horizon_filter = " AND horizon_minutes=?" if horizon_minutes is not None else ""
+    params = (
+        asset, MULTI_MODEL,
+        *((horizon_minutes,) if horizon_minutes is not None else ()),
+        instant.isoformat(), (instant - timedelta(minutes=20)).isoformat(),
+    )
     with market.store.connect() as connection:
         rows = connection.execute(
             """SELECT asset,horizon_minutes,target_opened_at,issued_at,
@@ -168,11 +185,11 @@ def recent_multi_watches(
                       reference_contract,reference_quote,contributor_count
                FROM perp_multi_forward
                WHERE asset=? AND settled_at IS NULL
-                 AND model_version=?
-                 AND issued_at<=? AND issued_at>=?
-               ORDER BY issued_at DESC LIMIT 40""",
-            (asset, MULTI_MODEL, instant.isoformat(),
-             (instant - timedelta(minutes=20)).isoformat()),
+                 AND model_version=?"""
+            + horizon_filter
+            + """ AND issued_at<=? AND issued_at>=?
+                ORDER BY issued_at DESC LIMIT 40""",
+            params,
         ).fetchall()
     if not rows:
         return []
@@ -193,6 +210,7 @@ def recent_multi_watches(
             venue = str(row["reference_venue"])
             if (
                 horizon not in HORIZONS
+                or (horizon_minutes is not None and horizon != horizon_minutes)
                 or not 0 < probability < 1
                 or not math.isfinite(probability)
                 or instant >= target + timedelta(minutes=5)

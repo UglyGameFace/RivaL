@@ -187,6 +187,7 @@ async def signal_embed(
             lambda: asyncio.to_thread(
                 reader, market, asset=asset, now=stamp,
                 limit=40, dedupe_horizons=False,
+                horizon_minutes=horizon_minutes,
             ),
             max_seconds=2.5,
         )
@@ -553,6 +554,34 @@ async def signal_embed(
                else discord.Color.red() if is_watch and direction == "DOWN"
                else discord.Color.orange()),
     )
+    # Four quick-glance fields mirror the agreed compact dashboard without
+    # disguising share prices, raw model output or an unverified trade as proof.
+    # Book prices MUST belong to this forecast's own matching venue.
+    venue_count = int(venue_evidence["settled"]) if venue_evidence else 0
+    venue_hit = venue_evidence.get("hit_rate") if venue_evidence else None
+    measured = (
+        f"{venue_hit:.1%} from {venue_count} settled\n"
+        f"Same venue • last 7d"
+        if venue_hit is not None and venue_count >= 50
+        else f"Unverified • {venue_count} settled\nMinimum 50 required"
+    )
+    matched_quote = (
+        f"Bid ${book.bid:,.{4 if asset == 'XRP' else 2}f}\n"
+        f"Ask ${book.ask:,.{4 if asset == 'XRP' else 2}f}"
+        if book is not None else "Not verified"
+    )
+    for index, (name, value) in enumerate((
+        ("💱 Same-venue live price", matched_quote),
+        ("⏱️ Expires", discord.utils.format_dt(
+            chosen["target"] + timedelta(minutes=5), style="R",
+        )),
+        ("⚡ Model strength", (f"{max(probability, 1-probability):.1%} raw\n"
+                             f"{strength} • not calibrated")),
+        ("📊 Measured direction accuracy", measured),
+    )):
+        embed.add_field(name=name, value=value, inline=True)
+        if index in (1, 3):
+            embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(
         name="Model and expiry",
         value=(
@@ -618,19 +647,6 @@ async def signal_embed(
             f"{chosen['venue']} venue record not evaluated "
             "(no matching book)."
         )
-    # Historical win rate is a measured outcome, NOT the raw model lean.
-    venue_settled = int(venue_evidence["settled"]) if venue_evidence else 0
-    venue_accuracy = venue_evidence.get("hit_rate") if venue_evidence else None
-    embed.add_field(
-        name="📊 Measured direction accuracy",
-        value=(
-            f"{venue_accuracy:.1%} from {venue_settled} settled forecasts "
-            "(last 7 days)"
-            if venue_accuracy is not None and venue_settled >= 50
-            else f"Not enough verified outcomes ({venue_settled} settled)"
-        ),
-        inline=False,
-    )
     global_hit = evidence.get("hit_rate")
     global_count = int(evidence["settled"])
     if engine == "multi":
@@ -701,7 +717,7 @@ async def signal_embed(
                         + (f" • Severe-cost mean {severe:+.1f} bps"
                            if severe is not None else
                            " • Too few observed exits")
-                        + "\\nOnly genuine later same-venue books; "
+                        + "\nOnly genuine later same-venue books; "
                           "no authenticated fills or guaranteed returns."
                     ),
                     inline=False,

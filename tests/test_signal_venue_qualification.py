@@ -93,7 +93,7 @@ async def test_stronger_qualified_venue_wins_over_priority(tmp_path):
             market, mock_books(now), asset="BTC", horizon_minutes=5, now=now,
         )
         assert "UP WATCH" in signal.title
-        assert "Source: **okx**" in signal.fields[0].value
+        assert "Source: **okx**" in next(x.value for x in signal.fields if x.name == "Model and expiry")
         alternatives = next(
             x.value for x in signal.fields
             if x.name.startswith("Other venues")

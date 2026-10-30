@@ -69,6 +69,9 @@ class TargetSnapshot:
     # excluded from fingerprint: a status label change must never re-edit a
     # Follow DM card, and detail strings stay byte-identical for the same reason.
     status: str = "ok"
+    # Walk-forward research examples actually evaluated for this model
+    # (NOT the settled forward win rate nor six months of oracle labels).
+    training_evaluated: int | None = None
 
     @property
     def fingerprint(self) -> str:
@@ -112,7 +115,10 @@ def target_snapshot(
             _LOG.exception("RivaL promotion lookup unavailable; serving live model")
             engine = "live"
         reader = recent_multi_watches if engine == "multi" else recent_watches
-        watches = reader(market, asset=asset, now=stamp, limit=5)
+        watches = reader(
+            market, asset=asset, now=stamp, limit=5,
+            horizon_minutes=horizon_minutes,
+        )
     except Exception:  # noqa: BLE001 - no internal SQL/auth details in Discord
         _LOG.exception("RivaL target observation unavailable")
         return TargetSnapshot(
@@ -150,6 +156,11 @@ def target_snapshot(
             issued_at=watch["issued"],
             ends_at=ends,
             status="ok",
+            training_evaluated=(
+                int(watch["training_evaluated"])
+                if int(watch.get("training_evaluated") or 0) > 0
+                else None
+            ),
         )
     return TargetSnapshot(
         asset, horizon_minutes, "WAIT",

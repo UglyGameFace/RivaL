@@ -225,6 +225,13 @@ class LivePolymarketBoardService:
         self.reader = reader
         self.market = market
         self._lock = asyncio.Lock()
+        self._model_gate = asyncio.Semaphore(2)
+        # A to_thread timeout does not terminate its PostgreSQL query.
+        # Retain that task until completion rather than starting duplicate
+        # database work every 15 seconds during a slow checkout.
+        self._model_pending: dict[
+            tuple[str, int], asyncio.Task[TargetSnapshot]
+        ] = {}
 
     async def _observation(
         self, asset: str, horizon: int,
@@ -242,19 +249,33 @@ class LivePolymarketBoardService:
                 return None
 
         async def load_model():
-            try:
-                return await asyncio.wait_for(
-                    asyncio.to_thread(
+            key = (asset, horizon)
+
+            async def read_once() -> TargetSnapshot:
+                async with self._model_gate:
+                    return await asyncio.to_thread(
                         target_snapshot, self.market,
                         asset=asset, horizon_minutes=horizon,
-                    ), timeout=2.5,
+                    )
+
+            pending = self._model_pending.get(key)
+            if pending is None:
+                pending = asyncio.create_task(read_once())
+                self._model_pending[key] = pending
+            try:
+                return await asyncio.wait_for(
+                    asyncio.shield(pending), timeout=2.5,
                 )
             except Exception:  # noqa: BLE001
                 _LOG.warning(
                     "Live Polymarket forecast evidence unavailable asset=%s "
-                    "horizon=%dm", asset, horizon,
+                    "horizon=%dm; next cycle will reuse in-flight read",
+                    asset, horizon,
                 )
                 return None
+            finally:
+                if pending.done():
+                    self._model_pending.pop(key, None)
 
         board, snapshot = await asyncio.gather(load_board(), load_model())
         embed = live_polymarket_embed(

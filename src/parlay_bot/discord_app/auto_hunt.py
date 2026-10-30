@@ -1128,6 +1128,33 @@ def hunt_embed(
 async def current_alert_review(service: AutoHuntService, row: dict) -> discord.Embed:
     """Re-query actual current market, never replay an old quote as fresh."""
     try:
+        if row["venue"] == "live_trend":
+            scanner = getattr(service.bot, "live_direction", None)
+            stream = getattr(service.bot, "live_stream", None)
+            now = datetime.now(UTC)
+            trend = scanner._confirmed.get(row["asset"]) if scanner else None
+            hyper = stream.snapshot("hyperliquid", row["asset"], now=now) if stream else None
+            binance = stream.snapshot("binance", row["asset"], now=now) if stream else None
+            if hyper is None or binance is None or trend is None:
+                return discord.Embed(
+                    title="Live market direction unavailable",
+                    description="Both fresh exchange books and an established "
+                                "confirmed trend are required. No prior quote "
+                                "is reused and no new prediction is invented.",
+                    color=discord.Color.orange(),
+                )
+            return discord.Embed(
+                title=f"📡 Current live trend • {row['asset']}",
+                description=(
+                    f"Most recent confirmed two-exchange price momentum: "
+                    f"**{trend}**.\\n"
+                    f"Hyperliquid bid/ask: **{hyper.bid:,.4f} / {hyper.ask:,.4f}**.\\n"
+                    f"Binance USD-M bid/ask: "
+                    f"**{binance.bid:,.4f} / {binance.ask:,.4f}**.\\n"
+                    "Research-only live momentum, NOT the ML model's "
+                    "latest candle-based prediction."
+                ), color=discord.Color.blurple(),
+            )
         if row["venue"] == "polymarket":
             notice = await asyncio.wait_for(
                 service.polymarket.market(
@@ -1347,6 +1374,11 @@ class AutoHuntService:
                     )
                     if not enabled:
                         await asyncio.to_thread(self.store.subscribe, str(user_id))
+                        # A live-alert opt-in must NOT silently enable
+                        # legacy model research notifications as a side effect.
+                        await asyncio.to_thread(
+                            self.store.set_tier, str(user_id), "research", False,
+                        )
             return await asyncio.to_thread(
                 self.store.set_preference, str(user_id), field, value,
             )

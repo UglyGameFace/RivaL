@@ -60,7 +60,7 @@ def market_slug(asset: str, horizon: int, opened: datetime) -> str:
 
 
 def _date(s: object) -> datetime:
-    date = datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+    date = datetime.fromisoformat(str(s))
     if date.utcoffset() is None:
         raise ValueError("unverified timezone")
     return date.astimezone(UTC)
@@ -86,7 +86,7 @@ def _best_ask(book: dict, *, now: datetime) -> float:
         raise ValueError("stale or future Polymarket book")
     asks = book.get("asks")
     if not isinstance(asks, list):
-        raise ValueError("no asks")
+        raise TypeError("no asks")
     prices = []
     for level in asks:
         try:

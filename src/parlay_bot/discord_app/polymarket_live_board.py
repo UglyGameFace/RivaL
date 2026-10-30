@@ -241,7 +241,7 @@ def live_polymarket_embed(
         forecast = (
             "WAIT • No fresh source-matched forecast ending at this "
             "Polymarket market's closing boundary. No old or unrelated "
-            "UP/DOWN estimate reused."
+            "direction estimate reused."
         )
     embed.add_field(
         name="Separate model evidence (not market odds)",

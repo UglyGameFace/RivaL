@@ -47,8 +47,9 @@ COINS = RESEARCH_ASSETS
 EXPLAIN = {
     "home": "Find crypto or sports research, choose private alerts, or inspect recorded results. No wagers are placed.",
     "discover": "Choose Predict Crypto for model research, Auto-Hunt for opt-in alerts, or Practice Money for simulated trades. No profits are established.",
-    "live": "Live Mode follows genuine WebSocket price-shift alerts and notifies you on confirmed momentum changes. It is not an extra forecasting model and does not bypass the alert delivery or trading safeguards.",
-    "hunt": "Follow Polymarket for listed share asks, not RivaL predictions. Follow model forecasts for new completed-candle forecasts. Customize Alerts to control coins, windows, side, price cap, and explicit live-trend or model-reversal notifications. Nothing places real bets.",
+    "live": "Start Auto-Track once for one automatically updated private market card. Current and next Polymarket events are separate from their share prices and from exchange-candle model research. Because no Polymarket-specific calibrated edge is verified, the decision is WAIT, never a share price misrepresented as a prediction.",
+    "hunt": "Live Mode is the main market tracker. Optional price, model, qualified-watch and shift notifications retain their settings under Other Alert Types. Market share prices are not win probabilities.",
+    "hunt-tools": "Advanced optional notifications: Polymarket prices are not predictions; model research and shift alerts are not calibrated Polymarket outcomes. All saved preferences are preserved until you deliberately change them.",
     "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
     "slip": "A parlay combines picks. All legs must win for the parlay to win. No real wager is placed here.",
     "crypto": "Choose a coin and timeframe. UP/DOWN is a forecast, not permission to trade. A price target is a number to watch, not a predicted certainty.",
@@ -113,6 +114,28 @@ class _Horizon(discord.ui.Select["GuidedHome"]):
                 discord.SelectOption(
                     label=f"{n} minutes", value=str(n), default=n == selected,
                 ) for n in RESEARCH_HORIZONS
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        self.view.horizon = int(self.values[0])
+        self.view.note = None
+        await interaction.response.defer()
+        await self.view.redraw(interaction)
+
+
+class _PolymarketHorizon(discord.ui.Select["GuidedHome"]):
+    """Only show timeframes that the verified Polymarket reader supports."""
+
+    def __init__(self, selected: int) -> None:
+        super().__init__(
+            placeholder="Choose a listed market window", row=1,
+            custom_id="rival:guided:horizon",
+            options=[
+                discord.SelectOption(
+                    label=f"{n} minutes", value=str(n), default=n == selected,
+                ) for n in (5, 15)
             ],
         )
 
@@ -342,24 +365,30 @@ class GuidedHome(discord.ui.View):
                 "Refresh Prediction" if p == "forecast" else "Get Signal",
                 "forecast", 2, "🔄" if p == "forecast" else "🎯", True,
             )
-            self._add("Follow in DM", "follow", 2, "🔔")
+            self._add("Follow Exchange Forecast", "follow", 2, "🔔")
             self._add("Auto-Hunt", "hunt", 2, "🔔")
             self._add("See Buy/Sell Prices", "quote", 3, "💱")
             self._add("Stop My Alerts", "stop", 3, "🔕")
         elif p == "live":
-            self._add("Enable Live Alerts", "live-on", 0, "⚡", True)
-            self._add("Disable Live Alerts", "live-off", 0, "🔕")
-            self._add("Alert Settings", "hunt-config", 1, "⚙️")
-            self._add("My Alerts", "hunt", 1, "🔔")
+            self.add_item(_Coin(self.coin))
+            self.add_item(_PolymarketHorizon(self.horizon))
+            self._add("Start Auto-Track", "poly-start", 2, "⚡", True)
+            self._add("Stop Auto-Track", "poly-stop", 2, "🔕")
+            self._add("Notification Options", "hunt", 3, "⚙️")
         elif p == "hunt":
-            self._add("Follow Polymarket", "hunt-poly", 0, "📊", True)
-            self._add("Follow Model Forecasts", "hunt-on", 0, "📈")
-            self._add("Alert Settings", "hunt-config", 1, "⚙️", True)
-            self._add("Live Mode", "live", 1, "⚡")
-            self._add("Stop All Alerts", "hunt-off", 2, "🔕")
-            self._add("Check Status", "hunt-status", 2, "🔎")
-            self._add("Early Research", "hunt-research", 3, "🔔")
-            self._add("Qualified Watches", "hunt-qualified", 3, "✅")
+            self._add("Live Mode", "live", 0, "⚡", True)
+            self._add("Alert Status", "hunt-status", 0, "🔎")
+            self._add("Notification Filters", "hunt-config", 1, "⚙️")
+            self._add("Other Alert Types", "hunt-tools", 1, "🔔")
+            self._add("Stop Old Alerts", "hunt-off", 2, "🔕")
+        elif p == "hunt-tools":
+            self._add("Polymarket Price Notices", "hunt-poly", 0, "📊")
+            self._add("Model Research", "hunt-on", 0, "📈")
+            self._add("Research Toggle", "hunt-research", 1, "🔔")
+            self._add("Qualified Watches Toggle", "hunt-qualified", 1, "✅")
+            self._add("Live Shift Alerts ON", "live-on", 2, "⚡")
+            self._add("Live Shift Alerts OFF", "live-off", 2, "🔕")
+            self._add("Notification Filters", "hunt-config", 3, "⚙️")
         elif p == "practice":
             self.add_item(_Coin(self.coin))
             self._add("Practice Buy $25", "buy", 1, "📈", True)
@@ -402,6 +431,8 @@ class GuidedHome(discord.ui.View):
             self.back_stack.append(self.page)
             self.back_stack = self.back_stack[-12:]
         self.page = page
+        if page == "live" and self.horizon not in (5, 15):
+            self.horizon = 5
         self.note = None
 
     async def _refresh_odds(self) -> str:
@@ -463,65 +494,73 @@ class GuidedHome(discord.ui.View):
                 color=discord.Color.blurple(),
             )
         elif p == "live":
-            # The always-on scanner is distinct from the user's DM opt-in.
-            # Reading the menu never turns on notifications for anyone.
-            enabled = None
-            preferences = None
-            if self.auto_hunt is not None:
+            service = (
+                getattr(self.auto_hunt.bot, "polymarket_board", None)
+                if self.auto_hunt is not None else None
+            )
+            tracker = None
+            if service is not None:
                 try:
-                    enabled, preferences = await asyncio.wait_for(
-                        asyncio.gather(
-                            asyncio.to_thread(
-                                self.auto_hunt.store.enabled, str(self.owner_id),
-                            ),
-                            asyncio.to_thread(
-                                self.auto_hunt.store.preferences, str(self.owner_id),
-                            ),
+                    tracker = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            service.store.get, str(self.owner_id),
                         ), timeout=1.5,
                     )
-                except Exception:  # noqa: BLE001 - no invented ON state
-                    _LOG.warning("Live Mode preference status unavailable")
-            stream = (
-                self.auto_hunt is not None
-                and getattr(self.auto_hunt.bot, "live_stream", None) is not None
+                except Exception:  # noqa: BLE001
+                    _LOG.warning("Live tracker status unavailable")
+            status = (
+                f"**TRACKING {tracker.asset} {tracker.horizon}m** "
+                "• your private card updates automatically"
+                if tracker else "OFF • no automatic market tracker active"
             )
-            if preferences is None or enabled is None:
-                state = "Status unavailable, settings not changed"
-            else:
-                state = "ON" if enabled and preferences["live_shifts"] else "OFF"
             embed = discord.Embed(
-                title="⚡ Live Mode | Price Shift Alerts",
+                title="⚡ Live Mode | One Market Tracker",
                 description=(
-                    "**Your live alerts: " + state + "**\n\n"
-                    "RivaL monitors live exchange WebSocket prices and "
-                    "looks for meaningful direction changes. Enabling "
-                    "notifications sends private DMs after a confirmed "
-                    "shift, not after every tick. This is NOT a guaranteed "
-                    "winning bet or the completed-candle forecasting model."
+                    status + "\n\n"
+                    "**Start Auto-Track** once. RivaL then updates ONE "
+                    "private message with the current and next verified "
+                    "Polymarket window, actual share ask prices, and "
+                    "separately labeled model research about every 15s. "
+                    "No repeated refresh or additional subscriptions.\n\n"
+                    "**Decision: WAIT** until a Polymarket-specific "
+                    "forward-validated edge exists. Raw model strength "
+                    "and share asks are not win probabilities. "
+                    "Your existing optional alerts are unchanged."
                 ),
                 color=discord.Color.blurple(),
             )
             embed.add_field(
-                name="Live data service",
-                value=(
-                    "Configured (connection freshness is checked separately)"
-                    if stream else "Unavailable, cannot enable live alerts"
-                ),
+                name="Selected market",
+                value=f"{self.coin} • {self.horizon}m "
+                      "(verified 5m/15m windows only)",
                 inline=False,
             )
-            if preferences is not None:
-                embed.add_field(
-                    name="Your settings",
-                    value=(
-                        "Coins: " + ", ".join(preferences["assets"])
-                        + " • Daily cap: "
-                        + (str(preferences["daily_limit"])
-                           if preferences["daily_limit"] else "Unlimited")
-                        + " per alert type"
-                    ),
-                    inline=False,
-                )
-            embed.set_footer(text="Only confirmed shifts; no real trades")
+            embed.add_field(
+                name="Optional notifications",
+                value="Choose **Notification Options** to review separate "
+                      "price, research, qualified-watch or price-shift alerts. "
+                      "They are not another Polymarket prediction model.",
+                inline=False,
+            )
+        elif p == "hunt-tools":
+            embed = discord.Embed(
+                title="Optional Alert Types | Advanced",
+                description=(
+                    "Only enable notifications you need. These are "
+                    "existing independent alerts, not separate "
+                    "Polymarket prediction engines. Your saved "
+                    "subscriptions have not been changed."
+                ),
+                color=discord.Color.orange(),
+            )
+            embed.add_field(
+                name="Market prices are not model predictions",
+                value="Polymarket alerts report share prices; model "
+                      "research reports exchange forecasts; Qualified "
+                      "Watches require stricter evidence but are NOT "
+                      "verified Polymarket betting edges.",
+                inline=False,
+            )
         elif p == "hunt":
             try:
                 status = (
@@ -1391,7 +1430,7 @@ class GuidedHome(discord.ui.View):
         if action == "back":
             self.page = self.back_stack.pop() if self.back_stack else "home"
             self.note = None
-        elif action in ("home", "discover", "sports", "crypto", "hunt", "live", "practice",
+        elif action in ("home", "discover", "sports", "crypto", "hunt", "hunt-tools", "live", "practice",
                         "results", "help", "advanced", "feeds", "trust"):
             self.navigate(action)
             if action == "sports":
@@ -1416,6 +1455,38 @@ class GuidedHome(discord.ui.View):
                 self.note = f"PASS: {exc}. Nothing was placed."
         elif action in ("forecast", "quote"):
             self.navigate(action)
+        elif action in ("poly-start", "poly-stop"):
+            self.navigate("live")
+            service = (
+                getattr(self.auto_hunt.bot, "polymarket_board", None)
+                if self.auto_hunt is not None else None
+            )
+            if service is None:
+                self.note = "Automatic Polymarket tracking is unavailable."
+            elif action == "poly-start":
+                try:
+                    ok, message = await asyncio.wait_for(
+                        service.start(
+                            interaction.user, asset=self.coin,
+                            horizon=self.horizon,
+                        ), timeout=12,
+                    )
+                    self.note = ("✅ " if ok else "⏳ ") + message
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("Starting live Polymarket DM failed safely")
+                    self.note = "Live DM tracking could not be confirmed."
+            else:
+                try:
+                    ended = await asyncio.wait_for(
+                        service.stop(self.owner_id), timeout=6,
+                    )
+                    self.note = (
+                        "Automatic live market DM stopped."
+                        if ended else "No automatic live market DM was active."
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("Stopping live Polymarket DM failed safely")
+                    self.note = "Could not confirm stopping the live tracker."
         elif action in ("live-on", "live-off"):
             self.navigate("live")
             if self.auto_hunt is None:
@@ -1663,6 +1734,7 @@ _STALE_SAFE_PAGES = {
     "sports": "sports",
     "crypto": "crypto",
     "hunt": "hunt",
+    "hunt-tools": "hunt-tools",
     "live": "live",
     "practice": "practice",
     "results": "results",
@@ -1695,7 +1767,9 @@ _STALE_BUTTONS_B = (
 )
 
 
-_STALE_BUTTONS_C = ("live", "live-on", "live-off")
+_STALE_BUTTONS_C = (
+    "live", "live-on", "live-off", "poly-start", "poly-stop", "hunt-tools",
+)
 
 
 class _StaleButton(discord.ui.Button["_StaleGuidedMenuBase"]):

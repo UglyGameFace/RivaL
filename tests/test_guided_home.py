@@ -527,10 +527,15 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
         interaction = _interaction()
         await home.act(interaction, "live")
         shown = interaction.edit_original_response.await_args.kwargs["view"]
-        assert "Enable Live Alerts" in _labels(shown)
-        assert "Disable Live Alerts" in _labels(shown)
-        assert "live exchange WebSocket prices" in (await home.render()).description
+        assert "Start Auto-Track" in _labels(shown)
+        assert "Stop Auto-Track" in _labels(shown)
+        assert "Notification Options" in _labels(shown)
+        assert "private message" in (await home.render()).description
         assert "OFF" in (await home.render()).description
+        await home.act(interaction, "hunt-tools")
+        advanced = interaction.edit_original_response.await_args.kwargs["view"]
+        assert "Live Shift Alerts ON" in _labels(advanced)
+        assert "Live Shift Alerts OFF" in _labels(advanced)
         await home.act(interaction, "live-on")
         service.update_preference.assert_awaited_once_with(
             home.owner_id, "live_shifts", 1,
@@ -547,6 +552,61 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
         )
         assert "disabled" in home.note
         assert home.page == "live"
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_live_mode_opens_one_automatic_tracker_without_extra_market_polls(
+    tmp_path,
+):
+    bot = _client(tmp_path)
+    home = _home(bot)
+    tracker = SimpleNamespace(asset="BTC", horizon=5)
+    board_service = SimpleNamespace(
+        store=SimpleNamespace(get=lambda _id: tracker),
+        start=AsyncMock(return_value=(
+            True, "Auto-tracking BTC 5m in one updated DM.",
+        )),
+        stop=AsyncMock(return_value=True),
+    )
+    provider = SimpleNamespace(
+        window_board=AsyncMock(
+            side_effect=AssertionError("Live menu must not poll Gamma"),
+        ),
+    )
+    home.auto_hunt = SimpleNamespace(
+        bot=SimpleNamespace(
+            live_stream=object(), polymarket_board=board_service,
+        ),
+        polymarket=provider,
+    )
+    try:
+        interaction = _interaction()
+        await home.act(interaction, "live")
+        rendered = interaction.edit_original_response.await_args.kwargs["view"]
+        labels = _labels(rendered)
+        assert "Start Auto-Track" in labels
+        assert "Stop Auto-Track" in labels
+        assert "Notification Options" in labels
+        assert "Follow Polymarket" not in labels
+        assert "Check Now" not in labels
+        embed = await home.render()
+        assert "TRACKING BTC 5m" in embed.description
+        provider.window_board.assert_not_awaited()
+        await home.act(interaction, "poly-start")
+        board_service.start.assert_awaited_once_with(
+            interaction.user, asset="BTC", horizon=5,
+        )
+        assert home.page == "live"
+        assert "Auto-tracking" in home.note
+        await home.act(interaction, "poly-stop")
+        board_service.stop.assert_awaited_once_with(home.owner_id)
+        assert "stopped" in home.note
+        provider.window_board.assert_not_awaited()
     finally:
         home.stop()
         await bot.zip_resolver.aclose()

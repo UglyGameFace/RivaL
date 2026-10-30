@@ -73,7 +73,7 @@ class HuntSettingsView(discord.ui.View):
                 "side", ("both", "up", "down"), prefs["side"], row=2,
             ))
             self.add_item(_Preference(
-                f"Max Ask: {prefs['max_ask_pct']}%", "max_ask_pct", 3,
+                f"Max price: {prefs['max_ask_pct']}¢", "max_ask_pct", 3,
             ))
             self.add_item(_Preference(
                 f"Min Time: {prefs['min_remaining_seconds']//60}m"
@@ -110,7 +110,7 @@ class HuntSettingsView(discord.ui.View):
                 "**Customize Auto-Hunt**\n"
                 f"Coins: **{assets}** • Windows: **{horizons}**\n"
                 f"Polymarket sides: **{self.prefs['side']}** • "
-                f"Maximum ask: **{self.prefs['max_ask_pct']}%** • "
+                f"Maximum share price: **{self.prefs['max_ask_pct']}¢** • "
                 f"Time remaining: **{self.prefs['min_remaining_seconds']}s**\n"
                 f"Daily limit per alert type: **"
                 f"{self.prefs['daily_limit'] or 'Unlimited'}**\n\n"

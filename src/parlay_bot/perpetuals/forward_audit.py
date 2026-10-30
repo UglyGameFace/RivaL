@@ -124,6 +124,18 @@ class ForwardAccuracyMonitor:
         self.store = market.store
 
     def initialize(self) -> None:
+        # Monitors are constructed for every signal and venue proof. Schema
+        # DDL belongs to process startup, not every background scan. Share
+        # readiness with all monitors backed by this market instance.
+        if self.market._forward_schema_ready:
+            return
+        with self.market._forward_schema_lock:
+            if self.market._forward_schema_ready:
+                return
+            self._initialize_schema()
+            self.market._forward_schema_ready = True
+
+    def _initialize_schema(self) -> None:
         self.market.initialize()
         ShadowLearningMonitor(self.store).initialize()
         with self.store.connect() as conn:

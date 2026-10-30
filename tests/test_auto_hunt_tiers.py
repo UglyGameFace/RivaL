@@ -203,7 +203,8 @@ def _signal_stub(decisions):
     calls = []
 
     async def stub(market, quotes, *, asset, horizon_minutes, now,
-                   stream_shadow, decision_out):
+                   stream_shadow, decision_out, decision_only=False):
+        assert decision_only is True
         calls.append((asset, horizon_minutes))
         decision = decisions.get((asset, horizon_minutes))
         if decision is not None:

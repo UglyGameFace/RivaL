@@ -761,18 +761,29 @@ async def new_forecast_watches(
 
     async def by_asset(asset: str) -> list[HuntCandidate]:
         try:
-            # Mirror the actual promoted model policy used by /rival-signal.
+            # One live forecast snapshot per asset, regardless of how many
+            # horizons the subscriber follows. Previously the same forty-row
+            # query, feed health and candle checks ran three times per asset.
+            live = await asyncio.to_thread(
+                recent_watches, market, asset=asset, now=stamp,
+                limit=40, dedupe_horizons=False,
+            )
+            fused: list[dict] | None = None
             picks: list[HuntCandidate] = []
             for horizon in HORIZONS:
                 engine = await asyncio.to_thread(
                     promoted_engine, market.store, asset=asset,
                     horizon=horizon, now=stamp,
                 )
-                reader = recent_multi_watches if engine == "multi" else recent_watches
-                watches = await asyncio.to_thread(
-                    reader, market, asset=asset, now=stamp,
-                    limit=40, dedupe_horizons=False,
-                )
+                if engine == "multi":
+                    if fused is None:
+                        fused = await asyncio.to_thread(
+                            recent_multi_watches, market, asset=asset, now=stamp,
+                            limit=40, dedupe_horizons=False,
+                        )
+                    watches = fused
+                else:
+                    watches = live
                 for watch in watches:
                     if int(watch["horizon_minutes"]) != horizon:
                         continue
@@ -794,8 +805,6 @@ async def new_forecast_watches(
                         quote_at=None, engine=engine,
                         model_version=str(watch.get("model_version", "live")),
                     ))
-                    # Only newest honest forecast per asset/horizon, not all
-                    # ten correlated exchanges reported as ten bets.
                     break
             return picks
         except Exception:  # noqa: BLE001 - one lagging feed must not stall others
@@ -841,7 +850,7 @@ async def qualified_watches(
                 await asyncio.wait_for(signal_embed(
                     market, quotes, asset=asset, horizon_minutes=horizon,
                     now=scan_at, stream_shadow=stream_shadow,
-                    decision_out=decision,
+                    decision_out=decision, decision_only=True,
                 ), timeout=7)
             except Exception:  # noqa: BLE001 - one failed slot cannot block others
                 _LOG.exception("Auto-Hunt qualified slot %s/%dm failed", asset, horizon)

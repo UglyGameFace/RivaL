@@ -1,3 +1,14 @@
+## ACTIVE TASK: PostgreSQL pool exhaustion + Auto-Hunt scan amplification (2026-10-30)
+
+- **Observed incident:** Discloud 13:01 local / 14:01 process log showed `PostgreSQL connection pool exhausted (max_size=8)` with Auto-Hunt BTC/ETH/SOL slot timeouts and failures in mathematical research, Gemini settlement, quote scoring, and target refresh. The cancellation from `asyncio.wait_for(signal_embed)` does not cancel the synchronous worker-thread query.
+- **Repo/branch/PR:** `UglyGameFace/RivaL`, `fix/rival-pg-pool-auto-hunt-20261030`, PR #110. PR #109 is already merged; no edits to #109's UI/Drive workflows.
+- **Evidence-based fix:** Per-market + forward-schema one-time guarded initialization, per-source as-of candle memoization inside genuine forecast reads, one fresh research snapshot per asset across Auto-Hunt horizons, quote/venue qualification only in background scans rather than full UI/profit reports, and sanitized PostgreSQL checkout/long-held connection diagnostics. Preserve authoritative source-matched WATCH rule, 8-connection pool cap, outbox, historical provenance and all assets/horizons.
+- **Tests and release:** New SQLite, concurrent initialization, matching-venue background screening, Auto-Hunt read-deduplication and exhausted PG pool-recovery tests. CI on exact PR head must pass. Discloud release and observed live recovery (pool wait ages, true forward math/AI outcomes, actual opted-in DMs, button latency) are NOT yet verified. Do not promote weak models or claim profitable edge.
+- **Rollback:** Revert PR #110; no database migration or data removal. If pool still saturates, inspect new oldest hold timing and database slow queries/locks before tuning pool capacity.
+- **Next:** CI → merge only when green and authorized → verify main CI and hosted Discloud logs; keep issue #6 open for independently unfinished model proof.
+
+---
+
 ## ACTIVE TASK: RivaL Fast Interactions and Verified Offline Research Intake (2026-10-30)
 
 - **Objective:** Remove observed Discord 3-second pre-ack timeout exposure, unblock responsive crypto menus and live scanner sampling, and provide an honest, verifiable route from archived six-month research to candidate visibility without falsely activating incompatible live models.

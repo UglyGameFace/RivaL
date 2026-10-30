@@ -98,6 +98,7 @@ async def signal_embed(
     *, asset: str, horizon_minutes: int, now: datetime | None = None,
     stream_shadow: StreamShadowLedger | None = None,
     decision_out: dict | None = None,
+    decision_only: bool = False,
 ) -> discord.Embed:
     """Refresh the selected market, its real book and measured forward results.
 
@@ -111,7 +112,8 @@ async def signal_embed(
     Auto-Hunt qualified tier reads it instead of re-implementing the
     selection policy, so the push gate can never drift from the tap-time
     gate. Early no-signal returns leave it empty, which readers treat as
-    not a watch.
+    not a watch. Background decision_only skips presentation-only proof
+    and quote-shadow reports, not the source/venue/watch qualification.
     """
     if asset not in ASSETS or horizon_minutes not in HORIZONS:
         raise ValueError("choose BTC, ETH, SOL or XRP and 5, 15 or 60 minutes")
@@ -281,25 +283,48 @@ async def signal_embed(
             _LOG.exception("RivaL multi proof lookup unavailable")
             shared_multi_proof = _default_evidence()
 
-    gathered = await asyncio.gather(
-        _pick_books(),
-        *(_venue_proof_or_default(venue) for venue in candidate_venues),
-        _proof_or_default(), _shadow_or_none(),
-        return_exceptions=True,
-    )
-    validated = gathered[0] if not isinstance(gathered[0], Exception) else {}
-    venue_proofs: dict[str, dict] = {}
-    for venue, outcome in zip(
-        candidate_venues, gathered[1:1 + len(candidate_venues)], strict=True,
-    ):
-        venue_proofs[venue] = (
-            outcome if not isinstance(outcome, Exception)
-            else _default_evidence()
+    if decision_only:
+        # The background notifier needs only the EXACT same venue/book
+        # qualification used by the screen. Full portfolio analytics and
+        # after-cost report rendering are expensive, irrelevant to deciding
+        # whether an alert is a WATCH, and compete with the research writer.
+        validated = await _pick_books()
+        if not validated:
+            return _no_signal(
+                asset, horizon_minutes, "No verified matching live book.",
+            )
+        proof_venues = [v for v in candidate_venues if v in validated]
+        outcomes = await asyncio.gather(
+            *(_venue_proof_or_default(v) for v in proof_venues),
+            return_exceptions=True,
         )
-    evidence = gathered[-2]
-    if isinstance(evidence, Exception):  # pragma: no cover - helper already guards
+        venue_proofs = {
+            venue: (item if not isinstance(item, BaseException)
+                    else _default_evidence())
+            for venue, item in zip(proof_venues, outcomes, strict=True)
+        }
         evidence = _default_evidence()
-    shadow = gathered[-1] if not isinstance(gathered[-1], Exception) else None
+        shadow = None
+    else:
+        gathered = await asyncio.gather(
+            _pick_books(),
+            *(_venue_proof_or_default(venue) for venue in candidate_venues),
+            _proof_or_default(), _shadow_or_none(),
+            return_exceptions=True,
+        )
+        validated = gathered[0] if not isinstance(gathered[0], Exception) else {}
+        venue_proofs: dict[str, dict] = {}
+        for venue, outcome in zip(
+            candidate_venues, gathered[1:1 + len(candidate_venues)], strict=True,
+        ):
+            venue_proofs[venue] = (
+                outcome if not isinstance(outcome, Exception)
+                else _default_evidence()
+            )
+        evidence = gathered[-2]
+        if isinstance(evidence, Exception):  # pragma: no cover - helper guards
+            evidence = _default_evidence()
+        shadow = gathered[-1] if not isinstance(gathered[-1], Exception) else None
 
     def _direction(probability: float) -> str:
         return "UP" if probability > 0.5 else (
@@ -342,6 +367,29 @@ async def signal_embed(
         selection == "qualified" and book is not None
         and strength == "directional watch" and direction != "FLAT"
     )
+    if decision_only:
+        if decision_out is not None:
+            decision_out.update({
+                "asset": asset,
+                "horizon_minutes": horizon_minutes,
+                "venue": chosen["venue"],
+                "engine": engine,
+                "model_version": chosen.get("model_version") or FORWARD_MODEL,
+                "issued": chosen["issued"],
+                "target": chosen["target"],
+                "direction": direction,
+                "probability": probability,
+                "is_watch": is_watch,
+                "bid": float(book.bid) if book is not None else None,
+                "ask": float(book.ask) if book is not None else None,
+                "quote_at": book.exchange_at if book is not None else None,
+                # A book quote is not a proven net trade; the notifier must
+                # never invent a fast-path after-cost performance number.
+                "after_cost_bps": None,
+                "after_cost_status": None,
+            })
+        return _no_signal(asset, horizon_minutes, "Screening completed.")
+
     if venue_beats is False:
         verdict = "⛔ PASS • MODEL UNDERPERFORMING"
         message = (

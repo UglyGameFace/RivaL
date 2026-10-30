@@ -49,8 +49,7 @@ def recent_watches(
     if current.utcoffset() is None:
         raise ValueError("current time must be aware")
     instant = current.astimezone(UTC)
-    monitor = ForwardAccuracyMonitor(market)
-    monitor.initialize()
+    ForwardAccuracyMonitor(market).initialize()
     with market.store.connect() as connection:
         rows = connection.execute(
             """SELECT venue,contract,quote,asset,horizon_minutes,
@@ -67,6 +66,9 @@ def recent_watches(
         (str(x["venue"]), str(x["asset"])): x
         for x in market.feed_health()
     }
+    # A 40-row candidate window often contains many forecasts for the
+    # same source. Fetch its latest as-of candle once, not once per horizon.
+    candles_by_source: dict[tuple[str, str, str], list[dict]] = {}
     accepted: list[dict] = []
     for row in rows:
         try:
@@ -93,11 +95,13 @@ def recent_watches(
             last_poll = _utc(str(health["last_success_at"]))
             if not timedelta(0) <= instant - last_poll <= timedelta(minutes=10):
                 continue
-            candles = market.recent_candles(
-                venue=venue, contract=str(row["contract"]),
-                quote=str(row["quote"]), interval_minutes=5,
-                count=1, as_of=instant,
-            )
+            source = (venue, str(row["contract"]), str(row["quote"]))
+            if source not in candles_by_source:
+                candles_by_source[source] = market.recent_candles(
+                    venue=venue, contract=source[1], quote=source[2],
+                    interval_minutes=5, count=1, as_of=instant,
+                )
+            candles = candles_by_source[source]
             if not candles:
                 continue
             candle = candles[-1]
@@ -154,8 +158,7 @@ def recent_multi_watches(
     if current.utcoffset() is None:
         raise ValueError("current time must be aware")
     instant = current.astimezone(UTC)
-    monitor = ForwardAccuracyMonitor(market)
-    monitor.initialize()
+    ForwardAccuracyMonitor(market).initialize()
     with market.store.connect() as connection:
         rows = connection.execute(
             """SELECT asset,horizon_minutes,target_opened_at,issued_at,
@@ -173,6 +176,9 @@ def recent_multi_watches(
         (str(x["venue"]), str(x["asset"])): x
         for x in market.feed_health()
     }
+    # A 40-row candidate window often contains many forecasts for the
+    # same source. Fetch its latest as-of candle once, not once per horizon.
+    candles_by_source: dict[tuple[str, str, str], list[dict]] = {}
     accepted: list[dict] = []
     for row in rows:
         try:
@@ -197,11 +203,14 @@ def recent_multi_watches(
             last_poll = _utc(str(health["last_success_at"]))
             if not timedelta(0) <= instant - last_poll <= timedelta(minutes=10):
                 continue
-            candles = market.recent_candles(
-                venue=venue, contract=str(row["reference_contract"]),
-                quote=str(row["reference_quote"]), interval_minutes=5,
-                count=1, as_of=instant,
-            )
+            source = (venue, str(row["reference_contract"]),
+                      str(row["reference_quote"]))
+            if source not in candles_by_source:
+                candles_by_source[source] = market.recent_candles(
+                    venue=venue, contract=source[1], quote=source[2],
+                    interval_minutes=5, count=1, as_of=instant,
+                )
+            candles = candles_by_source[source]
             if not candles:
                 continue
             candle = candles[-1]

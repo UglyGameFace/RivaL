@@ -410,7 +410,12 @@ class AutoHuntService:
         self.market = market
         self.quotes = quotes
         self.store = store
-        self.lock = asyncio.Lock()
+        self._user_locks: dict[str, asyncio.Lock] = {}
+        self._cycle_lock = asyncio.Lock()
+
+    def _user_lock(self, user_id: str) -> asyncio.Lock:
+        # Bounded at MAX_USERS while enabled; retained lock objects are small.
+        return self._user_locks.setdefault(user_id, asyncio.Lock())
 
     def delivery_for_message(self, user_id: str, message_id: str) -> dict | None:
         with self.store.store.connect() as conn:
@@ -425,23 +430,23 @@ class AutoHuntService:
     async def subscribe(self, user: discord.abc.User) -> tuple[bool, str]:
         if self.market is None:
             return False, "Live crypto forecasting is unavailable. No alerts enabled."
-        async with self.lock:
+        async with self._user_lock(str(user.id)):
             try:
                 if await asyncio.to_thread(self.store.enabled, str(user.id)):
                     return True, "Auto-Hunt is already on. No price entry needed."
                 channel = user.dm_channel or await user.create_dm()
-                await channel.send(
-                    "🔔 RivaL Auto-Hunt is being enabled for future research "
-                    "watches on BTC, ETH and SOL (5m and 15m). "
-                    "No bets will be placed. Use /rival-stop to stop."
-                )
+                await asyncio.wait_for(channel.send(
+                    "🔔 RivaL Auto-Hunt setup requested for future BTC, ETH and SOL "
+                    "research watches (5m and 15m). It is active only after "
+                    "your /rival menu confirms ON. No bets will be placed."
+                ), timeout=8)
                 await asyncio.to_thread(self.store.subscribe, str(user.id))
                 return True, (
                     "Auto-Hunt ON. I'll scan automatically and DM only freshly "
                     "issued, evidence-screened research watches. No target to type."
                 )
-            except (discord.HTTPException, discord.Forbidden):
-                return False, "DM blocked. Allow RivaL private messages and retry."
+            except (discord.HTTPException, TimeoutError):
+                return False, "DM blocked or timed out. No subscription confirmed."
             except ValueError as exc:
                 return False, str(exc)
             except Exception:  # noqa: BLE001 - fail closed on storage outage
@@ -449,7 +454,8 @@ class AutoHuntService:
                 return False, "Could not save Auto-Hunt. No subscription confirmed."
 
     async def stop(self, user_id: int) -> bool:
-        async with self.lock:
+        # A slow DM to a DIFFERENT user can never delay this cancellation.
+        async with self._user_lock(str(user_id)):
             return await asyncio.to_thread(self.store.stop, str(user_id))
 
     async def status(self, user_id: int) -> str:
@@ -463,56 +469,86 @@ class AutoHuntService:
     async def cycle(self) -> int:
         if self.market is None:
             return 0
-        async with self.lock:
+        # Only one scan and one candidate set per cycle, regardless of users.
+        async with self._cycle_lock:
             subscribers = await asyncio.to_thread(self.store.subscribers)
             if not subscribers:
                 return 0
             candidates = await eligible_research_watches(self.market, self.quotes)
             if not candidates:
                 return 0
-            sent = 0
-            for subscriber in subscribers:
+            # Shared bounded Discord/PG concurrency. Each user's own lock
+            # serializes delivery with that user's stop and re-opt-in request.
+            budget = asyncio.Semaphore(8)
+
+            async def deliver(subscriber: dict) -> int:
                 user_id = str(subscriber["user_id"])
                 since = _instant(str(subscriber["since_at"]))
-                # At most one alert per user each cycle. A later unexpired
-                # candidate cannot bypass the global per-user cooldown.
-                for candidate in candidates:
-                    stamp = datetime.now(UTC)
-                    if candidate.issued < since or candidate.expires - stamp < MIN_REMAINING:
-                        continue
-                    if not await asyncio.to_thread(
-                        self.store.claim, user_id, candidate, now=stamp,
-                    ):
-                        continue
-                    message = None
-                    try:
-                        user = self.bot.get_user(int(user_id))
-                        if user is None:
-                            user = await asyncio.wait_for(
-                                self.bot.fetch_user(int(user_id)), timeout=5,
+                async with budget:
+                    async with self._user_lock(user_id):
+                        for candidate in candidates:
+                            stamp = datetime.now(UTC)
+                            if (candidate.issued < since or
+                                    candidate.expires - stamp < MIN_REMAINING):
+                                continue
+                            claimed = await asyncio.to_thread(
+                                self.store.claim, user_id, candidate, now=stamp,
                             )
-                        channel = user.dm_channel or await user.create_dm()
-                        message = await asyncio.wait_for(
-                            channel.send(
-                                embed=hunt_embed(candidate, observed_at=stamp),
-                                view=AutoHuntActions(timeout=900),
-                            ), timeout=8,
-                        )
-                    except (discord.HTTPException, TimeoutError, ValueError):
-                        _LOG.warning("Auto-Hunt DM not confirmed user=%s", user_id)
-                    except Exception:  # noqa: BLE001 - never duplicate an ambiguous send
-                        _LOG.exception("Auto-Hunt DM failed")
-                    await asyncio.to_thread(
-                        self.store.finish, user_id, candidate, sent=message is not None,
-                        message_id=str(message.id) if message is not None else None,
+                            if not claimed:
+                                continue
+                            message = None
+                            try:
+                                user = self.bot.get_user(int(user_id))
+                                if user is None:
+                                    user = await asyncio.wait_for(
+                                        self.bot.fetch_user(int(user_id)),
+                                        timeout=5,
+                                    )
+                                channel = user.dm_channel or await user.create_dm()
+                                message = await asyncio.wait_for(
+                                    channel.send(
+                                        embed=hunt_embed(candidate, observed_at=stamp),
+                                        view=AutoHuntActions(timeout=900),
+                                    ), timeout=8,
+                                )
+                            except (discord.HTTPException, TimeoutError, ValueError):
+                                _LOG.warning(
+                                    "Auto-Hunt DM not confirmed user=%s", user_id,
+                                )
+                            except Exception:  # noqa: BLE001 - no ambiguous resend
+                                _LOG.exception("Auto-Hunt DM failed")
+                            # Claim already exists. If this acknowledgement
+                            # fails, a restart will NOT send the same DM again.
+                            await asyncio.to_thread(
+                                self.store.finish, user_id, candidate,
+                                sent=message is not None,
+                                message_id=(
+                                    str(message.id) if message is not None else None
+                                ),
+                            )
+                            _LOG.info(
+                                "RivaL hunt asset=%s horizon=%s venue=%s user=%s "
+                                "issue_to_attempt_ms=%d status=%s",
+                                candidate.asset, candidate.horizon,
+                                candidate.venue, user_id,
+                                int((stamp - candidate.issued).total_seconds() * 1000),
+                                "sent" if message is not None else "unconfirmed",
+                            )
+                            return int(message is not None)
+                return 0
+
+            outcomes = await asyncio.gather(
+                *(deliver(sub) for sub in subscribers), return_exceptions=True,
+            )
+            total = 0
+            for result in outcomes:
+                if isinstance(result, BaseException):
+                    if isinstance(result, asyncio.CancelledError):
+                        raise result
+                    _LOG.error(
+                        "Auto-Hunt individual delivery failed safely: %s",
+                        type(result).__name__,
                     )
-                    _LOG.info(
-                        "RivaL hunt asset=%s horizon=%s venue=%s user=%s "
-                        "latency_issue_to_attempt_ms=%d status=%s",
-                        candidate.asset, candidate.horizon, candidate.venue, user_id,
-                        int((stamp - candidate.issued).total_seconds() * 1000),
-                        "sent" if message is not None else "unconfirmed",
-                    )
-                    sent += int(message is not None)
-                    break
-            return sent
+                else:
+                    total += result
+            return total

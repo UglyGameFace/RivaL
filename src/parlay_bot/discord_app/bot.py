@@ -21,6 +21,7 @@ from parlay_bot.discord_app.home import (
     build_stale_guided_menu_views,
     install_view_dispatch_logging,
 )
+from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.multi_proof import multi_proof_embed
 from parlay_bot.discord_app.opportunities import (
     crypto_desk_embed,
@@ -149,7 +150,7 @@ class RivalDiscordClient(discord.Client):
         self.sports_refresh_checked_at: datetime | None = None
         self.current_provider: SportsGameOddsClient | None = None
         self.current_collector: CurrentBoardCollector | None = None
-        if settings.sportsgameodds_api_key is not None:
+        if settings.rival_sports_background_enabled and settings.sportsgameodds_api_key is not None:
             self.current_provider = SportsGameOddsClient(
                 settings.sportsgameodds_api_key.get_secret_value(),
                 base_url=settings.sportsgameodds_base_url,
@@ -168,7 +169,7 @@ class RivalDiscordClient(discord.Client):
 
         self.oddspapi_provider: OddsPapiClient | None = None
         self.oddspapi_collector: OddsPapiCurrentCollector | None = None
-        if settings.oddspapi_api_key is not None:
+        if settings.rival_sports_background_enabled and settings.oddspapi_api_key is not None:
             self.oddspapi_provider = OddsPapiClient(
                 settings.oddspapi_api_key.get_secret_value(),
                 base_url=settings.oddspapi_base_url,
@@ -182,9 +183,15 @@ class RivalDiscordClient(discord.Client):
             )
 
         self.the_odds_api_collector: TheOddsApiCollector | None = None
-        if settings.the_odds_api_key is not None:
+        if settings.rival_sports_background_enabled and settings.the_odds_api_key is not None:
             self.the_odds_api_collector = TheOddsApiCollector(
                 api_key=settings.the_odds_api_key.get_secret_value(), store=self.store,
+            )
+
+        if not settings.rival_sports_background_enabled:
+            _LOG.info(
+                "RivaL sports background DISABLED; crypto market collection "
+                "and predictions continue independently"
             )
 
         # Enable archive and perpetual cold copies automatically once the
@@ -433,6 +440,7 @@ class RivalDiscordClient(discord.Client):
         )
         self._hunt_event = asyncio.Event()
         self._hunt_task: asyncio.Task[None] | None = None
+        self.kalshi_browser = KalshiCryptoBrowser()
         self.polymarket_board = LivePolymarketBoardService(
             bot=self,
             store=LivePolymarketBoardStore(self.store),
@@ -479,6 +487,7 @@ class RivalDiscordClient(discord.Client):
             multi=self.autonomous.multi if self.autonomous is not None else None,
             venues=tuple(collector.providers) if collector is not None else (),
             training_status=self.training_status,
+            kalshi=self.kalshi_browser,
         )
 
     def _register_commands(self) -> None:
@@ -2218,10 +2227,13 @@ class RivalDiscordClient(discord.Client):
                 cutoff = datetime.now(UTC) - timedelta(
                     minutes=self.settings.rival_archive_closed_state_minutes
                 )
-                completed = await self.archive_runtime.service.archive_ready(
-                    cutoff=cutoff,
-                    max_rows=self.settings.rival_archive_batch_rows,
-                    max_batches=self.settings.rival_archive_max_batches,
+                completed = (
+                    await self.archive_runtime.service.archive_ready(
+                        cutoff=cutoff,
+                        max_rows=self.settings.rival_archive_batch_rows,
+                        max_batches=self.settings.rival_archive_max_batches,
+                    )
+                    if self.settings.rival_sports_archive_enabled else []
                 )
                 if completed:
                     _LOG.info(
@@ -2249,6 +2261,7 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        await self.kalshi_browser.aclose()
         if self._poly_board_task is not None:
             self._poly_board_task.cancel()
             with suppress(asyncio.CancelledError):

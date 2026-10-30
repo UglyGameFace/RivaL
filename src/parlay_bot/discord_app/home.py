@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import discord
 
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
+from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
 from parlay_bot.discord_app.presentation import (
     parlay_embed,
@@ -49,7 +50,8 @@ EXPLAIN = {
     "discover": "Choose Predict Crypto for model research, Auto-Hunt for opt-in alerts, or Practice Money for simulated trades. No profits are established.",
     "live": "Start Auto-Track once for one automatically updated private market card. Current and next Polymarket events are separate from their share prices and from exchange-candle model research. Because no Polymarket-specific calibrated edge is verified, the decision is WAIT, never a share price misrepresented as a prediction.",
     "hunt": "Live Mode is the main market tracker. Optional price, model, qualified-watch and shift notifications retain their settings under Other Alert Types. Market share prices are not win probabilities.",
-    "hunt-tools": "Advanced optional notifications: Polymarket prices are not predictions; model research and shift alerts are not calibrated Polymarket outcomes. All saved preferences are preserved until you deliberately change them.",
+    "hunt-tools": "Optional old alerts only. Your Polymarket Global live tracker is independent; toggles cannot produce verified predictions.",
+    "kalshi": "Kalshi is a different US prediction exchange. Its public prices and settlement rules must not inherit Polymarket Global forecast signals.",
     "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
     "slip": "A parlay combines picks. All legs must win for the parlay to win. No real wager is placed here.",
     "crypto": "Choose a coin and timeframe. UP/DOWN is a forecast, not permission to trade. A price target is a number to watch, not a predicted certainty.",
@@ -372,6 +374,7 @@ class GuidedHome(discord.ui.View):
         venues: tuple[str, ...] = (),
         auto_hunt: AutoHuntService | None = None,
         training_status: Callable[[str, int], dict] | None = None,
+        kalshi: KalshiCryptoBrowser | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
@@ -390,6 +393,8 @@ class GuidedHome(discord.ui.View):
         self.venues = venues
         self.research_factory = research_factory
         self.training_status = training_status
+        self.kalshi = kalshi
+        self._kalshi_refresh = False
         self.page = "home"
         self.back_stack: list[str] = []
         self.coin = "BTC"
@@ -460,13 +465,18 @@ class GuidedHome(discord.ui.View):
             self.add_item(_PolymarketHorizon(self.horizon))
             self._add("Start Auto-Track", "poly-start", 2, "⚡", True)
             self._add("Stop Auto-Track", "poly-stop", 2, "🔕")
-            self._add("Notification Options", "hunt", 3, "⚙️")
+            self._add("Notification Options", "hunt-tools", 3, "⚙️")
+            self._add("Browse Kalshi", "kalshi", 3, "📊")
         elif p == "hunt":
             self._add("Live Mode", "live", 0, "⚡", True)
             self._add("Alert Status", "hunt-status", 0, "🔎")
             self._add("Notification Filters", "hunt-config", 1, "⚙️")
             self._add("Other Alert Types", "hunt-tools", 1, "🔔")
             self._add("Stop Old Alerts", "hunt-off", 2, "🔕")
+        elif p == "kalshi":
+            self.add_item(_Coin(self.coin))
+            self._add("Refresh Kalshi", "kalshi-refresh", 2, "🔄", True)
+            self._add("Polymarket Live", "live", 2, "⚡")
         elif p == "hunt-tools":
             self._add("Polymarket Price Notices", "hunt-poly", 0, "📊")
             self._add("Model Research", "hunt-on", 0, "📈")
@@ -600,9 +610,12 @@ class GuidedHome(discord.ui.View):
                 if tracker else "OFF • no automatic market tracker active"
             )
             embed = discord.Embed(
-                title="⚡ Live Mode | One Market Tracker",
+                title="⚡ Polymarket Global | Live Market Tracker",
                 description=(
                     status + "\n\n"
+                    "**Provider: Polymarket Global (Gamma/CLOB)**, not Kalshi, "
+                    "DraftKings Predictions, or Polymarket US. Different "
+                    "contracts use different settlement rules.\n\n"
                     "**Start Auto-Track** once. RivaL then updates ONE "
                     "private message with the current and next verified "
                     "Polymarket window, actual share ask prices, and "
@@ -628,6 +641,67 @@ class GuidedHome(discord.ui.View):
                       "They are not another Polymarket prediction model.",
                 inline=False,
             )
+        elif p == "kalshi":
+            embed = discord.Embed(
+                title=f"📊 Kalshi | {self.coin} public crypto markets",
+                description=(
+                    "**Provider: Kalshi US** • independent exchange, NOT "
+                    "Polymarket Global, DraftKings Predictions or a RivaL "
+                    "UP/DOWN prediction. Public market listings and quoted "
+                    "share asks only; contract rules and settlement differ."
+                ),
+                color=discord.Color.blurple(),
+            )
+            if self.kalshi is None:
+                embed.add_field(
+                    name="Kalshi browser", value="Not configured", inline=False,
+                )
+            else:
+                try:
+                    snapshot = await asyncio.wait_for(
+                        self.kalshi.browse(self.coin, refresh=self._kalshi_refresh),
+                        timeout=4.5,
+                    )
+                    self._kalshi_refresh = False
+                    if not snapshot.markets:
+                        embed.add_field(
+                            name="No verified active listing",
+                            value="No open crypto contract for this coin was "
+                                  "confirmed by Kalshi's public API. "
+                                  "No market is invented.",
+                            inline=False,
+                        )
+                    for market in snapshot.markets:
+                        yes = (
+                            f"${market.yes_ask:.2f}/share"
+                            if market.yes_ask is not None else "Unverified"
+                        )
+                        no = (
+                            f"${market.no_ask:.2f}/share"
+                            if market.no_ask is not None else "Unverified"
+                        )
+                        embed.add_field(
+                            name=market.title[:140],
+                            value=(
+                                f"Ticker: `{market.ticker}` • Closes "
+                                f"{discord.utils.format_dt(market.close_time, style='R')}\n"
+                                f"Yes ask: {yes} • No ask: {no}\n"
+                                f"Rule: {market.rules[:170]}"
+                            ),
+                            inline=False,
+                        )
+                    embed.set_footer(
+                        text="Kalshi public listings • no real trades, "
+                             "model calls or guaranteed live order-book depth",
+                    )
+                except (TimeoutError, ValueError):
+                    embed.add_field(
+                        name="Kalshi data unavailable",
+                        value="Kalshi's public API could not return a "
+                              "verified listing promptly. Your Polymarket "
+                              "tracker remains unaffected.",
+                        inline=False,
+                    )
         elif p == "hunt-tools":
             embed = discord.Embed(
                 title="Optional Alert Types | Advanced",
@@ -1259,6 +1333,7 @@ class GuidedHome(discord.ui.View):
             stream_shadow=self.stream_shadow, multi=self.multi,
             venues=self.venues, auto_hunt=self.auto_hunt,
             training_status=self.training_status,
+            kalshi=self.kalshi,
         )
         view.page = self.page
         view.back_stack = list(self.back_stack)
@@ -1267,6 +1342,7 @@ class GuidedHome(discord.ui.View):
         view.risk = self.risk
         view.slip = self.slip
         view.note = self.note
+        view._kalshi_refresh = self._kalshi_refresh
         view._redraw_lock = self._redraw_lock
         view._render_revision = self._render_revision
         view._buttons()  # only the new, never-registered view is cleared
@@ -1421,6 +1497,17 @@ class GuidedHome(discord.ui.View):
             _LOG.exception("Guided background render retry failed")
 
     async def act(self, interaction: discord.Interaction, action: str) -> None:
+        if action == "hunt-tools":
+            # Navigation must never wait for a contested PostgreSQL checkout.
+            # A fresh private response is sent without editing the older menu
+            # or taking the shared render lock.
+            fresh = self._display_generation()
+            fresh.navigate("hunt-tools")
+            fresh._buttons()
+            await interaction.response.send_message(
+                embed=await fresh.render(), view=fresh, ephemeral=True,
+            )
+            return
         if action == "explain":
             await interaction.response.send_message(
                 EXPLAIN[self.page], ephemeral=True,
@@ -1504,11 +1591,14 @@ class GuidedHome(discord.ui.View):
         if action == "back":
             self.page = self.back_stack.pop() if self.back_stack else "home"
             self.note = None
-        elif action in ("home", "discover", "sports", "crypto", "hunt", "hunt-tools", "live", "practice",
+        elif action in ("home", "discover", "sports", "crypto", "hunt", "live", "kalshi", "practice",
                         "results", "help", "advanced", "feeds", "trust"):
             self.navigate(action)
             if action == "sports":
                 await self._refresh_odds()
+        elif action == "kalshi-refresh":
+            self.navigate("kalshi")
+            self._kalshi_refresh = True
         elif action == "refresh":
             self.note = await self._refresh_odds()
         elif action in ("slip", "lower", "balanced", "aggressive"):
@@ -1842,7 +1932,8 @@ _STALE_BUTTONS_B = (
 
 
 _STALE_BUTTONS_C = (
-    "live", "live-on", "live-off", "poly-start", "poly-stop", "hunt-tools",
+    "live", "live-on", "live-off", "poly-start", "poly-stop",
+    "hunt-tools", "kalshi", "kalshi-refresh",
 )
 
 

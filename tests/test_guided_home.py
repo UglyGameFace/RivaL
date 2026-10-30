@@ -534,7 +534,9 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
         assert "private message" in (await home.render()).description
         assert "OFF" in (await home.render()).description
         await home.act(interaction, "hunt-tools")
-        advanced = interaction.edit_original_response.await_args.kwargs["view"]
+        advanced = interaction.response.send_message.await_args.kwargs["view"]
+        assert interaction.response.send_message.await_args.kwargs["ephemeral"]
+        assert home.page == "live"
         assert "Live Shift Alerts ON" in _labels(advanced)
         assert "Live Shift Alerts OFF" in _labels(advanced)
         await home.act(interaction, "live-on")

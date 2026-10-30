@@ -252,6 +252,7 @@ async def test_discord_client_configures_current_collector_without_polling_on_st
         rival_db_path=str(tmp_path / "rival.sqlite"),
         discord_token=None,
         sportsgameodds_api_key="test-secret",
+        rival_sports_background_enabled=True,
         rival_current_leagues="NBA,NFL",
         rival_current_bookmakers="draftkings,fanduel",
     )

@@ -16,7 +16,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 
 _LOG = logging.getLogger(__name__)
-ASSETS = ("BTC", "ETH", "SOL")
+ASSETS = ("BTC", "ETH", "SOL", "XRP")
 HORIZONS = (5, 15)
 GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
@@ -129,16 +129,171 @@ def _average_ask(
     return None
 
 
+@dataclass(frozen=True)
+class PolymarketListedWindow:
+    """Verified Gamma identity, NOT a claim that trading has begun."""
+
+    asset: str
+    horizon: int
+    slug: str
+    opens: datetime
+    closes: datetime
+    accepting_orders: bool
+    price_to_beat: float | None
+
+    @property
+    def url(self) -> str:
+        # Constructed from our verified deterministic event slug only.
+        return f"https://polymarket.com/event/{self.slug}"
+
+
+@dataclass(frozen=True)
+class PolymarketWindowBoard:
+    checked_at: datetime
+    current: PolymarketListedWindow | None
+    next_window: PolymarketListedWindow | None
+    current_quote: PolymarketNotice | None
+
+
 class PolymarketReader:
     """Bounded cache avoids calling public Gamma/CLOB on each subscriber."""
 
     def __init__(self) -> None:
         self._cache: dict[tuple[str, int], tuple[datetime, PolymarketNotice | None]] = {}
         self._locks: dict[tuple[str, int], asyncio.Lock] = {}
+        self._listed_cache: dict[
+            str, tuple[datetime, PolymarketListedWindow | None]
+        ] = {}
+
+    async def listed(
+        self, asset: str, horizon: int, opened: datetime, *,
+        now: datetime | None = None, refresh: bool = False,
+    ) -> PolymarketListedWindow | None:
+        """Look up an actual current or next Gamma listing, never a guessed URL.
+
+        Future listings are shown as pre-open targets only; no book quote,
+        price-to-beat, or executable trading status is inferred from them.
+        """
+        instant = (now or datetime.now(UTC)).astimezone(UTC)
+        start = opened.astimezone(UTC)
+        slug = market_slug(asset, horizon, start)
+        if start != datetime.fromtimestamp(
+            int(start.timestamp()) // (horizon * 60) * (horizon * 60),
+            tz=UTC,
+        ):
+            raise ValueError("Unaligned window")
+        cache = self._listed_cache.get(slug)
+        if not refresh and cache is not None and cache[0] > instant:
+            return cache[1]
+        listing = None
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(3.5), follow_redirects=False,
+            ) as client:
+                res = await client.get(f"{GAMMA}/events/slug/{slug}")
+                if res.status_code != 404:
+                    res.raise_for_status()
+                    event = res.json()
+                    if isinstance(event, dict) and event.get("slug") == slug:
+                        markets = event.get("markets")
+                        if (
+                            event.get("closed") is False
+                            and event.get("archived") is not True
+                            and isinstance(markets, list) and len(markets) == 1
+                            and isinstance(markets[0], dict)
+                        ):
+                            m = markets[0]
+                            opens = _date(
+                                event.get("eventStartTime")
+                                or m.get("eventStartTime")
+                            )
+                            closes = _date(
+                                event.get("endDate") or m.get("endDate")
+                            )
+                            if (
+                                opens == start
+                                and closes == start + timedelta(minutes=horizon)
+                                and m.get("closed") is False
+                                and _decode_array(m.get("outcomes"))
+                                == ["Up", "Down"]
+                            ):
+                                active = bool(
+                                    event.get("active") is True
+                                    and m.get("active") is True
+                                    and m.get("acceptingOrders") is True
+                                    and m.get("enableOrderBook") is True
+                                    and start <= instant < closes
+                                )
+                                target = None
+                                metadata = event.get("eventMetadata")
+                                if (
+                                    start <= instant < closes
+                                    and isinstance(metadata, dict)
+                                ):
+                                    try:
+                                        candidate = float(
+                                            metadata.get("priceToBeat")
+                                        )
+                                        if (
+                                            math.isfinite(candidate)
+                                            and candidate > 0
+                                        ):
+                                            target = candidate
+                                    except (TypeError, ValueError, OverflowError):
+                                        pass
+                                listing = PolymarketListedWindow(
+                                    asset=asset, horizon=horizon,
+                                    slug=slug, opens=opens, closes=closes,
+                                    accepting_orders=active,
+                                    price_to_beat=target,
+                                )
+        except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+            _LOG.info(
+                "Polymarket verified listing unavailable asset=%s "
+                "horizon=%s reason=%s",
+                asset, horizon, type(exc).__name__,
+            )
+        self._listed_cache[slug] = (
+            instant + timedelta(seconds=10 if listing else 5),
+            listing,
+        )
+        return listing
+
+    async def window_board(
+        self, asset: str, horizon: int, *, now: datetime | None = None,
+        refresh: bool = False,
+    ) -> PolymarketWindowBoard:
+        """Shared read-only current/next market view for one selected window."""
+        stamp = (now or datetime.now(UTC)).astimezone(UTC)
+        if asset not in ASSETS or horizon not in HORIZONS:
+            raise ValueError("Choose BTC, ETH, SOL or XRP and 5m/15m")
+        period = horizon * 60
+        start = datetime.fromtimestamp(
+            int(stamp.timestamp()) // period * period, tz=UTC,
+        )
+        next_start = start + timedelta(seconds=period)
+        current, upcoming, quote = await asyncio.gather(
+            self.listed(asset, horizon, start, now=stamp, refresh=refresh),
+            self.listed(asset, horizon, next_start, now=stamp, refresh=refresh),
+            self.market(asset, horizon, now=stamp, refresh=refresh),
+        )
+        # One market can close between Gamma and CLOB reads. Do not show a
+        # quote for a missing/expired or different verified listing.
+        if (
+            current is None or quote is None
+            or quote.slug != current.slug
+            or quote.expires <= datetime.now(UTC)
+        ):
+            quote = None
+        return PolymarketWindowBoard(
+            checked_at=stamp, current=current,
+            next_window=upcoming, current_quote=quote,
+        )
 
     async def market(
         self, asset: str, horizon: int, *, now: datetime | None = None,
         opened: datetime | None = None,
+        refresh: bool = False,
     ) -> PolymarketNotice | None:
         instant = (now or datetime.now(UTC)).astimezone(UTC)
         target = opened or instant
@@ -150,7 +305,7 @@ class PolymarketReader:
         async with lock:
             cached = self._cache.get(key)
             if (
-                opened is None and cached is not None
+                not refresh and opened is None and cached is not None
                 and cached[0] > instant
                 and (cached[1] is None or cached[1].slug == slug)
             ):

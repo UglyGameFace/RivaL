@@ -629,15 +629,15 @@ def test_crypto_card_restores_four_visible_metrics_without_fake_accuracy():
         available, asset="BTC", horizon=5, checked_at=now,
     )
     assert "UP LEAN" in embed.title
-    assert len(embed.fields) == 4
+    assert len(embed.fields) == 6
     assert all(f.inline for f in embed.fields)
     assert [f.name for f in embed.fields] == [
-        "💰 Reference price", "⏱️ Expires",
-        "⚡ Strength", "📊 Accuracy",
+        "💰 Reference price", "⏱️ Expires", "\u200b",
+        "⚡ Strength", "📊 Accuracy", "\u200b",
     ]
     assert "$78,000.00" in embed.fields[0].value
-    assert "59.0% raw" in embed.fields[2].value
-    assert "Refresh Signal" in embed.fields[3].value
+    assert "59.0% raw" in embed.fields[3].value
+    assert "Refresh Signal" in embed.fields[4].value
     assert "58%" not in str(embed.to_dict())
     assert "not a Polymarket" in embed.description
 

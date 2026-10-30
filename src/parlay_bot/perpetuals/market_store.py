@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -174,6 +175,11 @@ class PerpetualMarketStore:
         inserted = 0
         unchanged = 0
         conflicted = 0
+        # Retain all conflict evidence without flooding logs with one warning
+        # per rejected Lighter candle every five minutes.
+        conflict_fields: dict[tuple[str, str], Counter[str]] = {}
+        conflict_counts: Counter[tuple[str, str]] = Counter()
+        conflict_samples: dict[tuple[str, str], str] = {}
         bounds: dict[tuple[str, str, str, int], tuple[str, str]] = {}
         for candle in batch.candles:
             group = (
@@ -206,25 +212,37 @@ class PerpetualMarketStore:
             # during historical recovery, starving live signal readers.
             missing: dict[tuple, tuple] = {}
 
-            def values_match(old: dict, values: tuple) -> bool:
+            fields = (
+                "closed_at", "open_price", "high_price", "low_price",
+                "close_price", "volume_base", "trades",
+            )
+
+            def stored_values(old: dict) -> tuple:
                 return (
                     str(old["closed_at"]), float(old["open_price"]),
                     float(old["high_price"]), float(old["low_price"]),
                     float(old["close_price"]), float(old["volume_base"]),
                     int(old["trades"]),
-                ) == (values[5], *values[7:])
+                )
+
+            def values_match(old: dict, values: tuple) -> bool:
+                return stored_values(old) == (values[5], *values[7:])
 
             def report_conflict(values: tuple, old: dict | None) -> None:
                 nonlocal conflicted
                 conflicted += 1
-                _LOG.warning(
-                    "RivaL conflicting candle skipped venue=%s "
-                    "contract=%s opened_at=%s stored_close=%s "
-                    "batch_close=%s; stored values kept",
-                    values[0], values[1], values[4],
-                    float(old["close_price"]) if old is not None else None,
-                    values[10],
+                group = (str(values[0]), str(values[1]))
+                conflict_counts[group] += 1
+                reasons = (
+                    (name for name, saved, incoming in zip(
+                        fields, stored_values(old), (values[5], *values[7:]),
+                        strict=True,
+                    ) if saved != incoming)
+                    if old is not None
+                    else ("duplicate_in_batch",)
                 )
+                conflict_fields.setdefault(group, Counter()).update(reasons)
+                conflict_samples.setdefault(group, str(values[4]))
 
             for candle in batch.candles:
                 values = (
@@ -311,6 +329,19 @@ class PerpetualMarketStore:
                         context.open_interest_base,
                     ),
                 )
+        # One grouped warning distinguishes revised volume from revised
+        # prices; no original record is overwritten or silently relabeled.
+        for (venue, contract), changed in conflict_fields.items():
+            _LOG.warning(
+                "RivaL immutable candle conflicts skipped venue=%s "
+                "contract=%s bars=%d changed_fields=%s "
+                "example_opened_at=%s; stored bars retained",
+                venue, contract, conflict_counts[(venue, contract)],
+                ",".join(
+                    f"{name}:{count}" for name, count in sorted(changed.items())
+                ),
+                conflict_samples[(venue, contract)],
+            )
         return MarketWriteResult(
             inserted, unchanged, len(batch.contexts), conflicted,
         )

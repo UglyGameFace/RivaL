@@ -23,6 +23,7 @@ class TheOddsApiCollector:
         self.refresh_interval = refresh_interval
         self._lock = asyncio.Lock()
         self._sport_cursor = 0
+        self._remaining_credits: int | None = None
         self._client = httpx.AsyncClient(timeout=25)
 
     async def aclose(self) -> None:
@@ -41,6 +42,8 @@ class TheOddsApiCollector:
                 except ValueError:
                     pass
 
+            if self._remaining_credits is not None and self._remaining_credits <= 10:
+                return "Quota reserve protected (10 credits)"
             params = {"apiKey": self.api_key}
             sports = await self._client.get(f"{_BASE}/sports", params=params)
             sports.raise_for_status()
@@ -59,6 +62,11 @@ class TheOddsApiCollector:
                         "oddsFormat": "decimal", "dateFormat": "iso"},
             )
             remaining = odds.headers.get("x-requests-remaining")
+            if remaining is not None:
+                try:
+                    self._remaining_credits = int(remaining)
+                except ValueError:
+                    pass
             if odds.status_code in (401, 403, 429):
                 return f"Provider unavailable ({odds.status_code}); remaining={remaining or 'unknown'}"
             odds.raise_for_status()
@@ -82,7 +90,9 @@ class TheOddsApiCollector:
                                     sport_id=sport, tournament_id=sport,
                                     bookmaker=bookmaker["key"], market_id=market["key"],
                                     outcome_id=outcome["name"],
-                                    player_id=str(outcome.get("point", "")),
+                                    player_id="",
+                                    market_name=market["key"], outcome_name=outcome["name"],
+                                    line_value=outcome.get("point"),
                                     active=True, main_line=True,
                                     price_decimal=float(price), changed_at=changed,
                                     observed_at=now,
@@ -92,7 +102,7 @@ class TheOddsApiCollector:
                     board = NormalizedOddsBoard(
                         provider="the_odds_api", fixture_id=event["id"],
                         sport_id=sport, tournament_id=sport,
-                        start_time=start, observed_at=now,
+                        start_time=start, updated_at=now,
                         participant1_name=event.get("home_team"),
                         participant2_name=event.get("away_team"),
                         observations=observations,

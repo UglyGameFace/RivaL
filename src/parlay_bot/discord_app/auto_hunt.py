@@ -45,6 +45,7 @@ from parlay_bot.discord_app.signals import (
     model_strength,
     signal_embed,
 )
+from parlay_bot.perpetuals.live_direction import LiveDirectionScanner, LiveShiftNotice
 from parlay_bot.perpetuals.live_quotes import MAX_QUOTE_AGE
 from parlay_bot.perpetuals.markets import LEGACY_ALERT_ASSETS, LEGACY_ALERT_HORIZONS
 from parlay_bot.perpetuals.promotion import multi_summary, promoted_engine
@@ -176,7 +177,8 @@ class AutoHuntStore:
                        side TEXT NOT NULL DEFAULT 'both',
                        max_ask_pct INTEGER NOT NULL DEFAULT 100,
                        min_remaining_seconds INTEGER NOT NULL DEFAULT 90,
-                       direction_changes INTEGER NOT NULL DEFAULT 0
+                       direction_changes INTEGER NOT NULL DEFAULT 0,
+                       live_shifts INTEGER NOT NULL DEFAULT 0
                    );
                    CREATE TABLE IF NOT EXISTS rival_hunt_tiers (
                        user_id TEXT PRIMARY KEY,
@@ -186,6 +188,14 @@ class AutoHuntStore:
                        updated_at TEXT NOT NULL
                    );"""
             )
+            prefs_columns = self.store.database.column_names(
+                conn, "rival_hunt_preferences",
+            )
+            if "live_shifts" not in prefs_columns:
+                conn.execute(
+                    "ALTER TABLE rival_hunt_preferences ADD COLUMN "
+                    "live_shifts INTEGER NOT NULL DEFAULT 0"
+                )
             # Additive, SQLite/PostgreSQL compatible outbox metadata. Legacy
             # attempted rows remain at-most-once and are never re-sent.
             columns = self.store.database.column_names(conn, "rival_hunt_delivery")
@@ -283,7 +293,7 @@ class AutoHuntStore:
         with self.store.connect() as conn:
             row = conn.execute(
                 """SELECT assets,horizons,side,max_ask_pct,
-                          min_remaining_seconds,direction_changes
+                          min_remaining_seconds,direction_changes,live_shifts
                    FROM rival_hunt_preferences WHERE user_id=?""",
                 (user_id,),
             ).fetchone()
@@ -297,6 +307,7 @@ class AutoHuntStore:
             "max_ask_pct": int(data.get("max_ask_pct", 100)),
             "min_remaining_seconds": int(data.get("min_remaining_seconds", 90)),
             "direction_changes": bool(data.get("direction_changes", 0)),
+            "live_shifts": bool(data.get("live_shifts", 0)),
         }
 
     def set_preference(self, user_id: str, field: str, value: object) -> dict:
@@ -311,6 +322,7 @@ class AutoHuntStore:
             "max_ask_pct": {25, 50, 75, 100},
             "min_remaining_seconds": {90, 180, 300},
             "direction_changes": {0, 1},
+            "live_shifts": {0, 1},
         }
         if field not in allowed:
             raise ValueError("Unknown Auto-Hunt preference")
@@ -344,11 +356,14 @@ class AutoHuntStore:
     def count_sent_today(self, user_id: str, tier: str, now: datetime) -> int:
         """Sent alerts today in one tier's budget. Research and qualified
         budgets are separate; Polymarket rows are identified by venue."""
-        if tier not in (*TIERS, "flip"):
+        if tier not in (*TIERS, "flip", "live_shift"):
             raise ValueError("Unsupported alert tier")
         day_start = now.replace(hour=0, minute=0, second=0,
                                 microsecond=0).isoformat()
-        if tier == "flip":
+        if tier == "live_shift":
+            condition = "venue = 'live_trend'"
+            params = (user_id, day_start)
+        elif tier == "flip":
             condition = "forecast_key LIKE 'flip|%'"
             params = (user_id, day_start)
         elif tier == "qualified":
@@ -437,8 +452,8 @@ class AutoHuntStore:
     def stop(self, user_id: str) -> bool:
         with self.store.connect() as conn:
             conn.execute(
-                "UPDATE rival_hunt_preferences SET direction_changes=0 "
-                "WHERE user_id=?", (user_id,),
+                "UPDATE rival_hunt_preferences SET direction_changes=0, "
+                "live_shifts=0 WHERE user_id=?", (user_id,),
             )
             updated = conn.execute(
                 "UPDATE rival_hunt_subscriptions SET enabled=0 WHERE user_id=? AND enabled=1",
@@ -975,6 +990,24 @@ def hunt_embed(
     candidate: HuntCandidate | PolymarketNotice, *, observed_at: datetime,
     tier: str | None = None,
 ) -> discord.Embed:
+    if isinstance(candidate, LiveShiftNotice):
+        embed = discord.Embed(
+            title=f"🔄 Live market trend changed • {candidate.asset} {candidate.direction}",
+            description=(
+                f"Two independent perpetual order books confirm a "
+                f"**{candidate.direction}** price move of "
+                f"**{candidate.move_bps:+.1f} basis points** "
+                f"over approximately **{candidate.lookback_seconds} seconds**.\n"
+                "Both venues crossed a 15-basis-point direction threshold "
+                "and held confirmation across multiple checks.\n"
+                f"Observed <t:{int(candidate.issued.timestamp())}:R>.\n\n"
+                "**Live price momentum only.** This is not a new "
+                "five-minute ML prediction, a calibrated chance of winning, "
+                "or a verified betting opportunity. No wager placed."
+            ), color=discord.Color.orange(),
+        )
+        embed.set_footer(text="Opt-in market shift • /rival-stop")
+        return embed
     if isinstance(candidate, PolymarketNotice):
         fill_line = (
             "10-share depth-weighted ask before fees: "
@@ -1303,14 +1336,14 @@ class AutoHuntService:
         self, user_id: int, field: str, value: object,
     ) -> dict:
         async with self._user_lock(str(user_id)):
-            if field == "direction_changes" and value == 1:
+            if field in ("direction_changes", "live_shifts") and value == 1:
                 enabled = await asyncio.to_thread(self.store.enabled, str(user_id))
                 preferences = await asyncio.to_thread(
                     self.store.preferences, str(user_id),
                 )
                 if not enabled or not preferences["direction_changes"]:
                     await self._dm_opt_in_probe(
-                        user_id, label="direction-change research alerts",
+                        user_id, label="live direction research alerts",
                     )
                     if not enabled:
                         await asyncio.to_thread(self.store.subscribe, str(user_id))
@@ -1368,7 +1401,8 @@ class AutoHuntService:
             return "ON • " + parts + " • Delivery health unavailable"
         preferences = await asyncio.to_thread(self.store.preferences, str(user_id))
         parts += (
-            f" • Direction changes {'on' if preferences['direction_changes'] else 'off'}"
+            f" • Model reversals {'on' if preferences['direction_changes'] else 'off'}"
+            f" • Live trends {'on' if preferences['live_shifts'] else 'off'}"
             f" • Coins {','.join(preferences['assets'])}"
             f" • {','.join(str(h) + 'm' for h in preferences['horizons'])}"
         )
@@ -1410,6 +1444,11 @@ class AutoHuntService:
             ):
                 _LOG.info("Auto-Hunt qualified quote expired before send")
                 return None
+            if isinstance(candidate, LiveShiftNotice) and (
+                dispatch_at - candidate.issued > timedelta(seconds=20)
+            ):
+                _LOG.info("RivaL market shift expired before DM")
+                return None
             if isinstance(candidate, PolymarketNotice) and (
                 not timedelta(0) <= dispatch_at - candidate.quote_at
                 <= timedelta(seconds=25)
@@ -1442,6 +1481,69 @@ class AutoHuntService:
                 )
             _LOG.exception("Auto-Hunt DM failed")
         return message
+
+    async def live_cycle(self, notices: list[LiveShiftNotice]) -> int:
+        """Deliver new live market shifts from one shared five-second scan.
+
+        The scanner reads cached WebSocket order books only. This method
+        does not fetch price data per Discord member or change model forecasts.
+        """
+        if not notices:
+            return 0
+        subs = await asyncio.to_thread(self.store.subscribers)
+        total = 0
+        budget = asyncio.Semaphore(5)
+
+        async def deliver(sub: dict) -> int:
+            user_id = str(sub["user_id"])
+            async with budget, self._user_lock(user_id):
+                prefs = await asyncio.to_thread(self.store.preferences, user_id)
+                if not prefs["live_shifts"]:
+                    return 0
+                sent = 0
+                for notice in notices:
+                    now = datetime.now(UTC)
+                    if (
+                        notice.issued < _instant(str(sub["since_at"]))
+                        or notice.expires <= now
+                        or (now - notice.issued).total_seconds() > 20
+                        or notice.asset not in prefs["assets"]
+                    ):
+                        continue
+                    if await asyncio.to_thread(
+                        self.store.count_sent_today,
+                        user_id, "live_shift", now,
+                    ) >= DAILY_CAP_PER_TIER:
+                        break
+                    claimed = await asyncio.to_thread(
+                        self.store.claim, user_id, notice,
+                        now=now, apply_cooldown=False,
+                    )
+                    if not claimed:
+                        continue
+                    message = await self._send_dm(
+                        user_id, notice, now, tier="live_shift",
+                    )
+                    await asyncio.to_thread(
+                        self.store.finish, user_id, notice,
+                        sent=message is not None,
+                        message_id=str(message.id) if message else None,
+                    )
+                    if message is not None:
+                        sent += 1
+                return sent
+
+        results = await asyncio.gather(
+            *(deliver(sub) for sub in subs), return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            if isinstance(result, int):
+                total += result
+            else:
+                _LOG.warning("Live trend alert delivery failed safely")
+        return total
 
     async def cycle(self) -> int:
         # Only one scan and one candidate set per cycle, regardless of users.

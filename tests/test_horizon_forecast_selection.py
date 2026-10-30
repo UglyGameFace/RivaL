@@ -119,6 +119,7 @@ def test_selected_horizon_not_starved_by_40_newer_other_horizon_rows(
         assert actual.horizon_minutes == 15
         assert actual.venue == venue
         assert actual.probability == 0.68
+        assert actual.training_evaluated == (600 if engine == "live" else None)
         # Unsupported horizons are rejected, never treated as wildcard.
         with pytest.raises(ValueError):
             reader(market, asset=asset, now=stamp, horizon_minutes=7)

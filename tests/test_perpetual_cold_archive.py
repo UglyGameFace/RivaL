@@ -194,7 +194,7 @@ def test_archive_receipts_use_bounded_queries_for_large_batch(tmp_path, monkeypa
     from parlay_bot.storage import database as db_module
 
     store, _drive, service = _setup(tmp_path)
-    now = datetime(2026, 10, 28, 20, tzinfo=UTC)
+    now = datetime(2026, 10, 28, 0, tzinfo=UTC)
     anchor = now - timedelta(days=30)
     with store.connect() as conn:
         for index in range(235):
@@ -233,7 +233,7 @@ def test_archive_receipts_use_bounded_queries_for_large_batch(tmp_path, monkeypa
 
 def test_archive_receipts_roll_back_all_batches_when_late_source_changes(tmp_path):
     store, _drive, service = _setup(tmp_path)
-    now = datetime(2026, 10, 28, 20, tzinfo=UTC)
+    now = datetime(2026, 10, 28, 0, tzinfo=UTC)
     anchor = now - timedelta(days=30)
     with store.connect() as conn:
         for index in range(120):

@@ -69,7 +69,7 @@ def _guided_custom_ids(bot):
     home = _home(bot)
     try:
         found: set[str] = set()
-        for page in ("home", "sports", "slip", "crypto", "forecast", "quote",
+        for page in ("home", "discover", "sports", "slip", "crypto", "forecast", "quote",
                      "practice", "results", "help", "advanced", "feeds", "trust", "hunt"):
             home.navigate("home")
             home.navigate(page)

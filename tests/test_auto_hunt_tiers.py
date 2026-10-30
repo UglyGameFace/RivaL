@@ -177,8 +177,9 @@ def test_qualified_embed_shows_quote_and_edge_only_when_positive():
     rich = _candidate(now, screened=True, after_cost_bps=12.5,
                       after_cost_status="PROVEN")
     embed = auto_hunt.hunt_embed(rich, observed_at=now, tier="qualified")
-    assert "Bet opportunity terms" in embed.description
-    assert "+12.5 bps" in embed.description
+    assert "Bet opportunity terms" not in embed.description
+    assert "Historical simulated after-cost return: **+12.5 bps**" in embed.description
+    assert "Current betting edge: **NOT ESTABLISHED**" in embed.description
     flat = _candidate(now, screened=True, after_cost_bps=-3.0)
     embed = auto_hunt.hunt_embed(flat, observed_at=now, tier="qualified")
     assert "Bet opportunity terms" not in embed.description

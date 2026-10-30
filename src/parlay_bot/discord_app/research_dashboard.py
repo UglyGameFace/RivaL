@@ -351,7 +351,11 @@ class _ModelListButton(discord.ui.Button["ResearchDashboard"]):
             if dashboard.ai is None:
                 raise ResearchUnavailable("Gemini research is not configured.")
             names = await dashboard.ai.list_advertised_models()
-            configured = dashboard.ai.model
+            configured = (
+                names[0]
+                if isinstance(dashboard.ai, OpenRouterResearch) and names
+                else dashboard.ai.model
+            )
             listed = configured in names
             other = [name for name in names if name != configured]
             # Short, mobile-friendly, relevant alternatives only.
@@ -1422,7 +1426,7 @@ class ResearchDashboard(discord.ui.View):
                             + ")"
                         )
                 embed.add_field(
-                    name="Gemini model & request limits",
+                    name="AI model & request limits",
                     value=(
                         f"Model: **{model}**\n"
                         f"RivaL usage: **{quota['requests_today']}/"
@@ -1443,7 +1447,7 @@ class ResearchDashboard(discord.ui.View):
         if self.opinion is not None and self.opinion.asset == self.asset:
             answer = self.opinion
             embed.add_field(
-                name="Gemini assessment · UNCALIBRATED",
+                name="AI research · UNCALIBRATED",
                 value=(
                     f"Direction: **{answer.direction.title()}** · "
                     f"{answer.confidence} self-reported confidence\n"

@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from parlay_bot.discord_app import auto_hunt
 from parlay_bot.discord_app.auto_hunt import (
     AutoHuntService,
     AutoHuntStore,
@@ -15,10 +16,12 @@ from parlay_bot.discord_app.auto_hunt import (
     confirmed_direction_change,
 )
 from parlay_bot.discord_app.polymarket_watch import PolymarketNotice
+from parlay_bot.perpetuals.forward_audit import MODEL, ForwardAccuracyMonitor
 from parlay_bot.perpetuals.live_direction import (
     LiveDirectionScanner,
     LiveShiftNotice,
 )
+from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore
 
 CLOCK = datetime(2026, 10, 30, 16, 0, tzinfo=UTC)
@@ -182,5 +185,45 @@ async def test_background_shift_delivery_is_opt_in_and_deduped(tmp_path):
                 move_bps=23., lookback_seconds=75,
             ),
         ]) == 0
+    finally:
+        hot.close()
+
+
+@pytest.mark.asyncio
+async def test_model_flip_recovers_recent_settled_previous_window(
+    tmp_path, monkeypatch,
+):
+    """A prior 5m forecast may settle before its replacement is issued."""
+    hot = SQLiteHotStore(tmp_path / "prior-settled.sqlite")
+    hot.initialize()
+    market = PerpetualMarketStore(hot)
+    ForwardAccuracyMonitor(market).initialize()
+    now = CLOCK
+    monkeypatch.setattr(auto_hunt, "promoted_engine", lambda *a, **k: "live")
+    try:
+        with hot.connect() as conn:
+            for issued, target, p, settled in (
+                (now-timedelta(minutes=6),
+                 now-timedelta(minutes=5), .76,
+                 now-timedelta(seconds=10)),
+                (now-timedelta(seconds=15),
+                 now+timedelta(minutes=5), .22, None),
+            ):
+                conn.execute(
+                    """INSERT INTO perp_forward_audit (
+                        venue,contract,quote,asset,horizon_minutes,model_version,
+                        reference_opened_at,reference_close,issued_at,
+                        target_opened_at,probability_up,baseline_up,
+                        training_evaluated,settled_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("hyperliquid", "BTC", "USDC", "BTC", 5, MODEL,
+                     (issued-timedelta(minutes=5)).isoformat(), 100.,
+                     issued.isoformat(), target.isoformat(), p, .5, 50,
+                     settled.isoformat() if settled is not None else None),
+                )
+        result = await auto_hunt.direction_change_watches(market, now=now)
+        assert len(result) == 1
+        assert result[0].direction == "DOWN"
+        assert result[0].previous_probability == pytest.approx(.76)
     finally:
         hot.close()

@@ -201,6 +201,31 @@ class PerpetualMarketStore:
                     existing[
                         (venue, contract, quote, interval, str(row["opened_at"]))
                     ] = dict(row)
+            # Group missing rows into bounded inserts. Hundreds of individual
+            # network round trips held a PostgreSQL connection for a minute
+            # during historical recovery, starving live signal readers.
+            missing: dict[tuple, tuple] = {}
+
+            def values_match(old: dict, values: tuple) -> bool:
+                return (
+                    str(old["closed_at"]), float(old["open_price"]),
+                    float(old["high_price"]), float(old["low_price"]),
+                    float(old["close_price"]), float(old["volume_base"]),
+                    int(old["trades"]),
+                ) == (values[5], *values[7:])
+
+            def report_conflict(values: tuple, old: dict | None) -> None:
+                nonlocal conflicted
+                conflicted += 1
+                _LOG.warning(
+                    "RivaL conflicting candle skipped venue=%s "
+                    "contract=%s opened_at=%s stored_close=%s "
+                    "batch_close=%s; stored values kept",
+                    values[0], values[1], values[4],
+                    float(old["close_price"]) if old is not None else None,
+                    values[10],
+                )
+
             for candle in batch.candles:
                 values = (
                     candle.venue, candle.contract, candle.quote,
@@ -212,63 +237,65 @@ class PerpetualMarketStore:
                 )
                 key = values[:5]
                 old = existing.get(key)
-                if old is None:
-                    cursor = conn.execute(
-                        """INSERT INTO perp_market_candles
-                           (venue,contract,quote,interval_minutes,opened_at,
-                            closed_at,first_observed_at,open_price,high_price,
-                            low_price,close_price,volume_base,trades)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                           ON CONFLICT (venue,contract,quote,interval_minutes,opened_at)
-                           DO NOTHING""",
-                        values,
-                    )
-                    if cursor.rowcount == 1:
-                        inserted += 1
-                        existing[key] = {
-                            "closed_at": values[5],
-                            "open_price": values[7],
-                            "high_price": values[8],
-                            "low_price": values[9],
-                            "close_price": values[10],
-                            "volume_base": values[11],
-                            "trades": values[12],
-                        }
+                if old is not None:
+                    if values_match(old, values):
+                        unchanged += 1
+                    else:
+                        report_conflict(values, old)
+                    continue
+                if key in missing:
+                    # A provider must not smuggle contradictory duplicates
+                    # into a single page; preserve the first valid bar.
+                    if missing[key] != values:
+                        report_conflict(values, None)
+                    else:
+                        unchanged += 1
+                    continue
+                missing[key] = values
+
+            # Both SQLite and PostgreSQL support INSERT ... RETURNING.
+            # One short bounded statement replaces up to 100 round trips,
+            # while the existing surrounding transaction remains atomic.
+            pending = list(missing.values())
+            for offset in range(0, len(pending), 100):
+                chunk = pending[offset:offset + 100]
+                placeholders = ", ".join(
+                    "(" + ",".join("?" for _ in range(13)) + ")"
+                    for _ in chunk
+                )
+                params = tuple(item for values in chunk for item in values)
+                rows = conn.execute(
+                    "INSERT INTO perp_market_candles "
+                    "(venue,contract,quote,interval_minutes,opened_at,"
+                    "closed_at,first_observed_at,open_price,high_price,"
+                    "low_price,close_price,volume_base,trades) VALUES "
+                    + placeholders
+                    + " ON CONFLICT (venue,contract,quote,interval_minutes,opened_at)"
+                    " DO NOTHING RETURNING venue,contract,quote,interval_minutes,opened_at",
+                    params,
+                ).fetchall()
+                inserted_keys = {
+                    (row["venue"], row["contract"], row["quote"],
+                     row["interval_minutes"], row["opened_at"])
+                    for row in rows
+                }
+                inserted += len(inserted_keys)
+                # Another writer can win the conflict between pre-read and
+                # insert. Compare its row rather than silently claiming a win.
+                for values in chunk:
+                    if values[:5] in inserted_keys:
                         continue
                     fetched = conn.execute(
-                        """SELECT closed_at,open_price,high_price,low_price,
-                                  close_price,volume_base,trades
-                           FROM perp_market_candles
-                           WHERE venue=? AND contract=? AND quote=?
-                             AND interval_minutes=? AND opened_at=?""",
-                        key,
+                        "SELECT closed_at,open_price,high_price,low_price,"
+                        "close_price,volume_base,trades FROM perp_market_candles "
+                        "WHERE venue=? AND contract=? AND quote=? "
+                        "AND interval_minutes=? AND opened_at=?",
+                        values[:5],
                     ).fetchone()
-                    old = dict(fetched) if fetched is not None else None
-                    if old is not None:
-                        existing[key] = old
-                if old is None or (
-                    str(old["closed_at"]), float(old["open_price"]),
-                    float(old["high_price"]), float(old["low_price"]),
-                    float(old["close_price"]), float(old["volume_base"]),
-                    int(old["trades"]),
-                ) != (values[5], *values[7:]):
-                    # Keep the stored values, skip only this bar, and let
-                    # the rest of the batch land. The warning preserves the
-                    # corruption signal without stalling the venue.
-                    conflicted += 1
-                    stored_close = (
-                        float(old["close_price"]) if old is not None else None
-                    )
-                    _LOG.warning(
-                        "RivaL conflicting candle skipped venue=%s "
-                        "contract=%s opened_at=%s stored_close=%s "
-                        "batch_close=%s; stored values kept",
-                        candle.venue, candle.contract,
-                        utc(candle.opened_at).isoformat(),
-                        stored_close, candle.close_price,
-                    )
-                    continue
-                unchanged += 1
+                    if fetched is not None and values_match(fetched, values):
+                        unchanged += 1
+                    else:
+                        report_conflict(values, dict(fetched) if fetched else None)
             for context in batch.contexts:
                 conn.execute(
                     """INSERT INTO perp_market_contexts

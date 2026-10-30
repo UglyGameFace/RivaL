@@ -527,9 +527,14 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
         interaction = _interaction()
         await home.act(interaction, "live")
         shown = interaction.edit_original_response.await_args.kwargs["view"]
-        assert "Enable Shift DMs" in _labels(shown)
-        assert "Disable Shift DMs" in _labels(shown)
-        assert "private Polymarket" in (await home.render()).description
+        assert "Start Auto-Track" in _labels(shown)
+        assert "Stop Auto-Track" in _labels(shown)
+        assert "Notification Options" in _labels(shown)
+        assert "private message" in (await home.render()).description
+        await home.act(interaction, "hunt-tools")
+        advanced = interaction.edit_original_response.await_args.kwargs["view"]
+        assert "Live Shift Alerts ON" in _labels(advanced)
+        assert "Live Shift Alerts OFF" in _labels(advanced)
         assert "OFF" in (await home.render()).description
         await home.act(interaction, "live-on")
         service.update_preference.assert_awaited_once_with(
@@ -555,75 +560,53 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_live_mode_shows_verified_current_next_polymarket_links(tmp_path):
-    from parlay_bot.discord_app.polymarket_watch import (
-        PolymarketListedWindow,
-        PolymarketNotice,
-        PolymarketWindowBoard,
-    )
-
+async def test_live_mode_opens_one_automatic_tracker_without_extra_market_polls(
+    tmp_path,
+):
     bot = _client(tmp_path)
     home = _home(bot)
-    stamp = datetime.now(UTC)
-    start = stamp.replace(second=0, microsecond=0)
-    start = datetime.fromtimestamp(
-        int(start.timestamp()) // 300 * 300, tz=UTC,
+    tracker = SimpleNamespace(asset="BTC", horizon=5)
+    board_service = SimpleNamespace(
+        store=SimpleNamespace(get=lambda _id: tracker),
+        start=AsyncMock(return_value=(
+            True, "Auto-tracking BTC 5m in one updated DM.",
+        )),
+        stop=AsyncMock(return_value=True),
     )
-    slug = f"btc-updown-5m-{int(start.timestamp())}"
-    next_slug = f"btc-updown-5m-{int(start.timestamp())+300}"
-    current = PolymarketListedWindow(
-        asset="BTC", horizon=5, slug=slug,
-        opens=start, closes=start+timedelta(minutes=5),
-        accepting_orders=True, price_to_beat=None,
-    )
-    next_market = PolymarketListedWindow(
-        asset="BTC", horizon=5, slug=next_slug,
-        opens=start+timedelta(minutes=5),
-        closes=start+timedelta(minutes=10),
-        accepting_orders=False, price_to_beat=None,
-    )
-    current_quote = PolymarketNotice(
-        asset="BTC", horizon=5, issued=start,
-        expires=start+timedelta(minutes=5),
-        slug=slug, up_ask=0.57, down_ask=0.45,
-        quote_at=stamp,
-    )
-    board = PolymarketWindowBoard(
-        checked_at=stamp, current=current, next_window=next_market,
-        current_quote=current_quote,
-    )
-    market_reader = SimpleNamespace(window_board=AsyncMock(return_value=board))
-    home.auto_hunt = SimpleNamespace(
-        bot=SimpleNamespace(live_stream=object()),
-        store=SimpleNamespace(
-            enabled=lambda _id: True,
-            preferences=lambda _id: {
-                "assets": ("BTC",), "daily_limit": 12,
-                "live_shifts": True,
-            },
+    provider = SimpleNamespace(
+        window_board=AsyncMock(
+            side_effect=AssertionError("Live menu must not poll Gamma"),
         ),
-        polymarket=market_reader,
+    )
+    home.auto_hunt = SimpleNamespace(
+        bot=SimpleNamespace(
+            live_stream=object(), polymarket_board=board_service,
+        ),
+        polymarket=provider,
     )
     try:
-        home.navigate("live")
-        labels = _labels(home)
-        assert "Follow Polymarket" in labels
-        assert "Start Auto-Track" in labels
-        assert any(isinstance(i, discord.ui.Select) for i in home.children)
-        embed = await home.render()
-        text = "\n".join(str(field.value) for field in embed.fields)
-        assert next_slug in text
-        assert slug in text
-        assert "Price to beat: **Not yet verified by Polymarket**" in text
-        assert "Up ask **57.0%**" in text
-        assert "no predicted strike" in text
-        market_reader.window_board.assert_awaited_once_with(
-            "BTC", 5, refresh=False,
-        )
         interaction = _interaction()
-        await home.act(interaction, "poly-refresh")
-        assert market_reader.window_board.await_args.kwargs["refresh"] is True
+        await home.act(interaction, "live")
+        rendered = interaction.edit_original_response.await_args.kwargs["view"]
+        labels = _labels(rendered)
+        assert "Start Auto-Track" in labels
+        assert "Stop Auto-Track" in labels
+        assert "Notification Options" in labels
+        assert "Follow Polymarket" not in labels
+        assert "Check Now" not in labels
+        embed = await home.render()
+        assert "TRACKING BTC 5m" in embed.description
+        provider.window_board.assert_not_awaited()
+        await home.act(interaction, "poly-start")
+        board_service.start.assert_awaited_once_with(
+            interaction.user, asset="BTC", horizon=5,
+        )
         assert home.page == "live"
+        assert "Auto-tracking" in home.note
+        await home.act(interaction, "poly-stop")
+        board_service.stop.assert_awaited_once_with(home.owner_id)
+        assert "stopped" in home.note
+        provider.window_board.assert_not_awaited()
     finally:
         home.stop()
         await bot.zip_resolver.aclose()

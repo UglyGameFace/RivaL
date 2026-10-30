@@ -387,6 +387,17 @@ class GuidedHome(discord.ui.View):
                     value="Checking saved state • Choose State if needed",
                     inline=False,
                 )
+            embed.add_field(
+                name="Model research scope",
+                value=(
+                    "Sports & Odds shows sportsbook prices and screens, "
+                    "not model predictions. The research model covers "
+                    "soccer and basketball only, once a league has 130 "
+                    "finalized games. NFL has odds and slips but no model "
+                    "forecast."
+                ),
+                inline=False,
+            )
             if self.collector is not None:
                 try:
                     last = await asyncio.wait_for(

@@ -40,10 +40,11 @@ def _cash(price: float) -> str:
 def recent_watches(
     market: PerpetualMarketStore, *, asset: str,
     now: datetime | None = None, limit: int = 3,
-    dedupe_horizons: bool = True,
+    dedupe_horizons: bool = True, horizon_minutes: int | None = None,
 ) -> list[dict]:
     """Only genuinely issued, still pending and fresh-venue forecasts."""
-    if asset not in ASSETS or not 1 <= limit <= 40:
+    if (asset not in ASSETS or not 1 <= limit <= 40
+            or (horizon_minutes is not None and horizon_minutes not in HORIZONS)):
         raise ValueError("unsupported opportunity request")
     current = now or datetime.now(UTC)
     if current.utcoffset() is None:
@@ -57,9 +58,10 @@ def recent_watches(
                       reference_close,probability_up,training_evaluated
                FROM perp_forward_audit
                WHERE asset=? AND settled_at IS NULL
+                 AND (? IS NULL OR horizon_minutes=?)
                  AND issued_at<=? AND issued_at>=?
                ORDER BY issued_at DESC LIMIT 40""",
-            (asset, instant.isoformat(),
+            (asset, horizon_minutes, horizon_minutes, instant.isoformat(),
              (instant - timedelta(minutes=20)).isoformat()),
         ).fetchall()
     if not rows:
@@ -81,6 +83,7 @@ def recent_watches(
             venue = str(row["venue"])
             if (
                 horizon not in HORIZONS
+                or (horizon_minutes is not None and horizon != horizon_minutes)
                 or not 0 < probability < 1
                 or not math.isfinite(probability)
                 # Outcomes always settle from the target FIVE-minute candle. The
@@ -141,7 +144,7 @@ def recent_watches(
 def recent_multi_watches(
     market: PerpetualMarketStore, *, asset: str,
     now: datetime | None = None, limit: int = 3,
-    dedupe_horizons: bool = True,
+    dedupe_horizons: bool = True, horizon_minutes: int | None = None,
 ) -> list[dict]:
     """Promoted fused-challenger forecasts, under the same freshness gates.
 
@@ -154,7 +157,8 @@ def recent_multi_watches(
     """
     from parlay_bot.perpetuals.multi_exchange import MODEL as MULTI_MODEL
 
-    if asset not in ASSETS or not 1 <= limit <= 40:
+    if (asset not in ASSETS or not 1 <= limit <= 40
+            or (horizon_minutes is not None and horizon_minutes not in HORIZONS)):
         raise ValueError("unsupported opportunity request")
     current = now or datetime.now(UTC)
     if current.utcoffset() is None:
@@ -169,9 +173,11 @@ def recent_multi_watches(
                FROM perp_multi_forward
                WHERE asset=? AND settled_at IS NULL
                  AND model_version=?
+                 AND (? IS NULL OR horizon_minutes=?)
                  AND issued_at<=? AND issued_at>=?
                ORDER BY issued_at DESC LIMIT 40""",
-            (asset, MULTI_MODEL, instant.isoformat(),
+            (asset, MULTI_MODEL, horizon_minutes, horizon_minutes,
+             instant.isoformat(),
              (instant - timedelta(minutes=20)).isoformat()),
         ).fetchall()
     if not rows:
@@ -193,6 +199,7 @@ def recent_multi_watches(
             venue = str(row["reference_venue"])
             if (
                 horizon not in HORIZONS
+                or (horizon_minutes is not None and horizon != horizon_minutes)
                 or not 0 < probability < 1
                 or not math.isfinite(probability)
                 or instant >= target + timedelta(minutes=5)

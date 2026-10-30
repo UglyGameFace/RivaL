@@ -51,18 +51,25 @@ def recent_watches(
         raise ValueError("current time must be aware")
     instant = current.astimezone(UTC)
     ForwardAccuracyMonitor(market).initialize()
+    # A constant, bound-column predicate lets PostgreSQL use the existing
+    # (asset,horizon_minutes,issued_at) index. Avoid an OR/NULL predicate,
+    # which may force a scan across unrelated timeframes under load.
+    horizon_filter = " AND horizon_minutes=?" if horizon_minutes is not None else ""
+    params = (
+        asset, *((horizon_minutes,) if horizon_minutes is not None else ()),
+        instant.isoformat(), (instant - timedelta(minutes=20)).isoformat(),
+    )
     with market.store.connect() as connection:
         rows = connection.execute(
             """SELECT venue,contract,quote,asset,horizon_minutes,
                       model_version,issued_at,target_opened_at,
                       reference_close,probability_up,training_evaluated
                FROM perp_forward_audit
-               WHERE asset=? AND settled_at IS NULL
-                 AND (? IS NULL OR horizon_minutes=?)
-                 AND issued_at<=? AND issued_at>=?
-               ORDER BY issued_at DESC LIMIT 40""",
-            (asset, horizon_minutes, horizon_minutes, instant.isoformat(),
-             (instant - timedelta(minutes=20)).isoformat()),
+               WHERE asset=? AND settled_at IS NULL"""
+            + horizon_filter
+            + """ AND issued_at<=? AND issued_at>=?
+                ORDER BY issued_at DESC LIMIT 40""",
+            params,
         ).fetchall()
     if not rows:
         return []
@@ -165,6 +172,12 @@ def recent_multi_watches(
         raise ValueError("current time must be aware")
     instant = current.astimezone(UTC)
     ForwardAccuracyMonitor(market).initialize()
+    horizon_filter = " AND horizon_minutes=?" if horizon_minutes is not None else ""
+    params = (
+        asset, MULTI_MODEL,
+        *((horizon_minutes,) if horizon_minutes is not None else ()),
+        instant.isoformat(), (instant - timedelta(minutes=20)).isoformat(),
+    )
     with market.store.connect() as connection:
         rows = connection.execute(
             """SELECT asset,horizon_minutes,target_opened_at,issued_at,
@@ -172,13 +185,11 @@ def recent_multi_watches(
                       reference_contract,reference_quote,contributor_count
                FROM perp_multi_forward
                WHERE asset=? AND settled_at IS NULL
-                 AND model_version=?
-                 AND (? IS NULL OR horizon_minutes=?)
-                 AND issued_at<=? AND issued_at>=?
-               ORDER BY issued_at DESC LIMIT 40""",
-            (asset, MULTI_MODEL, horizon_minutes, horizon_minutes,
-             instant.isoformat(),
-             (instant - timedelta(minutes=20)).isoformat()),
+                 AND model_version=?"""
+            + horizon_filter
+            + """ AND issued_at<=? AND issued_at>=?
+                ORDER BY issued_at DESC LIMIT 40""",
+            params,
         ).fetchall()
     if not rows:
         return []

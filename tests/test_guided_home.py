@@ -637,6 +637,7 @@ def test_crypto_card_restores_four_visible_metrics_without_fake_accuracy():
     ]
     assert "$78,000.00" in embed.fields[0].value
     assert "59.0% raw" in embed.fields[3].value
+    assert "600 walk-forward examples" in embed.fields[3].value
     assert "Refresh Signal" in embed.fields[4].value
     assert "58%" not in str(embed.to_dict())
     assert "not a Polymarket" in embed.description

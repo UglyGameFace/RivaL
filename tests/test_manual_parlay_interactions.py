@@ -65,6 +65,8 @@ async def test_selection_and_remove_buttons():
 async def test_same_fixture_selection_is_blocked():
     view = picker()
     view.legs = [quote("game1", "a")]
+    view.game = "game1"
+    view.category = "Full Game"
     view.refresh_components()
     select = next(x for x in view.children if isinstance(x, _Pick))
     select._values = ["1"]

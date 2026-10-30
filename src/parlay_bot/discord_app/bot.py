@@ -22,13 +22,13 @@ from parlay_bot.discord_app.home import (
     install_view_dispatch_logging,
 )
 from parlay_bot.discord_app.multi_proof import multi_proof_embed
-from parlay_bot.discord_app.polymarket_live_board import (
-    LivePolymarketBoardService,
-    LivePolymarketBoardStore,
-)
 from parlay_bot.discord_app.opportunities import (
     crypto_desk_embed,
     sportsbook_desk_embed,
+)
+from parlay_bot.discord_app.polymarket_live_board import (
+    LivePolymarketBoardService,
+    LivePolymarketBoardStore,
 )
 from parlay_bot.discord_app.presentation import onboarding_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard

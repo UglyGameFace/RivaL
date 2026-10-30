@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import discord
 from discord import app_commands
 
+from parlay_bot.archive.drive import DriveArchiveFolders, GoogleDriveArchiveClient
 from parlay_bot.archive.runtime import ColdArchiveRuntime, build_cold_archive_runtime
 from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.collectors.oddspapi_current import OddsPapiCurrentCollector
@@ -69,6 +70,7 @@ from parlay_bot.providers.errors import QuotaReserveReached
 from parlay_bot.providers.oddspapi import OddsPapiClient
 from parlay_bot.providers.owner_limits import OwnerLimitStore
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
+from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
 from parlay_bot.research.database_integrity import (
     perpetual_evidence_backlog,
     sports_settlement_backlog,
@@ -220,6 +222,39 @@ class RivalDiscordClient(discord.Client):
             store=self.store,
         )
         self._archive_task: asyncio.Task[None] | None = None
+        # Keep the offline candidate reader separate from the working
+        # hourly archive uploader. A blocked models folder MUST NOT stop
+        # normal PostgreSQL->Drive cold archive writes.
+        self.research_drive: GoogleDriveArchiveClient | None = None
+        if (
+            self.archive_runtime is not None
+            and settings.rival_drive_models_folder_id
+        ):
+            self.research_drive = GoogleDriveArchiveClient(
+                client_id=str(settings.rival_drive_oauth_client_id),
+                client_secret=settings.rival_drive_oauth_client_secret.get_secret_value(),
+                refresh_token=settings.rival_drive_oauth_refresh_token.get_secret_value(),
+                folders=DriveArchiveFolders(
+                    root=str(settings.rival_drive_root_folder_id),
+                    history=str(settings.rival_drive_history_folder_id),
+                    manifests=str(settings.rival_drive_manifests_folder_id),
+                    staging=str(settings.rival_drive_staging_folder_id),
+                    models=str(settings.rival_drive_models_folder_id),
+                    reports=None,
+                ),
+                chunk_size_bytes=settings.rival_archive_chunk_mib * 1024 * 1024,
+            )
+        self.offline_registry: ResearchCandidateRegistry | None = (
+            ResearchCandidateRegistry(self.store)
+            if self.research_drive is not None else None
+        )
+        self.candidate_sync_checked_at: datetime | None = None
+        self.candidate_sync_status = (
+            "pending_first_verified_drive_read"
+            if self.offline_registry is not None
+            else "not_configured_or_no_models_folder"
+        )
+        self._candidate_task: asyncio.Task[None] | None = None
 
         # No extra account is needed: two public, read-only feeds start
         # automatically with the existing PostgreSQL Discord deployment.
@@ -352,6 +387,8 @@ class RivalDiscordClient(discord.Client):
         )
         self._stream_shadow_task: asyncio.Task[None] | None = None
         self._live_direction_task: asyncio.Task[None] | None = None
+        self._live_delivery_task: asyncio.Task[None] | None = None
+        self._live_shift_queue: asyncio.Queue | None = None
         self.live_direction = (
             LiveDirectionScanner(self.live_stream)
             if self.live_stream is not None else None
@@ -413,6 +450,7 @@ class RivalDiscordClient(discord.Client):
             stream_shadow=self.stream_shadow,
             multi=self.autonomous.multi if self.autonomous is not None else None,
             venues=tuple(collector.providers) if collector is not None else (),
+            training_status=self.training_status,
         )
 
     def _register_commands(self) -> None:
@@ -1507,6 +1545,11 @@ class RivalDiscordClient(discord.Client):
         if self.live_stream is not None:
             self.live_stream.start()
             if self.live_direction is not None and self._live_direction_task is None:
+                self._live_shift_queue = asyncio.Queue(maxsize=32)
+                self._live_delivery_task = asyncio.create_task(
+                    self._live_shift_delivery_loop(),
+                    name="rival-live-alert-delivery",
+                )
                 self._live_direction_task = asyncio.create_task(
                     self._live_direction_loop(), name="rival-live-direction-scanner",
                 )
@@ -1562,6 +1605,23 @@ class RivalDiscordClient(discord.Client):
                 self._archive_loop(),
                 name="rival-cold-archive",
             )
+        if self.offline_registry is not None and self._candidate_task is None:
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(self.offline_registry.initialize),
+                    timeout=3,
+                )
+            except Exception:  # noqa: BLE001 - archive proof is optional
+                self.candidate_sync_status = "candidate_registry_unavailable"
+                _LOG.exception(
+                    "RivaL optional historical registry could not initialize; "
+                    "Discord and primary archives continue",
+                )
+            else:
+                self._candidate_task = asyncio.create_task(
+                    self._candidate_import_loop(),
+                    name="rival-verified-offline-candidate-import",
+                )
 
     async def on_ready(self) -> None:
         self.discord_ready_at = datetime.now(UTC)
@@ -1674,28 +1734,52 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(21600)
 
     async def _live_direction_loop(self) -> None:
-        """Read WebSocket books every 5s, independent of Discord interactions.
+        """Evaluate locally cached live books each second, no REST requests.
 
-        No REST polling or additional sockets. Alerts only after both
-        exchanges confirm a meaningful reversal, for explicitly opted-in users.
+        Sending Discord DMs is detached, so one slow user cannot pause
+        the actual trend scanner for eight seconds or more.
         """
         await self.wait_until_ready()
         assert self.live_direction is not None
-        _LOG.info("RivaL live market direction scanning enabled every 5 seconds")
+        assert self._live_shift_queue is not None
+        _LOG.info("RivaL live market direction scanner sample_period=1s")
         while not self.is_closed():
+            started = asyncio.get_running_loop().time()
             try:
                 notices = self.live_direction.observe()
-                if notices:
-                    _LOG.info(
-                        "RivaL independently confirmed live trend shifts=%d",
-                        len(notices),
-                    )
-                    await self.auto_hunt.live_cycle(notices)
+                for notice in notices:
+                    try:
+                        self._live_shift_queue.put_nowait(notice)
+                    except asyncio.QueueFull:
+                        _LOG.warning(
+                            "RivaL live alert queue saturated; skipped alert "
+                            "asset=%s (no ambiguous notification delivered)",
+                            notice.asset,
+                        )
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - stream/signal never stops Discord
-                _LOG.exception("RivaL live trend scanner cycle failed safely")
-            await asyncio.sleep(5)
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL live trend scanner failed safely")
+            elapsed = asyncio.get_running_loop().time() - started
+            await asyncio.sleep(max(0.1, 1.0 - elapsed))
+
+    async def _live_shift_delivery_loop(self) -> None:
+        """Bounded independent Discord network delivery of scanner events."""
+        await self.wait_until_ready()
+        assert self._live_shift_queue is not None
+        while not self.is_closed():
+            try:
+                candidate = await self._live_shift_queue.get()
+                try:
+                    await asyncio.wait_for(
+                        self.auto_hunt.live_cycle([candidate]), timeout=20,
+                    )
+                finally:
+                    self._live_shift_queue.task_done()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL live trend delivery failed safely")
 
     async def _hunt_loop(self) -> None:
         """Inspect fresh persisted forecasts without waiting for slow research work."""
@@ -2079,6 +2163,70 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL automatic shadow evaluation failed safely")
             await asyncio.sleep(self.settings.rival_shadow_eval_seconds)
 
+    async def _candidate_import_loop(self) -> None:
+        """Read bounded checksum-verified offline models from private Drive.
+
+        This is research metadata ONLY; cannot update live forecasts or
+        promotion records, and never exposes OAuth material in logs.
+        """
+        await self.wait_until_ready()
+        assert self.research_drive is not None
+        assert self.offline_registry is not None
+        while not self.is_closed():
+            try:
+                items = await asyncio.wait_for(
+                    self.research_drive.read_verified_research_candidates(
+                        limit=10,
+                    ), timeout=45,
+                )
+                saved = 0
+                for file_id, payload in items:
+                    try:
+                        await asyncio.to_thread(
+                            self.offline_registry.import_verified,
+                            file_id, payload,
+                        )
+                        saved += 1
+                    except ValueError:
+                        _LOG.warning(
+                            "RivaL offline research candidate failed "
+                            "model-contract verification"
+                        )
+                self.candidate_sync_status = f"verified_read_{saved}_candidates"
+                self.candidate_sync_checked_at = datetime.now(UTC)
+                _LOG.info("RivaL isolated historical candidate reads=%d", saved)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                self.candidate_sync_status = "drive_read_unverified"
+                self.candidate_sync_checked_at = datetime.now(UTC)
+                _LOG.exception("RivaL candidate import from Drive unavailable")
+            await asyncio.sleep(21600)
+
+    def training_status(self, asset: str, horizon: int) -> dict:
+        """Read-only accuracy and provenance. No retroactive promotion."""
+        from parlay_bot.perpetuals.promotion import promoted_engine
+
+        offline = (
+            self.offline_registry.summary(asset=asset, horizon=horizon)
+            if self.offline_registry is not None else
+            {"total": 0, "candidate": None, "active_offline_model": False}
+        )
+        live = (
+            self.autonomous.learning_heartbeat()
+            if self.autonomous is not None else None
+        )
+        engine = (
+            promoted_engine(self.store, asset=asset, horizon=horizon)
+            if self.autonomous is not None else "unavailable"
+        )
+        return {
+            **offline, "live_engine": engine,
+            "live_learning": live,
+            "drive_checked_at": self.candidate_sync_checked_at,
+            "drive_status": self.candidate_sync_status,
+        }
+
     async def _archive_loop(self) -> None:
         await self.wait_until_ready()
         assert self.archive_runtime is not None
@@ -2124,6 +2272,12 @@ class RivalDiscordClient(discord.Client):
             with suppress(asyncio.CancelledError):
                 await self._live_direction_task
             self._live_direction_task = None
+        if self._live_delivery_task is not None:
+            self._live_delivery_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._live_delivery_task
+            self._live_delivery_task = None
+        self._live_shift_queue = None
         if self.live_stream is not None:
             await self.live_stream.aclose()
         if self._stream_shadow_task is not None:
@@ -2180,12 +2334,19 @@ class RivalDiscordClient(discord.Client):
         if self.gemini_research is not None:
             await self.gemini_research.aclose()
 
+        if self._candidate_task is not None:
+            self._candidate_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._candidate_task
+            self._candidate_task = None
         if self._archive_task is not None:
             self._archive_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._archive_task
             self._archive_task = None
 
+        if self.research_drive is not None:
+            await self.research_drive.aclose()
         if self.archive_runtime is not None:
             await self.archive_runtime.drive.aclose()
         if self.current_provider is not None:

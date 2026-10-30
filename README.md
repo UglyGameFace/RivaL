@@ -5,6 +5,42 @@
 RivaL is a provider-agnostic sports-odds intelligence and parlay-analysis project. It keeps sportsbook coverage, line comparison, historical movement, jurisdiction filtering, and parlay construction behind a simple Discord experience.
 
 
+### Faster Discord controls and historical training provenance
+
+The Discord response and live-market scan are separate workloads. Button
+handlers **acknowledge before external database/Discord requests**; the
+private forecast page first shows a loading screen, then updates only if
+that page is still current. Model-proof lookups have short timeouts and
+unexpected view failures open a new usable private Home menu.
+
+The shared WebSocket scanner now samples its existing market-book cache
+**once per second** without opening extra exchange sockets or polling REST.
+A separate bounded delivery queue prevents slow Discord DMs from delaying
+market checks. The 60–150-second trend confirmation and two independent
+fresh exchange books remain required; 1-second sampling is not a
+new second-by-second ML prediction or accuracy guarantee.
+
+Historical training status: **/rival → My Results → Can I Trust Predictions?**
+shows the latest *live* learning cycle, active live engine, and a separate
+checksum-verified offline research inventory when the private Drive **Models**
+folder and OAuth read permissions are actually configured. The candidate
+reader scans at most ten small SHA-verified research documents every six
+hours in its own Drive connection, isolated from normal cold archive writes.
+Offline model weights cannot modify the live prediction or promotion
+tables. Historical test accuracy is labeled *retrospective*, with source
+dataset hash and last verified import separately from live accuracy.
+
+The monthly GitHub workflow enforces the repository variable
+`RIVAL_HISTORY_MONTHLY_ENABLED=true` for unattended scheduled runs;
+manual `workflow_dispatch` is available independently. Without that
+variable, the scheduled expensive training job **skips intentionally**.
+Even a completed research training run is not proof of live candidate
+compatibility or net profitability. The code does not silently activate
+offline logistic weights because their feature contract differs from
+the live model. That still requires a prospective side-by-side scorer
+and actual promotion evidence, not a declaration that backfill makes
+the model smarter.
+
 ### Continuous direction scanning and personalized Discord alerts
 
 A website is **not needed** for the automatic research alert system:

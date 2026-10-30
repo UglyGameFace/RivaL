@@ -261,6 +261,7 @@ class GuidedHome(discord.ui.View):
         multi: MultiExchangeResearch | None = None,
         venues: tuple[str, ...] = (),
         auto_hunt: AutoHuntService | None = None,
+        training_status: Callable[[str, int], dict] | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
@@ -278,6 +279,7 @@ class GuidedHome(discord.ui.View):
         self.multi = multi
         self.venues = venues
         self.research_factory = research_factory
+        self.training_status = training_status
         self.page = "home"
         self.back_stack: list[str] = []
         self.coin = "BTC"
@@ -286,6 +288,9 @@ class GuidedHome(discord.ui.View):
         self.slip = None
         self.note: str | None = None
         self._redraw_lock = asyncio.Lock()
+        # Shared across rendered generations to prevent a slow old forecast
+        # from overwriting a newer coin selection or Home navigation.
+        self._render_revision = {"value": 0}
         self._buttons()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -423,11 +428,16 @@ class GuidedHome(discord.ui.View):
                 color=discord.Color.blurple(),
             )
         elif p == "hunt":
-            status = (
-                await self.auto_hunt.status(self.owner_id)
-                if self.auto_hunt is not None else
-                "Unavailable until market collection is configured"
-            )
+            try:
+                status = (
+                    await asyncio.wait_for(
+                        self.auto_hunt.status(self.owner_id), timeout=1.2,
+                    )
+                    if self.auto_hunt is not None else
+                    "Unavailable until market collection is configured"
+                )
+            except (TimeoutError, Exception):  # noqa: BLE001
+                status = "Alert status is busy; your preferences were not changed."
             embed = discord.Embed(
                 title="🔔 Auto-Hunt | Find Research Opportunities",
                 description=(
@@ -870,9 +880,11 @@ class GuidedHome(discord.ui.View):
                 )
             else:
                 try:
-                    proof = await asyncio.to_thread(
-                        self.multi.report,
-                        asset=self.coin, horizon_minutes=self.horizon,
+                    proof = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.multi.report,
+                            asset=self.coin, horizon_minutes=self.horizon,
+                        ), timeout=2.5,
                     )
                     settled = proof["settled"]
                     is_better = proof.get("brier_improvement")
@@ -907,6 +919,78 @@ class GuidedHome(discord.ui.View):
                     embed.add_field(
                         name="Current verdict",
                         value="Accuracy evidence is unavailable. No improvement claimed.",
+                        inline=False,
+                    )
+            if self.training_status is not None:
+                try:
+                    state = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.training_status, self.coin, self.horizon,
+                        ), timeout=2.5,
+                    )
+                    latest = state.get("live_learning")
+                    last_live = (
+                        str(latest.get("completed_at"))
+                        if isinstance(latest, dict) else "Not recorded",
+                    )
+                    if isinstance(last_live, tuple):
+                        last_live = last_live[0]
+                    embed.add_field(
+                        name="Live training and active model",
+                        value=(
+                            f"Active engine: **{state['live_engine']}**\n"
+                            f"Latest live learning cycle: **{last_live}**\n"
+                            "Historical candidate activation: **NO** "
+                            "(separate feature contracts)."
+                        ),
+                        inline=False,
+                    )
+                    candidate = state.get("candidate")
+                    if candidate:
+                        accuracy = candidate.get("holdout_accuracy")
+                        accuracy_display = (
+                            f"{accuracy:.1%}" if accuracy is not None
+                            else "Unavailable"
+                        )
+                        embed.add_field(
+                            name="Six-month offline research",
+                            value=(
+                                f"Data version: **{candidate['data_version'][:12]}**\n"
+                                f"Source months: **{candidate['source_months']}**\n"
+                                f"Historical test accuracy: **{accuracy_display}**\n"
+                                f"Last verified import: "
+                                f"**{candidate['first_imported_at']}**\n"
+                                "This is retrospective only, NOT measured live accuracy."
+                            ),
+                            inline=False,
+                        )
+                    else:
+                        embed.add_field(
+                            name="Six-month offline research",
+                            value=(
+                                "No checksum-verified offline candidate loaded "
+                                "for this coin/timeframe yet. "
+                                "A completed archive upload is not a trained "
+                                "live model."
+                            ),
+                            inline=False,
+                        )
+                    embed.add_field(
+                        name="Historical data read status",
+                        value=(
+                            f"Drive: **{state['drive_status']}**\n"
+                            "Last historical workflow completion: **not "
+                            "verified from this bot**. Scheduled workflow "
+                            "and live model promotion are separate."
+                        ),
+                        inline=False,
+                    )
+                except (TimeoutError, Exception):  # noqa: BLE001
+                    _LOG.exception("Training provenance status unavailable")
+                    embed.add_field(
+                        name="Historical training status",
+                        value="Unverified right now. No active historical "
+                              "candidate claimed.",
                         inline=False,
                     )
         elif p == "help":
@@ -958,6 +1042,7 @@ class GuidedHome(discord.ui.View):
             research_factory=self.research_factory,
             stream_shadow=self.stream_shadow, multi=self.multi,
             venues=self.venues, auto_hunt=self.auto_hunt,
+            training_status=self.training_status,
         )
         view.page = self.page
         view.back_stack = list(self.back_stack)
@@ -967,12 +1052,77 @@ class GuidedHome(discord.ui.View):
         view.slip = self.slip
         view.note = self.note
         view._redraw_lock = self._redraw_lock
+        view._render_revision = self._render_revision
         view._buttons()  # only the new, never-registered view is cleared
         return view
 
     async def redraw(self, interaction: discord.Interaction) -> None:
         async with self._redraw_lock:
+            self._render_revision["value"] += 1
+            revision = self._render_revision["value"]
+            # Acknowledge a real Discord request quickly with a truthful
+            # loading view. Slow market checks never hold the button handler
+            # or block navigation; only the last generation can replace it.
+            if self.page == "forecast" and isinstance(
+                interaction, discord.Interaction,
+            ):
+                loading = discord.Embed(
+                    title=f"🔄 Checking {self.coin} {self.horizon}m",
+                    description=(
+                        "Checking newly issued model forecasts, matching live "
+                        "quotes, and real forward evidence. The previous "
+                        "forecast is not automatically a new trade."
+                    ),
+                    color=discord.Color.blurple(),
+                )
+                try:
+                    await asyncio.wait_for(
+                        interaction.edit_original_response(
+                            embed=loading, view=self._display_generation(),
+                        ), timeout=4,
+                    )
+                except (TimeoutError, discord.HTTPException):
+                    _LOG.warning("Fast forecast loading edit failed")
+                    return
+                asyncio.create_task(
+                    self._finish_forecast(interaction, revision),
+                    name="rival-forecast-details",
+                )
+                return
             await self._redraw_locked(interaction)
+
+    async def _finish_forecast(
+        self, interaction: discord.Interaction, revision: int,
+    ) -> None:
+        try:
+            embed = await asyncio.wait_for(self.render(), timeout=9)
+        except TimeoutError:
+            embed = discord.Embed(
+                title="⏳ Market research still unavailable",
+                description=(
+                    "The live model and venue-matched book did not finish "
+                    "checking in time. No new verified signal. "
+                    "Press Refresh Prediction to try again."
+                ), color=discord.Color.orange(),
+            )
+        except Exception:  # noqa: BLE001
+            _LOG.exception("Background forecast render failed")
+            embed = discord.Embed(
+                title="⏳ Prediction unavailable",
+                description="Couldn't verify live evidence. No trade inferred.",
+                color=discord.Color.orange(),
+            )
+        async with self._redraw_lock:
+            if self._render_revision["value"] != revision:
+                return
+            try:
+                await asyncio.wait_for(
+                    interaction.edit_original_response(
+                        embed=embed, view=self._display_generation(),
+                    ), timeout=4,
+                )
+            except (discord.HTTPException, TimeoutError):
+                _LOG.warning("Background forecast display update failed")
 
     async def _redraw_locked(
         self, interaction: discord.Interaction, *,
@@ -1064,46 +1214,63 @@ class GuidedHome(discord.ui.View):
             await interaction.response.send_modal(_Entry(self, action))
             return
         if action == "hunt-config":
+            # Discord must be acknowledged BEFORE PostgreSQL pool access.
+            await interaction.response.defer(ephemeral=True, thinking=True)
             if self.auto_hunt is None:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Auto-Hunt is unavailable.", ephemeral=True,
                 )
                 return
             from parlay_bot.discord_app.hunt_settings import HuntSettingsView
 
-            prefs = await asyncio.to_thread(
-                self.auto_hunt.store.preferences, str(self.owner_id),
-            )
-            settings_view = HuntSettingsView(
-                self.owner_id, self.auto_hunt, prefs,
-            )
-            await interaction.response.send_message(
-                settings_view.render(), ephemeral=True, view=settings_view,
-            )
+            try:
+                prefs = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.auto_hunt.store.preferences, str(self.owner_id),
+                    ), timeout=2,
+                )
+                view = HuntSettingsView(self.owner_id, self.auto_hunt, prefs)
+                await interaction.edit_original_response(
+                    content=view.render(), view=view,
+                )
+            except (TimeoutError, Exception):  # noqa: BLE001
+                _LOG.exception("RivaL Auto-Hunt settings slow or unavailable")
+                await interaction.edit_original_response(
+                    content="Settings are busy. The previous preferences "
+                            "were not changed; open Customize Alerts again.",
+                )
             return
         if action == "api-limits":
-            application = await interaction.client.application_info()
+            # Owner lookup is a remote Discord request. Acknowledge
+            # immediately, then use the followup to open the settings.
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            application = await asyncio.wait_for(
+                interaction.client.application_info(), timeout=3,
+            )
             owner = application.owner
             if owner is None or owner.id != interaction.user.id:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Only the application owner can edit API limits.", ephemeral=True,
                 )
                 return
             limits = OwnerLimitStore(interaction.client.store)
             view = OwnerLimitsView(store=limits, owner_id=owner.id)
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 "API Usage & Limits: choose a provider to set your safety ceiling. "
                 "This does not upgrade the provider subscription.",
                 view=view, ephemeral=True,
             )
             return
         if action == "manual":
-            saved = await asyncio.to_thread(
-                self.location.get_saved, platform="discord",
-                user_id=str(self.owner_id),
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            saved = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.location.get_saved, platform="discord",
+                    user_id=str(self.owner_id),
+                ), timeout=3,
             )
             if saved is None:
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Choose your betting state first.", ephemeral=True,
                 )
                 return
@@ -1112,7 +1279,7 @@ class GuidedHome(discord.ui.View):
                 ManualParlayView, owner_id=self.owner_id,
                 store=self.builder.store, eligible_books=books,
             )
-            await interaction.response.send_message(
+            await interaction.followup.send(
                 embed=picker.render(), view=picker, ephemeral=True,
             )
             return
@@ -1322,14 +1489,28 @@ class GuidedHome(discord.ui.View):
             "Guided home interaction failed",
             exc_info=(type(error), error, error.__traceback__),
         )
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                "Something went wrong. Press Home or type /rival.", ephemeral=True,
-            )
-        else:
-            await interaction.followup.send(
-                "Something went wrong. Press Home or type /rival.", ephemeral=True,
-            )
+        # A failed component must still leave a working button, instead of
+        # the generic "Something went wrong" dead-end seen on production.
+        fresh = self._display_generation()
+        fresh.page = "home"
+        fresh.back_stack = []
+        fresh.note = (
+            "That action couldn't be verified. No change was confirmed. "
+            "This is a fresh menu; your saved choices have not been erased."
+        )
+        fresh._buttons()
+        content = await fresh.render()
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    embed=content, view=fresh, ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    embed=content, view=fresh, ephemeral=True,
+                )
+        except discord.HTTPException:
+            _LOG.warning("RivaL guided recovery message could not be delivered")
 
 
 # ---------------------------------------------------------------------------

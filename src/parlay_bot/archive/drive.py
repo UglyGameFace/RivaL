@@ -545,6 +545,76 @@ class GoogleDriveArchiveClient:
             raise DriveArchiveError("restored bytes failed SHA256 verification")
 
 
+    async def read_verified_research_candidates(
+        self, *, limit: int = 20,
+    ) -> list[tuple[str, bytes]]:
+        """Bounded immutable Google Drive candidate import, NEVER live promotion.
+
+        Read-only (no trash, uploads or arbitrary IDs). File ID, model folder,
+        media size, checksum and the uploader's appProperties must all match.
+        Discovery is only under the configured models folder.
+        """
+        if self.folders.models is None:
+            raise DriveArchiveError("research models folder not configured")
+        if not 1 <= limit <= 20:
+            raise ValueError("candidate import limit must be 1..20")
+        await self._verify_folder_boundary()
+        folder = self.folders.models
+        query = (
+            f"'{self._escape_query(folder)}' in parents and trashed = false "
+            "and appProperties has { key='rival_kind' and value='model' }"
+        )
+        response = await self._client.get(
+            f"{self.DRIVE_URL}/files",
+            params={
+                "q": query, "spaces": "drive", "pageSize": limit,
+                "orderBy": "createdTime desc",
+                "fields": "nextPageToken,files(id,name,size,md5Checksum,parents,"
+                          "appProperties,trashed)",
+            },
+            headers=await self._headers(),
+        )
+        if response.status_code != 200:
+            raise DriveArchiveError("research candidate listing unavailable")
+        data = response.json()
+        files = data.get("files") if isinstance(data, dict) else None
+        if not isinstance(files, list) or len(files) > limit:
+            raise DriveArchiveError("invalid or unbounded candidate listing")
+        candidates = []
+        for raw in files:
+            if not isinstance(raw, dict) or raw.get("trashed"):
+                raise DriveArchiveError("invalid research candidate metadata")
+            item = self._object(raw)
+            props = raw.get("appProperties") or {}
+            expected = props.get("rival_sha256") if isinstance(props, dict) else None
+            if (
+                folder not in item.parents
+                or not isinstance(expected, str) or len(expected) != 64
+                or any(ch not in "0123456789abcdef" for ch in expected)
+                or not isinstance(item.size_bytes, int)
+                or not 0 < item.size_bytes <= 131072
+                or props.get("rival_kind") != "model"
+                or any(ch not in
+                       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+                       for ch in item.file_id)
+            ):
+                raise DriveArchiveError("unverified research candidate source")
+            media = await self._client.get(
+                f"{self.DRIVE_URL}/files/{item.file_id}",
+                params={"alt": "media"}, headers=await self._headers(),
+                follow_redirects=False,
+            )
+            if media.status_code != 200:
+                raise DriveArchiveError("research model readback unavailable")
+            payload = media.content
+            if (
+                len(payload) != item.size_bytes
+                or hashlib.sha256(payload).hexdigest() != expected
+            ):
+                raise DriveArchiveError("research candidate byte identity mismatch")
+            candidates.append((item.file_id, payload))
+        return candidates
+
     async def ensure_research_output(
         self,
         *,

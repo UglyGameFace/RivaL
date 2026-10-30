@@ -116,9 +116,13 @@ jobs:
           if-no-files-found: ignore
 
   six-month-production-research:
-    # Never burn provider quotas or GH minutes on unattended runs until the
-    # owner's private bot OAuth and warehouse account are configured.
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # An unattended multi-asset six-month job is expensive. Enforce the
+    # documented owner-controlled repository variable, not merely a comment.
+    # Manual dispatch remains available to deliberately verify the pipeline.
+    if: >-
+      (github.event_name == 'schedule' &&
+       vars.RIVAL_HISTORY_MONTHLY_ENABLED == 'true') ||
+      github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 120
     env:
@@ -158,6 +162,33 @@ jobs:
             --months "$months" --max-new 100 \
             --root data/research-history \
             --report-dir data/research-reports "${args[@]}"
+      - name: Summarize research evidence without claiming live promotion
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "### RivaL monthly historical research"
+            echo "Historical research artifacts do not activate production models."
+            echo "They remain isolated until their feature contract matches the live"
+            echo "model and they independently pass prospective promotion gates."
+            echo
+            if compgen -G "data/research-reports/history-learning-report-*.json" > /dev/null; then
+              python - <<'PY'
+          import glob
+          import json
+          import os
+          with open(sorted(glob.glob("data/research-reports/history-learning-report-*.json"))[-1], encoding="utf-8") as handle:
+              report = json.load(handle)
+          print("Source months:", len(report.get("source_months", [])))
+          print("Acquisition complete:", report.get("all_requested_data_complete"))
+          print("Research evaluations:", len(report.get("research", {}).get("evaluations", [])))
+          print("Live model promoted:", report.get("live_model_promoted", False))
+          print("Historical-only report, NOT real-money profitability.")
+          PY
+            else
+              echo "No completed history report; do not claim training succeeded."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Retain checksum-validated public Binance research until private Drive transfer
         if: always()
         uses: actions/upload-artifact@v4

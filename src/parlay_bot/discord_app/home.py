@@ -673,9 +673,22 @@ class GuidedHome(discord.ui.View):
             )
         _LOG.info("Guided render page=%s elapsed_ms=%.0f",
                   self.page, (time.monotonic() - started) * 1000)
-        await interaction.edit_original_response(
-            content=None, embed=embed, view=self,
-        )
+        try:
+            await asyncio.wait_for(
+                interaction.edit_original_response(content=None, embed=embed, view=self),
+                timeout=8,
+            )
+        except (TimeoutError, discord.HTTPException) as exc:
+            _LOG.warning("Guided menu edit failed page=%s error=%s", self.page, type(exc).__name__)
+            # The interaction was already acknowledged. Keep the user informed
+            # without turning an edit failure into a silent dead menu.
+            try:
+                await interaction.followup.send(
+                    "The menu could not update. Open /rival for a fresh menu.",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                _LOG.warning("Guided menu fallback message unavailable")
 
     async def act(self, interaction: discord.Interaction, action: str) -> None:
         if action == "explain":
@@ -721,7 +734,7 @@ class GuidedHome(discord.ui.View):
                 embed=picker.render(), view=picker, ephemeral=True,
             )
             return
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=False)
         _LOG.info("Guided interaction acknowledged action=%s", action)
         if action == "back":
             self.page = self.back_stack.pop() if self.back_stack else "home"

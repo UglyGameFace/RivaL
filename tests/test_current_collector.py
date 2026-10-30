@@ -22,7 +22,7 @@ class FakeSportsGameOddsClient:
         cursor=None,
     ):
         self.calls += 1
-        assert tuple(league_ids) == ("NBA", "NFL")
+        assert tuple(league_ids) in (("NBA",), ("NFL",))
         assert tuple(bookmaker_ids or ()) == ("draftkings", "fanduel")
         assert limit == 25
         assert cursor is None

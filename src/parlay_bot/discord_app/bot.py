@@ -63,6 +63,7 @@ from parlay_bot.perpetuals.live_quotes import (
     quote_embed,
 )
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
+from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 from parlay_bot.perpetuals.paper_ledger import PaperLedger
 from parlay_bot.perpetuals.phemex_history_recovery import PhemexHistoryRecovery
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
@@ -353,17 +354,30 @@ class RivalDiscordClient(discord.Client):
             else None
         )
         self._shadow_task: asyncio.Task[None] | None = None
-        secret = settings.gemini_api_key or settings.google_api_key
-        self.gemini_research: GeminiResearch | None = (
-            GeminiResearch(
+        # Both OPEN_ROUTER_API_KEY (the Discloud owner's variable) and
+        # OPENROUTER_API_KEY (provider convention) are accepted. OpenRouter
+        # has priority when configured, but there is never a paid fallback.
+        free_secret = settings.open_router_api_key or settings.openrouter_api_key
+        google_secret = settings.gemini_api_key or settings.google_api_key
+        if self.perp_collector is None:
+            self.gemini_research: GeminiResearch | OpenRouterResearch | None = None
+        elif free_secret is not None:
+            self.gemini_research = OpenRouterResearch(
                 self.perp_collector.market,
-                api_key=secret.get_secret_value() if secret is not None else None,
+                api_key=free_secret.get_secret_value(),
+                daily_max=settings.rival_openrouter_daily_max,
+                cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
+            )
+            _LOG.info("RivaL optional AI reviewer: OpenRouter free coding models only")
+        else:
+            self.gemini_research = GeminiResearch(
+                self.perp_collector.market,
+                api_key=(google_secret.get_secret_value()
+                         if google_secret is not None else None),
                 model=settings.rival_gemini_model,
                 daily_max=settings.rival_gemini_daily_max,
                 cooldown_seconds=settings.rival_gemini_cooldown_seconds,
             )
-            if self.perp_collector is not None else None
-        )
         self.autonomous: AutonomousResearch | None = (
             AutonomousResearch(
                 self.perp_collector.market,

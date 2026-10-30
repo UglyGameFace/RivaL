@@ -509,14 +509,33 @@ class AutoHuntActions(discord.ui.View):
             await interaction.followup.send("This is not your saved alert.", ephemeral=True)
             return
         try:
-            embed = await asyncio.wait_for(
-                signal_embed(
-                    service.market, service.quotes,
-                    asset=row["asset"], horizon_minutes=int(row["horizon"]),
-                    stream_shadow=getattr(interaction.client, "stream_shadow", None),
-                ), timeout=12,
-            )
-        except Exception:  # noqa: BLE001
+            if row["venue"] == "polymarket":
+                opened = _instant(row["issued_at"])
+                fresh = await asyncio.wait_for(
+                    service.polymarket.market(
+                        row["asset"], int(row["horizon"]), opened=opened,
+                    ), timeout=10,
+                )
+                if fresh is None:
+                    embed = discord.Embed(
+                        title="Polymarket market no longer verified",
+                        description=(
+                            "The listed market is expired, unavailable, or "
+                            "lacks a fresh book. The original alert is NOT "
+                            "a current quote. No order was placed."
+                        ),
+                    )
+                else:
+                    embed = hunt_embed(fresh, observed_at=datetime.now(UTC))
+            else:
+                embed = await asyncio.wait_for(
+                    signal_embed(
+                        service.market, service.quotes,
+                        asset=row["asset"], horizon_minutes=int(row["horizon"]),
+                        stream_shadow=getattr(interaction.client, "stream_shadow", None),
+                    ), timeout=12,
+                )
+        except Exception:  # noqa: BLE001 - no stale quote masquerades as current
             embed = discord.Embed(
                 title="Market review unavailable",
                 description="No currently verified quote. Do not act on an old alert.",

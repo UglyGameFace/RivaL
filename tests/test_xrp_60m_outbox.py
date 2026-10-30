@@ -5,10 +5,11 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.discord_app import auto_hunt
 from parlay_bot.perpetuals.forward_audit import (
-    ForwardAccuracyMonitor, select_live_streams,
+    ForwardAccuracyMonitor,
+    select_live_streams,
 )
-from parlay_bot.perpetuals.markets import ASSETS, HORIZONS, asset_for_contract
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.markets import ASSETS, HORIZONS, asset_for_contract
 from parlay_bot.storage.hot import SQLiteHotStore
 
 
@@ -54,7 +55,6 @@ def test_xrp_60m_is_genuinely_issued_from_live_history_and_settles_later(tmp_pat
                      closed.isoformat(), observed.isoformat(),
                      price, price + .02, price - .02, price + .001, 100, 40),
                 )
-        monitor._eligible_test_streams = None
         # Avoid relying on mock network/health: inspect the real SQL
         # eligibility just as production does, but use only seeded XRP.
         from parlay_bot.perpetuals import shadow_monitor

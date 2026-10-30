@@ -5,6 +5,44 @@
 RivaL is a provider-agnostic sports-odds intelligence and parlay-analysis project. It keeps sportsbook coverage, line comparison, historical movement, jurisdiction filtering, and parlay construction behind a simple Discord experience.
 
 
+### Continuous direction scanning and personalized Discord alerts
+
+A website is **not needed** for the automatic research alert system:
+the Discloud bot uses the two already-configured public WebSocket streams
+(Hyperliquid and Binance USD-M) and reads current quotes **every five seconds
+in memory**. The live scanner requires both venues to provide recent,
+reasonably aligned bid/ask books, a meaningful shared momentum move of
+at least 15 basis points over roughly 60-150 seconds, and two confirmations.
+It sends a **Live Price Shift** only after the previously established
+direction reverses. A new starting trend is not misreported as a flip.
+If a stream is blocked, stale, crosses a large venue basis or has a wide
+bid/ask spread, the live scanner **does not invent a signal**.
+
+The existing completed-5-minute-candle forecast still updates at its
+real issuance cadence. **New Model Reversal** is a **different** opt-in
+alert that compares two genuinely prospectively issued model records
+on distinct future target windows, including a previously settled record.
+It requires raw UP forecast scores to cross opposite sides of a
+0.38/0.62 buffer, not a merely volatile tick. Neither a market momentum
+flip nor a raw ML probability is proof of profitable after-cost trading.
+
+In **/rival → My Alerts → Customize Alerts**, choose BTC/ETH/SOL/XRP
+for supported live feeds, 5m/15m market windows, Polymarket **Up/Down**
+outcomes, a maximum *ask price* (not win probability), and minimum
+time remaining. Open **Direction Alerts** for independent switches:
+**Live Price Shifts** and **New Model Reversals**. All new alert types
+are OFF by default until the recipient explicitly enables them and
+the bot confirms DMs can be created. The two live WebSockets are shared;
+no additional network feed is opened per member. Delivery uses the
+existing persistent at-most-once outbox with daily caps. No orders.
+
+A **Review Fresh Signal** DM button now opens a **Refresh Again**
+button that can be pressed repeatedly; Polymarket refresh verifies the
+next actual listed market when an earlier window expires, never
+relabeling an old quote. Discord restarts can expire a private
+interactive review; the original persistent DM button can reopen it.
+Real exchange access and completed user DM delivery need hosted proof.
+
 ### Start in Discord
 
 Type **`/rival`**. The top-level private menu has just four choices:

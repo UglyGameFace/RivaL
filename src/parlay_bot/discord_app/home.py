@@ -390,11 +390,25 @@ class GuidedHome(discord.ui.View):
                 color=discord.Color.orange(),
             )
         elif p == "forecast":
-            embed = await signal_embed(
-                self.market, self.quotes,
-                asset=self.coin, horizon_minutes=self.horizon,
-                stream_shadow=self.stream_shadow,
-            )
+            try:
+                embed = await asyncio.wait_for(
+                    signal_embed(
+                        self.market, self.quotes,
+                        asset=self.coin, horizon_minutes=self.horizon,
+                        stream_shadow=self.stream_shadow,
+                    ),
+                    timeout=7,
+                )
+            except TimeoutError:
+                embed = discord.Embed(
+                    title=f"⏳ {self.coin} | {self.horizon}m • SIGNAL DELAYED",
+                    description=(
+                        "The market check is taking too long. No fresh signal "
+                        "was verified, and the previous forecast is not a new trade. "
+                        "Try again shortly."
+                    ),
+                    color=discord.Color.orange(),
+                )
         elif p == "quote":
             try:
                 price = await self.quotes.get(self.coin)

@@ -149,7 +149,7 @@ async def test_weak_model_is_pass_not_actionable_even_with_current_quote(tmp_pat
                                     horizon_minutes=5, now=now)
         assert "UP LEAN • NO SIGNAL" in report.title
         assert "coin flip" in report.description
-        assert "51.4%" in report.to_dict()["fields"][0]["value"]
+        assert "51.4%" in next(x.value for x in report.fields if x.name == "⚡ Model strength")
     finally:
         store.close()
 
@@ -170,9 +170,9 @@ async def test_blocked_exchange_uses_only_another_forecasts_matching_book(tmp_pa
         signal = await signal_embed(market, quotes, asset="BTC",
                                     horizon_minutes=5, now=now)
         assert "UP WATCH" in signal.title
-        assert "Source: **binance**" in signal.fields[0].value
-        assert "$81,003.00" in signal.fields[1].value
-        assert "$81,000.00" not in signal.fields[1].value
+        assert "Source: **binance**" in next(x.value for x in signal.fields if x.name == "Model and expiry")
+        assert "$81,003.00" in next(x.value for x in signal.fields if x.name == "Fresh matching-market bid / ask 💱")
+        assert "$81,000.00" not in next(x.value for x in signal.fields if x.name == "Fresh matching-market bid / ask 💱")
         quotes.get.assert_awaited_once_with("BTC")
     finally:
         store.close()
@@ -189,7 +189,7 @@ async def test_unmatched_price_or_near_expiry_is_not_a_fabricated_signal(tmp_pat
         unmatched = await signal_embed(market, quotes, asset="BTC",
                                        horizon_minutes=5, now=now)
         assert "MARKET PRICE UNAVAILABLE" in unmatched.title
-        assert "not a valid real-time entry" in unmatched.fields[1].value
+        assert "not a valid real-time entry" in next(x.value for x in unmatched.fields if x.name == "Matching live price")
         quotes.get.assert_not_awaited()
         quotes.get_reference.assert_not_awaited()
 

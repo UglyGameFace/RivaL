@@ -67,10 +67,18 @@ EXPLAIN = {
 class _Button(discord.ui.Button["GuidedHome"]):
     def __init__(self, title: str, action: str, row: int,
                  emoji: str | None = None, primary: bool = False) -> None:
+        if action == "forecast":
+            style = discord.ButtonStyle.success
+        elif action in ("stop", "hunt-off", "poly-stop"):
+            style = discord.ButtonStyle.danger
+        else:
+            style = (
+                discord.ButtonStyle.primary
+                if primary else discord.ButtonStyle.secondary
+            )
         super().__init__(
             label=title, custom_id=f"rival:guided:{action}", emoji=emoji,
-            row=row, style=(discord.ButtonStyle.primary if primary
-                            else discord.ButtonStyle.secondary),
+            row=row, style=style,
         )
         self.action = action
 

@@ -1576,7 +1576,7 @@ class AutoHuntService:
         reset = (now.replace(hour=0, minute=0, second=0, microsecond=0)
                  + timedelta(days=1))
         budget = (
-            "\\n**Today's sent alerts (UTC):** "
+            "\n**Today's sent alerts (UTC):** "
             + " • ".join(
                 f"{label} {today[tier]}/{DAILY_CAP_PER_TIER}"
                 for tier, label in (
@@ -1586,13 +1586,13 @@ class AutoHuntService:
             )
             + f" • Resets <t:{int(reset.timestamp())}:R>"
             if today is not None else
-            "\\nToday's alert budget is temporarily unavailable."
+            "\nToday's alert budget is temporarily unavailable."
         )
         return (
             "ON • " + parts + f" • Sent {health.get('sent', 0)} total"
             + (f" • Unconfirmed {uncertainty}" if uncertainty else "")
             + budget
-            + "\\nDaily caps stop new alerts until reset. Future delivery "
+            + "\nDaily caps stop new alerts until reset. Future delivery "
               "also requires a qualifying signal and working DMs."
         )
 

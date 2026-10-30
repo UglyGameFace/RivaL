@@ -17,8 +17,12 @@ def model(name, *, paid=False, expiry=None, endpoint=True):
             "prompt": "0.00001" if paid else "0",
             "completion": "0", "request": "0",
         },
-        "architecture": {"output_modalities": ["text"]},
-        "endpoints": ["/api/v1/chat/completions"] if endpoint else [],
+        "architecture": {
+            "input_modalities": ["text"], "output_modalities": ["text"],
+        },
+        "links": {
+            "details": "/api/v1/models/cohere/north-mini-code/endpoints",
+        } if endpoint else {},
         "expiration_date": expiry,
     }
 
@@ -26,19 +30,19 @@ def model(name, *, paid=False, expiry=None, endpoint=True):
 def test_catalog_strictly_excludes_paid_expired_and_non_code_models():
     now = datetime(2026, 10, 30, 20, tzinfo=UTC)
     data = {"data": [
-        model("cohere/north-mini-code:free"),
-        model("poolside/laguna-s-2.1:free",
+        model("recursive/flint-v1.0:free"),
+        model("cohere/north-mini-code:free",
               expiry=(now-timedelta(seconds=1)).isoformat()),
-        model("qwen/qwen3-coder:free", paid=True),
-        model("mistralai/devstral-2512:free", endpoint=False),
+        model("cohere/north-mini-code:free", paid=True),
+        model("cohere/north-mini-code:free", endpoint=False),
         model("openrouter/free"),
         model("openai/gpt-6"),
     ]}
     assert module.eligible_free_coding_models(data, now=now) == (
-        "cohere/north-mini-code:free",
+        "recursive/flint-v1.0:free",
     )
     assert module.eligible_free_coding_models({"data": [
-        model("qwen/qwen3-coder:free", paid=True)
+        model("cohere/north-mini-code:free", paid=True)
     ]}, now=now) == ()
     with pytest.raises(ResearchUnavailable):
         module.eligible_free_coding_models({"error": "permission"}, now=now)
@@ -91,13 +95,13 @@ async def test_free_only_coding_reviewer_uses_verified_evidence_and_budget(monke
         assert req.headers["authorization"] == "Bearer test-secret"
         if req.url.path == "/api/v1/models":
             return httpx.Response(200, json={"data": [
-                model("poolside/laguna-s-2.1:free"),
+                model("recursive/flint-v1.0:free"),
                 model("cohere/north-mini-code:free"),
-                model("qwen/qwen3-coder:free", paid=True),
+                model("cohere/north-mini-code:free", paid=True),
             ]})
         assert req.url.path == "/api/v1/chat/completions"
         body = __import__("json").loads(req.content)
-        assert body["model"] == "cohere/north-mini-code:free"
+        assert body["model"] == "recursive/flint-v1.0:free"
         assert "Chainlink" in body["messages"][0]["content"]
         assert body["messages"][1]["content"] == (
             '{"sources":[{"venue":"hyperliquid"},'
@@ -117,9 +121,9 @@ async def test_free_only_coding_reviewer_uses_verified_evidence_and_budget(monke
             market, api_key="test-secret", client=client,
         )
         models = await reviewer.list_advertised_models()
-        assert models[0] == "cohere/north-mini-code:free"
+        assert models[0] == "recursive/flint-v1.0:free"
         result = await reviewer.ask(asset="BTC", venues=("hyperliquid", "okx"))
-        assert result.model == "cohere/north-mini-code:free"
+        assert result.model == "recursive/flint-v1.0:free"
         assert result.direction == "uncertain"
         assert result.evidence_sha256 == "sha-of-verified-input"
         assert len(market.saved) == 1

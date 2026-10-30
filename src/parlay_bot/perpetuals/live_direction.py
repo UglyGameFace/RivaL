@@ -74,6 +74,8 @@ class LiveDirectionScanner:
                 or not all(math.isfinite(x) and x > 0
                            for x in (book.bid, book.ask))
                 or book.bid >= book.ask
+                or (book.ask - book.bid) / ((book.ask + book.bid) / 2)
+                   * 10000 > 25
                 for book in (a, b)
             ):
                 self._pending.pop(asset, None)

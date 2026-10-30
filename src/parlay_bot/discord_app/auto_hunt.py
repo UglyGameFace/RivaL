@@ -373,7 +373,7 @@ class AutoHuntStore:
             condition = "venue = 'polymarket'"
             params = (user_id, day_start)
         else:
-            condition = ("venue != 'polymarket' AND "
+            condition = ("venue NOT IN ('polymarket','live_trend') AND "
                          "forecast_key NOT LIKE 'qualified|%' AND "
                          "forecast_key NOT LIKE 'flip|%'")
             params = (user_id, day_start)
@@ -385,6 +385,47 @@ class AutoHuntStore:
                 params,
             ).fetchone()
         return int(row["n"])
+
+    def daily_sent_counts(
+        self, user_id: str, *, now: datetime | None = None,
+    ) -> dict[str, int]:
+        """Single-query UTC alert budget, matching the actual delivery cap.
+
+        This uses the same attempted_at and sent-state semantics as
+        count_sent_today. A live-price trend must not consume the research
+        budget, and unconfirmed messages must not be reported as delivered.
+        """
+        clock = now or datetime.now(UTC)
+        if clock.utcoffset() is None:
+            raise ValueError("Daily budget requires an aware clock")
+        midnight = clock.astimezone(UTC).replace(
+            hour=0, minute=0, second=0, microsecond=0,
+        )
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT venue,forecast_key FROM rival_hunt_delivery
+                   WHERE user_id=? AND state='sent' AND attempted_at>=?
+                     AND attempted_at<?""",
+                (user_id, midnight.isoformat(),
+                 (midnight + timedelta(days=1)).isoformat()),
+            ).fetchall()
+        counters = {tier: 0 for tier in
+                    ("research", "qualified", "polymarket", "flip", "live_shift")}
+        for record in row:
+            key = str(record["forecast_key"])
+            venue = str(record["venue"])
+            if venue == "polymarket":
+                tier = "polymarket"
+            elif venue == "live_trend":
+                tier = "live_shift"
+            elif key.startswith(QUALIFIED_KEY_PREFIX):
+                tier = "qualified"
+            elif key.startswith(FLIP_KEY_PREFIX):
+                tier = "flip"
+            else:
+                tier = "research"
+            counters[tier] += 1
+        return counters
 
     def has_qualified_sent_window(self, user_id: str, asset: str,
                                   horizon: int, expires: datetime) -> bool:
@@ -1518,6 +1559,12 @@ class AutoHuntService:
         except Exception:  # noqa: BLE001
             return "ON • " + parts + " • Delivery health unavailable"
         preferences = await asyncio.to_thread(self.store.preferences, str(user_id))
+        try:
+            today = await asyncio.to_thread(
+                self.store.daily_sent_counts, str(user_id),
+            )
+        except Exception:  # noqa: BLE001 - status display is best effort
+            today = None
         parts += (
             f" • Model reversals {'on' if preferences['direction_changes'] else 'off'}"
             f" • Live trends {'on' if preferences['live_shifts'] else 'off'}"
@@ -1525,10 +1572,28 @@ class AutoHuntService:
             f" • {','.join(str(h) + 'm' for h in preferences['horizons'])}"
         )
         uncertainty = sum(health.get(state, 0) for state in ("unknown", "sending", "attempted"))
+        now = datetime.now(UTC)
+        reset = (now.replace(hour=0, minute=0, second=0, microsecond=0)
+                 + timedelta(days=1))
+        budget = (
+            "\\n**Today's sent alerts (UTC):** "
+            + " • ".join(
+                f"{label} {today[tier]}/{DAILY_CAP_PER_TIER}"
+                for tier, label in (
+                    ("research", "Research"), ("qualified", "Qualified"),
+                    ("polymarket", "Polymarket"),
+                ) if flags[tier]
+            )
+            + f" • Resets <t:{int(reset.timestamp())}:R>"
+            if today is not None else
+            "\\nToday's alert budget is temporarily unavailable."
+        )
         return (
-            "ON • " + parts + f" • Sent {health.get('sent', 0)}"
+            "ON • " + parts + f" • Sent {health.get('sent', 0)} total"
             + (f" • Unconfirmed {uncertainty}" if uncertainty else "")
-            + " • Future delivery not guaranteed"
+            + budget
+            + "\\nDaily caps stop new alerts until reset. Future delivery "
+              "also requires a qualifying signal and working DMs."
         )
 
     async def _send_dm(self, user_id: str, candidate, stamp: datetime,

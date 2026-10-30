@@ -1404,7 +1404,11 @@ class ResearchDashboard(discord.ui.View):
             try:
                 quota = await self.ai.request_status()
                 reasons = {
-                    "provider_error_pause": "A previous AI provider error caused a pause",
+                    "provider_error_pause": (
+                        "A previous OpenRouter API error caused a pause"
+                        if isinstance(self.ai, OpenRouterResearch)
+                        else "A previous Google API error caused a pause"
+                    ),
                     "minimum_spacing": "RivaL's minimum interval between AI requests",
                     "daily_budget_exhausted": "RivaL's daily safety limit is reached",
                 }

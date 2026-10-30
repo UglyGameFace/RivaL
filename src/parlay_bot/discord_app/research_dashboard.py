@@ -1444,7 +1444,7 @@ class ResearchDashboard(discord.ui.View):
                             if isinstance(self.ai, OpenRouterResearch)
                             else "(not Google's account-wide limit)\n"
                         )
-                        f"{state}"
+                        + f"{state}"
                     )[:1024],
                     inline=False,
                 )

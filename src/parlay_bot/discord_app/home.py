@@ -1503,6 +1503,7 @@ class GuidedHome(discord.ui.View):
             # or taking the shared render lock.
             fresh = self._display_generation()
             fresh.navigate("hunt-tools")
+            fresh._buttons()
             await interaction.response.send_message(
                 embed=await fresh.render(), view=fresh, ephemeral=True,
             )

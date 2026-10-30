@@ -47,7 +47,7 @@ COINS = RESEARCH_ASSETS
 EXPLAIN = {
     "home": "Find crypto or sports research, choose private alerts, or inspect recorded results. No wagers are placed.",
     "discover": "Choose Predict Crypto for model research, Auto-Hunt for opt-in alerts, or Practice Money for simulated trades. No profits are established.",
-    "live": "Live Mode follows genuine WebSocket price-shift alerts and notifies you on confirmed momentum changes. It is not an extra forecasting model and does not bypass the alert delivery or trading safeguards.",
+    "live": "Live Mode shows verified current and next-listed Polymarket Up/Down windows, and independently controls live exchange price-shift DMs. Polymarket asks are not the price to beat, and no return is guaranteed.",
     "hunt": "Follow Polymarket for listed share asks, not RivaL predictions. Follow model forecasts for new completed-candle forecasts. Customize Alerts to control coins, windows, side, price cap, and explicit live-trend or model-reversal notifications. Nothing places real bets.",
     "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
     "slip": "A parlay combines picks. All legs must win for the parlay to win. No real wager is placed here.",
@@ -347,10 +347,13 @@ class GuidedHome(discord.ui.View):
             self._add("See Buy/Sell Prices", "quote", 3, "💱")
             self._add("Stop My Alerts", "stop", 3, "🔕")
         elif p == "live":
-            self._add("Enable Live Alerts", "live-on", 0, "⚡", True)
-            self._add("Disable Live Alerts", "live-off", 0, "🔕")
-            self._add("Alert Settings", "hunt-config", 1, "⚙️")
-            self._add("My Alerts", "hunt", 1, "🔔")
+            self.add_item(_Coin(self.coin))
+            self.add_item(_Horizon(self.horizon))
+            self._add("Check Current & Next", "poly-refresh", 2, "🔄", True)
+            self._add("Follow Polymarket", "hunt-poly", 2, "📊")
+            self._add("Enable Shift DMs", "live-on", 3, "⚡")
+            self._add("Disable Shift DMs", "live-off", 3, "🔕")
+            self._add("Alert Settings", "hunt-config", 3, "⚙️")
         elif p == "hunt":
             self._add("Follow Polymarket", "hunt-poly", 0, "📊", True)
             self._add("Follow Model Forecasts", "hunt-on", 0, "📈")
@@ -522,6 +525,114 @@ class GuidedHome(discord.ui.View):
                     inline=False,
                 )
             embed.set_footer(text="Only confirmed shifts; no real trades")
+            # This is a separate source. Live exchange direction notifications
+            # do not imply a Polymarket market was looked up or subscribed.
+            if self.horizon not in (5, 15):
+                embed.add_field(
+                    name="📊 Current & next Polymarket targets",
+                    value="Choose a 5m or 15m window to verify live listings. "
+                          "No 60m market is assumed to exist.",
+                    inline=False,
+                )
+            else:
+                reader = (
+                    getattr(self.auto_hunt, "polymarket", None)
+                    if self.auto_hunt is not None else None
+                )
+                if reader is None:
+                    embed.add_field(
+                        name="📊 Polymarket current & next",
+                        value="Market verification unavailable. No live target claimed.",
+                        inline=False,
+                    )
+                else:
+                    try:
+                        board = await asyncio.wait_for(
+                            reader.window_board(
+                                self.coin, self.horizon,
+                                refresh=getattr(self, "_poly_refresh", False),
+                            ), timeout=4.7,
+                        )
+                    except (TimeoutError, ValueError):
+                        embed.add_field(
+                            name="📊 Polymarket current & next",
+                            value="Market lookup timed out or this window is "
+                                  "unsupported. No live target verified.",
+                            inline=False,
+                        )
+                    except Exception:  # noqa: BLE001 - fail closed
+                        _LOG.exception("Guided live Polymarket board unavailable")
+                        embed.add_field(
+                            name="📊 Polymarket current & next",
+                            value="Provider unavailable. No current or next "
+                                  "market identity verified.",
+                            inline=False,
+                        )
+                    else:
+                        if board.current is None:
+                            current = "Not listed or not verifiable from Gamma."
+                        else:
+                            now_open = (
+                                "Trading enabled" if board.current.accepting_orders
+                                else "Trading status not verified"
+                            )
+                            target = (
+                                f"${board.current.price_to_beat:,.4f} "
+                                "(published by Gamma)"
+                                if board.current.price_to_beat is not None
+                                else "Not yet verified by Polymarket"
+                            )
+                            current = (
+                                f"[Open event]({board.current.url})"
+                                f" • {now_open}\\n"
+                                f"Closes <t:{int(board.current.closes.timestamp())}:R>"
+                                f" • Price to beat: **{target}**"
+                            )
+                            if board.current_quote is not None:
+                                quote = board.current_quote
+                                current += (
+                                    f"\\nUp ask **{quote.up_ask:.1%}** "
+                                    f"• Down ask **{quote.down_ask:.1%}** "
+                                    f"• Book checked <t:{int(quote.quote_at.timestamp())}:R>"
+                                )
+                            else:
+                                current += (
+                                    "\\nFresh Up/Down order books unavailable "
+                                    "(not an executable quote)."
+                                )
+                        embed.add_field(
+                            name=f"📊 Current Polymarket {self.coin} {self.horizon}m",
+                            value=current,
+                            inline=False,
+                        )
+                        if board.next_window is None:
+                            upcoming = (
+                                "Next window isn't confirmed as listed yet. "
+                                "Check again near the boundary."
+                            )
+                        else:
+                            nxt = board.next_window
+                            upcoming = (
+                                f"[Open next event]({nxt.url}) • Starts "
+                                f"<t:{int(nxt.opens.timestamp())}:R>\\n"
+                                "Price to beat: pending window opening; "
+                                "**no predicted strike**."
+                            )
+                        embed.add_field(
+                            name="⏭️ Next verified Polymarket window",
+                            value=upcoming,
+                            inline=False,
+                        )
+                        embed.add_field(
+                            name="Market source",
+                            value="Gamma event identity + current CLOB asks. "
+                                  "Polymarket Follow DMs are independent of "
+                                  "Live Shift DMs; use **Follow Polymarket**. "
+                                  "Quotes are indicative, not guaranteed fills.",
+                            inline=False,
+                        )
+                    finally:
+                        self._poly_refresh = False
         elif p == "hunt":
             try:
                 status = (
@@ -1416,6 +1527,10 @@ class GuidedHome(discord.ui.View):
                 self.note = f"PASS: {exc}. Nothing was placed."
         elif action in ("forecast", "quote"):
             self.navigate(action)
+        elif action == "poly-refresh":
+            self.navigate("live")
+            self._poly_refresh = True
+            self.note = "Checking fresh Gamma listings and order-book asks."
         elif action in ("live-on", "live-off"):
             self.navigate("live")
             if self.auto_hunt is None:
@@ -1695,7 +1810,7 @@ _STALE_BUTTONS_B = (
 )
 
 
-_STALE_BUTTONS_C = ("live", "live-on", "live-off")
+_STALE_BUTTONS_C = ("live", "live-on", "live-off", "poly-refresh")
 
 
 class _StaleButton(discord.ui.Button["_StaleGuidedMenuBase"]):

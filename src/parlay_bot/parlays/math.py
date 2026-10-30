@@ -7,7 +7,7 @@ from collections.abc import Iterable
 def _finite(value: float, name: str) -> float:
     """Reject nonnumeric, boolean, NaN and infinite provider/model values."""
     if isinstance(value, bool):
-        raise ValueError(f"{name} must be finite")
+        raise TypeError(f"{name} must be a number, not bool")
     try:
         number = float(value)
     except (TypeError, ValueError, OverflowError) as exc:

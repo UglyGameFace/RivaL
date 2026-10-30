@@ -394,3 +394,23 @@ def test_capped_subscribers_do_not_trigger_expensive_external_scans(
     monkeypatch.setattr(service.polymarket, "active", scans[2])
     assert run(service.cycle()) == 0
     assert all(scan.await_count == 0 for scan in scans)
+
+
+def test_daily_alert_cap_option_persists_and_is_not_global(hunt_store):
+    user = "user-with-unlimited"
+    other = "user-with-default"
+    assert hunt_store.preferences(user)["daily_limit"] == 12
+    assert hunt_store.preferences(other)["daily_limit"] == 12
+    assert hunt_store.set_preference(user, "daily_limit", 0)["daily_limit"] == 0
+    assert hunt_store.preferences(other)["daily_limit"] == 12
+    for limit in (12, 24, 48, 0):
+        hunt_store.set_preference(user, "daily_limit", limit)
+        restarted = auto_hunt.AutoHuntStore(hunt_store.store)
+        restarted.initialize()
+        assert restarted.preferences(user)["daily_limit"] == limit
+    for unsupported in (-1, 1, 999, "0"):
+        with pytest.raises(ValueError):
+            hunt_store.set_preference(user, "daily_limit", unsupported)
+    assert auto_hunt._cap_reached(12, 12)
+    assert not auto_hunt._cap_reached(120, 0)
+    assert not auto_hunt._cap_reached(12, 24)

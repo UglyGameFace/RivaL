@@ -983,7 +983,7 @@ class AutoHuntService:
         )
         if not any(flags.values()):
             return "OFF • all alert tiers off — choose one to start"
-        return "ON (configured; delivery can still fail) • " + parts
+        return "ON • " + parts + " • Delivery is not guaranteed"
 
     async def _send_dm(self, user_id: str, candidate, stamp: datetime,
                        *, tier: str | None) -> object | None:

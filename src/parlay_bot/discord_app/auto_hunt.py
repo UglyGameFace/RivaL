@@ -484,57 +484,56 @@ class AutoHuntService:
             async def deliver(subscriber: dict) -> int:
                 user_id = str(subscriber["user_id"])
                 since = _instant(str(subscriber["since_at"]))
-                async with budget:
-                    async with self._user_lock(user_id):
-                        for candidate in candidates:
-                            stamp = datetime.now(UTC)
-                            if (candidate.issued < since or
-                                    candidate.expires - stamp < MIN_REMAINING):
-                                continue
-                            claimed = await asyncio.to_thread(
-                                self.store.claim, user_id, candidate, now=stamp,
-                            )
-                            if not claimed:
-                                continue
-                            message = None
-                            try:
-                                user = self.bot.get_user(int(user_id))
-                                if user is None:
-                                    user = await asyncio.wait_for(
-                                        self.bot.fetch_user(int(user_id)),
-                                        timeout=5,
-                                    )
-                                channel = user.dm_channel or await user.create_dm()
-                                message = await asyncio.wait_for(
-                                    channel.send(
-                                        embed=hunt_embed(candidate, observed_at=stamp),
-                                        view=AutoHuntActions(timeout=900),
-                                    ), timeout=8,
+                async with budget, self._user_lock(user_id):
+                    for candidate in candidates:
+                        stamp = datetime.now(UTC)
+                        if (candidate.issued < since or
+                                candidate.expires - stamp < MIN_REMAINING):
+                            continue
+                        claimed = await asyncio.to_thread(
+                            self.store.claim, user_id, candidate, now=stamp,
+                        )
+                        if not claimed:
+                            continue
+                        message = None
+                        try:
+                            user = self.bot.get_user(int(user_id))
+                            if user is None:
+                                user = await asyncio.wait_for(
+                                    self.bot.fetch_user(int(user_id)),
+                                    timeout=5,
                                 )
-                            except (discord.HTTPException, TimeoutError, ValueError):
-                                _LOG.warning(
-                                    "Auto-Hunt DM not confirmed user=%s", user_id,
-                                )
-                            except Exception:  # noqa: BLE001 - no ambiguous resend
-                                _LOG.exception("Auto-Hunt DM failed")
-                            # Claim already exists. If this acknowledgement
-                            # fails, a restart will NOT send the same DM again.
-                            await asyncio.to_thread(
-                                self.store.finish, user_id, candidate,
-                                sent=message is not None,
-                                message_id=(
-                                    str(message.id) if message is not None else None
-                                ),
+                            channel = user.dm_channel or await user.create_dm()
+                            message = await asyncio.wait_for(
+                                channel.send(
+                                    embed=hunt_embed(candidate, observed_at=stamp),
+                                    view=AutoHuntActions(timeout=900),
+                                ), timeout=8,
                             )
-                            _LOG.info(
-                                "RivaL hunt asset=%s horizon=%s venue=%s user=%s "
-                                "issue_to_attempt_ms=%d status=%s",
-                                candidate.asset, candidate.horizon,
-                                candidate.venue, user_id,
-                                int((stamp - candidate.issued).total_seconds() * 1000),
-                                "sent" if message is not None else "unconfirmed",
+                        except (discord.HTTPException, TimeoutError, ValueError):
+                            _LOG.warning(
+                                "Auto-Hunt DM not confirmed user=%s", user_id,
                             )
-                            return int(message is not None)
+                        except Exception:  # noqa: BLE001 - no ambiguous resend
+                            _LOG.exception("Auto-Hunt DM failed")
+                        # Claim already exists. If this acknowledgement
+                        # fails, a restart will NOT send the same DM again.
+                        await asyncio.to_thread(
+                            self.store.finish, user_id, candidate,
+                            sent=message is not None,
+                            message_id=(
+                                str(message.id) if message is not None else None
+                            ),
+                        )
+                        _LOG.info(
+                            "RivaL hunt asset=%s horizon=%s venue=%s user=%s "
+                            "issue_to_attempt_ms=%d status=%s",
+                            candidate.asset, candidate.horizon,
+                            candidate.venue, user_id,
+                            int((stamp - candidate.issued).total_seconds() * 1000),
+                            "sent" if message is not None else "unconfirmed",
+                        )
+                        return int(message is not None)
                 return 0
 
             outcomes = await asyncio.gather(

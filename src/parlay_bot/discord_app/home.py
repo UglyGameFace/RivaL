@@ -327,8 +327,12 @@ def crypto_snapshot_card(
         ("📊 Accuracy", ("Refresh Signal checks the same-venue 7-day "
          "settled record and its sample size")),
     )
-    for heading, value in fields:
+    for index, (heading, value) in enumerate(fields):
         embed.add_field(name=heading, value=value, inline=True)
+        # Match the supplied rival_ui.py: three Discord inline fields per
+        # row, with a blank third tile creating two visible columns.
+        if index in (1, 3):
+            embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.set_footer(
         text="Reference candle ≠ live bid/ask • "
              "Raw model score ≠ measured accuracy • No orders",

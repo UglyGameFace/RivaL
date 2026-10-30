@@ -16,8 +16,8 @@ from typing import TYPE_CHECKING
 import discord
 
 from parlay_bot.discord_app.polymarket_watch import (
-    HORIZONS,
     ASSETS,
+    HORIZONS,
     PolymarketReader,
     PolymarketWindowBoard,
 )

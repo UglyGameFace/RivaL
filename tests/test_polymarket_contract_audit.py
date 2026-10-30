@@ -56,10 +56,10 @@ def test_contract_evidence_requires_unique_21_day_verified_window_brier_and_cost
 
 
 def test_chainlink_equal_price_resolves_up_not_down():
-    row = observations(total_days=1, per_day=1)[0]
+    row = observations(total_days=1, per_day=2)[1]
     assert row.oracle_start_twap == row.oracle_end_twap
     report = audit_contract_predictions([row])
-    assert report.candidate_accuracy == 0.0
+    assert report.candidate_accuracy == 1.0
     assert report.status == "insufficient"
 
 

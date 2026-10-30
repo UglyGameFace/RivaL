@@ -62,6 +62,8 @@ def recent_watches(
             (asset, instant.isoformat(),
              (instant - timedelta(minutes=20)).isoformat()),
         ).fetchall()
+    if not rows:
+        return []
     feeds = {
         (str(x["venue"]), str(x["asset"])): x
         for x in market.feed_health()
@@ -172,6 +174,8 @@ def recent_multi_watches(
             (asset, MULTI_MODEL, instant.isoformat(),
              (instant - timedelta(minutes=20)).isoformat()),
         ).fetchall()
+    if not rows:
+        return []
     feeds = {
         (str(x["venue"]), str(x["asset"])): x
         for x in market.feed_health()

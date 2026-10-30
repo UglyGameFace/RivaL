@@ -360,27 +360,23 @@ class AutoHuntStore:
             raise ValueError("Unsupported alert tier")
         day_start = now.replace(hour=0, minute=0, second=0,
                                 microsecond=0).isoformat()
-        # Never embed literal LIKE '%' wildcards in a parameterized
-        # psycopg3 query. Its % placeholder parser raises ProgrammingError
-        # even when the percent is inside a SQL string literal.
-        # substr works on both SQLite and PostgreSQL and compares exact
-        # immutable outbox key prefixes (no user-controlled SQL).
-        qualified_key = "substr(forecast_key,1,10) = 'qualified|'"
-        flip_key = "substr(forecast_key,1,5) = 'flip|'"
         if tier == "live_shift":
             condition = "venue = 'live_trend'"
+            params = (user_id, day_start)
         elif tier == "flip":
-            condition = flip_key
+            condition = "forecast_key LIKE 'flip|%'"
+            params = (user_id, day_start)
         elif tier == "qualified":
-            condition = qualified_key
+            condition = "forecast_key LIKE 'qualified|%'"
+            params: tuple = (user_id, day_start)
         elif tier == "polymarket":
             condition = "venue = 'polymarket'"
+            params = (user_id, day_start)
         else:
-            condition = (
-                "venue NOT IN ('polymarket','live_trend') AND "
-                f"NOT ({qualified_key}) AND NOT ({flip_key})"
-            )
-        params = (user_id, day_start)
+            condition = ("venue != 'polymarket' AND "
+                         "forecast_key NOT LIKE 'qualified|%' AND "
+                         "forecast_key NOT LIKE 'flip|%'")
+            params = (user_id, day_start)
         with self.store.connect() as conn:
             row = conn.execute(
                 f"""SELECT COUNT(*) AS n FROM rival_hunt_delivery
@@ -402,7 +398,7 @@ class AutoHuntStore:
                 """SELECT 1 FROM rival_hunt_delivery
                    WHERE user_id = ? AND asset = ? AND horizon = ?
                      AND expires_at = ? AND state = 'sent'
-                     AND substr(forecast_key,1,10) = 'qualified|'""",
+                     AND forecast_key LIKE 'qualified|%'""",
                 (user_id, asset, horizon, expires.isoformat()),
             ).fetchone()
         return row is not None
@@ -1935,7 +1931,6 @@ class AutoHuntService:
                     _LOG.error(
                         "Auto-Hunt individual delivery failed safely: %s",
                         type(result).__name__,
-                        exc_info=(type(result), result, result.__traceback__),
                     )
                 else:
                     total += result

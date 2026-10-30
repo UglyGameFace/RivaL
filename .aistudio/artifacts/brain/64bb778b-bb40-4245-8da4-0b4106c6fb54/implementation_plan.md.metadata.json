@@ -1,0 +1,6 @@
+{
+  "summary":  "Root-cause analysis and fix plan for the Discloud PostgreSQL pool exhaustion, long-held connections (6.6s–29.1s), and Auto-Hunt qualified slot timeouts (signals.py lines 138 and 291).",
+  "updatedAt":  "2026-10-30T17:41:18.729190064Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

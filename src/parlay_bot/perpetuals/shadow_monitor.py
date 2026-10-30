@@ -6,6 +6,7 @@ by RivaL. Reports evidence; never promotes a trading signal or sends an order.
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,7 @@ if TYPE_CHECKING:
     from parlay_bot.storage.hot import RelationalHotStore
 
 _LOG = logging.getLogger(__name__)
+_SCHEMA_LOCK = threading.Lock()
 MODEL = "shadow-online-logistic-v1"
 HORIZONS = RESEARCH_HORIZONS
 MAX_STREAMS = 10
@@ -40,44 +42,53 @@ class ShadowLearningMonitor:
 
     def initialize(self) -> None:
         self.market.initialize()
-        with self.store.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS perp_shadow_evaluations (
-                    venue TEXT NOT NULL,
-                    contract TEXT NOT NULL,
-                    quote TEXT NOT NULL,
-                    asset TEXT NOT NULL,
-                    horizon_minutes INTEGER NOT NULL,
-                    model_version TEXT NOT NULL,
-                    evaluated_at TEXT NOT NULL,
-                    observed_candles INTEGER NOT NULL,
-                    causal_examples INTEGER NOT NULL,
-                    evaluated INTEGER NOT NULL,
-                    matured_updates INTEGER NOT NULL,
-                    brier DOUBLE PRECISION,
-                    baseline_brier DOUBLE PRECISION,
-                    directional_accuracy DOUBLE PRECISION,
-                    candidate_beats_baseline INTEGER NOT NULL,
-                    PRIMARY KEY (venue,contract,quote,horizon_minutes,model_version)
-                );
-                CREATE INDEX IF NOT EXISTS idx_perp_shadow_asset
-                    ON perp_shadow_evaluations (asset, evaluated_at);
-                """
-            )
+        if getattr(self.store, "_shadow_schema_ready", False):
+            return
+        with _SCHEMA_LOCK:
+            if getattr(self.store, "_shadow_schema_ready", False):
+                return
+            with self.store.connect() as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS perp_shadow_evaluations (
+                        venue TEXT NOT NULL,
+                        contract TEXT NOT NULL,
+                        quote TEXT NOT NULL,
+                        asset TEXT NOT NULL,
+                        horizon_minutes INTEGER NOT NULL,
+                        model_version TEXT NOT NULL,
+                        evaluated_at TEXT NOT NULL,
+                        observed_candles INTEGER NOT NULL,
+                        causal_examples INTEGER NOT NULL,
+                        evaluated INTEGER NOT NULL,
+                        matured_updates INTEGER NOT NULL,
+                        brier DOUBLE PRECISION,
+                        baseline_brier DOUBLE PRECISION,
+                        directional_accuracy DOUBLE PRECISION,
+                        candidate_beats_baseline INTEGER NOT NULL,
+                        PRIMARY KEY (venue,contract,quote,horizon_minutes,model_version)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_perp_shadow_asset
+                        ON perp_shadow_evaluations (asset, evaluated_at);
+                    """
+                )
+            setattr(self.store, "_shadow_schema_ready", True)
 
     def _eligible_streams(
         self, *, now: datetime, limit: int = MAX_STREAMS,
     ) -> list[tuple[str, str, str]]:
         if not 1 <= limit <= 40:
             raise ValueError("invalid shadow stream discovery limit")
+        cutoff = (now - timedelta(minutes=20)).isoformat()
         with self.store.connect() as conn:
             observed = conn.execute(
                 """SELECT venue,contract,quote,MAX(first_observed_at) AS last_seen
                    FROM perp_market_candles
                    WHERE interval_minutes=5
+                     AND first_observed_at>=?
                    GROUP BY venue,contract,quote
-                   ORDER BY venue,contract,quote LIMIT 80"""
+                   ORDER BY venue,contract,quote LIMIT 80""",
+                (cutoff,),
             ).fetchall()
             prior = conn.execute(
                 """SELECT venue,contract,quote,MAX(evaluated_at) AS last_eval

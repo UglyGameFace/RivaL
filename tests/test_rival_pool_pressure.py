@@ -162,13 +162,26 @@ def test_postgres_pool_releases_connections_after_context_exit(monkeypatch):
 
     class DummyConnection:
         closed = False
+        commits = 0
+        rollbacks = 0
         info = SimpleNamespace(transaction_status=TransactionStatus.IDLE)
 
         def __enter__(self):
             return self
 
         def __exit__(self, *_args):
+            # Real psycopg3 Connection.__exit__ closes the socket when _pool
+            # is unset; _Connection.__exit__ must commit/rollback directly.
+            self.closed = True
             return None
+
+        def commit(self):
+            self.commits += 1
+            self.info.transaction_status = TransactionStatus.IDLE
+
+        def rollback(self):
+            self.rollbacks += 1
+            self.info.transaction_status = TransactionStatus.IDLE
 
         def close(self):
             self.closed = True
@@ -187,5 +200,55 @@ def test_postgres_pool_releases_connections_after_context_exit(monkeypatch):
         database.connect()
     with database.connect():
         assert len(created) == 1
+        assert created[0].commits == 1
+        assert not created[0].closed
+    with pytest.raises(RuntimeError, match="boom"), database.connect():
+        raise RuntimeError("boom")
+    assert created[0].rollbacks == 1
+    assert not created[0].closed
     database.close()
     assert created[0].closed
+
+
+@pytest.mark.asyncio
+async def test_background_signal_skips_books_for_weak_or_unqualified_forecasts(
+    monkeypatch,
+):
+    stamp = datetime(2026, 10, 30, 18, 0, tzinfo=UTC)
+    weak_watch = {
+        "venue": "okx", "horizon_minutes": 15,
+        "probability_up": 0.52, "issued": stamp - timedelta(seconds=15),
+        "target": stamp + timedelta(minutes=4),
+        "model_version": "test-model",
+    }
+    monkeypatch.setattr(signals, "promoted_engine", lambda *_a, **_kw: "live")
+    monkeypatch.setattr(signals, "recent_watches", lambda *_a, **_kw: [weak_watch])
+
+    def fail_if_called(*_a, **_kw):
+        raise AssertionError("should not query proof or books for weak forecast")
+
+    monkeypatch.setattr(signals, "_venue_proof", fail_if_called)
+    monkeypatch.setattr(signals, "_venue_book", fail_if_called)
+    decision = {}
+    await signals.signal_embed(
+        SimpleNamespace(store=object()), object(),
+        asset="BTC", horizon_minutes=15, now=stamp,
+        decision_out=decision, decision_only=True,
+    )
+    assert decision == {}
+
+    strong_watch = {**weak_watch, "probability_up": 0.65}
+    monkeypatch.setattr(signals, "recent_watches", lambda *_a, **_kw: [strong_watch])
+    monkeypatch.setattr(
+        signals, "_venue_proof",
+        lambda *_a, **_kw: {
+            "settled": 70, "hit_rate": 0.48, "model_beats_baseline": False,
+        },
+    )
+    await signals.signal_embed(
+        SimpleNamespace(store=object()), object(),
+        asset="BTC", horizon_minutes=15, now=stamp,
+        decision_out=decision, decision_only=True,
+    )
+    assert decision == {}
+

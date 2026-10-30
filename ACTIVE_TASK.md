@@ -1,13 +1,3 @@
-## ACTIVE TASK: Auto-Hunt PostgreSQL delivery ProgrammingError (2026-10-30)
-
-- **Incident:** Post-restart Discloud 13:17:20 and 13:17:48 local: Auto-Hunt saw 1 subscriber, 6 forward forecasts, 6 Polymarket markets but logged `Auto-Hunt individual delivery failed safely: ProgrammingError`. PR #110's PostgreSQL instrumentation is already present at runtime: checkout slow 1–1.2s, one hold 6.6s; no proof that DMs were delivered.
-- **Confirmed code defect:** `AutoHuntStore.count_sent_today()` and `has_qualified_sent_window()` passed parameterized SQL containing literal `LIKE 'qualified|%'` / `LIKE 'flip|%'`. psycopg3 treats unescaped percent signs as bind-format syntax, causing ProgrammingError; these queries gate every attempted alert. Fix in PR #111 `fix/rival-auto-hunt-postgres-percent-20261030` uses portable exact `substr` prefix checks, separately counts live-shift vs research-tier DMs, and records traceback on delivery failure.
-- **Safety & testing:** Add real PostgreSQL16 and SQLite tier-prefix/duplicate guard regressions; no subscription, claim, UNKNOWN/sent dedupe or data migration changes. Exact-head CI, main CI, and real hosted delivery needed before production acceptance. Do not blindly enlarge PostgreSQL pool; inspect telemetry after recovery.
-- **Other log findings:** 9 perp venues × BTC/ETH/SOL/XRP collected fresh 48-bar batches (many `new=0` expected); Gate recovery SOL/XRP retry failed; SportsGameOdds quota reserve reached at 250. Those are independent of the Auto-Hunt ProgrammingError.
-- **Next:** Pass PR #111 tests, merge only when authorized, verify release and opted-in DMs, then measure pool contention and research issuance. Keep broader forecasting issue #6 open.
-
----
-
 ## ACTIVE TASK: PostgreSQL pool exhaustion + Auto-Hunt scan amplification (2026-10-30)
 
 - **Observed incident:** Discloud 13:01 local / 14:01 process log showed `PostgreSQL connection pool exhausted (max_size=8)` with Auto-Hunt BTC/ETH/SOL slot timeouts and failures in mathematical research, Gemini settlement, quote scoring, and target refresh. The cancellation from `asyncio.wait_for(signal_embed)` does not cancel the synchronous worker-thread query.

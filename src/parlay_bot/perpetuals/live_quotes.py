@@ -283,6 +283,11 @@ class PublicBestQuoteClient:
         self._venue_locks: dict[str, asyncio.Lock] = {
             venue: asyncio.Lock() for venue in VENUE_BOOK_SYMBOLS
         }
+        self._venue_asset_locks: dict[tuple[str, str], asyncio.Lock] = {
+            (venue, asset): asyncio.Lock()
+            for venue in VENUE_BOOK_SYMBOLS
+            for asset in ASSETS
+        }
 
     async def aclose(self) -> None:
         if self._owns:
@@ -397,7 +402,7 @@ class PublicBestQuoteClient:
         if asset not in ASSETS or venue not in VENUE_BOOK_SYMBOLS:
             raise QuoteUnavailable("Only BTC, ETH, SOL and XRP venue books supported.")
         symbol = VENUE_BOOK_SYMBOLS[venue][asset]
-        async with self._venue_locks[venue]:
+        async with self._venue_asset_locks[(venue, asset)]:
             clock = time.monotonic()
             if clock < self._venue_blocked_until.get(venue, 0.0):
                 raise QuoteUnavailable("Venue temporarily blocked or rate limited.")

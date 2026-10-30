@@ -199,22 +199,25 @@ async def signal_embed(
                 and venue not in candidate_venues):
             candidate_venues.append(venue)
 
-    async def _pick_books() -> dict[str, tuple[dict, BookQuote | PerpReferenceBook | VenueBookQuote]]:
-        if not candidate_venues:
+    async def _pick_books(
+        venues: list[str] | None = None,
+    ) -> dict[str, tuple[dict, BookQuote | PerpReferenceBook | VenueBookQuote]]:
+        target_venues = candidate_venues if venues is None else venues
+        if not target_venues:
             return {}
         started = time.monotonic()
         watch_by_venue = {
             venue: next(w for w in prioritized if w["venue"] == venue)
-            for venue in candidate_venues
+            for venue in target_venues
         }
         outcomes = await asyncio.gather(
             *(_venue_book(quotes, asset=asset, venue=venue)
-              for venue in candidate_venues),
+              for venue in target_venues),
             return_exceptions=True,
         )
         marks["book_ms"] = (time.monotonic() - started) * 1000
         validated: dict[str, tuple[dict, BookQuote | PerpReferenceBook | VenueBookQuote]] = {}
-        for venue, outcome in zip(candidate_venues, outcomes, strict=True):
+        for venue, outcome in zip(target_venues, outcomes, strict=True):
             if isinstance(outcome, Exception):
                 continue
             try:
@@ -288,21 +291,45 @@ async def signal_embed(
         # qualification used by the screen. Full portfolio analytics and
         # after-cost report rendering are expensive, irrelevant to deciding
         # whether an alert is a WATCH, and compete with the research writer.
-        validated = await _pick_books()
-        if not validated:
+        # Venues whose forecast is not a directional watch, or whose 7-day
+        # record does not beat baseline, can never become a qualified WATCH;
+        # skip network order-book requests for them.
+        watch_by_venue = {
+            venue: next(w for w in prioritized if w["venue"] == venue)
+            for venue in candidate_venues
+        }
+        strong_venues = [
+            venue for venue in candidate_venues
+            if model_strength(float(watch_by_venue[venue]["probability_up"]))
+            == "directional watch"
+            and float(watch_by_venue[venue]["probability_up"]) != 0.5
+        ]
+        if not strong_venues:
             return _no_signal(
-                asset, horizon_minutes, "No verified matching live book.",
+                asset, horizon_minutes, "No directional watch candidate.",
             )
-        proof_venues = [v for v in candidate_venues if v in validated]
         outcomes = await asyncio.gather(
-            *(_venue_proof_or_default(v) for v in proof_venues),
+            *(_venue_proof_or_default(v) for v in strong_venues),
             return_exceptions=True,
         )
         venue_proofs = {
             venue: (item if not isinstance(item, BaseException)
                     else _default_evidence())
-            for venue, item in zip(proof_venues, outcomes, strict=True)
+            for venue, item in zip(strong_venues, outcomes, strict=True)
         }
+        beating_venues = [
+            venue for venue in strong_venues
+            if venue_proofs[venue].get("model_beats_baseline") is True
+        ]
+        if not beating_venues:
+            return _no_signal(
+                asset, horizon_minutes, "No baseline-beating venue candidate.",
+            )
+        validated = await _pick_books(beating_venues)
+        if not validated:
+            return _no_signal(
+                asset, horizon_minutes, "No verified matching live book.",
+            )
         evidence = _default_evidence()
         shadow = None
     else:

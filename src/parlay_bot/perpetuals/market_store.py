@@ -76,6 +76,9 @@ class PerpetualMarketStore:
                     CREATE INDEX IF NOT EXISTS idx_perp_market_candles_close
                         ON perp_market_candles
                            (venue,contract,quote,interval_minutes,closed_at);
+                    CREATE INDEX IF NOT EXISTS idx_perp_market_candles_observed
+                        ON perp_market_candles
+                           (interval_minutes,first_observed_at);
                     CREATE TABLE IF NOT EXISTS perp_feed_health (
                         venue TEXT NOT NULL,
                         asset TEXT NOT NULL,
@@ -171,7 +174,33 @@ class PerpetualMarketStore:
         inserted = 0
         unchanged = 0
         conflicted = 0
+        bounds: dict[tuple[str, str, str, int], tuple[str, str]] = {}
+        for candle in batch.candles:
+            group = (
+                candle.venue, candle.contract, candle.quote,
+                candle.interval_minutes,
+            )
+            opened_iso = utc(candle.opened_at).isoformat()
+            if group not in bounds:
+                bounds[group] = (opened_iso, opened_iso)
+            else:
+                low, high = bounds[group]
+                bounds[group] = (min(low, opened_iso), max(high, opened_iso))
         with self.store.connect() as conn:
+            existing: dict[tuple[str, str, str, int, str], dict] = {}
+            for (venue, contract, quote, interval), (low, high) in bounds.items():
+                rows = conn.execute(
+                    """SELECT opened_at,closed_at,open_price,high_price,low_price,
+                              close_price,volume_base,trades
+                       FROM perp_market_candles
+                       WHERE venue=? AND contract=? AND quote=?
+                         AND interval_minutes=? AND opened_at>=? AND opened_at<=?""",
+                    (venue, contract, quote, interval, low, high),
+                ).fetchall()
+                for row in rows:
+                    existing[
+                        (venue, contract, quote, interval, str(row["opened_at"]))
+                    ] = dict(row)
             for candle in batch.candles:
                 values = (
                     candle.venue, candle.contract, candle.quote,
@@ -181,27 +210,42 @@ class PerpetualMarketStore:
                     candle.open_price, candle.high_price, candle.low_price,
                     candle.close_price, candle.volume_base, candle.trades,
                 )
-                cursor = conn.execute(
-                    """INSERT INTO perp_market_candles
-                       (venue,contract,quote,interval_minutes,opened_at,
-                        closed_at,first_observed_at,open_price,high_price,
-                        low_price,close_price,volume_base,trades)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
-                       ON CONFLICT (venue,contract,quote,interval_minutes,opened_at)
-                       DO NOTHING""",
-                    values,
-                )
-                if cursor.rowcount == 1:
-                    inserted += 1
-                    continue
-                old = conn.execute(
-                    """SELECT closed_at,open_price,high_price,low_price,
-                              close_price,volume_base,trades
-                       FROM perp_market_candles
-                       WHERE venue=? AND contract=? AND quote=?
-                         AND interval_minutes=? AND opened_at=?""",
-                    values[:5],
-                ).fetchone()
+                key = values[:5]
+                old = existing.get(key)
+                if old is None:
+                    cursor = conn.execute(
+                        """INSERT INTO perp_market_candles
+                           (venue,contract,quote,interval_minutes,opened_at,
+                            closed_at,first_observed_at,open_price,high_price,
+                            low_price,close_price,volume_base,trades)
+                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                           ON CONFLICT (venue,contract,quote,interval_minutes,opened_at)
+                           DO NOTHING""",
+                        values,
+                    )
+                    if cursor.rowcount == 1:
+                        inserted += 1
+                        existing[key] = {
+                            "closed_at": values[5],
+                            "open_price": values[7],
+                            "high_price": values[8],
+                            "low_price": values[9],
+                            "close_price": values[10],
+                            "volume_base": values[11],
+                            "trades": values[12],
+                        }
+                        continue
+                    fetched = conn.execute(
+                        """SELECT closed_at,open_price,high_price,low_price,
+                                  close_price,volume_base,trades
+                           FROM perp_market_candles
+                           WHERE venue=? AND contract=? AND quote=?
+                             AND interval_minutes=? AND opened_at=?""",
+                        key,
+                    ).fetchone()
+                    old = dict(fetched) if fetched is not None else None
+                    if old is not None:
+                        existing[key] = old
                 if old is None or (
                     str(old["closed_at"]), float(old["open_price"]),
                     float(old["high_price"]), float(old["low_price"]),

@@ -70,7 +70,18 @@ class _Connection:
         tb: TracebackType | None,
     ) -> bool | None:
         try:
-            result = self._raw.__exit__(exc_type, exc, tb)
+            if self.backend == "postgres" and hasattr(self._raw, "commit"):
+                if not getattr(self._raw, "closed", False):
+                    if exc_type is not None:
+                        try:
+                            self._raw.rollback()
+                        except Exception:  # noqa: BLE001
+                            pass
+                    else:
+                        self._raw.commit()
+                result = False
+            else:
+                result = self._raw.__exit__(exc_type, exc, tb)
         finally:
             if self.backend == "sqlite":
                 self._raw.close()
@@ -172,11 +183,11 @@ class PostgresDatabase(RelationalDatabase):
             )
 
         def release(connection: Any) -> None:
+            with self._lock:
+                self._borrowers.pop(id(connection), None)
             try:
                 self._checkin(connection)
             finally:
-                with self._lock:
-                    self._borrowers.pop(id(connection), None)
                 held = time.monotonic() - held_since
                 if held >= 5.0:
                     _LOG.warning(

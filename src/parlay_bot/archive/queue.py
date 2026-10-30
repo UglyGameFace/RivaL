@@ -95,11 +95,6 @@ class RelationalArchiveQueue:
         with self.connect() as connection:
             first = connection.execute(
                 """
-                WITH latest AS (
-                    SELECT selection_key, MAX(id) AS latest_id
-                    FROM odds_changes
-                    GROUP BY selection_key
-                )
                 SELECT
                     oc.provider,
                     oc.bookmaker,
@@ -109,10 +104,12 @@ class RelationalArchiveQueue:
                 JOIN fixtures AS f
                   ON f.provider = oc.provider
                  AND f.fixture_id = oc.fixture_id
-                JOIN latest AS l
-                  ON l.selection_key = oc.selection_key
                 WHERE oc.archived_batch_id IS NULL
-                  AND oc.id <> l.latest_id
+                  AND EXISTS (
+                      SELECT 1 FROM odds_changes AS newer
+                      WHERE newer.selection_key = oc.selection_key
+                        AND newer.id > oc.id
+                  )
                   AND oc.last_seen <= ?
                 ORDER BY oc.last_seen, oc.id
                 LIMIT 1
@@ -125,11 +122,6 @@ class RelationalArchiveQueue:
 
             rows = connection.execute(
                 """
-                WITH latest AS (
-                    SELECT selection_key, MAX(id) AS latest_id
-                    FROM odds_changes
-                    GROUP BY selection_key
-                )
                 SELECT
                     oc.id,
                     oc.selection_key,
@@ -164,10 +156,12 @@ class RelationalArchiveQueue:
                 JOIN fixtures AS f
                   ON f.provider = oc.provider
                  AND f.fixture_id = oc.fixture_id
-                JOIN latest AS l
-                  ON l.selection_key = oc.selection_key
                 WHERE oc.archived_batch_id IS NULL
-                  AND oc.id <> l.latest_id
+                  AND EXISTS (
+                      SELECT 1 FROM odds_changes AS newer
+                      WHERE newer.selection_key = oc.selection_key
+                        AND newer.id > oc.id
+                  )
                   AND oc.last_seen <= ?
                   AND oc.provider = ?
                   AND oc.bookmaker = ?

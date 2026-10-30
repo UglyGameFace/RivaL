@@ -188,3 +188,77 @@ def test_config_rejects_unconnected_archive_and_bounds(tmp_path):
         Settings(_env_file=None, rival_perp_archive_keep_hot_days=1)
     with pytest.raises(ValidationError):
         Settings(_env_file=None, rival_perp_archive_batch_rows=9999)
+
+
+def test_archive_receipts_use_bounded_queries_for_large_batch(tmp_path, monkeypatch):
+    from parlay_bot.storage import database as db_module
+
+    store, _drive, service = _setup(tmp_path)
+    now = datetime(2026, 10, 28, 20, tzinfo=UTC)
+    anchor = now - timedelta(days=30)
+    with store.connect() as conn:
+        for index in range(235):
+            opened = anchor + timedelta(minutes=5 * index)
+            closed = opened + timedelta(minutes=5)
+            conn.execute(
+                "INSERT INTO perp_market_candles "
+                "(venue,contract,quote,interval_minutes,opened_at,closed_at,"
+                "first_observed_at,open_price,high_price,low_price,close_price,"
+                "volume_base,trades) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("gate", "BTCUSDT", "USDT", 5, opened.isoformat(),
+                 closed.isoformat(), (closed+timedelta(seconds=1)).isoformat(),
+                 100.0, 101.0, 99.0, 100.5, 1.25, 7),
+            )
+    batch = service._next_batch(
+        cutoff=now-timedelta(days=14), max_rows=235,
+    )
+    assert batch is not None and len(batch.rows) == 235
+    original = db_module._Connection.execute
+    statements = []
+
+    def counted(self, sql, params=()):
+        if "perp_candle_archive_receipts" in sql and sql.lstrip().upper().startswith("INSERT"):
+            statements.append("insert")
+        if "SELECT venue,contract,quote,interval_minutes" in sql:
+            statements.append("read")
+        return original(self, sql, params)
+
+    monkeypatch.setattr(db_module._Connection, "execute", counted)
+    service._mark_archived(batch, now)
+    assert statements.count("insert") == 3
+    assert statements.count("read") == 3
+    assert _count(store, "perp_candle_archive_receipts") == 235
+    assert _count(store, "perp_market_candles") == 235
+
+
+def test_archive_receipts_roll_back_all_batches_when_late_source_changes(tmp_path):
+    store, _drive, service = _setup(tmp_path)
+    now = datetime(2026, 10, 28, 20, tzinfo=UTC)
+    anchor = now - timedelta(days=30)
+    with store.connect() as conn:
+        for index in range(120):
+            opened = anchor + timedelta(minutes=5 * index)
+            closed = opened + timedelta(minutes=5)
+            conn.execute(
+                "INSERT INTO perp_market_candles "
+                "(venue,contract,quote,interval_minutes,opened_at,closed_at,"
+                "first_observed_at,open_price,high_price,low_price,close_price,"
+                "volume_base,trades) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                ("gate", "BTCUSDT", "USDT", 5, opened.isoformat(),
+                 closed.isoformat(), (closed+timedelta(seconds=1)).isoformat(),
+                 100.0, 101.0, 99.0, 100.5, 1.25, 7),
+            )
+    batch = service._next_batch(
+        cutoff=now-timedelta(days=14), max_rows=120,
+    )
+    assert batch is not None and len(batch.rows) == 120
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE perp_market_candles SET volume_base=? WHERE venue=? "
+            "AND contract=? AND opened_at=?",
+            (2.5, "gate", "BTCUSDT", batch.rows[105]["opened_at"]),
+        )
+    with pytest.raises(RuntimeError, match="source changed"):
+        service._mark_archived(batch, now)
+    assert _count(store, "perp_candle_archive_receipts") == 0
+    assert _count(store, "perp_market_candles") == 120

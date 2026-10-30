@@ -1,3 +1,4 @@
+from parlay_bot.providers.errors import QuotaReserveReached
 from __future__ import annotations
 
 import asyncio
@@ -1505,6 +1506,8 @@ class RivalDiscordClient(discord.Client):
                         "RivaL finalized score audit checked=%d newly_verified=%d",
                         len(due), verified,
                     )
+            except QuotaReserveReached as exc:
+                _LOG.info("RivaL sports result audit deferred by quota reserve: %s", exc)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - quota/provider faults never block Discord

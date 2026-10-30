@@ -275,7 +275,10 @@ class PolymarketReader:
         current, upcoming, quote = await asyncio.gather(
             self.listed(asset, horizon, start, now=stamp, refresh=refresh),
             self.listed(asset, horizon, next_start, now=stamp, refresh=refresh),
-            self.market(asset, horizon, now=stamp, refresh=refresh),
+            self.market(
+                asset, horizon, now=stamp,
+                refresh=refresh, display_only=True,
+            ),
         )
         # One market can close between Gamma and CLOB reads. Do not show a
         # quote for a missing/expired or different verified listing.
@@ -294,6 +297,7 @@ class PolymarketReader:
         self, asset: str, horizon: int, *, now: datetime | None = None,
         opened: datetime | None = None,
         refresh: bool = False,
+        display_only: bool = False,
     ) -> PolymarketNotice | None:
         instant = (now or datetime.now(UTC)).astimezone(UTC)
         target = opened or instant
@@ -305,7 +309,8 @@ class PolymarketReader:
         async with lock:
             cached = self._cache.get(key)
             if (
-                not refresh and opened is None and cached is not None
+                not (refresh or display_only)
+                and opened is None and cached is not None
                 and cached[0] > instant
                 and (cached[1] is None or cached[1].slug == slug)
             ):
@@ -313,6 +318,7 @@ class PolymarketReader:
             try:
                 notice = await self._lookup(
                     slug=slug, asset=asset, horizon=horizon, now=instant,
+                    min_seconds_left=0 if display_only else MIN_SECONDS_LEFT,
                 )
             except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
                 _LOG.info(
@@ -321,7 +327,7 @@ class PolymarketReader:
                 )
                 notice = None
             # 15s live cache, 10s negative cache. Never reuse an old window.
-            if opened is None:
+            if opened is None and not display_only:
                 self._cache[key] = (
                     instant + timedelta(seconds=15 if notice else 10), notice,
                 )
@@ -329,6 +335,7 @@ class PolymarketReader:
 
     async def _lookup(
         self, *, slug: str, asset: str, horizon: int, now: datetime,
+        min_seconds_left: int = MIN_SECONDS_LEFT,
     ) -> PolymarketNotice | None:
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(3.5), follow_redirects=False,
@@ -363,7 +370,7 @@ class PolymarketReader:
             end = _date(event.get("endDate") or market.get("endDate"))
             if start != expected or end != expires:
                 return None
-            if not (start <= now < end and (end - now).total_seconds() >= MIN_SECONDS_LEFT):
+            if not (start <= now < end and (end - now).total_seconds() >= min_seconds_left):
                 return None
             outcomes = _decode_array(market.get("outcomes"))
             tokens = _decode_array(market.get("clobTokenIds"))
@@ -382,7 +389,9 @@ class PolymarketReader:
             quote_at = datetime.now(UTC)
             up = _best_ask(up_book, now=quote_at)
             down = _best_ask(down_book, now=quote_at)
-            if expires - quote_at < timedelta(seconds=MIN_SECONDS_LEFT):
+            if expires <= quote_at or (
+                expires - quote_at < timedelta(seconds=min_seconds_left)
+            ):
                 return None
             return PolymarketNotice(
                 asset=asset, horizon=horizon, issued=start,

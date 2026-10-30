@@ -68,6 +68,11 @@ FORECAST_ALERT_MAX_AGE = timedelta(minutes=3)
 # Per-tier, per-user daily budgets. Research and qualified budgets are
 # separate, so a busy research day can never crowd out a qualified window.
 DAILY_CAP_PER_TIER = 12
+
+
+def _cap_reached(sent: int, limit: int) -> bool:
+    """0 is explicitly unlimited; unrelated platform safeguards still apply."""
+    return limit > 0 and sent >= limit
 # Qualified delivery keys are prefixed so one forecast can yield a research
 # record and a qualified record without either claiming the other. Research
 # and Polymarket keys stay unprefixed, so pre-reconcile delivery rows keep
@@ -178,7 +183,8 @@ class AutoHuntStore:
                        max_ask_pct INTEGER NOT NULL DEFAULT 100,
                        min_remaining_seconds INTEGER NOT NULL DEFAULT 90,
                        direction_changes INTEGER NOT NULL DEFAULT 0,
-                       live_shifts INTEGER NOT NULL DEFAULT 0
+                       live_shifts INTEGER NOT NULL DEFAULT 0,
+                       daily_limit INTEGER NOT NULL DEFAULT 12
                    );
                    CREATE TABLE IF NOT EXISTS rival_hunt_tiers (
                        user_id TEXT PRIMARY KEY,
@@ -195,6 +201,11 @@ class AutoHuntStore:
                 conn.execute(
                     "ALTER TABLE rival_hunt_preferences ADD COLUMN "
                     "live_shifts INTEGER NOT NULL DEFAULT 0"
+                )
+            if "daily_limit" not in prefs_columns:
+                conn.execute(
+                    "ALTER TABLE rival_hunt_preferences ADD COLUMN "
+                    "daily_limit INTEGER NOT NULL DEFAULT 12"
                 )
             # Additive, SQLite/PostgreSQL compatible outbox metadata. Legacy
             # attempted rows remain at-most-once and are never re-sent.
@@ -293,7 +304,8 @@ class AutoHuntStore:
         with self.store.connect() as conn:
             row = conn.execute(
                 """SELECT assets,horizons,side,max_ask_pct,
-                          min_remaining_seconds,direction_changes,live_shifts
+                          min_remaining_seconds,direction_changes,live_shifts,
+                          daily_limit
                    FROM rival_hunt_preferences WHERE user_id=?""",
                 (user_id,),
             ).fetchone()
@@ -308,6 +320,7 @@ class AutoHuntStore:
             "min_remaining_seconds": int(data.get("min_remaining_seconds", 90)),
             "direction_changes": bool(data.get("direction_changes", 0)),
             "live_shifts": bool(data.get("live_shifts", 0)),
+            "daily_limit": int(data.get("daily_limit", DAILY_CAP_PER_TIER)),
         }
 
     def set_preference(self, user_id: str, field: str, value: object) -> dict:
@@ -323,6 +336,7 @@ class AutoHuntStore:
             "min_remaining_seconds": {90, 180, 300},
             "direction_changes": {0, 1},
             "live_shifts": {0, 1},
+            "daily_limit": {0, 12, 24, 48},
         }
         if field not in allowed:
             raise ValueError("Unknown Auto-Hunt preference")
@@ -1588,7 +1602,9 @@ class AutoHuntService:
         budget = (
             "\n**Today's sent alerts (UTC):** "
             + " • ".join(
-                f"{label} {today[tier]}/{DAILY_CAP_PER_TIER}"
+                f"{label} {today[tier]}/"
+                + (str(preferences["daily_limit"])
+                   if preferences["daily_limit"] > 0 else "Unlimited")
                 for tier, label in (
                     ("research", "Research"), ("qualified", "Qualified"),
                     ("polymarket", "Polymarket"),
@@ -1703,10 +1719,12 @@ class AutoHuntService:
                         or notice.asset not in prefs["assets"]
                     ):
                         continue
-                    if await asyncio.to_thread(
-                        self.store.count_sent_today,
-                        user_id, "live_shift", now,
-                    ) >= DAILY_CAP_PER_TIER:
+                    if _cap_reached(
+                        await asyncio.to_thread(
+                            self.store.count_sent_today,
+                            user_id, "live_shift", now,
+                        ), prefs["daily_limit"],
+                    ):
                         break
                     claimed = await asyncio.to_thread(
                         self.store.claim, user_id, notice,
@@ -1763,19 +1781,27 @@ class AutoHuntService:
             )
             counts = [daily[str(sub["user_id"])] for sub in subscribers]
             want_qualified = any(
-                s.get("qualified") and count["qualified"] < DAILY_CAP_PER_TIER
-                for s, count in zip(subscribers, counts, strict=True)
+                s.get("qualified") and not _cap_reached(
+                    count["qualified"], prefs["daily_limit"],
+                )
+                for s, count, prefs in zip(subscribers, counts, configs, strict=True)
             )
             want_research = any(
-                s.get("research") and count["research"] < DAILY_CAP_PER_TIER
-                for s, count in zip(subscribers, counts, strict=True)
+                s.get("research") and not _cap_reached(
+                    count["research"], prefs["daily_limit"],
+                )
+                for s, count, prefs in zip(subscribers, counts, configs, strict=True)
             )
             want_poly = any(
-                s.get("polymarket") and count["polymarket"] < DAILY_CAP_PER_TIER
-                for s, count in zip(subscribers, counts, strict=True)
+                s.get("polymarket") and not _cap_reached(
+                    count["polymarket"], prefs["daily_limit"],
+                )
+                for s, count, prefs in zip(subscribers, counts, configs, strict=True)
             )
             want_flips = any(
-                prefs["direction_changes"] and count["flip"] < DAILY_CAP_PER_TIER
+                prefs["direction_changes"] and not _cap_reached(
+                    count["flip"], prefs["daily_limit"],
+                )
                 for prefs, count in zip(configs, counts, strict=True)
             )
             qualified = (
@@ -1833,10 +1859,12 @@ class AutoHuntService:
                                 or candidate.expires - stamp < MIN_REMAINING
                             ):
                                 continue
-                            if await asyncio.to_thread(
+                            if _cap_reached(
+                                await asyncio.to_thread(
                                 self.store.count_sent_today, user_id,
                                 "qualified", stamp,
-                            ) >= DAILY_CAP_PER_TIER:
+                            ), preferences["daily_limit"],
+                            ):
                                 _LOG.info(
                                     "RivaL auto-hunt daily cap user=%s tier=qualified",
                                     user_id,
@@ -1899,10 +1927,12 @@ class AutoHuntService:
                                 candidate.expires,
                             ):
                                 continue
-                            if await asyncio.to_thread(
+                            if _cap_reached(
+                                await asyncio.to_thread(
                                 self.store.count_sent_today, user_id,
                                 "research", stamp,
-                            ) >= DAILY_CAP_PER_TIER:
+                            ), preferences["daily_limit"],
+                            ):
                                 _LOG.info(
                                     "RivaL auto-hunt daily cap user=%s tier=research",
                                     user_id,
@@ -1947,9 +1977,11 @@ class AutoHuntService:
                                 )
                             ):
                                 continue
-                            if await asyncio.to_thread(
+                            if _cap_reached(
+                                await asyncio.to_thread(
                                 self.store.count_sent_today, user_id, "flip", stamp,
-                            ) >= DAILY_CAP_PER_TIER:
+                            ), preferences["daily_limit"],
+                            ):
                                 break
                             key = FLIP_KEY_PREFIX + candidate.key
                             claimed = await asyncio.to_thread(
@@ -1980,10 +2012,12 @@ class AutoHuntService:
                             stamp = datetime.now(UTC)
                             if candidate.expires - stamp < MIN_REMAINING:
                                 continue
-                            if await asyncio.to_thread(
+                            if _cap_reached(
+                                await asyncio.to_thread(
                                 self.store.count_sent_today, user_id,
                                 "polymarket", stamp,
-                            ) >= DAILY_CAP_PER_TIER:
+                            ), preferences["daily_limit"],
+                            ):
                                 _LOG.info(
                                     "RivaL auto-hunt daily cap user=%s tier=polymarket",
                                     user_id,

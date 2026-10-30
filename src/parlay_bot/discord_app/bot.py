@@ -51,6 +51,7 @@ from parlay_bot.perpetuals.hyperliquid_history_recovery import (
 )
 from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
 from parlay_bot.perpetuals.lighter_history_recovery import LighterHistoryRecovery
+from parlay_bot.perpetuals.live_direction import LiveDirectionScanner
 from parlay_bot.perpetuals.live_quotes import (
     PublicBestQuoteClient,
     QuoteUnavailable,
@@ -350,6 +351,11 @@ class RivalDiscordClient(discord.Client):
             StreamShadowLedger(self.store) if self.live_stream is not None else None
         )
         self._stream_shadow_task: asyncio.Task[None] | None = None
+        self._live_direction_task: asyncio.Task[None] | None = None
+        self.live_direction = (
+            LiveDirectionScanner(self.live_stream)
+            if self.live_stream is not None else None
+        )
         self.quote_profit = (
             ProspectiveQuoteProfitMonitor(self.store)
             if self.forward_audit is not None else None
@@ -1500,6 +1506,10 @@ class RivalDiscordClient(discord.Client):
 
         if self.live_stream is not None:
             self.live_stream.start()
+            if self.live_direction is not None and self._live_direction_task is None:
+                self._live_direction_task = asyncio.create_task(
+                    self._live_direction_loop(), name="rival-live-direction-scanner",
+                )
             if self._stream_shadow_task is None:
                 self._stream_shadow_task = asyncio.create_task(
                     self._stream_shadow_loop(), name="rival-stream-forward-cost-audit",
@@ -1662,6 +1672,30 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001 - monitoring is best effort
                 _LOG.exception("RivaL sports DB integrity check unavailable")
             await asyncio.sleep(21600)
+
+    async def _live_direction_loop(self) -> None:
+        """Read WebSocket books every 5s, independent of Discord interactions.
+
+        No REST polling or additional sockets. Alerts only after both
+        exchanges confirm a meaningful reversal, for explicitly opted-in users.
+        """
+        await self.wait_until_ready()
+        assert self.live_direction is not None
+        _LOG.info("RivaL live market direction scanning enabled every 5 seconds")
+        while not self.is_closed():
+            try:
+                notices = self.live_direction.observe()
+                if notices:
+                    _LOG.info(
+                        "RivaL independently confirmed live trend shifts=%d",
+                        len(notices),
+                    )
+                    await self.auto_hunt.live_cycle(notices)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - stream/signal never stops Discord
+                _LOG.exception("RivaL live trend scanner cycle failed safely")
+            await asyncio.sleep(5)
 
     async def _hunt_loop(self) -> None:
         """Inspect fresh persisted forecasts without waiting for slow research work."""
@@ -2085,6 +2119,11 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self._live_direction_task is not None:
+            self._live_direction_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._live_direction_task
+            self._live_direction_task = None
         if self.live_stream is not None:
             await self.live_stream.aclose()
         if self._stream_shadow_task is not None:

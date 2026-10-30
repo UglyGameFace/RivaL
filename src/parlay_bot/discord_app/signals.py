@@ -559,13 +559,13 @@ async def signal_embed(
     venue_count = int(venue_evidence["settled"]) if venue_evidence else 0
     venue_hit = venue_evidence.get("hit_rate") if venue_evidence else None
     measured = (
-        f"{venue_hit:.1%} from {venue_count} settled\\n"
+        f"{venue_hit:.1%} from {venue_count} settled\n"
         f"Same venue • last 7d"
         if venue_hit is not None and venue_count >= 50
-        else f"Unverified • {venue_count} settled\\nMinimum 50 required"
+        else f"Unverified • {venue_count} settled\nMinimum 50 required"
     )
     matched_quote = (
-        f"Bid ${book.bid:,.{4 if asset == 'XRP' else 2}f}\\n"
+        f"Bid ${book.bid:,.{4 if asset == 'XRP' else 2}f}\n"
         f"Ask ${book.ask:,.{4 if asset == 'XRP' else 2}f}"
         if book is not None else "Not verified"
     )
@@ -574,7 +574,7 @@ async def signal_embed(
         ("⏱️ Expires", discord.utils.format_dt(
             chosen["target"] + timedelta(minutes=5), style="R",
         )),
-        ("⚡ Model strength", f"{max(probability, 1-probability):.1%} raw\\n"
+        ("⚡ Model strength", f"{max(probability, 1-probability):.1%} raw\n"
                              f"{strength} • not calibrated"),
         ("📊 Measured direction accuracy", measured),
     ):
@@ -714,7 +714,7 @@ async def signal_embed(
                         + (f" • Severe-cost mean {severe:+.1f} bps"
                            if severe is not None else
                            " • Too few observed exits")
-                        + "\\nOnly genuine later same-venue books; "
+                        + "\nOnly genuine later same-venue books; "
                           "no authenticated fills or guaranteed returns."
                     ),
                     inline=False,

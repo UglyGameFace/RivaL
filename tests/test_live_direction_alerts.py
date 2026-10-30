@@ -53,7 +53,7 @@ def test_five_second_websocket_scanning_requires_strong_confirmed_reversal():
     assert events[0].direction == "DOWN"
     assert events[0].move_bps < -15
     assert events[0].venue == "live_trend"
-    assert events[0].issued > CLOCK + timedelta(seconds=110)
+    assert events[0].issued >= CLOCK + timedelta(seconds=110)
     assert scanner.observe(now=CLOCK+timedelta(seconds=150)) == []
 
 

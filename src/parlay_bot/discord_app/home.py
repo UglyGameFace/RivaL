@@ -1380,12 +1380,12 @@ _STALE_BUTTONS_A = (
     "discover",
     "state", "zip", "refresh", "manual", "slip", "lower", "balanced",
     "aggressive", "forecast", "follow", "target", "home", "back",
-    "hunt-poly", "hunt-research", "hunt-qualified",
+    "hunt-poly", "hunt-research", "hunt-qualified", "hunt-config",
 )
 _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",
     "feeds", "research", "api-limits", "hunt-on",
-    "hunt-off", "hunt-status", "hunt-config", "explain",
+    "hunt-off", "hunt-status", "explain",
 )
 
 

@@ -173,7 +173,75 @@ def test_live_market_and_model_predictions_are_clearly_separate():
     assert "Down ask 45.0%" in full_text
     assert "Price to beat: Not verified" in full_text
     assert "Next price to beat unknown" in full_text
-    assert "**UP**" in full_text
-    assert "Exchange hyperliquid" in full_text
-    assert "not a Polymarket prediction" in full_text
+    assert "Same 5m closing boundary verified" in full_text
+    assert "lean: UP" in full_text
+    assert "source hyperliquid" in full_text
+    assert "WAIT • no verified Polymarket-specific edge" in full_text
+    assert "not calibrated" in full_text
     assert "every 15s" in embed.footer.text
+
+
+def test_15m_model_cannot_be_presented_as_15m_polymarket_prediction():
+    now = datetime(2026, 10, 30, 19, 15, tzinfo=UTC)
+    current = PolymarketListedWindow(
+        asset="BTC", horizon=15, slug="btc-updown-15m-1",
+        opens=now, closes=now + timedelta(minutes=15),
+        accepting_orders=True, price_to_beat=75000.0,
+    )
+    board = PolymarketWindowBoard(
+        checked_at=now, current=current,
+        next_window=None,
+        current_quote=PolymarketNotice(
+            asset="BTC", horizon=15, issued=now,
+            expires=now+timedelta(minutes=15),
+            slug=current.slug, up_ask=0.82,
+            down_ask=0.19, quote_at=now,
+        ),
+    )
+    model = TargetSnapshot(
+        asset="BTC", horizon_minutes=15, direction="UP",
+        detail="not validated", venue="hyperliquid",
+        probability=0.95, price=75000.0, issued_at=now,
+        ends_at=current.closes, status="ok",
+    )
+    embed = live_polymarket_embed(board, model, asset="BTC", horizon=15)
+    decision = embed.fields[-2].value
+    model_line = embed.fields[-1].value
+    assert "WAIT" in decision
+    assert "share purchase prices" in decision
+    assert "WAIT" in model_line
+    assert "5-minute candle" in model_line
+    assert "95.0%" not in model_line
+    assert "UP" not in model_line
+
+
+def test_mismatched_or_expired_forecast_does_not_justify_direction():
+    now = datetime(2026, 10, 30, 19, 15, tzinfo=UTC)
+    current = PolymarketListedWindow(
+        asset="BTC", horizon=5, slug="btc-updown-5m-1",
+        opens=now, closes=now+timedelta(minutes=5),
+        accepting_orders=True, price_to_beat=None,
+    )
+    board = PolymarketWindowBoard(
+        checked_at=now, current=current, next_window=None,
+        current_quote=PolymarketNotice(
+            asset="BTC", horizon=5, issued=now,
+            expires=now+timedelta(minutes=5),
+            slug=current.slug, up_ask=0.60,
+            down_ask=0.42, quote_at=now,
+        ),
+    )
+    wrong_window = TargetSnapshot(
+        asset="BTC", horizon_minutes=5, direction="DOWN",
+        detail="old unrelated candle", venue="okx",
+        probability=0.99, price=75000.0, issued_at=now,
+        ends_at=now+timedelta(minutes=10), status="ok",
+    )
+    embed = live_polymarket_embed(
+        board, wrong_window, asset="BTC", horizon=5,
+    )
+    evidence = embed.fields[-1].value
+    assert "WAIT" in evidence
+    assert "99.0%" not in evidence
+    assert "DOWN" not in evidence
+    assert "no verified Polymarket-specific edge" in embed.fields[-2].value

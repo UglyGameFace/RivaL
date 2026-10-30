@@ -1651,7 +1651,7 @@ class GuidedHome(discord.ui.View):
 # reopen on a fresh menu, and anything that would place, change, or stop
 # something (trades, alerts, slips, location, limits) just reopens a fresh
 # home menu with an honest note. A view has five rows. A fallback with two full-width selects must use at
-# most 15 buttons; we split these custom_ids across two views;
+# most 15 buttons; we split these custom_ids across three views;
 # discord.py matches by custom_id across every registered persistent view.
 # ---------------------------------------------------------------------------
 
@@ -1691,8 +1691,11 @@ _STALE_BUTTONS_A = (
 _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",
     "feeds", "research", "api-limits", "hunt-on",
-    "hunt-off", "hunt-status", "live", "live-on", "live-off", "explain",
+    "hunt-off", "hunt-status", "explain",
 )
+
+
+_STALE_BUTTONS_C = ("live", "live-on", "live-off")
 
 
 class _StaleButton(discord.ui.Button["_StaleGuidedMenuBase"]):
@@ -1795,19 +1798,29 @@ class StaleGuidedMenuViewB(_StaleGuidedMenuBase):
         self.add_item(_StaleHorizon())
 
 
+class StaleGuidedMenuViewC(_StaleGuidedMenuBase):
+    """Third slice for Live Mode, within Discord's five-row component limit."""
+
+    def __init__(self, home_factory: Callable[[int], GuidedHome]) -> None:
+        super().__init__(home_factory)
+        for action in _STALE_BUTTONS_C:
+            self.add_item(_StaleButton(action))
+
+
 def build_stale_guided_menu_views(
     home_factory: Callable[[int], GuidedHome],
-) -> tuple[StaleGuidedMenuViewA, StaleGuidedMenuViewB]:
-    """Persistent fallback views covering every guided-menu custom_id.
+) -> tuple[StaleGuidedMenuViewA, StaleGuidedMenuViewB, StaleGuidedMenuViewC]:
+    """Persistent fallbacks for every guided-menu custom_id.
 
-    Register both with bot.add_view at startup. discord.py routes a tap on
-    an expired or pre-restart menu to the matching fallback view.
+    The select-bearing B view is capped at 15 buttons plus two selects.
+    Extra Live Mode controls reside in a third independent persistent view,
+    preserving restart recovery without exceeding Discord's five rows.
     """
     return (
         StaleGuidedMenuViewA(home_factory),
         StaleGuidedMenuViewB(home_factory),
+        StaleGuidedMenuViewC(home_factory),
     )
-
 
 def install_view_dispatch_logging(client: object) -> None:
     """Log-only wrapper around discord.py's ViewStore.dispatch_view.

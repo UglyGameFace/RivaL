@@ -161,6 +161,12 @@ class PolymarketReader:
     def __init__(self) -> None:
         self._cache: dict[tuple[str, int], tuple[datetime, PolymarketNotice | None]] = {}
         self._locks: dict[tuple[str, int], asyncio.Lock] = {}
+        # Display-only reads must share a SHORT, slug-specific in-flight
+        # result; bypassing every cache doubled CLOB/Gamma work for the
+        # same 5m/15m contract. Never reuse an expired previous window.
+        self._display_cache: dict[
+            tuple[str, int], tuple[datetime, str, PolymarketNotice | None]
+        ] = {}
         self._listed_cache: dict[
             str, tuple[datetime, PolymarketListedWindow | None]
         ] = {}
@@ -308,6 +314,14 @@ class PolymarketReader:
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             cached = self._cache.get(key)
+            display = self._display_cache.get(key)
+            if (
+                display_only and not refresh and opened is None
+                and display is not None and display[0] > instant
+                and display[1] == slug
+            ):
+                candidate = display[2]
+                return candidate if candidate is None or candidate.expires > datetime.now(UTC) else None
             if (
                 not (refresh or display_only)
                 and opened is None and cached is not None
@@ -315,6 +329,16 @@ class PolymarketReader:
                 and (cached[1] is None or cached[1].slug == slug)
             ):
                 return cached[1]
+            # A validated fresh display quote also serves normal research.
+            # A negative display result does not overrule the independent
+            # eligibility rules of normal Auto-Hunt alerts.
+            if (
+                not display_only and not refresh and opened is None
+                and display is not None and display[0] > instant
+                and display[1] == slug and display[2] is not None
+                and (display[2].expires - instant).total_seconds() >= MIN_SECONDS_LEFT
+            ):
+                return display[2]
             try:
                 notice = await self._lookup(
                     slug=slug, asset=asset, horizon=horizon, now=instant,
@@ -326,8 +350,13 @@ class PolymarketReader:
                     asset, horizon, type(exc).__name__,
                 )
                 notice = None
-            # 15s live cache, 10s negative cache. Never reuse an old window.
-            if opened is None and not display_only:
+            # 5s display cache reduces duplicated Gamma/CLOB burst traffic
+            # while keeping a genuinely short freshness window for quotes.
+            if opened is None and display_only:
+                self._display_cache[key] = (
+                    instant + timedelta(seconds=5), slug, notice,
+                )
+            elif opened is None:
                 self._cache[key] = (
                     instant + timedelta(seconds=15 if notice else 10), notice,
                 )

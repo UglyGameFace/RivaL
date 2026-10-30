@@ -9,7 +9,7 @@ import discord
 
 from parlay_bot.discord_app.auto_hunt import AutoHuntService
 
-MARKET_COINS = ("BTC", "ETH", "SOL")
+MARKET_COINS = ("BTC", "ETH", "SOL", "XRP")
 MARKET_HORIZONS = (5, 15)
 
 
@@ -107,7 +107,7 @@ class HuntSettingsView(discord.ui.View):
                 f"Polymarket sides: **{self.prefs['side']}** • "
                 f"Maximum ask: **{self.prefs['max_ask_pct']}%** • "
                 f"Time remaining: **{self.prefs['min_remaining_seconds']}s**\n\n"
-                "Polymarket uses real listed 5m/15m Up/Down markets. "
+                "Polymarket has listed BTC/ETH/SOL 5m/15m markets; XRP requires its own live market feed. "
                 "The max ask is a PRICE filter (not a probability "
                 "estimate); it does not establish profitable odds. "
                 "Select coins and windows independently, then press "

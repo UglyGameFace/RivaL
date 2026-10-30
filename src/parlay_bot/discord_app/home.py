@@ -1732,13 +1732,16 @@ class GuidedHome(discord.ui.View):
         elif action in ("follow", "stop"):
             try:
                 if action == "stop":
-                    done = await self.targets.stop(self.owner_id)
-                    hunt_done = (
-                        await self.auto_hunt.stop(self.owner_id)
-                        if self.auto_hunt is not None else False
+                    tracker = getattr(
+                        getattr(self.auto_hunt, "bot", None),
+                        "polymarket_board", None,
                     )
-                    self.note = ("Private alerts stopped." if done or hunt_done else
-                                 "You have no active alerts.")
+                    result = await stop_all_notifications(
+                        self.owner_id, auto_hunt=self.auto_hunt,
+                        targets=self.targets, tracker=tracker,
+                    )
+                    self.navigate("hunt")
+                    self.note = result
                 else:
                     ok, message = await self.targets.follow(
                         interaction.user, asset=self.coin,

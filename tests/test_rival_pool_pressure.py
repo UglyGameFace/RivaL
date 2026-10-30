@@ -293,6 +293,7 @@ def test_postgres_checkout_reports_owner_query_and_commit_not_values(
     monkeypatch, caplog,
 ):
     from psycopg.pq import TransactionStatus
+
     from parlay_bot.storage import database as db_module
 
     class DummyConnection:
@@ -320,12 +321,11 @@ def test_postgres_checkout_reports_owner_query_and_commit_not_values(
         "postgresql://fake.test/fake", max_size=1,
     )
     try:
-        with caplog.at_level(logging.WARNING):
-            with db.connect() as conn:
-                conn.execute("SELECT ? AS injected", ("SUPER-SECRET-VALUE",))
-                assert conn.query_count == 1
-                assert conn.slowest_operation == "SELECT"
-                clock["now"] = 106.25
+        with caplog.at_level(logging.WARNING), db.connect() as conn:
+            conn.execute("SELECT ? AS injected", ("SUPER-SECRET-VALUE",))
+            assert conn.query_count == 1
+            assert conn.slowest_operation == "SELECT"
+            clock["now"] = 106.25
         records = [r.message for r in caplog.records
                    if "connection held" in r.message]
         assert len(records) == 1

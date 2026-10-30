@@ -512,10 +512,11 @@ class AutoHuntStore:
                 """UPDATE rival_hunt_delivery SET
                        state=?,message_id=?,delivered_at=?
                    WHERE user_id=? AND forecast_key=?
-                     AND state IN ('ready','sending','attempted')""",
+                     AND (state IN ('sending','attempted')
+                          OR (state='ready' AND ?=1))""",
                 ("sent" if sent else "unknown", message_id,
                  datetime.now(UTC).isoformat() if sent else None,
-                 user_id, key or candidate.key),
+                 user_id, key or candidate.key, 1 if sent else 0),
             )
 
     def delivery_health(self, user_id: str) -> dict:

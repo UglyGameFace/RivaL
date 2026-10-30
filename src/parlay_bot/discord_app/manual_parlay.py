@@ -82,12 +82,13 @@ class ManualParlayView(discord.ui.View):
             sports = sorted({r["sport_name"] for r in self.rows if r["sport_name"]})
             self.add_item(_Filter(self, "sport", sports))
             books = sorted({r["bookmaker"] for r in self.rows})
-            self.add_item(_Filter(self, "book", books))
+            if self.game is None:
+                self.add_item(_Filter(self, "book", books))
             games = {}
             for r in self.rows:
                 if (self.sport is None or r["sport_name"] == self.sport) and (self.book is None or r["bookmaker"] == self.book):
                     games.setdefault(r["fixture_id"], r["event_name"])
-            if games:
+            if games and self.game is None:
                 self.add_item(_Filter(self, "game", list(games.items())))
             if self.game is not None:
                 categories = sorted({self._category(r) for r in self.rows if r["fixture_id"] == self.game})

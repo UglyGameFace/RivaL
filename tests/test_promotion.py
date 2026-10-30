@@ -301,7 +301,10 @@ def test_stale_promotion_falls_back_to_live(tmp_path):
     now = datetime.now(UTC).replace(microsecond=0)
     store = SQLiteHotStore(tmp_path / "stale.sqlite")
     try:
-        assert promote(store, now)["status"] == "promoted"
+        seed_strict_21_day_paired_proof(store, now)
+        assert evaluate_promotion(
+            store, asset="BTC", horizon=5, now=now,
+        )["status"] == "promoted"
         assert (
             promoted_engine(
                 store,

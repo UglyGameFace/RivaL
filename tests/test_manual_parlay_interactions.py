@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from parlay_bot.discord_app.manual_parlay import ManualParlayView, _Action, _Pick
+from parlay_bot.discord_app.manual_parlay import ManualParlayView, _Action, _Filter, _Pick
 
 
 def quote(fixture, key, price=2.0):
@@ -41,6 +41,14 @@ async def test_other_user_cannot_interact():
 @pytest.mark.asyncio
 async def test_selection_and_remove_buttons():
     view = picker()
+    game = next(x for x in view.children if isinstance(x, _Filter) and x.kind == "game")
+    game._values = ["game1"]
+    interaction = MagicMock()
+    interaction.response.edit_message = AsyncMock()
+    await game.callback(interaction)
+    category = next(x for x in view.children if isinstance(x, _Filter) and x.kind == "category")
+    category._values = ["Full Game"]
+    await category.callback(interaction)
     select = next(x for x in view.children if isinstance(x, _Pick))
     select._values = ["0"]
     interaction = MagicMock()

@@ -41,7 +41,7 @@ class OddsPapiCurrentCollector:
                 if not account.sport_ids:
                     return "No sports entitled by OddsPapi subscription"
                 books = tuple(slug for slug, entitlement in account.bookmakers.items()
-                              if getattr(entitlement, "enabled", True))
+                              if entitlement.has_live_odds)
                 if not books:
                     return "No entitled OddsPapi bookmakers"
                 sport = account.sport_ids[self._sport_cursor % len(account.sport_ids)]

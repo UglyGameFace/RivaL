@@ -1417,6 +1417,7 @@ class GuidedHome(discord.ui.View):
         elif action in ("forecast", "quote"):
             self.navigate(action)
         elif action in ("live-on", "live-off"):
+            self.navigate("live")
             if self.auto_hunt is None:
                 self.note = "Live alerts are unavailable; no change saved."
             else:
@@ -1436,7 +1437,6 @@ class GuidedHome(discord.ui.View):
                 except Exception:  # noqa: BLE001
                     _LOG.exception("Live alert preference failed")
                     self.note = "Live alerts unchanged; unable to save preference."
-            self.navigate("live")
         elif action in ("hunt-on", "hunt-poly", "hunt-off", "hunt-status",
                          "hunt-research", "hunt-qualified"):
             if self.auto_hunt is None:

@@ -351,20 +351,21 @@ class GuidedHome(discord.ui.View):
             self.add_item(_Horizon(self.horizon))
             self._add("Start Auto-Track", "poly-start", 2, "⚡", True)
             self._add("Stop Auto-Track", "poly-stop", 2, "🔕")
-            self._add("Follow Polymarket", "hunt-poly", 2, "📊")
-            self._add("Enable Shift DMs", "live-on", 3, "⚡")
-            self._add("Disable Shift DMs", "live-off", 3, "🔕")
-            self._add("Check Now", "poly-refresh", 3, "🔄")
-            self._add("Alert Settings", "hunt-config", 3, "⚙️")
+            self._add("Notification Options", "hunt", 3, "⚙️")
         elif p == "hunt":
-            self._add("Follow Polymarket", "hunt-poly", 0, "📊", True)
-            self._add("Follow Model Forecasts", "hunt-on", 0, "📈")
-            self._add("Alert Settings", "hunt-config", 1, "⚙️", True)
-            self._add("Live Mode", "live", 1, "⚡")
-            self._add("Stop All Alerts", "hunt-off", 2, "🔕")
-            self._add("Check Status", "hunt-status", 2, "🔎")
-            self._add("Early Research", "hunt-research", 3, "🔔")
-            self._add("Qualified Watches", "hunt-qualified", 3, "✅")
+            self._add("Live Mode", "live", 0, "⚡", True)
+            self._add("Alert Status", "hunt-status", 0, "🔎")
+            self._add("Notification Filters", "hunt-config", 1, "⚙️")
+            self._add("Other Alert Types", "hunt-tools", 1, "🔔")
+            self._add("Stop Old Alerts", "hunt-off", 2, "🔕")
+        elif p == "hunt-tools":
+            self._add("Polymarket Price Notices", "hunt-poly", 0, "📊")
+            self._add("Model Research", "hunt-on", 0, "📈")
+            self._add("Research Toggle", "hunt-research", 1, "🔔")
+            self._add("Qualified Watches Toggle", "hunt-qualified", 1, "✅")
+            self._add("Live Shift Alerts ON", "live-on", 2, "⚡")
+            self._add("Live Shift Alerts OFF", "live-off", 2, "🔕")
+            self._add("Notification Filters", "hunt-config", 3, "⚙️")
         elif p == "practice":
             self.add_item(_Coin(self.coin))
             self._add("Practice Buy $25", "buy", 1, "📈", True)
@@ -1509,7 +1510,7 @@ class GuidedHome(discord.ui.View):
         if action == "back":
             self.page = self.back_stack.pop() if self.back_stack else "home"
             self.note = None
-        elif action in ("home", "discover", "sports", "crypto", "hunt", "live", "practice",
+        elif action in ("home", "discover", "sports", "crypto", "hunt", "hunt-tools", "live", "practice",
                         "results", "help", "advanced", "feeds", "trust"):
             self.navigate(action)
             if action == "sports":
@@ -1566,10 +1567,6 @@ class GuidedHome(discord.ui.View):
                 except Exception:  # noqa: BLE001
                     _LOG.exception("Stopping live Polymarket DM failed safely")
                     self.note = "Could not confirm stopping the live tracker."
-        elif action == "poly-refresh":
-            self.navigate("live")
-            self._poly_refresh = True
-            self.note = "Checking fresh Gamma listings and order-book asks."
         elif action in ("live-on", "live-off"):
             self.navigate("live")
             if self.auto_hunt is None:
@@ -1817,6 +1814,7 @@ _STALE_SAFE_PAGES = {
     "sports": "sports",
     "crypto": "crypto",
     "hunt": "hunt",
+    "hunt-tools": "hunt-tools",
     "live": "live",
     "practice": "practice",
     "results": "results",
@@ -1851,6 +1849,7 @@ _STALE_BUTTONS_B = (
 
 _STALE_BUTTONS_C = (
     "live", "live-on", "live-off", "poly-refresh", "poly-start", "poly-stop",
+    "hunt-tools",
 )
 
 

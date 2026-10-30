@@ -39,6 +39,8 @@ from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
+from parlay_bot.perpetuals.deribit_history_recovery import DeribitHistoryRecovery
+from parlay_bot.perpetuals.dydx_history_recovery import DydxHistoryRecovery
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import GeminiResearch
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
@@ -47,6 +49,7 @@ from parlay_bot.perpetuals.hyperliquid_history_recovery import (
     HyperliquidHistoryRecovery,
 )
 from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
+from parlay_bot.perpetuals.lighter_history_recovery import LighterHistoryRecovery
 from parlay_bot.perpetuals.live_quotes import (
     PublicBestQuoteClient,
     QuoteUnavailable,
@@ -54,6 +57,7 @@ from parlay_bot.perpetuals.live_quotes import (
 )
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
 from parlay_bot.perpetuals.paper_ledger import PaperLedger
+from parlay_bot.perpetuals.phemex_history_recovery import PhemexHistoryRecovery
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
@@ -259,6 +263,34 @@ class RivalDiscordClient(discord.Client):
         )
         self.hyperliquid_history_recovery: HyperliquidHistoryRecovery | None = (
             HyperliquidHistoryRecovery(
+                self.perp_collector.market, assets=self.perp_collector.assets,
+            )
+            if self.perp_collector is not None
+            and settings.rival_history_recovery_enabled else None
+        )
+        self.deribit_history_recovery: DeribitHistoryRecovery | None = (
+            DeribitHistoryRecovery(
+                self.perp_collector.market, assets=self.perp_collector.assets,
+            )
+            if self.perp_collector is not None
+            and settings.rival_history_recovery_enabled else None
+        )
+        self.lighter_history_recovery: LighterHistoryRecovery | None = (
+            LighterHistoryRecovery(
+                self.perp_collector.market, assets=self.perp_collector.assets,
+            )
+            if self.perp_collector is not None
+            and settings.rival_history_recovery_enabled else None
+        )
+        self.dydx_history_recovery: DydxHistoryRecovery | None = (
+            DydxHistoryRecovery(
+                self.perp_collector.market, assets=self.perp_collector.assets,
+            )
+            if self.perp_collector is not None
+            and settings.rival_history_recovery_enabled else None
+        )
+        self.phemex_history_recovery: PhemexHistoryRecovery | None = (
+            PhemexHistoryRecovery(
                 self.perp_collector.market, assets=self.perp_collector.assets,
             )
             if self.perp_collector is not None
@@ -1455,7 +1487,11 @@ class RivalDiscordClient(discord.Client):
              or self.kucoin_history_recovery is not None
              or self.bitget_history_recovery is not None
              or self.okx_history_recovery is not None
-             or self.hyperliquid_history_recovery is not None)
+             or self.hyperliquid_history_recovery is not None
+             or self.deribit_history_recovery is not None
+             or self.lighter_history_recovery is not None
+             or self.dydx_history_recovery is not None
+             or self.phemex_history_recovery is not None)
             and self._history_task is None
         ):
             self._history_task = asyncio.create_task(
@@ -1796,6 +1832,54 @@ class RivalDiscordClient(discord.Client):
                 except Exception:  # noqa: BLE001
                     _LOG.exception(
                         "RivaL Hyperliquid history recovery failed safely")
+            if self.deribit_history_recovery is not None:
+                try:
+                    added = await self.deribit_history_recovery.run_once()
+                    if added:
+                        _LOG.info(
+                            "RivaL verified historical Deribit recovery inserted=%d",
+                            added,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL Deribit history recovery failed safely")
+            if self.lighter_history_recovery is not None:
+                try:
+                    added = await self.lighter_history_recovery.run_once()
+                    if added:
+                        _LOG.info(
+                            "RivaL verified historical Lighter recovery inserted=%d",
+                            added,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL Lighter history recovery failed safely")
+            if self.dydx_history_recovery is not None:
+                try:
+                    added = await self.dydx_history_recovery.run_once()
+                    if added:
+                        _LOG.info(
+                            "RivaL verified historical dYdX recovery inserted=%d",
+                            added,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL dYdX history recovery failed safely")
+            if self.phemex_history_recovery is not None:
+                try:
+                    added = await self.phemex_history_recovery.run_once()
+                    if added:
+                        _LOG.info(
+                            "RivaL verified historical Phemex recovery inserted=%d",
+                            added,
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL Phemex history recovery failed safely")
             if self.history_auditor is not None and self.perp_collector is not None:
                 now = datetime.now(UTC)
                 hour = int(now.timestamp() // 3600)

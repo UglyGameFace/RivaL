@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 import pytest
 
 from parlay_bot.collectors.oddspapi_current import OddsPapiCurrentCollector
 from parlay_bot.storage.hot import SQLiteHotStore
-from tests.sgo_samples import sample_sgo_event
 
 
 class FakeOddsPapi:

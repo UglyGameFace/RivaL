@@ -191,27 +191,66 @@ def live_polymarket_embed(
             "Next price to beat unknown until Polymarket publishes it."
         )
     embed.add_field(name="Next event", value=upcoming, inline=False)
-    if snapshot is None or snapshot.status != "ok":
+    # The incumbent exchange model predicts a FUTURE FIVE-MINUTE candle,
+    # even when its parameter horizon is 15m. That is not the same target
+    # as the 15m Polymarket contract. No model in this path has been
+    # calibrated against Polymarket's settlement oracle/contract outcomes.
+    # Raw exchange model strength must NEVER become a Polymarket win %.
+    embed.add_field(
+        name="RivaL Polymarket decision",
+        value=(
+            "**WAIT • no verified Polymarket-specific edge.** "
+            "Up/Down asks are share purchase prices, **not predictions**. "
+            "A separate exchange-candle model cannot justify a real-money "
+            "direction until market timing, settlement rules, and "
+            "forward-tested calibration match."
+        ),
+        inline=False,
+    )
+    current = board.current if board is not None else None
+    aligned = (
+        current is not None
+        and current.accepting_orders
+        and board.current_quote is not None
+        and snapshot is not None
+        and snapshot.status == "ok"
+        and snapshot.asset == asset
+        and snapshot.horizon_minutes == horizon == 5
+        and snapshot.direction in ("UP", "DOWN")
+        and snapshot.probability is not None
+        and 0.5 < snapshot.probability < 1
+        and snapshot.issued_at is not None
+        and snapshot.issued_at <= board.checked_at < current.closes
+        and snapshot.ends_at == current.closes
+    )
+    if aligned:
         forecast = (
-            "WAIT • No currently verified RivaL forward forecast. "
-            "Updating automatically when a new eligible model result arrives."
+            f"Separate 5m exchange-candle model lean: "
+            f"{snapshot.direction} • raw directional score "
+            f"{snapshot.probability:.1%} • source {snapshot.venue}\\n"
+            "Same 5m closing boundary verified; **not calibrated "
+            "to this Polymarket outcome or its oracle**."
+        )
+    elif horizon == 15:
+        forecast = (
+            "WAIT • RivaL's 15m-horizon forecast predicts a future "
+            "**5-minute candle**, not this 15-minute Polymarket "
+            "settlement window. Its direction is intentionally hidden."
         )
     else:
-        end = (
-            f" • Expires <t:{int(snapshot.ends_at.timestamp())}:R>"
-            if snapshot.ends_at else ""
-        )
         forecast = (
-            f"**{snapshot.direction}** (unverified model lean, "
-            f"not a Polymarket prediction) • "
-            f"Model score {snapshot.probability:.1%} • "
-            f"Exchange {snapshot.venue}{end}"
+            "WAIT • No fresh source-matched forecast ending at this "
+            "Polymarket market's closing boundary. No old or unrelated "
+            "UP/DOWN estimate reused."
         )
     embed.add_field(
-        name="RivaL's latest exchange-candle direction",
+        name="Separate model evidence (not market odds)",
         value=forecast, inline=False,
     )
-    embed.set_footer(text="Auto-updates about every 15s; stops with /rival → Live Mode")
+    embed.set_footer(
+        text="Auto-updates ~15s • Follow markets, not betting advice • "
+             "Stop via /rival → Live Mode",
+    )
     return embed
 
 

@@ -161,9 +161,16 @@ class PolymarketReader:
     def __init__(self) -> None:
         self._cache: dict[tuple[str, int], tuple[datetime, PolymarketNotice | None]] = {}
         self._locks: dict[tuple[str, int], asyncio.Lock] = {}
+        # Display-only reads must share a SHORT, slug-specific in-flight
+        # result; bypassing every cache doubled CLOB/Gamma work for the
+        # same 5m/15m contract. Never reuse an expired previous window.
+        self._display_cache: dict[
+            tuple[str, int], tuple[datetime, str, PolymarketNotice | None]
+        ] = {}
         self._listed_cache: dict[
             str, tuple[datetime, PolymarketListedWindow | None]
         ] = {}
+        self._listed_locks: dict[str, asyncio.Lock] = {}
 
     async def listed(
         self, asset: str, horizon: int, opened: datetime, *,
@@ -182,82 +189,93 @@ class PolymarketReader:
             tz=UTC,
         ):
             raise ValueError("Unaligned window")
-        cache = self._listed_cache.get(slug)
-        if not refresh and cache is not None and cache[0] > instant:
-            return cache[1]
-        listing = None
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(3.5), follow_redirects=False,
-            ) as client:
-                res = await client.get(f"{GAMMA}/events/slug/{slug}")
-                if res.status_code != 404:
-                    res.raise_for_status()
-                    event = res.json()
-                    if isinstance(event, dict) and event.get("slug") == slug:
-                        markets = event.get("markets")
-                        if (
-                            event.get("closed") is False
-                            and event.get("archived") is not True
-                            and isinstance(markets, list) and len(markets) == 1
-                            and isinstance(markets[0], dict)
-                        ):
-                            m = markets[0]
-                            opens = _date(
-                                event.get("eventStartTime")
-                                or m.get("eventStartTime")
-                            )
-                            closes = _date(
-                                event.get("endDate") or m.get("endDate")
-                            )
+        # Bound the per-contract locks over months of 5-minute rollover.
+        # Never evict an active lock (which may have concurrent waiters).
+        if len(self._listed_locks) > 64:
+            for old, active in list(self._listed_locks.items()):
+                if not active.locked():
+                    self._listed_locks.pop(old, None)
+                if len(self._listed_locks) <= 32:
+                    break
+        # Gamma listing checks from the live board and Auto-Hunt share a
+        # slug-keyed request, even when both start during the same second.
+        async with self._listed_locks.setdefault(slug, asyncio.Lock()):
+            cache = self._listed_cache.get(slug)
+            if not refresh and cache is not None and cache[0] > instant:
+                return cache[1]
+            listing = None
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(3.5), follow_redirects=False,
+                ) as client:
+                    res = await client.get(f"{GAMMA}/events/slug/{slug}")
+                    if res.status_code != 404:
+                        res.raise_for_status()
+                        event = res.json()
+                        if isinstance(event, dict) and event.get("slug") == slug:
+                            markets = event.get("markets")
                             if (
-                                opens == start
-                                and closes == start + timedelta(minutes=horizon)
-                                and m.get("closed") is False
-                                and _decode_array(m.get("outcomes"))
-                                == ["Up", "Down"]
+                                event.get("closed") is False
+                                and event.get("archived") is not True
+                                and isinstance(markets, list) and len(markets) == 1
+                                and isinstance(markets[0], dict)
                             ):
-                                active = bool(
-                                    event.get("active") is True
-                                    and m.get("active") is True
-                                    and m.get("acceptingOrders") is True
-                                    and m.get("enableOrderBook") is True
-                                    and start <= instant < closes
+                                m = markets[0]
+                                opens = _date(
+                                    event.get("eventStartTime")
+                                    or m.get("eventStartTime")
                                 )
-                                target = None
-                                metadata = event.get("eventMetadata")
+                                closes = _date(
+                                    event.get("endDate") or m.get("endDate")
+                                )
                                 if (
-                                    start <= instant < closes
-                                    and isinstance(metadata, dict)
+                                    opens == start
+                                    and closes == start + timedelta(minutes=horizon)
+                                    and m.get("closed") is False
+                                    and _decode_array(m.get("outcomes"))
+                                    == ["Up", "Down"]
                                 ):
-                                    try:
-                                        candidate = float(
-                                            metadata.get("priceToBeat")
-                                        )
-                                        if (
-                                            math.isfinite(candidate)
-                                            and candidate > 0
-                                        ):
-                                            target = candidate
-                                    except (TypeError, ValueError, OverflowError):
-                                        pass
-                                listing = PolymarketListedWindow(
-                                    asset=asset, horizon=horizon,
-                                    slug=slug, opens=opens, closes=closes,
-                                    accepting_orders=active,
-                                    price_to_beat=target,
-                                )
-        except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
-            _LOG.info(
-                "Polymarket verified listing unavailable asset=%s "
-                "horizon=%s reason=%s",
-                asset, horizon, type(exc).__name__,
+                                    active = bool(
+                                        event.get("active") is True
+                                        and m.get("active") is True
+                                        and m.get("acceptingOrders") is True
+                                        and m.get("enableOrderBook") is True
+                                        and start <= instant < closes
+                                    )
+                                    target = None
+                                    metadata = event.get("eventMetadata")
+                                    if (
+                                        start <= instant < closes
+                                        and isinstance(metadata, dict)
+                                    ):
+                                        try:
+                                            candidate = float(
+                                                metadata.get("priceToBeat")
+                                            )
+                                            if (
+                                                math.isfinite(candidate)
+                                                and candidate > 0
+                                            ):
+                                                target = candidate
+                                        except (TypeError, ValueError, OverflowError):
+                                            pass
+                                    listing = PolymarketListedWindow(
+                                        asset=asset, horizon=horizon,
+                                        slug=slug, opens=opens, closes=closes,
+                                        accepting_orders=active,
+                                        price_to_beat=target,
+                                    )
+            except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+                _LOG.info(
+                    "Polymarket verified listing unavailable asset=%s "
+                    "horizon=%s reason=%s",
+                    asset, horizon, type(exc).__name__,
+                )
+            self._listed_cache[slug] = (
+                instant + timedelta(seconds=10 if listing else 5),
+                listing,
             )
-        self._listed_cache[slug] = (
-            instant + timedelta(seconds=10 if listing else 5),
-            listing,
-        )
-        return listing
+            return listing
 
     async def window_board(
         self, asset: str, horizon: int, *, now: datetime | None = None,
@@ -308,6 +326,14 @@ class PolymarketReader:
         lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
             cached = self._cache.get(key)
+            display = self._display_cache.get(key)
+            if (
+                display_only and not refresh and opened is None
+                and display is not None and display[0] > instant
+                and display[1] == slug
+            ):
+                candidate = display[2]
+                return candidate if candidate is None or candidate.expires > datetime.now(UTC) else None
             if (
                 not (refresh or display_only)
                 and opened is None and cached is not None
@@ -315,6 +341,16 @@ class PolymarketReader:
                 and (cached[1] is None or cached[1].slug == slug)
             ):
                 return cached[1]
+            # A validated fresh display quote also serves normal research.
+            # A negative display result does not overrule the independent
+            # eligibility rules of normal Auto-Hunt alerts.
+            if (
+                not display_only and not refresh and opened is None
+                and display is not None and display[0] > instant
+                and display[1] == slug and display[2] is not None
+                and (display[2].expires - instant).total_seconds() >= MIN_SECONDS_LEFT
+            ):
+                return display[2]
             try:
                 notice = await self._lookup(
                     slug=slug, asset=asset, horizon=horizon, now=instant,
@@ -326,8 +362,13 @@ class PolymarketReader:
                     asset, horizon, type(exc).__name__,
                 )
                 notice = None
-            # 15s live cache, 10s negative cache. Never reuse an old window.
-            if opened is None and not display_only:
+            # 5s display cache reduces duplicated Gamma/CLOB burst traffic
+            # while keeping a genuinely short freshness window for quotes.
+            if opened is None and display_only:
+                self._display_cache[key] = (
+                    instant + timedelta(seconds=5), slug, notice,
+                )
+            elif opened is None:
                 self._cache[key] = (
                     instant + timedelta(seconds=15 if notice else 10), notice,
                 )

@@ -530,7 +530,7 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
         shown = interaction.edit_original_response.await_args.kwargs["view"]
         assert "Start Auto-Track" in _labels(shown)
         assert "Stop Auto-Track" in _labels(shown)
-        assert "Notification Options" in _labels(shown)
+        assert "Alert Settings" in _labels(shown)
         assert "private message" in (await home.render()).description
         assert "OFF" in (await home.render()).description
         await home.act(interaction, "hunt-tools")
@@ -594,7 +594,7 @@ async def test_live_mode_opens_one_automatic_tracker_without_extra_market_polls(
         labels = _labels(rendered)
         assert "Start Auto-Track" in labels
         assert "Stop Auto-Track" in labels
-        assert "Notification Options" in labels
+        assert "Alert Settings" in labels
         assert "Follow Polymarket" not in labels
         assert "Check Now" not in labels
         embed = await home.render()

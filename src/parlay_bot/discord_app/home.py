@@ -395,6 +395,7 @@ class GuidedHome(discord.ui.View):
         self.training_status = training_status
         self.kalshi = kalshi
         self._kalshi_refresh = False
+        self.live_source = "polymarket"
         self.page = "home"
         self.back_stack: list[str] = []
         self.coin = "BTC"
@@ -462,11 +463,18 @@ class GuidedHome(discord.ui.View):
             self._add("Stop My Alerts", "stop", 3, "🔕")
         elif p == "live":
             self.add_item(_Coin(self.coin))
-            self.add_item(_PolymarketHorizon(self.horizon))
-            self._add("Start Auto-Track", "poly-start", 2, "⚡", True)
-            self._add("Stop Auto-Track", "poly-stop", 2, "🔕")
-            self._add("Notification Options", "hunt-tools", 3, "⚙️")
-            self._add("Browse Kalshi", "kalshi", 3, "📊")
+            if self.live_source == "polymarket":
+                self.add_item(_PolymarketHorizon(self.horizon))
+                self._add("Start Auto-Track", "poly-start", 2, "⚡", True)
+                self._add("Stop Auto-Track", "poly-stop", 2, "🔕")
+            elif self.live_source == "kalshi":
+                self._add("Update Kalshi", "kalshi-refresh", 2, "🔄")
+            self._add("Alert Settings", "hunt-tools", 2, "⚙️")
+            self._add("Polymarket", "live-poly", 3, "⚡",
+                      self.live_source == "polymarket")
+            self._add("Kalshi", "live-kalshi", 3, "📊",
+                      self.live_source == "kalshi")
+            self._add("DraftKings", "live-dk", 3, "🔒")
         elif p == "hunt":
             self._add("Live Mode", "live", 0, "⚡", True)
             self._add("Alert Status", "hunt-status", 0, "🔎")
@@ -589,119 +597,196 @@ class GuidedHome(discord.ui.View):
                 ),
                 color=discord.Color.blurple(),
             )
-        elif p == "live":
+        elif p in ("live", "kalshi"):
+            # One source-focused card and one set of controls. Legacy Kalshi
+            # deep links still land here, not a competing submenu.
+            source = self.live_source if p == "live" else "kalshi"
             service = (
-                getattr(self.auto_hunt.bot, "polymarket_board", None)
-                if self.auto_hunt is not None else None
+                getattr(getattr(self.auto_hunt, "bot", None),
+                        "polymarket_board", None)
             )
             tracker = None
             if service is not None:
                 try:
                     tracker = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            service.store.get, str(self.owner_id),
-                        ), timeout=1.5,
+                        asyncio.to_thread(service.store.get, str(self.owner_id)),
+                        timeout=0.75,
                     )
-                except Exception:  # noqa: BLE001
-                    _LOG.warning("Live tracker status unavailable")
+                except (TimeoutError, Exception):  # noqa: BLE001
+                    _LOG.info("Market desk tracker status busy")
             status = (
                 f"**TRACKING {tracker.asset} {tracker.horizon}m** "
-                "• your private card updates automatically"
-                if tracker else "OFF • no automatic market tracker active"
+                "• private message updates automatically"
+                if tracker else "**OFF** • Start Auto-Track for one updated private message"
             )
+            provider = {
+                "polymarket": "Polymarket Global",
+                "kalshi": "Kalshi",
+                "draftkings": "DraftKings Predictions",
+            }.get(source, "Polymarket Global")
             embed = discord.Embed(
-                title="⚡ Polymarket Global | Live Market Tracker",
+                title=(
+                    f"⚡ Live Markets | {provider} • {self.coin}"
+                    + (f" {self.horizon}m" if source == "polymarket" else "")
+                ),
                 description=(
-                    status + "\n\n"
-                    "**Provider: Polymarket Global (Gamma/CLOB)**, not Kalshi, "
-                    "DraftKings Predictions, or Polymarket US. Different "
-                    "contracts use different settlement rules.\n\n"
-                    "**Start Auto-Track** once. RivaL then updates ONE "
-                    "private message with the current and next verified "
-                    "Polymarket window, actual share ask prices, and "
-                    "separately labeled model research about every 15s. "
-                    "No repeated refresh or additional subscriptions.\n\n"
-                    "**Decision: WAIT** until a Polymarket-specific "
-                    "forward-validated edge exists. Raw model strength "
-                    "and share asks are not win probabilities. "
-                    "Your existing optional alerts are unchanged."
+                    "**Live contract call: WAIT** • no verified, "
+                    "forward-tested profitable market edge.\n"
+                    + status
                 ),
                 color=discord.Color.blurple(),
             )
-            embed.add_field(
-                name="Selected market",
-                value=f"{self.coin} • {self.horizon}m "
-                      "(verified 5m/15m windows only)",
-                inline=False,
-            )
-            embed.add_field(
-                name="Optional notifications",
-                value="Choose **Notification Options** to review separate "
-                      "price, research, qualified-watch or price-shift alerts. "
-                      "They are not another Polymarket prediction model.",
-                inline=False,
-            )
-        elif p == "kalshi":
-            embed = discord.Embed(
-                title=f"📊 Kalshi | {self.coin} public crypto markets",
-                description=(
-                    "**Provider: Kalshi US** • independent exchange, NOT "
-                    "Polymarket Global, DraftKings Predictions or a RivaL "
-                    "UP/DOWN prediction. Public market listings and quoted "
-                    "share asks only; contract rules and settlement differ."
-                ),
-                color=discord.Color.blurple(),
-            )
-            if self.kalshi is None:
-                embed.add_field(
-                    name="Kalshi browser", value="Not configured", inline=False,
-                )
-            else:
-                try:
-                    snapshot = await asyncio.wait_for(
-                        self.kalshi.browse(self.coin, refresh=self._kalshi_refresh),
-                        timeout=4.5,
+            if source == "polymarket":
+                cached = None
+                if service is not None:
+                    preview = getattr(service, "preview", None)
+                    if callable(preview):
+                        try:
+                            cached = await preview(self.coin, self.horizon)
+                        except (TimeoutError, ValueError):
+                            cached = None
+                board, model = cached if cached is not None else (None, None)
+                if board is not None and board.current is not None:
+                    event = board.current
+                    quote = board.current_quote
+                    embed.add_field(
+                        name="🎯 Current Polymarket contract",
+                        value=(
+                            f"[Open verified event]({event.url}) • "
+                            f"Closes {discord.utils.format_dt(event.closes, style='R')}\n"
+                            + (
+                                f"Price to beat: ${event.price_to_beat:,.4f}"
+                                if event.price_to_beat is not None
+                                else "Price to beat: not independently verified"
+                            )
+                            + "\n"
+                            + (
+                                f"UP ask ${quote.up_ask:.2f} • "
+                                f"DOWN ask ${quote.down_ask:.2f} "
+                                f"({discord.utils.format_dt(quote.quote_at, style='R')})"
+                                if quote is not None
+                                else "No fresh verified UP/DOWN order book"
+                            )
+                        ),
+                        inline=False,
                     )
-                    self._kalshi_refresh = False
-                    if not snapshot.markets:
+                    if board.next_window is not None:
+                        nxt = board.next_window
                         embed.add_field(
-                            name="No verified active listing",
-                            value="No open crypto contract for this coin was "
-                                  "confirmed by Kalshi's public API. "
-                                  "No market is invented.",
-                            inline=False,
-                        )
-                    for market in snapshot.markets:
-                        yes = (
-                            f"${market.yes_ask:.2f}/share"
-                            if market.yes_ask is not None else "Unverified"
-                        )
-                        no = (
-                            f"${market.no_ask:.2f}/share"
-                            if market.no_ask is not None else "Unverified"
-                        )
-                        embed.add_field(
-                            name=market.title[:140],
+                            name="⏭️ Next verified contract",
                             value=(
-                                f"Ticker: `{market.ticker}` • Closes "
-                                f"{discord.utils.format_dt(market.close_time, style='R')}\n"
-                                f"Yes ask: {yes} • No ask: {no}\n"
-                                f"Rule: {market.rules[:170]}"
+                                f"[Open next listing]({nxt.url}) • "
+                                f"Opens {discord.utils.format_dt(nxt.opens, style='R')} "
+                                "• future strike unknown until verified"
                             ),
                             inline=False,
                         )
-                    embed.set_footer(
-                        text="Kalshi public listings • no real trades, "
-                             "model calls or guaranteed live order-book depth",
-                    )
-                except (TimeoutError, ValueError):
+                    else:
+                        embed.add_field(
+                            name="⏭️ Next contract",
+                            value="Next event not verified yet",
+                            inline=False,
+                        )
+                else:
                     embed.add_field(
-                        name="Kalshi data unavailable",
-                        value="Kalshi's public API could not return a "
-                              "verified listing promptly. Your Polymarket "
-                              "tracker remains unaffected.",
+                        name="🎯 Polymarket current / next",
+                        value=(
+                            "No fresh verified contract snapshot yet. "
+                            "The shared tracker warms in the background; "
+                            "no price or direction will be guessed."
+                        ),
                         inline=False,
                     )
+                aligned = (
+                    model is not None and model.status == "ok"
+                    and model.asset == self.coin
+                    and model.horizon_minutes == self.horizon
+                    and model.issued_at is not None
+                    and model.ends_at is not None
+                    and model.issued_at <= datetime.now(UTC) < model.ends_at
+                    and model.direction in ("UP", "DOWN")
+                )
+                embed.add_field(
+                    name="🧠 RivaL research (NOT contract odds)",
+                    value=(
+                        f"{model.direction} exchange-candle lean • "
+                        f"{model.venue} • expires "
+                        f"{discord.utils.format_dt(model.ends_at, style='R')}\n"
+                        "Not a proven Polymarket contract prediction"
+                        if aligned else
+                        "WAIT • no fresh, correctly timed exchange-model forecast"
+                    ),
+                    inline=False,
+                )
+            elif source == "kalshi":
+                if self.kalshi is None:
+                    embed.add_field(
+                        name="Kalshi availability",
+                        value="Public market browser not configured",
+                        inline=False,
+                    )
+                else:
+                    try:
+                        snapshot = await asyncio.wait_for(
+                            self.kalshi.browse(
+                                self.coin, refresh=self._kalshi_refresh,
+                            ), timeout=3.5,
+                        )
+                        self._kalshi_refresh = False
+                        if not snapshot.markets:
+                            embed.add_field(
+                                name="Kalshi contracts",
+                                value="No matching open crypto contract confirmed. "
+                                      "No Polymarket market is substituted.",
+                                inline=False,
+                            )
+                        for market in snapshot.markets[:3]:
+                            yes = (
+                                f"${market.yes_ask:.2f}"
+                                if market.yes_ask is not None else "not verified"
+                            )
+                            no = (
+                                f"${market.no_ask:.2f}"
+                                if market.no_ask is not None else "not verified"
+                            )
+                            embed.add_field(
+                                name=market.title[:140],
+                                value=(
+                                    f"`{market.ticker}` • closes "
+                                    f"{discord.utils.format_dt(market.close_time, style='R')}\n"
+                                    f"YES ask {yes} • NO ask {no}\n"
+                                    f"Rule: {market.rules[:130]}"
+                                ),
+                                inline=False,
+                            )
+                    except (TimeoutError, ValueError, TypeError):
+                        embed.add_field(
+                            name="Kalshi feed unavailable",
+                            value="No fresh contract details verified. "
+                                  "The Polymarket tracker is unaffected.",
+                            inline=False,
+                        )
+                embed.add_field(
+                    name="RivaL decision",
+                    value="WAIT • Kalshi contract settlement has no "
+                          "approved source-matched prediction model. "
+                          "YES/NO asks are prices, not win chances.",
+                    inline=False,
+                )
+            else:
+                embed.add_field(
+                    name="DraftKings Predictions",
+                    value=(
+                        "Not connected: no verified official public market "
+                        "feed and matching contract rules have been integrated. "
+                        "Sportsbook odds are NOT DraftKings Predictions."
+                    ),
+                    inline=False,
+                )
+            embed.set_footer(
+                text="Provider buttons below • live asks are prices, not probabilities "
+                     "• No orders",
+            )
         elif p == "hunt-tools":
             embed = discord.Embed(
                 title="Optional Alert Types | Advanced",
@@ -1343,6 +1428,7 @@ class GuidedHome(discord.ui.View):
         view.slip = self.slip
         view.note = self.note
         view._kalshi_refresh = self._kalshi_refresh
+        view.live_source = self.live_source
         view._redraw_lock = self._redraw_lock
         view._render_revision = self._render_revision
         view._buttons()  # only the new, never-registered view is cleared
@@ -1591,13 +1677,20 @@ class GuidedHome(discord.ui.View):
         if action == "back":
             self.page = self.back_stack.pop() if self.back_stack else "home"
             self.note = None
-        elif action in ("home", "discover", "sports", "crypto", "hunt", "live", "kalshi", "practice",
+        elif action in ("live-poly", "live-kalshi", "live-dk", "kalshi"):
+            self.live_source = {
+                "live-poly": "polymarket", "live-kalshi": "kalshi",
+                "live-dk": "draftkings", "kalshi": "kalshi",
+            }[action]
+            self.navigate("live")
+        elif action in ("home", "discover", "sports", "crypto", "hunt", "live", "practice",
                         "results", "help", "advanced", "feeds", "trust"):
             self.navigate(action)
             if action == "sports":
                 await self._refresh_odds()
         elif action == "kalshi-refresh":
-            self.navigate("kalshi")
+            self.live_source = "kalshi"
+            self.navigate("live")
             self._kalshi_refresh = True
         elif action == "refresh":
             self.note = await self._refresh_odds()
@@ -1620,6 +1713,7 @@ class GuidedHome(discord.ui.View):
         elif action in ("forecast", "quote"):
             self.navigate(action)
         elif action in ("poly-start", "poly-stop"):
+            self.live_source = "polymarket"
             self.navigate("live")
             service = (
                 getattr(self.auto_hunt.bot, "polymarket_board", None)
@@ -1934,6 +2028,7 @@ _STALE_BUTTONS_B = (
 _STALE_BUTTONS_C = (
     "live", "live-on", "live-off", "poly-start", "poly-stop",
     "hunt-tools", "kalshi", "kalshi-refresh",
+    "live-poly", "live-kalshi", "live-dk",
 )
 
 

@@ -10,7 +10,7 @@ import asyncio
 import hashlib
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import discord
@@ -311,6 +311,50 @@ class LivePolymarketBoardService:
         self._model_pending: dict[
             tuple[str, int], asyncio.Task[TargetSnapshot]
         ] = {}
+        # In-memory verified source/evidence snapshots. The guided menu
+        # renders these without another network or PostgreSQL request.
+        self._live_cache: dict[
+            tuple[str, int], tuple[datetime, PolymarketWindowBoard, TargetSnapshot | None]
+        ] = {}
+        self._prime_pending: dict[tuple[str, int], asyncio.Task] = {}
+
+    def peek(self, asset: str, horizon: int) -> tuple[PolymarketWindowBoard, TargetSnapshot | None] | None:
+        saved = self._live_cache.get((asset, horizon))
+        now = datetime.now(UTC)
+        if saved is None or now - saved[0] > timedelta(seconds=20):
+            return None
+        board = saved[1]
+        if board.current is not None and board.current.closes <= now:
+            return None
+        if board.current_quote is not None and (
+            now - board.current_quote.quote_at > timedelta(seconds=25)
+            or board.current_quote.expires <= now
+        ):
+            return board.__class__(
+                checked_at=board.checked_at, current=board.current,
+                next_window=board.next_window, current_quote=None,
+            ), saved[2]
+        return board, saved[2]
+
+    async def preview(self, asset: str, horizon: int) -> tuple[PolymarketWindowBoard, TargetSnapshot | None] | None:
+        """One short warmup read; never block menu on the model DB pool."""
+        cached = self.peek(asset, horizon)
+        if cached is not None:
+            return cached
+        key = (asset, horizon)
+        task = self._prime_pending.get(key)
+        if task is None or task.done():
+            task = asyncio.create_task(self._observation(asset, horizon))
+            self._prime_pending[key] = task
+            task.add_done_callback(
+                lambda finished, k=key: self._prime_pending.pop(k, None)
+                if self._prime_pending.get(k) is finished else None
+            )
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=1.2)
+        except (TimeoutError, Exception):  # noqa: BLE001 - warmup best effort
+            return None
+        return self.peek(asset, horizon)
 
     async def _observation(
         self, asset: str, horizon: int,
@@ -357,6 +401,10 @@ class LivePolymarketBoardService:
                     self._model_pending.pop(key, None)
 
         board, snapshot = await asyncio.gather(load_board(), load_model())
+        if board is not None:
+            self._live_cache[(asset, horizon)] = (
+                datetime.now(UTC), board, snapshot,
+            )
         embed = live_polymarket_embed(
             board, snapshot, asset=asset, horizon=horizon,
         )

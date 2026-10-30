@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 from parlay_bot.discord_app.data_dashboard import MARKET_SYMBOLS
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.markets import ASSETS
 
 
 def six_months_prior(moment: datetime) -> datetime:
@@ -23,7 +24,7 @@ def history_inventory(
     market: PerpetualMarketStore, *,
     asset: str, venues: tuple[str, ...], now: datetime | None = None,
 ) -> dict:
-    if asset not in ("BTC", "ETH", "SOL"):
+    if asset not in ASSETS:
         raise ValueError("unsupported asset")
     instant = (now or datetime.now(UTC)).astimezone(UTC)
     end = instant.replace(minute=instant.minute // 5 * 5,

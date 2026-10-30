@@ -17,10 +17,10 @@ import httpx
 from parlay_bot.perpetuals.history_inventory import six_months_prior
 from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle, MarketDataError
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.markets import ASSETS as _ALLOWED
 
 _LOG = logging.getLogger(__name__)
 _STEP = timedelta(minutes=5)
-_ALLOWED = ("BTC", "ETH", "SOL")
 
 
 def _utc(value: datetime) -> datetime:

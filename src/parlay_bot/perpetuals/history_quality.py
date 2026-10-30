@@ -11,9 +11,9 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.history_inventory import six_months_prior
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.markets import ASSETS as _ASSETS
 
 _STEP = timedelta(minutes=5)
-_ASSETS = ("BTC", "ETH", "SOL")
 
 
 def _utc(value: datetime) -> datetime:

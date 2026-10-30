@@ -360,3 +360,33 @@ def test_alert_status_explains_daily_limits_and_reset(hunt_store):
     assert "Qualified" not in result
     assert "Resets <t:" in result
     assert "Sent 0 total" in result
+
+
+def test_capped_subscribers_do_not_trigger_expensive_external_scans(
+    hunt_store, monkeypatch,
+):
+    user = "capped-100"
+    hunt_store.subscribe(user, now=datetime.now(UTC) - timedelta(minutes=1))
+    hunt_store.set_tier(user, "qualified", True)
+    hunt_store.set_tier(user, "polymarket", True)
+    monkeypatch.setattr(
+        hunt_store, "daily_sent_counts",
+        lambda _user, *, now=None: {
+            "research": 12, "qualified": 12, "polymarket": 12,
+            "flip": 12, "live_shift": 0,
+        },
+    )
+    scans = (AsyncMock(side_effect=AssertionError("network scan under cap")),
+             AsyncMock(side_effect=AssertionError("model scan under cap")),
+             AsyncMock(side_effect=AssertionError("Polymarket scan under cap")),
+             AsyncMock(side_effect=AssertionError("flip scan under cap")))
+    monkeypatch.setattr(auto_hunt, "qualified_watches", scans[0])
+    monkeypatch.setattr(auto_hunt, "new_forecast_watches", scans[1])
+    monkeypatch.setattr(auto_hunt, "direction_change_watches", scans[3])
+    service = auto_hunt.AutoHuntService(
+        bot=SimpleNamespace(), market=object(), quotes=object(),
+        store=hunt_store,
+    )
+    monkeypatch.setattr(service.polymarket, "active", scans[2])
+    assert run(service.cycle()) == 0
+    assert all(scan.await_count == 0 for scan in scans)

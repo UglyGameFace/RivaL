@@ -18,6 +18,7 @@ from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.markets import ASSETS, HORIZONS
 from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
 
 _LOG = logging.getLogger(__name__)
@@ -40,7 +41,7 @@ class AutonomousResearch:
     def __init__(
         self, market: PerpetualMarketStore,
         *, ai: GeminiResearch | None, venues: tuple[str, ...],
-        assets: tuple[str, ...] = ("BTC", "ETH", "SOL"),
+        assets: tuple[str, ...] = ASSETS,
         auto_ai: bool = True,
     ) -> None:
         self.market = market
@@ -317,7 +318,7 @@ class AutonomousResearch:
             ).fetchall()
         count = 0
         for asset in self.assets:
-            for horizon in (5, 15):
+            for horizon in HORIZONS:
                 recent = [
                     (str(x["target_opened_at"]), float(x["model_brier"]),
                      float(x["baseline_brier"]))
@@ -394,7 +395,7 @@ class AutonomousResearch:
         stamp = now or datetime.now(UTC)
         results = []
         for asset in self.assets:
-            for horizon in (5, 15):
+            for horizon in HORIZONS:
                 try:
                     results.append(evaluate_promotion(
                         self.store, asset=asset, horizon=horizon, now=stamp,

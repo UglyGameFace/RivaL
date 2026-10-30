@@ -23,15 +23,16 @@ from parlay_bot.perpetuals.features import (
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.learning import walk_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.markets import ASSETS, HORIZONS as RESEARCH_HORIZONS, asset_for_contract
 from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 
 _LOG = logging.getLogger(__name__)
 MODEL = "prospective-logistic-shadow-v2"
-HORIZONS = (5, 15)
+HORIZONS = RESEARCH_HORIZONS
 MIN_PREVIOUS_EVALUATED = 20
-MAX_STREAMS_PER_CYCLE = 30
+MAX_STREAMS_PER_CYCLE = 40
 MAX_PENDING_SETTLEMENTS = 120
 
 
@@ -94,14 +95,10 @@ def select_live_streams(
     """
     if slot < 0 or not 1 <= limit <= MAX_STREAMS_PER_CYCLE:
         raise ValueError("invalid live forecast selection")
-    buckets: dict[str, list[tuple[str, str, str]]] = {
-        "BTC": [], "ETH": [], "SOL": [],
-    }
+    buckets: dict[str, list[tuple[str, str, str]]] = {asset: [] for asset in ASSETS}
     for entry in eligible:
         contract = entry[1]
-        asset = ("BTC" if contract.startswith(("BTC", "XBT"))
-                 else "ETH" if contract.startswith("ETH")
-                 else "SOL" if contract.startswith("SOL") else None)
+        asset = asset_for_contract(contract)
         if asset is not None:
             buckets[asset].append(entry)
     for asset, streams in buckets.items():
@@ -110,7 +107,7 @@ def select_live_streams(
             buckets[asset] = streams[offset:] + streams[:offset]
     selected: list[tuple[str, str, str]] = []
     while len(selected) < limit and any(buckets.values()):
-        for asset in ("BTC", "ETH", "SOL"):
+        for asset in ASSETS:
             if buckets[asset]:
                 selected.append(buckets[asset].pop(0))
                 if len(selected) == limit:
@@ -408,7 +405,7 @@ class ForwardAccuracyMonitor:
         # Reuse the same bounded, freshness-checked stream selection as
         # existing offline evaluation, without external HTTP requests.
         eligible = ShadowLearningMonitor(self.store)._eligible_streams(
-            now=stamp, limit=30,
+            now=stamp, limit=40,
         )
         metrics["discovered_streams"] = len(eligible)
         # Always inspect each available asset every five-minute cycle.
@@ -452,9 +449,7 @@ class ForwardAccuracyMonitor:
                     positive = sum(x.label_up for x in usable)
                     baseline = (positive + 5) / (len(usable) + 10)
                     probability = _probability(tested.final_weights, features)
-                    asset = ("BTC" if contract.startswith(("BTC", "XBT"))
-                             else "ETH" if contract.startswith("ETH")
-                             else "SOL" if contract.startswith("SOL") else None)
+                    asset = asset_for_contract(contract)
                     if asset is None:
                         continue
                     target_open = utc(last.opened_at) + timedelta(minutes=horizon)
@@ -540,7 +535,7 @@ class ForwardAccuracyMonitor:
 
     def recent_issued(self, *, asset: str, limit: int = 3) -> list[dict]:
         """Read actual immutable forecast rows; never synthesize predictions."""
-        if asset not in ("BTC", "ETH", "SOL") or not 1 <= limit <= 8:
+        if asset not in ASSETS or not 1 <= limit <= 8:
             raise ValueError("invalid recent prediction request")
         self.initialize()
         with self.store.connect() as conn:
@@ -560,7 +555,7 @@ class ForwardAccuracyMonitor:
         now: datetime | None = None,
     ) -> dict:
         """Prospective skill sliced by regime known when prediction was saved."""
-        if asset not in ("BTC", "ETH", "SOL") or horizon_minutes not in HORIZONS:
+        if asset not in ASSETS or horizon_minutes not in HORIZONS:
             raise ValueError("unsupported regime query")
         stamp = utc(now or datetime.now(UTC))
         self.initialize()
@@ -597,7 +592,7 @@ class ForwardAccuracyMonitor:
         returns hundreds of thousands of old forecast rows for one click.
         (Binance is quote-only, not a tenth collector.)
         """
-        if asset not in ("BTC", "ETH", "SOL"):
+        if asset not in ASSETS:
             raise ValueError("invalid asset")
         stamp = utc(now or datetime.now(UTC))
         start = (stamp - timedelta(days=7)).isoformat()
@@ -674,7 +669,7 @@ class ForwardAccuracyMonitor:
         fewer than 50 settled forecasts reports model_beats_baseline=None:
         insufficient evidence, never a pass and never a watch.
         """
-        if asset not in ("BTC", "ETH", "SOL"):
+        if asset not in ASSETS:
             raise ValueError("invalid asset")
         if horizon not in HORIZONS:
             raise ValueError("invalid horizon")

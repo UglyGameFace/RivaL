@@ -13,25 +13,21 @@ from parlay_bot.perpetuals.features import live_examples, persisted_candles
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.learning import walk_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.markets import ASSETS, HORIZONS as RESEARCH_HORIZONS, asset_for_contract
 
 if TYPE_CHECKING:
     from parlay_bot.storage.hot import RelationalHotStore
 
 _LOG = logging.getLogger(__name__)
 MODEL = "shadow-online-logistic-v1"
-HORIZONS = (5, 15)
+HORIZONS = RESEARCH_HORIZONS
 MAX_STREAMS = 10
 MAX_CANDLES = 1000
 MIN_EVALUATED = 50
 
 
 def _asset(contract: str) -> str | None:
-    for asset in ("BTC", "ETH", "SOL"):
-        if contract.startswith(asset):
-            return asset
-    if contract.startswith("XBT"):
-        return "BTC"
-    return None
+    return asset_for_contract(contract)
 
 
 class ShadowLearningMonitor:
@@ -72,7 +68,7 @@ class ShadowLearningMonitor:
     def _eligible_streams(
         self, *, now: datetime, limit: int = MAX_STREAMS,
     ) -> list[tuple[str, str, str]]:
-        if not 1 <= limit <= 30:
+        if not 1 <= limit <= 40:
             raise ValueError("invalid shadow stream discovery limit")
         with self.store.connect() as conn:
             observed = conn.execute(
@@ -173,7 +169,7 @@ class ShadowLearningMonitor:
 
     def latest(self, *, asset: str) -> list[dict]:
         """Read stored evaluation status; no training or exchange calls."""
-        if asset not in ("BTC", "ETH", "SOL"):
+        if asset not in ASSETS:
             raise ValueError("unsupported asset")
         self.initialize()
         with self.store.connect() as conn:

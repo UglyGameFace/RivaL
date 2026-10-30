@@ -19,6 +19,7 @@ from parlay_bot.perpetuals.fusion import (
     utc,
 )
 from parlay_bot.perpetuals.live_quotes import BookQuote, PerpReferenceBook
+from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS, HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.perpetuals.profit_proof import (
     COST_SCENARIOS,
     ENTRY_GRACE,
@@ -33,8 +34,8 @@ VENUES = frozenset({
     "hyperliquid", "dydx", "bitget", "gate", "okx",
     "kucoin", "deribit", "binance", "lighter", "phemex",
 })
-ASSETS = ("BTC", "ETH", "SOL")
-HORIZONS = (5, 15)
+ASSETS = RESEARCH_ASSETS
+HORIZONS = RESEARCH_HORIZONS
 MAX_SOURCE_AGE = timedelta(minutes=3)
 MIN_LIVE_REMAINING = timedelta(seconds=90)
 MIN_QUORUM = 3

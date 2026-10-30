@@ -700,13 +700,16 @@ class GuidedHome(discord.ui.View):
             )
         _LOG.info("Guided render page=%s elapsed_ms=%.0f",
                   self.page, (time.monotonic() - started) * 1000)
+        edit_failed = False
         try:
             await asyncio.wait_for(
                 interaction.edit_original_response(content=None, embed=embed, view=self),
                 timeout=8,
             )
         except (TimeoutError, discord.HTTPException) as exc:
+            edit_failed = True
             _LOG.warning("Guided menu edit failed page=%s error=%s", self.page, type(exc).__name__)
+            self._reregister_view(interaction)
             if _background_retry:
                 # A background retry must never spam the user: the
                 # loading embed is still there, and the next tap retries.
@@ -720,14 +723,34 @@ class GuidedHome(discord.ui.View):
                 )
             except discord.HTTPException:
                 _LOG.warning("Guided menu fallback message unavailable")
-        if render_timed_out and not _background_retry:
+        if (render_timed_out or edit_failed) and not _background_retry:
             # One self-healing attempt: a timed-out render left a "Still
-            # Loading" embed with no recovery. Re-render once after a
+            # Loading" embed with no recovery, and a failed edit left the
+            # store pointing at detached items. Re-render once after a
             # short pause; the redraw lock serializes it against the
             # user's next tap, and the retry itself never retries again.
-            asyncio.create_task(self._retry_timed_out_render(interaction))
+            asyncio.create_task(self._retry_failed_render(interaction))
 
-    async def _retry_timed_out_render(
+    def _reregister_view(self, interaction: discord.Interaction) -> None:
+        """Re-register the rebuilt view after a failed edit.
+
+        _buttons() detaches the previous generation's items (clear_items
+        sets item.view to None). A successful edit re-registers the new
+        generation via store_view, but a failed edit leaves the store
+        pointing at detached items, so the next tap on the displayed
+        buttons discards with no handler and no ack. Re-registering maps
+        the displayed custom_ids back to attached items, healing future
+        taps without a fresh menu. Best effort: never break the menu.
+        """
+        try:
+            message = interaction.message
+            store = interaction.client._connection._view_store
+            if message is not None and store is not None:
+                store.add_view(self, message.id)
+        except Exception:  # noqa: BLE001 - healing must never break the menu
+            _LOG.warning("Guided view re-register failed")
+
+    async def _retry_failed_render(
         self, interaction: discord.Interaction,
     ) -> None:
         try:

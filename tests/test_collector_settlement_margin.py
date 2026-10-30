@@ -1,12 +1,14 @@
 """Collector settlement margin: a just-closed bar may still be revised.
 
-Ingest refuses to overwrite a stored bar (CandleConflictError), so a bar
-stored prematurely and then revised by the exchange rejects the whole
-asset batch every cycle until the bar ages out of the 48-bar window.
-That is the observed kucoin-ETH / deribit-ETH+SOL storage_error pattern:
-a non-MarketDataError from ingest lands in the catch-all bucket. Holding
-back the single newest bar per batch means a revised bar is first stored
-once settled, so a revision can never conflict with a premature row.
+A bar stored prematurely and then revised by the exchange used to
+reject the whole asset batch every cycle until the bar aged out of the
+48-bar window (the observed kucoin-ETH / deribit-ETH+SOL storage_error
+pattern). The margin is the first layer: holding back the single newest
+bar per batch means a revised bar is first stored once settled, so a
+revision can never conflict with a premature row. The second layer is
+ingest conflict isolation (see test_collector_conflict_isolation.py):
+any conflict that still occurs is skipped per bar instead of failing
+the batch.
 """
 from __future__ import annotations
 

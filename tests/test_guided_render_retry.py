@@ -119,3 +119,26 @@ async def test_retry_edit_failure_is_silent(tmp_path, monkeypatch):
         interaction.followup.send.assert_not_called()
     finally:
         home.stop()
+
+
+@pytest.mark.asyncio
+async def test_first_edit_failure_notifies_and_retries_once(tmp_path):
+    bot = _client(tmp_path)
+    home = _home(bot)
+    interaction = _interaction()
+    interaction.edit_original_response.side_effect = [
+        discord.HTTPException(SimpleNamespace(status=500, reason="boom"), "boom"),
+        None,
+    ]
+    try:
+        await home.redraw(interaction)
+        # The user is told once; the failed edit also schedules the single
+        # background retry, which heals the menu on its own edit.
+        interaction.followup.send.assert_awaited_once()
+        await asyncio.sleep(3)
+        assert interaction.edit_original_response.await_count == 2
+        # No loop: a further retry window produces no third edit.
+        await asyncio.sleep(2.5)
+        assert interaction.edit_original_response.await_count == 2
+    finally:
+        home.stop()

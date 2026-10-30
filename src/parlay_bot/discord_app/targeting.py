@@ -65,6 +65,10 @@ class TargetSnapshot:
     price: float | None = None
     issued_at: datetime | None = None
     ends_at: datetime | None = None
+    # Machine-readable preview state for the crypto menu headline. Deliberately
+    # excluded from fingerprint: a status label change must never re-edit a
+    # Follow DM card, and detail strings stay byte-identical for the same reason.
+    status: str = "ok"
 
     @property
     def fingerprint(self) -> str:
@@ -97,6 +101,7 @@ def target_snapshot(
         return TargetSnapshot(
             asset, horizon_minutes, "WAIT",
             "Live market collector is unavailable.",
+            status="collector_down",
         )
     try:
         try:
@@ -113,6 +118,7 @@ def target_snapshot(
         return TargetSnapshot(
             asset, horizon_minutes, "WAIT",
             "Cannot verify the current forecast or market feed.",
+            status="feed_error",
         )
     for watch in watches:
         if watch["horizon_minutes"] != horizon_minutes:
@@ -131,6 +137,7 @@ def target_snapshot(
             return TargetSnapshot(
                 asset, horizon_minutes, "WAIT",
                 "The current model is tied; there is no directional call.",
+                status="tied",
             )
         return TargetSnapshot(
             asset=asset, horizon_minutes=horizon_minutes,
@@ -142,10 +149,12 @@ def target_snapshot(
             price=float(watch["price"]),
             issued_at=watch["issued"],
             ends_at=ends,
+            status="ok",
         )
     return TargetSnapshot(
         asset, horizon_minutes, "WAIT",
         "No fresh unexpired prediction for this timeframe. Checking again automatically.",
+        status="no_forecast",
     )
 
 

@@ -26,7 +26,10 @@ from parlay_bot.providers.owner_limits import OwnerLimitStore
 if TYPE_CHECKING:
     from parlay_bot.collectors.current import CurrentBoardCollector
     from parlay_bot.discord_app.auto_hunt import AutoHuntService
-    from parlay_bot.discord_app.targeting import DirectionTargetService
+    from parlay_bot.discord_app.targeting import (
+        DirectionTargetService,
+        TargetSnapshot,
+    )
     from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
     from parlay_bot.parlays.builder import ParlayBuilder
     from parlay_bot.perpetuals.live_quotes import PublicBestQuoteClient
@@ -207,6 +210,36 @@ def _latest_forward_cycle(market: object) -> dict | None:
     except (TypeError, ValueError):
         return None
     return {"checked_at": checked, "issued": issued, "expired": expired}
+
+
+def _crypto_preview_headline(snapshot: TargetSnapshot | None) -> str:
+    """One honest line for the crypto page preview.
+
+    The old fallback ("NO CURRENT SIGNAL • Preview pending") made every
+    no-forecast state read as a broken bot. target_snapshot already
+    distinguishes the states; this maps each one to its own line instead
+    of discarding that detail. The preview path deliberately does NOT
+    query feed health itself — it must never wait on the contended pool —
+    so a stale feed surfaces here as "no current forecast", with the
+    per-venue staleness detail staying on the Feeds page, which already
+    shows last_success per venue.
+    """
+    if snapshot is None:
+        return "Preview timed out — Get Signal checks live"
+    if snapshot.probability is not None:
+        return (
+            f"{snapshot.direction} lean • raw "
+            f"{snapshot.probability:.1%} ({model_strength(snapshot.probability)})"
+        )
+    if snapshot.status == "tied":
+        return "No directional call — model tied"
+    if snapshot.status == "no_forecast":
+        return "No current forecast — markets being collected"
+    if snapshot.status == "collector_down":
+        return "Collector unavailable — signals paused"
+    if snapshot.status == "feed_error":
+        return "Feed check failed — Get Signal verifies live"
+    return snapshot.detail
 
 
 class GuidedHome(discord.ui.View):
@@ -524,12 +557,7 @@ class GuidedHome(discord.ui.View):
             except (TimeoutError, Exception):  # noqa: BLE001 - keep navigation alive
                 _LOG.warning("RivaL crypto menu preview unavailable (non-blocking)")
                 snapshot = None
-            headline = (
-                f"{snapshot.direction} lean • raw "
-                f"{snapshot.probability:.1%} ({model_strength(snapshot.probability)})"
-                if snapshot is not None and snapshot.probability is not None
-                else "NO CURRENT SIGNAL • Preview pending; Get Signal checks live"
-            )
+            headline = _crypto_preview_headline(snapshot)
             embed = discord.Embed(
                 title=f"🎯 Crypto Signals | {self.coin}",
                 description=(

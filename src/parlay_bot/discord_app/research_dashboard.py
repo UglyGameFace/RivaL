@@ -1439,7 +1439,11 @@ class ResearchDashboard(discord.ui.View):
                         f"Model: **{model}**\n"
                         f"RivaL usage: **{quota['requests_today']}/"
                         f"{quota['rival_daily_limit']}** requests today "
-                        "(not provider account-wide limit)\n"
+                        + (
+                            "(not OpenRouter's account-wide limit)\n"
+                            if isinstance(self.ai, OpenRouterResearch)
+                            else "(not Google's account-wide limit)\n"
+                        )
                         f"{state}"
                     )[:1024],
                     inline=False,

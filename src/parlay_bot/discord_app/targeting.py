@@ -112,7 +112,10 @@ def target_snapshot(
             _LOG.exception("RivaL promotion lookup unavailable; serving live model")
             engine = "live"
         reader = recent_multi_watches if engine == "multi" else recent_watches
-        watches = reader(market, asset=asset, now=stamp, limit=5)
+        watches = reader(
+            market, asset=asset, now=stamp, limit=5,
+            horizon_minutes=horizon_minutes,
+        )
     except Exception:  # noqa: BLE001 - no internal SQL/auth details in Discord
         _LOG.exception("RivaL target observation unavailable")
         return TargetSnapshot(

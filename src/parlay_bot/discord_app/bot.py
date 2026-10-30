@@ -1183,7 +1183,7 @@ class RivalDiscordClient(discord.Client):
 
         @tools_group.command(
             name="source-health",
-            description="Inspect all ten futures collectors for the selected coin.",
+            description="Inspect all nine futures collectors for the selected coin.",
         )
         @app_commands.choices(coin=[
             app_commands.Choice(name="BTC", value="BTC"),
@@ -1196,7 +1196,7 @@ class RivalDiscordClient(discord.Client):
             await interaction.response.defer(ephemeral=True, thinking=True)
             if self.perp_collector is None:
                 await interaction.edit_original_response(
-                    content="Ten-source collection is disabled, not live.",
+                    content="Nine-source collection is disabled, not live.",
                 )
                 return
             try:
@@ -1233,7 +1233,7 @@ class RivalDiscordClient(discord.Client):
                         f" • failures {row['failure_count']}"
                     )
                 embed = discord.Embed(
-                    title=f"RivaL | {coin.value} ten-source health",
+                    title=f"RivaL | {coin.value} nine-source health",
                     description=(
                         f"**{fresh}/{len(self.perp_collector.providers)}** "
                         "venues confirmed recently fresh from actual stored "
@@ -1244,7 +1244,7 @@ class RivalDiscordClient(discord.Client):
                           else discord.Color.orange(),
                 )
                 embed.set_footer(
-                    text="Five-minute candles, not ten WebSocket order books. "
+                    text="Five-minute candles, not live order books. "
                          "A failed or region-blocked source never counts as fresh.",
                 )
                 await interaction.edit_original_response(embed=embed)
@@ -1256,7 +1256,7 @@ class RivalDiscordClient(discord.Client):
 
         @tools_group.command(
             name="multi-proof",
-            description="Compare the ten-venue challenger to existing predictions.",
+            description="Compare the nine-venue challenger to existing predictions.",
         )
         @app_commands.choices(
             coin=[

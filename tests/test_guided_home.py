@@ -64,13 +64,13 @@ async def test_beginner_home_begins_simple_and_keeps_advanced_features(tmp_path)
         assert tools.get_command("practice") is not None
         assert home.page == "home"
         assert set(_labels(home)) == {
-            "Find Opportunities", "My Alerts", "Sports & Odds",
-            "My Results", "Live Mode", "Home", "Back", "Explain This",
+            "Crypto", "Sports", "Notifications", "My Results",
+            "Practice", "Help",
         }
         assert len(home.children) <= 25
         assert max(item.row for item in home.children) <= 4
         embed = await home.render()
-        assert "What would you like to do?" in embed.description
+        assert "Find a live crypto market" in embed.description
         assert "No real bets" in embed.description
     finally:
         home.stop()
@@ -91,7 +91,7 @@ async def test_every_page_has_home_back_explain_without_dead_buttons(tmp_path):
             home.navigate(page)
             home._buttons()
             buttons = _labels(home)
-            assert {"Home", "Back", "Explain This"}.issubset(set(buttons))
+            assert {"Home", "Back"}.issubset(set(buttons))
             assert len(home.children) <= 25
             assert all(0 <= item.row <= 4 for item in home.children)
             assert page in EXPLAIN
@@ -524,27 +524,22 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
     )
     home.auto_hunt = service
     try:
-        assert "Live Mode" in _labels(home)
+        assert "Crypto" in _labels(home)
         interaction = _interaction()
         await home.act(interaction, "live")
         shown = interaction.edit_original_response.await_args.kwargs["view"]
-        assert "Start Auto-Track" in _labels(shown)
-        assert "Stop Auto-Track" in _labels(shown)
-        assert "Alert Settings" in _labels(shown)
-        assert "private message" in (await home.render()).description
-        assert "OFF" in (await home.render()).description
-        await home.act(interaction, "hunt-tools")
-        advanced = interaction.response.send_message.await_args.kwargs["view"]
-        assert interaction.response.send_message.await_args.kwargs["ephemeral"]
-        assert home.page == "live"
-        assert "Live Shift Alerts ON" in _labels(advanced)
-        assert "Live Shift Alerts OFF" in _labels(advanced)
+        assert "Track in DMs" in _labels(shown)
+        assert "Stop Tracking" in _labels(shown)
+        await home.act(interaction, "hunt")
+        settings = interaction.edit_original_response.await_args.kwargs["view"]
+        assert {"Track Crypto", "Watch Forecast", "Changes ON",
+                "Changes OFF", "Stop All"}.issubset(set(_labels(settings)))
         await home.act(interaction, "live-on")
         service.update_preference.assert_awaited_once_with(
             home.owner_id, "live_shifts", 1,
         )
         assert "enabled" in home.note
-        assert home.page == "live"
+        assert home.page == "hunt"
         service.update_preference.reset_mock()
         service.update_preference.return_value = {
             "assets": ("BTC", "ETH"), "daily_limit": 0, "live_shifts": False,
@@ -554,7 +549,7 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
             home.owner_id, "live_shifts", 0,
         )
         assert "disabled" in home.note
-        assert home.page == "live"
+        assert home.page == "hunt"
     finally:
         home.stop()
         await bot.zip_resolver.aclose()
@@ -592,9 +587,9 @@ async def test_live_mode_opens_one_automatic_tracker_without_extra_market_polls(
         await home.act(interaction, "live")
         rendered = interaction.edit_original_response.await_args.kwargs["view"]
         labels = _labels(rendered)
-        assert "Start Auto-Track" in labels
-        assert "Stop Auto-Track" in labels
-        assert "Alert Settings" in labels
+        assert "Track in DMs" in labels
+        assert "Stop Tracking" in labels
+        assert "Alert Settings" not in labels
         assert "Follow Polymarket" not in labels
         assert "Check Now" not in labels
         embed = await home.render()

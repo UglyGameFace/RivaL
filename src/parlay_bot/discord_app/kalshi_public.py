@@ -1,0 +1,174 @@
+"""Read-only Kalshi crypto contract discovery from documented public REST data.
+
+This is a separate venue catalog, NOT a source-matched Polymarket 5m/15m
+prediction feed. Never blend contracts with different oracle or strike rules.
+No API keys, accounts, scraping, orders, or synthetic odds.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import math
+import re
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import httpx
+
+_LOG = logging.getLogger(__name__)
+_ROOT = "https://external-api.kalshi.com/trade-api/v2"
+_SYMBOLS = {
+    "BTC": (r"\\bBTC\\b", r"\\bBITCOIN\\b"),
+    "ETH": (r"\\bETH\\b", r"\\bETHEREUM\\b"),
+    "SOL": (r"\\bSOL\\b", r"\\bSOLANA\\b"),
+    "XRP": (r"\\bXRP\\b",),
+}
+# Series may include several tickers sharing a theme. Only the official
+# discovery response determines what exists. Avoid hardcoded market IDs.
+_MAX_SERIES = 4
+_CACHE_TTL = timedelta(seconds=35)
+
+
+def _date(value: object) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if parsed.utcoffset() is not None:
+            return parsed.astimezone(UTC)
+    except ValueError:
+        pass
+    return None
+
+
+def _ask(value: object) -> float | None:
+    try:
+        parsed = float(value) if isinstance(value, (str, int, float)) else float("nan")
+    except (ValueError, OverflowError):
+        return None
+    if not math.isfinite(parsed) or not 0 < parsed < 1:
+        return None
+    return parsed
+
+
+def matching_series(payload: object, *, asset: str) -> tuple[str, ...]:
+    if asset not in _SYMBOLS:
+        raise ValueError("Unknown Kalshi asset")
+    if not isinstance(payload, dict) or not isinstance(payload.get("series"), list):
+        raise ValueError("Unverified Kalshi series response")
+    selected = []
+    for row in payload["series"]:
+        if not isinstance(row, dict):
+            continue
+        title = row.get("title")
+        ticker = row.get("ticker")
+        categories = row.get("categories")
+        if (
+            not isinstance(title, str) or not isinstance(ticker, str)
+            or not re.fullmatch(r"[A-Z0-9-]{2,80}", ticker)
+            or (
+                row.get("category") != "Crypto"
+                and (not isinstance(categories, list) or "Crypto" not in categories)
+            )
+        ):
+            continue
+        name = title.upper()
+        if any(re.search(pattern, name) for pattern in _SYMBOLS[asset]):
+            selected.append(ticker)
+    return tuple(dict.fromkeys(selected))[:_MAX_SERIES]
+
+
+@dataclass(frozen=True)
+class KalshiMarket:
+    ticker: str
+    title: str
+    close_time: datetime
+    yes_ask: float | None
+    no_ask: float | None
+    rules: str
+
+
+@dataclass(frozen=True)
+class KalshiSnapshot:
+    asset: str
+    checked_at: datetime
+    matched_series: int
+    markets: tuple[KalshiMarket, ...]
+
+
+def parse_markets(payload: object, *, now: datetime) -> tuple[KalshiMarket, ...]:
+    if not isinstance(payload, dict) or not isinstance(payload.get("markets"), list):
+        raise ValueError("Unverified Kalshi markets response")
+    entries = []
+    for row in payload["markets"]:
+        if not isinstance(row, dict) or row.get("status") != "open":
+            continue
+        ticker = row.get("ticker")
+        title = row.get("title")
+        end = _date(row.get("close_time"))
+        if (
+            not isinstance(ticker, str)
+            or not re.fullmatch(r"[A-Z0-9-]{2,110}", ticker)
+            or not isinstance(title, str) or not title.strip()
+            or end is None or end <= now
+        ):
+            continue
+        rules = row.get("rules_primary")
+        entries.append(KalshiMarket(
+            ticker=ticker, title=title[:170], close_time=end,
+            yes_ask=_ask(row.get("yes_ask_dollars")),
+            no_ask=_ask(row.get("no_ask_dollars")),
+            rules=(rules[:220] if isinstance(rules, str) else "Rules not verified"),
+        ))
+    return tuple(entries)
+
+
+class KalshiCryptoBrowser:
+    """Bounded on-demand public catalog, not a second automatic alert worker."""
+
+    def __init__(self, *, client: httpx.AsyncClient | None = None) -> None:
+        self._client = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(3.0), follow_redirects=False,
+        )
+        self._owned_client = client is None
+        self._cache: dict[str, tuple[datetime, KalshiSnapshot]] = {}
+        self._lock = asyncio.Lock()
+
+    async def aclose(self) -> None:
+        if self._owned_client:
+            await self._client.aclose()
+
+    async def browse(self, asset: str, *, refresh: bool = False) -> KalshiSnapshot:
+        if asset not in _SYMBOLS:
+            raise ValueError("Unknown Kalshi crypto asset")
+        async with self._lock:
+            now = datetime.now(UTC)
+            cached = self._cache.get(asset)
+            if cached and cached[0] > now and not refresh:
+                return cached[1]
+            try:
+                resp = await self._client.get(_ROOT + "/series", params={"category": "Crypto"})
+                resp.raise_for_status()
+                series = matching_series(resp.json(), asset=asset)
+                # No market listing means no invented venue / timeframe match.
+                async def get_markets(ticker: str) -> tuple[KalshiMarket, ...]:
+                    response = await self._client.get(
+                        _ROOT + "/markets",
+                        params={"series_ticker": ticker, "status": "open", "limit": 50},
+                    )
+                    response.raise_for_status()
+                    return parse_markets(response.json(), now=now)
+                responses = await asyncio.gather(*(get_markets(ticker) for ticker in series))
+            except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
+                _LOG.warning("Kalshi crypto discovery unavailable asset=%s error=%s",
+                             asset, type(exc).__name__)
+                raise ValueError("Kalshi public market data unavailable") from exc
+            unique = {m.ticker: m for group in responses for m in group}
+            markets = tuple(sorted(unique.values(), key=lambda m: m.close_time))[:4]
+            snapshot = KalshiSnapshot(
+                asset=asset, checked_at=now,
+                matched_series=len(series), markets=markets,
+            )
+            self._cache[asset] = (now + _CACHE_TTL, snapshot)
+            return snapshot

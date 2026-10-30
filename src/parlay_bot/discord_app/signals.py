@@ -187,6 +187,7 @@ async def signal_embed(
             lambda: asyncio.to_thread(
                 reader, market, asset=asset, now=stamp,
                 limit=40, dedupe_horizons=False,
+                horizon_minutes=horizon_minutes,
             ),
             max_seconds=2.5,
         )

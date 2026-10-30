@@ -302,6 +302,8 @@ class GuidedHome(discord.ui.View):
             self._add("Follow RivaL Forecasts", "hunt-on", 1, "📈")
             self._add("Stop Auto-Hunt", "hunt-off", 2, "🔕")
             self._add("Check Status", "hunt-status", 2, "🔎")
+            self._add("Research alerts", "hunt-research", 3, "🔔")
+            self._add("Qualified alerts", "hunt-qualified", 3, "✅")
         elif p == "practice":
             self.add_item(_Coin(self.coin))
             self._add("Practice Buy $25", "buy", 1, "📈", True)
@@ -1064,7 +1066,8 @@ class GuidedHome(discord.ui.View):
                 self.note = f"PASS: {exc}. Nothing was placed."
         elif action in ("forecast", "quote"):
             self.navigate(action)
-        elif action in ("hunt-on", "hunt-poly", "hunt-off", "hunt-status"):
+        elif action in ("hunt-on", "hunt-poly", "hunt-off", "hunt-status",
+                         "hunt-research", "hunt-qualified"):
             if self.auto_hunt is None:
                 self.note = "Auto-Hunt unavailable. No subscription saved."
             elif action in ("hunt-on", "hunt-poly"):
@@ -1075,6 +1078,11 @@ class GuidedHome(discord.ui.View):
             elif action == "hunt-off":
                 ended = await self.auto_hunt.stop(self.owner_id)
                 self.note = "Auto-Hunt stopped." if ended else "Auto-Hunt was already off."
+            elif action in ("hunt-research", "hunt-qualified"):
+                _, self.note = await self.auto_hunt.toggle_tier(
+                    self.owner_id,
+                    "research" if action == "hunt-research" else "qualified",
+                )
             else:
                 self.note = await self.auto_hunt.status(self.owner_id)
             self.navigate("hunt")
@@ -1290,7 +1298,7 @@ _STALE_BUTTONS_A = (
     "sports", "crypto", "hunt", "practice", "results", "help", "advanced",
     "state", "zip", "refresh", "manual", "slip", "lower", "balanced",
     "aggressive", "forecast", "follow", "target", "home", "back",
-    "hunt-poly",
+    "hunt-poly", "hunt-research", "hunt-qualified",
 )
 _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",

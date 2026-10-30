@@ -19,7 +19,12 @@ from parlay_bot.discord_app.opportunities import (
     recent_multi_watches,
     recent_watches,
 )
-from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.forward_audit import (
+    MODEL as FORWARD_MODEL,
+)
+from parlay_bot.perpetuals.forward_audit import (
+    ForwardAccuracyMonitor,
+)
 from parlay_bot.perpetuals.live_quotes import (
     BookQuote,
     PerpReferenceBook,
@@ -91,11 +96,21 @@ async def signal_embed(
     quotes: PublicBestQuoteClient,
     *, asset: str, horizon_minutes: int, now: datetime | None = None,
     stream_shadow: StreamShadowLedger | None = None,
+    decision_out: dict | None = None,
 ) -> discord.Embed:
     """Refresh the selected market, its real book and measured forward results.
 
     At most one quote request per supported venue; no forecast or quote cache
     is used after its source-specific validity expires.
+
+    When decision_out is given, it is filled with the chosen forecast's
+    identity and verdict (venue, engine, model version, issued/target,
+    direction, probability, is_watch, the validated book, and the
+    source-matched after-cost status) before the embed returns. The
+    Auto-Hunt qualified tier reads it instead of re-implementing the
+    selection policy, so the push gate can never drift from the tap-time
+    gate. Early no-signal returns leave it empty, which readers treat as
+    not a watch.
     """
     if asset not in ASSETS or horizon_minutes not in HORIZONS:
         raise ValueError("choose BTC, ETH or SOL and 5 or 15 minutes")
@@ -533,4 +548,31 @@ async def signal_embed(
          "false" if venue_beats is False else "none"),
         engine,
     )
+    if decision_out is not None:
+        after_cost_bps: float | None = None
+        after_cost_status: str | None = None
+        if shadow is not None:
+            try:
+                after_cost_status = str(shadow["status"])
+                after_cost_bps = shadow["costs"]["severe"]["mean_net_bps"]
+            except Exception:  # noqa: BLE001 - missing proof stays unknown
+                after_cost_bps = None
+                after_cost_status = None
+        decision_out.update({
+            "asset": asset,
+            "horizon_minutes": horizon_minutes,
+            "venue": chosen["venue"],
+            "engine": engine,
+            "model_version": chosen.get("model_version") or FORWARD_MODEL,
+            "issued": chosen["issued"],
+            "target": chosen["target"],
+            "direction": direction,
+            "probability": probability,
+            "is_watch": is_watch,
+            "bid": float(book.bid) if book is not None else None,
+            "ask": float(book.ask) if book is not None else None,
+            "quote_at": book.exchange_at if book is not None else None,
+            "after_cost_bps": after_cost_bps,
+            "after_cost_status": after_cost_status,
+        })
     return embed

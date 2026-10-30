@@ -1,9 +1,14 @@
 """Regression coverage for PostgreSQL startup DDL and batched candle writes."""
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+import os
+
+import pytest
 
 from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle
+from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
-from parlay_bot.storage.database import _Connection
+from parlay_bot.storage.database import PostgresDatabase, _Connection, _postgres_sql
 from parlay_bot.storage.hot import SQLiteHotStore
 
 
@@ -65,3 +70,62 @@ def test_bulk_history_preserves_idempotence_and_immutable_conflicts(tmp_path) ->
     )
     assert len(prices) == 235
     assert prices[0]["open_price"] == 100.0
+
+
+def test_postgres_adapter_escapes_literal_percent_before_binding() -> None:
+    # The exact query used by Auto-Hunt research suppression formerly
+    # raised psycopg.ProgrammingError when given a bound user id.
+    sql = (
+        "SELECT 1 FROM rival_hunt_delivery WHERE user_id=? "
+        "AND forecast_key LIKE 'qualified|%'"
+    )
+    assert _postgres_sql(sql) == (
+        "SELECT 1 FROM rival_hunt_delivery WHERE user_id=%s "
+        "AND forecast_key LIKE 'qualified|%%'"
+    )
+    assert _postgres_sql("SELECT (?::int % ?::int)") == (
+        "SELECT (%s::int %% %s::int)"
+    )
+
+
+def test_postgres_literal_percent_queries_execute_in_real_backend() -> None:
+    dsn = os.environ.get("RIVAL_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("A disposable PostgreSQL test database is not configured")
+    database = PostgresDatabase(dsn, max_size=1)
+    try:
+        with database.connect() as conn:
+            match = conn.execute(
+                "SELECT ? AS label WHERE ? LIKE 'qualified|%'",
+                ("qualified", "qualified|abc"),
+            ).fetchone()
+            assert match["label"] == "qualified"
+            mod = conn.execute(
+                "SELECT (?::int % ?::int) AS remainder", (10, 3),
+            ).fetchone()
+            assert mod["remainder"] == 1
+    finally:
+        database.close()
+
+
+def test_autonomous_schema_is_initialized_once_even_across_threads(tmp_path, monkeypatch):
+    store = SQLiteHotStore(tmp_path / "autonomous.sqlite")
+    market = PerpetualMarketStore(store)
+    research = AutonomousResearch(
+        market, ai=None, venues=("hyperliquid",), assets=("BTC",),
+        auto_ai=False,
+    )
+    original_connect = store.connect
+    calls = []
+
+    def counted_connect():
+        calls.append(1)
+        return original_connect()
+
+    monkeypatch.setattr(store, "connect", counted_connect)
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(lambda _: research.initialize(), range(8)))
+    first = len(calls)
+    assert first > 0
+    research.initialize()
+    assert len(calls) == first

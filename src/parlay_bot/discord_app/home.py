@@ -469,178 +469,73 @@ class GuidedHome(discord.ui.View):
                 color=discord.Color.blurple(),
             )
         elif p == "live":
-            # The always-on scanner is distinct from the user's DM opt-in.
-            # Reading the menu never turns on notifications for anyone.
-            enabled = None
-            preferences = None
-            if self.auto_hunt is not None:
+            service = (
+                getattr(self.auto_hunt.bot, "polymarket_board", None)
+                if self.auto_hunt is not None else None
+            )
+            tracker = None
+            if service is not None:
                 try:
-                    enabled, preferences = await asyncio.wait_for(
-                        asyncio.gather(
-                            asyncio.to_thread(
-                                self.auto_hunt.store.enabled, str(self.owner_id),
-                            ),
-                            asyncio.to_thread(
-                                self.auto_hunt.store.preferences, str(self.owner_id),
-                            ),
+                    tracker = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            service.store.get, str(self.owner_id),
                         ), timeout=1.5,
                     )
-                except Exception:  # noqa: BLE001 - no invented ON state
-                    _LOG.warning("Live Mode preference status unavailable")
-            stream = (
-                self.auto_hunt is not None
-                and getattr(self.auto_hunt.bot, "live_stream", None) is not None
+                except Exception:  # noqa: BLE001
+                    _LOG.warning("Live tracker status unavailable")
+            status = (
+                f"**TRACKING {tracker.asset} {tracker.horizon}m** "
+                "• your private card updates automatically"
+                if tracker else "OFF • no automatic market tracker active"
             )
-            if preferences is None or enabled is None:
-                state = "Status unavailable, settings not changed"
-            else:
-                state = "ON" if enabled and preferences["live_shifts"] else "OFF"
             embed = discord.Embed(
-                title="⚡ Live Mode | Auto Polymarket + Model Research",
+                title="⚡ Live Mode | One Market Tracker",
                 description=(
-                    "**Your live alerts: " + state + "**\n\n"
-                    "**Start Auto-Track** once to keep a private Polymarket "
-                    "current/next event card automatically updated every ~15s. "
-                    "It includes RivaL's newest unexpired **exchange-model** "
-                    "direction when available, separate from Polymarket quotes. "
-                    "No button refresh is required.\n\n"
-                    "**Enable Shift DMs** is a separate WebSocket momentum alert "
-                    "and **Follow Polymarket** sends distinct new-market alerts. "
-                    "None guarantees a winning bet."
+                    status + "\n\n"
+                    "**Start Auto-Track** once. RivaL then updates ONE "
+                    "private message with the current and next verified "
+                    "Polymarket window, actual share ask prices, and "
+                    "separately labeled model research about every 15s. "
+                    "No repeated refresh or additional subscriptions.\n\n"
+                    "**Decision: WAIT** until a Polymarket-specific "
+                    "forward-validated edge exists. Raw model strength "
+                    "and share asks are not win probabilities. "
+                    "Your existing optional alerts are unchanged."
                 ),
                 color=discord.Color.blurple(),
             )
             embed.add_field(
-                name="Live data service",
-                value=(
-                    "Configured (connection freshness is checked separately)"
-                    if stream else "Unavailable, cannot enable live alerts"
-                ),
+                name="Selected market",
+                value=f"{self.coin} • {self.horizon}m "
+                      "(verified 5m/15m windows only)",
                 inline=False,
             )
-            if preferences is not None:
-                embed.add_field(
-                    name="Your settings",
-                    value=(
-                        "Coins: " + ", ".join(preferences["assets"])
-                        + " • Daily cap: "
-                        + (str(preferences["daily_limit"])
-                           if preferences["daily_limit"] else "Unlimited")
-                        + " per alert type"
-                    ),
-                    inline=False,
-                )
-            embed.set_footer(
-                text="Auto-Track edits one DM in place • No real orders or guarantees",
+            embed.add_field(
+                name="Optional notifications",
+                value="Choose **Notification Options** to review separate "
+                      "price, research, qualified-watch or price-shift alerts. "
+                      "They are not another Polymarket prediction model.",
+                inline=False,
             )
-            # This is a separate source. Live exchange direction notifications
-            # do not imply a Polymarket market was looked up or subscribed.
-            if self.horizon not in (5, 15):
-                embed.add_field(
-                    name="📊 Current & next Polymarket targets",
-                    value="Choose a 5m or 15m window to verify live listings. "
-                          "No 60m market is assumed to exist.",
-                    inline=False,
-                )
-            else:
-                reader = (
-                    getattr(self.auto_hunt, "polymarket", None)
-                    if self.auto_hunt is not None else None
-                )
-                if reader is None:
-                    embed.add_field(
-                        name="📊 Polymarket current & next",
-                        value="Market verification unavailable. No live target claimed.",
-                        inline=False,
-                    )
-                else:
-                    try:
-                        board = await asyncio.wait_for(
-                            reader.window_board(
-                                self.coin, self.horizon,
-                                refresh=getattr(self, "_poly_refresh", False),
-                            ), timeout=4.7,
-                        )
-                    except (TimeoutError, ValueError):
-                        embed.add_field(
-                            name="📊 Polymarket current & next",
-                            value="Market lookup timed out or this window is "
-                                  "unsupported. No live target verified.",
-                            inline=False,
-                        )
-                    except Exception:  # noqa: BLE001 - fail closed
-                        _LOG.exception("Guided live Polymarket board unavailable")
-                        embed.add_field(
-                            name="📊 Polymarket current & next",
-                            value="Provider unavailable. No current or next "
-                                  "market identity verified.",
-                            inline=False,
-                        )
-                    else:
-                        if board.current is None:
-                            current = "Not listed or not verifiable from Gamma."
-                        else:
-                            now_open = (
-                                "Trading enabled" if board.current.accepting_orders
-                                else "Trading status not verified"
-                            )
-                            target = (
-                                f"${board.current.price_to_beat:,.4f} "
-                                "(published by Gamma)"
-                                if board.current.price_to_beat is not None
-                                else "Not yet verified by Polymarket"
-                            )
-                            current = (
-                                f"[Open event]({board.current.url})"
-                                f" • {now_open}\n"
-                                f"Closes <t:{int(board.current.closes.timestamp())}:R>"
-                                f" • Price to beat: **{target}**"
-                            )
-                            if board.current_quote is not None:
-                                quote = board.current_quote
-                                current += (
-                                    f"\nUp ask **{quote.up_ask:.1%}** "
-                                    f"• Down ask **{quote.down_ask:.1%}** "
-                                    f"• Book checked <t:{int(quote.quote_at.timestamp())}:R>"
-                                )
-                            else:
-                                current += (
-                                    "\nFresh Up/Down order books unavailable "
-                                    "(not an executable quote)."
-                                )
-                        embed.add_field(
-                            name=f"📊 Current Polymarket {self.coin} {self.horizon}m",
-                            value=current,
-                            inline=False,
-                        )
-                        if board.next_window is None:
-                            upcoming = (
-                                "Next window isn't confirmed as listed yet. "
-                                "Check again near the boundary."
-                            )
-                        else:
-                            nxt = board.next_window
-                            upcoming = (
-                                f"[Open next event]({nxt.url}) • Starts "
-                                f"<t:{int(nxt.opens.timestamp())}:R>\n"
-                                "Price to beat: pending window opening; "
-                                "**no predicted strike**."
-                            )
-                        embed.add_field(
-                            name="⏭️ Next verified Polymarket window",
-                            value=upcoming,
-                            inline=False,
-                        )
-                        embed.add_field(
-                            name="Market source",
-                            value="Gamma event identity + current CLOB asks. "
-                                  "Polymarket Follow DMs are independent of "
-                                  "Live Shift DMs; use **Follow Polymarket**. "
-                                  "Quotes are indicative, not guaranteed fills.",
-                            inline=False,
-                        )
-                    finally:
-                        self._poly_refresh = False
+        elif p == "hunt-tools":
+            embed = discord.Embed(
+                title="Optional Alert Types | Advanced",
+                description=(
+                    "Only enable notifications you need. These are "
+                    "existing independent alerts, not separate "
+                    "Polymarket prediction engines. Your saved "
+                    "subscriptions have not been changed."
+                ),
+                color=discord.Color.orange(),
+            )
+            embed.add_field(
+                name="Market prices are not model predictions",
+                value="Polymarket alerts report share prices; model "
+                      "research reports exchange forecasts; Qualified "
+                      "Watches require stricter evidence but are NOT "
+                      "verified Polymarket betting edges.",
+                inline=False,
+            )
         elif p == "hunt":
             try:
                 status = (

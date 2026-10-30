@@ -436,6 +436,10 @@ class AutoHuntStore:
 
     def stop(self, user_id: str) -> bool:
         with self.store.connect() as conn:
+            conn.execute(
+                "UPDATE rival_hunt_preferences SET direction_changes=0 "
+                "WHERE user_id=?", (user_id,),
+            )
             updated = conn.execute(
                 "UPDATE rival_hunt_subscriptions SET enabled=0 WHERE user_id=? AND enabled=1",
                 (user_id,),
@@ -1401,6 +1405,15 @@ class AutoHuntService:
             want_qualified = any(s.get("qualified") for s in subscribers)
             want_research = any(s.get("research") for s in subscribers)
             want_poly = any(s.get("polymarket") for s in subscribers)
+            configs = await asyncio.gather(*(
+                asyncio.to_thread(self.store.preferences, str(sub["user_id"]))
+                for sub in subscribers
+            ))
+            pref_by_user = {
+                str(sub["user_id"]): prefs
+                for sub, prefs in zip(subscribers, configs, strict=True)
+            }
+            want_flips = any(prefs["direction_changes"] for prefs in configs)
             qualified = (
                 await qualified_watches(
                     self.market, self.quotes,
@@ -1416,12 +1429,16 @@ class AutoHuntService:
                 await self.polymarket.active()
                 if want_poly else []
             )
+            flips = (
+                await direction_change_watches(self.market)
+                if want_flips else []
+            )
             _LOG.info(
                 "RivaL Auto-Hunt cycle subscribers=%d qualified=%d "
                 "forecasts=%d poly_markets=%d",
                 len(subscribers), len(qualified), len(forecasts), len(markets),
             )
-            if not qualified and not forecasts and not markets:
+            if not qualified and not forecasts and not markets and not flips:
                 return 0
             # Shared bounded Discord/PG concurrency. Each user's own lock
             # serializes delivery with that user's stop and re-opt-in request.
@@ -1431,6 +1448,7 @@ class AutoHuntService:
                 user_id = str(subscriber["user_id"])
                 since = _instant(str(subscriber["since_at"]))
                 sent = 0
+                preferences = pref_by_user[user_id]
                 async with budget, self._user_lock(user_id):
                     # QUALIFIED first: every distinct window alerts, with no
                     # cooldown and no per-cycle limit hiding a later window.
@@ -1441,6 +1459,10 @@ class AutoHuntService:
                     claimed_windows: set[tuple[str, int, datetime]] = set()
                     if subscriber.get("qualified"):
                         for candidate in qualified:
+                            if not candidate_allowed(
+                                candidate, preferences, now=datetime.now(UTC),
+                            ):
+                                continue
                             stamp = datetime.now(UTC)
                             if (
                                 candidate.issued < since
@@ -1495,6 +1517,10 @@ class AutoHuntService:
                     # the existing 120-second cooldown, as before.
                     if subscriber.get("research"):
                         for candidate in forecasts:
+                            if not candidate_allowed(
+                                candidate, preferences, now=datetime.now(UTC),
+                            ):
+                                continue
                             if candidate.window in claimed_windows:
                                 continue
                             stamp = datetime.now(UTC)
@@ -1544,9 +1570,49 @@ class AutoHuntService:
                                 "sent" if message is not None else "unconfirmed",
                             )
                             break
+                    # A model reversal is not every tick. It requires distinct
+                    # newly issued source-backed forecasts on 5m candle windows.
+                    if preferences["direction_changes"]:
+                        for candidate in flips:
+                            stamp = datetime.now(UTC)
+                            if (
+                                candidate.issued < since
+                                or candidate.expires - stamp < MIN_REMAINING
+                                or not candidate_allowed(
+                                    candidate, preferences, now=stamp,
+                                )
+                            ):
+                                continue
+                            if await asyncio.to_thread(
+                                self.store.count_sent_today, user_id, "flip", stamp,
+                            ) >= DAILY_CAP_PER_TIER:
+                                break
+                            key = FLIP_KEY_PREFIX + candidate.key
+                            claimed = await asyncio.to_thread(
+                                self.store.claim, user_id, candidate,
+                                now=stamp, key=key, apply_cooldown=False,
+                            )
+                            if not claimed:
+                                continue
+                            message = await self._send_dm(
+                                user_id, candidate, stamp, tier="flip",
+                            )
+                            await asyncio.to_thread(
+                                self.store.finish, user_id, candidate,
+                                sent=message is not None,
+                                message_id=str(message.id) if message else None,
+                                key=key,
+                            )
+                            if message is not None:
+                                sent += 1
+                            break
                     # POLYMARKET: at most one per cycle per user, as before.
                     if subscriber.get("polymarket"):
                         for candidate in markets:
+                            if not candidate_allowed(
+                                candidate, preferences, now=datetime.now(UTC),
+                            ):
+                                continue
                             stamp = datetime.now(UTC)
                             if candidate.expires - stamp < MIN_REMAINING:
                                 continue

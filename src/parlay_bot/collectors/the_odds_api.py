@@ -74,7 +74,7 @@ class TheOddsApiCollector:
             written = 0
             for event in events[:5]:
                 try:
-                    start = datetime.fromisoformat(event["commence_time"].replace("Z", "+00:00"))
+                    start = datetime.fromisoformat(event["commence_time"])
                     observations = []
                     for bookmaker in event.get("bookmakers", []):
                         for market in bookmaker.get("markets", []):
@@ -83,7 +83,7 @@ class TheOddsApiCollector:
                                 if not isinstance(price, (int, float)) or price <= 1:
                                     continue
                                 changed = datetime.fromisoformat(
-                                    market["last_update"].replace("Z", "+00:00")
+                                    market["last_update"]
                                 )
                                 observations.append(MarketObservation(
                                     provider="the_odds_api", fixture_id=event["id"],

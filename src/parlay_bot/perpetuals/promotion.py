@@ -39,6 +39,7 @@ from parlay_bot.perpetuals.multi_exchange import (
 from parlay_bot.perpetuals.multi_exchange import (
     MODEL as MULTI_MODEL,
 )
+from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
 from parlay_bot.perpetuals.profit_proof import COST_SCENARIOS
 
 _LOG = logging.getLogger(__name__)
@@ -218,7 +219,18 @@ def evaluate_promotion(
         and net_gain > 0
     )
     was_promoted = previous is not None and str(previous["status"]) == "promoted"
-    if audit is not None and audit.status == "qualified_shadow" and quote_ok:
+    # Seven-day predictive improvement and 20 paper trades alone are NOT
+    # enough to replace the incumbent. Require the stricter independent
+    # unique-window 21-day, calibration, quote-coverage and severe-cost
+    # shadow proof on this exact asset/horizon.
+    full = MultiExchangeResearch(store).report(
+        asset=asset, horizon_minutes=horizon, now=stamp,
+    )
+    long_proof_ok = full["shadow_candidate_qualified"]
+    if (
+        audit is not None and audit.status == "qualified_shadow"
+        and quote_ok and long_proof_ok
+    ):
         status, engine = "promoted", "multi"
         reason = (
             f"{audit.reason}; quote_windows={quote_windows} "
@@ -229,14 +241,12 @@ def evaluate_promotion(
     elif audit is not None and audit.status == "qualified_shadow":
         status, engine = "held", "live"
         reason = (
-            f"Brier qualified but quote proof insufficient: "
-            f"windows={quote_windows} (need {MIN_QUOTE_WINDOWS}) "
-            f"challenger_trades={challenger_trades} "
-            f"(need {MIN_QUOTE_TRADES})"
-            + (
-                f" net_gain={net_gain:.1f}bps (need >0)"
-                if net_gain is not None else ""
-            )
+            f"Short Brier screen passed, but full forward/quote proof is incomplete: "
+            f"quote_windows={quote_windows}, trades={challenger_trades}; "
+            f"21-day calibration={full['calibration']['status']}; "
+            f"unique_windows={full['calibration']['unique_windows']}; "
+            f"quote_coverage={full['quote_coverage']:.1%}; "
+            "no model replacement authorized"
         )
     elif was_promoted:
         status, engine = "demoted", "live"

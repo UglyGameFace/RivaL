@@ -49,11 +49,11 @@ if TYPE_CHECKING:
 _LOG = logging.getLogger(__name__)
 COINS = RESEARCH_ASSETS
 EXPLAIN = {
-    "home": "Find crypto or sports research, choose private alerts, or inspect recorded results. No wagers are placed.",
-    "discover": "Choose Predict Crypto for model research, Auto-Hunt for opt-in alerts, or Practice Money for simulated trades. No profits are established.",
-    "live": "Start Auto-Track once for one automatically updated private market card. Current and next Polymarket events are separate from their share prices and from exchange-candle model research. Because no Polymarket-specific calibrated edge is verified, the decision is WAIT, never a share price misrepresented as a prediction.",
-    "hunt": "Live Mode is the main market tracker. Optional price, model, qualified-watch and shift notifications retain their settings under Other Alert Types. Market share prices are not win probabilities.",
-    "hunt-tools": "Optional old alerts only. Your Polymarket Global live tracker is independent; toggles cannot produce verified predictions.",
+    "home": "Choose Crypto, Sports, Notifications, Results, or Practice. No bets are placed.",
+    "discover": "Old menus can open Crypto or Practice. No actual trades are placed.",
+    "live": "Track one verified Polymarket contract DM. Share prices are not win probabilities. Exchange forecasts remain separate research.",
+    "hunt": "Track live Polymarket or an exchange forecast; opt in separately to confirmed price changes. Stop All disables personal notifications.",
+    "hunt-tools": "Old Auto-Hunt notifications retired. Use Notifications.",
     "kalshi": "Kalshi is a different US prediction exchange. Its public prices and settlement rules must not inherit Polymarket Global forecast signals.",
     "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
     "slip": "A parlay combines picks. All legs must win for the parlay to win. No real wager is placed here.",
@@ -62,7 +62,7 @@ EXPLAIN = {
     "quote": "Ask is the price you might buy at; bid is the price you might sell at. These quotes are not guaranteed fills.",
     "practice": "Everything in Practice Money is fictional. Buying means you expect a rise; selling means you expect a fall. Fake gains never count as proven real profit.",
     "results": "Practice results are your own fake trades. Model accuracy is measured separately from later verified market outcomes. Real profit is not yet proven.",
-    "help": "Start at Home. For sports, select your state. For crypto, choose a coin and press Get Signal. To learn without real money, open Practice Money.",
+    "help": "Choose Crypto for prediction markets, Exchange Forecast for separate research, Sports for odds, Notifications for tracking, and Practice for fake trades.",
     "advanced": "Optional checks for whether data is fresh and whether RivaL is improving. You do not need any of this to request a prediction.",
     "feeds": "Fresh means RivaL recently received a genuine completed market candle. That is different from a live streaming price or a prediction.",
     "trust": "A successful prediction is not necessarily a profitable trade. The combined model must beat the old model on later matched results and after trading costs.",
@@ -1328,14 +1328,12 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title="❓ Getting Started",
                 description=(
-                    "1. Press **Home** whenever you feel lost.\n"
-                    "2. **Sports**: choose your state, then browse games.\n"
-                    "3. **Crypto**: choose a coin and time, then see a forecast.\n"
-                    "4. **Practice Money**: try fake buys and sells.\n"
-                    "5. **My Results**: check your practice trades.\n"
-                    "6. **Advanced**: optional data freshness and model accuracy.\n\n"
-                    "**PASS** means the evidence doesn't support a pick. "
-                    "That is a useful answer, not a broken button."
+                    "1. **Crypto:** inspect live markets or separate exchange forecasts.\n"
+                    "2. **Sports:** choose your state and browse odds.\n"
+                    "3. **Notifications:** enable tracking and stop it anytime.\n"
+                    "4. **My Results:** inspect recorded accuracy and practice.\n"
+                    "5. **Practice:** experiment using fake money only.\n\n"
+                    "**WAIT** means evidence is insufficient. No bets are placed."
                 ), color=discord.Color.blurple(),
             )
         else:
@@ -1573,16 +1571,7 @@ class GuidedHome(discord.ui.View):
 
     async def act(self, interaction: discord.Interaction, action: str) -> None:
         if action == "hunt-tools":
-            # Navigation must never wait for a contested PostgreSQL checkout.
-            # A fresh private response is sent without editing the older menu
-            # or taking the shared render lock.
-            fresh = self._display_generation()
-            fresh.navigate("hunt-tools")
-            fresh._buttons()
-            await interaction.response.send_message(
-                embed=await fresh.render(), view=fresh, ephemeral=True,
-            )
-            return
+            action = "hunt"
         if action == "explain":
             await interaction.response.send_message(
                 EXPLAIN[self.page], ephemeral=True,
@@ -1592,32 +1581,7 @@ class GuidedHome(discord.ui.View):
             await interaction.response.send_modal(_Entry(self, action))
             return
         if action == "hunt-config":
-            # Discord must be acknowledged BEFORE PostgreSQL pool access.
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            if self.auto_hunt is None:
-                await interaction.followup.send(
-                    "Auto-Hunt is unavailable.", ephemeral=True,
-                )
-                return
-            from parlay_bot.discord_app.hunt_settings import HuntSettingsView
-
-            try:
-                prefs = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self.auto_hunt.store.preferences, str(self.owner_id),
-                    ), timeout=2,
-                )
-                view = HuntSettingsView(self.owner_id, self.auto_hunt, prefs)
-                await interaction.edit_original_response(
-                    content=view.render(), view=view,
-                )
-            except (TimeoutError, Exception):  # noqa: BLE001
-                _LOG.exception("RivaL Auto-Hunt settings slow or unavailable")
-                await interaction.edit_original_response(
-                    content="Settings are busy. The previous preferences "
-                            "were not changed; open Customize Alerts again.",
-                )
-            return
+            action = "hunt"
         if action == "api-limits":
             # Owner lookup is a remote Discord request. Acknowledge
             # immediately, then use the followup to open the settings.
@@ -1701,6 +1665,15 @@ class GuidedHome(discord.ui.View):
                 self.note = f"PASS: {exc}. Nothing was placed."
         elif action in ("forecast", "quote"):
             self.navigate(action)
+        elif action == "stop-all":
+            tracker = getattr(getattr(self.auto_hunt, "bot", None),
+                              "polymarket_board", None)
+            result = await stop_all_notifications(
+                self.owner_id, auto_hunt=self.auto_hunt,
+                targets=self.targets, tracker=tracker,
+            )
+            self.navigate("hunt")
+            self.note = result
         elif action in ("poly-start", "poly-stop"):
             self.live_source = "polymarket"
             self.navigate("live")
@@ -1735,7 +1708,7 @@ class GuidedHome(discord.ui.View):
                     _LOG.exception("Stopping live Polymarket DM failed safely")
                     self.note = "Could not confirm stopping the live tracker."
         elif action in ("live-on", "live-off"):
-            self.navigate("live")
+            self.navigate("hunt")
             if self.auto_hunt is None:
                 self.note = "Live alerts are unavailable; no change saved."
             else:
@@ -1757,24 +1730,8 @@ class GuidedHome(discord.ui.View):
                     self.note = "Live alerts unchanged; unable to save preference."
         elif action in ("hunt-on", "hunt-poly", "hunt-off", "hunt-status",
                          "hunt-research", "hunt-qualified"):
-            if self.auto_hunt is None:
-                self.note = "Auto-Hunt unavailable. No subscription saved."
-            elif action in ("hunt-on", "hunt-poly"):
-                _, self.note = await self.auto_hunt.subscribe(
-                    interaction.user,
-                    source="polymarket" if action == "hunt-poly" else "forecasts",
-                )
-            elif action == "hunt-off":
-                ended = await self.auto_hunt.stop(self.owner_id)
-                self.note = "Auto-Hunt stopped." if ended else "Auto-Hunt was already off."
-            elif action in ("hunt-research", "hunt-qualified"):
-                _, self.note = await self.auto_hunt.toggle_tier(
-                    self.owner_id,
-                    "research" if action == "hunt-research" else "qualified",
-                )
-            else:
-                self.note = await self.auto_hunt.status(self.owner_id)
             self.navigate("hunt")
+            self.note = "Auto-Hunt retired. Use Track Crypto or Changes instead."
         elif action in ("follow", "stop"):
             try:
                 if action == "stop":
@@ -1977,11 +1934,11 @@ class GuidedHome(discord.ui.View):
 # stateful action and is never run from stale state.
 _STALE_SAFE_PAGES = {
     "home": "home",
-    "discover": "discover",
+    "discover": "live",
     "sports": "sports",
     "crypto": "crypto",
     "hunt": "hunt",
-    "hunt-tools": "hunt-tools",
+    "hunt-tools": "hunt",
     "live": "live",
     "practice": "practice",
     "results": "results",
@@ -2017,7 +1974,7 @@ _STALE_BUTTONS_B = (
 _STALE_BUTTONS_C = (
     "live", "live-on", "live-off", "poly-start", "poly-stop",
     "hunt-tools", "kalshi", "kalshi-refresh",
-    "live-poly", "live-kalshi", "live-dk",
+    "live-poly", "live-kalshi", "live-dk", "stop-all",
 )
 
 

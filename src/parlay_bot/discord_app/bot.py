@@ -13,6 +13,7 @@ from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.collectors.oddspapi_current import OddsPapiCurrentCollector
 from parlay_bot.collectors.the_odds_api import TheOddsApiCollector
 from parlay_bot.config import Settings
+from parlay_bot.discord_app.auto_hunt import AutoHuntActions, AutoHuntService, AutoHuntStore
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
 from parlay_bot.discord_app.home import (
     GuidedHome,
@@ -360,6 +361,13 @@ class RivalDiscordClient(discord.Client):
             store=DirectionTargetStore(self.store),
         )
         self._target_task: asyncio.Task[None] | None = None
+        self.auto_hunt = AutoHuntService(
+            bot=self,
+            market=self.perp_collector.market if self.perp_collector else None,
+            quotes=self.public_quotes, store=AutoHuntStore(self.store),
+        )
+        self._hunt_event = asyncio.Event()
+        self._hunt_task: asyncio.Task[None] | None = None
 
         self._register_commands()
 
@@ -390,6 +398,7 @@ class RivalDiscordClient(discord.Client):
             refresh_sports=self._request_sports_refresh,
             market=collector.market if collector is not None else None,
             targets=self.direction_targets,
+            auto_hunt=self.auto_hunt,
             paper=self.paper_ledger,
             quotes=self.public_quotes,
             profit=self.quote_profit,
@@ -1170,19 +1179,34 @@ class RivalDiscordClient(discord.Client):
 
         @self.tree.command(
             name="rival-stop",
-            description="Stop automatic personal target updates.",
+            description="Stop all personal forecast and Auto-Hunt DM alerts.",
         )
         async def rival_stop(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
+            # Revoke both independently. A broken old target message must
+            # never prevent canceling the new Auto-Hunt subscription.
+            failures = []
+            hunt = watch = False
             try:
-                stopped = await self.direction_targets.stop(interaction.user.id)
-                message = (
-                    "Target stopped. No further automatic updates."
-                    if stopped else "You have no active personal target."
-                )
-            except Exception:  # noqa: BLE001
+                hunt = await self.auto_hunt.stop(interaction.user.id)
+            except Exception:  # noqa: BLE001 - preserve the other cancel path
+                _LOG.exception("RivaL Auto-Hunt cancellation failed")
+                failures.append("Auto-Hunt")
+            try:
+                watch = await self.direction_targets.stop(interaction.user.id)
+            except Exception:  # noqa: BLE001 - preserve the other cancel path
                 _LOG.exception("RivaL personal target cancellation failed")
-                message = "Target cancellation unavailable; please retry."
+                failures.append("personal target")
+            if failures:
+                message = (
+                    "Could not confirm stopping " + ", ".join(failures) +
+                    ". Please retry /rival-stop. Other alert stops were applied."
+                )
+            else:
+                message = (
+                    "All personal alerts stopped." if watch or hunt else
+                    "No active personal alerts."
+                )
             await interaction.edit_original_response(content=message)
 
         @tools_group.command(
@@ -1423,7 +1447,13 @@ class RivalDiscordClient(discord.Client):
         # menus are silently discarded and the menu looks dead.
         for stale_view in build_stale_guided_menu_views(self._build_guided_home):
             self.add_view(stale_view)
-        _LOG.info("RivaL stale guided-menu fallback views registered")
+        self.add_view(AutoHuntActions())
+        _LOG.info("RivaL stale guided-menu and restart-safe hunt views registered")
+        await asyncio.to_thread(self.auto_hunt.store.initialize)
+        if self.perp_collector is not None and self._hunt_task is None:
+            self._hunt_task = asyncio.create_task(
+                self._hunt_loop(), name="rival-auto-hunt-eligible-forecast-alerts",
+            )
         if self._target_task is None:
             self._target_task = asyncio.create_task(
                 self._target_loop(), name="rival-personal-direction-updates",
@@ -1628,6 +1658,24 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL sports DB integrity check unavailable")
             await asyncio.sleep(21600)
 
+    async def _hunt_loop(self) -> None:
+        """Inspect fresh persisted forecasts without waiting for slow research work."""
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                count = await self.auto_hunt.cycle()
+                if count:
+                    _LOG.info("RivaL Auto-Hunt new private alerts delivered=%d", count)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - alert outages cannot stop collector
+                _LOG.exception("RivaL Auto-Hunt check failed safely")
+            try:
+                await asyncio.wait_for(self._hunt_event.wait(), timeout=15.0)
+            except TimeoutError:
+                pass
+            self._hunt_event.clear()
+
     async def _target_loop(self) -> None:
         """Update user-opted-in private forecast cards without flooding DMs."""
         await self.wait_until_ready()
@@ -1766,6 +1814,8 @@ class RivalDiscordClient(discord.Client):
                         "math_settled=%s ai_issued=%s",
                         issued, settled, ai_issued,
                     )
+                    if issued:
+                        self._hunt_event.set()
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001
@@ -2037,6 +2087,11 @@ class RivalDiscordClient(discord.Client):
             with suppress(asyncio.CancelledError):
                 await self._stream_shadow_task
             self._stream_shadow_task = None
+        if self._hunt_task is not None:
+            self._hunt_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._hunt_task
+            self._hunt_task = None
         await self.public_quotes.aclose()
         if self._target_task is not None:
             self._target_task.cancel()

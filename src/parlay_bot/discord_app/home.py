@@ -25,8 +25,8 @@ from parlay_bot.providers.owner_limits import OwnerLimitStore
 
 if TYPE_CHECKING:
     from parlay_bot.collectors.current import CurrentBoardCollector
-    from parlay_bot.discord_app.targeting import DirectionTargetService
     from parlay_bot.discord_app.auto_hunt import AutoHuntService
+    from parlay_bot.discord_app.targeting import DirectionTargetService
     from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
     from parlay_bot.parlays.builder import ParlayBuilder
     from parlay_bot.perpetuals.live_quotes import PublicBestQuoteClient

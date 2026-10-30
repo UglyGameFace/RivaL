@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import time
 from datetime import UTC, datetime, timedelta
 
 import discord
@@ -89,10 +90,12 @@ async def signal_embed(
         return _no_signal(asset, horizon_minutes, "Market collection is disconnected.")
 
     try:
+        watches_started = time.monotonic()
         watches = await asyncio.to_thread(
             recent_watches, market, asset=asset, now=stamp,
             limit=40, dedupe_horizons=False,
         )
+        marks = {"watches_ms": (time.monotonic() - watches_started) * 1000}
     except Exception:  # noqa: BLE001 - do not leak DB details into Discord
         _LOG.exception("RivaL signal ledger cannot be inspected")
         return _no_signal(
@@ -122,11 +125,14 @@ async def signal_embed(
     # Choose a forecast with its OWN current market book. A different venue's
     # quote cannot be substituted just to display a made-up executable setup.
     # Prefer Hyperliquid when Binance USDM is blocked in the hosting region.
-    # The venue loop keeps its priority short-circuit: at most one quote
-    # request per supported venue, and Binance is never queried once a
-    # Hyperliquid book validates. The book fetch runs concurrently with the
-    # independent forward-evidence lookups below instead of before them, so
-    # a slow database no longer stretches every tap by its own round trip.
+    # The venues are raced, not tried one after another: a slow first venue
+    # used to consume the whole signal budget before the fallback was even
+    # tried, which produced SIGNAL DELAYED on otherwise healthy markets.
+    # Priority is still Hyperliquid first, then Binance, among the books
+    # that actually validate. At most one quote request per supported venue.
+    # The book fetch runs concurrently with the independent forward-evidence
+    # lookups below instead of before them, so a slow database no longer
+    # stretches every tap by its own round trip.
     prioritized = sorted(
         live,
         key=lambda row: (
@@ -137,21 +143,38 @@ async def signal_embed(
     )
 
     async def _pick_book() -> tuple[dict, BookQuote | PerpReferenceBook | None]:
-        checked_venues: set[str] = set()
+        candidates: list[tuple[str, dict]] = []
+        seen_venues: set[str] = set()
         for watch in prioritized:
             venue = watch["venue"]
-            if venue not in ("hyperliquid", "binance") or venue in checked_venues:
+            if venue in ("hyperliquid", "binance") and venue not in seen_venues:
+                seen_venues.add(venue)
+                candidates.append((venue, watch))
+        if not candidates:
+            return prioritized[0], None
+        started = time.monotonic()
+        outcomes = await asyncio.gather(
+            *(_venue_book(quotes, asset=asset, venue=venue)
+              for venue, _ in candidates),
+            return_exceptions=True,
+        )
+        marks["book_ms"] = (time.monotonic() - started) * 1000
+        validated: dict[str, tuple[dict, BookQuote | PerpReferenceBook]] = {}
+        for (venue, watch), outcome in zip(candidates, outcomes):
+            if isinstance(outcome, Exception):
                 continue
-            checked_venues.add(venue)
             try:
-                candidate_book = await _venue_book(quotes, asset=asset, venue=venue)
-                candidate_book.validate(now=stamp if now is not None else datetime.now(UTC))
+                outcome.validate(now=stamp if now is not None else datetime.now(UTC))
             except QuoteUnavailable:
                 continue
-            return watch, candidate_book
+            validated[venue] = (watch, outcome)
+        for venue in ("hyperliquid", "binance"):
+            if venue in validated:
+                return validated[venue]
         return prioritized[0], None
 
     async def _proof_or_default() -> dict:
+        started = time.monotonic()
         try:
             return await asyncio.to_thread(
                 _proof, market, asset=asset, horizon=horizon_minutes, now=stamp,
@@ -159,10 +182,13 @@ async def signal_embed(
         except Exception:  # noqa: BLE001
             _LOG.exception("RivaL signal forward-evidence lookup unavailable")
             return {"settled": 0, "hit_rate": None, "model_beats_baseline": None}
+        finally:
+            marks["proof_ms"] = (time.monotonic() - started) * 1000
 
     async def _shadow_or_none() -> dict | None:
         if stream_shadow is None:
             return None
+        started = time.monotonic()
         try:
             return await asyncio.to_thread(
                 stream_shadow.report, asset=asset,
@@ -171,6 +197,8 @@ async def signal_embed(
         except Exception:  # noqa: BLE001 - missing proof must not halt signals
             _LOG.exception("RivaL forward quote evidence unavailable")
             return None
+        finally:
+            marks["shadow_ms"] = (time.monotonic() - started) * 1000
 
     book_outcome, evidence, shadow = await asyncio.gather(
         _pick_book(), _proof_or_default(), _shadow_or_none(),
@@ -307,5 +335,13 @@ async def signal_embed(
             "Research watch only • Refresh to recheck • No approved "
             "entry/stop/target or real order"
         ),
+    )
+    _LOG.info(
+        "RivaL signal asset=%s horizon=%d watches_ms=%.0f book_ms=%.0f "
+        "book_venue=%s proof_ms=%.0f shadow_ms=%.0f",
+        asset, horizon_minutes, marks.get("watches_ms", -1),
+        marks.get("book_ms", -1),
+        chosen["venue"] if book is not None else "none",
+        marks.get("proof_ms", -1), marks.get("shadow_ms", -1),
     )
     return embed

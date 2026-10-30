@@ -193,3 +193,56 @@ async def test_no_data_and_disconnected_market_are_clean_no_signal(tmp_path):
         store.close()
     with pytest.raises(ValueError):
         await signal_embed(None, quotes, asset="DOGE", horizon_minutes=5)
+
+
+@pytest.mark.asyncio
+async def test_signal_venues_are_raced_not_tried_one_after_another(tmp_path, caplog):
+    """A slow first venue must not consume the whole signal budget.
+
+    Both venue fetches start before either finishes: under the old
+    sequential loop the Binance fetch could not start until Hyperliquid
+    returned, so a 5s Hyperliquid timeout plus a slow Binance fetch blew
+    past the signal cap into SIGNAL DELAYED. Priority is unchanged: the
+    Hyperliquid book still wins when it validates.
+    """
+    import asyncio as _asyncio
+    import logging as _logging
+
+    now = datetime.now(UTC).replace(microsecond=0)
+    store = SQLiteHotStore(tmp_path / "raced.sqlite")
+    market = PerpetualMarketStore(store)
+    hyper, binance = books(now)
+    started: list[str] = []
+    release = _asyncio.Event()
+
+    async def _gate(name):
+        started.append(name)
+        if len(started) == 2:
+            release.set()
+        await _asyncio.wait_for(release.wait(), timeout=5)
+        return hyper if name == "hyperliquid" else binance
+
+    class RacedQuotes:
+        async def get_reference(self, asset):
+            return await _gate("hyperliquid")
+
+        async def get(self, asset):
+            return await _gate("binance")
+
+    try:
+        seed_prediction(market, now, venue="hyperliquid", probability=.61)
+        seed_prediction(market, now, venue="binance", probability=.58)
+        with caplog.at_level(_logging.INFO, logger="parlay_bot.discord_app.signals"):
+            signal = await signal_embed(
+                market, RacedQuotes(), asset="BTC", horizon_minutes=5, now=now,
+            )
+        assert started == ["hyperliquid", "binance"] or set(started) == {
+            "hyperliquid", "binance"}
+        assert "UP WATCH" in signal.title
+        assert "Hyperliquid" in next(
+            x.value for x in signal.fields if x.name.startswith("Fresh matching")
+        )
+        assert "RivaL signal asset=BTC horizon=5" in caplog.text
+        assert "book_venue=hyperliquid" in caplog.text
+    finally:
+        store.close()

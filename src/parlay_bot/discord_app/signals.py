@@ -210,9 +210,22 @@ async def signal_embed(
             venue: next(w for w in prioritized if w["venue"] == venue)
             for venue in target_venues
         }
+        async def bounded_book(venue: str):
+            # A slow DNS lookup on one remote exchange must not consume the
+            # entire seven-second background Auto-Hunt decision budget.
+            # Missing quotes fail closed; no cross-venue substitution.
+            try:
+                return await asyncio.wait_for(
+                    _venue_book(quotes, asset=asset, venue=venue),
+                    timeout=2.5 if decision_only else 4.5,
+                )
+            except TimeoutError as exc:
+                raise QuoteUnavailable(
+                    "Source-matched order book timed out"
+                ) from exc
+
         outcomes = await asyncio.gather(
-            *(_venue_book(quotes, asset=asset, venue=venue)
-              for venue in target_venues),
+            *(bounded_book(venue) for venue in target_venues),
             return_exceptions=True,
         )
         marks["book_ms"] = (time.monotonic() - started) * 1000

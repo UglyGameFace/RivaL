@@ -201,13 +201,15 @@ def live_polymarket_embed(
     # are different metrics. No contract-outcome ledger exists in this path,
     # so showing 58% 'accuracy' from unrelated labels would be dishonest.
     accuracy = "Polymarket: not validated"
-    for name, value in (
+    for index, (name, value) in enumerate((
         ("💰 Price / Share Cost", reference),
         ("⏱️ Expires", expiry),
         ("⚡ Model Strength", strength),
         ("📊 Accuracy", accuracy),
-    ):
+    )):
         embed.add_field(name=name, value=value, inline=True)
+        if index in (1, 3):
+            embed.add_field(name="\u200b", value="\u200b", inline=True)
     if current is None:
         market = "No current verified Gamma listing."
     else:

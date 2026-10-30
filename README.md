@@ -7,18 +7,14 @@ RivaL is a provider-agnostic sports-odds intelligence and parlay-analysis projec
 
 ### Start in Discord
 
-Type **`/rival`**. Everything ordinary users need is in one private menu:
+Type **`/rival`**. The top-level private menu has just four choices:
 
-- **Sports & Odds:** choose a state, compare game prices and build a fictional
-  three-pick slip. Nothing is placed.
-- **Predict Crypto:** select BTC, ETH or SOL, choose 5m/15m, then **Get Signal**.
-  Expect UP/DOWN research watches only when the evidence is fresh and strong;
-  otherwise **WAIT** is a correct answer. Follow in DM or set an optional price goal.
-- **Practice Money:** fake buy/sell/close trades using current exchange quotes.
-- **My Results:** personal fictional trade outcomes, plus a plain-English link
-  to **Can I Trust Predictions?**
-- **Advanced (optional):** **Are My Prices Fresh?**, **Is RivaL Improving?**,
-  and the existing technical research dashboard.
+- **Find Opportunities:** Predict Crypto (BTC, ETH, SOL, 5m/15m), Auto-Hunt research alerts, Practice Money, and beginner Help. Research results can be **WAIT/NO SIGNAL**; none promise a betting advantage.
+- **My Alerts:** choose genuinely available Polymarket market listings or new RivaL model forecasts, with a confirmed DM delivery probe before enabling a new tier. You can stop alerts anytime; later delivery can still fail.
+- **Sports & Odds:** choose a state, compare current eligible sportsbook prices and request a screened, fictional three-leg slip. Nonpositive indicative edges are rejected, and uncertain correlation is not treated as proven independence.
+- **My Results:** review actually settled model accuracy and fictional practice results; optional **Advanced Tools** stays available here.
+
+Every page has **Home**, **Back**, and **Explain This**. Power-user features have not been deleted.
 
 Only **four top-level Discord commands** are registered:
 `/rival` (the menu), `/rival-signal` (quick crypto lookup),
@@ -122,6 +118,25 @@ A returned parlay:
 - uses at most one leg per fixture until a proper same-game correlation model exists.
 
 The Discord result explicitly labels these values as market-consensus estimates rather than guaranteed outcomes or model predictions.
+
+### Research alerts and quoted prices
+
+A severe-cost historical simulated trading mean is **not** an expected betting
+edge. Auto-Hunt will not describe perpetual exchange quotes as actionable
+Polymarket prices. Its qualified tier remains a **research watch** until a
+verified market-specific event, calibrated win probability, executable contract
+price and applicable fees establish a separate expected value.
+
+Polymarket notices show the best displayed ask and an estimated order-book
+average for **10 shares** if enough live quoted size exists. This depth
+estimate excludes fees and latency, and it is not a guaranteed fill. Market
+availability and legal eligibility vary by jurisdiction. Alert status means
+*configured*, not that future DMs are guaranteed. The existing once-only
+claim policy intentionally does not retry ambiguous sends.
+
+XRP and one-hour forecasts are not shown yet: the active forward models are
+still built around BTC/ETH/SOL and 5m/15m future five-minute reference candle
+outcomes. A one-hour label alone would not create a validated one-hour model.
 
 ## Simple RivaL Home (mobile and first-time users)
 

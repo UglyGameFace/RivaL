@@ -1,6 +1,6 @@
 """Phemex USDT perpetual history recovery: real units, durable cursors.
 
-The range endpoint (/kline with from/to) is exercised here through the mock
+The documented range endpoint (/kline/list with aligned from/to) is exercised
 exactly as the recovery sends it; whether the live API honors it is proven
 by the first live cycle's received/inserted log line, not by this test.
 """
@@ -27,12 +27,13 @@ def response(request: httpx.Request) -> httpx.Response:
              "baseCurrency": "BTC", "quoteCurrency": "USDT",
              "settleCurrency": "USDT"},
         ]}})
-    assert request.url.path.endswith("/md/v2/kline")
+    assert request.url.path.endswith("/md/v2/kline/list")
     assert request.url.params["symbol"] == "BTCUSDT"
     assert request.url.params["resolution"] == "300"
     start = int(request.url.params["from"])
     end = int(request.url.params["to"])
-    assert end - start == 12 * 300 - 1
+    assert end - start == 12 * 300
+    assert start % 300 == end % 300 == 0
     return httpx.Response(200, json={"code": 0, "data": {"rows": [
         [start + i * 300, 300, 0, "100", "110", "95", "102", "1.25", "127.50"]
         for i in range(12)

@@ -42,7 +42,8 @@ if TYPE_CHECKING:
 _LOG = logging.getLogger(__name__)
 COINS = ("BTC", "ETH", "SOL")
 EXPLAIN = {
-    "home": "Choose an area. Auto-Hunt scans for new research watches after you opt in. No wagers are placed.",
+    "home": "Find crypto or sports research, choose private alerts, or inspect recorded results. No wagers are placed.",
+    "discover": "Choose Predict Crypto for model research, Auto-Hunt for opt-in alerts, or Practice Money for simulated trades. No profits are established.",
     "hunt": "Auto-Hunt scans genuine future-issued crypto predictions, checks the SAME venue's fresh bid/ask and forward research evidence, and sends new private notifications. It never invents a strike or places a bet. Raw model percentages are not calibrated winning odds.",
     "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
     "slip": "A parlay combines picks. All legs must win for the parlay to win. No real wager is placed here.",
@@ -301,16 +302,18 @@ class GuidedHome(discord.ui.View):
         p = self.page
         if p == "home":
             items = (
-                ("Sports & Odds", "sports", 0, "🏆"),
-                ("Predict Crypto", "crypto", 0, "📈"),
-                ("Practice Money", "practice", 0, "💵"),
-                ("Auto-Hunt", "hunt", 2, "🔔"),
+                ("Find Opportunities", "discover", 0, "🔎"),
+                ("My Alerts", "hunt", 0, "🔔"),
+                ("Sports & Odds", "sports", 1, "🏆"),
                 ("My Results", "results", 1, "📊"),
-                ("Help Me Start", "help", 1, "❓"),
-                ("Advanced", "advanced", 1, "⚙️"),
             )
             for title, action, row, emoji in items:
                 self._add(title, action, row, emoji, action == "sports")
+        elif p == "discover":
+            self._add("Predict Crypto", "crypto", 0, "📈", True)
+            self._add("Auto-Hunt Alerts", "hunt", 0, "🔔")
+            self._add("Practice Money", "practice", 1, "💵")
+            self._add("Help Me Start", "help", 1, "❓")
         elif p == "sports":
             self._add("Choose State", "state", 0, "🗺️")
             self._add("Enter ZIP", "zip", 0, "📍")
@@ -345,6 +348,8 @@ class GuidedHome(discord.ui.View):
             self._add("Set Fake Balance", "funds", 2, "💵")
             self._add("See My Results", "results", 3, "📊")
         elif p == "results":
+            self._add("Practice Money", "practice", 3, "💵")
+            self._add("Advanced Tools", "advanced", 3, "⚙️")
             self.add_item(_Coin(self.coin))
             self.add_item(_Horizon(self.horizon))
             self._add("Check Profit Evidence", "proof", 2, "🔍")
@@ -391,14 +396,24 @@ class GuidedHome(discord.ui.View):
                 title="RivaL | Betting Genie",
                 description=(
                     "**Welcome! What would you like to do?**\n"
-                    "🏆 **Sports & Odds**: Find games and compare prices.\n"
-                    "📈 **Predict Crypto**: See BTC, ETH or SOL forecasts.\n"
-                    "🔔 **Auto-Hunt**: Get new private research alerts automatically.\n"
-                    "💵 **Practice Money**: Try fake funds, no deposits.\n"
-                    "📊 **My Results**: See wins and losses.\n"
-                    "❓ **Help Me Start**: Simple instructions.\n\n"
+                    "🔎 **Find Opportunities**: Choose crypto research or practice.\n"
+                    "🔔 **My Alerts**: Choose new forecasts or markets to follow.\n"
+                    "🏆 **Sports & Odds**: Compare currently available prices.\n"
+                    "📊 **My Results**: Check accuracy and practice results.\n\n"
+                    "Source availability is checked inside each section.\n"
                     "**No real bets or orders are placed.**"
                 ), color=discord.Color.blurple(),
+            )
+        elif p == "discover":
+            embed = discord.Embed(
+                title="🔎 Find Opportunities",
+                description=(
+                    "Choose a fresh crypto forecast, opt in to research "
+                    "notifications, or practice with fake money. A forecast "
+                    "does not automatically match a betting market's rules, "
+                    "and positive expected betting value is not established."
+                ),
+                color=discord.Color.blurple(),
             )
         elif p == "hunt":
             status = (
@@ -919,6 +934,32 @@ class GuidedHome(discord.ui.View):
         )
         return embed
 
+    def _display_generation(self) -> GuidedHome:
+        """Create the replacement buttons without detaching the displayed ones.
+
+        The old generation stays dispatchable throughout slow renders and
+        until Discord successfully registers the newly edited message.
+        """
+        view = GuidedHome(
+            owner_id=self.owner_id, location=self.location, builder=self.builder,
+            collector=self.collector, refresh_sports=self.refresh_sports,
+            market=self.market, targets=self.targets, paper=self.paper,
+            quotes=self.quotes, profit=self.profit,
+            research_factory=self.research_factory,
+            stream_shadow=self.stream_shadow, multi=self.multi,
+            venues=self.venues, auto_hunt=self.auto_hunt,
+        )
+        view.page = self.page
+        view.back_stack = list(self.back_stack)
+        view.coin = self.coin
+        view.horizon = self.horizon
+        view.risk = self.risk
+        view.slip = self.slip
+        view.note = self.note
+        view._redraw_lock = self._redraw_lock
+        view._buttons()  # only the new, never-registered view is cleared
+        return view
+
     async def redraw(self, interaction: discord.Interaction) -> None:
         async with self._redraw_lock:
             await self._redraw_locked(interaction)
@@ -928,7 +969,7 @@ class GuidedHome(discord.ui.View):
         _background_retry: bool = False,
     ) -> None:
         started = time.monotonic()
-        self._buttons()
+        # Do not clear live components before the next embed is ready.
         render_timed_out = False
         try:
             embed = await asyncio.wait_for(self.render(), timeout=12)
@@ -959,13 +1000,15 @@ class GuidedHome(discord.ui.View):
         edit_failed = False
         try:
             await asyncio.wait_for(
-                interaction.edit_original_response(content=None, embed=embed, view=self),
+                interaction.edit_original_response(
+                    content=None, embed=embed, view=self._display_generation(),
+                ),
                 timeout=8,
             )
         except (TimeoutError, discord.HTTPException) as exc:
             edit_failed = True
             _LOG.warning("Guided menu edit failed page=%s error=%s", self.page, type(exc).__name__)
-            self._reregister_view(interaction)
+            # A failed edit leaves the previous generation intact.
             if _background_retry:
                 # A background retry must never spam the user: the
                 # loading embed is still there, and the next tap retries.
@@ -986,25 +1029,6 @@ class GuidedHome(discord.ui.View):
             # short pause; the redraw lock serializes it against the
             # user's next tap, and the retry itself never retries again.
             asyncio.create_task(self._retry_failed_render(interaction))
-
-    def _reregister_view(self, interaction: discord.Interaction) -> None:
-        """Re-register the rebuilt view after a failed edit.
-
-        _buttons() detaches the previous generation's items (clear_items
-        sets item.view to None). A successful edit re-registers the new
-        generation via store_view, but a failed edit leaves the store
-        pointing at detached items, so the next tap on the displayed
-        buttons discards with no handler and no ack. Re-registering maps
-        the displayed custom_ids back to attached items, healing future
-        taps without a fresh menu. Best effort: never break the menu.
-        """
-        try:
-            message = interaction.message
-            store = interaction.client._connection._view_store
-            if message is not None and store is not None:
-                store.add_view(self, message.id)
-        except Exception:  # noqa: BLE001 - healing must never break the menu
-            _LOG.warning("Guided view re-register failed")
 
     async def _retry_failed_render(
         self, interaction: discord.Interaction,
@@ -1069,8 +1093,8 @@ class GuidedHome(discord.ui.View):
         if action == "back":
             self.page = self.back_stack.pop() if self.back_stack else "home"
             self.note = None
-        elif action in ("home", "sports", "crypto", "hunt", "practice", "results",
-                        "help", "advanced", "feeds", "trust"):
+        elif action in ("home", "discover", "sports", "crypto", "hunt", "practice",
+                        "results", "help", "advanced", "feeds", "trust"):
             self.navigate(action)
             if action == "sports":
                 await self._refresh_odds()
@@ -1302,6 +1326,7 @@ class GuidedHome(discord.ui.View):
 # stateful action and is never run from stale state.
 _STALE_SAFE_PAGES = {
     "home": "home",
+    "discover": "discover",
     "sports": "sports",
     "crypto": "crypto",
     "hunt": "hunt",
@@ -1324,6 +1349,7 @@ _STALE_NOTE = (
 # Button actions split across two views to stay under the 25-component limit.
 _STALE_BUTTONS_A = (
     "sports", "crypto", "hunt", "practice", "results", "help", "advanced",
+    "discover",
     "state", "zip", "refresh", "manual", "slip", "lower", "balanced",
     "aggressive", "forecast", "follow", "target", "home", "back",
     "hunt-poly", "hunt-research", "hunt-qualified",

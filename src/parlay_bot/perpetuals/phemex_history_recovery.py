@@ -36,7 +36,7 @@ from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
 _LOG = logging.getLogger(__name__)
 _PRODUCTS = "https://api.phemex.com/public/products"
-_KLINE = "https://api.phemex.com/exchange/public/md/v2/kline"
+_KLINE = "https://api.phemex.com/exchange/public/md/v2/kline/list"
 
 
 class PhemexHistoryRecovery(GateHistoryRecovery):
@@ -163,7 +163,7 @@ class PhemexHistoryRecovery(GateHistoryRecovery):
             response = await self._get(_KLINE, {
                 "symbol": symbol,
                 "from": int(cursor.timestamp()),
-                "to": int(until.timestamp()) - 1,
+                "to": int(until.timestamp()),
                 "resolution": 300,
             })
             body = response.get("data") if isinstance(response, dict) else None

@@ -321,6 +321,13 @@ class ParlayBuilder:
                 1 for c in candidates if c.price_edge < 0.02
             )
             candidates = [c for c in candidates if c.price_edge >= 0.02]
+        else:
+            # Preserve single-leg diagnostics; never auto-suggest negative
+            # individual prices in multi-leg combinations.
+            self.last_diagnostics["nonpositive_multi_leg"] = sum(
+                1 for c in candidates if c.price_edge <= 0
+            )
+            candidates = [c for c in candidates if c.price_edge > 0]
         if not candidates:
             raise ParlayBuildError(
                 "No current eligible sportsbook prices pass the fresh positive-edge screen. "
@@ -361,6 +368,13 @@ class ParlayBuilder:
                 fair_probability=joint_probability,
                 decimal_odds=combined_price,
             )
+            # These are indicative no-vig consensus probabilities, not a
+            # calibrated guarantee. Never auto-suggest a losing-price slip.
+            if combined_edge <= 0:
+                self.last_diagnostics["negative_combined_edge"] = (
+                    self.last_diagnostics.get("negative_combined_edge", 0) + 1
+                )
+                continue
 
             legs = [
                 ParlayLeg(

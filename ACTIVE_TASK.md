@@ -1,3 +1,16 @@
+## ACTIVE TASK: RivaL Fourth-Pass Production Hardening (2026-10-30)
+
+- **Objective:** Fix confirmed menu dispatch race, misleading trade-edge terminology, parlay math, stale notification timestamps, subscription false confirmations, Polymarket quote depth, and Phemex historical requests in one cohesive reviewable PR. The owner explicitly authorized this priority.
+- **Pinned base:** main `f2ed25c7e2da82227f3394d4749435179253be6e` (merged #104). New branch `fix/rival-audit-hardening-20261030`, PR #105. Existing issues #6 and #66 remain open for independently unfinished forecasting/provider-owner functionality.
+- **Implemented:** Immutable replacement Discord view generations preserve still-displayed button dispatch; four-choice beginner home with advanced services retained. Auto-Hunt now labels severe after-cost bps as historical simulated return, never current contract EV; bounded concurrent quote screening and final DM freshness gate; shared opt-in DM probe for both source subscription and tier enable, with configured-vs-delivery distinction. Polymarket read-only best ask is distinct from depth-weighted 10-share estimate and may show insufficient depth. Reject nonfinite/overflowing parlay math, filter nonpositive candidate legs on multi-leg auto-suggestions, guard combined return, and use Phemex aligned `/exchange/public/md/v2/kline/list` range.
+- **Checks:** GitHub CI runs Python 3.11 Ruff and full pytest including PostgreSQL16. A first full run passed 615 tests and revealed three compatibility assertions, then fixes were committed; the final exact-head CI result must be inspected before merge. No tested production Discord runtime DM or hosted provider reachability is implied.
+- **Operational safety:** Strictly read-only; no order placement, wallet keys, destructive migrations or fake expected value. Keep existing at-most-once ambiguous notification behavior. In particular, a definitively failed DM is not yet recovered by a durable retrying outbox.
+- **Remaining independent development:** Real XRP and 60-minute source-backed point-in-time forecasting, centrally defined market identities, properly event-calibrated Polymarket probabilities, 21+ day uniquely paired forward validation with uncertainty, durable notification outbox, and hosted production monitoring. XRP/60m buttons are intentionally NOT shown without corresponding real model support. Neither model improvement nor real-world profitability is proven.
+- **Release:** Merge PR #105 only when exact-head CI green. Verify main CI separately, then validate a guarded Discloud release and actual Discord menu interaction, DM opt-in/stop, and provider read-only health; without that observation, **deployed/production-fixed is not proven**.
+- **Rollback:** Revert PR #105 on main without storage schema changes; previous main SHA above. Do not revert independently merged PRs after #104.
+
+---
+
 ## ACTIVE TASK: Auto-Hunt missed alerts + selectable Polymarket source (2026-10-30)
 
 - **Owner report:** Auto-Hunt DMs missing. Discloud log from 05:30 UTC shows `rival:guided:hunt` clicks discarded from detached message items, 12s crypto render timeouts, 41s Discord gateway lag; automatic math produced 1 forecast, not a confirmed DM attempt. Do NOT invent actual delivery.

@@ -22,6 +22,7 @@ GAMMA = "https://gamma-api.polymarket.com"
 CLOB = "https://clob.polymarket.com"
 MAX_BOOK_AGE = timedelta(seconds=25)
 MIN_SECONDS_LEFT = 90
+REFERENCE_SHARES = 10.0
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,8 @@ class PolymarketNotice:
     up_ask: float
     down_ask: float
     quote_at: datetime
+    up_average_ask: float | None = None  # depth for ten shares, before fees
+    down_average_ask: float | None = None
 
     @property
     def venue(self) -> str:
@@ -74,31 +77,56 @@ def _decode_array(value: object) -> list[str]:
     return value
 
 
-def _best_ask(book: dict, *, now: datetime) -> float:
+def _ask_levels(book: dict, *, now: datetime) -> list[tuple[float, float]]:
     if not isinstance(book, dict) or not book.get("timestamp"):
         raise ValueError("orderbook timestamp unavailable")
     value = float(book["timestamp"])
     if not math.isfinite(value):
         raise ValueError("orderbook timestamp invalid")
-    # CLOB books use millisecond epoch timestamps.
+    # CLOB book timestamps are milliseconds.
     quoted = datetime.fromtimestamp(value / 1000, tz=UTC)
     if quoted > now + timedelta(seconds=5) or now - quoted > MAX_BOOK_AGE:
         raise ValueError("stale or future Polymarket book")
     asks = book.get("asks")
     if not isinstance(asks, list):
         raise TypeError("no asks")
-    prices = []
+    levels = []
     for level in asks:
         try:
             price = float(level["price"])
             size = float(level["size"])
             if math.isfinite(price) and math.isfinite(size) and 0 < price < 1 and size > 0:
-                prices.append(price)
+                levels.append((price, size))
         except (KeyError, ValueError, TypeError, OverflowError):
             continue
-    if not prices:
+    if not levels:
         raise ValueError("no quoted liquidity")
-    return min(prices)
+    return sorted(levels)
+
+
+def _best_ask(book: dict, *, now: datetime) -> float:
+    """Top-of-book only; not a guaranteed fill price."""
+    return _ask_levels(book, now=now)[0][0]
+
+
+def _average_ask(
+    book: dict, *, now: datetime, shares: float = REFERENCE_SHARES,
+) -> float | None:
+    """Walk order-book depth, returning None when the requested size cannot fill.
+
+    Excludes trading fees, latency and actual execution uncertainty.
+    """
+    if not math.isfinite(shares) or shares <= 0:
+        raise ValueError("reference shares must be finite and positive")
+    remaining = shares
+    spent = 0.0
+    for price, amount in _ask_levels(book, now=now):
+        taken = min(amount, remaining)
+        spent += taken * price
+        remaining -= taken
+        if remaining <= 1e-9:
+            return spent / shares
+    return None
 
 
 class PolymarketReader:
@@ -205,6 +233,8 @@ class PolymarketReader:
                 asset=asset, horizon=horizon, issued=start,
                 expires=expires, slug=slug,
                 up_ask=up, down_ask=down, quote_at=quote_at,
+                up_average_ask=_average_ask(up_book, now=quote_at),
+                down_average_ask=_average_ask(down_book, now=quote_at),
             )
 
     async def active(self, *, now: datetime | None = None) -> list[PolymarketNotice]:

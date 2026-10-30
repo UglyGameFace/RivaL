@@ -62,9 +62,10 @@ async def test_beginner_home_begins_simple_and_keeps_advanced_features(tmp_path)
         assert tools.get_command("profit-proof") is not None
         assert tools.get_command("practice") is not None
         assert home.page == "home"
-        assert {"Sports & Odds", "Predict Crypto", "Practice Money",
-                "My Results", "Help Me Start", "Advanced",
-                "Home", "Back", "Explain This"}.issubset(set(_labels(home)))
+        assert set(_labels(home)) == {
+            "Find Opportunities", "My Alerts", "Sports & Odds",
+            "My Results", "Home", "Back", "Explain This",
+        }
         assert len(home.children) <= 25
         assert max(item.row for item in home.children) <= 4
         embed = await home.render()
@@ -82,7 +83,7 @@ async def test_every_page_has_home_back_explain_without_dead_buttons(tmp_path):
     bot = _client(tmp_path)
     home = _home(bot)
     try:
-        for page in ("sports", "crypto", "practice", "results",
+        for page in ("discover", "sports", "crypto", "practice", "results",
                      "help", "advanced", "slip", "forecast", "quote",
                      "feeds", "trust"):
             home.navigate("home")
@@ -160,8 +161,9 @@ async def test_crypto_watch_and_price_goal_are_existing_service_actions(tmp_path
     try:
         i = _interaction()
         await home.act(i, "crypto")
+        display = i.edit_original_response.await_args.kwargs["view"]
         assert "Choose a coin" in next(
-            item.placeholder for item in home.children
+            item.placeholder for item in display.children
             if isinstance(item, discord.ui.Select)
         )
         home.coin = "ETH"

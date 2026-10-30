@@ -309,3 +309,54 @@ def test_forecast_alerts_reject_late_or_already_expired(monkeypatch):
     assert run(auto_hunt.new_forecast_watches(market, now=now)) == []
     watches[:] = [{**_mock_watch(now), "target": now - timedelta(minutes=5)}]
     assert run(auto_hunt.new_forecast_watches(market, now=now)) == []
+
+
+def test_daily_alert_budgets_separate_research_live_trends_and_sources(hunt_store):
+    now = datetime(2026, 10, 30, 18, 0, tzinfo=UTC)
+    user = "budget-100"
+    hunt_store.subscribe(user, now=now - timedelta(minutes=5))
+    cases = (
+        ("research", candidate(now, venue="binance", model_version="research"), None),
+        ("qualified", candidate(now, venue="hyperliquid", model_version="qualified"),
+         "qualified|confirmed"),
+        ("polymarket", candidate(now, venue="polymarket", model_version="poly"), None),
+        ("flip", candidate(now, venue="okx", model_version="flip"),
+         "flip|reversal"),
+        ("live_shift", candidate(now, venue="live_trend", model_version="shift"),
+         None),
+    )
+    for tier, watch, key in cases:
+        assert hunt_store.claim(
+            user, watch, now=now, key=key, apply_cooldown=False,
+        ), tier
+        hunt_store.finish(
+            user, watch, key=key, sent=True,
+            message_id=f"test-{tier}",
+        )
+    counts = hunt_store.daily_sent_counts(user, now=now)
+    assert counts == {
+        "research": 1, "qualified": 1, "polymarket": 1,
+        "flip": 1, "live_shift": 1,
+    }
+    for tier in counts:
+        assert hunt_store.count_sent_today(user, tier, now) == 1
+    assert all(
+        n == 0 for n in hunt_store.daily_sent_counts(
+            user, now=now + timedelta(days=1),
+        ).values()
+    )
+
+
+def test_alert_status_explains_daily_limits_and_reset(hunt_store):
+    user_id = 33331
+    hunt_store.subscribe(str(user_id))
+    service = auto_hunt.AutoHuntService(
+        bot=SimpleNamespace(), market=object(), quotes=object(),
+        store=hunt_store,
+    )
+    result = run(service.status(user_id))
+    assert "Today's sent alerts (UTC)" in result
+    assert "Research 0/12" in result
+    assert "Qualified" not in result
+    assert "Resets <t:" in result
+    assert "Sent 0 total" in result

@@ -182,7 +182,7 @@ def test_live_market_and_model_predictions_are_clearly_separate():
     full = "\n".join(str(x.value) for x in embed.fields)
     assert "Same 5m" not in full or "same closing time" in full
     assert "UP" in embed.fields[-2].value
-    assert "current" in embed.fields[4].name.lower()
+    assert "current" in embed.fields[6].name.lower()
     assert next_window.slug in full
     assert "~15s" in embed.footer.text
 
@@ -215,8 +215,9 @@ def test_15m_model_leans_up_for_a_different_five_minute_candle_only():
     assert "**UP** research lean" in research
     assert "5m exchange candle" in research
     assert "not this 15m Polymarket contract" in research
-    assert "95.0%" not in embed.fields[3].value
-    assert "Polymarket: not validated" in embed.fields[3].value
+    assert "95.0%" not in embed.fields[4].value
+    assert "95.0% raw model score" in embed.fields[3].value
+    assert "Polymarket: not validated" in embed.fields[4].value
 
 
 def test_stale_or_unavailable_model_never_becomes_directional_call():

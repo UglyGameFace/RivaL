@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import queue
 import sqlite3
-from collections.abc import Sequence
+import threading
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from types import TracebackType
 from typing import Any, Literal, Protocol, Self
 
 import psycopg
+from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 
 BackendName = Literal["sqlite", "postgres"]
@@ -30,9 +33,13 @@ def _postgres_sql(sql: str) -> str:
 
 
 class _Connection:
-    def __init__(self, raw: Any, backend: BackendName) -> None:
+    def __init__(
+        self, raw: Any, backend: BackendName,
+        on_exit: Callable[[Any], None] | None = None,
+    ) -> None:
         self._raw = raw
         self.backend = backend
+        self._on_exit = on_exit
 
     def execute(self, sql: str, params: Sequence[Any] = ()) -> CursorLike:
         if self.backend == "postgres":
@@ -63,6 +70,8 @@ class _Connection:
         finally:
             if self.backend == "sqlite":
                 self._raw.close()
+            elif self._on_exit is not None:
+                self._on_exit(self._raw)
         return result
 
 
@@ -116,18 +125,129 @@ class SQLiteDatabase(RelationalDatabase):
 class PostgresDatabase(RelationalDatabase):
     backend: BackendName = "postgres"
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(
+        self, dsn: str, *, max_size: int = 8, checkout_timeout: float = 10.0,
+    ) -> None:
         cleaned = dsn.strip()
         if not cleaned:
             raise ValueError("PostgreSQL DSN is required")
         if not cleaned.startswith(("postgresql://", "postgres://")):
             raise ValueError("RIVAL_DATABASE_URL must be a PostgreSQL connection URL")
+        if max_size < 1:
+            raise ValueError("PostgreSQL pool max_size must be at least 1")
+        if checkout_timeout <= 0:
+            raise ValueError("PostgreSQL pool checkout_timeout must be positive")
         self.dsn = cleaned
+        self._max_size = max_size
+        self._checkout_timeout = checkout_timeout
+        # Small stdlib pool, no new dependency: every render used to pay
+        # a full TCP+TLS+auth handshake per query (10-15 fresh connections
+        # per menu render). Connections here are reused across threads;
+        # each checkout is used by one thread at a time via `with`.
+        self._idle: queue.Queue[Any] = queue.Queue()
+        self._lock = threading.Lock()
+        self._total = 0
+        self._closed = False
 
     def connect(self) -> _Connection:
-        raw = psycopg.connect(
-            self.dsn,
-            row_factory=dict_row,
-            connect_timeout=10,
+        return _Connection(
+            self._checkout(), self.backend, on_exit=self._checkin,
         )
-        return _Connection(raw, self.backend)
+
+    def _checkout(self) -> Any:
+        while True:
+            try:
+                raw = self._idle.get_nowait()
+            except queue.Empty:
+                pass
+            else:
+                if raw.closed:
+                    with self._lock:
+                        self._total -= 1
+                    continue
+                return raw
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError(
+                        "PostgreSQL connection pool is closed",
+                    )
+                create = self._total < self._max_size
+                if create:
+                    self._total += 1
+            if create:
+                try:
+                    return psycopg.connect(
+                        self.dsn,
+                        row_factory=dict_row,
+                        connect_timeout=10,
+                    )
+                except Exception:
+                    with self._lock:
+                        self._total -= 1
+                    raise
+            try:
+                raw = self._idle.get(timeout=self._checkout_timeout)
+            except queue.Empty:
+                raise TimeoutError(
+                    "PostgreSQL connection pool exhausted "
+                    f"(max_size={self._max_size}); all connections are "
+                    "checked out",
+                ) from None
+            if raw.closed:
+                with self._lock:
+                    self._total -= 1
+                continue
+            return raw
+
+    def _checkin(self, raw: Any) -> None:
+        with self._lock:
+            closed = self._closed
+        if closed:
+            try:
+                raw.close()
+            finally:
+                with self._lock:
+                    self._total -= 1
+            return
+        # A borrower may have left an open transaction (or a broken
+        # connection) behind. Roll back so the next borrower sees clean
+        # state; a connection that cannot roll back is discarded, never
+        # returned to the pool.
+        try:
+            if raw.info.transaction_status != TransactionStatus.IDLE:
+                raw.rollback()
+        except Exception:  # noqa: BLE001 - a failed checkin must discard, not raise
+            try:
+                raw.close()
+            finally:
+                with self._lock:
+                    self._total -= 1
+            return
+        if raw.closed:
+            with self._lock:
+                self._total -= 1
+            return
+        try:
+            self._idle.put_nowait(raw)
+        except Exception:  # noqa: BLE001 - a failed checkin must discard, not raise
+            try:
+                raw.close()
+            finally:
+                with self._lock:
+                    self._total -= 1
+
+    def close(self) -> None:
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+        while True:
+            try:
+                raw = self._idle.get_nowait()
+            except queue.Empty:
+                return
+            try:
+                raw.close()
+            finally:
+                with self._lock:
+                    self._total -= 1

@@ -1,10 +1,13 @@
 """One live source-focused market screen, with no guessed odds or duplicate reads."""
 from __future__ import annotations
 
+import asyncio
+
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 from parlay_bot.config import Settings
@@ -156,3 +159,48 @@ async def test_live_polymarket_display_book_deduplicates_but_never_reuses_next_w
         "BTC", 5, now=stamp+timedelta(minutes=5), display_only=True,
     )
     assert reader._lookup.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_concurrent_gamma_listing_uses_one_shared_request(monkeypatch):
+    now = datetime.now(UTC)
+    opened = datetime.fromtimestamp(int(now.timestamp()) // 300 * 300, UTC)
+    close = opened + timedelta(minutes=5)
+    slug = market_slug("BTC", 5, opened)
+    requests = []
+
+    def handle(req: httpx.Request) -> httpx.Response:
+        requests.append(str(req.url))
+        return httpx.Response(200, json={
+            "slug": slug, "active": True, "closed": False,
+            "archived": False,
+            "eventStartTime": opened.isoformat(),
+            "endDate": close.isoformat(),
+            "markets": [{
+                "eventStartTime": opened.isoformat(),
+                "active": True, "closed": False,
+                "acceptingOrders": True, "enableOrderBook": True,
+                "outcomes": '["Up","Down"]',
+            }],
+        })
+
+    actual_client = httpx.AsyncClient
+
+    def client(*args, **kwargs):
+        return actual_client(
+            transport=httpx.MockTransport(handle),
+            timeout=kwargs.get("timeout", 3.5),
+            follow_redirects=False,
+        )
+
+    monkeypatch.setattr(
+        "parlay_bot.discord_app.polymarket_watch.httpx.AsyncClient", client,
+    )
+    reader = PolymarketReader()
+    left, right = await asyncio.gather(
+        reader.listed("BTC", 5, opened, now=now),
+        reader.listed("BTC", 5, opened, now=now),
+    )
+    assert left is not None
+    assert right is left
+    assert len(requests) == 1

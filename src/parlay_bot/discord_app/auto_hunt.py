@@ -27,6 +27,7 @@ from parlay_bot.discord_app.signals import (
     model_strength,
     signal_embed,
 )
+from parlay_bot.discord_app.polymarket_watch import PolymarketNotice, PolymarketReader
 from parlay_bot.perpetuals.promotion import multi_summary, promoted_engine
 from parlay_bot.storage.hot import RelationalHotStore
 
@@ -113,7 +114,11 @@ class AutoHuntStore:
                        PRIMARY KEY(user_id, forecast_key)
                    );
                    CREATE INDEX IF NOT EXISTS rival_hunt_delivery_user
-                       ON rival_hunt_delivery(user_id, attempted_at);"""
+                       ON rival_hunt_delivery(user_id, attempted_at);
+                   CREATE TABLE IF NOT EXISTS rival_hunt_source (
+                       user_id TEXT PRIMARY KEY,
+                       selected_source TEXT NOT NULL
+                   );"""
             )
 
     def subscribe(self, user_id: str, *, now: datetime | None = None) -> bool:
@@ -139,6 +144,29 @@ class AutoHuntStore:
             )
             return True
 
+    def choose_source(self, user_id: str, source: str) -> None:
+        if source not in ("forecasts", "polymarket"):
+            raise ValueError("Unsupported source")
+        with self.store.connect() as conn:
+            conn.execute(
+                """INSERT INTO rival_hunt_source(user_id,selected_source)
+                   VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET
+                   selected_source=excluded.selected_source""",
+                (user_id, source),
+            )
+            conn.execute(
+                "UPDATE rival_hunt_subscriptions SET last_sent_at=NULL WHERE user_id=?",
+                (user_id,),
+            )
+
+    def source(self, user_id: str) -> str:
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT selected_source FROM rival_hunt_source WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+        return str(row["selected_source"]) if row else "forecasts"
+
     def stop(self, user_id: str) -> bool:
         with self.store.connect() as conn:
             updated = conn.execute(
@@ -158,9 +186,11 @@ class AutoHuntStore:
     def subscribers(self) -> list[dict]:
         with self.store.connect() as conn:
             rows = conn.execute(
-                """SELECT user_id,since_at,last_sent_at
-                   FROM rival_hunt_subscriptions WHERE enabled=1
-                   ORDER BY user_id LIMIT ?""",
+                """SELECT s.user_id,s.since_at,s.last_sent_at,
+                          COALESCE(p.selected_source,'forecasts') AS source
+                   FROM rival_hunt_subscriptions s
+                   LEFT JOIN rival_hunt_source p ON p.user_id=s.user_id
+                   WHERE s.enabled=1 ORDER BY s.user_id LIMIT ?""",
                 (MAX_USERS,),
             ).fetchall()
             return [dict(row) for row in rows]
@@ -173,7 +203,11 @@ class AutoHuntStore:
                    WHERE user_id=? AND enabled=1""",
                 (user_id,),
             ).fetchone()
-            if eligible is None or _instant(eligible["since_at"]) > candidate.issued:
+            if eligible is None:
+                return False
+            if candidate.venue != "polymarket" and (
+                _instant(eligible["since_at"]) > candidate.issued
+            ):
                 return False
             if eligible["last_sent_at"] and (
                 now - _instant(eligible["last_sent_at"]) < COOLDOWN
@@ -401,7 +435,26 @@ async def new_forecast_watches(
     return sorted(candidates, key=lambda c: (-c.issued.timestamp(), c.expires))
 
 
-def hunt_embed(candidate: HuntCandidate, *, observed_at: datetime) -> discord.Embed:
+def hunt_embed(
+    candidate: HuntCandidate | PolymarketNotice, *, observed_at: datetime,
+) -> discord.Embed:
+    if isinstance(candidate, PolymarketNotice):
+        embed = discord.Embed(
+            title=f"📊 Polymarket • {candidate.asset} {candidate.horizon}m market",
+            description=(
+                "**Listed Polymarket market, not a RivaL prediction.**\n"
+                f"Up ask: **{candidate.up_ask:.1%}** per share • "
+                f"Down ask: **{candidate.down_ask:.1%}** per share.\n"
+                f"Book received <t:{int(candidate.quote_at.timestamp())}:R>.\n"
+                f"Market closes <t:{int(candidate.expires.timestamp())}:R>.\n"
+                f"[View exact event]({candidate.url})\n\n"
+                "Quoted prices are NOT calibrated win probabilities or a "
+                "verified edge. No bet placed. Availability varies by jurisdiction."
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="Read-only global Polymarket data • /rival-stop")
+        return embed
     seconds = max(0, int((candidate.expires - observed_at).total_seconds()))
     quote_line = (
         f"Validated {candidate.venue} book at "
@@ -497,6 +550,7 @@ class AutoHuntService:
         self.market = market
         self.quotes = quotes
         self.store = store
+        self.polymarket = PolymarketReader()
         self._user_locks: dict[str, asyncio.Lock] = {}
         self._cycle_lock = asyncio.Lock()
 
@@ -514,23 +568,37 @@ class AutoHuntService:
             ).fetchone()
         return dict(row) if row else None
 
-    async def subscribe(self, user: discord.abc.User) -> tuple[bool, str]:
-        if self.market is None:
-            return False, "Live crypto forecasting is unavailable. No alerts enabled."
+    async def subscribe(
+        self, user: discord.abc.User, *, source: str = "forecasts",
+    ) -> tuple[bool, str]:
+        if source not in ("forecasts", "polymarket"):
+            return False, "Unsupported alert source."
+        if source == "forecasts" and self.market is None:
+            return False, "Live crypto forecasting unavailable; forecasts not enabled."
         async with self._user_lock(str(user.id)):
             try:
-                if await asyncio.to_thread(self.store.enabled, str(user.id)):
-                    return True, "Auto-Hunt is already on. No price entry needed."
+                enabled = await asyncio.to_thread(self.store.enabled, str(user.id))
+                current = await asyncio.to_thread(self.store.source, str(user.id))
+                if enabled and current == source:
+                    return True, "Already following " + (
+                        "Polymarket markets." if source == "polymarket" else
+                        "RivaL forecasts."
+                    )
                 channel = user.dm_channel or await user.create_dm()
                 await asyncio.wait_for(channel.send(
-                    "🔔 RivaL Auto-Hunt setup requested for future BTC, ETH and SOL "
-                    "research watches (5m and 15m). It is active only after "
-                    "your /rival menu confirms ON. No bets will be placed."
+                    "🔔 Auto-Hunt source request: " +
+                    ("Polymarket live Up/Down markets" if source == "polymarket"
+                     else "RivaL new model predictions") +
+                    ". The /rival menu confirms when enabled. No bet is placed."
                 ), timeout=8)
-                await asyncio.to_thread(self.store.subscribe, str(user.id))
+                if not enabled:
+                    await asyncio.to_thread(self.store.subscribe, str(user.id))
+                await asyncio.to_thread(self.store.choose_source, str(user.id), source)
                 return True, (
-                    "Auto-Hunt ON. I'll scan automatically and DM only freshly "
-                    "issued, evidence-screened research watches. No target to type."
+                    "Now following Polymarket crypto markets with actual Up/Down "
+                    "quotes, not invented model predictions."
+                    if source == "polymarket" else
+                    "Now following newly issued RivaL research forecasts."
                 )
             except (discord.HTTPException, TimeoutError):
                 return False, "DM blocked or timed out. No subscription confirmed."
@@ -550,23 +618,32 @@ class AutoHuntService:
             active = await asyncio.to_thread(self.store.enabled, str(user_id))
         except Exception:  # noqa: BLE001 - storage fail closed
             return "Status unavailable. No new alert confirmed."
-        return ("ON • watching new qualified research forecasts" if active else
-                "OFF • opt in to receive new alerts")
+        if not active:
+            return "OFF • choose a source to start"
+        source = await asyncio.to_thread(self.store.source, str(user_id))
+        return ("ON • Polymarket 5m/15m markets"
+                if source == "polymarket" else "ON • RivaL new model forecasts")
 
     async def cycle(self) -> int:
-        if self.market is None:
-            return 0
         # Only one scan and one candidate set per cycle, regardless of users.
         async with self._cycle_lock:
             subscribers = await asyncio.to_thread(self.store.subscribers)
             if not subscribers:
                 return 0
-            candidates = await new_forecast_watches(self.market)
-            _LOG.info(
-                "RivaL Auto-Hunt cycle subscribers=%d fresh_forecasts=%d",
-                len(subscribers), len(candidates),
+            sources = {sub.get("source", "forecasts") for sub in subscribers}
+            forecasts = (
+                await new_forecast_watches(self.market)
+                if "forecasts" in sources else []
             )
-            if not candidates:
+            markets = (
+                await self.polymarket.active()
+                if "polymarket" in sources else []
+            )
+            _LOG.info(
+                "RivaL Auto-Hunt cycle subscribers=%d forecasts=%d poly_markets=%d",
+                len(subscribers), len(forecasts), len(markets),
+            )
+            if not forecasts and not markets:
                 return 0
             # Shared bounded Discord/PG concurrency. Each user's own lock
             # serializes delivery with that user's stop and re-opt-in request.
@@ -575,11 +652,15 @@ class AutoHuntService:
             async def deliver(subscriber: dict) -> int:
                 user_id = str(subscriber["user_id"])
                 since = _instant(str(subscriber["since_at"]))
+                source = subscriber.get("source", "forecasts")
+                candidates = markets if source == "polymarket" else forecasts
                 async with budget, self._user_lock(user_id):
                     for candidate in candidates:
                         stamp = datetime.now(UTC)
-                        if (candidate.issued < since or
-                                candidate.expires - stamp < MIN_REMAINING):
+                        if (
+                            (candidate.venue != "polymarket" and candidate.issued < since)
+                            or candidate.expires - stamp < MIN_REMAINING
+                        ):
                             continue
                         claimed = await asyncio.to_thread(
                             self.store.claim, user_id, candidate, now=stamp,

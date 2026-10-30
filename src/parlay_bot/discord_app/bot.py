@@ -240,7 +240,7 @@ class RivalDiscordClient(discord.Client):
                     manifests=str(settings.rival_drive_manifests_folder_id),
                     staging=str(settings.rival_drive_staging_folder_id),
                     models=str(settings.rival_drive_models_folder_id),
-                    reports=settings.rival_drive_reports_folder_id,
+                    reports=None,
                 ),
                 chunk_size_bytes=settings.rival_archive_chunk_mib * 1024 * 1024,
             )
@@ -1606,11 +1606,22 @@ class RivalDiscordClient(discord.Client):
                 name="rival-cold-archive",
             )
         if self.offline_registry is not None and self._candidate_task is None:
-            await asyncio.to_thread(self.offline_registry.initialize)
-            self._candidate_task = asyncio.create_task(
-                self._candidate_import_loop(),
-                name="rival-verified-offline-candidate-import",
-            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(self.offline_registry.initialize),
+                    timeout=3,
+                )
+            except Exception:  # noqa: BLE001 - archive proof is optional
+                self.candidate_sync_status = "candidate_registry_unavailable"
+                _LOG.exception(
+                    "RivaL optional historical registry could not initialize; "
+                    "Discord and primary archives continue",
+                )
+            else:
+                self._candidate_task = asyncio.create_task(
+                    self._candidate_import_loop(),
+                    name="rival-verified-offline-candidate-import",
+                )
 
     async def on_ready(self) -> None:
         self.discord_ready_at = datetime.now(UTC)

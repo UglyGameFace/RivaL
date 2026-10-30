@@ -49,7 +49,7 @@ def _unexpired(value: object, now: datetime) -> bool:
         if isinstance(value, (float, int)):
             return datetime.fromtimestamp(value, UTC) > now
         if isinstance(value, str):
-            return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(UTC) > now
+            return datetime.fromisoformat(value).astimezone(UTC) > now
     except (ValueError, OverflowError, OSError, TypeError):
         pass
     return False
@@ -239,7 +239,7 @@ class OpenRouterResearch:
                 content = payload["choices"][0]["message"]["content"]
                 result = json.loads(content)
                 if not isinstance(result, dict):
-                    raise ValueError("AI response was not a JSON object")
+                    raise TypeError("AI response was not a JSON object")
                 direction = result.get("direction")
                 confidence = result.get("confidence")
                 thesis = result.get("thesis")

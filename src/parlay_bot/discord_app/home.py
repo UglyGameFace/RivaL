@@ -270,6 +270,72 @@ def _crypto_preview_headline(snapshot: TargetSnapshot | None) -> str:
     return snapshot.detail
 
 
+
+def crypto_snapshot_card(
+    snapshot: TargetSnapshot | None, *, asset: str, horizon: int,
+    checked_at: datetime | None = None,
+) -> discord.Embed:
+    """Compact four-tile Discord model card without fabricated financial stats.
+
+    Snapshot.price is the MODEL'S REFERENCE CANDLE, not a current order-book
+    quote or the Polymarket settlement strike. A complete venue-matched signal
+    check is needed for the actual bid/ask and the measured 7-day hit rate.
+    """
+    stamp = checked_at or datetime.now(UTC)
+    current = (
+        snapshot is not None and snapshot.status == "ok"
+        and snapshot.asset == asset and snapshot.horizon_minutes == horizon
+        and snapshot.ends_at is not None and snapshot.ends_at > stamp
+        and snapshot.issued_at is not None and snapshot.issued_at <= stamp
+        and snapshot.direction in ("UP", "DOWN")
+    )
+    status = (
+        f"{snapshot.direction} LEAN • RESEARCH ONLY"
+        if current else "WAIT • NO SIGNAL"
+    )
+    embed = discord.Embed(
+        title=f"{ASSET_NAMES.get(asset, asset)} • {horizon} min | {status}",
+        description=(
+            "Exchange-candle model issued "
+            + discord.utils.format_dt(snapshot.issued_at, style="R")
+            + ". This is not a Polymarket win prediction."
+            if current else
+            "**No verified current direction.** "
+            + _crypto_preview_headline(snapshot)
+        ),
+        color=discord.Color.orange(),
+    )
+    digits = 4 if asset == "XRP" else 2
+    price = (
+        f"${snapshot.price:,.{digits}f}\n"
+        f"Reference candle • {snapshot.venue}"
+        if current and snapshot.price is not None else "Unavailable"
+    )
+    expiry = (
+        discord.utils.format_dt(snapshot.ends_at, style="R")
+        if current else "No live window"
+    )
+    strength = (
+        f"{snapshot.probability:.1%} raw score\n"
+        f"{model_strength(snapshot.probability)}"
+        if current and snapshot.probability is not None else "Unverified"
+    )
+    fields = (
+        ("💰 Reference price", price),
+        ("⏱️ Expires", expiry),
+        ("⚡ Strength", strength),
+        ("📊 Accuracy", "Refresh Signal checks the same-venue 7-day "
+         "settled record and its sample size"),
+    )
+    for heading, value in fields:
+        embed.add_field(name=heading, value=value, inline=True)
+    embed.set_footer(
+        text="Reference candle ≠ live bid/ask • "
+             "Raw model score ≠ measured accuracy • No orders",
+    )
+    return embed
+
+
 class GuidedHome(discord.ui.View):
     """One private menu; real actions are wired to existing authoritative services."""
 
@@ -362,7 +428,7 @@ class GuidedHome(discord.ui.View):
             self.add_item(_Coin(self.coin))
             self.add_item(_Horizon(self.horizon))
             self._add(
-                "Refresh Prediction" if p == "forecast" else "Get Signal",
+                "Refresh Signal" if p == "forecast" else "Get Signal",
                 "forecast", 2, "🔄" if p == "forecast" else "🎯", True,
             )
             self._add("Follow Exchange Forecast", "follow", 2, "🔔")
@@ -734,20 +800,8 @@ class GuidedHome(discord.ui.View):
             except (TimeoutError, Exception):  # noqa: BLE001 - keep navigation alive
                 _LOG.warning("RivaL crypto menu preview unavailable (non-blocking)")
                 snapshot = None
-            headline = _crypto_preview_headline(snapshot)
-            embed = discord.Embed(
-                title=f"🎯 Crypto Signals | {self.coin}",
-                description=(
-                    f"**{headline}**\n\n"
-                    "Choose a coin and timeframe, then press **Get Signal** "
-                    "to check the matching-market price, expiry, signal "
-                    "strength, and measured forward accuracy.\n"
-                    "Or **Auto-Hunt** to receive new qualified research watches "
-                    "without entering a target (new markets require validation).\n"
-                    "**Follow in DM** still edits one personal forecast card.\n\n"
-                    "A model lean is not a proven profitable entry."
-                ),
-                color=discord.Color.orange(),
+            embed = crypto_snapshot_card(
+                snapshot, asset=self.coin, horizon=self.horizon,
             )
         elif p == "forecast":
             try:

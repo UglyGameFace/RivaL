@@ -74,6 +74,7 @@ def test_polymarket_live_market_only_from_real_gamma_and_clob(monkeypatch):
             "active": True, "closed": False, "enableOrderBook": True,
             "acceptingOrders": True, "outcomes": '["Up","Down"]',
             "clobTokenIds": json.dumps(tokens),
+            "conditionId": "0x" + "a" * 64,
         }],
     }
     requested = []
@@ -86,6 +87,7 @@ def test_polymarket_live_market_only_from_real_gamma_and_clob(monkeypatch):
             price = 0.56 if token_id == tokens[0] else 0.48
             return httpx.Response(200, json={
                 "timestamp": str(int(now.timestamp() * 1000)),
+                "asset_id": req.url.params["token_id"], "market": "0x" + "a" * 64,
                 "asks": [{"price": str(price), "size": "20"}],
             })
         return httpx.Response(400)
@@ -211,12 +213,14 @@ def test_verified_current_and_next_polymarket_targets_without_fabrication(monkey
                     "acceptingOrders": True, "enableOrderBook": True,
                     "outcomes": json.dumps(["Up", "Down"]),
                     "clobTokenIds": json.dumps(tokens),
+                    "conditionId": "0x" + "a" * 64,
                 }],
             })
         if req.url.host == "clob.polymarket.com":
             token = req.url.params["token_id"]
             return httpx.Response(200, json={
                 "timestamp": str(int(now.timestamp() * 1000)),
+                "asset_id": req.url.params["token_id"], "market": "0x" + "a" * 64,
                 "asks": [{"price": "0.61" if token == tokens[0] else "0.42",
                           "size": "20"}],
             })
@@ -244,7 +248,7 @@ def test_verified_current_and_next_polymarket_targets_without_fabrication(monkey
         f"/xrp-updown-5m-{int(next_start.timestamp())}"
     )
     assert len([x for x in requested if "/book?" in x]) == 2
-    assert len([x for x in requested if "/events/slug/" in x]) == 3
+    assert len([x for x in requested if "/events/slug/" in x]) == 2
     # The informational late-window quote must not bypass the original
     # >= 90-second alerting rule or populate its notification cache.
     assert run(reader.market("XRP", 5, now=now)) is None

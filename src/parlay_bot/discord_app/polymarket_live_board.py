@@ -20,6 +20,7 @@ from parlay_bot.discord_app.polymarket_watch import (
     HORIZONS,
     PolymarketReader,
     PolymarketWindowBoard,
+    unavailable_text,
 )
 from parlay_bot.discord_app.targeting import TargetSnapshot, target_snapshot
 from parlay_bot.storage.hot import RelationalHotStore
@@ -225,7 +226,7 @@ def live_polymarket_embed(
                 f" • observed <t:{int(board.current_quote.quote_at.timestamp())}:R>"
             )
         else:
-            market += "\nNo fresh verified order book."
+            market += "\n" + unavailable_text(board.quote_unavailable_reason)
     embed.add_field(name="📊 Current Market", value=market, inline=False)
     if board is None or board.next_window is None:
         future = "Next window not listed or not verified yet."
@@ -304,6 +305,8 @@ class LivePolymarketBoardService:
         self.reader = reader
         self.market = market
         self._lock = asyncio.Lock()
+        self._cycle_lock = asyncio.Lock()
+        self._user_locks: dict[str, asyncio.Lock] = {}
         self._model_gate = asyncio.Semaphore(2)
         # A to_thread timeout does not terminate its PostgreSQL query.
         # Retain that task until completion rather than starting duplicate
@@ -333,6 +336,7 @@ class LivePolymarketBoardService:
             return board.__class__(
                 checked_at=board.checked_at, current=board.current,
                 next_window=board.next_window, current_quote=None,
+                quote_unavailable_reason="book_stale",
             ), saved[2]
         return board, saved[2]
 
@@ -418,7 +422,7 @@ class LivePolymarketBoardService:
                     asset: str, horizon: int) -> tuple[bool, str]:
         if asset not in ASSETS or horizon not in HORIZONS:
             return False, "Select BTC, ETH, SOL or XRP and 5m/15m."
-        async with self._lock:
+        async with self._lock, self._user_locks.setdefault(str(user.id), asyncio.Lock()):
             previous = await asyncio.to_thread(self.store.get, str(user.id))
             if not await asyncio.to_thread(self.store.can_start, str(user.id)):
                 return False, "The automatic live tracker is at capacity."
@@ -462,7 +466,7 @@ class LivePolymarketBoardService:
             )
 
     async def stop(self, user_id: int) -> bool:
-        async with self._lock:
+        async with self._user_locks.setdefault(str(user_id), asyncio.Lock()):
             previous = await asyncio.to_thread(self.store.get, str(user_id))
             ended = await asyncio.to_thread(self.store.stop, str(user_id))
             if previous is not None and ended:
@@ -485,52 +489,49 @@ class LivePolymarketBoardService:
             return ended
 
     async def cycle(self) -> int:
-        """Shared market reads, one edited DM per active member on change."""
-        async with self._lock:
+        """Deliver each shared market when ready; slow peers cannot delay it."""
+        async with self._cycle_lock:
             trackers = await asyncio.to_thread(self.store.active)
-            if not trackers:
-                return 0
-            keys = {(t.asset, t.horizon) for t in trackers}
-            # At most eight verified market pairs for 100 subscribers.
-            results = await asyncio.gather(*(
-                self._observation(asset, horizon)
-                for asset, horizon in sorted(keys)
-            ), return_exceptions=True)
-            by_key = {
-                key: result for key, result in zip(sorted(keys), results, strict=True)
-                if not isinstance(result, BaseException)
-            }
-            edited = 0
+            by_key: dict[tuple[str, int], list[LivePolymarketTracker]] = {}
             for tracker in trackers:
-                observed = by_key.get((tracker.asset, tracker.horizon))
-                if observed is None:
-                    continue
-                embed, fingerprint = observed
-                if tracker.fingerprint == fingerprint:
-                    continue
+                by_key.setdefault((tracker.asset, tracker.horizon), []).append(tracker)
+            budget = asyncio.Semaphore(8)
+
+            async def update(tracker, embed, fingerprint) -> int:
+                async with budget, self._user_locks.setdefault(tracker.user_id, asyncio.Lock()):
+                    # A Stop or retarget during this shared read takes effect
+                    # before editing. Never restore the previous target's card.
+                    current = await asyncio.to_thread(self.store.get, tracker.user_id)
+                    if current != tracker or tracker.fingerprint == fingerprint:
+                        return 0
+                    try:
+                        channel = self.bot.get_partial_messageable(int(tracker.channel_id))
+                        await asyncio.wait_for(
+                            channel.get_partial_message(int(tracker.message_id)).edit(embed=embed),
+                            timeout=5,
+                        )
+                    except discord.NotFound:
+                        await asyncio.to_thread(self.store.stop, tracker.user_id)
+                    except (discord.HTTPException, TimeoutError) as exc:
+                        _LOG.warning(
+                            "Live Polymarket DM update failed user=%s reason=%s",
+                            tracker.user_id, type(exc).__name__,
+                        )
+                    else:
+                        await asyncio.to_thread(self.store.changed, tracker, fingerprint)
+                        return 1
+                    return 0
+
+            async def observe(key, members) -> int:
                 try:
-                    channel = self.bot.get_partial_messageable(
-                        int(tracker.channel_id),
-                    )
-                    await asyncio.wait_for(
-                        channel.get_partial_message(
-                            int(tracker.message_id)
-                        ).edit(embed=embed), timeout=5,
-                    )
-                except discord.NotFound:
-                    # A user deleted the card; never recreate/send without
-                    # a fresh button tap and DM consent.
-                    await asyncio.to_thread(
-                        self.store.stop, tracker.user_id,
-                    )
-                except (discord.HTTPException, TimeoutError) as exc:
-                    _LOG.warning(
-                        "Live Polymarket DM update failed user=%s reason=%s",
-                        tracker.user_id, type(exc).__name__,
-                    )
-                else:
-                    await asyncio.to_thread(
-                        self.store.changed, tracker, fingerprint,
-                    )
-                    edited += 1
-            return edited
+                    embed, fingerprint = await self._observation(*key)
+                    return sum(await asyncio.gather(*(
+                        update(tracker, embed, fingerprint) for tracker in members
+                    )))
+                except Exception:  # noqa: BLE001 - independent markets stay live
+                    _LOG.exception("Live Polymarket board update failed asset=%s horizon=%s", *key)
+                    return 0
+
+            return sum(await asyncio.gather(*(
+                observe(key, members) for key, members in by_key.items()
+            )))

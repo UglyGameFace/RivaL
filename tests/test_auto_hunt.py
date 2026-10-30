@@ -139,7 +139,7 @@ def test_hunt_sends_once_only_after_opt_in_and_respects_stop(hunt_store, monkeyp
     now = datetime.now(UTC)
     watch = candidate(now)
     monkeypatch.setattr(
-        auto_hunt, "eligible_research_watches",
+        auto_hunt, "new_forecast_watches",
         AsyncMock(return_value=[watch]),
     )
     channel = SimpleNamespace(
@@ -230,7 +230,7 @@ def test_two_opted_in_members_receive_concurrent_bounded_alerts(hunt_store, monk
     hunt_store.subscribe("1001", now=now - timedelta(minutes=1))
     hunt_store.subscribe("1002", now=now - timedelta(minutes=1))
     monkeypatch.setattr(
-        auto_hunt, "eligible_research_watches",
+        auto_hunt, "new_forecast_watches",
         AsyncMock(return_value=[candidate(now)]),
     )
     simultaneous = 0
@@ -256,3 +256,51 @@ def test_two_opted_in_members_receive_concurrent_bounded_alerts(hunt_store, monk
     assert run(service.cycle()) == 2
     assert peak == 2
     assert channel.send.await_count == 2
+
+
+def test_new_forecast_alerts_not_blocked_by_unproven_model_edge(monkeypatch):
+    """A valid raw forecast can notify without pretending it is tradable."""
+    now = datetime.now(UTC)
+    monkeypatch.setattr(auto_hunt, "promoted_engine", lambda *a, **k: "live")
+    watch = _mock_watch(now, probability=0.54)
+    monkeypatch.setattr(
+        auto_hunt, "recent_watches",
+        lambda *a, asset, **k: [watch] if asset == "BTC" else [],
+    )
+    monkeypatch.setattr(
+        auto_hunt, "_venue_proof",
+        lambda *a, **k: {"model_beats_baseline": False},
+    )
+    monkeypatch.setattr(
+        auto_hunt, "_venue_book", AsyncMock(side_effect=AssertionError(
+            "Forecast notification must not call external book API",
+        )),
+    )
+    market = SimpleNamespace(store=object())
+    forecasts = run(auto_hunt.new_forecast_watches(market, now=now))
+    assert len(forecasts) == 1
+    found = forecasts[0]
+    assert (found.asset, found.horizon, found.direction) == ("BTC", 5, "UP")
+    assert not found.screened and found.bid is None
+    embed = auto_hunt.hunt_embed(found, observed_at=now)
+    assert "NOT VERIFIED" in embed.description
+    assert "not calibrated odds" in embed.description
+    assert run(auto_hunt.eligible_research_watches(
+        market, object(), now=now,
+    )) == []
+
+
+def test_forecast_alerts_reject_late_or_already_expired(monkeypatch):
+    now = datetime.now(UTC)
+    monkeypatch.setattr(auto_hunt, "promoted_engine", lambda *a, **k: "live")
+    watches = [_mock_watch(now, issued_delta=8)]
+    monkeypatch.setattr(
+        auto_hunt, "recent_watches",
+        lambda *a, asset, **k: watches if asset == "BTC" else [],
+    )
+    market = SimpleNamespace(store=object())
+    assert len(run(auto_hunt.new_forecast_watches(market, now=now))) == 1
+    watches[:] = [_mock_watch(now, issued_delta=250)]
+    assert run(auto_hunt.new_forecast_watches(market, now=now)) == []
+    watches[:] = [{**_mock_watch(now), "target": now - timedelta(minutes=5)}]
+    assert run(auto_hunt.new_forecast_watches(market, now=now)) == []

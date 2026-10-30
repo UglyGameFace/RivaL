@@ -20,6 +20,7 @@ from parlay_bot.discord_app.opportunities import (
     recent_multi_watches,
     recent_watches,
 )
+from parlay_bot.discord_app.polymarket_watch import PolymarketNotice, PolymarketReader
 from parlay_bot.discord_app.signals import (
     MIN_REMAINING,
     _venue_book,
@@ -37,6 +38,9 @@ MAX_USERS = 100
 COOLDOWN = timedelta(seconds=120)
 MAX_ISSUE_AGE = timedelta(seconds=90)
 MAX_SPREAD_BPS = 25.0
+# New research alerts are deliberately distinct from qualified trade signals.
+# Don't silently discard every forecast just because live P&L is unproven.
+FORECAST_ALERT_MAX_AGE = timedelta(minutes=3)
 
 
 def _instant(value: str) -> datetime:
@@ -54,11 +58,12 @@ class HuntCandidate:
     issued: datetime
     expires: datetime
     probability_up: float
-    bid: float
-    ask: float
-    quote_at: datetime
+    bid: float | None
+    ask: float | None
+    quote_at: datetime | None
     engine: str
     model_version: str
+    screened: bool = False
 
     @property
     def direction(self) -> str:
@@ -109,7 +114,11 @@ class AutoHuntStore:
                        PRIMARY KEY(user_id, forecast_key)
                    );
                    CREATE INDEX IF NOT EXISTS rival_hunt_delivery_user
-                       ON rival_hunt_delivery(user_id, attempted_at);"""
+                       ON rival_hunt_delivery(user_id, attempted_at);
+                   CREATE TABLE IF NOT EXISTS rival_hunt_source (
+                       user_id TEXT PRIMARY KEY,
+                       selected_source TEXT NOT NULL
+                   );"""
             )
 
     def subscribe(self, user_id: str, *, now: datetime | None = None) -> bool:
@@ -135,6 +144,29 @@ class AutoHuntStore:
             )
             return True
 
+    def choose_source(self, user_id: str, source: str) -> None:
+        if source not in ("forecasts", "polymarket"):
+            raise ValueError("Unsupported source")
+        with self.store.connect() as conn:
+            conn.execute(
+                """INSERT INTO rival_hunt_source(user_id,selected_source)
+                   VALUES(?,?) ON CONFLICT(user_id) DO UPDATE SET
+                   selected_source=excluded.selected_source""",
+                (user_id, source),
+            )
+            conn.execute(
+                "UPDATE rival_hunt_subscriptions SET last_sent_at=NULL WHERE user_id=?",
+                (user_id,),
+            )
+
+    def source(self, user_id: str) -> str:
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT selected_source FROM rival_hunt_source WHERE user_id=?",
+                (user_id,),
+            ).fetchone()
+        return str(row["selected_source"]) if row else "forecasts"
+
     def stop(self, user_id: str) -> bool:
         with self.store.connect() as conn:
             updated = conn.execute(
@@ -154,9 +186,11 @@ class AutoHuntStore:
     def subscribers(self) -> list[dict]:
         with self.store.connect() as conn:
             rows = conn.execute(
-                """SELECT user_id,since_at,last_sent_at
-                   FROM rival_hunt_subscriptions WHERE enabled=1
-                   ORDER BY user_id LIMIT ?""",
+                """SELECT s.user_id,s.since_at,s.last_sent_at,
+                          COALESCE(p.selected_source,'forecasts') AS source
+                   FROM rival_hunt_subscriptions s
+                   LEFT JOIN rival_hunt_source p ON p.user_id=s.user_id
+                   WHERE s.enabled=1 ORDER BY s.user_id LIMIT ?""",
                 (MAX_USERS,),
             ).fetchall()
             return [dict(row) for row in rows]
@@ -169,7 +203,11 @@ class AutoHuntStore:
                    WHERE user_id=? AND enabled=1""",
                 (user_id,),
             ).fetchone()
-            if eligible is None or _instant(eligible["since_at"]) > candidate.issued:
+            if eligible is None:
+                return False
+            if candidate.venue != "polymarket" and (
+                _instant(eligible["since_at"]) > candidate.issued
+            ):
                 return False
             if eligible["last_sent_at"] and (
                 now - _instant(eligible["last_sent_at"]) < COOLDOWN
@@ -321,22 +359,124 @@ async def eligible_research_watches(
     return sorted(picks, key=lambda c: (-c.strength, c.expires, c.asset))
 
 
-def hunt_embed(candidate: HuntCandidate, *, observed_at: datetime) -> discord.Embed:
+async def new_forecast_watches(
+    market, *, now: datetime | None = None,
+) -> list[HuntCandidate]:
+    """Notify genuine newly issued model forecasts even when not trade-qualified.
+
+    This path is intentionally cheap. It does NOT wait for costly model
+    backtesting, historical recovery, or a network quote to say that a
+    directional forecast has been published. Any unverified model is explicitly
+    labeled research-only, NEVER an executable market opportunity.
+    """
+    if market is None:
+        return []
+    stamp = now or datetime.now(UTC)
+    if stamp.utcoffset() is None:
+        raise ValueError("Auto-Hunt requires an aware clock")
+    stamp = stamp.astimezone(UTC)
+
+    async def by_asset(asset: str) -> list[HuntCandidate]:
+        try:
+            # Mirror the actual promoted model policy used by /rival-signal.
+            picks: list[HuntCandidate] = []
+            for horizon in HORIZONS:
+                engine = await asyncio.to_thread(
+                    promoted_engine, market.store, asset=asset,
+                    horizon=horizon, now=stamp,
+                )
+                reader = recent_multi_watches if engine == "multi" else recent_watches
+                watches = await asyncio.to_thread(
+                    reader, market, asset=asset, now=stamp,
+                    limit=40, dedupe_horizons=False,
+                )
+                for watch in watches:
+                    if int(watch["horizon_minutes"]) != horizon:
+                        continue
+                    issued = watch["issued"]
+                    expires = watch["target"] + timedelta(minutes=5)
+                    probability = float(watch["probability_up"])
+                    if (
+                        issued > stamp
+                        or stamp - issued > FORECAST_ALERT_MAX_AGE
+                        or expires - stamp < MIN_REMAINING
+                        or not math.isfinite(probability)
+                        or not 0 < probability < 1
+                    ):
+                        continue
+                    picks.append(HuntCandidate(
+                        asset=asset, horizon=horizon, venue=str(watch["venue"]),
+                        issued=issued, expires=expires,
+                        probability_up=probability, bid=None, ask=None,
+                        quote_at=None, engine=engine,
+                        model_version=str(watch.get("model_version", "live")),
+                    ))
+                    # Only newest honest forecast per asset/horizon, not all
+                    # ten correlated exchanges reported as ten bets.
+                    break
+            return picks
+        except Exception:  # noqa: BLE001 - one lagging feed must not stall others
+            _LOG.exception("Auto-Hunt forecast lookup failed asset=%s", asset)
+            return []
+
+    results = await asyncio.gather(
+        *(by_asset(asset) for asset in ASSETS), return_exceptions=True,
+    )
+    candidates: list[HuntCandidate] = []
+    for result in results:
+        if isinstance(result, BaseException):
+            if isinstance(result, asyncio.CancelledError):
+                raise result
+            _LOG.warning("Auto-Hunt forecast scan unavailable")
+        else:
+            candidates.extend(result)
+    # Prefer recently issued forecasts and earliest actionable expiry,
+    # not raw model strength mistaken for a calibrated win probability.
+    return sorted(candidates, key=lambda c: (-c.issued.timestamp(), c.expires))
+
+
+def hunt_embed(
+    candidate: HuntCandidate | PolymarketNotice, *, observed_at: datetime,
+) -> discord.Embed:
+    if isinstance(candidate, PolymarketNotice):
+        embed = discord.Embed(
+            title=f"📊 Polymarket • {candidate.asset} {candidate.horizon}m market",
+            description=(
+                "**Listed Polymarket market, not a RivaL prediction.**\n"
+                f"Up ask: **{candidate.up_ask:.1%}** per share • "
+                f"Down ask: **{candidate.down_ask:.1%}** per share.\n"
+                f"Book received <t:{int(candidate.quote_at.timestamp())}:R>.\n"
+                f"Market closes <t:{int(candidate.expires.timestamp())}:R>.\n"
+                f"[View exact event]({candidate.url})\n\n"
+                "Quoted prices are NOT calibrated win probabilities or a "
+                "verified edge. No bet placed. Availability varies by jurisdiction."
+            ),
+            color=discord.Color.blurple(),
+        )
+        embed.set_footer(text="Read-only global Polymarket data • /rival-stop")
+        return embed
     seconds = max(0, int((candidate.expires - observed_at).total_seconds()))
+    quote_line = (
+        f"Validated {candidate.venue} book at "
+        f"<t:{int(candidate.quote_at.timestamp())}:R>: "
+        f"Bid **${candidate.bid:,.2f}** / Ask **${candidate.ask:,.2f}**."
+        if candidate.screened and candidate.quote_at is not None
+        and candidate.bid is not None and candidate.ask is not None
+        else "Live executable quote and after-cost advantage: **NOT VERIFIED**."
+    )
     embed = discord.Embed(
         title=f"🔎 Auto-Hunt • {candidate.asset} {candidate.horizon}m • {candidate.direction}",
         description=(
-            f"**Fresh research watch**, not a trade instruction.\n"
-            f"Raw model direction strength: **{candidate.strength:.1%}** "
-            "(not a calibrated win chance).\n"
-            f"Matching venue: **{candidate.venue}** • "
-            f"Bid **${candidate.bid:,.2f}** / Ask **${candidate.ask:,.2f}**\n"
-            f"Quote observed <t:{int(candidate.quote_at.timestamp())}:R> • "
-            f"Forecast issued <t:{int(candidate.issued.timestamp())}:R>\n"
+            "**New model forecast • research only**\n"
+            f"Raw directional model strength: **{candidate.strength:.1%}** "
+            "(not calibrated odds).\n"
+            f"Forecast reference venue: **{candidate.venue}**.\n"
+            f"{quote_line}\n"
+            f"Issued <t:{int(candidate.issued.timestamp())}:R> • "
             f"Expires <t:{int(candidate.expires.timestamp())}:R> "
-            f"(~{seconds}s remained at screening).\n\n"
-            "This is NOT a market strike, executable odds, or verified after-cost edge. "
-            "Review a fresh market before making any independent decision."
+            f"(~{seconds}s remained at notification).\n\n"
+            "Not a betting recommendation, trade signal, guaranteed prediction, "
+            "or automatically executable market. Refresh to review any current quote."
         ),
         color=discord.Color.blurple(),
     )
@@ -369,14 +509,33 @@ class AutoHuntActions(discord.ui.View):
             await interaction.followup.send("This is not your saved alert.", ephemeral=True)
             return
         try:
-            embed = await asyncio.wait_for(
-                signal_embed(
-                    service.market, service.quotes,
-                    asset=row["asset"], horizon_minutes=int(row["horizon"]),
-                    stream_shadow=getattr(interaction.client, "stream_shadow", None),
-                ), timeout=12,
-            )
-        except Exception:  # noqa: BLE001
+            if row["venue"] == "polymarket":
+                opened = _instant(row["issued_at"])
+                fresh = await asyncio.wait_for(
+                    service.polymarket.market(
+                        row["asset"], int(row["horizon"]), opened=opened,
+                    ), timeout=10,
+                )
+                if fresh is None:
+                    embed = discord.Embed(
+                        title="Polymarket market no longer verified",
+                        description=(
+                            "The listed market is expired, unavailable, or "
+                            "lacks a fresh book. The original alert is NOT "
+                            "a current quote. No order was placed."
+                        ),
+                    )
+                else:
+                    embed = hunt_embed(fresh, observed_at=datetime.now(UTC))
+            else:
+                embed = await asyncio.wait_for(
+                    signal_embed(
+                        service.market, service.quotes,
+                        asset=row["asset"], horizon_minutes=int(row["horizon"]),
+                        stream_shadow=getattr(interaction.client, "stream_shadow", None),
+                    ), timeout=12,
+                )
+        except Exception:  # noqa: BLE001 - no stale quote masquerades as current
             embed = discord.Embed(
                 title="Market review unavailable",
                 description="No currently verified quote. Do not act on an old alert.",
@@ -410,6 +569,7 @@ class AutoHuntService:
         self.market = market
         self.quotes = quotes
         self.store = store
+        self.polymarket = PolymarketReader()
         self._user_locks: dict[str, asyncio.Lock] = {}
         self._cycle_lock = asyncio.Lock()
 
@@ -427,23 +587,37 @@ class AutoHuntService:
             ).fetchone()
         return dict(row) if row else None
 
-    async def subscribe(self, user: discord.abc.User) -> tuple[bool, str]:
-        if self.market is None:
-            return False, "Live crypto forecasting is unavailable. No alerts enabled."
+    async def subscribe(
+        self, user: discord.abc.User, *, source: str = "forecasts",
+    ) -> tuple[bool, str]:
+        if source not in ("forecasts", "polymarket"):
+            return False, "Unsupported alert source."
+        if source == "forecasts" and self.market is None:
+            return False, "Live crypto forecasting unavailable; forecasts not enabled."
         async with self._user_lock(str(user.id)):
             try:
-                if await asyncio.to_thread(self.store.enabled, str(user.id)):
-                    return True, "Auto-Hunt is already on. No price entry needed."
+                enabled = await asyncio.to_thread(self.store.enabled, str(user.id))
+                current = await asyncio.to_thread(self.store.source, str(user.id))
+                if enabled and current == source:
+                    return True, "Already following " + (
+                        "Polymarket markets." if source == "polymarket" else
+                        "RivaL forecasts."
+                    )
                 channel = user.dm_channel or await user.create_dm()
                 await asyncio.wait_for(channel.send(
-                    "🔔 RivaL Auto-Hunt setup requested for future BTC, ETH and SOL "
-                    "research watches (5m and 15m). It is active only after "
-                    "your /rival menu confirms ON. No bets will be placed."
+                    "🔔 Auto-Hunt source request: " +
+                    ("Polymarket live Up/Down markets" if source == "polymarket"
+                     else "RivaL new model predictions") +
+                    ". The /rival menu confirms when enabled. No bet is placed."
                 ), timeout=8)
-                await asyncio.to_thread(self.store.subscribe, str(user.id))
+                if not enabled:
+                    await asyncio.to_thread(self.store.subscribe, str(user.id))
+                await asyncio.to_thread(self.store.choose_source, str(user.id), source)
                 return True, (
-                    "Auto-Hunt ON. I'll scan automatically and DM only freshly "
-                    "issued, evidence-screened research watches. No target to type."
+                    "Now following Polymarket crypto markets with actual Up/Down "
+                    "quotes, not invented model predictions."
+                    if source == "polymarket" else
+                    "Now following newly issued RivaL research forecasts."
                 )
             except (discord.HTTPException, TimeoutError):
                 return False, "DM blocked or timed out. No subscription confirmed."
@@ -463,19 +637,32 @@ class AutoHuntService:
             active = await asyncio.to_thread(self.store.enabled, str(user_id))
         except Exception:  # noqa: BLE001 - storage fail closed
             return "Status unavailable. No new alert confirmed."
-        return ("ON • watching new qualified research forecasts" if active else
-                "OFF • opt in to receive new alerts")
+        if not active:
+            return "OFF • choose a source to start"
+        source = await asyncio.to_thread(self.store.source, str(user_id))
+        return ("ON • Polymarket 5m/15m markets"
+                if source == "polymarket" else "ON • RivaL new model forecasts")
 
     async def cycle(self) -> int:
-        if self.market is None:
-            return 0
         # Only one scan and one candidate set per cycle, regardless of users.
         async with self._cycle_lock:
             subscribers = await asyncio.to_thread(self.store.subscribers)
             if not subscribers:
                 return 0
-            candidates = await eligible_research_watches(self.market, self.quotes)
-            if not candidates:
+            sources = {sub.get("source", "forecasts") for sub in subscribers}
+            forecasts = (
+                await new_forecast_watches(self.market)
+                if "forecasts" in sources else []
+            )
+            markets = (
+                await self.polymarket.active()
+                if "polymarket" in sources else []
+            )
+            _LOG.info(
+                "RivaL Auto-Hunt cycle subscribers=%d forecasts=%d poly_markets=%d",
+                len(subscribers), len(forecasts), len(markets),
+            )
+            if not forecasts and not markets:
                 return 0
             # Shared bounded Discord/PG concurrency. Each user's own lock
             # serializes delivery with that user's stop and re-opt-in request.
@@ -484,11 +671,15 @@ class AutoHuntService:
             async def deliver(subscriber: dict) -> int:
                 user_id = str(subscriber["user_id"])
                 since = _instant(str(subscriber["since_at"]))
+                source = subscriber.get("source", "forecasts")
+                candidates = markets if source == "polymarket" else forecasts
                 async with budget, self._user_lock(user_id):
                     for candidate in candidates:
                         stamp = datetime.now(UTC)
-                        if (candidate.issued < since or
-                                candidate.expires - stamp < MIN_REMAINING):
+                        if (
+                            (candidate.venue != "polymarket" and candidate.issued < since)
+                            or candidate.expires - stamp < MIN_REMAINING
+                        ):
                             continue
                         claimed = await asyncio.to_thread(
                             self.store.claim, user_id, candidate, now=stamp,

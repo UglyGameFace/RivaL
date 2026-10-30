@@ -298,9 +298,10 @@ class GuidedHome(discord.ui.View):
             self._add("See Buy/Sell Prices", "quote", 3, "💱")
             self._add("Stop My Alerts", "stop", 3, "🔕")
         elif p == "hunt":
-            self._add("Start Auto-Hunt", "hunt-on", 0, "🔔", True)
-            self._add("Stop Auto-Hunt", "hunt-off", 0, "🔕")
-            self._add("Check Status", "hunt-status", 1, "🔎")
+            self._add("Follow Polymarket", "hunt-poly", 0, "📊", True)
+            self._add("Follow RivaL Forecasts", "hunt-on", 1, "📈")
+            self._add("Stop Auto-Hunt", "hunt-off", 2, "🔕")
+            self._add("Check Status", "hunt-status", 2, "🔎")
         elif p == "practice":
             self.add_item(_Coin(self.coin))
             self._add("Practice Buy $25", "buy", 1, "📈", True)
@@ -374,12 +375,16 @@ class GuidedHome(discord.ui.View):
                 title="🔔 Auto-Hunt | Find Research Opportunities",
                 description=(
                     "**" + status + "**\n\n"
-                    "After you choose Start, RivaL watches BTC, ETH and SOL "
-                    "for new 5-minute and 15-minute research forecasts. "
-                    "It checks the prediction's own exchange for a fresh "
-                    "market quote and recent measured forward evidence.\n\n"
-                    "Only qualifying NEW observations trigger a fresh DM. "
-                    "You do not need to type a price or keep a menu open.\n"
+                    "Choose what to follow for BTC, ETH and SOL, "
+                    "across 5-minute and 15-minute windows:\n\n"
+                    "**Follow Polymarket**: actual listed Up/Down event windows, "
+                    "with read-only live market ask prices and direct event links. "
+                    "These are market alerts, NOT RivaL model predictions. "
+                    "The international Polymarket market feed is separate from "
+                    "Polymarket US; access may differ by location.\n\n"
+                    "**Follow RivaL Forecasts**: new genuine model direction "
+                    "predictions even when future profitability is unproven.\n\n"
+                    "Switch anytime. You do not need to type a target.\n"
                     "**No automated real-money bets, guaranteed winning odds, "
                     "or verified profitable entry are implied.**"
                 ),
@@ -503,14 +508,25 @@ class GuidedHome(discord.ui.View):
                     + "\n\n**No wager was placed. All legs must win.**"
                 )
         elif p == "crypto":
-            snapshot = await asyncio.to_thread(
-                target_snapshot, self.market,
-                asset=self.coin, horizon_minutes=self.horizon,
-            )
+            # Loading the crypto menu must never wait for a contended
+            # PostgreSQL pool or a full research query. Get Signal performs
+            # the authoritative refresh separately, on demand.
+            try:
+                snapshot = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        target_snapshot, self.market,
+                        asset=self.coin, horizon_minutes=self.horizon,
+                    ),
+                    timeout=1.5,
+                )
+            except (TimeoutError, Exception):  # noqa: BLE001 - keep navigation alive
+                _LOG.warning("RivaL crypto menu preview unavailable (non-blocking)")
+                snapshot = None
             headline = (
                 f"{snapshot.direction} lean • raw "
                 f"{snapshot.probability:.1%} ({model_strength(snapshot.probability)})"
-                if snapshot.probability is not None else "NO CURRENT SIGNAL"
+                if snapshot is not None and snapshot.probability is not None
+                else "NO CURRENT SIGNAL • Preview pending; Get Signal checks live"
             )
             embed = discord.Embed(
                 title=f"🎯 Crypto Signals | {self.coin}",
@@ -1048,11 +1064,14 @@ class GuidedHome(discord.ui.View):
                 self.note = f"PASS: {exc}. Nothing was placed."
         elif action in ("forecast", "quote"):
             self.navigate(action)
-        elif action in ("hunt-on", "hunt-off", "hunt-status"):
+        elif action in ("hunt-on", "hunt-poly", "hunt-off", "hunt-status"):
             if self.auto_hunt is None:
                 self.note = "Auto-Hunt unavailable. No subscription saved."
-            elif action == "hunt-on":
-                _, self.note = await self.auto_hunt.subscribe(interaction.user)
+            elif action in ("hunt-on", "hunt-poly"):
+                _, self.note = await self.auto_hunt.subscribe(
+                    interaction.user,
+                    source="polymarket" if action == "hunt-poly" else "forecasts",
+                )
             elif action == "hunt-off":
                 ended = await self.auto_hunt.stop(self.owner_id)
                 self.note = "Auto-Hunt stopped." if ended else "Auto-Hunt was already off."
@@ -1271,11 +1290,12 @@ _STALE_BUTTONS_A = (
     "sports", "crypto", "hunt", "practice", "results", "help", "advanced",
     "state", "zip", "refresh", "manual", "slip", "lower", "balanced",
     "aggressive", "forecast", "follow", "target", "home", "back",
+    "hunt-poly",
 )
 _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",
-    "feeds", "research", "api-limits", "hunt-on", "hunt-off", "hunt-status",
-    "explain",
+    "feeds", "research", "api-limits", "hunt-on",
+    "hunt-off", "hunt-status", "explain",
 )
 
 
@@ -1437,11 +1457,31 @@ def install_view_dispatch_logging(client: object) -> None:
                     message_id, custom_id,
                 )
             elif item.view is None:
-                _LOG.warning(
-                    "RivaL view dispatch DISCARDED detached item "
-                    "message_id=%s custom_id=%s found_under=%s item=%r",
-                    message_id, custom_id, found_under, item,
-                )
+                # discord.py looks up the message-specific item BEFORE the
+                # registered persistent view. A rebuild/timeout can leave a
+                # detached item in that slot and shadow the healthy fallback.
+                # Drop ONLY that unusable message-specific guided entry; then
+                # let the original dispatcher find the normal safe fallback.
+                fallback = views.get(None, {}).get(key)
+                if (
+                    found_under == "message"
+                    and custom_id.startswith("rival:guided:")
+                    and fallback is not None
+                    and fallback.view is not None
+                    and views.get(message_id, {}).get(key) is item
+                ):
+                    del views[message_id][key]
+                    _LOG.warning(
+                        "RivaL repaired detached guided component "
+                        "message_id=%s custom_id=%s; persistent fallback ready",
+                        message_id, custom_id,
+                    )
+                else:
+                    _LOG.warning(
+                        "RivaL view dispatch DISCARDED detached item "
+                        "message_id=%s custom_id=%s found_under=%s item=%r",
+                        message_id, custom_id, found_under, item,
+                    )
         except Exception:  # noqa: BLE001 - logging must never break dispatch
             _LOG.exception("RivaL view dispatch logging failed")
         return original(component_type, custom_id, interaction)

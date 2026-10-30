@@ -1,3 +1,15 @@
+## ACTIVE TASK: Auto-Hunt missed alerts + selectable Polymarket source (2026-10-30)
+
+- **Owner report:** Auto-Hunt DMs missing. Discloud log from 05:30 UTC shows `rival:guided:hunt` clicks discarded from detached message items, 12s crypto render timeouts, 41s Discord gateway lag; automatic math produced 1 forecast, not a confirmed DM attempt. Do NOT invent actual delivery.
+- **Latest owner preference:** Offer **Follow Polymarket** and **Follow RivaL Forecasts** under the existing Auto-Hunt panel. Never silently switch everyone: explicit per-user selection, one active source, existing unsubscribe and at-most-once identity.
+- **Polymarket is read-only:** global Gamma `events/slug` plus CLOB `book`, genuine BTC/ETH/SOL 5m/15m Up/Down event slug and window verification, both outcome book asks and freshness checks, exact verified event link. This is a listed market observation, **not** a RivaL prediction nor a statement about US market access or after-cost edge. Market source and RivaL model are distinct and the 15m model's target-candle definition must NOT be mislabeled as the Polymarket 15m outcome.
+- **RivaL forecast alerts:** existing forward ledger, no historic backfill or invented model; loosen only the notification of genuinely fresh research-issued predictions, **not** qualification for a trade; show raw direction and explicit lack of quote, calibrated odds, and after-cost proof. Preserve validated signal screen.
+- **Discord reliability:** repair detached guided message component shadowing existing safe persistent fallback; bound crypto preview query, preserve button expiry recovery and independently cancelable opt-in.
+- **Acceptance:** exact PR head Ruff, complete SQLite/Postgres 16 tests, no fake external market data, zero auto orders. Merge only on green CI, check separately main CI and gated Discloud upload, then live Discord tests of source selection, DM, stop and platform access. Production DMs remain unverified until observed.
+- **Avoid:** unrelated history recovery, rebuilding model, alternate GitHub branch-cleaner or Dank Shield work.
+
+---
+
 ## ACTIVE FORCE SWITCH: Auto-Hunt opt-in alerts (2026-10-30)
 
 - **Current single task:** Owner explicitly prioritized implementing RivaL Auto-Hunt. Preserve the previous beginner slash-command simplification/production acceptance as a suspended checkpoint, not a parallel change. Do not modify Dank Shield or unrelated projects from this RivaL task.

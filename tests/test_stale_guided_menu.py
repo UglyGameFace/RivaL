@@ -20,6 +20,7 @@ from parlay_bot.discord_app.home import (
     _STALE_NOTE,
     GuidedHome,
     build_stale_guided_menu_views,
+    install_view_dispatch_logging,
 )
 from parlay_bot.discord_app.signals import signal_embed
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
@@ -69,7 +70,7 @@ def _guided_custom_ids(bot):
     try:
         found: set[str] = set()
         for page in ("home", "sports", "slip", "crypto", "forecast", "quote",
-                     "practice", "results", "help", "advanced", "feeds", "trust"):
+                     "practice", "results", "help", "advanced", "feeds", "trust", "hunt"):
             home.navigate("home")
             home.navigate(page)
             home._buttons()
@@ -257,3 +258,52 @@ async def test_signal_evidence_runs_concurrently_with_book_fetch(tmp_path):
         assert "Source-matched after-cost proof" in [f.name for f in embed.fields]
     finally:
         store.close()
+
+
+def test_detached_message_item_uses_persistent_guided_recovery():
+    """Reproduce Discloud's 'DISCARDED detached item rival:guided:hunt'."""
+    key = (2, "rival:guided:hunt")
+    stale = SimpleNamespace(view=None)
+    persistent = SimpleNamespace(view=object())
+    seen = []
+    views = {987654: {key: stale}, None: {key: persistent}}
+
+    def original(component_type, custom_id, interaction):
+        matched = (
+            views.get(interaction.message.id, {}).get((component_type, custom_id))
+            or views.get(None, {}).get((component_type, custom_id))
+        )
+        seen.append(matched)
+        return matched
+
+    store = SimpleNamespace(_views=views, dispatch_view=original)
+    client = SimpleNamespace(_connection=SimpleNamespace(_view_store=store))
+    install_view_dispatch_logging(client)
+    interaction = SimpleNamespace(message=SimpleNamespace(id=987654))
+
+    assert store.dispatch_view(*key, interaction) is persistent
+    assert seen == [persistent]
+    assert key not in views[987654]
+    # Retrying registration must not wrap the dispatcher twice.
+    first = store.dispatch_view
+    install_view_dispatch_logging(client)
+    assert store.dispatch_view is first
+    assert store.dispatch_view(*key, interaction) is persistent
+
+
+def test_detached_non_guided_item_is_not_mutated():
+    key = (2, "rival:other:some-button")
+    stale = SimpleNamespace(view=None)
+    persistent = SimpleNamespace(view=object())
+    views = {123: {key: stale}, None: {key: persistent}}
+    store = SimpleNamespace(
+        _views=views, dispatch_view=lambda *args: views[123][key],
+    )
+    install_view_dispatch_logging(
+        SimpleNamespace(_connection=SimpleNamespace(_view_store=store)),
+    )
+    result = store.dispatch_view(*key, SimpleNamespace(
+        message=SimpleNamespace(id=123),
+    ))
+    assert result is stale
+    assert views[123][key] is stale

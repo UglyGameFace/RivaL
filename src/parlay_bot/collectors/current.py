@@ -63,6 +63,7 @@ class CurrentBoardCollector:
         self.event_limit = event_limit
         self.max_pages = max_pages
         self._lock = asyncio.Lock()
+        self._league_cursor = 0
 
     @staticmethod
     def _log_forecast_outcome(task: asyncio.Task[object]) -> None:
@@ -113,11 +114,14 @@ class CurrentBoardCollector:
             pages_fetched = 0
             notice: str | None = None
 
+            # Rotate league requests so one busy sport cannot monopolize intake.
+            league = self.league_ids[self._league_cursor % len(self.league_ids)]
+            self._league_cursor += 1
             for _ in range(self.max_pages):
                 stage_start = time.monotonic()
                 try:
                     events, next_cursor, page_notice = await self.client.get_events(
-                        league_ids=self.league_ids,
+                        league_ids=(league,),
                         bookmaker_ids=self.bookmaker_ids,
                         limit=self.event_limit,
                         cursor=cursor,

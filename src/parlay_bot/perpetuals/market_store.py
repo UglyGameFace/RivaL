@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
@@ -39,76 +40,89 @@ class MarketWriteResult:
 class PerpetualMarketStore:
     def __init__(self, store: RelationalHotStore) -> None:
         self.store = store
+        # Schema creation is a startup operation, not a per-candle read.
+        # Shared by the collector, research worker, and Discord signal readers.
+        self._schema_lock = threading.Lock()
+        self._schema_ready = False
+        self._forward_read_lock = threading.Lock()
+        self._forward_read_ready = False
 
     def initialize(self) -> None:
-        # Isolated tables: no changes to the sports, archive, or prediction schemas.
-        with self.store.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS perp_market_candles (
-                    venue TEXT NOT NULL,
-                    contract TEXT NOT NULL,
-                    quote TEXT NOT NULL,
-                    interval_minutes INTEGER NOT NULL,
-                    opened_at TEXT NOT NULL,
-                    closed_at TEXT NOT NULL,
-                    first_observed_at TEXT NOT NULL,
-                    open_price DOUBLE PRECISION NOT NULL,
-                    high_price DOUBLE PRECISION NOT NULL,
-                    low_price DOUBLE PRECISION NOT NULL,
-                    close_price DOUBLE PRECISION NOT NULL,
-                    volume_base DOUBLE PRECISION NOT NULL,
-                    trades INTEGER NOT NULL,
-                    PRIMARY KEY (venue,contract,quote,interval_minutes,opened_at)
-                );
-                CREATE INDEX IF NOT EXISTS idx_perp_market_candles_close
-                    ON perp_market_candles
-                       (venue,contract,quote,interval_minutes,closed_at);
-                CREATE TABLE IF NOT EXISTS perp_feed_health (
-                    venue TEXT NOT NULL,
-                    asset TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    last_attempt_at TEXT NOT NULL,
-                    last_success_at TEXT,
-                    last_candle_close TEXT,
-                    last_new_candles INTEGER NOT NULL DEFAULT 0,
-                    total_new_candles INTEGER NOT NULL DEFAULT 0,
-                    failure_count INTEGER NOT NULL DEFAULT 0,
-                    PRIMARY KEY (venue, asset)
-                );
-                CREATE TABLE IF NOT EXISTS perp_ai_research (
-                    asset TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    evidence_sha256 TEXT NOT NULL,
-                    issued_at TEXT NOT NULL,
-                    direction TEXT NOT NULL,
-                    confidence TEXT NOT NULL,
-                    thesis TEXT NOT NULL,
-                    risk TEXT NOT NULL,
-                    source_count INTEGER NOT NULL,
-                    PRIMARY KEY (asset,model,evidence_sha256)
-                );
-                CREATE TABLE IF NOT EXISTS perp_ai_quota (
-                    model TEXT NOT NULL,
-                    utc_day TEXT NOT NULL,
-                    used INTEGER NOT NULL,
-                    last_called_at TEXT NOT NULL,
-                    blocked_until TEXT,
-                    PRIMARY KEY (model,utc_day)
-                );
-                CREATE TABLE IF NOT EXISTS perp_market_contexts (
-                    venue TEXT NOT NULL,
-                    contract TEXT NOT NULL,
-                    quote TEXT NOT NULL,
-                    observed_at TEXT NOT NULL,
-                    mark_price DOUBLE PRECISION NOT NULL,
-                    oracle_price DOUBLE PRECISION NOT NULL,
-                    funding_rate DOUBLE PRECISION NOT NULL,
-                    open_interest_base DOUBLE PRECISION NOT NULL,
-                    PRIMARY KEY (venue,contract,quote,observed_at)
-                );
-                """
-            )
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            # Isolated tables: no changes to the sports, archive, or prediction schemas.
+            with self.store.connect() as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS perp_market_candles (
+                        venue TEXT NOT NULL,
+                        contract TEXT NOT NULL,
+                        quote TEXT NOT NULL,
+                        interval_minutes INTEGER NOT NULL,
+                        opened_at TEXT NOT NULL,
+                        closed_at TEXT NOT NULL,
+                        first_observed_at TEXT NOT NULL,
+                        open_price DOUBLE PRECISION NOT NULL,
+                        high_price DOUBLE PRECISION NOT NULL,
+                        low_price DOUBLE PRECISION NOT NULL,
+                        close_price DOUBLE PRECISION NOT NULL,
+                        volume_base DOUBLE PRECISION NOT NULL,
+                        trades INTEGER NOT NULL,
+                        PRIMARY KEY (venue,contract,quote,interval_minutes,opened_at)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_perp_market_candles_close
+                        ON perp_market_candles
+                           (venue,contract,quote,interval_minutes,closed_at);
+                    CREATE TABLE IF NOT EXISTS perp_feed_health (
+                        venue TEXT NOT NULL,
+                        asset TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        last_attempt_at TEXT NOT NULL,
+                        last_success_at TEXT,
+                        last_candle_close TEXT,
+                        last_new_candles INTEGER NOT NULL DEFAULT 0,
+                        total_new_candles INTEGER NOT NULL DEFAULT 0,
+                        failure_count INTEGER NOT NULL DEFAULT 0,
+                        PRIMARY KEY (venue, asset)
+                    );
+                    CREATE TABLE IF NOT EXISTS perp_ai_research (
+                        asset TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        evidence_sha256 TEXT NOT NULL,
+                        issued_at TEXT NOT NULL,
+                        direction TEXT NOT NULL,
+                        confidence TEXT NOT NULL,
+                        thesis TEXT NOT NULL,
+                        risk TEXT NOT NULL,
+                        source_count INTEGER NOT NULL,
+                        PRIMARY KEY (asset,model,evidence_sha256)
+                    );
+                    CREATE TABLE IF NOT EXISTS perp_ai_quota (
+                        model TEXT NOT NULL,
+                        utc_day TEXT NOT NULL,
+                        used INTEGER NOT NULL,
+                        last_called_at TEXT NOT NULL,
+                        blocked_until TEXT,
+                        PRIMARY KEY (model,utc_day)
+                    );
+                    CREATE TABLE IF NOT EXISTS perp_market_contexts (
+                        venue TEXT NOT NULL,
+                        contract TEXT NOT NULL,
+                        quote TEXT NOT NULL,
+                        observed_at TEXT NOT NULL,
+                        mark_price DOUBLE PRECISION NOT NULL,
+                        oracle_price DOUBLE PRECISION NOT NULL,
+                        funding_rate DOUBLE PRECISION NOT NULL,
+                        open_interest_base DOUBLE PRECISION NOT NULL,
+                        PRIMARY KEY (venue,contract,quote,observed_at)
+                    );
+                    """
+                )
+            # Failures leave the flag unset so a later attempt can retry.
+            self._schema_ready = True
 
     def ingest(self, batch: MarketBatch) -> MarketWriteResult:
         """Atomically insert closed candles; retries cannot rewrite historical prices.

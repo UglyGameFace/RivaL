@@ -8,14 +8,17 @@ covers results the provider never redelivers.
 """
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from parlay_bot.discord_app.bot import RivalDiscordClient
 from parlay_bot.research.sports_results import (
     MODELS,
     ResultIntegrityError,
     SportsResultStore,
+    parse_final_score,
 )
 from parlay_bot.storage.hot import SQLiteHotStore
 
@@ -112,5 +115,70 @@ def test_contradicting_redelivery_still_raises(tmp_path):
             research.save_finalized(
                 event(home=3), observed_at=KICKOFF + timedelta(hours=3),
             )
+    finally:
+        store.close()
+
+
+def test_active_transaction_settlement_does_not_reinitialize(tmp_path, monkeypatch):
+    """An existing transaction must not open a nested DDL connection."""
+    store = SQLiteHotStore(tmp_path / "active-transaction.sqlite")
+    research = SportsResultStore(store)
+    try:
+        research.initialize()
+        insert_pending_forecast(store)
+        score = parse_final_score(
+            event(), observed_at=KICKOFF + timedelta(hours=2),
+        )
+
+        def forbidden_initialize():
+            pytest.fail("Reinitialized schema inside an active transaction")
+
+        monkeypatch.setattr(research, "initialize", forbidden_initialize)
+        with store.connect() as conn:
+            assert research.settle_forecast(score, conn=conn)
+        assert forecast_row(store)["settled_at"] is not None
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_background_reconciliation_runs_with_no_due_fixtures(tmp_path, monkeypatch):
+    """An old result must settle even if no external result poll is due."""
+    store = SQLiteHotStore(tmp_path / "recovery-loop.sqlite")
+    store.initialize()
+    research = SportsResultStore(store)
+    try:
+        research.save_finalized(
+            event(), observed_at=KICKOFF + timedelta(hours=2),
+        )
+        insert_pending_forecast(store)
+
+        class OneCycleBot:
+            sports_results = research
+            current_provider = object()
+            closed = False
+
+            async def wait_until_ready(self):
+                return None
+
+            def is_closed(self):
+                return self.closed
+
+        bot = OneCycleBot()
+        bot.store = store
+        original_sleep = asyncio.sleep
+
+        async def finish_cycle(delay):
+            if delay == 21600:
+                bot.closed = True
+            await original_sleep(0)
+
+        monkeypatch.setattr("parlay_bot.discord_app.bot.asyncio.sleep", finish_cycle)
+        assert research.due_fixtures(
+            now=KICKOFF + timedelta(days=3),
+        ) == []
+        await RivalDiscordClient._sports_results_loop(bot)
+        assert forecast_row(store)["settled_at"] is not None
+        assert int(forecast_row(store)["label"]) == 0
     finally:
         store.close()

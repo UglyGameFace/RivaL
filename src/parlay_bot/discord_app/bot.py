@@ -67,6 +67,10 @@ from parlay_bot.providers.errors import QuotaReserveReached
 from parlay_bot.providers.oddspapi import OddsPapiClient
 from parlay_bot.providers.owner_limits import OwnerLimitStore
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
+from parlay_bot.research.database_integrity import (
+    perpetual_evidence_backlog,
+    sports_settlement_backlog,
+)
 from parlay_bot.research.sports_results import (
     ResultIntegrityError,
     SportsResultStore,
@@ -1559,16 +1563,6 @@ class RivalDiscordClient(discord.Client):
                                 "RivaL finalized sports result withheld: conflicting "
                                 "or incomplete provider evidence"
                             )
-                    try:
-                        reconciled = await asyncio.to_thread(
-                            self.sports_results.reconcile_unsettled, limit=100,
-                        )
-                        for sport, league in reconciled:
-                            affected.add((sport, league))
-                    except Exception:  # noqa: BLE001
-                        _LOG.exception(
-                            "RivaL sports settlement reconciliation failed"
-                        )
                     await asyncio.to_thread(
                         self.sports_results.mark_checked, due, now=seen,
                     )
@@ -1593,6 +1587,45 @@ class RivalDiscordClient(discord.Client):
                 raise
             except Exception:  # noqa: BLE001 - quota/provider faults never block Discord
                 _LOG.exception("RivaL sports result verification unavailable")
+            # This is local PostgreSQL work, not another provider request.
+            # Run it even when no fixtures were due, the provider is down,
+            # or the quota reserve prevented fetching any results.
+            try:
+                reconciled = await asyncio.to_thread(
+                    self.sports_results.reconcile_unsettled, limit=100,
+                )
+                if reconciled:
+                    _LOG.info(
+                        "RivaL sports backlog repaired events=%d leagues=%d",
+                        len(reconciled), len(set(reconciled)),
+                    )
+                for sport, league in set(reconciled):
+                    review = await asyncio.to_thread(
+                        self.sports_results.promotion_status,
+                        sport=sport, league=league, now=datetime.now(UTC),
+                    )
+                    _LOG.info(
+                        "RivaL recovered sports governance sport=%s league=%s "
+                        "status=%s settled=%d",
+                        sport, league, review["status"],
+                        review["settled_unique_events"],
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - repair must not block Discord
+                _LOG.exception("RivaL sports settlement reconciliation failed")
+            try:
+                remaining = await asyncio.to_thread(
+                    sports_settlement_backlog, self.store,
+                )
+                _LOG.info(
+                    "RivaL sports DB integrity unsettled_finalized=%d",
+                    remaining,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - monitoring is best effort
+                _LOG.exception("RivaL sports DB integrity check unavailable")
             await asyncio.sleep(21600)
 
     async def _target_loop(self) -> None:
@@ -1714,6 +1747,7 @@ class RivalDiscordClient(discord.Client):
         await self.wait_until_ready()
         assert self.perp_collector is not None
         _LOG.info("RivaL perp automatic collector RUNNING")
+        last_integrity_hour: int | None = None
         while not self.is_closed():
             try:
                 await self.perp_collector.collect_once()
@@ -1736,6 +1770,28 @@ class RivalDiscordClient(discord.Client):
                     raise
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL autonomous research cycle failed safely")
+            # Once per hour, inspect persisted evidence without adding API
+            # requests or disturbing live predictions and market collection.
+            if self.autonomous is not None:
+                integrity_hour = int(datetime.now(UTC).timestamp() // 3600)
+                if integrity_hour != last_integrity_hour:
+                    try:
+                        audit = await asyncio.to_thread(
+                            perpetual_evidence_backlog, self.store,
+                        )
+                        last_integrity_hour = integrity_hour
+                        _LOG.info(
+                            "RivaL perpetual DB integrity overdue=%d "
+                            "recoverable=%d quoted=%d neither_traded=%d",
+                            audit["overdue_forecasts"],
+                            audit["recoverable_overdue"],
+                            audit["closed_quote_windows"],
+                            audit["neither_traded_quote_windows"],
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - read-only audit only
+                        _LOG.exception("RivaL perpetual DB integrity unavailable")
             # Prospective execution research is strictly read-only and
             # refuses to backfill old candles as executable market quotes.
             # Three assets × one snapshot per shared collector cycle, not

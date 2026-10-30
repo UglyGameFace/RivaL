@@ -1450,9 +1450,11 @@ class RivalDiscordClient(discord.Client):
         self.add_view(AutoHuntActions())
         _LOG.info("RivaL stale guided-menu and restart-safe hunt views registered")
         await asyncio.to_thread(self.auto_hunt.store.initialize)
-        if self.perp_collector is not None and self._hunt_task is None:
+        # Polymarket market watching is independent of the crypto candle
+        # collector. The worker itself stays idle until a user opts in.
+        if self._hunt_task is None:
             self._hunt_task = asyncio.create_task(
-                self._hunt_loop(), name="rival-auto-hunt-eligible-forecast-alerts",
+                self._hunt_loop(), name="rival-auto-hunt-selected-source-alerts",
             )
         if self._target_task is None:
             self._target_task = asyncio.create_task(

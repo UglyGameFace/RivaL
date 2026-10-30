@@ -35,11 +35,11 @@ from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.multi_exchange import (
     ASSETS,
     HORIZONS,
+    MultiExchangeResearch,
 )
 from parlay_bot.perpetuals.multi_exchange import (
     MODEL as MULTI_MODEL,
 )
-from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
 from parlay_bot.perpetuals.profit_proof import COST_SCENARIOS
 
 _LOG = logging.getLogger(__name__)

@@ -527,9 +527,9 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
         interaction = _interaction()
         await home.act(interaction, "live")
         shown = interaction.edit_original_response.await_args.kwargs["view"]
-        assert "Enable Live Alerts" in _labels(shown)
-        assert "Disable Live Alerts" in _labels(shown)
-        assert "live exchange WebSocket prices" in (await home.render()).description
+        assert "Enable Shift DMs" in _labels(shown)
+        assert "Disable Shift DMs" in _labels(shown)
+        assert "private Polymarket" in (await home.render()).description
         assert "OFF" in (await home.render()).description
         await home.act(interaction, "live-on")
         service.update_preference.assert_awaited_once_with(
@@ -608,7 +608,7 @@ async def test_live_mode_shows_verified_current_next_polymarket_links(tmp_path):
         home.navigate("live")
         labels = _labels(home)
         assert "Follow Polymarket" in labels
-        assert "Check Current & Next" in labels
+        assert "Start Auto-Track" in labels
         assert any(isinstance(i, discord.ui.Select) for i in home.children)
         embed = await home.render()
         text = "\n".join(str(field.value) for field in embed.fields)

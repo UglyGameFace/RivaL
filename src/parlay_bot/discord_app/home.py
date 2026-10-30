@@ -180,6 +180,7 @@ class GuidedHome(discord.ui.View):
         self.risk = RiskMode.BALANCED
         self.slip = None
         self.note: str | None = None
+        self._redraw_lock = asyncio.Lock()
         self._buttons()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -389,11 +390,25 @@ class GuidedHome(discord.ui.View):
                 color=discord.Color.orange(),
             )
         elif p == "forecast":
-            embed = await signal_embed(
-                self.market, self.quotes,
-                asset=self.coin, horizon_minutes=self.horizon,
-                stream_shadow=self.stream_shadow,
-            )
+            try:
+                embed = await asyncio.wait_for(
+                    signal_embed(
+                        self.market, self.quotes,
+                        asset=self.coin, horizon_minutes=self.horizon,
+                        stream_shadow=self.stream_shadow,
+                    ),
+                    timeout=7,
+                )
+            except TimeoutError:
+                embed = discord.Embed(
+                    title=f"⏳ {self.coin} | {self.horizon}m • SIGNAL DELAYED",
+                    description=(
+                        "The market check is taking too long. No fresh signal "
+                        "was verified, and the previous forecast is not a new trade. "
+                        "Try again shortly."
+                    ),
+                    color=discord.Color.orange(),
+                )
         elif p == "quote":
             try:
                 price = await self.quotes.get(self.coin)
@@ -646,6 +661,10 @@ class GuidedHome(discord.ui.View):
         return embed
 
     async def redraw(self, interaction: discord.Interaction) -> None:
+        async with self._redraw_lock:
+            await self._redraw_locked(interaction)
+
+    async def _redraw_locked(self, interaction: discord.Interaction) -> None:
         started = time.monotonic()
         self._buttons()
         try:
@@ -673,9 +692,22 @@ class GuidedHome(discord.ui.View):
             )
         _LOG.info("Guided render page=%s elapsed_ms=%.0f",
                   self.page, (time.monotonic() - started) * 1000)
-        await interaction.edit_original_response(
-            content=None, embed=embed, view=self,
-        )
+        try:
+            await asyncio.wait_for(
+                interaction.edit_original_response(content=None, embed=embed, view=self),
+                timeout=8,
+            )
+        except (TimeoutError, discord.HTTPException) as exc:
+            _LOG.warning("Guided menu edit failed page=%s error=%s", self.page, type(exc).__name__)
+            # The interaction was already acknowledged. Keep the user informed
+            # without turning an edit failure into a silent dead menu.
+            try:
+                await interaction.followup.send(
+                    "The menu could not update. Open /rival for a fresh menu.",
+                    ephemeral=True,
+                )
+            except discord.HTTPException:
+                _LOG.warning("Guided menu fallback message unavailable")
 
     async def act(self, interaction: discord.Interaction, action: str) -> None:
         if action == "explain":
@@ -721,7 +753,7 @@ class GuidedHome(discord.ui.View):
                 embed=picker.render(), view=picker, ephemeral=True,
             )
             return
-        await interaction.response.defer()
+        await interaction.response.defer(thinking=False)
         _LOG.info("Guided interaction acknowledged action=%s", action)
         if action == "back":
             self.page = self.back_stack.pop() if self.back_stack else "home"

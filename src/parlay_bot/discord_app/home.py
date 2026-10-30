@@ -268,12 +268,12 @@ class GuidedHome(discord.ui.View):
 
     async def _refresh_odds(self) -> None:
         if self.collector is None:
-            return
+            return "SportsGameOdds is disabled. Other providers refresh in the background."
         # One shared refresh runs in the background. Menu interactions never
         # wait for sportsbook HTTP calls or PostgreSQL ingestion.
         collector = self.collector
         if collector._lock.locked():
-            return
+            return "A sportsbook refresh is already running. No new odds confirmed."
         # The collector lock is shared across all views. Even if two users
         # schedule concurrently, only one task acquires it and fetches.
         async def refresh() -> None:
@@ -287,6 +287,7 @@ class GuidedHome(discord.ui.View):
                 _LOG.exception("Background sportsbook refresh failed")
 
         asyncio.create_task(refresh())
+        return "Refresh requested in background. No new odds confirmed yet; check freshness again shortly."
 
     async def render(self) -> discord.Embed:
         p = self.page
@@ -747,8 +748,7 @@ class GuidedHome(discord.ui.View):
             if action == "sports":
                 await self._refresh_odds()
         elif action == "refresh":
-            await self._refresh_odds()
-            self.note = "Checked the current sportsbook data."
+            self.note = await self._refresh_odds()
         elif action in ("slip", "lower", "balanced", "aggressive"):
             self.risk = {
                 "lower": RiskMode.LOWER, "balanced": RiskMode.BALANCED,

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -15,6 +16,8 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from parlay_bot.storage.hot import RelationalHotStore
+
+_LOG = logging.getLogger(__name__)
 
 SUPPORTED = {"SOCCER", "BASKETBALL"}
 MAX_SCORES = {"SOCCER": 25, "BASKETBALL": 250}
@@ -278,6 +281,7 @@ def evaluate_sports_model(
 class SportsResultStore:
     def __init__(self, store: RelationalHotStore) -> None:
         self.store = store
+        self._qualification_cache: dict[tuple[str, str], tuple[str, datetime]] = {}
 
     def initialize(self) -> None:
         with self.store.connect() as conn:
@@ -341,6 +345,10 @@ class SportsResultStore:
             if old:
                 if old["digest"] != result.digest:
                     raise ResultIntegrityError("Final scores contradict immutable record")
+                # A crash between insert and settlement must not strand the
+                # forecast: an identical redelivery retries settlement in
+                # the same transaction instead of returning early.
+                self.settle_forecast(result, conn=conn)
                 return "unchanged"
             conn.execute(
                 """INSERT INTO rival_sport_results
@@ -355,61 +363,124 @@ class SportsResultStore:
                     result.observed_at.isoformat(), result.digest,
                 ),
             )
-        # The external finalized result alone may settle a previously issued
-        # prospectively recorded research forecast. Final scores never manufacture
-        # a prediction after kickoff.
-        self.settle_forecast(result)
-        return "inserted"
+            # The external finalized result alone may settle a previously
+            # issued prospectively recorded research forecast. Final scores
+            # never manufacture a prediction after kickoff. Insert and
+            # settlement commit together, so a crash cannot leave the
+            # result stored with its forecast unsettled.
+            self.settle_forecast(result, conn=conn)
+            return "inserted"
 
-    def settle_forecast(self, result: FinalScore) -> bool:
+    def reconcile_unsettled(self, *, limit: int = 100) -> list[tuple[str, str]]:
+        """Settle forecasts whose finalized result arrived but never settled.
+
+        Covers results the provider never redelivers after a crash, and
+        any historical finalized result with a still-pending forecast.
+        Integrity failures are logged and skipped so one bad record
+        never blocks the rest. Returns the leagues with newly settled
+        forecasts, for governance review.
+        """
+        if not 1 <= limit <= 1000:
+            raise ValueError("Reconciliation budget exceeded")
         self.initialize()
         with self.store.connect() as conn:
-            record = conn.execute(
-                "SELECT * FROM rival_sport_forecasts WHERE event_id=?",
-                (result.event_id,),
-            ).fetchone()
-            if record is None or record["settled_at"] is not None:
-                return False
-            if (
-                record["sport"] != result.sport or record["league"] != result.league
-                or record["home_id"] != result.home_id
-                or record["away_id"] != result.away_id
-            ):
-                raise ResultIntegrityError("Result identity disagrees with prospective model")
-            if _instant(record["issued_at"]) >= result.started_at:
-                raise ResultIntegrityError("Forecast was not issued before kickoff")
-            prediction = json.loads(record["probability_json"])
-            baseline = json.loads(record["baseline_json"])
-            label = 0 if result.outcome == 1 else (
-                1 if result.outcome == 0 and result.sport == "SOCCER"
-                else 2 if result.sport == "SOCCER" else 1
+            rows = conn.execute(
+                """SELECT r.event_id,r.sport,r.league,r.home_id,r.away_id,
+                          r.home_score,r.away_score,r.started_at,
+                          r.first_observed_at,r.digest
+                   FROM rival_sport_results AS r
+                   JOIN rival_sport_forecasts AS f ON f.event_id=r.event_id
+                   WHERE f.settled_at IS NULL
+                   ORDER BY r.first_observed_at ASC LIMIT ?""",
+                (limit,),
+            ).fetchall()
+        affected: list[tuple[str, str]] = []
+        for row in rows:
+            result = FinalScore(
+                str(row["event_id"]), str(row["sport"]), str(row["league"]),
+                str(row["home_id"]), str(row["away_id"]),
+                int(row["home_score"]), int(row["away_score"]),
+                _instant(str(row["started_at"])),
+                _instant(str(row["first_observed_at"])), str(row["digest"]),
             )
-            if result.sport == "BASKETBALL" and result.outcome == 0:
-                return False
-            if (
-                len(prediction) != len(baseline)
-                or len(prediction) != (3 if result.sport == "SOCCER" else 2)
-            ):
-                raise ResultIntegrityError("Incompatible immutable forecast")
-            model_loss = sum((float(p) - int(i == label)) ** 2
-                             for i, p in enumerate(prediction))
-            base_loss = sum((float(p) - int(i == label)) ** 2
-                            for i, p in enumerate(baseline))
-            changed = conn.execute(
-                """UPDATE rival_sport_forecasts
-                   SET settled_at=?,label=?,model_brier=?,baseline_brier=?
-                   WHERE event_id=? AND settled_at IS NULL""",
-                (
-                    result.observed_at.isoformat(), label,
-                    model_loss, base_loss, result.event_id,
-                ),
-            )
-            return changed.rowcount == 1
+            try:
+                settled = self.settle_forecast(result)
+            except ResultIntegrityError:
+                _LOG.warning(
+                    "RivaL sports reconciliation withheld event=%s: "
+                    "conflicting or incomplete provider evidence",
+                    result.event_id,
+                )
+                continue
+            if settled:
+                affected.append((result.sport, result.league))
+        return affected
+
+    def settle_forecast(self, result: FinalScore, *, conn=None) -> bool:
+        self.initialize()
+        if conn is None:
+            with self.store.connect() as owned:
+                return self._settle_forecast(owned, result)
+        return self._settle_forecast(conn, result)
+
+    def _settle_forecast(self, conn, result: FinalScore) -> bool:
+        record = conn.execute(
+            "SELECT * FROM rival_sport_forecasts WHERE event_id=?",
+            (result.event_id,),
+        ).fetchone()
+        if record is None or record["settled_at"] is not None:
+            return False
+        if (
+            record["sport"] != result.sport or record["league"] != result.league
+            or record["home_id"] != result.home_id
+            or record["away_id"] != result.away_id
+        ):
+            raise ResultIntegrityError("Result identity disagrees with prospective model")
+        if _instant(record["issued_at"]) >= result.started_at:
+            raise ResultIntegrityError("Forecast was not issued before kickoff")
+        prediction = json.loads(record["probability_json"])
+        baseline = json.loads(record["baseline_json"])
+        label = 0 if result.outcome == 1 else (
+            1 if result.outcome == 0 and result.sport == "SOCCER"
+            else 2 if result.sport == "SOCCER" else 1
+        )
+        if result.sport == "BASKETBALL" and result.outcome == 0:
+            return False
+        if (
+            len(prediction) != len(baseline)
+            or len(prediction) != (3 if result.sport == "SOCCER" else 2)
+        ):
+            raise ResultIntegrityError("Incompatible immutable forecast")
+        model_loss = sum((float(p) - int(i == label)) ** 2
+                         for i, p in enumerate(prediction))
+        base_loss = sum((float(p) - int(i == label)) ** 2
+                        for i, p in enumerate(baseline))
+        changed = conn.execute(
+            """UPDATE rival_sport_forecasts
+               SET settled_at=?,label=?,model_brier=?,baseline_brier=?
+               WHERE event_id=? AND settled_at IS NULL""",
+            (
+                result.observed_at.isoformat(), label,
+                model_loss, base_loss, result.event_id,
+            ),
+        )
+        return changed.rowcount == 1
 
     def issue_forecast(
         self, event: dict, *, observed_at: datetime,
+        now: datetime | None = None,
     ) -> str:
-        """Only immutable pregame forecasts with qualified *historical* evidence."""
+        """Only immutable pregame forecasts with qualified *historical* evidence.
+
+        The observation timestamp selects the evidence: only results
+        observed before it may inform the forecast. The issuance
+        timestamp is the actual insertion time, rechecked immediately
+        before the insert: a computation that crosses kickoff is
+        rejected, so a saved prediction can never appear issued before
+        kickoff when it was actually written after it. League
+        qualification is cached for 30 minutes; the cache never serves
+        an evaluation made after the event's observation time.
+        """
         if observed_at.utcoffset() is None:
             raise ValueError("Timestamp must have UTC offset")
         status = event.get("status")
@@ -452,9 +523,17 @@ class SportsResultStore:
             x for x in self.all_results(sport=sport, league=league)
             if x.started_at < stamp and x.observed_at < stamp
         ]
-        if evaluate_sports_model(prior, sport=sport, league=league).status != (
-            "HISTORICAL_SHADOW"
+        cached = self._qualification_cache.get((sport, league))
+        if (
+            cached is not None
+            and timedelta(0) <= stamp - cached[1] <= timedelta(minutes=30)
         ):
+            qualified = cached[0] == "HISTORICAL_SHADOW"
+        else:
+            evidence = evaluate_sports_model(prior, sport=sport, league=league)
+            qualified = evidence.status == "HISTORICAL_SHADOW"
+            self._qualification_cache[(sport, league)] = (evidence.status, stamp)
+        if not qualified:
             return "not_qualified"
         probability = model_probabilities(
             prior, sport=sport, league=league, home_id=home_id, away_id=away_id,
@@ -471,6 +550,9 @@ class SportsResultStore:
             elif sport == "SOCCER":
                 counts[1] += 1
         baseline = tuple(x / sum(counts) for x in counts)
+        issued_now = (now or datetime.now(UTC)).astimezone(UTC)
+        if issued_now >= start:
+            return "crossed_kickoff"
         with self.store.connect() as conn:
             result = conn.execute(
                 """INSERT INTO rival_sport_forecasts
@@ -479,7 +561,7 @@ class SportsResultStore:
                    VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
                 (
                     event_id, sport, league, home_id, away_id, MODELS[sport],
-                    stamp.isoformat(), start.isoformat(),
+                    issued_now.isoformat(), start.isoformat(),
                     json.dumps(probability), json.dumps(baseline),
                 ),
             )

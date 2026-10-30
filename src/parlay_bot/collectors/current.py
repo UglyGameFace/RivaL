@@ -65,15 +65,56 @@ class CurrentBoardCollector:
         self.max_pages = max_pages
         self._lock = asyncio.Lock()
         self._league_cursor = 0
+        self._forecast_semaphore = asyncio.Semaphore(4)
+        self._forecast_inflight: set[str] = set()
 
     @staticmethod
     def _log_forecast_outcome(task: asyncio.Task[object]) -> None:
         if task.cancelled():
             return
         try:
-            task.result()
+            outcome = task.result()
         except Exception:  # noqa: BLE001
             _LOG.exception("RivaL optional sports forecast failed; odds intake unaffected")
+        else:
+            _LOG.info("RivaL sports forecast outcome=%s", outcome)
+
+    async def _run_forecast(
+        self, results: SportsResultStore, event: dict, *,
+        observed_at: datetime,
+    ) -> str:
+        """One bounded forecast job: capped concurrency, deduped, shed loudly.
+
+        Without a bound, every fetched event spawns a thread job that
+        repeats a chronological backtest over many games; jobs pile up,
+        contend for the database, and delay predictions toward kickoff.
+        At most 4 run at once and at most 8 are in flight (running or
+        queued); anything beyond that is shed with a distinct log line
+        instead of silently queueing, and a duplicate event already in
+        flight is skipped.
+        """
+        event_id = event.get("eventID") if isinstance(event, dict) else None
+        if not isinstance(event_id, str) or not event_id:
+            return await asyncio.to_thread(
+                results.issue_forecast, event, observed_at=observed_at,
+            )
+        if (
+            event_id in self._forecast_inflight
+            or len(self._forecast_inflight) >= 8
+        ):
+            _LOG.info(
+                "RivaL sports forecast shed event=%s inflight=%d",
+                event_id, len(self._forecast_inflight),
+            )
+            return "shed"
+        self._forecast_inflight.add(event_id)
+        try:
+            async with self._forecast_semaphore:
+                return await asyncio.to_thread(
+                    results.issue_forecast, event, observed_at=observed_at,
+                )
+        finally:
+            self._forecast_inflight.discard(event_id)
 
     def _last_refresh(self) -> datetime | None:
         raw = self.store.get_runtime_state(_STATE_KEY)
@@ -171,8 +212,8 @@ class CurrentBoardCollector:
                     if self.results is not None:
                         # Forecast research is optional and must not delay odds intake.
                         task = asyncio.create_task(
-                            asyncio.to_thread(
-                                self.results.issue_forecast, event,
+                            self._run_forecast(
+                                self.results, event,
                                 observed_at=datetime.now(UTC),
                             )
                         )

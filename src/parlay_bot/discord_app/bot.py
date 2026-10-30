@@ -1559,6 +1559,16 @@ class RivalDiscordClient(discord.Client):
                                 "RivaL finalized sports result withheld: conflicting "
                                 "or incomplete provider evidence"
                             )
+                    try:
+                        reconciled = await asyncio.to_thread(
+                            self.sports_results.reconcile_unsettled, limit=100,
+                        )
+                        for sport, league in reconciled:
+                            affected.add((sport, league))
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception(
+                            "RivaL sports settlement reconciliation failed"
+                        )
                     await asyncio.to_thread(
                         self.sports_results.mark_checked, due, now=seen,
                     )

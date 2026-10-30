@@ -64,6 +64,8 @@ def build_cold_archive_runtime(
         history=str(settings.rival_drive_history_folder_id),
         manifests=str(settings.rival_drive_manifests_folder_id),
         staging=str(settings.rival_drive_staging_folder_id),
+        models=settings.rival_drive_models_folder_id,
+        reports=settings.rival_drive_reports_folder_id,
     )
     drive = GoogleDriveArchiveClient(
         client_id=str(settings.rival_drive_oauth_client_id),

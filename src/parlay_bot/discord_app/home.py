@@ -880,9 +880,11 @@ class GuidedHome(discord.ui.View):
                 )
             else:
                 try:
-                    proof = await asyncio.to_thread(
-                        self.multi.report,
-                        asset=self.coin, horizon_minutes=self.horizon,
+                    proof = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.multi.report,
+                            asset=self.coin, horizon_minutes=self.horizon,
+                        ), timeout=2.5,
                     )
                     settled = proof["settled"]
                     is_better = proof.get("brier_improvement")
@@ -1487,14 +1489,28 @@ class GuidedHome(discord.ui.View):
             "Guided home interaction failed",
             exc_info=(type(error), error, error.__traceback__),
         )
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                "Something went wrong. Press Home or type /rival.", ephemeral=True,
-            )
-        else:
-            await interaction.followup.send(
-                "Something went wrong. Press Home or type /rival.", ephemeral=True,
-            )
+        # A failed component must still leave a working button, instead of
+        # the generic "Something went wrong" dead-end seen on production.
+        fresh = self._display_generation()
+        fresh.page = "home"
+        fresh.back_stack = []
+        fresh.note = (
+            "That action couldn't be verified. No change was confirmed. "
+            "This is a fresh menu; your saved choices have not been erased."
+        )
+        fresh._buttons()
+        content = await fresh.render()
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    embed=content, view=fresh, ephemeral=True,
+                )
+            else:
+                await interaction.followup.send(
+                    embed=content, view=fresh, ephemeral=True,
+                )
+        except discord.HTTPException:
+            _LOG.warning("RivaL guided recovery message could not be delivered")
 
 
 # ---------------------------------------------------------------------------

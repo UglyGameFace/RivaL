@@ -531,11 +531,11 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
         assert "Stop Auto-Track" in _labels(shown)
         assert "Notification Options" in _labels(shown)
         assert "private message" in (await home.render()).description
+        assert "OFF" in (await home.render()).description
         await home.act(interaction, "hunt-tools")
         advanced = interaction.edit_original_response.await_args.kwargs["view"]
         assert "Live Shift Alerts ON" in _labels(advanced)
         assert "Live Shift Alerts OFF" in _labels(advanced)
-        assert "OFF" in (await home.render()).description
         await home.act(interaction, "live-on")
         service.update_preference.assert_awaited_once_with(
             home.owner_id, "live_shifts", 1,

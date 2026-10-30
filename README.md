@@ -21,25 +21,35 @@ fresh exchange books remain required; 1-second sampling is not a
 new second-by-second ML prediction or accuracy guarantee.
 
 Historical training status: **/rival → My Results → Can I Trust Predictions?**
-shows the latest *live* learning cycle, active live engine, and a separate
-checksum-verified offline research inventory when the private Drive **Models**
-folder and OAuth read permissions are actually configured. The candidate
-reader scans at most ten small SHA-verified research documents every six
-hours in its own Drive connection, isolated from normal cold archive writes.
-Offline model weights cannot modify the live prediction or promotion
-tables. Historical test accuracy is labeled *retrospective*, with source
-dataset hash and last verified import separately from live accuracy.
+shows saved/reused live weights, actual learning cycles, Polymarket outcome
+counts and the verified historical model inventory. The live v3 learner keeps
+its weights across restarts and learns each newly matured observation once.
 
-The monthly GitHub workflow enforces the repository variable
-`RIVAL_HISTORY_MONTHLY_ENABLED=true` for unattended scheduled runs;
-manual `workflow_dispatch` is available independently. Without that
-variable, the scheduled expensive training job **skips intentionally**.
-Even a completed research training run is not proof of live candidate
-compatibility or net profitability. The code does not silently activate
-offline logistic weights because their feature contract differs from
-the live model. That still requires a prospective side-by-side scorer
-and actual promotion evidence, not a declaration that backfill makes
-the model smarter.
+The six-month workflow now also trains the exact live 40-bar/10-feature
+contract. Three regularized logistic fits and their logit ensemble compete on
+purged chronological validation; only the selected method opens the final
+holdout. Compatible passing weights are loaded from PostgreSQL as independent
+persistent research challengers. Source-matched frozen forward predictions,
+calibration and day-blocked paired improvement govern research selection and
+rollback. Existing quote/cost gates still govern qualified trade calls. Legacy
+six-weight artifacts remain separate; the importer understands their original
+bundle without pretending those features match the current model.
+
+The historical workflow runs monthly and when research code reaches main,
+unless `RIVAL_HISTORY_MONTHLY_ENABLED=false`;
+manual `workflow_dispatch` remains available. Drive is the cold archive: its
+bounded six-hour verified import is outside prediction and Discord paths.
+Historical results never become live accuracy by declaration.
+
+**Live Polymarket:** selected 5m, 15m and verified hourly contracts have their own
+experimental AI calls. Start Auto-Track keeps one DM updating until Stop,
+including rollover. Quotes refresh about every 15 seconds independently of the
+shared free AI quota (18 requests/day). A separate book-only learner uses exact
+terminal Polymarket payout receipts and needs 100 settled contracts per source
+and timeframe before issuing local experimental model calls. It never trains
+on exchange candle labels or AI confidence. See
+[continuous calls and learning](docs/RIVAL_CONTINUOUS_LEARNING.md) for measured
+results and production acceptance limits.
 
 ### Continuous direction scanning and personalized Discord alerts
 

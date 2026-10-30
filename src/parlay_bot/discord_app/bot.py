@@ -2197,8 +2197,8 @@ class RivalDiscordClient(discord.Client):
     async def _candidate_import_loop(self) -> None:
         """Read bounded checksum-verified offline models from private Drive.
 
-        This is research metadata ONLY; cannot update live forecasts or
-        promotion records, and never exposes OAuth material in logs.
+        Matching screened weights become research challengers. Trade promotion
+        still needs forward and cost evidence. No credentials in logs.
         """
         await self.wait_until_ready()
         assert self.research_drive is not None
@@ -2213,11 +2213,11 @@ class RivalDiscordClient(discord.Client):
                 saved = 0
                 for file_id, payload in items:
                     try:
-                        await asyncio.to_thread(
-                            self.offline_registry.import_verified,
+                        imported = await asyncio.to_thread(
+                            self.offline_registry.import_document,
                             file_id, payload,
                         )
-                        saved += 1
+                        saved += imported
                     except ValueError:
                         _LOG.warning(
                             "RivaL offline research candidate failed "
@@ -2225,7 +2225,7 @@ class RivalDiscordClient(discord.Client):
                         )
                 self.candidate_sync_status = f"verified_read_{saved}_candidates"
                 self.candidate_sync_checked_at = datetime.now(UTC)
-                _LOG.info("RivaL isolated historical candidate reads=%d", saved)
+                _LOG.info("RivaL verified historical candidate reads=%d", saved)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
@@ -2238,6 +2238,7 @@ class RivalDiscordClient(discord.Client):
         """Read-only accuracy and provenance. No retroactive promotion."""
         from parlay_bot.perpetuals.promotion import promoted_engine
 
+        self.polymarket_research.initialize()
         offline = (
             self.offline_registry.summary(asset=asset, horizon=horizon)
             if self.offline_registry is not None else
@@ -2256,6 +2257,12 @@ class RivalDiscordClient(discord.Client):
             "live_learning": live,
             "drive_checked_at": self.candidate_sync_checked_at,
             "drive_status": self.candidate_sync_status,
+            "polymarket_learning": self.polymarket_research.learner.summary(asset=asset, horizon=horizon),
+            "model_checkpoints": (
+                self.perp_collector.market.live_model_checkpoints.summary()
+                if self.perp_collector is not None
+                and self.perp_collector.market.live_model_checkpoints is not None else None
+            ),
         }
 
     async def _archive_loop(self) -> None:

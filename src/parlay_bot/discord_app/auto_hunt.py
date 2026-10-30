@@ -1160,7 +1160,7 @@ def hunt_embed(
             and call.expires == candidate.expires and call.issued_at <= observed_at < call.expires
         )
         call_line = (
-            f"**Polymarket AI: {call.direction} • experimental research**\n"
+            f"**Polymarket {call.kind}: {call.direction} • experimental research**\n"
             f"{call.thesis}\nCall issued <t:{int(call.issued_at.timestamp())}:R>.\n"
             if valid_call else "**Polymarket AI: no current call**\n"
             + (candidate.research_note or "No verified contract AI response yet.") + "\n"

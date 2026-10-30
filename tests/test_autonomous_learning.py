@@ -171,7 +171,7 @@ def test_autonomous_governance_counts_correlated_exchanges_once(tmp_path):
                                 outcome_up,realized_close,model_brier,
                                 baseline_brier)
                                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                            (venue, "BTC", "USDC", "BTC", 5, "prospective-logistic-shadow-v2",
+                            (venue, "BTC", "USDC", "BTC", 5, "prospective-logistic-persistent-v3",
                              (target - timedelta(minutes=5)).isoformat(),
                              100., (target - timedelta(minutes=2)).isoformat(),
                              target.isoformat(), .7, .5, 100,

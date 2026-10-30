@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
+from parlay_bot.perpetuals.polymarket_learning import PolymarketOutcomeLearner
 from parlay_bot.storage.hot import RelationalHotStore
 
 _LOG = logging.getLogger(__name__)
@@ -36,12 +37,16 @@ class ContractCall:
     evidence_sha256: str
     input_up_ask: float | None = None
     input_down_ask: float | None = None
+    kind: str = "AI"
 
 
 class PolymarketResearch:
     def __init__(self, store: RelationalHotStore, *, ai=None) -> None:
         self.store = store
         self.ai = ai
+        self.learner = PolymarketOutcomeLearner(store)
+        self._learning_tasks: dict[str, asyncio.Task] = {}
+        self._math_calls: dict[str, ContractCall] = {}
         self._initialized = False
         self._closed = False
         self._init_lock = threading.Lock()
@@ -71,6 +76,9 @@ class PolymarketResearch:
                     );
                     CREATE INDEX IF NOT EXISTS rival_polymarket_ai_expiry
                         ON rival_polymarket_ai_calls(expires_at);
+                    CREATE TABLE IF NOT EXISTS rival_polymarket_resolution_attempts (
+                        slug TEXT PRIMARY KEY, checked_at TEXT NOT NULL
+                    );
                     CREATE TABLE IF NOT EXISTS rival_polymarket_ai_outcomes (
                         slug TEXT PRIMARY KEY, condition_id TEXT NOT NULL,
                         direction TEXT NOT NULL, resolved_at TEXT NOT NULL,
@@ -78,6 +86,7 @@ class PolymarketResearch:
                         receipt_json TEXT NOT NULL
                     );
                 """)
+            self.learner.initialize()
             self._initialized = True
 
     def _saved(self, slug: str) -> ContractCall | None:
@@ -116,8 +125,11 @@ class PolymarketResearch:
         return self._saved(call.slug)
 
     def peek(self, slug: str) -> ContractCall | None:
-        call = self._calls.get(slug)
-        return call if call is not None and call.issued_at <= datetime.now(UTC) < call.expires else None
+        call = self._calls.get(slug) or self._math_calls.get(slug)
+        now = datetime.now(UTC)
+        return call if call is not None and call.issued_at <= now < call.expires and (
+            call.kind != "model" or now-call.issued_at <= timedelta(seconds=25)
+        ) else None
 
     def status(self, slug: str) -> str:
         if slug in self._pending:
@@ -136,22 +148,15 @@ class PolymarketResearch:
         for slug in list(self._calls):
             if self._calls[slug].expires <= now:
                 self._calls.pop(slug, None)
+        for slug in list(self._math_calls):
+            if self._math_calls[slug].expires <= now:
+                self._math_calls.pop(slug, None)
         if len(self._status) > 48:
             for slug in list(self._status):
                 if slug not in self._pending:
                     self._status.pop(slug, None)
                 if len(self._status) <= 24:
                     break
-        cached = self.peek(notice.slug)
-        if cached is not None and not self._needs_refresh(cached, notice, now):
-            return cached
-        if notice.slug in self._pending:
-            return cached
-        previous = self._status.get(notice.slug)
-        if previous is not None and now < previous[0]:
-            return cached
-        if len(self._pending) >= 12:
-            return None
         if not (
             notice.issued <= now < notice.expires
             and timedelta(0) <= now - notice.quote_at <= timedelta(seconds=25)
@@ -164,6 +169,41 @@ class PolymarketResearch:
         ):
             self._status[notice.slug] = (now + timedelta(seconds=15), "Verified contract inputs are incomplete or stale.")
             return None
+        if notice.slug not in self._learning_tasks and len(self._learning_tasks) < 4:
+            async def learn():
+                try:
+                    await asyncio.to_thread(self.initialize)
+                    result = await asyncio.to_thread(self.learner.observe, notice)
+                    if result is not None and not self._closed:
+                        self._math_calls[notice.slug] = ContractCall(
+                            slug=notice.slug, asset=notice.asset, horizon=notice.horizon,
+                            issued_at=result["issued_at"], expires=notice.expires,
+                            direction=result["direction"], model=result["model"],
+                            thesis=f"Book-based model trained on {result['training_labels']} verified Polymarket outcomes.",
+                            risk="Experimental model score; calibrated accuracy and after-fee edge are unverified.",
+                            evidence_sha256=result["evidence_sha256"], input_up_ask=notice.up_ask,
+                            input_down_ask=notice.down_ask, kind="model",
+                        )
+                except Exception:  # noqa: BLE001 - learning failures never block live quotes
+                    _LOG.exception("Polymarket contract learning unavailable")
+            learning = asyncio.create_task(learn(), name="rival-polymarket-outcome-learning")
+            self._learning_tasks[notice.slug] = learning
+            def learned(task):
+                if self._learning_tasks.get(notice.slug) is task:
+                    self._learning_tasks.pop(notice.slug, None)
+                if not task.cancelled():
+                    task.exception()
+            learning.add_done_callback(learned)
+        cached = self._calls.get(notice.slug)
+        if cached is not None and not self._needs_refresh(cached, notice, now):
+            return cached or self.peek(notice.slug)
+        if notice.slug in self._pending:
+            return cached or self.peek(notice.slug)
+        previous = self._status.get(notice.slug)
+        if previous is not None and now < previous[0]:
+            return cached or self.peek(notice.slug)
+        if len(self._pending) >= 12:
+            return None
         task = asyncio.create_task(self._produce(notice), name="rival-polymarket-ai-contract")
         self._pending[notice.slug] = task
 
@@ -174,7 +214,7 @@ class PolymarketResearch:
                 finished.exception()
 
         task.add_done_callback(done)
-        return cached
+        return cached or self.peek(notice.slug)
 
     @staticmethod
     def _needs_refresh(call: ContractCall, notice, now: datetime) -> bool:
@@ -253,11 +293,21 @@ class PolymarketResearch:
         self.initialize()
         with self.store.connect() as conn:
             rows = conn.execute(
-                "SELECT DISTINCT c.slug,c.condition_id,c.expires_at FROM rival_polymarket_ai_calls c "
+                "SELECT c.slug,c.condition_id,c.expires_at FROM ("
+                "SELECT slug,condition_id,expires_at FROM rival_polymarket_ai_calls UNION "
+                "SELECT slug,condition_id,expires_at FROM rival_polymarket_observations) c "
                 "LEFT JOIN rival_polymarket_ai_outcomes o ON o.slug=c.slug "
-                "WHERE o.slug IS NULL AND c.expires_at<? ORDER BY c.expires_at LIMIT 20",
+                "LEFT JOIN rival_polymarket_resolution_attempts a ON a.slug=c.slug "
+                "WHERE o.slug IS NULL AND c.expires_at<? "
+                "ORDER BY COALESCE(a.checked_at,''),c.expires_at LIMIT 20",
                 (now.isoformat(),),
             ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "INSERT INTO rival_polymarket_resolution_attempts (slug,checked_at) VALUES (?,?) "
+                    "ON CONFLICT(slug) DO UPDATE SET checked_at=excluded.checked_at",
+                    (row['slug'], now.isoformat()),
+                )
         return [dict(row) for row in rows]
 
     def _record_resolution(self, call: dict, row: dict, *, now: datetime) -> int:
@@ -342,7 +392,7 @@ class PolymarketResearch:
 
     async def aclose(self) -> None:
         self._closed = True
-        pending = list(self._pending.values())
+        pending = list(self._pending.values()) + list(self._learning_tasks.values())
         if self._settle_task is not None:
             pending.append(self._settle_task)
         for task in pending:

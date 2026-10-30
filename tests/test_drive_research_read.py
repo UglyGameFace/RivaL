@@ -84,13 +84,13 @@ async def test_corrupt_drive_model_bytes_rejected_before_registry():
         await client.aclose()
 
 
-def test_verified_history_schedule_requires_explicit_owner_flag():
+def test_verified_history_schedule_defaults_enabled_with_explicit_stop_switch():
     from pathlib import Path
 
     workflow = (
         Path(__file__).resolve().parents[1]
         / ".github/workflows/verified-history.yml"
     ).read_text(encoding="utf-8")
-    assert "vars.RIVAL_HISTORY_MONTHLY_ENABLED == 'true'" in workflow
+    assert "vars.RIVAL_HISTORY_MONTHLY_ENABLED != 'false'" in workflow
     assert "github.event_name == 'workflow_dispatch'" in workflow
     assert "live model promotion are separate" not in workflow

@@ -83,7 +83,7 @@ def test_governance_filters_wrong_model_versions_and_uses_paired_loss(tmp_path):
                 paired_days([.04] * 7, venues=1)
             ):
                 for version, a, b in (
-                    ("prospective-logistic-shadow-v2", loss, baseline),
+                    ("prospective-logistic-persistent-v3", loss, baseline),
                     ("experimental-rogue", .8, .1),
                 ):
                     conn.execute(
@@ -112,7 +112,7 @@ def test_governance_filters_wrong_model_versions_and_uses_paired_loss(tmp_path):
                    ORDER BY evaluated_at DESC LIMIT 1"""
             ).fetchone()
         assert row["status"] == "qualified_shadow"
-        assert row["model_version"] == "prospective-logistic-shadow-v2"
+        assert row["model_version"] == "prospective-logistic-persistent-v3"
         assert row["unique_target_windows"] == 112
         assert "positive_days=7/7" in row["reason"]
         assert "day_stress_lower=" in row["reason"]

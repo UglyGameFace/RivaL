@@ -27,7 +27,7 @@ def test_restart_reuses_exact_checkpoint_without_zero_weight_rebuild(tmp_path, m
         first = module.LiveModelCheckpoints(hot).fit(rows, as_of=now)
         assert first.updates == 80
         restarted = module.LiveModelCheckpoints(hot)
-        monkeypatch.setattr(module, "walk_forward", lambda *a, **kw: pytest.fail("refitted saved weights"))
+        monkeypatch.setattr(restarted, "_cold_state", lambda *a, **kw: pytest.fail("rebuilt saved weights"))
         restored = restarted.fit(rows, as_of=now+timedelta(seconds=1))
         assert restored == first
         assert restarted.summary()["reused_this_process"] == 1

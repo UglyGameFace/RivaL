@@ -161,9 +161,9 @@ def live_polymarket_embed(
     valid = matching_call(board, snapshot, asset=asset, horizon=horizon)
     direction = snapshot.direction if valid else "WAIT"
     embed = discord.Embed(
-        title=f"⚡ {asset} • {horizon} min | Polymarket AI {direction}",
+        title=f"⚡ {asset} • {horizon} min | Polymarket {snapshot.kind if valid else 'AI'} {direction}",
         description=(
-            "**Experimental contract-specific AI research.** "
+            f"**Experimental contract-specific {snapshot.kind} research.** "
             "Accuracy and profitable edge are not established."
             if valid else "**No current contract-specific AI call.** "
             + (ai_status or "Waiting for verified contract inputs and available free AI.")
@@ -195,7 +195,7 @@ def live_polymarket_embed(
             if horizon == 60 else "The Chainlink reference in this event's published rules"
         ), inline=False)
     if valid:
-        embed.add_field(name="🧠 AI contract call", value=f"**{direction}** • {snapshot.thesis}", inline=False)
+        embed.add_field(name=f"🧠 {snapshot.kind} contract call", value=f"**{direction}** • {snapshot.thesis}", inline=False)
         embed.add_field(name="Call timing", value=(
             f"Issued <t:{int(snapshot.issued_at.timestamp())}:R> for this contract only. "
             "Live quotes update separately; this is not a new AI call every tick."

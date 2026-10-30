@@ -48,6 +48,7 @@ class PerpetualMarketStore:
         self._forward_schema_lock = threading.Lock()
         self._forward_schema_ready = False
         self.live_model_checkpoints = None
+        self.historical_challengers = None
 
     def initialize(self) -> None:
         if self._schema_ready:

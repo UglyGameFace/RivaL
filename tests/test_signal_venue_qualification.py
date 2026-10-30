@@ -52,7 +52,7 @@ def seed_watch(market, now, *, venue, probability):
                 probability_up,baseline_up,training_evaluated)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                venue, contract, quote, "BTC", 5, "prospective-logistic-shadow-v2",
+                venue, contract, quote, "BTC", 5, "prospective-logistic-persistent-v3",
                 opened.isoformat(), 81001,
                 (now - timedelta(seconds=30)).isoformat(),
                 (now + timedelta(seconds=120)).isoformat(),

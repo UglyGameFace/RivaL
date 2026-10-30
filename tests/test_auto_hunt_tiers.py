@@ -34,7 +34,7 @@ def _candidate(now, **replace):
         "expires": now + timedelta(minutes=4),
         "probability_up": 0.68, "bid": 81000.0, "ask": 81001.0,
         "quote_at": now, "engine": "live",
-        "model_version": "prospective-logistic-shadow-v2",
+        "model_version": "prospective-logistic-persistent-v3",
     }
     args.update(replace)
     return auto_hunt.HuntCandidate(**args)
@@ -220,7 +220,7 @@ def _signal_stub(decisions):
 def _watch_decision(now, *, is_watch=True, quote_age=0, after_bps=None):
     return {
         "asset": "BTC", "horizon_minutes": 5, "venue": "hyperliquid",
-        "engine": "live", "model_version": "prospective-logistic-shadow-v2",
+        "engine": "live", "model_version": "prospective-logistic-persistent-v3",
         "issued": now - timedelta(seconds=30),
         "target": now + timedelta(minutes=4),
         "direction": "UP", "probability": 0.68, "is_watch": is_watch,

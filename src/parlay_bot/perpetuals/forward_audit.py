@@ -7,20 +7,18 @@ Uses only model weights trained on outcomes already known at issuance.
 from __future__ import annotations
 
 import hashlib
-import itertools
 import json
 import logging
 import math
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.features import (
-    INDICATOR_BARS,
-    LOOKBACK,
-    indicator_features,
+    feature_vector,
     live_examples,
     persisted_candles,
 )
 from parlay_bot.perpetuals.fusion import utc
+from parlay_bot.perpetuals.historical_challengers import HistoricalChallengers
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS, asset_for_contract
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
@@ -30,7 +28,7 @@ from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 
 _LOG = logging.getLogger(__name__)
-MODEL = "prospective-logistic-shadow-v2"
+MODEL = "prospective-logistic-persistent-v3"
 HORIZONS = RESEARCH_HORIZONS
 MIN_PREVIOUS_EVALUATED = 20
 MAX_STREAMS_PER_CYCLE = 40
@@ -38,42 +36,7 @@ MAX_PENDING_SETTLEMENTS = 120
 
 
 def _features(candles) -> tuple[float, ...]:
-    """Match the causal feature vector in live_examples() for the last bar."""
-    window = tuple(candles[-INDICATOR_BARS:])
-    if len(window) != INDICATOR_BARS:
-        raise ValueError("not enough point-in-time candles")
-    for left, right in itertools.pairwise(window):
-        if (
-            (utc(right.opened_at) - utc(left.opened_at)).total_seconds() != 300
-            or (left.venue, left.contract, left.quote) !=
-            (right.venue, right.contract, right.quote)
-        ):
-            raise ValueError("latest feature window is not continuous")
-    recent = window[-LOOKBACK - 1:]
-    closes = [x.close_price for x in recent]
-    if any(not math.isfinite(x) or x <= 0 for x in closes):
-        raise ValueError("invalid prospective prices")
-    returns = [math.log(b / a) for a, b in itertools.pairwise(closes)]
-    avg = sum(returns) / len(returns)
-    variance = sum((v - avg) ** 2 for v in returns) / len(returns)
-    current = window[-1]
-    volume_avg = sum(x.volume_base for x in recent[:-1]) / LOOKBACK
-    return (
-        max(-5.0, min(5.0, returns[-1] * 100)),
-        max(-5.0, min(5.0, math.log(closes[-1] / closes[0]) * 100)),
-        max(0.0, min(5.0, math.sqrt(variance) * 100)),
-        max(0.0, min(5.0, (current.high_price - current.low_price)
-                         / current.close_price * 100)),
-        max(-2.0, min(2.0, math.log((current.volume_base + 1)
-                                   / (volume_avg + 1)))),
-        *indicator_features(
-            [x.close_price for x in window],
-            [x.high_price for x in window],
-            [x.low_price for x in window],
-            [x.volume_base for x in window],
-        ),
-    )
-
+    return feature_vector(candles)
 
 def _probability(weights: tuple[float, ...], features: tuple[float, ...]) -> float:
     if len(weights) != len(features) + 1:
@@ -135,6 +98,9 @@ class ForwardAccuracyMonitor:
             if self.market.live_model_checkpoints is None:
                 self.market.live_model_checkpoints = LiveModelCheckpoints(self.store)
             self.market.live_model_checkpoints.initialize()
+            if self.market.historical_challengers is None:
+                self.market.historical_challengers = HistoricalChallengers(self.store, self.market.live_model_checkpoints)
+            self.market.historical_challengers.initialize()
             self._initialize_schema()
             self.market._forward_schema_ready = True
 
@@ -453,6 +419,10 @@ class ForwardAccuracyMonitor:
                         metrics["insufficient_causal_labels"] += 1
                         continue
                     tested = self.market.live_model_checkpoints.fit(samples, as_of=stamp)
+                    tested = self.market.historical_challengers.choose(
+                        samples, features, last, horizon=horizon, now=stamp,
+                        incumbent=tested, wall_clock=now is None,
+                    )
                     if tested.evaluated < MIN_PREVIOUS_EVALUATED:
                         metrics["insufficient_training"] += 1
                         continue

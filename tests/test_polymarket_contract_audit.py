@@ -1,8 +1,8 @@
 """Contract-aligned Polymarket proof rejects exchange-candle labels and hindsight."""
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 

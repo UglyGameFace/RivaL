@@ -359,16 +359,19 @@ class RivalDiscordClient(discord.Client):
         # has priority when configured, but there is never a paid fallback.
         free_secret = settings.open_router_api_key or settings.openrouter_api_key
         google_secret = settings.gemini_api_key or settings.google_api_key
-        if self.perp_collector is None:
+        if self.perp_collector is None or settings.rival_ai_provider == "disabled":
             self.gemini_research: GeminiResearch | OpenRouterResearch | None = None
-        elif free_secret is not None:
+        elif settings.rival_ai_provider == "openrouter":
+            # No Gemini/paid fallback when a free coding model or the key
+            # is unavailable. Only explicit legacy Gemini mode can use it.
             self.gemini_research = OpenRouterResearch(
                 self.perp_collector.market,
-                api_key=free_secret.get_secret_value(),
+                api_key=(free_secret.get_secret_value()
+                         if free_secret is not None else None),
                 daily_max=settings.rival_openrouter_daily_max,
                 cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
             )
-            _LOG.info("RivaL optional AI reviewer: OpenRouter free coding models only")
+            _LOG.info("RivaL optional AI reviewer: free-only OpenRouter coding")
         else:
             self.gemini_research = GeminiResearch(
                 self.perp_collector.market,

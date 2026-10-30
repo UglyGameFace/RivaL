@@ -47,7 +47,7 @@ COINS = RESEARCH_ASSETS
 EXPLAIN = {
     "home": "Find crypto or sports research, choose private alerts, or inspect recorded results. No wagers are placed.",
     "discover": "Choose Predict Crypto for model research, Auto-Hunt for opt-in alerts, or Practice Money for simulated trades. No profits are established.",
-    "hunt": "Auto-Hunt scans genuine future-issued crypto predictions, checks the SAME venue's fresh bid/ask and forward research evidence, and sends new private notifications. It never invents a strike or places a bet. Raw model percentages are not calibrated winning odds.",
+    "hunt": "Follow Polymarket for listed share asks, not RivaL predictions. Follow model forecasts for new completed-candle forecasts. Customize Alerts to control coins, windows, side, price cap, and explicit live-trend or model-reversal notifications. Nothing places real bets.",
     "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
     "slip": "A parlay combines picks. All legs must win for the parlay to win. No real wager is placed here.",
     "crypto": "Choose a coin and timeframe. UP/DOWN is a forecast, not permission to trade. A price target is a number to watch, not a predicted certainty.",
@@ -331,15 +331,19 @@ class GuidedHome(discord.ui.View):
         elif p in ("crypto", "forecast", "quote"):
             self.add_item(_Coin(self.coin))
             self.add_item(_Horizon(self.horizon))
-            self._add("Get Signal", "forecast", 2, "🎯", True)
+            self._add(
+                "Refresh Prediction" if p == "forecast" else "Get Signal",
+                "forecast", 2, "🔄" if p == "forecast" else "🎯", True,
+            )
             self._add("Follow in DM", "follow", 2, "🔔")
             self._add("Auto-Hunt", "hunt", 2, "🔔")
             self._add("See Buy/Sell Prices", "quote", 3, "💱")
             self._add("Stop My Alerts", "stop", 3, "🔕")
         elif p == "hunt":
-            self._add("Follow Polymarket", "hunt-poly", 0, "📊", True)
-            self._add("Follow RivaL Forecasts", "hunt-on", 1, "📈")
-            self._add("Stop Auto-Hunt", "hunt-off", 2, "🔕")
+            self._add("Enable Polymarket Alerts", "hunt-poly", 0, "📊", True)
+            self._add("Enable Model Forecast Alerts", "hunt-on", 0, "📈")
+            self._add("Customize Alerts", "hunt-config", 1, "⚙️", True)
+            self._add("Stop All Alerts", "hunt-off", 2, "🔕")
             self._add("Check Status", "hunt-status", 2, "🔎")
             self._add("Research alerts", "hunt-research", 3, "🔔")
             self._add("Qualified alerts", "hunt-qualified", 3, "✅")
@@ -428,14 +432,17 @@ class GuidedHome(discord.ui.View):
                 title="🔔 Auto-Hunt | Find Research Opportunities",
                 description=(
                     "**" + status + "**\n\n"
-                    "Choose what to follow for BTC, ETH and SOL, "
-                    "across 5-minute and 15-minute windows:\n\n"
-                    "**Follow Polymarket**: actual listed Up/Down event windows, "
-                    "with read-only live market ask prices and direct event links. "
-                    "These are market alerts, NOT RivaL model predictions. "
-                    "The international Polymarket market feed is separate from "
-                    "Polymarket US; access may differ by location.\n\n"
-                    "**Follow RivaL Forecasts**: new genuine model direction "
+                    "**Enable Polymarket Alerts** receives fresh listed "
+                    "Up/Down market quotes, NOT predictions. "
+                    "**Enable Model Forecast Alerts** receives genuine new "
+                    "model forecasts, NOT guaranteed bets.\n\n"
+                    "Press **Customize Alerts** to choose coins, 5m/15m "
+                    "windows, Polymarket Up/Down side, maximum share ask, "
+                    "time remaining, and independent live-trend/model-reversal "
+                    "notifications. All changes are private to you.\n\n"
+                    "The global Polymarket market feed differs from "
+                    "Polymarket US; access depends on your location.\n\n"
+                    "**RivaL model forecasts**: new genuine model direction "
                     "predictions even when future profitability is unproven.\n\n"
                     "Switch anytime. You do not need to type a target.\n"
                     "**No automated real-money bets, guaranteed winning odds, "
@@ -1056,6 +1063,24 @@ class GuidedHome(discord.ui.View):
         if action in ("zip", "state", "target", "funds"):
             await interaction.response.send_modal(_Entry(self, action))
             return
+        if action == "hunt-config":
+            if self.auto_hunt is None:
+                await interaction.response.send_message(
+                    "Auto-Hunt is unavailable.", ephemeral=True,
+                )
+                return
+            from parlay_bot.discord_app.hunt_settings import HuntSettingsView
+
+            prefs = await asyncio.to_thread(
+                self.auto_hunt.store.preferences, str(self.owner_id),
+            )
+            settings_view = HuntSettingsView(
+                self.owner_id, self.auto_hunt, prefs,
+            )
+            await interaction.response.send_message(
+                settings_view.render(), ephemeral=True, view=settings_view,
+            )
+            return
         if action == "api-limits":
             application = await interaction.client.application_info()
             owner = application.owner
@@ -1360,7 +1385,7 @@ _STALE_BUTTONS_A = (
 _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",
     "feeds", "research", "api-limits", "hunt-on",
-    "hunt-off", "hunt-status", "explain",
+    "hunt-off", "hunt-status", "hunt-config", "explain",
 )
 
 

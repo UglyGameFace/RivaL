@@ -858,6 +858,115 @@ async def qualified_watches(
     return sorted(picks, key=lambda c: (-c.strength, c.expires, c.asset))
 
 
+
+def confirmed_direction_change(latest: HuntCandidate, previous: HuntCandidate,
+                               *, now: datetime) -> bool:
+    """True only for opposite strong models on distinct future candle windows."""
+    if (
+        latest.asset != previous.asset
+        or latest.horizon != previous.horizon
+        or latest.engine != previous.engine
+        or not previous.issued < latest.issued <= now
+        or previous.expires >= latest.expires
+        or latest.issued - previous.issued > FLIP_MAX_PREVIOUS_AGE
+        or now - latest.issued > FORECAST_ALERT_MAX_AGE
+        or latest.expires - now < MIN_REMAINING
+    ):
+        return False
+    before, after = previous.probability_up, latest.probability_up
+    if not all(math.isfinite(p) and 0 < p < 1 for p in (before, after)):
+        return False
+    return (before <= FLIP_DOWN and after >= FLIP_UP) or (
+        before >= FLIP_UP and after <= FLIP_DOWN
+    )
+
+
+async def direction_change_watches(market, *,
+                                    now: datetime | None = None) -> list[HuntCandidate]:
+    """Read newly issued prospective forecasts, not tick-level prices."""
+    if market is None:
+        return []
+    from dataclasses import replace
+
+    stamp = (now or datetime.now(UTC)).astimezone(UTC)
+
+    async def scan(asset: str) -> list[HuntCandidate]:
+        findings = []
+        for horizon in HORIZONS:
+            try:
+                engine = await asyncio.to_thread(
+                    promoted_engine, market.store, asset=asset,
+                    horizon=horizon, now=stamp,
+                )
+                reader = recent_multi_watches if engine == "multi" else recent_watches
+                watches = await asyncio.to_thread(
+                    reader, market, asset=asset, now=stamp,
+                    limit=40, dedupe_horizons=False,
+                )
+                seen: set[datetime] = set()
+                distinct = []
+                for row in sorted(watches, key=lambda x: x["issued"], reverse=True):
+                    if int(row["horizon_minutes"]) != horizon:
+                        continue
+                    if row["target"] in seen:
+                        continue
+                    seen.add(row["target"])
+                    distinct.append(HuntCandidate(
+                        asset=asset, horizon=horizon, venue=str(row["venue"]),
+                        issued=row["issued"],
+                        expires=row["target"] + timedelta(minutes=5),
+                        probability_up=float(row["probability_up"]),
+                        bid=None, ask=None, quote_at=None, engine=engine,
+                        model_version=str(row.get("model_version", "live")),
+                    ))
+                    if len(distinct) == 2:
+                        break
+                if len(distinct) == 2 and confirmed_direction_change(
+                    distinct[0], distinct[1], now=stamp,
+                ):
+                    findings.append(replace(
+                        distinct[0],
+                        previous_probability=distinct[1].probability_up,
+                        previous_issued=distinct[1].issued,
+                    ))
+            except Exception:  # noqa: BLE001
+                _LOG.exception(
+                    "Direction-change watch failed asset=%s horizon=%s",
+                    asset, horizon,
+                )
+        return findings
+
+    result = await asyncio.gather(
+        *(scan(asset) for asset in ASSETS), return_exceptions=True,
+    )
+    findings = []
+    for item in result:
+        if isinstance(item, asyncio.CancelledError):
+            raise item
+        if isinstance(item, list):
+            findings.extend(item)
+    return findings
+
+
+def candidate_allowed(candidate, preferences: dict, *, now: datetime) -> bool:
+    """Apply explicit per-person filters before DB claim or DM send."""
+    if (candidate.asset not in preferences["assets"]
+        or candidate.horizon not in preferences["horizons"]):
+        return False
+    if isinstance(candidate, PolymarketNotice):
+        if (candidate.expires - now).total_seconds() < preferences[
+            "min_remaining_seconds"
+        ]:
+            return False
+        ceiling = preferences["max_ask_pct"] / 100
+        side = preferences["side"]
+        return (
+            (side in ("both", "up") and candidate.up_ask <= ceiling)
+            or (side in ("both", "down") and candidate.down_ask <= ceiling)
+        )
+    return True
+
+
 def hunt_embed(
     candidate: HuntCandidate | PolymarketNotice, *, observed_at: datetime,
     tier: str | None = None,
@@ -890,6 +999,26 @@ def hunt_embed(
         embed.set_footer(text="Read-only global Polymarket data • /rival-stop")
         return embed
     seconds = max(0, int((candidate.expires - observed_at).total_seconds()))
+    if tier == "flip" and candidate.previous_probability is not None:
+        old = "UP" if candidate.previous_probability > 0.5 else "DOWN"
+        embed = discord.Embed(
+            title=f"🔄 RivaL direction changed • {candidate.asset} {candidate.horizon}m",
+            description=(
+                f"Earlier model issue: **{old}** "
+                f"({candidate.previous_probability:.1%} raw UP score).\\n"
+                f"Newest model issue: **{candidate.direction}** "
+                f"({candidate.probability_up:.1%} raw UP score).\\n"
+                f"New issue <t:{int(candidate.issued.timestamp())}:R> • "
+                f"Expires <t:{int(candidate.expires.timestamp())}:R>.\\n\\n"
+                "Two real forecasts on distinct 5-minute reference windows "
+                "crossed opposite sides of a confidence buffer. Not an "
+                "intrabar recalculation, calibrated win probability, or "
+                "profitable trading opportunity. No order placed."
+            ),
+            color=discord.Color.orange(),
+        )
+        embed.set_footer(text="Opt-in model reversal research • /rival-stop")
+        return embed
     if tier == "qualified" and candidate.screened:
         # Historic perpetual simulation is not contract-specific bet EV.
         edge = candidate.after_cost_bps

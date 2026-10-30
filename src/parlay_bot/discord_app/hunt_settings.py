@@ -113,7 +113,7 @@ class HuntSettingsView(discord.ui.View):
                 f"Maximum ask: **{self.prefs['max_ask_pct']}%** • "
                 f"Time remaining: **{self.prefs['min_remaining_seconds']}s**\n"
                 f"Daily limit per alert type: **"
-                f"{self.prefs['daily_limit'] or 'Unlimited'}**\n\\n"
+                f"{self.prefs['daily_limit'] or 'Unlimited'}**\n\n"
                 "Polymarket has listed BTC/ETH/SOL 5m/15m markets; XRP requires its own live market feed. "
                 "The max ask is a PRICE filter (not a probability "
                 "estimate); it does not establish profitable odds. "

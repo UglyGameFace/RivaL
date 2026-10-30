@@ -286,6 +286,9 @@ class GuidedHome(discord.ui.View):
         self.slip = None
         self.note: str | None = None
         self._redraw_lock = asyncio.Lock()
+        # Shared across rendered generations to prevent a slow old forecast
+        # from overwriting a newer coin selection or Home navigation.
+        self._render_revision = {"value": 0}
         self._buttons()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -423,11 +426,16 @@ class GuidedHome(discord.ui.View):
                 color=discord.Color.blurple(),
             )
         elif p == "hunt":
-            status = (
-                await self.auto_hunt.status(self.owner_id)
-                if self.auto_hunt is not None else
-                "Unavailable until market collection is configured"
-            )
+            try:
+                status = (
+                    await asyncio.wait_for(
+                        self.auto_hunt.status(self.owner_id), timeout=1.2,
+                    )
+                    if self.auto_hunt is not None else
+                    "Unavailable until market collection is configured"
+                )
+            except (TimeoutError, Exception):  # noqa: BLE001
+                status = "Alert status is busy; your preferences were not changed."
             embed = discord.Embed(
                 title="🔔 Auto-Hunt | Find Research Opportunities",
                 description=(
@@ -967,12 +975,77 @@ class GuidedHome(discord.ui.View):
         view.slip = self.slip
         view.note = self.note
         view._redraw_lock = self._redraw_lock
+        view._render_revision = self._render_revision
         view._buttons()  # only the new, never-registered view is cleared
         return view
 
     async def redraw(self, interaction: discord.Interaction) -> None:
         async with self._redraw_lock:
+            self._render_revision["value"] += 1
+            revision = self._render_revision["value"]
+            # Acknowledge a real Discord request quickly with a truthful
+            # loading view. Slow market checks never hold the button handler
+            # or block navigation; only the last generation can replace it.
+            if self.page == "forecast" and isinstance(
+                interaction, discord.Interaction,
+            ):
+                loading = discord.Embed(
+                    title=f"🔄 Checking {self.coin} {self.horizon}m",
+                    description=(
+                        "Checking newly issued model forecasts, matching live "
+                        "quotes, and real forward evidence. The previous "
+                        "forecast is not automatically a new trade."
+                    ),
+                    color=discord.Color.blurple(),
+                )
+                try:
+                    await asyncio.wait_for(
+                        interaction.edit_original_response(
+                            embed=loading, view=self._display_generation(),
+                        ), timeout=4,
+                    )
+                except (TimeoutError, discord.HTTPException):
+                    _LOG.warning("Fast forecast loading edit failed")
+                    return
+                asyncio.create_task(
+                    self._finish_forecast(interaction, revision),
+                    name="rival-forecast-details",
+                )
+                return
             await self._redraw_locked(interaction)
+
+    async def _finish_forecast(
+        self, interaction: discord.Interaction, revision: int,
+    ) -> None:
+        try:
+            embed = await asyncio.wait_for(self.render(), timeout=9)
+        except TimeoutError:
+            embed = discord.Embed(
+                title="⏳ Market research still unavailable",
+                description=(
+                    "The live model and venue-matched book did not finish "
+                    "checking in time. No new verified signal. "
+                    "Press Refresh Prediction to try again."
+                ), color=discord.Color.orange(),
+            )
+        except Exception:  # noqa: BLE001
+            _LOG.exception("Background forecast render failed")
+            embed = discord.Embed(
+                title="⏳ Prediction unavailable",
+                description="Couldn't verify live evidence. No trade inferred.",
+                color=discord.Color.orange(),
+            )
+        async with self._redraw_lock:
+            if self._render_revision["value"] != revision:
+                return
+            try:
+                await asyncio.wait_for(
+                    interaction.edit_original_response(
+                        embed=embed, view=self._display_generation(),
+                    ), timeout=4,
+                )
+            except (discord.HTTPException, TimeoutError):
+                _LOG.warning("Background forecast display update failed")
 
     async def _redraw_locked(
         self, interaction: discord.Interaction, *,

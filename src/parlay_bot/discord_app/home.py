@@ -143,6 +143,70 @@ class _Entry(discord.ui.Modal):
         await self.home.submit(interaction, self.kind, str(self.value_input.value))
 
 
+def _parlay_diagnostics_text(diagnostics: dict[str, int]) -> str:
+    """Plain-language summary of why the last slip build returned PASS.
+
+    Only nonzero gates are listed, most informative first. An empty string
+    means the counters name no gate, in which case the UI shows no field
+    rather than a made-up reason.
+    """
+    if diagnostics.get("rows_seen", 0) == 0:
+        return "No fresh eligible prices were found."
+    labels = (
+        ("below_advertised_edge", "below the 2% advertised-edge screen"),
+        ("insufficient_reference_books", "lacked 2 reference books"),
+        ("negative_edge", "negative edge"),
+        ("below_minimum_probability", "below the minimum probability"),
+        ("books_short_of_legs", "sportsbooks short of enough independent fixtures"),
+        ("duplicate_fixture_skips", "duplicate-fixture legs skipped"),
+        ("single_outcome_groups", "markets with only one outcome side"),
+        ("invalid_probability", "markets with unusable prices"),
+        ("duplicate_vectors", "duplicate price sets skipped"),
+    )
+    parts = [
+        f"{diagnostics[key]} {label}"
+        for key, label in labels
+        if diagnostics.get(key, 0) > 0
+    ]
+    return " • ".join(parts)
+
+
+def _latest_forward_cycle(market: object) -> dict | None:
+    """Latest forward-cycle row, or None when it cannot be read.
+
+    Runs in a worker thread: the store connection is synchronous. Positional
+    row access keeps this valid for both the SQLite and Postgres stores.
+    """
+    try:
+        with market.connect() as conn:
+            row = conn.execute(
+                "SELECT checked_at, issued_forecasts, target_expired "
+                "FROM perp_forward_cycle_diagnostics "
+                "ORDER BY checked_at DESC LIMIT 1"
+            ).fetchone()
+    except Exception:  # noqa: BLE001 - health display must never break the menu
+        return None
+    if row is None:
+        return None
+    checked = row[0]
+    if isinstance(checked, str):
+        try:
+            checked = datetime.fromisoformat(checked)
+        except ValueError:
+            return None
+    if not isinstance(checked, datetime) or checked.tzinfo is None:
+        if isinstance(checked, datetime):
+            checked = checked.replace(tzinfo=UTC)
+        else:
+            return None
+    try:
+        issued = int(row[1] or 0)
+        expired = int(row[2] or 0)
+    except (TypeError, ValueError):
+        return None
+    return {"checked_at": checked, "issued": issued, "expired": expired}
+
+
 class GuidedHome(discord.ui.View):
     """One private menu; real actions are wired to existing authoritative services."""
 
@@ -353,6 +417,24 @@ class GuidedHome(discord.ui.View):
                         name="Odds status", value="Refresh status unavailable",
                         inline=False,
                     )
+                notice_getter = getattr(self.collector, "_last_notice", None)
+                if callable(notice_getter):
+                    try:
+                        notice = await asyncio.wait_for(
+                            asyncio.to_thread(notice_getter),
+                            timeout=2,
+                        )
+                    except TimeoutError:
+                        notice = None
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("Sports pause notice unavailable")
+                        notice = None
+                    if notice:
+                        embed.add_field(
+                            name="Sports collection paused",
+                            value=str(notice)[:200],
+                            inline=False,
+                        )
         elif p == "slip":
             if self.slip is None:
                 embed = discord.Embed(
@@ -360,6 +442,16 @@ class GuidedHome(discord.ui.View):
                     description="PASS: No qualifying available prices. No wager made.",
                     color=discord.Color.orange(),
                 )
+                diagnostics = (
+                    getattr(self.builder, "last_diagnostics", None)
+                    if self.builder is not None else None
+                )
+                if diagnostics:
+                    reason = _parlay_diagnostics_text(diagnostics)
+                    if reason:
+                        embed.add_field(
+                            name="Why PASS", value=reason, inline=False,
+                        )
             else:
                 embed = parlay_embed(self.slip)
                 embed.title = "🎟️ Your Sports Slip"
@@ -563,6 +655,79 @@ class GuidedHome(discord.ui.View):
                     )
                     if healthy:
                         embed.color = discord.Color.blurple()
+                    try:
+                        health_lines: list[str] = []
+                        successes: list[datetime] = []
+                        for r in rows:
+                            if r.get("status") != "ok" or not r.get("last_success_at"):
+                                continue
+                            try:
+                                successes.append(datetime.fromisoformat(
+                                    str(r["last_success_at"])
+                                ).astimezone(UTC))
+                            except (ValueError, TypeError):
+                                continue
+                        if successes:
+                            age = max(0, int((now - max(successes)).total_seconds() // 60))
+                            verdict = "fresh" if age <= 15 else "stale"
+                            health_lines.append(
+                                f"Crypto ingestion: {verdict} ({age} min ago)"
+                            )
+                        else:
+                            health_lines.append(
+                                "Crypto ingestion: no successful ingestion recorded"
+                            )
+                        cycle = await asyncio.to_thread(
+                            _latest_forward_cycle, self.market,
+                        )
+                        if cycle is None:
+                            health_lines.append("Forecast cycle: no cycle recorded yet")
+                        else:
+                            age = max(0, int(
+                                (now - cycle["checked_at"]).total_seconds() // 60
+                            ))
+                            verdict = "fresh" if age <= 10 else "stale"
+                            health_lines.append(
+                                f"Forecast cycle: {verdict} — "
+                                f"{cycle['issued']} issued, "
+                                f"{cycle['expired']} expired ({age} min ago)"
+                            )
+                        if self.collector is not None:
+                            last = await asyncio.to_thread(
+                                self.collector._last_refresh,
+                            )
+                            if last is None:
+                                health_lines.append(
+                                    "Sports refresh: no completed refresh yet"
+                                )
+                            else:
+                                age = max(0, int(
+                                    (now - last).total_seconds() // 60
+                                ))
+                                interval = getattr(
+                                    self.collector, "refresh_interval",
+                                    timedelta(minutes=30),
+                                )
+                                verdict = (
+                                    "fresh" if timedelta(minutes=age) <= interval
+                                    else "update due"
+                                )
+                                health_lines.append(
+                                    f"Sports refresh: {verdict} ({age} min ago)"
+                                )
+                        if health_lines:
+                            embed.add_field(
+                                name="System health",
+                                value="\n".join(health_lines),
+                                inline=False,
+                            )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("RivaL system health unavailable")
+                        embed.add_field(
+                            name="System health",
+                            value="Health details unavailable.",
+                            inline=False,
+                        )
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL beginner exchange freshness unavailable")
                     embed.add_field(

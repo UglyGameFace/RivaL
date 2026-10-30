@@ -13,6 +13,7 @@ from parlay_bot.research.sports_results import SportsResultStore
 from parlay_bot.storage.hot import RelationalHotStore
 
 _STATE_KEY = "sportsgameodds:last_successful_refresh"
+_NOTICE_KEY = "sportsgameodds:last_refresh_notice"
 _LOG = logging.getLogger(__name__)
 
 
@@ -86,6 +87,18 @@ class CurrentBoardCollector:
             return None
         return parsed.astimezone(UTC)
 
+    def _last_notice(self) -> str | None:
+        """The last persisted refresh failure note, if any.
+
+        A quota-reserve pause is the case that matters: it survives restarts
+        until a later refresh succeeds, so the sports page can name the
+        reason instead of only showing a stale "last checked" age.
+        """
+        raw = self.store.get_runtime_state(_NOTICE_KEY)
+        if raw is None or not raw.strip():
+            return None
+        return raw
+
     def is_due(self, *, now: datetime | None = None) -> bool:
         current = (now or datetime.now(UTC)).astimezone(UTC)
         last = self._last_refresh()
@@ -128,6 +141,9 @@ class CurrentBoardCollector:
                     )
                 except QuotaReserveReached as exc:
                     _LOG.warning("RivaL sports collection paused by provider quota reserve: %s", exc)
+                    await asyncio.to_thread(
+                        self.store.set_runtime_state, _NOTICE_KEY, str(exc),
+                    )
                     return CurrentRefreshResult(
                         refreshed=False,
                         events_seen=events_seen,
@@ -172,6 +188,8 @@ class CurrentBoardCollector:
 
             now = datetime.now(UTC)
             await asyncio.to_thread(self.store.set_runtime_state, _STATE_KEY, now.isoformat())
+            # A completed refresh clears any earlier pause note.
+            await asyncio.to_thread(self.store.set_runtime_state, _NOTICE_KEY, "")
 
             return CurrentRefreshResult(
                 refreshed=True,

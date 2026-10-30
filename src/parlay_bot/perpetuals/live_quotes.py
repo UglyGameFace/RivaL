@@ -146,6 +146,110 @@ def parse_hyperliquid_reference(
     return reference
 
 
+# Verified live top-of-book sources beyond Hyperliquid/Binance. Symbols are
+# the venues' own USDT-perp contracts, already used by the candle collectors
+# (OKX "{asset}-USDT-SWAP", Bitget "{asset}USDT" USDT-FUTURES). A forecast's
+# book must still come from its OWN venue; these adapters widen which venues
+# can supply one, they never substitute another venue's price.
+VENUE_BOOK_SYMBOLS: dict[str, dict[str, str]] = {
+    "okx": {asset: f"{asset}-USDT-SWAP" for asset in ASSETS},
+    "bitget": {asset: f"{asset}USDT" for asset in ASSETS},
+}
+VENUE_BOOK_BASE_URLS: dict[str, str] = {
+    "okx": "https://www.okx.com",
+    "bitget": "https://api.bitget.com",
+}
+
+
+@dataclass(frozen=True)
+class VenueBookQuote:
+    """Top of book from a venue other than Binance/Hyperliquid.
+
+    Same validation bounds as BookQuote (spread, freshness, quantities);
+    the symbol check is venue-aware instead of Binance-hardcoded.
+    """
+
+    asset: str
+    venue: str
+    symbol: str
+    bid: float
+    bid_quantity: float
+    ask: float
+    ask_quantity: float
+    exchange_at: datetime
+    received_at: datetime
+
+    @property
+    def spread_bps(self) -> float:
+        return (self.ask - self.bid) / ((self.ask + self.bid) / 2) * 10000
+
+    def validate(self, *, now: datetime) -> None:
+        expected = VENUE_BOOK_SYMBOLS.get(self.venue, {}).get(self.asset)
+        if expected is None or self.symbol != expected:
+            raise QuoteUnavailable("Wrong exchange instrument.")
+        if self.exchange_at.utcoffset() is None or self.received_at.utcoffset() is None:
+            raise QuoteUnavailable("Missing exchange timestamp.")
+        if any(not math.isfinite(v) or v <= 0 for v in (
+            self.bid, self.ask, self.bid_quantity, self.ask_quantity,
+        )):
+            raise QuoteUnavailable("Invalid bid/ask or top-of-book liquidity.")
+        if self.ask <= self.bid or self.spread_bps > 200:
+            raise QuoteUnavailable("Crossed or implausibly wide order book.")
+        if not timedelta(0) <= now - self.exchange_at <= MAX_QUOTE_AGE:
+            raise QuoteUnavailable("Exchange quote is stale or from the future.")
+        if not timedelta(0) <= now - self.received_at <= MAX_QUOTE_AGE:
+            raise QuoteUnavailable("Local quote receipt is stale or from the future.")
+
+
+def _parse_venue_ticker(
+    payload: Any, *, asset: str, venue: str, received_at: datetime,
+) -> VenueBookQuote:
+    if asset not in ASSETS or venue not in VENUE_BOOK_SYMBOLS:
+        raise QuoteUnavailable("Unsupported asset or venue.")
+    if not isinstance(payload, dict):
+        raise QuoteUnavailable("Malformed exchange response.")
+    if venue == "okx" and payload.get("code") != "0":
+        raise QuoteUnavailable("OKX ticker request rejected.")
+    if venue == "bitget" and payload.get("code") != "00000":
+        raise QuoteUnavailable("Bitget ticker request rejected.")
+    data = payload.get("data")
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        raise QuoteUnavailable("Empty ticker response.")
+    row = data[0]
+    symbol_key = "instId" if venue == "okx" else "symbol"
+    try:
+        milliseconds = row["ts"]
+        if isinstance(milliseconds, str):
+            milliseconds = int(milliseconds)
+        if type(milliseconds) is not int or milliseconds <= 0:
+            raise ValueError("invalid timestamp")
+        quote = VenueBookQuote(
+            asset=asset, venue=venue, symbol=str(row[symbol_key]),
+            bid=float(row["bidPx"]), bid_quantity=float(row["bidSz"]),
+            ask=float(row["askPx"]), ask_quantity=float(row["askSz"]),
+            exchange_at=datetime.fromtimestamp(milliseconds / 1000, tz=UTC),
+            received_at=received_at,
+        )
+        quote.validate(now=received_at)
+    except (ValueError, TypeError, KeyError, OverflowError) as exc:
+        raise QuoteUnavailable("Invalid top-of-book response.") from exc
+    return quote
+
+
+def parse_okx_ticker(
+    payload: Any, *, asset: str, received_at: datetime,
+) -> VenueBookQuote:
+    """OKX /api/v5/market/ticker row for a USDT-SWAP contract."""
+    return _parse_venue_ticker(payload, asset=asset, venue="okx", received_at=received_at)
+
+
+def parse_bitget_ticker(
+    payload: Any, *, asset: str, received_at: datetime,
+) -> VenueBookQuote:
+    """Bitget /api/v2/mix/market/ticker row for a USDT-FUTURES contract."""
+    return _parse_venue_ticker(payload, asset=asset, venue="bitget", received_at=received_at)
+
+
 class PublicBestQuoteClient:
     """Bounded shared REST snapshot; no API keys, wallet or order endpoint."""
 
@@ -153,6 +257,7 @@ class PublicBestQuoteClient:
         self, *, client: httpx.AsyncClient | None = None,
         base_url: str = "https://fapi.binance.com",
         reference_client: httpx.AsyncClient | None = None,
+        venue_clients: dict[str, httpx.AsyncClient] | None = None,
     ) -> None:
         self._owns = client is None
         self.client = client or httpx.AsyncClient(
@@ -169,12 +274,25 @@ class PublicBestQuoteClient:
         self._reference_blocked_until = 0.0
         self._reference_lock = asyncio.Lock()
         self.stream_hub: StreamingBookHub | None = None
+        # Additional venue books (OKX, Bitget). Clients passed in are owned
+        # by the caller, like the Binance/reference clients above.
+        self._venue_clients: dict[str, httpx.AsyncClient] = dict(venue_clients or {})
+        self._owns_venue_clients = set(VENUE_BOOK_SYMBOLS) - set(self._venue_clients)
+        self._venue_cache: dict[tuple[str, str], tuple[float, VenueBookQuote]] = {}
+        self._venue_blocked_until: dict[str, float] = {}
+        self._venue_locks: dict[str, asyncio.Lock] = {
+            venue: asyncio.Lock() for venue in VENUE_BOOK_SYMBOLS
+        }
 
     async def aclose(self) -> None:
         if self._owns:
             await self.client.aclose()
         if self._owns_reference and self._reference_client is not None:
             await self._reference_client.aclose()
+        for venue in self._owns_venue_clients:
+            venue_client = self._venue_clients.get(venue)
+            if venue_client is not None:
+                await venue_client.aclose()
 
     async def get(self, asset: str) -> BookQuote:
         if asset not in ASSETS:
@@ -267,6 +385,62 @@ class PublicBestQuoteClient:
                 ) from exc
             self._reference_cache[asset] = (time.monotonic(), value)
             return value
+
+    async def get_venue(self, asset: str, venue: str) -> VenueBookQuote:
+        """Top of book for an OKX or Bitget forecast's own venue.
+
+        Same bounds as the Binance path: 3s cache, per-venue block on
+        401/403/451 (1h) or 429 (60s), fail-closed QuoteUnavailable. A
+        malformed or mismatched book never degrades into another venue's
+        price; the caller falls back to its WAIT verdict.
+        """
+        if asset not in ASSETS or venue not in VENUE_BOOK_SYMBOLS:
+            raise QuoteUnavailable("Only BTC, ETH and SOL venue books supported.")
+        symbol = VENUE_BOOK_SYMBOLS[venue][asset]
+        async with self._venue_locks[venue]:
+            clock = time.monotonic()
+            if clock < self._venue_blocked_until.get(venue, 0.0):
+                raise QuoteUnavailable("Venue temporarily blocked or rate limited.")
+            cached = self._venue_cache.get((venue, asset))
+            now = datetime.now(UTC)
+            if cached is not None and clock - cached[0] <= CACHE_SECONDS:
+                try:
+                    cached[1].validate(now=now)
+                    return cached[1]
+                except QuoteUnavailable:
+                    self._venue_cache.pop((venue, asset), None)
+            try:
+                venue_client = self._venue_clients.get(venue)
+                if venue_client is None:
+                    venue_client = httpx.AsyncClient(
+                        base_url=VENUE_BOOK_BASE_URLS[venue],
+                        timeout=httpx.Timeout(5.0),
+                    )
+                    self._venue_clients[venue] = venue_client
+                if venue == "okx":
+                    path, params = "/api/v5/market/ticker", {"instId": symbol}
+                    parser = parse_okx_ticker
+                else:
+                    path = "/api/v2/mix/market/ticker"
+                    params = {"symbol": symbol, "productType": "USDT-FUTURES"}
+                    parser = parse_bitget_ticker
+                resp = await venue_client.get(path, params=params)
+                if resp.status_code in (401, 403, 451):
+                    self._venue_blocked_until[venue] = clock + BLOCK_SECONDS
+                    raise QuoteUnavailable("Venue quotes unavailable in this region/account.")
+                if resp.status_code == 429:
+                    self._venue_blocked_until[venue] = clock + 60
+                    raise QuoteUnavailable("Venue public quote API rate limited.")
+                resp.raise_for_status()
+                quote = parser(resp.json(), asset=asset, received_at=datetime.now(UTC))
+            except QuoteUnavailable:
+                raise
+            except (httpx.HTTPError, ValueError, TypeError) as exc:
+                raise QuoteUnavailable(
+                    "Live executable bid/ask could not be verified."
+                ) from exc
+            self._venue_cache[(venue, asset)] = (time.monotonic(), quote)
+            return quote
 
 
 def quote_cost_preview(

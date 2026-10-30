@@ -21,6 +21,7 @@ from parlay_bot.perpetuals.live_quotes import (
     PerpReferenceBook,
     PublicBestQuoteClient,
     QuoteUnavailable,
+    VenueBookQuote,
 )
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
@@ -53,11 +54,13 @@ def _no_signal(asset: str, horizon: int, reason: str) -> discord.Embed:
 
 async def _venue_book(
     quotes: PublicBestQuoteClient, *, asset: str, venue: str,
-) -> BookQuote | PerpReferenceBook:
+) -> BookQuote | PerpReferenceBook | VenueBookQuote:
     if venue == "binance":
         return await quotes.get(asset)
     if venue == "hyperliquid":
         return await quotes.get_reference(asset)
+    if venue in ("okx", "bitget"):
+        return await quotes.get_venue(asset, venue)
     raise QuoteUnavailable("No verified live order-book source for this venue.")
 
 
@@ -128,8 +131,9 @@ async def signal_embed(
     # The venues are raced, not tried one after another: a slow first venue
     # used to consume the whole signal budget before the fallback was even
     # tried, which produced SIGNAL DELAYED on otherwise healthy markets.
-    # Priority is still Hyperliquid first, then Binance, among the books
-    # that actually validate. At most one quote request per supported venue.
+    # Priority is still Hyperliquid first, then Binance, then OKX, then
+    # Bitget, among the books that actually validate. At most one quote
+    # request per supported venue.
     # The book fetch runs concurrently with the independent forward-evidence
     # lookups below instead of before them, so a slow database no longer
     # stretches every tap by its own round trip.
@@ -137,17 +141,19 @@ async def signal_embed(
         live,
         key=lambda row: (
             0 if row["venue"] == "hyperliquid" else
-            1 if row["venue"] == "binance" else 2,
+            1 if row["venue"] == "binance" else
+            2 if row["venue"] == "okx" else
+            3 if row["venue"] == "bitget" else 4,
             -row["issued"].timestamp(),
         ),
     )
 
-    async def _pick_book() -> tuple[dict, BookQuote | PerpReferenceBook | None]:
+    async def _pick_book() -> tuple[dict, BookQuote | PerpReferenceBook | VenueBookQuote | None]:
         candidates: list[tuple[str, dict]] = []
         seen_venues: set[str] = set()
         for watch in prioritized:
             venue = watch["venue"]
-            if venue in ("hyperliquid", "binance") and venue not in seen_venues:
+            if venue in ("hyperliquid", "binance", "okx", "bitget") and venue not in seen_venues:
                 seen_venues.add(venue)
                 candidates.append((venue, watch))
         if not candidates:
@@ -159,7 +165,7 @@ async def signal_embed(
             return_exceptions=True,
         )
         marks["book_ms"] = (time.monotonic() - started) * 1000
-        validated: dict[str, tuple[dict, BookQuote | PerpReferenceBook]] = {}
+        validated: dict[str, tuple[dict, BookQuote | PerpReferenceBook | VenueBookQuote]] = {}
         for (venue, watch), outcome in zip(candidates, outcomes):
             if isinstance(outcome, Exception):
                 continue
@@ -168,7 +174,7 @@ async def signal_embed(
             except QuoteUnavailable:
                 continue
             validated[venue] = (watch, outcome)
-        for venue in ("hyperliquid", "binance"):
+        for venue in ("hyperliquid", "binance", "okx", "bitget"):
             if venue in validated:
                 return validated[venue]
         return prioritized[0], None
@@ -263,9 +269,14 @@ async def signal_embed(
         inline=False,
     )
     if book is not None:
-        quote_label = (
-            "Binance USD-M USDT contract" if chosen["venue"] == "binance"
-            else "Hyperliquid USD-perp reference"
+        quote_labels = {
+            "binance": "Binance USD-M USDT contract",
+            "hyperliquid": "Hyperliquid USD-perp reference",
+            "okx": "OKX USDT-SWAP contract",
+            "bitget": "Bitget USDT-FUTURES contract",
+        }
+        quote_label = quote_labels.get(
+            chosen["venue"], f"{chosen['venue']} contract",
         )
         embed.add_field(
             name="Fresh matching-market bid / ask",

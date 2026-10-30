@@ -505,7 +505,7 @@ def test_every_legacy_tool_is_grouped_without_duplicate_global_commands(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
+async def test_live_mode_and_retired_shift_toggles_do_not_restart_spam(tmp_path):
     bot = _client(tmp_path)
     home = _home(bot)
     service = SimpleNamespace(
@@ -533,21 +533,14 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
         await home.act(interaction, "hunt")
         settings = interaction.edit_original_response.await_args.kwargs["view"]
         assert {"Track Crypto", "Watch Forecast", "Stop All"}.issubset(set(_labels(settings)))
+        assert "Changes ON" not in _labels(settings)
+        assert "Changes OFF" not in _labels(settings)
+        # Old live-shift buttons cannot reactivate notifications after retirement.
         await home.act(interaction, "live-on")
-        service.update_preference.assert_awaited_once_with(
-            home.owner_id, "live_shifts", 1,
-        )
-        assert "enabled" in home.note
-        assert home.page == "hunt"
-        service.update_preference.reset_mock()
-        service.update_preference.return_value = {
-            "assets": ("BTC", "ETH"), "daily_limit": 0, "live_shifts": False,
-        }
+        assert "retired" in home.note
         await home.act(interaction, "live-off")
-        service.update_preference.assert_awaited_once_with(
-            home.owner_id, "live_shifts", 0,
-        )
-        assert "disabled" in home.note
+        assert "retired" in home.note
+        service.update_preference.assert_not_awaited()
         assert home.page == "hunt"
     finally:
         home.stop()

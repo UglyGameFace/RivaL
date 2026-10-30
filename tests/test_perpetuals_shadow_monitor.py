@@ -69,10 +69,10 @@ def seed(
 
 def test_scoring_is_automatic_restart_safe_and_evidence_only(monitor):
     now = seed(monitor)
-    assert monitor.run_once(now=now) == 2
+    assert monitor.run_once(now=now) == 3
     saved = monitor.latest(asset="BTC")
-    assert len(saved) == 2
-    assert {x["horizon_minutes"] for x in saved} == {5, 15}
+    assert len(saved) == 3
+    assert {x["horizon_minutes"] for x in saved} == {5, 15, 60}
     assert all(x["model_version"] == MODEL for x in saved)
     assert all(x["evaluated"] >= MIN_EVALUATED for x in saved)
     assert all(x["brier"] is not None and 0 <= x["brier"] <= 1 for x in saved)
@@ -80,16 +80,16 @@ def test_scoring_is_automatic_restart_safe_and_evidence_only(monitor):
     assert all(x["matured_updates"] >= x["evaluated"] for x in saved)
     # Reboot/replay does not create duplicate snapshots or model promotions.
     restarted = ShadowLearningMonitor(monitor.store)
-    assert restarted.run_once(now=now) == 2
-    assert len(restarted.latest(asset="BTC")) == 2
+    assert restarted.run_once(now=now) == 3
+    assert len(restarted.latest(asset="BTC")) == 3
     assert restarted.latest(asset="ETH") == []
 
 
 def test_historical_backfill_is_not_fake_live_training(monitor):
     now = seed(monitor, contract="ETH-SHADOW-TEST", backfill=True)
-    assert monitor.run_once(now=now) == 2
+    assert monitor.run_once(now=now) == 3
     snapshots = monitor.latest(asset="ETH")
-    assert len(snapshots) == 2
+    assert len(snapshots) == 3
     assert all(x["causal_examples"] == 0 for x in snapshots)
     assert all(x["evaluated"] == 0 for x in snapshots)
     assert all(x["brier"] is None for x in snapshots)

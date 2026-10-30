@@ -34,7 +34,7 @@ def test_xrp_60m_is_genuinely_issued_from_live_history_and_settles_later(tmp_pat
     store = SQLiteHotStore(tmp_path / "xrp-60m.sqlite")
     market = PerpetualMarketStore(store)
     monitor = ForwardAccuracyMonitor(market)
-    now = datetime.now(UTC).replace(second=20, microsecond=0)
+    now = datetime.now(UTC)
     end = now.replace(minute=now.minute // 5 * 5, second=0)
     market.initialize()
     count = 180

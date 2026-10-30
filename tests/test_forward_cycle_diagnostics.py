@@ -84,17 +84,17 @@ def test_live_forward_predictions_are_counted_and_duplicate_replays_explained(tm
     try:
         seed(market, now=now, bars=150)
         monitor = ForwardAccuracyMonitor(market)
-        assert monitor.run_once(now=now) == (2, 0)
+        assert monitor.run_once(now=now) == (3, 0)
         first = monitor.latest_diagnostics()
         assert first["discovered_streams"] == 1
         assert first["selected_streams"] == 1
-        assert first["issued_forecasts"] == 2
+        assert first["issued_forecasts"] == 3
         assert first["duplicate_forecasts"] == 0
         assert first["insufficient_causal_labels"] == 0
         assert monitor.run_once(now=now) == (0, 0)
         again = ForwardAccuracyMonitor(market).latest_diagnostics()
         assert again["issued_forecasts"] == 0
-        assert again["duplicate_forecasts"] == 2
+        assert again["duplicate_forecasts"] == 3
         assert again["selected_streams"] == 1
         with store.connect() as conn:
             assert conn.execute(
@@ -102,7 +102,7 @@ def test_live_forward_predictions_are_counted_and_duplicate_replays_explained(tm
             ).fetchone()["n"] == 1
             assert conn.execute(
                 "SELECT COUNT(*) AS n FROM perp_forward_audit"
-            ).fetchone()["n"] == 2
+            ).fetchone()["n"] == 3
     finally:
         store.close()
 

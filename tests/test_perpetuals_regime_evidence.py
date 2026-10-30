@@ -95,12 +95,12 @@ def test_predictions_are_issued_and_fingerprinted_before_future_outcome(tmp_path
     now = datetime.now(UTC)
     seed(market, now=now)
     try:
-        assert monitor.run_once(now=now)[0] == 2
+        assert monitor.run_once(now=now)[0] == 3
         with store.connect() as conn:
             tags = conn.execute(
                 """SELECT * FROM perp_forward_regimes ORDER BY horizon_minutes"""
             ).fetchall()
-        assert len(tags) == 2
+        assert len(tags) == 3
         assert all(tag["method_version"] == VERSION for tag in tags)
         assert all(tag["regime"] in ("quiet", "normal", "turbulent") for tag in tags)
         assert all(len(tag["feature_sha256"]) == 64 for tag in tags)
@@ -114,9 +114,9 @@ def test_predictions_are_issued_and_fingerprinted_before_future_outcome(tmp_path
         with store.connect() as conn:
             assert conn.execute(
                 "SELECT COUNT(*) AS n FROM perp_forward_regimes"
-            ).fetchone()["n"] == 2
+            ).fetchone()["n"] == 3
         recent = monitor.recent_issued(asset="BTC")
-        assert len(recent) == 2
+        assert len(recent) == 3
         assert all(row["settled_at"] is None for row in recent)
         summary = monitor.regime_summary(asset="BTC", horizon_minutes=5, now=now)
         assert summary["unique_target_windows"] == 0

@@ -508,7 +508,7 @@ class AutoHuntStore:
                 """UPDATE rival_hunt_delivery SET
                        state=?,message_id=?,delivered_at=?
                    WHERE user_id=? AND forecast_key=?
-                     AND state IN ('sending','attempted')""",
+                     AND state IN ('ready','sending','attempted')""",
                 ("sent" if sent else "unknown", message_id,
                  datetime.now(UTC).isoformat() if sent else None,
                  user_id, key or candidate.key),

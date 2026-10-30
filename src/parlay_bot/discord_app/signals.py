@@ -491,7 +491,7 @@ async def signal_embed(
         )
         price_decimals = 4 if asset == "XRP" else 2
         embed.add_field(
-            name="💱 Live matching-market bid / ask",
+            name="Fresh matching-market bid / ask 💱",
             value=(
                 f"**{quote_label}**\n"
                 f"Bid **${book.bid:,.{price_decimals}f}** · "

@@ -370,10 +370,13 @@ def test_capped_subscribers_do_not_trigger_expensive_external_scans(
     hunt_store.set_tier(user, "qualified", True)
     hunt_store.set_tier(user, "polymarket", True)
     monkeypatch.setattr(
-        hunt_store, "daily_sent_counts",
-        lambda _user, *, now=None: {
-            "research": 12, "qualified": 12, "polymarket": 12,
-            "flip": 12, "live_shift": 0,
+        hunt_store, "daily_sent_counts_many",
+        lambda users, *, now=None: {
+            user: {
+                "research": 12, "qualified": 12, "polymarket": 12,
+                "flip": 12, "live_shift": 0,
+            }
+            for user in users
         },
     )
     scans = (AsyncMock(side_effect=AssertionError("network scan under cap")),

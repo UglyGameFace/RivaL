@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import threading
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence, build_evidence
@@ -53,70 +54,81 @@ class AutonomousResearch:
         self.assets = assets
         self.auto_ai = auto_ai
         self._lock = asyncio.Lock()
+        self._schema_lock = threading.Lock()
+        self._schema_ready = False
 
     def initialize(self) -> None:
-        self.forward.initialize()
-        self.multi.initialize()
-        with self.store.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS perp_learning_cycle_health (
-                    slot_utc TEXT PRIMARY KEY,
-                    started_at TEXT NOT NULL,
-                    completed_at TEXT NOT NULL,
-                    math_issued INTEGER NOT NULL,
-                    math_settled INTEGER NOT NULL,
-                    ai_issued INTEGER NOT NULL,
-                    math_ok INTEGER NOT NULL,
-                    ai_settlement_ok INTEGER NOT NULL,
-                    model_review_ok INTEGER NOT NULL,
-                    gemini_ok INTEGER NOT NULL
-                );
-                CREATE TABLE IF NOT EXISTS perp_auto_ai_slots (
-                    asset TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    slot_utc TEXT NOT NULL,
-                    attempted_at TEXT NOT NULL,
-                    PRIMARY KEY (asset,model,slot_utc)
-                );
-                CREATE TABLE IF NOT EXISTS perp_auto_ai_forecasts (
-                    asset TEXT NOT NULL,
-                    model TEXT NOT NULL,
-                    evidence_sha256 TEXT NOT NULL,
-                    issued_at TEXT NOT NULL,
-                    venue TEXT NOT NULL,
-                    contract TEXT NOT NULL,
-                    quote TEXT NOT NULL,
-                    reference_opened_at TEXT NOT NULL,
-                    reference_price DOUBLE PRECISION NOT NULL,
-                    target_opened_at TEXT NOT NULL,
-                    direction TEXT NOT NULL,
-                    source_count INTEGER NOT NULL,
-                    settled_at TEXT,
-                    outcome_up INTEGER,
-                    realized_close DOUBLE PRECISION,
-                    correct INTEGER,
-                    PRIMARY KEY (asset,model,evidence_sha256)
-                );
-                CREATE INDEX IF NOT EXISTS idx_perp_auto_ai_unsettled
-                    ON perp_auto_ai_forecasts (settled_at,target_opened_at);
-                CREATE INDEX IF NOT EXISTS idx_perp_auto_ai_asset
-                    ON perp_auto_ai_forecasts (asset,issued_at);
-                CREATE TABLE IF NOT EXISTS perp_model_governance (
-                    asset TEXT NOT NULL,
-                    horizon_minutes INTEGER NOT NULL,
-                    model_version TEXT NOT NULL,
-                    evaluated_at TEXT NOT NULL,
-                    unique_target_windows INTEGER NOT NULL,
-                    calendar_days INTEGER NOT NULL,
-                    candidate_brier DOUBLE PRECISION,
-                    baseline_brier DOUBLE PRECISION,
-                    status TEXT NOT NULL,
-                    reason TEXT NOT NULL,
-                    PRIMARY KEY (asset,horizon_minutes,model_version,evaluated_at)
-                );
-                """
-            )
+        # This was running CREATE TABLE/INDEX on every model settlement and
+        # review, while other workers were inserting prediction rows. Avoid
+        # read/write DDL lock inversions after the first successful setup.
+        if self._schema_ready:
+            return
+        with self._schema_lock:
+            if self._schema_ready:
+                return
+            self.forward.initialize()
+            self.multi.initialize()
+            with self.store.connect() as conn:
+                conn.executescript(
+                    """
+                    CREATE TABLE IF NOT EXISTS perp_learning_cycle_health (
+                        slot_utc TEXT PRIMARY KEY,
+                        started_at TEXT NOT NULL,
+                        completed_at TEXT NOT NULL,
+                        math_issued INTEGER NOT NULL,
+                        math_settled INTEGER NOT NULL,
+                        ai_issued INTEGER NOT NULL,
+                        math_ok INTEGER NOT NULL,
+                        ai_settlement_ok INTEGER NOT NULL,
+                        model_review_ok INTEGER NOT NULL,
+                        gemini_ok INTEGER NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS perp_auto_ai_slots (
+                        asset TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        slot_utc TEXT NOT NULL,
+                        attempted_at TEXT NOT NULL,
+                        PRIMARY KEY (asset,model,slot_utc)
+                    );
+                    CREATE TABLE IF NOT EXISTS perp_auto_ai_forecasts (
+                        asset TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        evidence_sha256 TEXT NOT NULL,
+                        issued_at TEXT NOT NULL,
+                        venue TEXT NOT NULL,
+                        contract TEXT NOT NULL,
+                        quote TEXT NOT NULL,
+                        reference_opened_at TEXT NOT NULL,
+                        reference_price DOUBLE PRECISION NOT NULL,
+                        target_opened_at TEXT NOT NULL,
+                        direction TEXT NOT NULL,
+                        source_count INTEGER NOT NULL,
+                        settled_at TEXT,
+                        outcome_up INTEGER,
+                        realized_close DOUBLE PRECISION,
+                        correct INTEGER,
+                        PRIMARY KEY (asset,model,evidence_sha256)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_perp_auto_ai_unsettled
+                        ON perp_auto_ai_forecasts (settled_at,target_opened_at);
+                    CREATE INDEX IF NOT EXISTS idx_perp_auto_ai_asset
+                        ON perp_auto_ai_forecasts (asset,issued_at);
+                    CREATE TABLE IF NOT EXISTS perp_model_governance (
+                        asset TEXT NOT NULL,
+                        horizon_minutes INTEGER NOT NULL,
+                        model_version TEXT NOT NULL,
+                        evaluated_at TEXT NOT NULL,
+                        unique_target_windows INTEGER NOT NULL,
+                        calendar_days INTEGER NOT NULL,
+                        candidate_brier DOUBLE PRECISION,
+                        baseline_brier DOUBLE PRECISION,
+                        status TEXT NOT NULL,
+                        reason TEXT NOT NULL,
+                        PRIMARY KEY (asset,horizon_minutes,model_version,evaluated_at)
+                    );
+                    """
+                )
+            self._schema_ready = True
 
     def settle_ai(self, *, now: datetime | None = None) -> int:
         """Resolve ONLY same-contract future candles observed after issuance."""

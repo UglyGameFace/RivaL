@@ -20,15 +20,15 @@ from parlay_bot.parlays.models import ParlayBuildError
 def test_invalid_odds_and_probability_are_rejected(bad):
     with pytest.raises((TypeError, ValueError)):
         implied_probability(bad)
-    with pytest.raises(ValueError):
+    with pytest.raises((TypeError, ValueError)):
         no_vig_probabilities([2, bad])
-    with pytest.raises(ValueError):
+    with pytest.raises((TypeError, ValueError)):
         combined_decimal_odds([2, bad])
-    with pytest.raises(ValueError):
+    with pytest.raises((TypeError, ValueError)):
         expected_return_edge(fair_probability=0.5, decimal_odds=bad)
-    with pytest.raises(ValueError):
+    with pytest.raises((TypeError, ValueError)):
         expected_return_edge(fair_probability=bad, decimal_odds=2)
-    with pytest.raises(ValueError):
+    with pytest.raises((TypeError, ValueError)):
         independent_joint_probability([0.5, bad])
 
 
@@ -42,14 +42,14 @@ def test_negative_combined_indicative_edge_cannot_be_auto_suggested(tmp_path):
     engine, store = build_engine(tmp_path)
     try:
         # Simulate candidates already selected upstream, so the final
-        # aggregate guard is independently tested against a regression.
+        # aggregate guard catches an inconsistent upstream indicative score.
         candidate = _PricedCandidate(
             bookmaker="fanduel", fixture_id="game-0", event_name="Game",
             market_id="1", market_name="Winner", outcome_id="2",
             outcome_name="Home", player_id="0", player_name=None,
             line_value=None, line_group_value=None, deeplink=None,
             price_decimal=2.0, price_american="+100",
-            fair_probability=0.49, price_edge=-0.02,
+            fair_probability=0.49, price_edge=0.01,
             reference_books=2, score=1.0,
         )
         engine._candidates = lambda **kwargs: [

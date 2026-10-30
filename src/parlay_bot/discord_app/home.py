@@ -538,51 +538,19 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title="RivaL | Betting Genie",
                 description=(
-                    "**What would you like to do?**\n"
-                    "Choose a button below. Every result is checked against "
-                    "its real source, and a missing result is never invented. "
+                    "**Choose where to start.**\n"
+                    "📈 **Crypto:** live prediction markets or exchange forecasts.\n"
+                    "🏆 **Sports:** games and odds.\n"
+                    "🔔 **Notifications:** manage all your updates.\n"
+                    "📊 **My Results:** recorded outcomes.\n"
+                    "💵 **Practice:** simulated trades.\n\n"
                     "No real bets or orders are placed."
                 ), color=discord.Color.blurple(),
             )
-            embed.add_field(
-                name="🔎 Find Opportunities",
-                value="Crypto forecasts, practice, and research watches",
-                inline=True,
-            )
-            embed.add_field(
-                name="🔔 My Alerts",
-                value="Follow verified markets and manage notifications",
-                inline=True,
-            )
-            embed.add_field(
-                name="🏆 Sports & Odds",
-                value="Compare available sportsbook prices",
-                inline=True,
-            )
-            embed.add_field(
-                name="📊 My Results",
-                value="Measured prediction accuracy and practice results",
-                inline=True,
-            )
-            embed.add_field(
-                name="⚡ Live Mode",
-                value="Watch genuine live price shifts and control private alerts",
-                inline=False,
-            )
-            embed.add_field(
-                name="Private research only",
-                value="No real bets or orders are placed.",
-                inline=False,
-            )
         elif p == "discover":
             embed = discord.Embed(
-                title="🔎 Find Opportunities",
-                description=(
-                    "Choose a fresh crypto forecast, opt in to research "
-                    "notifications, or practice with fake money. A forecast "
-                    "does not automatically match a betting market's rules, "
-                    "and positive expected betting value is not established."
-                ),
+                title="RivaL | Start Here",
+                description="Open Crypto for verified markets or Practice for fake trades.",
                 color=discord.Color.blurple(),
             )
         elif p in ("live", "kalshi"):
@@ -614,7 +582,7 @@ class GuidedHome(discord.ui.View):
             }.get(source, "Polymarket Global")
             embed = discord.Embed(
                 title=(
-                    f"⚡ Live Markets | {provider} • {self.coin}"
+                    f"📈 Crypto Markets | {provider} • {self.coin}"
                     + (f" {self.horizon}m" if source == "polymarket" else "")
                 ),
                 description=(
@@ -780,69 +748,46 @@ class GuidedHome(discord.ui.View):
                     ),
                     inline=False,
                 )
-            embed.set_footer(
-                text="Provider buttons below • live asks are prices, not probabilities "
-                     "• No orders",
-            )
-        elif p == "hunt-tools":
-            embed = discord.Embed(
-                title="Optional Alert Types | Advanced",
-                description=(
-                    "Only enable notifications you need. These are "
-                    "existing independent alerts, not separate "
-                    "Polymarket prediction engines. Your saved "
-                    "subscriptions have not been changed."
-                ),
-                color=discord.Color.orange(),
-            )
-            embed.add_field(
-                name="Market prices are not model predictions",
-                value="Polymarket alerts report share prices; model "
-                      "research reports exchange forecasts; Qualified "
-                      "Watches require stricter evidence but are NOT "
-                      "verified Polymarket betting edges.",
-                inline=False,
-            )
-        elif p == "hunt":
-            try:
-                status = (
-                    await asyncio.wait_for(
-                        self.auto_hunt.status(self.owner_id), timeout=1.2,
+            embed.set_footer(text="Share prices are not probabilities • No orders")
+        elif p in ("hunt", "hunt-tools"):
+            tracker = getattr(getattr(self.auto_hunt, "bot", None),
+                              "polymarket_board", None)
+
+            async def current(read):
+                if read is None:
+                    return None
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(read, str(self.owner_id)), timeout=0.9,
                     )
-                    if self.auto_hunt is not None else
-                    "Unavailable until market collection is configured"
-                )
-            except (TimeoutError, Exception):  # noqa: BLE001
-                status = "Alert status is busy; your preferences were not changed."
+                except Exception:  # noqa: BLE001
+                    return "unknown"
+
+            market = await current(tracker.store.get if tracker else None)
+            exchange = await current(self.targets.store.get if self.targets else None)
+            prefs = await current(
+                self.auto_hunt.store.preferences if self.auto_hunt else None
+            )
+            shifts = (
+                "ON" if prefs.get("live_shifts") else "OFF"
+            ) if isinstance(prefs, dict) else "Unavailable"
+
+            def status(value):
+                if value == "unknown":
+                    return "Checking…"
+                return "ON" if value is not None else "OFF"
+
             embed = discord.Embed(
-                title="🔔 My Alerts | Auto-Hunt",
-                description="**Your alert status**\n" + status,
+                title="🔔 Notifications",
+                description=(
+                    f"**Polymarket tracking:** {status(market)}\n"
+                    f"**Exchange forecast watch:** {status(exchange)}\n"
+                    f"**Price direction changes:** {shifts}\n\n"
+                    "Tracking updates a single private message. Optional "
+                    "price-change alerts are separate. Old Auto-Hunt alerts "
+                    "have been retired. **Stop All** cancels every personal update."
+                ),
                 color=discord.Color.blurple(),
-            )
-            embed.add_field(
-                name="📊 Polymarket",
-                value="Get notices for real listed Up/Down market prices. "
-                      "A market price is **not** a predicted win rate.",
-                inline=False,
-            )
-            embed.add_field(
-                name="📈 RivaL forecasts",
-                value="Get new model research, or choose separately "
-                      "screened qualified watches. Neither guarantees a win.",
-                inline=False,
-            )
-            embed.add_field(
-                name="⚙️ Your filters",
-                value="Customize coins, 5m/15m alerts, Up/Down, price limit, "
-                      "time remaining, and direction changes.",
-                inline=False,
-            )
-            embed.add_field(
-                name="Important",
-                value="Alerts have daily limits and require working DMs. "
-                      "The global Polymarket feed is not Polymarket US. "
-                      "No real bets are placed.",
-                inline=False,
             )
         elif p == "sports":
             # Browsing the sports menu is not a bet recommendation. In

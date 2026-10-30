@@ -96,8 +96,8 @@ async def test_promoted_slot_serves_fused_watch_with_disclosure(tmp_path, caplog
                 now=now,
             )
         assert "UP WATCH" in signal.title
-        assert "multi-fused" in signal.fields[0].value
-        assert "Source: **hyperliquid**" in signal.fields[0].value
+        assert "multi-fused" in next(x.value for x in signal.fields if x.name == "Model and expiry")
+        assert "Source: **hyperliquid**" in next(x.value for x in signal.fields if x.name == "Model and expiry")
         assert "engine=multi" in caplog.text
     finally:
         store.close()

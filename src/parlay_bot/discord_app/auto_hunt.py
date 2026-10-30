@@ -440,7 +440,7 @@ class AutoHuntService:
                 return False, "DM blocked. Allow RivaL private messages and retry."
             except ValueError as exc:
                 return False, str(exc)
-            except Exception:
+            except Exception:  # noqa: BLE001 - fail closed on storage outage
                 _LOG.exception("Auto-Hunt subscribe failed")
                 return False, "Could not save Auto-Hunt. No subscription confirmed."
 
@@ -451,7 +451,7 @@ class AutoHuntService:
     async def status(self, user_id: int) -> str:
         try:
             active = await asyncio.to_thread(self.store.enabled, str(user_id))
-        except Exception:
+        except Exception:  # noqa: BLE001 - storage fail closed
             return "Status unavailable. No new alert confirmed."
         return ("ON • watching new qualified research forecasts" if active else
                 "OFF • opt in to receive new alerts")
@@ -496,7 +496,7 @@ class AutoHuntService:
                         )
                     except (discord.HTTPException, TimeoutError, ValueError):
                         _LOG.warning("Auto-Hunt DM not confirmed user=%s", user_id)
-                    except Exception:
+                    except Exception:  # noqa: BLE001 - never duplicate an ambiguous send
                         _LOG.exception("Auto-Hunt DM failed")
                     await asyncio.to_thread(
                         self.store.finish, user_id, candidate, sent=message is not None,

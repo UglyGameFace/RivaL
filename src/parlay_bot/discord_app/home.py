@@ -526,7 +526,7 @@ class GuidedHome(discord.ui.View):
                 f"{snapshot.direction} lean • raw "
                 f"{snapshot.probability:.1%} ({model_strength(snapshot.probability)})"
                 if snapshot is not None and snapshot.probability is not None
-                else "Preview pending • Get Signal checks the live forecast"
+                else "NO CURRENT SIGNAL • Preview pending; Get Signal checks live"
             )
             embed = discord.Embed(
                 title=f"🎯 Crypto Signals | {self.coin}",

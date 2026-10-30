@@ -26,6 +26,7 @@ from parlay_bot.providers.owner_limits import OwnerLimitStore
 if TYPE_CHECKING:
     from parlay_bot.collectors.current import CurrentBoardCollector
     from parlay_bot.discord_app.targeting import DirectionTargetService
+    from parlay_bot.discord_app.auto_hunt import AutoHuntService
     from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
     from parlay_bot.parlays.builder import ParlayBuilder
     from parlay_bot.perpetuals.live_quotes import PublicBestQuoteClient
@@ -38,7 +39,8 @@ if TYPE_CHECKING:
 _LOG = logging.getLogger(__name__)
 COINS = ("BTC", "ETH", "SOL")
 EXPLAIN = {
-    "home": "Choose an area. Your menu is private, and no real wagers are placed.",
+    "home": "Choose an area. Auto-Hunt scans for new research watches after you opt in. No wagers are placed.",
+    "hunt": "Auto-Hunt scans genuine future-issued crypto predictions, checks the SAME venue's fresh bid/ask and forward research evidence, and sends new private notifications. It never invents a strike or places a bet. Raw model percentages are not calibrated winning odds.",
     "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
     "slip": "A parlay combines picks. All legs must win for the parlay to win. No real wager is placed here.",
     "crypto": "Choose a coin and timeframe. UP/DOWN is a forecast, not permission to trade. A price target is a number to watch, not a predicted certainty.",
@@ -221,6 +223,7 @@ class GuidedHome(discord.ui.View):
         stream_shadow: StreamShadowLedger | None = None,
         multi: MultiExchangeResearch | None = None,
         venues: tuple[str, ...] = (),
+        auto_hunt: AutoHuntService | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
@@ -230,6 +233,7 @@ class GuidedHome(discord.ui.View):
         self.refresh_sports = refresh_sports
         self.market = market
         self.targets = targets
+        self.auto_hunt = auto_hunt
         self.paper = paper
         self.quotes = quotes
         self.profit = profit
@@ -267,6 +271,7 @@ class GuidedHome(discord.ui.View):
                 ("Sports & Odds", "sports", 0, "🏆"),
                 ("Predict Crypto", "crypto", 0, "📈"),
                 ("Practice Money", "practice", 0, "💵"),
+                ("Auto-Hunt", "hunt", 2, "🔔"),
                 ("My Results", "results", 1, "📊"),
                 ("Help Me Start", "help", 1, "❓"),
                 ("Advanced", "advanced", 1, "⚙️"),
@@ -289,9 +294,13 @@ class GuidedHome(discord.ui.View):
             self.add_item(_Horizon(self.horizon))
             self._add("Get Signal", "forecast", 2, "🎯", True)
             self._add("Follow in DM", "follow", 2, "🔔")
-            self._add("Set Price Target", "target", 2, "🎯")
+            self._add("Auto-Hunt", "hunt", 2, "🔔")
             self._add("See Buy/Sell Prices", "quote", 3, "💱")
             self._add("Stop My Alerts", "stop", 3, "🔕")
+        elif p == "hunt":
+            self._add("Start Auto-Hunt", "hunt-on", 0, "🔔", True)
+            self._add("Stop Auto-Hunt", "hunt-off", 0, "🔕")
+            self._add("Check Status", "hunt-status", 1, "🔎")
         elif p == "practice":
             self.add_item(_Coin(self.coin))
             self._add("Practice Buy $25", "buy", 1, "📈", True)
@@ -313,6 +322,7 @@ class GuidedHome(discord.ui.View):
             self._add("Is RivaL Improving?", "trust", 0, "📊")
             self._add("Technical Research", "research", 1, "🧪")
             self._add("API Usage & Limits", "api-limits", 2, "🔒")
+            self._add("Manual Price Target", "target", 2, "🎯")
         elif p in ("feeds", "trust"):
             self.add_item(_Coin(self.coin))
             if p == "trust":
@@ -347,11 +357,33 @@ class GuidedHome(discord.ui.View):
                     "**Welcome! What would you like to do?**\n"
                     "🏆 **Sports & Odds**: Find games and compare prices.\n"
                     "📈 **Predict Crypto**: See BTC, ETH or SOL forecasts.\n"
+                    "🔔 **Auto-Hunt**: Get new private research alerts automatically.\n"
                     "💵 **Practice Money**: Try fake funds, no deposits.\n"
                     "📊 **My Results**: See wins and losses.\n"
                     "❓ **Help Me Start**: Simple instructions.\n\n"
                     "**No real bets or orders are placed.**"
                 ), color=discord.Color.blurple(),
+            )
+        elif p == "hunt":
+            status = (
+                await self.auto_hunt.status(self.owner_id)
+                if self.auto_hunt is not None else
+                "Unavailable until market collection is configured"
+            )
+            embed = discord.Embed(
+                title="🔔 Auto-Hunt | Find Research Opportunities",
+                description=(
+                    "**" + status + "**\n\n"
+                    "After you choose Start, RivaL watches BTC, ETH and SOL "
+                    "for new 5-minute and 15-minute research forecasts. "
+                    "It checks the prediction's own exchange for a fresh "
+                    "market quote and recent measured forward evidence.\n\n"
+                    "Only qualifying NEW observations trigger a fresh DM. "
+                    "You do not need to type a price or keep a menu open.\n"
+                    "**No automated real-money bets, guaranteed winning odds, "
+                    "or verified profitable entry are implied.**"
+                ),
+                color=discord.Color.blurple(),
             )
         elif p == "sports":
             # Browsing the sports menu is not a bet recommendation. In
@@ -487,7 +519,9 @@ class GuidedHome(discord.ui.View):
                     "Choose a coin and timeframe, then press **Get Signal** "
                     "to check the matching-market price, expiry, signal "
                     "strength, and measured forward accuracy.\n"
-                    "Or **Follow in DM** for automatic private model updates.\n\n"
+                    "Or **Auto-Hunt** to receive new qualified research watches "
+                    "across all three coins without entering a target.\n"
+                    "**Follow in DM** still edits one personal forecast card.\n\n"
                     "A model lean is not a proven profitable entry."
                 ),
                 color=discord.Color.orange(),
@@ -989,7 +1023,7 @@ class GuidedHome(discord.ui.View):
         if action == "back":
             self.page = self.back_stack.pop() if self.back_stack else "home"
             self.note = None
-        elif action in ("home", "sports", "crypto", "practice", "results",
+        elif action in ("home", "sports", "crypto", "hunt", "practice", "results",
                         "help", "advanced", "feeds", "trust"):
             self.navigate(action)
             if action == "sports":
@@ -1014,11 +1048,26 @@ class GuidedHome(discord.ui.View):
                 self.note = f"PASS: {exc}. Nothing was placed."
         elif action in ("forecast", "quote"):
             self.navigate(action)
+        elif action in ("hunt-on", "hunt-off", "hunt-status"):
+            if self.auto_hunt is None:
+                self.note = "Auto-Hunt unavailable. No subscription saved."
+            elif action == "hunt-on":
+                _, self.note = await self.auto_hunt.subscribe(interaction.user)
+            elif action == "hunt-off":
+                ended = await self.auto_hunt.stop(self.owner_id)
+                self.note = "Auto-Hunt stopped." if ended else "Auto-Hunt was already off."
+            else:
+                self.note = await self.auto_hunt.status(self.owner_id)
+            self.navigate("hunt")
         elif action in ("follow", "stop"):
             try:
                 if action == "stop":
                     done = await self.targets.stop(self.owner_id)
-                    self.note = ("Private alerts stopped." if done else
+                    hunt_done = (
+                        await self.auto_hunt.stop(self.owner_id)
+                        if self.auto_hunt is not None else False
+                    )
+                    self.note = ("Private alerts stopped." if done or hunt_done else
                                  "You have no active alerts.")
                 else:
                     ok, message = await self.targets.follow(

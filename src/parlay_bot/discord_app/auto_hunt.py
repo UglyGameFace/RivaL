@@ -1163,13 +1163,31 @@ async def current_alert_review(service: AutoHuntService, row: dict) -> discord.E
                 ), timeout=10,
             )
             if notice is None:
+                # The button must keep working after the old 5m/15m
+                # window expires. Advance only to a separately verified
+                # real current market, never relabel the old quote as new.
+                notice = await asyncio.wait_for(
+                    service.polymarket.market(
+                        row["asset"], int(row["horizon"]),
+                    ), timeout=10,
+                )
+            if notice is None:
                 return discord.Embed(
                     title="Market window closed or unavailable",
-                    description="This Polymarket window no longer has a verified "
-                                "live orderbook. No old quote is reused.",
+                    description="No currently listed matching event has a "
+                                "verified fresh orderbook. Old quotes are "
+                                "not reused as new market prices.",
                     color=discord.Color.orange(),
                 )
-            return hunt_embed(notice, observed_at=datetime.now(UTC))
+            embed = hunt_embed(notice, observed_at=datetime.now(UTC))
+            if notice.issued != _instant(row["issued_at"]):
+                embed.add_field(
+                    name="New market window",
+                    value="The previous event expired. This is a newly "
+                          "verified event with its own independent orderbook.",
+                    inline=False,
+                )
+            return embed
         return await asyncio.wait_for(
             signal_embed(
                 service.market, service.quotes,

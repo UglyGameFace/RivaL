@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-
 import pytest
 
 from parlay_bot.discord_app.bot import RivaLBot

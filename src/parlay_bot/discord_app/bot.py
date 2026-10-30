@@ -1183,16 +1183,30 @@ class RivalDiscordClient(discord.Client):
         )
         async def rival_stop(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
+            # Revoke both independently. A broken old target message must
+            # never prevent canceling the new Auto-Hunt subscription.
+            failures = []
+            hunt = watch = False
+            try:
+                hunt = await self.auto_hunt.stop(interaction.user.id)
+            except Exception:  # noqa: BLE001 - preserve the other cancel path
+                _LOG.exception("RivaL Auto-Hunt cancellation failed")
+                failures.append("Auto-Hunt")
             try:
                 watch = await self.direction_targets.stop(interaction.user.id)
-                hunt = await self.auto_hunt.stop(interaction.user.id)
+            except Exception:  # noqa: BLE001 - preserve the other cancel path
+                _LOG.exception("RivaL personal target cancellation failed")
+                failures.append("personal target")
+            if failures:
+                message = (
+                    "Could not confirm stopping " + ", ".join(failures) +
+                    ". Please retry /rival-stop. Other alert stops were applied."
+                )
+            else:
                 message = (
                     "All personal alerts stopped." if watch or hunt else
                     "No active personal alerts."
                 )
-            except Exception:  # noqa: BLE001
-                _LOG.exception("RivaL personal alerts cancellation failed")
-                message = "Alert cancellation unavailable; please retry."
             await interaction.edit_original_response(content=message)
 
         @tools_group.command(

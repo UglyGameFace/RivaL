@@ -381,6 +381,37 @@ class AutonomousResearch:
                     count += 1
         return count
 
+    def evaluate_promotion(self, *, now: datetime | None = None) -> dict:
+        """Hourly promotion check for every slot; never blocks the cycle.
+
+        Runs beside review_model, not every five minutes: promotion
+        evidence moves on a days scale, and hourly evaluation keeps the
+        promotion record fresh enough for the 48h freshness guard while
+        avoiding churn from thin intra-hour windows.
+        """
+        from parlay_bot.perpetuals.promotion import evaluate_promotion
+
+        stamp = now or datetime.now(UTC)
+        results = []
+        for asset in self.assets:
+            for horizon in (5, 15):
+                try:
+                    results.append(evaluate_promotion(
+                        self.store, asset=asset, horizon=horizon, now=stamp,
+                    ))
+                except Exception:  # noqa: BLE001 - one bad slot never blocks the rest
+                    _LOG.exception(
+                        "RivaL promotion evaluation failed asset=%s horizon=%d",
+                        asset, horizon,
+                    )
+        promoted = sum(1 for row in results if row["status"] == "promoted")
+        demoted = sum(1 for row in results if row["status"] == "demoted")
+        _LOG.info(
+            "RivaL promotion evaluated slots=%d promoted=%d demoted=%d",
+            len(results), promoted, demoted,
+        )
+        return {"slots": len(results), "promoted": promoted, "demoted": demoted}
+
     def learning_heartbeat(self) -> dict | None:
         """Uncached persisted result of the last five-minute research cycle."""
         self.initialize()
@@ -470,6 +501,12 @@ class AutonomousResearch:
             except Exception:  # noqa: BLE001
                 review_ok = False
                 _LOG.exception("RivaL shadow model gate review failed")
+            try:
+                await asyncio.to_thread(self.evaluate_promotion)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                _LOG.exception("RivaL promotion evaluation failed")
         try:
             ai_count = await self.run_auto_ai()
         except asyncio.CancelledError:

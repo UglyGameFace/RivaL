@@ -17,7 +17,13 @@ from typing import TYPE_CHECKING
 
 import discord
 
-from parlay_bot.discord_app.opportunities import ASSETS, _cash, _utc, recent_watches
+from parlay_bot.discord_app.opportunities import (
+    ASSETS,
+    _cash,
+    _utc,
+    recent_multi_watches,
+    recent_watches,
+)
 from parlay_bot.discord_app.price_targets import (
     PriceGoal,
     PriceResult,
@@ -26,6 +32,7 @@ from parlay_bot.discord_app.price_targets import (
     price_result,
 )
 from parlay_bot.discord_app.signals import model_strength
+from parlay_bot.perpetuals.promotion import promoted_engine
 from parlay_bot.storage.hot import RelationalHotStore
 
 if TYPE_CHECKING:
@@ -92,7 +99,15 @@ def target_snapshot(
             "Live market collector is unavailable.",
         )
     try:
-        watches = recent_watches(market, asset=asset, now=stamp, limit=5)
+        try:
+            engine = promoted_engine(
+                market.store, asset=asset, horizon=horizon_minutes, now=stamp,
+            )
+        except Exception:  # noqa: BLE001 - promotion lookup never blocks the menu
+            _LOG.exception("RivaL promotion lookup unavailable; serving live model")
+            engine = "live"
+        reader = recent_multi_watches if engine == "multi" else recent_watches
+        watches = reader(market, asset=asset, now=stamp, limit=5)
     except Exception:  # noqa: BLE001 - no internal SQL/auth details in Discord
         _LOG.exception("RivaL target observation unavailable")
         return TargetSnapshot(

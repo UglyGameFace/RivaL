@@ -14,7 +14,11 @@ from datetime import UTC, datetime, timedelta
 
 import discord
 
-from parlay_bot.discord_app.opportunities import ASSETS, recent_watches
+from parlay_bot.discord_app.opportunities import (
+    ASSETS,
+    recent_multi_watches,
+    recent_watches,
+)
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.live_quotes import (
     BookQuote,
@@ -24,6 +28,7 @@ from parlay_bot.perpetuals.live_quotes import (
     VenueBookQuote,
 )
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.promotion import multi_summary, promoted_engine
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 
 _LOG = logging.getLogger(__name__)
@@ -103,8 +108,17 @@ async def signal_embed(
 
     try:
         watches_started = time.monotonic()
+        try:
+            engine = await asyncio.to_thread(
+                promoted_engine, market.store, asset=asset,
+                horizon=horizon_minutes, now=stamp,
+            )
+        except Exception:  # noqa: BLE001 - promotion lookup never blocks signals
+            _LOG.exception("RivaL promotion lookup unavailable; serving live model")
+            engine = "live"
+        reader = recent_multi_watches if engine == "multi" else recent_watches
         watches = await asyncio.to_thread(
-            recent_watches, market, asset=asset, now=stamp,
+            reader, market, asset=asset, now=stamp,
             limit=40, dedupe_horizons=False,
         )
         marks = {"watches_ms": (time.monotonic() - watches_started) * 1000}
@@ -195,7 +209,11 @@ async def signal_embed(
     def _default_evidence() -> dict:
         return {"settled": 0, "hit_rate": None, "model_beats_baseline": None}
 
+    shared_multi_proof: dict | None = None
+
     async def _venue_proof_or_default(venue: str) -> dict:
+        if engine == "multi" and shared_multi_proof is not None:
+            return shared_multi_proof
         started = time.monotonic()
         try:
             return await asyncio.to_thread(
@@ -209,6 +227,8 @@ async def signal_embed(
             marks[f"proof_{venue}_ms"] = (time.monotonic() - started) * 1000
 
     async def _proof_or_default() -> dict:
+        if engine == "multi" and shared_multi_proof is not None:
+            return shared_multi_proof
         started = time.monotonic()
         try:
             return await asyncio.to_thread(
@@ -234,6 +254,16 @@ async def signal_embed(
             return None
         finally:
             marks["shadow_ms"] = (time.monotonic() - started) * 1000
+
+    if engine == "multi":
+        try:
+            shared_multi_proof = await asyncio.to_thread(
+                multi_summary, market.store, asset=asset,
+                horizon=horizon_minutes, now=stamp,
+            )
+        except Exception:  # noqa: BLE001
+            _LOG.exception("RivaL multi proof lookup unavailable")
+            shared_multi_proof = _default_evidence()
 
     gathered = await asyncio.gather(
         _pick_books(),
@@ -347,6 +377,11 @@ async def signal_embed(
             f"Source: **{chosen['venue']}** • "
             f"Issued {discord.utils.format_dt(chosen['issued'], style='R')}\n"
             f"Expires {discord.utils.format_dt(chosen['target'] + timedelta(minutes=5), style='R')}"
+            + (
+                f"\nEngine: **multi-fused {chosen.get('model_version', 'multi')}** "
+                f"({chosen.get('contributor_count', '?')} venues)"
+                if chosen.get("engine") == "multi" else ""
+            )
         ),
         inline=False,
     )
@@ -383,8 +418,9 @@ async def signal_embed(
     if venue_evidence is not None:
         venue_hit = venue_evidence.get("hit_rate")
         venue_count = int(venue_evidence["settled"])
+        venue_label = "multi-fused" if engine == "multi" else chosen["venue"]
         track_lines.append(
-            f"{venue_count} settled {chosen['venue']} forecasts"
+            f"{venue_count} settled {venue_label} forecasts"
             + (f" • Direction correct {venue_hit:.1%}"
                if venue_hit is not None else " • Not enough scored outcomes")
             + (" • Beats baseline" if venue_beats is True else
@@ -398,8 +434,19 @@ async def signal_embed(
         )
     global_hit = evidence.get("hit_rate")
     global_count = int(evidence["settled"])
-    track_lines.append(
-        f"All venues: {global_count} settled"
+    if engine == "multi":
+        challenger_brier = evidence.get("challenger_brier")
+        incumbent_brier = evidence.get("incumbent_brier")
+        if challenger_brier is not None and incumbent_brier is not None:
+            track_lines.append(
+                f"Live model on the same windows: mean Brier "
+                f"{incumbent_brier:.4f} vs challenger {challenger_brier:.4f}."
+            )
+        else:
+            track_lines.append("Live model comparison unavailable.")
+    else:
+        track_lines.append(
+            f"All venues: {global_count} settled"
         + (f" • Direction correct {global_hit:.1%}"
            if global_hit is not None else " • Not enough scored outcomes")
     )
@@ -476,7 +523,7 @@ async def signal_embed(
     _LOG.info(
         "RivaL signal asset=%s horizon=%d watches_ms=%.0f book_ms=%.0f "
         "book_venue=%s proof_ms=%.0f shadow_ms=%.0f selection=%s "
-        "alternatives=%d venue_beats=%s",
+        "alternatives=%d venue_beats=%s engine=%s",
         asset, horizon_minutes, marks.get("watches_ms", -1),
         marks.get("book_ms", -1),
         chosen["venue"] if book is not None else "none",
@@ -484,5 +531,6 @@ async def signal_embed(
         selection, len(alternatives),
         ("true" if venue_beats is True else
          "false" if venue_beats is False else "none"),
+        engine,
     )
     return embed

@@ -526,8 +526,9 @@ async def test_live_mode_is_obvious_and_uses_real_preference_service(tmp_path):
         assert "Live Mode" in _labels(home)
         interaction = _interaction()
         await home.act(interaction, "live")
-        assert "Enable Live Alerts" in _labels(home)
-        assert "Disable Live Alerts" in _labels(home)
+        shown = interaction.edit_original_response.await_args.kwargs["view"]
+        assert "Enable Live Alerts" in _labels(shown)
+        assert "Disable Live Alerts" in _labels(shown)
         assert "Live price" in (await home.render()).description
         assert "OFF" in (await home.render()).description
         await home.act(interaction, "live-on")

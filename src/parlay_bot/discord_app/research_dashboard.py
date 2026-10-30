@@ -14,6 +14,7 @@ from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
+from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
@@ -385,7 +386,7 @@ class _ModelListButton(discord.ui.Button["ResearchDashboard"]):
 class ResearchDashboard(discord.ui.View):
     def __init__(
         self, *, owner_id: int, market: PerpetualMarketStore | None,
-        ai: GeminiResearch | None, venues: tuple[str, ...],
+        ai: GeminiResearch | OpenRouterResearch | None, venues: tuple[str, ...],
         shadow_enabled: bool = False,
         target_service: DirectionTargetService | None = None,
     ) -> None:

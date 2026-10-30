@@ -1734,9 +1734,6 @@ class AutoHuntService:
             subscribers = await asyncio.to_thread(self.store.subscribers)
             if not subscribers:
                 return 0
-            want_qualified = any(s.get("qualified") for s in subscribers)
-            want_research = any(s.get("research") for s in subscribers)
-            want_poly = any(s.get("polymarket") for s in subscribers)
             configs = await asyncio.gather(*(
                 asyncio.to_thread(self.store.preferences, str(sub["user_id"]))
                 for sub in subscribers
@@ -1745,7 +1742,33 @@ class AutoHuntService:
                 str(sub["user_id"]): prefs
                 for sub, prefs in zip(subscribers, configs, strict=True)
             }
-            want_flips = any(prefs["direction_changes"] for prefs in configs)
+            # Avoid live quote DNS, Polymarket HTTP and evidence reads when
+            # every follower of that tier is already at the sent-alert cap.
+            # Delivery still rechecks caps after the scan for race safety.
+            scan_at = datetime.now(UTC)
+            counts = await asyncio.gather(*(
+                asyncio.to_thread(
+                    self.store.daily_sent_counts, str(sub["user_id"]),
+                    now=scan_at,
+                )
+                for sub in subscribers
+            ))
+            want_qualified = any(
+                s.get("qualified") and count["qualified"] < DAILY_CAP_PER_TIER
+                for s, count in zip(subscribers, counts, strict=True)
+            )
+            want_research = any(
+                s.get("research") and count["research"] < DAILY_CAP_PER_TIER
+                for s, count in zip(subscribers, counts, strict=True)
+            )
+            want_poly = any(
+                s.get("polymarket") and count["polymarket"] < DAILY_CAP_PER_TIER
+                for s, count in zip(subscribers, counts, strict=True)
+            )
+            want_flips = any(
+                prefs["direction_changes"] and count["flip"] < DAILY_CAP_PER_TIER
+                for prefs, count in zip(configs, counts, strict=True)
+            )
             qualified = (
                 await qualified_watches(
                     self.market, self.quotes,

@@ -206,3 +206,53 @@ def test_postgres_auto_hunt_subscription_claim_and_stop_survive_restart():
             conn.execute("DELETE FROM rival_hunt_delivery WHERE user_id=?", (user_id,))
             conn.execute("DELETE FROM rival_hunt_subscriptions WHERE user_id=?", (user_id,))
         hot.close()
+
+
+def test_a_slow_other_user_does_not_block_alert_cancellation(hunt_store):
+    hunt_store.subscribe("1001")
+    hunt_store.subscribe("1002")
+    service = auto_hunt.AutoHuntService(
+        bot=SimpleNamespace(), market=object(), quotes=object(),
+        store=hunt_store,
+    )
+
+    async def exercise():
+        async with service._user_lock("1001"):
+            return await asyncio.wait_for(service.stop(1002), timeout=1.0)
+
+    assert run(exercise())
+    assert hunt_store.enabled("1001")
+    assert not hunt_store.enabled("1002")
+
+
+def test_two_opted_in_members_receive_concurrent_bounded_alerts(hunt_store, monkeypatch):
+    now = datetime.now(UTC)
+    hunt_store.subscribe("1001", now=now - timedelta(minutes=1))
+    hunt_store.subscribe("1002", now=now - timedelta(minutes=1))
+    monkeypatch.setattr(
+        auto_hunt, "eligible_research_watches",
+        AsyncMock(return_value=[candidate(now)]),
+    )
+    simultaneous = 0
+    peak = 0
+
+    async def send(**kwargs):
+        nonlocal simultaneous, peak
+        simultaneous += 1
+        peak = max(peak, simultaneous)
+        await asyncio.sleep(0.03)
+        simultaneous -= 1
+        return SimpleNamespace(id=1000 + peak)
+
+    channel = SimpleNamespace(id=123, send=AsyncMock(side_effect=send))
+    user = SimpleNamespace(dm_channel=channel)
+    client = SimpleNamespace(
+        get_user=lambda _uid: user,
+        fetch_user=AsyncMock(return_value=user),
+    )
+    service = auto_hunt.AutoHuntService(
+        bot=client, market=object(), quotes=object(), store=hunt_store,
+    )
+    assert run(service.cycle()) == 2
+    assert peak == 2
+    assert channel.send.await_count == 2

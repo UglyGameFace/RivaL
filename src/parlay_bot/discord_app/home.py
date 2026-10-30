@@ -47,7 +47,7 @@ COINS = RESEARCH_ASSETS
 EXPLAIN = {
     "home": "Find crypto or sports research, choose private alerts, or inspect recorded results. No wagers are placed.",
     "discover": "Choose Predict Crypto for model research, Auto-Hunt for opt-in alerts, or Practice Money for simulated trades. No profits are established.",
-    "live": "Live Mode shows verified current and next-listed Polymarket Up/Down windows, and independently controls live exchange price-shift DMs. Polymarket asks are not the price to beat, and no return is guaranteed.",
+    "live": "Start Auto-Track once to receive a private, automatically edited current/next Polymarket market card with the newest separately verified RivaL forward-model direction. The exchange-model forecast is not a Polymarket win probability or a guaranteed bet.",
     "hunt": "Follow Polymarket for listed share asks, not RivaL predictions. Follow model forecasts for new completed-candle forecasts. Customize Alerts to control coins, windows, side, price cap, and explicit live-trend or model-reversal notifications. Nothing places real bets.",
     "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
     "slip": "A parlay combines picks. All legs must win for the parlay to win. No real wager is placed here.",
@@ -349,10 +349,12 @@ class GuidedHome(discord.ui.View):
         elif p == "live":
             self.add_item(_Coin(self.coin))
             self.add_item(_Horizon(self.horizon))
-            self._add("Check Current & Next", "poly-refresh", 2, "🔄", True)
+            self._add("Start Auto-Track", "poly-start", 2, "⚡", True)
+            self._add("Stop Auto-Track", "poly-stop", 2, "🔕")
             self._add("Follow Polymarket", "hunt-poly", 2, "📊")
             self._add("Enable Shift DMs", "live-on", 3, "⚡")
             self._add("Disable Shift DMs", "live-off", 3, "🔕")
+            self._add("Check Now", "poly-refresh", 3, "🔄")
             self._add("Alert Settings", "hunt-config", 3, "⚙️")
         elif p == "hunt":
             self._add("Follow Polymarket", "hunt-poly", 0, "📊", True)
@@ -493,14 +495,17 @@ class GuidedHome(discord.ui.View):
             else:
                 state = "ON" if enabled and preferences["live_shifts"] else "OFF"
             embed = discord.Embed(
-                title="⚡ Live Mode | Price Shift Alerts",
+                title="⚡ Live Mode | Auto Polymarket + Model Research",
                 description=(
                     "**Your live alerts: " + state + "**\n\n"
-                    "RivaL monitors live exchange WebSocket prices and "
-                    "looks for meaningful direction changes. Enabling "
-                    "notifications sends private DMs after a confirmed "
-                    "shift, not after every tick. This is NOT a guaranteed "
-                    "winning bet or the completed-candle forecasting model."
+                    "**Start Auto-Track** once to keep a private Polymarket "
+                    "current/next event card automatically updated every ~15s. "
+                    "It includes RivaL's newest unexpired **exchange-model** "
+                    "direction when available, separate from Polymarket quotes. "
+                    "No button refresh is required.\\n\\n"
+                    "**Enable Shift DMs** is a separate WebSocket momentum alert "
+                    "and **Follow Polymarket** sends distinct new-market alerts. "
+                    "None guarantees a winning bet."
                 ),
                 color=discord.Color.blurple(),
             )
@@ -524,7 +529,9 @@ class GuidedHome(discord.ui.View):
                     ),
                     inline=False,
                 )
-            embed.set_footer(text="Only confirmed shifts; no real trades")
+            embed.set_footer(
+                text="Auto-Track edits one DM in place • No real orders or guarantees",
+            )
             # This is a separate source. Live exchange direction notifications
             # do not imply a Polymarket market was looked up or subscribed.
             if self.horizon not in (5, 15):
@@ -1527,6 +1534,38 @@ class GuidedHome(discord.ui.View):
                 self.note = f"PASS: {exc}. Nothing was placed."
         elif action in ("forecast", "quote"):
             self.navigate(action)
+        elif action in ("poly-start", "poly-stop"):
+            self.navigate("live")
+            service = (
+                getattr(self.auto_hunt.bot, "polymarket_board", None)
+                if self.auto_hunt is not None else None
+            )
+            if service is None:
+                self.note = "Automatic Polymarket tracking is unavailable."
+            elif action == "poly-start":
+                try:
+                    ok, message = await asyncio.wait_for(
+                        service.start(
+                            interaction.user, asset=self.coin,
+                            horizon=self.horizon,
+                        ), timeout=12,
+                    )
+                    self.note = ("✅ " if ok else "⏳ ") + message
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("Starting live Polymarket DM failed safely")
+                    self.note = "Live DM tracking could not be confirmed."
+            else:
+                try:
+                    ended = await asyncio.wait_for(
+                        service.stop(self.owner_id), timeout=6,
+                    )
+                    self.note = (
+                        "Automatic live market DM stopped."
+                        if ended else "No automatic live market DM was active."
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("Stopping live Polymarket DM failed safely")
+                    self.note = "Could not confirm stopping the live tracker."
         elif action == "poly-refresh":
             self.navigate("live")
             self._poly_refresh = True
@@ -1810,7 +1849,9 @@ _STALE_BUTTONS_B = (
 )
 
 
-_STALE_BUTTONS_C = ("live", "live-on", "live-off", "poly-refresh")
+_STALE_BUTTONS_C = (
+    "live", "live-on", "live-off", "poly-refresh", "poly-start", "poly-stop",
+)
 
 
 class _StaleButton(discord.ui.Button["_StaleGuidedMenuBase"]):

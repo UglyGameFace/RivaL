@@ -211,3 +211,34 @@ def _try_reserve(budget, claim):
     except QuotaReserveReached:
         return "blocked"
     return "reserved"
+
+
+@pytest.mark.asyncio
+async def test_provider_missing_minute_count_does_not_spend_monthly_entities(tmp_path):
+    store = SQLiteHotStore(str(tmp_path / "minute-unknown.sqlite"))
+    calls = []
+    def handler(req):
+        calls.append(req.url.path)
+        if req.url.path.endswith("/usage"):
+            payload = _sgo_usage(minute=1, minute_end="2026-11-01T00:00:00+00:00")
+            payload["data"]["rateLimits"]["per-minute"].pop("current-requests")
+            return httpx.Response(200, json=payload)
+        return httpx.Response(200, json={"success": True, "data": []})
+    try:
+        async with httpx.AsyncClient(
+            base_url="https://api.sportsgameodds.com/v2",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            provider = SportsGameOddsClient(
+                "missing-minute", client=client, owner_limits=OwnerLimitStore(store),
+                monthly_entity_reserve=0, request_cooldown_seconds=0,
+            )
+            with pytest.raises(QuotaReserveReached, match="minute usage unknown"):
+                await provider.get_events(league_ids=["NBA"], limit=3)
+        assert calls == ["/v2/account/usage"]
+        shared = SharedProviderBudget(
+            store, provider="sportsgameodds", api_key="missing-minute",
+        )
+        assert shared.snapshot("monthly_entities") is None
+    finally:
+        store.close()

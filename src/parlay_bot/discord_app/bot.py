@@ -493,6 +493,7 @@ class RivalDiscordClient(discord.Client):
             multi=self.autonomous.multi if self.autonomous is not None else None,
             venues=tuple(collector.providers) if collector is not None else (),
             training_status=self.training_status,
+            polymarket_status=self.polymarket_learning_status,
             kalshi=self.kalshi_browser,
         )
 
@@ -2165,6 +2166,11 @@ class RivalDiscordClient(discord.Client):
                 self.candidate_sync_checked_at = datetime.now(UTC)
                 _LOG.exception("RivaL candidate import from Drive unavailable")
             await asyncio.sleep(21600)
+
+    def polymarket_learning_status(self, asset: str, horizon: int) -> dict:
+        """Read Polymarket contract scores without querying exchange/Drive state."""
+        self.polymarket_research.learner.initialize()
+        return self.polymarket_research.learner.summary(asset=asset, horizon=horizon)
 
     def training_status(self, asset: str, horizon: int) -> dict:
         """Read-only accuracy and provenance. No retroactive promotion."""

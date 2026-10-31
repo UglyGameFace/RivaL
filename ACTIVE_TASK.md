@@ -1,3 +1,15 @@
+## ACTIVE TASK: Causal multi-model learning and NO CALL (2026-10-31)
+
+- Objective: keep RivaL's real incumbent and existing source-specific promotion safeguards; train two distinct bounded algorithms automatically from mature live data, record actual future matched outcomes, compare without cheating, and prevent unjustified directional calls.
+- Branch `feature/rival-causal-multimodel-shadow-20261031`, [PR #160](https://github.com/UglyGameFace/RivaL/pull/160), based on `main@8212843`. No open PR at start. Existing Issue #6 tracks real proof; Issue #151 the broader multi-venue intelligent prediction roadmap.
+- Implemented: Gaussian naive Bayes and distance-weighted 21-NN shadow families, source/coin/horizon-scoped training capped at 480 fully known examples; immutable additive prediction+training provenance and same-incumbent settlement with isolated transactional savepoint. Bot Performance shows source/target-day research gates; no new DM, orders, AI/provider calls or automatic unqualified model promotion.
+- User-facing: manual signal and subscribed target tracker say NO CALL for insufficient same-model forward accuracy, day-block coverage, strength or missing verified quote where applicable; raw probability alone is not a watch.
+- Validation: [PR CI](https://github.com/UglyGameFace/RivaL/pull/160/checks) pending exact commit review; run SQLite/PostgreSQL suites and repair failures before merge. Test historical-label leakage, instrument mismatch, duplicates, and no-proof tracker behavior. Main CI, Discloud upload and hosted runtime still require separate checks.
+- Production limitations: existing six-month Binance weights are not safely portable to unrelated venue identities; Gaussian NB / kNN scores must gather genuine prospective settlements before claims of superiority. Shadow research-only status is deliberate; do not claim profitable trades or automatically enable model promotion without verified cost and book evidence. See `docs/RIVAL_MULTI_MODEL_COMPETITION.md`.
+- Next: green exact-head CI, review final diff and merge if validated; verify main/discloud; obtain hosted evidence before broader boosted-tree/LLM work.
+
+---
+
 ## ACTIVE TASK: Historical seed diagnosis, current learning evidence and future-only challenger gates (2026-10-31)
 
 - Objective: explain absent seeds, measure current learned-policy benefit, correct health reporting, and require truly prospective baseline wins before historical challenger selection.

@@ -63,7 +63,7 @@ def recent_watches(
     with market.store.connect() as connection:
         rows = connection.execute(
             """SELECT venue,contract,quote,asset,horizon_minutes,
-                      model_version,reference_opened_at,issued_at,target_opened_at,
+                      model_version,issued_at,target_opened_at,
                       reference_close,probability_up,training_evaluated
                FROM perp_forward_audit
                WHERE asset=? AND settled_at IS NULL"""
@@ -135,7 +135,8 @@ def recent_watches(
             family = promoted.get(scope)
             if family:
                 paired = family_rows.get(
-                    (*scope,row["reference_opened_at"],row["issued_at"],family),
+                    (*scope,(target-timedelta(minutes=horizon)).isoformat(),
+                     row["issued_at"],family),
                 )
                 if (paired is not None and
                         paired["target_opened_at"] == row["target_opened_at"]):

@@ -44,23 +44,56 @@ async def run_native_research(
     )
     quality = audit_catalog(root, months=months, sources=(SOURCE,))
     requested = [s for s in quality["streams"] if s["venue"] == venue]
+    # The general history audit permits small research-grade gaps. This
+    # acceptance milestone is stricter: every one of the six *source-native*
+    # calendar partitions must be present and have zero missing 5m candles.
+    full_partitions = {
+        (p["venue"], p["contract"], p["quote"], p["interval_minutes"], p["month"])
+        for p in quality["partitions"]
+        if p["full_calendar_month_verified"]
+    }
     qualified = {
         (s["venue"], s["contract"], s["quote"], s["interval_minutes"])
         for s in requested
         if s["months_present"] == len(months) and s["research_grade"]
         and not s["missing_months"] and s["interval_minutes"] == 5
+        and all(
+            (s["venue"], s["contract"], s["quote"], 5, month) in full_partitions
+            for month in months
+        )
     }
     if quality["validation_failures"]:
         # A single forged/malformed or re-imported source file blocks the
         # entire run. Never select the cleaner-looking part of corrupt inputs.
         raise HistoryImportError("native research has invalid source partitions")
     if not qualified:
-        return {
+        blocked = {
+            "schema_version": "rival-native-source-research-v1",
             "status": "source_months_incomplete", "venue": venue,
             "requested_months": months, "restored_manifests": len(artifacts),
             "qualified_source_scopes": 0, "published_models": 0,
-            "promoted_live": False, "profitability_verified": False,
+            "source_scopes": [
+                {
+                    "contract": s["contract"], "quote": s["quote"],
+                    "interval": s["interval_minutes"],
+                    "verified_full_months": sum(
+                        (s["venue"], s["contract"], s["quote"],
+                         s["interval_minutes"], month) in full_partitions
+                        for month in months
+                    ),
+                    "missing_or_incomplete_months": [
+                        month for month in months
+                        if (s["venue"], s["contract"], s["quote"],
+                            s["interval_minutes"], month) not in full_partitions
+                    ],
+                }
+                for s in requested
+            ],
+            "live_approved": False, "promoted_live": False,
+            "profitability_verified": False,
         }
+        _report(report_dir / f"source-{venue}-research.json", blocked)
+        return blocked
     logistic = evaluate_logistic(root, qualified_streams=qualified)
     boosted = evaluate_boosters(
         root, qualified_streams=qualified,
@@ -85,7 +118,6 @@ async def run_native_research(
         "live_approved": False, "trades_placed": False,
         "real_fills_verified": False, "after_cost_gain_verified": False,
     }
-    file = _report(report_dir / f"source-{venue}-research.json", report)
     published = []
     if publish:
         for evaluation in logistic:
@@ -116,17 +148,26 @@ async def run_native_research(
                     kind="model",
                 )
                 published.append(restored.file_id)
+    result = {
+        **report,
+        "status": (
+            "verified_research_published" if publish and published
+            else "source_models_not_published" if publish
+            else "verified_research_local_only"
+        ),
+        "published_models": len(published),
+        "promoted_live": False, "profitability_verified": False,
+    }
+    # Persist the actual final outcome; the previous report was written
+    # before publication and could not report how many files reached Drive.
+    file = _report(report_dir / f"source-{venue}-research.json", result)
+    if publish:
         report_item = _artifact(file, 1)
         await drive.ensure_research_output(
             artifact=report_item, batch_id="report-" + report_item.sha256[:24],
             kind="report",
         )
-    return {
-        **report, "status": "verified_research_published" if publish
-        else "verified_research_local_only",
-        "published_models": len(published),
-        "promoted_live": False, "profitability_verified": False,
-    }
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -155,7 +196,16 @@ def main(argv: list[str] | None = None) -> int:
     except (HistoryImportError, OSError, RuntimeError) as exc:
         parser.exit(1, f"RivaL native research blocked safely: {exc}\n")
     print(json.dumps(result, sort_keys=True))
-    # Missing provider coverage is recorded, never a false model promotion.
+    # A green Actions job must mean verified publication, not merely a clean
+    # Python exit after zero restored months or zero published candidates.
+    expected_status = (
+        "verified_research_published" if args.publish
+        else "verified_research_local_only"
+    )
+    if result.get("status") != expected_status:
+        return 2
+    if args.publish and result.get("published_models", 0) < 1:
+        return 2
     return 0
 
 

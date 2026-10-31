@@ -78,6 +78,40 @@ jobs:
           echo "Researching actual warehouse source: $VENUE"
           python -m parlay_bot.research.source_native_offline \
             --venue "$VENUE" --months 6 --publish
+      - name: Summarize verified source-native acceptance
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          reports = sorted(Path("data/native-reports").glob("source-*-research-*.json"))
+          lines = ["### Source-native acceptance", ""]
+          if not reports:
+              lines.append("No source-native report was produced. Check workflow authorization and errors.")
+          for report in reports:
+              data = json.loads(report.read_text(encoding="utf-8"))
+              lines.extend([
+                  f"Venue: `{data.get('venue', 'unknown')}`",
+                  f"Status: `{data.get('status', 'missing')}`",
+                  f"Restored monthly manifests: {data.get('restored_manifests', 0)}",
+                  f"Published research models: {data.get('published_models', 0)}",
+              ])
+              for stream in data.get("source_scopes", [])[:24]:
+                  if "missing_or_incomplete_months" not in stream:
+                      continue
+                  missing = ", ".join(stream["missing_or_incomplete_months"])
+                  lines.append(
+                      f"- {stream['contract']}/{stream['quote']}: "
+                      f"{stream['verified_full_months']}/6 full months; "
+                      f"missing/incomplete: {missing}"
+                  )
+          lines.extend(["", "Research is NOT live model promotion, forward accuracy, or verified real trading profit."])
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
+              summary.write("\n".join(lines) + "\n")
+          PY
       - name: Preserve research-only evidence, never provider raw files
         if: always()
         uses: actions/upload-artifact@v4

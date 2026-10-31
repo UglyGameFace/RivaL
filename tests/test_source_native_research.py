@@ -196,6 +196,86 @@ async def test_native_research_fails_closed_when_archive_has_no_months(tmp_path)
     assert result["published_models"] == 0
     assert result["promoted_live"] is False
     assert result["profitability_verified"] is False
+    reports = list((tmp_path / "reports").glob("source-hyperliquid-research-*.json"))
+    assert len(reports) == 1
+    saved = json.loads(reports[0].read_text())
+    assert saved["status"] == "source_months_incomplete"
+    assert saved["published_models"] == 0
+    assert saved["requested_months"] == [
+        "2026-04", "2026-05", "2026-06",
+        "2026-07", "2026-08", "2026-09",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_native_research_rejects_research_grade_month_with_one_gap(
+    tmp_path, monkeypatch,
+):
+    import parlay_bot.research.source_native_offline as native
+
+    months = [f"2026-{month:02d}" for month in range(4, 10)]
+    scope = {"venue": "hyperliquid", "contract": "BTC",
+             "quote": "USDC", "interval_minutes": 5}
+
+    async def restore(*args, **kwargs):
+        return [tmp_path / "present.manifest.json"]
+
+    def audit(*args, **kwargs):
+        return {
+            "streams": [{
+                **scope, "months_present": 6, "research_grade": True,
+                "missing_months": [],
+            }],
+            "partitions": [
+                {**scope, "month": month,
+                 "full_calendar_month_verified": month != "2026-09"}
+                for month in months
+            ],
+            "validation_failures": [],
+        }
+
+    monkeypatch.setattr(native, "restore_verified_source_months", restore)
+    monkeypatch.setattr(native, "audit_catalog", audit)
+    result = await native.run_native_research(
+        drive=object(), venue="hyperliquid", months=months,
+        root=tmp_path / "source", report_dir=tmp_path / "reports",
+        publish=True,
+    )
+    assert result["status"] == "source_months_incomplete"
+    assert result["source_scopes"][0]["verified_full_months"] == 5
+    assert result["source_scopes"][0]["missing_or_incomplete_months"] == [
+        "2026-09",
+    ]
+
+
+@pytest.mark.parametrize(
+    ("status", "models", "exit_code"),
+    [
+        ("source_months_incomplete", 0, 2),
+        ("source_models_not_published", 0, 2),
+        ("verified_research_published", 0, 2),
+        ("verified_research_published", 3, 0),
+    ],
+)
+def test_native_cli_requires_actual_published_models(
+    status, models, exit_code, monkeypatch, capsys,
+):
+    import parlay_bot.research.source_native_offline as native
+
+    class Drive:
+        async def aclose(self):
+            return None
+
+    monkeypatch.setattr(native, "Settings", lambda: object())
+    monkeypatch.setattr(native, "_drive", lambda settings: Drive())
+
+    async def run(**kwargs):
+        assert kwargs["publish"] is True
+        return {"status": status, "published_models": models}
+
+    monkeypatch.setattr(native, "run_native_research", run)
+    assert native.main(["--venue", "hyperliquid", "--publish"]) == exit_code
+    assert json.loads(capsys.readouterr().out)["status"] == status
 
 
 def test_native_boosted_contract_is_accepted_only_for_its_exact_source(native_market):

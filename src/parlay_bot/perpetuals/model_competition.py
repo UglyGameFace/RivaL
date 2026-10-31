@@ -17,7 +17,6 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.research.boosted_portable import predict_portable
-from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
 
 FAMILIES = ("gaussian_nb_v1", "knn21_v1")
 MIN_TRAIN = 80
@@ -125,16 +124,21 @@ class ShadowModelCompetition:
 
     def issue(self, conn, *, samples, features, now, venue, contract, quote,
               asset, horizon, reference_opened_at, target_opened_at, issued_at,
-              incumbent_up, baseline_up):
+              incumbent_up, baseline_up, boosters=()):
         """Call only inside the incumbent forecast's *successful* transaction."""
         predictions = shadow_predictions(samples, features, as_of=now)
         # Exact-source historical boosters enter the SAME immutable future
         # comparison as existing live families, never the incumbent weights.
         boosters = {}
-        for item in ResearchCandidateRegistry(self.store).compatible_boosters(
-            venue=venue, contract=contract, quote=quote,
-            horizon=horizon, now=utc(issued_at),
-        ):
+        for item in boosters:
+            identity = item.get("identity", {})
+            if (tuple(identity.get(key) for key in ("venue", "contract", "quote"))
+                    != (venue, contract, quote)
+                    or item.get("horizon_minutes") != horizon
+                    or utc(datetime.fromisoformat(item["imported_at"])) > utc(issued_at)
+                    or utc(datetime.fromisoformat(item["evaluation_completed_through"]))
+                       >= utc(issued_at)):
+                continue
             family = f"boosted_{item['family']}_{item['model_sha256'][:12]}"
             boosters[family] = item
             predictions[family] = predict_portable(

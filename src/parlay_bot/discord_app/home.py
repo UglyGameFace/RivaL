@@ -30,6 +30,7 @@ from parlay_bot.discord_app.targeting import target_snapshot
 from parlay_bot.jurisdiction.zip_lookup import ZipLookupError
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
 from parlay_bot.perpetuals.live_quotes import QuoteUnavailable, quote_embed
 from parlay_bot.perpetuals.markets import ASSET_NAMES
 from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
@@ -290,7 +291,15 @@ def _performance_exchange(market: object, asset: str, horizon: int) -> dict:
     except Exception:  # noqa: BLE001 - independent score read
         _LOG.exception("Active learning evidence unavailable")
         benefit = None
-    return {"score": score, "lineage": lineage, "benefit": benefit}
+    try:
+        challengers = ShadowModelCompetition(market.store).report(
+            asset=asset, horizon=horizon,
+        )
+    except Exception:  # noqa: BLE001 - diagnostic cannot hide incumbent proof
+        _LOG.exception("Multi-model research read unavailable")
+        challengers = None
+    return {"score": score, "lineage": lineage, "benefit": benefit,
+            "challengers": challengers}
 
 
 def _performance_health(market: object) -> dict:
@@ -1415,6 +1424,14 @@ class GuidedHome(discord.ui.View):
                                       f"{benefit['baseline_brier']:.4f} past-rate / 0.2500 coin-flip")
             else:
                 learning_text += "\nCurrent learning benefit: unavailable"
+            challengers = exchange.get("challengers") if isinstance(exchange, dict) else None
+            if isinstance(challengers, dict):
+                for family, summary in challengers.items():
+                    label = "Naive Bayes" if family.startswith("gaussian") else "kNN"
+                    state = ("passed future research screen" if summary["qualified_research"]
+                             else "not yet proven")
+                    learning_text += (f"\n{label} shadow: {state} "
+                                      f"({summary['targets']} targets / {summary['days']} days)")
             embed.add_field(name="🧠 Learning", value=learning_text[:1024], inline=False)
 
             health = reports.get("health")

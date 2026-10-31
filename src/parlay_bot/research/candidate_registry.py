@@ -275,7 +275,7 @@ class ResearchCandidateRegistry:
                 "ON a.model_sha256=c.model_sha256 WHERE a.compatible=1 "
                 "AND c.retrospective_screen='passed' AND c.horizon_minutes=? AND c.asset=? "
                 "ORDER BY c.first_imported_at DESC,c.model_sha256 LIMIT 30",
-                (horizon, contract.removesuffix('USDT')),
+                (horizon, asset_for_contract(contract)),
             ).fetchall()
         found = []
         for row in rows:

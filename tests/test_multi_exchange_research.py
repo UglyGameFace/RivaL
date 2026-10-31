@@ -241,3 +241,28 @@ def test_postgres_causal_fusion_persists_on_restart():
                 conn.execute("DELETE FROM perp_feed_health WHERE venue=? AND asset='BTC'",
                              (venue,))
         store.close()
+
+
+def test_stale_but_accepted_source_gets_less_influence(tmp_path):
+    now = datetime(2026, 10, 30, 14, tzinfo=UTC)
+    store = SQLiteHotStore(tmp_path / "freshweights.sqlite")
+    try:
+        seed(store, now, venues=("hyperliquid", "binance", "okx"))
+        # All sources are accepted, but the last two were observed earlier.
+        with store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_forward_audit SET issued_at=?
+                   WHERE venue IN ('binance','okx')""",
+                ((now-timedelta(minutes=2)).isoformat(),),
+            )
+        assert MultiExchangeResearch(store).issue(now=now) == 1
+        with store.connect() as conn:
+            row = conn.execute("SELECT contributors_json FROM perp_multi_forward").fetchone()
+        contributions = {x["venue"]: x for x in json.loads(row["contributors_json"])}
+        assert len(contributions) == 3
+        assert contributions["hyperliquid"]["quality"] > contributions["okx"]["quality"]
+        assert contributions["hyperliquid"]["quality"] > contributions["binance"]["quality"]
+        assert contributions["hyperliquid"]["weight"] >= contributions["okx"]["weight"]
+        assert sum(x["weight"] for x in contributions.values()) == pytest.approx(1.)
+    finally:
+        store.close()

@@ -94,8 +94,8 @@ jobs:
           for report in reports:
               data = json.loads(report.read_text(encoding="utf-8"))
               lines.extend([
-                  f"Venue: \`{data.get('venue', 'unknown')}\`",
-                  f"Status: \`{data.get('status', 'missing')}\`",
+                  f"Venue: `{data.get('venue', 'unknown')}`",
+                  f"Status: `{data.get('status', 'missing')}`",
                   f"Restored monthly manifests: {data.get('restored_manifests', 0)}",
                   f"Published research models: {data.get('published_models', 0)}",
               ])
@@ -110,7 +110,7 @@ jobs:
                   )
           lines.extend(["", "Research is NOT live model promotion, forward accuracy, or verified real trading profit."])
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-              summary.write("\\n".join(lines) + "\\n")
+              summary.write("\n".join(lines) + "\n")
           PY
       - name: Preserve research-only evidence, never provider raw files
         if: always()

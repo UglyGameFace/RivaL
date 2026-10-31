@@ -2485,13 +2485,14 @@ _STALE_BUTTONS_A = (
     "discover",
     "state", "zip", "refresh", "manual", "slip", "lower", "balanced",
     "aggressive", "forecast", "follow", "target", "home", "back",
-    "hunt-poly", "hunt-research", "hunt-qualified", "hunt-config",
+    "hunt-config",
 )
 _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",
     "feeds", "research", "api-limits", "hunt-on",
     "hunt-off", "hunt-status", "explain",
     "cdna-auto", "cdna-quote", "dk-independent-ai",
+    "hunt-poly", "hunt-research", "hunt-qualified",
 )
 
 
@@ -2606,7 +2607,7 @@ class _StaleGuidedMenuBase(discord.ui.View):
 
 
 class StaleGuidedMenuViewA(_StaleGuidedMenuBase):
-    """First slice of the stale-menu fallback (25 button custom_ids)."""
+    """First slice of the stale-menu fallback (22 buttons plus selects)."""
 
     def __init__(self, home_factory: Callable[[int], GuidedHome]) -> None:
         super().__init__(home_factory)

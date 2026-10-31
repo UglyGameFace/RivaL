@@ -68,8 +68,7 @@ def parse_daily_metrics(payload: bytes, *, asset: str, day: date) -> list[dict]:
     if not {"create_time", "symbol", *FIELDS} <= names:
         raise HistoryImportError("historical metrics schema missing fields")
     result = []
-    previous = None
-    for row in reader:
+    for source_row, row in enumerate(reader, 1):
         if len(result) >= 300:
             raise HistoryImportError("excessive 5-minute positioning rows")
         if row.get("symbol") != asset + "USDT":
@@ -85,15 +84,17 @@ def parse_daily_metrics(payload: bytes, *, asset: str, day: date) -> list[dict]:
             labeled = labeled.replace(tzinfo=UTC)
         labeled = labeled.astimezone(UTC)
         if (labeled.second or labeled.microsecond or labeled.minute % 5
-            or (previous is not None and labeled <= previous)
             or labeled.date() not in (day, day + timedelta(days=1))
             or (labeled.date() != day and labeled.time() != datetime.min.time())):
             raise HistoryImportError(
                 "untrustworthy metrics chronology or source day "
                 f"source_date={day.isoformat()} "
                 f"label={labeled.isoformat()} "
-                f"previous={previous.isoformat() if previous else 'none'}"
+                f"source_row={source_row}"
             )
+        # Official archived CSVs may not be ordered by event time. Retain
+        # the original file row and check duplicates AFTER sorting, rather
+        # than rejecting otherwise authentic, checksum-verified snapshots.
         # Old source files were end-labeled, new files start-labeled; the
         # transition has two colliding labels across adjacent daily archives.
         # A full source publication delay is NOT known. These are strict
@@ -103,15 +104,22 @@ def parse_daily_metrics(payload: bytes, *, asset: str, day: date) -> list[dict]:
         values = {key: _number(row[key]) for key in FIELDS}
         result.append({
             "source_date": day.isoformat(),
+            "source_row_index": source_row,
             "source_labeled_at": labeled.isoformat(),
             "conservative_feature_after_at": usable_after.isoformat(),
             "label_regime": regime,
             "boundary_caution": day in (date(2026, 6, 24), date(2026, 6, 25)),
             **values,
         })
-        previous = labeled
     if not result:
         raise HistoryImportError("empty or missing Binance metrics observations")
+    result.sort(key=lambda item: item["source_labeled_at"])
+    if any(a["source_labeled_at"] == b["source_labeled_at"]
+           for a, b in zip(result, result[1:])):
+        raise HistoryImportError("duplicate historical metrics source timestamp")
+    # The original source row index is kept for audit. If the official source
+    # CSV wasn't sorted, derived records are now strictly event-time sorted.
+    # Gaps remain gaps and are NEVER synthesized into five-minute observations.
     # Before the label change one day's last source timestamp was the next
     # 00:00; after it, files span 00:00..23:55. Never concatenate by label
     # without source_date/regime (the transition contains collisions).
@@ -140,6 +148,9 @@ def ingest_daily_metrics(
             "timestamp_convention_change": "2026-06-25",
             "source_issue": "https://github.com/binance/binance-public-data/issues/491",
             "timestamp_caution": True,
+            "original_source_csv_order_preserved_per_row": True,
+            "normalized_sorted_by_source_event_time": True,
+            "missing_or_duplicate_source_times_not_invented": True,
             "historical_observation_not_prospective_first_seen_at": True,
             "no_verified_executable_orderbook_or_actual_fills": True,
             "not_an_exact_polymarket_or_kalshi_oracle": True,

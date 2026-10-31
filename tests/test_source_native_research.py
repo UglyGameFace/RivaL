@@ -14,7 +14,9 @@ from parlay_bot.research.audit import audit_catalog, audit_partition
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.learning import _rows, assemble
 from parlay_bot.research.source_native import (
-    NativeMonthlyPublisher, SOURCE, export_source_month,
+    SOURCE,
+    NativeMonthlyPublisher,
+    export_source_month,
 )
 from parlay_bot.research.source_native_offline import run_native_research
 from parlay_bot.storage.hot import SQLiteHotStore
@@ -193,7 +195,8 @@ async def test_native_research_fails_closed_when_archive_has_no_months(tmp_path)
 
 def test_native_boosted_contract_is_accepted_only_for_its_exact_source(native_market):
     from parlay_bot.research.candidate_registry import (
-        ResearchCandidateRegistry, verified_candidate,
+        ResearchCandidateRegistry,
+        verified_candidate,
     )
     from tests.test_portable_boosted_forward import _document
 

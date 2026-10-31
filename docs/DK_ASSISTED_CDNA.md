@@ -9,8 +9,8 @@ mathematics/free AI, and do not place bets.
 `/rival` → Crypto → DraftKings Predictions → choose BTC/ETH/SOL/XRP and
 independent research horizon. Buttons:
 
-1. **Find CDNA Contract** searches public Crypto.com Predictions events on
-   demand and returns real trading symbols found in official event contract
+1. **Find My Coin** automatically searches public Crypto.com Predictions events
+   for the selected BTC/ETH/SOL/XRP coin on demand and returns real trading symbols found in official event contract
    listings. An event search result is NOT an automatic DraftKings contract ID.
 2. **Check CDNA Quote** reads one exact contract price from
    `GET https://data-api.crypto.com/api/v1/predictions/contracts/{symbol}/price`.

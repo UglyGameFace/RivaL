@@ -65,8 +65,8 @@ def test_source_exact_family_paper_promotion_demotes_and_expires(learning_store)
     now=datetime(2026,10,31,16,tzinfo=UTC)
     family=_seed(learning_store,now)
     owner=FamilyPromotion(learning_store)
-    kwargs=dict(asset="BTC",venue="hyperliquid",contract="BTC",
-                quote="USDC",horizon=5)
+    kwargs={"asset":"BTC","venue":"hyperliquid","contract":"BTC",
+            "quote":"USDC","horizon":5}
     result=owner.evaluate(now=now,**kwargs)
     assert result["selected_family"]==family
     assert result["status"]=="promoted_paper"

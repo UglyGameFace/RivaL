@@ -47,6 +47,7 @@ jobs:
           test -f requirements.txt
           test -f pyproject.toml
           test -f src/parlay_bot/discord_app/targeting.py
+          test -f tools/unattended_acceptance.py
           grep -q '^TYPE=bot$' discloud.config
           grep -q '^MAIN=main.py$' discloud.config
 
@@ -62,3 +63,4 @@ jobs:
             requirements.txt
             pyproject.toml
             src/**
+            tools/unattended_acceptance.py

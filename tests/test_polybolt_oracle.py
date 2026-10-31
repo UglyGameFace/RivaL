@@ -151,3 +151,28 @@ def test_digital_math_is_monotonic_and_unverified_costs_are_unknown():
     )
     assert costs["yes_ev"] == pytest.approx(.085)
     assert costs["verified_edge"] is False
+
+
+def test_polybolt_health_reports_real_twap_not_just_configuration():
+    now = datetime(2026, 10, 30, 12, 2, 30, tzinfo=UTC)
+    feed = stream()
+    cold = feed.status(now=now)
+    assert cold["configured"] is True
+    assert cold["connected"] is False
+    assert cold["valid_twap_live"] is False
+    feed.accept({"op": "authed"}, received_at=now)
+    assert feed.status(now=now)["authenticated"] is True
+    assert feed.status(now=now)["valid_twap_live"] is False
+    feed.accept({"op": "subscribed", "channel": CHANNEL}, received_at=now)
+    assert feed.status(now=now)["connected"] is True
+    assert feed.status(now=now)["valid_twap_live"] is False
+    assert feed.accept(snapshot(now), received_at=now) == 12
+    live = feed.status(now=now)
+    assert live["valid_twap_live"] is True
+    assert live["accepted_twap_samples"] == 12
+    assert live["assets_fresh"] == ["BTC"]
+    assert live["last_valid_twap_at"] == now.isoformat()
+    assert feed.status(now=now+timedelta(seconds=9))["valid_twap_live"] is False
+    feed.accept({"op": "error", "code": "unsupported-provider-message"}, received_at=now)
+    assert feed.status(now=now)["last_error"] == "provider_error"
+    assert feed.status(now=now)["connected"] is False

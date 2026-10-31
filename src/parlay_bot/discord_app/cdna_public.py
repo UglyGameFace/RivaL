@@ -67,7 +67,7 @@ def parse_cdna_price(payload: object, *, requested: str, checked_at: datetime) -
     if not isinstance(source_time, str):
         raise CDNAUnavailable("CDNA quote has no source update time")
     try:
-        at = datetime.fromisoformat(source_time.replace("Z", "+00:00"))
+        at = datetime.fromisoformat(source_time)
     except ValueError as exc:
         raise CDNAUnavailable("CDNA quote update time is invalid") from exc
     if at.tzinfo is None or at.utcoffset() is None:

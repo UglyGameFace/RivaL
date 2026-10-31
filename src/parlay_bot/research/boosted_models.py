@@ -1,0 +1,183 @@
+"""Optional boosted-tree research on RivaL's validated historical market archive.
+
+Models are trained and selected exclusively on the purged chronological training
+and validation periods. The sealed final test is opened for the ONE
+validation-selected candidate. No live production candidate, score, order or
+promotion may be manufactured from retrospective OHLCV data.
+"""
+from __future__ import annotations
+
+import hashlib
+import math
+from collections import defaultdict
+from pathlib import Path
+
+from parlay_bot.perpetuals.model_checkpoints import FEATURE_CONTRACT, TARGET_CONTRACT, canonical
+from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.learning import _metrics, assemble
+from parlay_bot.research.live_training import compatible_partitions, historical_features
+
+FAMILIES = ("hist_gradient_boosting", "lightgbm", "xgboost", "catboost")
+MAX_TRAIN = 40000
+SEED = 420
+
+
+def _estimators() -> tuple[dict, dict]:
+    """Discover optional, bounded CPU-only scientific packages.
+
+    Optional dependencies never execute in the live bot. Missing libraries
+    are recorded instead of masquerading as successful evaluations.
+    """
+    factories = {}
+    unavailable = {}
+    try:
+        from sklearn.ensemble import HistGradientBoostingClassifier
+        factories["hist_gradient_boosting"] = lambda: HistGradientBoostingClassifier(
+            max_iter=100, max_leaf_nodes=12, learning_rate=.04,
+            l2_regularization=10.0, min_samples_leaf=100,
+            early_stopping=False, random_state=SEED,
+        )
+    except ImportError:
+        unavailable["hist_gradient_boosting"] = "dependency_missing"
+    try:
+        from lightgbm import LGBMClassifier
+        factories["lightgbm"] = lambda: LGBMClassifier(
+            n_estimators=150, num_leaves=12, max_depth=5,
+            learning_rate=.04, min_child_samples=100, reg_lambda=10.0,
+            subsample=1.0, colsample_bytree=1.0,
+            n_jobs=1, random_state=SEED, verbosity=-1,
+        )
+    except ImportError:
+        unavailable["lightgbm"] = "dependency_missing"
+    try:
+        from xgboost import XGBClassifier
+        factories["xgboost"] = lambda: XGBClassifier(
+            n_estimators=150, max_depth=3, learning_rate=.04,
+            min_child_weight=40, reg_lambda=10.0,
+            n_jobs=1, random_state=SEED, tree_method="hist",
+            eval_metric="logloss",
+        )
+    except ImportError:
+        unavailable["xgboost"] = "dependency_missing"
+    try:
+        from catboost import CatBoostClassifier
+        factories["catboost"] = lambda: CatBoostClassifier(
+            iterations=150, depth=4, learning_rate=.04,
+            l2_leaf_reg=10.0, thread_count=1, random_seed=SEED,
+            verbose=False, allow_writing_files=False,
+        )
+    except ImportError:
+        unavailable["catboost"] = "dependency_missing"
+    return factories, unavailable
+
+
+def _scores(model, samples, base):
+    predictions = model.predict_proba([x[2] for x in samples])
+    scored = []
+    for result, sample in zip(predictions, samples, strict=True):
+        p = float(result[1])
+        if not math.isfinite(p) or not 0 <= p <= 1:
+            raise ValueError("invalid historical model probability")
+        scored.append((p, sample[3], sample[0].date().isoformat()))
+    return _metrics(scored, base)
+
+
+def evaluate_compatible_boosters(manifests, *, horizon, prepared=None, estimators=None):
+    """Fit a single source-specific offline experiment, never a live model."""
+    identity, rows, provenance = assemble(manifests) if prepared is None else prepared[:3]
+    vectors = historical_features(rows, identity) if prepared is None else prepared[3]
+    train, validation, test = compatible_partitions(
+        rows, vectors, horizon=horizon, identity=identity,
+    )
+    if len(train) < 300 or len(validation) < 100 or len(test) < 100:
+        raise HistoryImportError("insufficient purge-separated model research")
+    factories, unavailable = _estimators() if estimators is None else (estimators, {})
+    if not factories:
+        return {"status": "dependencies_missing", "identity": identity,
+                "horizon_minutes": horizon, "unavailable": unavailable,
+                "live_model_promoted": False}
+    # A bounded *stratified-in-time*, not recency-only, subset retains
+    # coverage throughout the original six-month training interval.
+    stride = max(1, math.ceil(len(train) / MAX_TRAIN))
+    fitted = train[::stride]
+    if len({x[3] for x in fitted}) < 2:
+        return {"status": "single_class_training", "identity": identity,
+                "horizon_minutes": horizon, "live_model_promoted": False}
+    base = (sum(s[3] for s in fitted) + 5) / (len(fitted) + 10)
+    compared = []
+    for family in FAMILIES:
+        factory = factories.get(family)
+        if factory is None:
+            continue
+        try:
+            model = factory()
+            model.fit([s[2] for s in fitted], [s[3] for s in fitted])
+            metrics = _scores(model, validation, base)
+            compared.append((family, model, metrics))
+        except (ValueError, RuntimeError, TypeError, ArithmeticError) as exc:
+            unavailable[family] = "training_failed:" + type(exc).__name__
+    if not compared:
+        return {"status": "no_usable_family", "identity": identity,
+                "horizon_minutes": horizon, "unavailable": unavailable,
+                "live_model_promoted": False}
+    # Strict validation-only selection. Do not inspect the final test for
+    # hyperparameter choice or to pick the family that happened to get lucky.
+    family, champion, validation_score = min(
+        compared, key=lambda x: (x[2]["brier"], x[0]),
+    )
+    test_score = _scores(champion, test, base)
+    spec = {
+        "model": "boosted-offline-research-v1", "family": family,
+        "identity": identity, "horizon_minutes": horizon,
+        "feature_contract": FEATURE_CONTRACT, "target_contract": TARGET_CONTRACT,
+        "source_sha256_by_month": provenance["source_sha256_by_month"],
+        "training_count": len(fitted),
+        "train_cutoff": train[-1][1].isoformat(),
+        "validation_cutoff": test[0][0].isoformat(),
+        "evaluation_completed_through": test[-1][1].isoformat(),
+        "model_serialized": False,
+    }
+    passed = (len(provenance["months"]) >= 6
+              and all(m["brier_gain"] > .005
+                      and m["ece_10"] <= .10 and m["days"] >= 7
+                      for m in (validation_score, test_score)))
+    return {
+        "schema_version": "rival-boosted-tree-research-v1",
+        "status": "evaluated",
+        "identity": identity, "horizon_minutes": horizon,
+        "model_sha256": hashlib.sha256(canonical(spec).encode()).hexdigest(),
+        "model_spec": spec,
+        "validation": validation_score, "out_of_sample_test": test_score,
+        "compared_on_validation": [
+            {"family": name, "scores": metrics} for name, _, metrics in compared
+        ],
+        "unavailable": unavailable,
+        "research_candidate_passed": passed,
+        "live_model_promoted": False, "prospective_accuracy": None,
+        "eligible_for_live_import": False,
+        "reason": "historical tree model is not a signed, source-compatible live artifact",
+    }
+
+
+def evaluate_directory(root: Path, *, qualified_streams):
+    groups = defaultdict(list)
+    for path in sorted((root / "binance_um_klines").glob("*.manifest.json")):
+        import json
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        key = (meta.get("contract"), meta.get("interval_minutes"))
+        if key[1] == 5 and key in qualified_streams:
+            groups[key].append(path)
+    from parlay_bot.perpetuals.markets import HORIZONS
+    results = []
+    for paths in groups.values():
+        identity, rows, provenance = assemble(paths)
+        vectors = historical_features(rows, identity)
+        prepared = (identity, rows, provenance, vectors)
+        for horizon in HORIZONS:
+            try:
+                results.append(evaluate_compatible_boosters(
+                    paths, horizon=horizon, prepared=prepared,
+                ))
+            except HistoryImportError:
+                continue
+    return results

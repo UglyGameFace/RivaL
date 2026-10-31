@@ -770,6 +770,8 @@ class RivalDiscordClient(discord.Client):
                 ("Sport results", self._sports_results_task),
                 ("Perpetual data", self._perp_task),
                 ("Model evaluation", self._shadow_task),
+                ("Polymarket oracle", self._polybolt_task),
+                ("Kalshi learning", self._kalshi_research_task),
                 ("Personal alerts", self._target_task),
             )
             embed = discord.Embed(
@@ -813,6 +815,21 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001
                 description = "Sportsbook refresh state unavailable"
             embed.add_field(name="Actual source status", value=description, inline=False)
+            oracle_status = self.polybolt.status()
+            oracle_text = (
+                "PolyBolt TWAP: "
+                + ("authenticated" if oracle_status["connected"] else
+                   "credentials needed" if not oracle_status["configured"] else
+                   "not connected")
+                + " • fresh Chainlink TWAP: "
+                + (", ".join(oracle_status["assets_fresh"])
+                   if oracle_status["assets_fresh"] else "none verified")
+                + " • oracle-v2 is research-only"
+            )
+            embed.add_field(
+                name="Polymarket oracle research",
+                value=oracle_text, inline=False,
+            )
             embed.add_field(name="Latest refresh attempt", value=self.sports_refresh_status, inline=False)
             embed.set_footer(
                 text="Use /rival-quote and /rival-sport-proof for separate market/model evidence"

@@ -353,3 +353,98 @@ async def restore_verified_source_months(
                 output.write_bytes(payload)
         imported.append(path)
     return imported
+
+def source_month_readiness(
+    market, *, venue: str, contract: str, quote: str,
+    now: datetime | None = None,
+) -> dict:
+    """Bounded host-DB evidence for six *complete calendar* training months.
+
+    Row counts alone are NOT continuity or byte proof. Only the existing
+    publisher's persisted receipt identifies a month that completed exact
+    source-grid checks and remote SHA-256 readback. Drive restoration still
+    independently verifies stored bytes before any research model is trained.
+    This function neither retrieves historical candles nor promotes models.
+    """
+    from parlay_bot.research.batch import complete_months
+
+    if (venue not in VENUES or not contract or len(contract) > 64
+        or quote not in {"USDT", "USDC", "USD"}):
+        raise ValueError("unsupported source-native evidence identity")
+    clock = now or datetime.now(UTC)
+    if clock.utcoffset() is None:
+        raise ValueError("source-native evidence requires a timezone-aware clock")
+    months = complete_months(now=clock, count=6)
+    start = months[0] + "-01T00:00:00+00:00"
+    end = clock.astimezone(UTC).strftime("%Y-%m") + "-01T00:00:00+00:00"
+    market.initialize()
+    with market.store.connect() as conn:
+        counted = conn.execute(
+            """SELECT substr(opened_at,1,7) AS month, COUNT(*) AS bars,
+                      MIN(opened_at) AS first_open, MAX(opened_at) AS last_open
+               FROM perp_market_candles
+               WHERE venue=? AND contract=? AND quote=? AND interval_minutes=5
+                 AND opened_at>=? AND opened_at<?
+               GROUP BY substr(opened_at,1,7)""",
+            (venue, contract, quote, start, end),
+        ).fetchall()
+        # A new or partially migrated database can lack the receipt table.
+        # That is UNKNOWN, never zero verified publications.
+        try:
+            receipts = conn.execute(
+                """SELECT month,published_at FROM rival_native_research_receipts
+                   WHERE venue=? AND contract=? AND quote=? AND month>=?
+                     AND month<=?""",
+                (venue, contract, quote, months[0], months[-1]),
+            ).fetchall()
+        except Exception as exc:
+            message = str(exc).lower()
+            if "no such table" not in message and "does not exist" not in message:
+                raise
+            receipts = None
+
+    by_month = {str(row["month"]): row for row in counted}
+    published = (
+        {str(row["month"]): str(row["published_at"]) for row in receipts}
+        if receipts is not None else None
+    )
+    details = []
+    for month in months:
+        first = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
+        last = (
+            first.replace(year=first.year + 1, month=1)
+            if first.month == 12 else first.replace(month=first.month + 1)
+        )
+        expected = int((last - first) / STEP)
+        row = by_month.get(month)
+        bars = int(row["bars"]) if row is not None else 0
+        first_seen = str(row["first_open"]) if row is not None else None
+        last_seen = str(row["last_open"]) if row is not None else None
+        count_possible = (
+            bars == expected and first_seen == first.isoformat()
+            and last_seen == (last - STEP).isoformat()
+        )
+        has_receipt = published is not None and month in published
+        details.append({
+            "month": month, "bars": bars, "expected_bars": expected,
+            "count_looks_complete": count_possible,
+            "publisher_receipt": (
+                "present" if has_receipt else
+                "absent" if published is not None else "unknown"
+            ),
+            "status": (
+                "published_receipt" if has_receipt and count_possible
+                else "receipt_source_mismatch" if has_receipt
+                else "count_only_not_certified" if count_possible
+                else "incomplete"
+            ),
+        })
+    verified = sum(x["status"] == "published_receipt" for x in details)
+    return {
+        "venue": venue, "contract": contract, "quote": quote,
+        "months": details, "months_with_receipts": verified,
+        "receipt_read_available": published is not None,
+        "six_month_receipts_ready": verified == 6,
+        "training_approved": False,
+        "note": "Host receipts are not Drive restore, model import, or future proof",
+    }

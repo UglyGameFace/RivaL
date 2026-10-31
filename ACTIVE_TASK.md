@@ -1,3 +1,10 @@
+## Active outcome: native research production receipt visibility (2026-10-31)
+- Goal: Make exact source-native six-month readiness visible from the actual host PostgreSQL, without projecting Binance archive coverage onto another exchange or turning backfills into live predictions.
+- Change in progress: bounded, per-selected-venue six complete calendar-month count and publisher-receipt evidence in the existing Math & History → History & gaps screen. Each count-only month is explicitly NOT certified; receipts follow full-grid validation and private Drive downloaded-byte checks. Reporting does not train, promote or trade.
+- Verified release baseline: #167 merged main@8c4ab59cdc93e3eff988bbbe9a3d809d2acde9d5; main CI passed and Discloud API 200 upload. No native live-venue model file or source-month manifesto was visible in connected RivaL Drive at this check. The hosted DB itself is still unavailable through connector.
+- Empirical blockers remain exact six-month native receipts, authenticated Drive restore and source-trained model publication/import, then 21-day/150-forward-target/80%-quote and positive conservative+severe paper after-cost evidence. No claims of live approval; keep NO CALL and Issues #151/#6 open.
+- Branch/PR and exact-commit CI must be reconciled before any merge; no duplicate learner, model weights, trading API, or unqualified promotion.
+
 ## Active outcome: native research publication and acceptance checks (2026-10-31)
 - Objective: Obtain six complete 5m UTC calendar months for an exact production venue/contract/quote, publish source-native verified model artifacts, and track actual hosted import plus independently future-only evidence. Preserve research-only status, the existing model registry, 21-day/150-window/80%-coverage after-cost gates, incumbent and NO CALL.
 - Verified integration: PR #166 merged at `main@cc075b94805bb28cecb2eb89a67d877046c41c8c`; exact-main CI run 41243630011 and Discloud package release 41243781702 succeeded. Upload is not proof of hosted process/database health.

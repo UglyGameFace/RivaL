@@ -338,3 +338,59 @@ def test_native_month_export_real_postgresql16(tmp_path):
                 ("hyperliquid", "XBT_NATIVE_TEST", "USDC"),
             )
         hot.close()
+
+
+def test_native_month_readiness_requires_real_archival_receipts(
+    native_market, tmp_path,
+):
+    from parlay_bot.research.source_native import source_month_readiness
+
+    clock = datetime(2026, 10, 31, 12, tzinfo=UTC)
+    _seed_month(native_market, venue="hyperliquid", contract="BTC",
+                quote="USDC", month=9)
+    before = source_month_readiness(
+        native_market, venue="hyperliquid", contract="BTC", quote="USDC",
+        now=clock,
+    )
+    assert len(before["months"]) == 6
+    september = before["months"][-1]
+    assert september["month"] == "2026-09"
+    assert september["bars"] == september["expected_bars"]
+    assert september["status"] == "count_only_not_certified"
+    assert before["months_with_receipts"] == 0
+    assert before["receipt_read_available"] is False
+    assert before["six_month_receipts_ready"] is False
+    assert before["training_approved"] is False
+
+    import asyncio
+    publisher = NativeMonthlyPublisher(native_market, _FakeArchiveDrive(), tmp_path)
+    published = asyncio.run(publisher.run_once(now=clock, max_batches=2))
+    assert len(published) == 1
+    after = source_month_readiness(
+        native_market, venue="hyperliquid", contract="BTC", quote="USDC",
+        now=clock,
+    )
+    assert after["receipt_read_available"] is True
+    assert after["months_with_receipts"] == 1
+    assert after["months"][-1]["status"] == "published_receipt"
+    assert after["months"][0]["status"] == "incomplete"
+    assert after["six_month_receipts_ready"] is False
+    assert after["training_approved"] is False
+
+
+def test_native_month_readiness_never_mixes_contract_or_quote(native_market):
+    from parlay_bot.research.source_native import source_month_readiness
+
+    clock = datetime(2026, 10, 31, 12, tzinfo=UTC)
+    _seed_month(native_market, venue="hyperliquid", contract="BTC",
+                quote="USDC", month=9)
+    wrong_quote = source_month_readiness(
+        native_market, venue="hyperliquid", contract="BTC", quote="USDT",
+        now=clock,
+    )
+    assert all(row["bars"] == 0 for row in wrong_quote["months"])
+    with pytest.raises(ValueError):
+        source_month_readiness(
+            native_market, venue="binance", contract="BTC", quote="USDC",
+            now=clock,
+        )

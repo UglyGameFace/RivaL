@@ -68,7 +68,6 @@ def test_oracle_challenger_requires_real_receipts_and_keeps_first_forward(tmp_pa
         assert oracle.summary()["observed_contracts"] == 1
         assert oracle.summary()["learned_contracts"] == 0
         from parlay_bot.perpetuals.model_checkpoints import canonical
-        from parlay_bot.perpetuals.polymarket_oracle import oracle_features
         inputs = canonical(oracle_features(market, ref, now=now))
         with store.connect() as conn:
             for i in range(100):

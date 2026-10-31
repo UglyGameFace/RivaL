@@ -53,7 +53,7 @@ def _number(value: str) -> float:
         v = float(value)
     except (ValueError, TypeError, OverflowError) as exc:
         raise HistoryImportError("invalid historical positioning measurement") from exc
-    if not math.isfinite(v) or v < 0:
+    if not math.isfinite(v) or v < 0 or v > 1e16:
         raise HistoryImportError("invalid or negative positioning measurement")
     return v
 
@@ -87,7 +87,8 @@ def parse_daily_metrics(payload: bytes, *, asset: str, day: date) -> list[dict]:
         labeled = labeled.astimezone(UTC)
         if (labeled.second or labeled.microsecond or labeled.minute % 5
             or (previous is not None and labeled <= previous)
-            or labeled.date() not in (day, day + timedelta(days=1))):
+            or labeled.date() not in (day, day + timedelta(days=1))
+            or (labeled.date() != day and labeled.time() != datetime.min.time())):
             raise HistoryImportError("untrustworthy metrics chronology or source day")
         # Old source files were end-labeled, new files start-labeled; the
         # transition has two colliding labels across adjacent daily archives.
@@ -143,8 +144,8 @@ def ingest_daily_metrics(
 
 
 def _days(count: int, *, now: datetime) -> list[date]:
-    if not 1 <= count <= 210 or now.utcoffset() is None:
-        raise ValueError("metrics catch-up requires 1..210 past days and aware clock")
+    if not 1 <= count <= 220 or now.utcoffset() is None:
+        raise ValueError("metrics catch-up requires 1..220 past days and aware clock")
     today = now.astimezone(UTC).date()
     return [today - timedelta(days=n) for n in range(count, 0, -1)]
 
@@ -220,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Conservative Binance positioning research")
     parser.add_argument("--root", type=Path, default=Path("data/research-history"))
     parser.add_argument("--report-dir", type=Path, default=Path("data/research-reports"))
-    parser.add_argument("--days", type=int, default=182)
+    parser.add_argument("--days", type=int, default=215)
     parser.add_argument("--assets", nargs="+", choices=sorted(ASSETS), default=["BTC", "ETH", "SOL"])
     parser.add_argument("--max-new", type=int, default=80)
     parser.add_argument("--publish", action="store_true")

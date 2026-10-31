@@ -1995,10 +1995,15 @@ class GuidedHome(discord.ui.View):
                 )
                 return
             limits = OwnerLimitStore(interaction.client.store)
-            view = OwnerLimitsView(store=limits, owner_id=owner.id)
+            view = OwnerLimitsView(
+                store=limits, owner_id=owner.id,
+                odds_provider=getattr(interaction.client, "oddspapi_provider", None),
+                sports_provider=getattr(interaction.client, "current_provider", None),
+            )
             await interaction.followup.send(
-                "API Usage & Limits: choose a provider to set your safety ceiling. "
-                "This does not upgrade the provider subscription.",
+                "API Usage & Limits: review your saved limits, change a ceiling "
+                "with confirmation, or check current provider usage. "
+                "Provider allowances still take precedence.",
                 view=view, ephemeral=True,
             )
             return

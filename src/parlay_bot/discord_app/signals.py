@@ -644,7 +644,7 @@ async def signal_embed(
         name="Model and expiry",
         value=(
             f"**{direction if is_watch else 'NO CALL'}** • raw model {direction} "
-            f"{max(probability, 1 - probability):.1%} 
+            f"{max(probability, 1 - probability):.1%} "
             f"({strength})\n"
             f"Source: **{chosen['venue']}** • "
             f"Issued {discord.utils.format_dt(chosen['issued'], style='R')}\n"

@@ -18,8 +18,14 @@ from pathlib import Path
 import httpx
 
 from parlay_bot.research.free_history import (
-    ASSETS, HistoryImportError, _binance_rows, _checked_zip, _fetch,
-    _month_key, _persist, _sha,
+    ASSETS,
+    HistoryImportError,
+    _binance_rows,
+    _checked_zip,
+    _fetch,
+    _month_key,
+    _persist,
+    _sha,
 )
 
 BASE = "https://data.binance.vision/data/futures/um/monthly"

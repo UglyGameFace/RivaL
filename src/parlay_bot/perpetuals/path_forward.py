@@ -56,7 +56,7 @@ def empirical_paths(candles, *, horizon: int, now: datetime):
         return {}
     instant = utc(now)
     steps = horizon//5
-    if len(candles) < LOOKBACK+steps+MIN_TRAIN*steps+1:
+    if len(candles) < LOOKBACK+steps+MIN_TRAIN*steps+2:
         return {}
     previous = None
     for c in candles:
@@ -70,10 +70,13 @@ def empirical_paths(candles, *, horizon: int, now: datetime):
     latest = len(candles)-1
     side_samples = {side: [] for side in SIDES}
     # A step-wide grid avoids training on 12 copies of one 60m outcome.
-    for index in range(LOOKBACK, latest-steps+1, steps):
+    # Skip the first candle opening alongside the reference close: the
+    # real worker issues seconds AFTER that bar opens and cannot prove
+    # what happened inside the bar before issuance.
+    for index in range(LOOKBACK, latest-steps, steps):
         reference = candles[index]
-        ahead = candles[index+1:index+steps+1]
-        if any(utc(item.opened_at) != utc(reference.opened_at)+timedelta(minutes=5*(j+1))
+        ahead = candles[index+2:index+steps+2]
+        if any(utc(item.opened_at) != utc(reference.opened_at)+timedelta(minutes=5*(j+2))
                or utc(item.closed_at) >= instant or utc(item.observed_at) > instant
                for j,item in enumerate(ahead)):
             continue
@@ -181,7 +184,9 @@ class ProspectivePathLedger:
         options=empirical_paths(candles,horizon=horizon,now=now)
         if not options:
             return 0
-        target=utc(last.opened_at)+timedelta(minutes=horizon)
+        # The path starts with the next complete candle AFTER issuance
+        # (reference open +10m). Never score the partially elapsed bar.
+        target=utc(last.opened_at)+timedelta(minutes=horizon+5)
         count=0
         for side,sample in options.items():
             result=conn.execute(
@@ -224,7 +229,7 @@ class ProspectivePathLedger:
                 issued=utc(datetime.fromisoformat(p["issued_at"]))
                 steps=int(p["horizon_minutes"])//5
                 if not (issued < reference+timedelta(minutes=10) and issued<=stamp
-                        and target==reference+timedelta(minutes=5*steps)):
+                        and target==reference+timedelta(minutes=5*(steps+1))):
                     continue
                 bars=conn.execute(
                     """SELECT opened_at,closed_at,first_observed_at,high_price,
@@ -233,14 +238,15 @@ class ProspectivePathLedger:
                          AND interval_minutes=5 AND opened_at>?
                          AND opened_at<=? ORDER BY opened_at""",
                     (p["venue"],p["contract"],p["quote"],
-                     reference.isoformat(),target.isoformat()),
+                     (reference+timedelta(minutes=5)).isoformat(),
+                     target.isoformat()),
                 ).fetchall()
                 if len(bars)!=steps:
                     continue
                 try:
                     valid=all(
                         utc(datetime.fromisoformat(b["opened_at"])) ==
-                            reference+timedelta(minutes=5*(j+1))
+                            reference+timedelta(minutes=5*(j+2))
                         and issued < utc(datetime.fromisoformat(
                             b["first_observed_at"])) <= stamp
                         and utc(datetime.fromisoformat(b["closed_at"])) < stamp
@@ -299,7 +305,7 @@ class ProspectivePathLedger:
         for row in rows:
             key="/".join((row["venue"],row["contract"],row["quote"],row["side"]))
             target=str(row["target_opened_at"])
-            if int(datetime.fromisoformat(target).timestamp())%(horizon*60):
+            if (int(datetime.fromisoformat(target).timestamp())-300)%(horizon*60):
                 continue
             scopes.setdefault(key,{}).setdefault(target,[]).append(row)
         reports={}

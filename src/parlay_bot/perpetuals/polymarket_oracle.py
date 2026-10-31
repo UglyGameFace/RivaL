@@ -68,7 +68,7 @@ def oracle_features(notice, reference: OracleReference, *, now: datetime) -> tup
     rule = (notice.rules or "").lower()
     if notice.horizon in (5, 15):
         if (reference.method != "chainlink-twap-60s"
-            or "chainlink" not in source or "twap" not in rule
+            or not ("chainlink" in source or "chain.link" in source) or "twap" not in rule
             or not re.search(r"60[ -]?(?:second|sec|s)", rule)):
             raise ValueError("current short-window oracle rule not verified")
     elif notice.horizon == 60:
@@ -77,7 +77,7 @@ def oracle_features(notice, reference: OracleReference, *, now: datetime) -> tup
         # contracts may publish another exact settlement source.
         chainlink = (
             reference.method == "chainlink-twap-60s"
-            and "chainlink" in source and "twap" in rule
+            and ("chainlink" in source or "chain.link" in source) and "twap" in rule
             and re.search(r"60[ -]?(?:second|sec|s)", rule)
         )
         binance = (

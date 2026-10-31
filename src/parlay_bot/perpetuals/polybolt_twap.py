@@ -32,6 +32,10 @@ MAX_AGE = timedelta(seconds=8)
 MAX_SAMPLE_AGE = timedelta(minutes=3)
 
 
+class _TransientAuthUnavailable(Exception):
+    """The provider explicitly reported temporary auth infrastructure failure."""
+
+
 @dataclass(frozen=True)
 class TWAPTick:
     asset: str
@@ -63,6 +67,10 @@ class PolyBoltTWAP:
         self._subscribed = False
         self._healthy_since: datetime | None = None
         self._last_error = "not connected"
+        self._auth_at: datetime | None = None
+        self._first_valid_at: datetime | None = None
+        self._valid_observations: int = 0
+        self._reconnects: int = 0
 
     @property
     def configured(self) -> bool:
@@ -73,20 +81,33 @@ class PolyBoltTWAP:
         self._subscribed = False
         self._authenticated = False
         self._healthy_since = None
+        self._auth_at = None
         for ticks in self._ticks.values():
             ticks.clear()
 
     def status(self, *, now: datetime | None = None) -> dict:
         checked = now or datetime.now(UTC)
+        if checked.tzinfo is None or checked.utcoffset() is None:
+            raise ValueError("diagnostic clock must be timezone-aware")
+        checked = checked.astimezone(UTC)
+        fresh = [
+            asset for asset in ASSETS
+            if self._ticks[asset]
+            and timedelta(0) <= checked-self._ticks[asset][-1].observed_at <= MAX_AGE
+        ]
         return {
             "configured": self.configured,
             "connected": self._authenticated and self._subscribed,
+            "authenticated": self._authenticated,
             "channel": CHANNEL,
-            "assets_fresh": [
-                asset for asset in ASSETS
-                if self._ticks[asset]
-                and timedelta(0) <= checked-self._ticks[asset][-1].observed_at <= MAX_AGE
-            ],
+            "assets_fresh": fresh,
+            "valid_twap_live": bool(self._authenticated and self._subscribed and fresh),
+            "accepted_twap_samples": self._valid_observations,
+            "last_valid_twap_at": (
+                self._healthy_since.isoformat() if self._healthy_since else None
+            ),
+            "auth_at": self._auth_at.isoformat() if self._auth_at else None,
+            "reconnects": self._reconnects,
             "last_error": self._last_error,
             "model_approved": False,
         }
@@ -102,14 +123,28 @@ class PolyBoltTWAP:
         operation = message.get("op")
         if operation == "authed":
             self._authenticated = True
+            self._auth_at = received
             self._last_error = None
             return 0
         if operation == "error":
-            self._last_error = str(message.get("code") or "provider_error")[:55]
+            raw_code = message.get("code")
+            code = raw_code if raw_code in (
+                "auth_invalid", "auth_required", "auth_unavailable",
+                "bad_filter", "bad_channel", "sub_limit", "rate_limited",
+            ) else "provider_error"
+            self._last_error = code
             self._subscribed = False
+            _LOG.warning(
+                "RivaL PolyBolt provider error code=%s (no credentials logged)",
+                code,
+            )
             return 0
         if operation == "subscribed":
             if message.get("channel") == CHANNEL and self._authenticated:
+                if not self._subscribed:
+                    _LOG.info(
+                        "RivaL PolyBolt Chainlink TWAP subscription accepted"
+                    )
                 self._subscribed = True
             return 0
         if message.get("channel") != CHANNEL or not self._authenticated:
@@ -174,8 +209,15 @@ class PolyBoltTWAP:
             except (ValueError, TypeError, OverflowError):
                 continue
         if updated:
+            self._valid_observations += updated
             self._healthy_since = received
             self._last_error = None
+            if self._first_valid_at is None:
+                self._first_valid_at = received
+                _LOG.info(
+                    "RivaL PolyBolt first verified Chainlink TWAP samples "
+                    "asset=%s count=%d (no keys/prices logged)", asset, updated,
+                )
         return updated
 
     def reference(self, notice, *, now: datetime | None = None) -> OracleReference | None:
@@ -248,6 +290,12 @@ class PolyBoltTWAP:
         backoff = 1.
         while True:
             self.reset()
+            self._reconnects += 1
+            _LOG.info(
+                "RivaL PolyBolt TWAP connecting attempt=%d "
+                "channel=%s credentials_configured=true",
+                self._reconnects, CHANNEL,
+            )
             try:
                 async with connect(
                     WS, max_size=65536, open_timeout=10,
@@ -262,10 +310,29 @@ class PolyBoltTWAP:
                         },
                     }))
                     auth = json.loads(await asyncio.wait_for(socket.recv(), timeout=8))
+                    if not isinstance(auth, dict):
+                        self._last_error = "PolyBolt invalid auth response"
+                        _LOG.warning("RivaL PolyBolt invalid authentication response")
+                        return
                     if auth.get("op") != "authed":
-                        self._last_error = "PolyBolt authentication rejected"
-                        return  # Credentials/entitlement need owner action.
+                        code = auth.get("code")
+                        if code == "auth_unavailable":
+                            self._last_error = "PolyBolt auth temporarily unavailable"
+                            raise _TransientAuthUnavailable
+                        self._last_error = (
+                            "PolyBolt authentication rejected"
+                            if code == "auth_invalid" else
+                            "PolyBolt authentication not confirmed"
+                        )
+                        _LOG.warning(
+                            "RivaL PolyBolt authentication not confirmed; "
+                            "check CLOB credentials and feed entitlement (code=%s)",
+                            code if code in ("auth_invalid", "auth_required")
+                            else "unrecognized",
+                        )
+                        return  # Invalid authorization won't fix itself on retry.
                     self.accept(auth)
+                    _LOG.info("RivaL PolyBolt CLOB authentication verified")
                     await socket.send(json.dumps({
                         "op": "subscribe", "rid": "rival-twap",
                         "subscriptions": [
@@ -280,9 +347,15 @@ class PolyBoltTWAP:
                         self.accept(json.loads(raw))
                         # Auth required/errors are not endlessly retried.
                         if self._last_error in ("auth_invalid", "auth_required"):
+                            _LOG.warning("RivaL PolyBolt source rejected subscription")
                             return
             except asyncio.CancelledError:
                 raise
+            except _TransientAuthUnavailable:
+                _LOG.warning(
+                    "RivaL PolyBolt authentication temporarily unavailable; "
+                    "retrying without exposing credentials"
+                )
             except Exception:  # noqa: BLE001
                 # Do not log request frames/credentials or remote payloads.
                 self._last_error = "PolyBolt transport interrupted"

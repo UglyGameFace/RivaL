@@ -1,3 +1,15 @@
+## ACTIVE TASK: Audit P1 WATCH confidence guard (2026-10-31)
+
+- Objective: prevent a 50-row, single-day or barely-positive Brier result from being labeled an evidence-qualified crypto WATCH. Do **not** restore Auto-Hunt: sports scanner is a future independent feature only after real API coverage.
+- Baseline: main `79cc1cccc6025ce7ac0a3957ab8eaa303c32b02b` (#145 merged); no open PR when branch started. #6/#66/#138 remain separate empirical/live-acceptance tasks.
+- Root cause: seven-day venue evidence required only 50 settled rows and mean Brier below baseline; even a one-day lucky session or mixed model versions could qualify.
+- Patch: same-model venue evidence, shared day-block lower confidence guard (at least 50 eligible settled rows, at least five UTC days with five scored rows each, mean Brier advantage of at least 0.01 and positive conservative daily lower bound). Separate fused challenger proof. Passive/manual Get Signal and retired background evaluator follow identical gate; fail-closed status is explained as research, not WATCH. No provider requests, notifications, orders, migrations or model promotion added.
+- Branch: `fix/watch-forward-day-block-proof-20261031`. CI must confirm full Ruff, SQLite and PostgreSQL integration; merge exact validated head only.
+- Production verification: inspect hosted signal labels, model cohorts, and actual prospective scores. This guard does **not** prove independence or profitable edges. Other audits (stale menus, history recovery, AI quotas, oracle/tie correctness) remain.
+- Rollback: code-only rollback; original forecast and outcome records are unchanged.
+
+---
+
 ## ACTIVE TASK: Audit P1-6 sports settlement recovery (2026-10-31)
 
 - Objective: retain valid final results and prevent poison forecasts from starving bounded settlement repair. Auto-Hunt is intentionally retired per the owner's explicit clarification; do not restore it.

@@ -696,201 +696,136 @@ class GuidedHome(discord.ui.View):
                 color=discord.Color.blurple(),
             )
         elif p in ("live", "kalshi"):
-            # One source-focused card and one set of controls. Legacy Kalshi
-            # deep links still land here, not a competing submenu.
             source = self.live_source if p == "live" else "kalshi"
-            service = (
-                getattr(getattr(self.auto_hunt, "bot", None),
-                        "polymarket_board", None)
-            )
-            tracker = None
-            if service is not None:
-                try:
-                    tracker = await asyncio.wait_for(
-                        asyncio.to_thread(service.store.get, str(self.owner_id)),
-                        timeout=0.75,
-                    )
-                except (TimeoutError, Exception):  # noqa: BLE001
-                    _LOG.info("Market desk tracker status busy")
-            status = (
-                f"**TRACKING {tracker.asset} {tracker.horizon}m** "
-                "• your DM updates automatically"
-                if tracker else "**OFF** • Start Auto-Track for one updated private message"
-            )
-            provider = {
-                "polymarket": "Polymarket Global",
-                "kalshi": "Kalshi",
-                "draftkings": "DraftKings Predictions",
-            }.get(source, "Polymarket Global")
-            embed = discord.Embed(
-                title=(
-                    f"📈 Crypto Markets | {provider} • {self.coin}"
-                    + (f" {self.horizon}m" if source == "polymarket" else "")
-                ),
-                description=(
-                    "**Live contract call: WAIT** • no verified, "
-                    "forward-tested profitable market edge.\n"
-                    + status
-                ),
-                color=discord.Color.blurple(),
-            )
             if source == "polymarket":
-                cached = None
+                service = getattr(
+                    getattr(self.auto_hunt, "bot", None),
+                    "polymarket_board", None,
+                )
+                embed = discord.Embed(
+                    title=f"🎯 Polymarket | {self.coin} {self.horizon}m",
+                    description="**RivaL call: WAIT** • No verified contract-specific call yet.",
+                    color=discord.Color.orange(),
+                )
+                tracker = None
                 if service is not None:
-                    preview = getattr(service, "preview", None)
-                    if callable(preview):
-                        try:
-                            cached = await preview(self.coin, self.horizon)
-                        except (TimeoutError, ValueError):
-                            cached = None
-                board, model = cached if cached is not None else (None, None)
-                if board is not None and board.current is not None:
-                    event = board.current
-                    quote = board.current_quote
+                    try:
+                        tracker = await asyncio.wait_for(
+                            asyncio.to_thread(service.store.get, str(self.owner_id)),
+                            timeout=0.7,
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOG.info("Tracker status unavailable")
+                if tracker is not None:
+                    tracking = (
+                        "ON • This market updates in one DM"
+                        if tracker.asset == self.coin and tracker.horizon == self.horizon
+                        else f"ON • {tracker.asset} {tracker.horizon}m instead"
+                    )
+                else:
+                    tracking = "OFF"
+                embed.add_field(name="🔔 Your tracking", value=tracking, inline=False)
+                cached = None
+                if service is not None and callable(getattr(service, "preview", None)):
+                    try:
+                        cached = await service.preview(self.coin, self.horizon)
+                    except Exception:  # noqa: BLE001
+                        _LOG.info("Exact Polymarket preview unavailable")
+                board, call = cached if cached is not None else (None, None)
+                if board is None or board.current is None:
                     embed.add_field(
-                        name="🎯 Current Polymarket contract",
-                        value=(
-                            f"[Open verified event]({event.url}) • "
-                            f"Closes {discord.utils.format_dt(event.closes, style='R')}\n"
-                            + (
-                                f"Price to beat: ${event.price_to_beat:,.4f}"
-                                if event.price_to_beat is not None
-                                else "Price to beat: not independently verified"
-                            )
-                            + "\n"
-                            + (
-                                f"UP ask ${quote.up_ask:.2f} • "
-                                f"DOWN ask ${quote.down_ask:.2f} "
-                                f"({discord.utils.format_dt(quote.quote_at, style='R')})"
-                                if quote is not None
-                                else unavailable_text(board.quote_unavailable_reason)
-                            )
-                        ),
+                        name="Contract",
+                        value="No verified current contract. No market price or call was guessed.",
                         inline=False,
                     )
-                    if self.horizon == 60:
-                        embed.add_field(name="Hourly settlement rule", value=(
-                            f"This Polymarket contract uses Binance {self.coin}/USDT's "
-                            "hourly candle. It is not a Bitget forecast."
-                        ), inline=False)
-                    if board.next_window is not None:
-                        nxt = board.next_window
-                        embed.add_field(
-                            name="⏭️ Next verified contract",
-                            value=(
-                                f"[Open next listing]({nxt.url}) • "
-                                f"Opens {discord.utils.format_dt(nxt.opens, style='R')} "
-                                "• future strike unknown until verified"
-                            ),
-                            inline=False,
+                else:
+                    event, quote = board.current, board.current_quote
+                    details = (
+                        f"[Open contract]({event.url}) • "
+                        f"Closes {discord.utils.format_dt(event.closes, style='R')}"
+                    )
+                    if event.price_to_beat is not None:
+                        details += f"\nPrice to beat: USD {event.price_to_beat:,.4f}"
+                    if quote is not None:
+                        details += (
+                            f"\nUP ask USD {quote.up_ask:.2f} • "
+                            f"DOWN ask USD {quote.down_ask:.2f} "
+                            f"({discord.utils.format_dt(quote.quote_at, style='R')})"
                         )
                     else:
+                        details += "\n" + unavailable_text(board.quote_unavailable_reason)
+                    embed.add_field(name="📈 Verified market", value=details, inline=False)
+                    if matching_call(board, call, asset=self.coin, horizon=self.horizon):
+                        embed.description = (
+                            f"**RivaL {call.kind} call: {call.direction}** "
+                            "• experimental, NOT a verified profitable edge."
+                        )
                         embed.add_field(
-                            name="⏭️ Next contract",
-                            value="Next event not verified yet",
+                            name="🧠 Why RivaL called it",
+                            value=(
+                                f"{call.thesis[:450]}\n"
+                                f"Issued {discord.utils.format_dt(call.issued_at, style='R')} "
+                                "for this exact contract."
+                            ), inline=False,
+                        )
+                    else:
+                        research = getattr(service, "research", None)
+                        reason = (
+                            research.status(event.slug) if research is not None
+                            else "Free contract AI or verified inputs unavailable."
+                        )
+                        embed.add_field(
+                            name="🧠 Why no call?",
+                            value=str(reason)[:320],
                             inline=False,
                         )
-                else:
-                    embed.add_field(
-                        name="🎯 Polymarket current / next",
-                        value=(
-                            "No fresh verified contract snapshot yet. "
-                            "The shared tracker warms in the background; "
-                            "no price or direction will be guessed."
-                        ),
-                        inline=False,
-                    )
-                aligned = matching_call(board, model, asset=self.coin, horizon=self.horizon)
-                research = getattr(service, "research", None)
-                reason = (
-                    research.status(board.current.slug)
-                    if research is not None and board is not None and board.current is not None
-                    else "Waiting for verified Polymarket inputs and available free AI."
-                )
-                refresh_note = (
-                    research.refresh_note(board.current.slug)
-                    if aligned and research is not None else None
-                )
-                embed.description = (
-                    f"**Polymarket {model.kind}: {model.direction} (experimental research)**\n"
-                    if aligned else "**Polymarket AI: no current call**\n"
-                ) + status + "\nAccuracy and profitable edge are unverified."
-                embed.add_field(
-                    name=f"🧠 {model.kind if aligned else 'AI'} for this Polymarket contract",
-                    value=(
-                        f"**{model.direction}** • {model.thesis}\n"
-                        f"Call issued {discord.utils.format_dt(model.issued_at, style='R')} "
-                        f"for this exact event; expires {discord.utils.format_dt(model.expires, style='R')}."
-                        + ("\n" + refresh_note if refresh_note else "")
-                        if aligned else reason
-                    ), inline=False,
-                )
+                embed.set_footer(text="Share prices are not winning odds • No orders")
             elif source == "kalshi":
+                embed = discord.Embed(
+                    title=f"🔎 Kalshi | {self.coin}",
+                    description="**RivaL call: NOT AVAILABLE.** No approved Kalshi model. "
+                                "Read-only market browsing, no wagers.",
+                    color=discord.Color.orange(),
+                )
                 if self.kalshi is None:
-                    embed.add_field(
-                        name="Kalshi availability",
-                        value="Public market browser not configured",
-                        inline=False,
-                    )
+                    embed.add_field(name="Verified markets", value="Kalshi browser unavailable.")
                 else:
                     try:
-                        snapshot = await asyncio.wait_for(
+                        found = await asyncio.wait_for(
                             self.kalshi.browse(
                                 self.coin, refresh=self._kalshi_refresh,
                             ), timeout=3.5,
                         )
                         self._kalshi_refresh = False
-                        if not snapshot.markets:
+                        if not found.markets:
                             embed.add_field(
-                                name="Kalshi contracts",
-                                value="No matching open crypto contract confirmed. "
-                                      "No Polymarket market is substituted.",
+                                name="Verified markets",
+                                value="No matching open contract. No Polymarket substitution.",
                                 inline=False,
                             )
-                        for market in snapshot.markets[:3]:
-                            yes = (
-                                f"${market.yes_ask:.2f}"
-                                if market.yes_ask is not None else "not verified"
-                            )
-                            no = (
-                                f"${market.no_ask:.2f}"
-                                if market.no_ask is not None else "not verified"
-                            )
+                        for item in found.markets[:2]:
+                            yes = f"USD {item.yes_ask:.2f}" if item.yes_ask is not None else "unverified"
+                            no = f"USD {item.no_ask:.2f}" if item.no_ask is not None else "unverified"
                             embed.add_field(
-                                name=market.title[:140],
+                                name=item.title[:140],
                                 value=(
-                                    f"`{market.ticker}` • closes "
-                                    f"{discord.utils.format_dt(market.close_time, style='R')}\n"
-                                    f"YES ask {yes} • NO ask {no}\n"
-                                    f"Rule: {market.rules[:130]}"
-                                ),
-                                inline=False,
+                                    f"{item.ticker} • closes "
+                                    f"{discord.utils.format_dt(item.close_time, style='R')}\n"
+                                    f"YES ask: {yes} • NO ask: {no}\n"
+                                    f"Rule: {item.rules[:140]}"
+                                ), inline=False,
                             )
                     except (TimeoutError, ValueError, TypeError):
                         embed.add_field(
-                            name="Kalshi feed unavailable",
-                            value="No fresh contract details verified. "
-                                  "The Polymarket tracker is unaffected.",
+                            name="Verified markets", value="Kalshi feed unavailable.",
                             inline=False,
                         )
-                embed.add_field(
-                    name="RivaL decision",
-                    value="WAIT • Kalshi contract settlement has no "
-                          "approved source-matched prediction model. "
-                          "YES/NO asks are prices, not win chances.",
-                    inline=False,
-                )
             else:
-                embed.add_field(
-                    name="DraftKings Predictions",
-                    value=(
-                        "Not connected: no verified official public market "
-                        "feed and matching contract rules have been integrated. "
-                        "Sportsbook odds are NOT DraftKings Predictions."
-                    ),
-                    inline=False,
+                embed = discord.Embed(
+                    title="Choose Your Market",
+                    description="Select a market in Crypto Analysis before requesting a call.",
+                    color=discord.Color.orange(),
                 )
-            embed.set_footer(text="Share prices are not probabilities • No orders")
         elif p in ("hunt", "hunt-tools"):
             tracker = getattr(getattr(self.auto_hunt, "bot", None),
                               "polymarket_board", None)

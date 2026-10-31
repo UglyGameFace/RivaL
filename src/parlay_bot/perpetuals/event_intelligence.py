@@ -112,7 +112,7 @@ def _indexed_news(payload: bytes, now: datetime) -> list[dict]:
     """Research leads only; GDELT index time is NOT article publication time."""
     items = json.loads(payload)
     if not isinstance(items, dict) or not isinstance(items.get("articles"), list):
-        raise ValueError("invalid global news index response")
+        raise TypeError("invalid global news index response")
     result = []
     for record in items["articles"][:MAX_ITEMS]:
         if not isinstance(record, dict):
@@ -413,7 +413,7 @@ class EventIntelligence:
                     summary["events_seen"] += self._store(source, rows, stamp)
                     summary["sources_ok"] += 1
                     self._status(source, stamp, "ok")
-                except (httpx.HTTPError, ValueError, ET.ParseError, UnicodeError) as exc:
+                except (httpx.HTTPError, ValueError, TypeError, ET.ParseError, UnicodeError) as exc:
                     code = type(exc).__name__[:60]
                     self._status(source, stamp, "unavailable")
                     summary["source_failures"].append({"source": source, "error": code})

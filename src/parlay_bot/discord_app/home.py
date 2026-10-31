@@ -30,11 +30,11 @@ from parlay_bot.discord_app.targeting import target_snapshot
 from parlay_bot.jurisdiction.zip_lookup import ZipLookupError
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
-from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
 from parlay_bot.perpetuals.live_quotes import QuoteUnavailable, quote_embed
 from parlay_bot.perpetuals.markets import ASSET_NAMES
 from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
+from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
 from parlay_bot.providers.owner_limits import OwnerLimitStore
 
 if TYPE_CHECKING:

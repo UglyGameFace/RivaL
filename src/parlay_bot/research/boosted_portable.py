@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import struct
 import tempfile
 from pathlib import Path
 
@@ -183,6 +184,11 @@ def predict_portable(portable, features, *, trusted=False):
             node = tree
             while "value" not in node:
                 value = features[node["feature"]]
+                # XGBoost quantizes inference inputs to float32. Comparing
+                # the original Python float64 at an exact split boundary
+                # can choose the wrong leaf, even if tree weights match.
+                if portable["family"] == "xgboost":
+                    value = struct.unpack("<f", struct.pack("<f", value))[0]
                 left = (value < node["threshold"] if node["op"] == "lt"
                         else value <= node["threshold"])
                 node = node["left"] if left else node["right"]

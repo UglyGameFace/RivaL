@@ -278,6 +278,9 @@ class RivalDiscordClient(discord.Client):
             else "not_configured_or_no_models_folder"
         )
         self._candidate_task: asyncio.Task[None] | None = None
+        # Resume older verified-model pages across bounded archive cycles.
+        # Starting every scan at newest used to starve all but 120 models.
+        self._candidate_inventory_cursor: str | None = None
 
         # No extra account is needed: two public, read-only feeds start
         # automatically with the existing PostgreSQL Discord deployment.
@@ -2341,13 +2344,13 @@ class RivalDiscordClient(discord.Client):
             try:
                 saved = 0
                 pages = 0
-                cursor = None
+                cursor = self._candidate_inventory_cursor
                 seen_cursors = set()
                 # A single latest-ten listing can exclude every older coin,
                 # timeframe and trained model when new artifacts are published.
                 # Bound the scan, keep all existing candidates immutable, and
                 # perform expensive reads off the Discord interaction path.
-                for _ in range(6):
+                for _ in range(12):
                     items, next_cursor = await asyncio.wait_for(
                         self.research_drive.read_verified_research_candidates(
                             limit=20, page_token=cursor, return_next_page=True,
@@ -2372,14 +2375,26 @@ class RivalDiscordClient(discord.Client):
                         raise ValueError("repeated verified-model Drive cursor")
                     seen_cursors.add(next_cursor)
                     cursor = next_cursor
-                if cursor and next_cursor:
-                    _LOG.warning("RivaL model inventory scan capped at %d pages", pages)
+                if next_cursor:
+                    # Continue at the next page on the next six-hour scan;
+                    # don't perpetually re-import only the newest models.
+                    self._candidate_inventory_cursor = next_cursor
+                    _LOG.info(
+                        "RivaL verified model scan reached %d pages; "
+                        "older archive pages resume on next cycle", pages,
+                    )
+                else:
+                    self._candidate_inventory_cursor = None
                 self.candidate_sync_status = f"verified_read_{saved}_candidates"
                 self.candidate_sync_checked_at = datetime.now(UTC)
                 _LOG.info("RivaL verified historical candidate reads=%d", saved)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
+                # Drive pagination tokens can expire when new files arrive.
+                # On a failed read, recover from newest; never mark an
+                # unverified page as a successful model import.
+                self._candidate_inventory_cursor = None
                 self.candidate_sync_status = "drive_read_unverified"
                 self.candidate_sync_checked_at = datetime.now(UTC)
                 _LOG.exception("RivaL candidate import from Drive unavailable")

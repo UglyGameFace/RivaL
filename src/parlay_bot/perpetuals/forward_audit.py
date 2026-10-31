@@ -18,6 +18,7 @@ from parlay_bot.perpetuals.features import (
     persisted_candles,
 )
 from parlay_bot.perpetuals.fusion import utc
+from parlay_bot.perpetuals.family_governance import FamilyPromotion
 from parlay_bot.perpetuals.historical_challengers import HistoricalChallengers
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS, asset_for_contract
@@ -713,6 +714,27 @@ class ForwardAccuracyMonitor:
                 )
                 continue
         metrics["issued_forecasts"] = issued
+        # Hourly, bounded model-family governance uses ONLY already
+        # settled, source-exact forecasts and matched quote results. It
+        # cannot alter the incumbent forecast or send an unqualified call.
+        if stamp.minute < 5 and selection:
+            venue, contract, currency = selection[stamp.hour % len(selection)]
+            asset = asset_for_contract(contract)
+            if asset is not None:
+                horizon = (5, 15, 60)[(stamp.hour // max(1, len(selection))) % 3]
+                try:
+                    family_status = FamilyPromotion(self.store).evaluate(
+                        asset=asset, venue=venue, contract=contract,
+                        quote=currency, horizon=horizon, now=stamp,
+                    )
+                    _LOG.info(
+                        "RivaL family promotion gate venue=%s asset=%s horizon=%s "
+                        "status=%s family=%s",
+                        venue, asset, horizon, family_status["status"],
+                        family_status["selected_family"] or "none",
+                    )
+                except Exception:  # noqa: BLE001 - optional shadow governance
+                    _LOG.exception("RivaL source-specific family gate unavailable")
         self._record_cycle(stamp, metrics)
         # The table alone does not explain a bare menu: log the gate
         # breakdown so the next empty-signal report names its cause.

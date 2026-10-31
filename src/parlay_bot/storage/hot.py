@@ -160,6 +160,15 @@ class RelationalHotStore:
 
                 CREATE INDEX IF NOT EXISTS idx_owner_api_limit_audit_provider
                     ON owner_api_limit_audit(provider,changed_at);
+
+                CREATE TABLE IF NOT EXISTS rival_provider_quota_reservations (
+                    account_key TEXT NOT NULL,
+                    metric TEXT NOT NULL,
+                    period_key TEXT NOT NULL,
+                    projected_units BIGINT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (account_key, metric)
+                );
                 """
             )
             self._ensure_column(connection, "current_odds", "market_name", "TEXT")

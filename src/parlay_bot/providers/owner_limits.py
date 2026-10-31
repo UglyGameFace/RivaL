@@ -43,6 +43,7 @@ class OwnerLimitStore:
             raise ValueError("Unsupported provider")
         self.store.initialize()
         with self.store.connect() as conn:
+            self._lock_budget_transaction(conn, self.store)
             row = conn.execute(
                 "SELECT state_value FROM runtime_state WHERE state_key=?",
                 (KEY_PREFIX + provider,),
@@ -59,6 +60,15 @@ class OwnerLimitStore:
                VALUES(?,?,?,?,?)""",
             (str(uuid4()), value.provider, stamp, previous, json.dumps(asdict(value))),
         )
+
+    @staticmethod
+    def _lock_budget_transaction(conn, store: RelationalHotStore) -> None:
+        # Share the same lock as billable quota reservations. An owner
+        # downgrade cannot race a concurrent provider claim.
+        if store.database.backend == "postgres":
+            conn.execute("SELECT pg_advisory_xact_lock(72649113004)")
+        else:
+            conn.execute("BEGIN IMMEDIATE")
 
     def save(self, value: OwnerLimit) -> None:
         """Keep existing programmatic upsert; record every committed change."""
@@ -89,6 +99,7 @@ class OwnerLimitStore:
         stamp = datetime.now(UTC).isoformat()
         serialized = json.dumps(asdict(value))
         with self.store.connect() as conn:
+            self._lock_budget_transaction(conn, self.store)
             if expected is None:
                 updated = conn.execute(
                     """INSERT INTO runtime_state(state_key,state_value,updated_at)

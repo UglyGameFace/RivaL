@@ -1832,6 +1832,11 @@ class GuidedHome(discord.ui.View):
                 self.navigate("forecast")
             elif self.live_source in ("polymarket", "kalshi"):
                 self.navigate("live")
+            else:
+                self.note = (
+                    "DraftKings Predictions is not connected. "
+                    "No market call was generated or substituted."
+                )
         elif action == "desk-track":
             if self.live_source == "polymarket":
                 tracker = getattr(
@@ -1863,7 +1868,10 @@ class GuidedHome(discord.ui.View):
                     _LOG.exception("Following selected exchange forecast failed")
                     self.note = "Forecast follow could not be confirmed."
             else:
-                self.note = "Choose a trackable market first. Kalshi is browse-only."
+                self.note = (
+                    "Choose a supported tracking market first. "
+                    "Kalshi is browse-only; DraftKings Predictions isn't connected."
+                )
         elif action == "live" and self.live_source is None:
             # Legacy Live Mode buttons must not silently choose Polymarket.
             self.navigate("crypto-desk")

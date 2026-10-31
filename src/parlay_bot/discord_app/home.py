@@ -35,6 +35,7 @@ from parlay_bot.perpetuals.markets import ASSET_NAMES
 from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
+from parlay_bot.perpetuals.path_forward import ProspectivePathLedger
 from parlay_bot.providers.owner_limits import OwnerLimitStore
 
 if TYPE_CHECKING:
@@ -298,8 +299,16 @@ def _performance_exchange(market: object, asset: str, horizon: int) -> dict:
     except Exception:  # noqa: BLE001 - diagnostic cannot hide incumbent proof
         _LOG.exception("Multi-model research read unavailable")
         challengers = None
+    path_evidence = None
+    if horizon in (15, 60):
+        try:
+            path_evidence = ProspectivePathLedger(market.store).report(
+                asset=asset, horizon=horizon,
+            )
+        except Exception:  # noqa: BLE001 - no invented results on read errors
+            _LOG.exception("Prospective first-passage evidence read unavailable")
     return {"score": score, "lineage": lineage, "benefit": benefit,
-            "challengers": challengers}
+            "challengers": challengers, "path_evidence": path_evidence}
 
 
 def _performance_health(market: object) -> dict:
@@ -1451,6 +1460,19 @@ class GuidedHome(discord.ui.View):
                                 f"\n  Highest-confidence misses: "
                                 f"{data['high_confidence_misses']} in {name} conditions"
                             )
+            path_evidence = exchange.get("path_evidence") if isinstance(exchange, dict) else None
+            if isinstance(path_evidence, dict) and path_evidence:
+                scopes = sorted(
+                    path_evidence.items(),
+                    key=lambda item: item[1]["tp1"]["targets"], reverse=True,
+                )
+                scope, proof = scopes[0]
+                learning_text += (
+                    f"\nPath research ({scope}): TP1 {proof['tp1']['targets']} "
+                    f"settled target groups / {proof['tp1']['days']} days; "
+                    f"TP2 {proof['tp2']['targets']} groups. "
+                    "Research only, no approved trade."
+                )
             embed.add_field(name="🧠 Learning", value=learning_text[:1024], inline=False)
 
             health = reports.get("health")

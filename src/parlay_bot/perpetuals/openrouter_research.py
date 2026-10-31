@@ -183,19 +183,23 @@ class OpenRouterResearch:
             )
             models = await self.list_advertised_models()
             selected = models[0]
-            cached = await asyncio.to_thread(
-                self.market.cached_ai_research, asset=asset,
-                model=selected, evidence_sha256=digest,
-            )
-            if cached is not None:
-                return AiResearch(
-                    asset=asset, model=selected,
-                    generated_at=datetime.fromisoformat(cached["issued_at"]),
-                    direction=cached["direction"], confidence=cached["confidence"],
-                    thesis=cached["thesis"], risk=cached["risk"],
-                    source_count=int(cached["source_count"]),
-                    evidence_sha256=digest, from_cache=True,
+            # A fallback may have served the previous successful analysis.
+            # Cache lookup must check the same two catalog-approved models as
+            # the routing plan or a repeat click needlessly burns the free cap.
+            for candidate in models[:2]:
+                cached = await asyncio.to_thread(
+                    self.market.cached_ai_research, asset=asset,
+                    model=candidate, evidence_sha256=digest,
                 )
+                if cached is not None:
+                    return AiResearch(
+                        asset=asset, model=candidate,
+                        generated_at=datetime.fromisoformat(cached["issued_at"]),
+                        direction=cached["direction"], confidence=cached["confidence"],
+                        thesis=cached["thesis"], risk=cached["risk"],
+                        source_count=int(cached["source_count"]),
+                        evidence_sha256=digest, from_cache=True,
+                    )
             now = datetime.now(UTC)
             permitted = await asyncio.to_thread(
                 self.market.reserve_ai_request,

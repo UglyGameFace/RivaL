@@ -31,7 +31,8 @@ SOURCES = {
 # Its 60-minute rolling window overlaps the durable 30-minute poll interval.
 GDELT_PARAMS = {
     "query": ('(bitcoin OR ethereum OR cryptocurrency OR stablecoin OR '
-              '"federal reserve" OR sanctions OR tariffs OR "oil prices") '
+              '"federal reserve" OR "central bank" OR inflation OR '
+              'sanctions OR tariffs OR "oil prices" OR "exchange outage") '
               "sourcelang:english"),
     "mode": "artlist", "format": "json", "timespan": "1h",
     "maxrecords": "40", "sort": "datedesc",
@@ -54,7 +55,7 @@ BLS_HIGH_IMPACT = (
 )
 RELEVANT_REGULATION = re.compile(
     r"\b(crypto|cryptocurrency|digital asset|bitcoin|ethereum|ether|"
-    r"stablecoin|tokeniz|exchange.traded fund|etf)\b", re.IGNORECASE,
+    r"stablecoin|tokeniz\\w*|exchange.traded fund|etf)\b", re.IGNORECASE,
 )
 RELEVANT_MACRO = re.compile(
     r"\b(fomc|federal open market|interest rate|monetary policy|"
@@ -63,6 +64,11 @@ RELEVANT_MACRO = re.compile(
 CRYPTO_INCIDENT = re.compile(
     r"\b(hack|hacked|exploit|breach|outage|insolvenc\w*|"
     r"liquidat\w*|depeg|bankrupt\w*|phishing)\b", re.IGNORECASE,
+)
+WORLD_MACRO = re.compile(
+    r"\b(inflation|interest rate\w*|central bank|recession|"
+    r"oil prices|economic slowdown|financial crisis|bond yield\w*|"
+    r"currency crisis)\b", re.IGNORECASE,
 )
 GEO_EVENT = re.compile(
     r"\b(sanction\w*|tariff\w*|diplomatic|war|ceasefire|"
@@ -123,7 +129,9 @@ def _indexed_news(payload: bytes, now: datetime) -> list[dict]:
                 and RELEVANT_REGULATION.search(title) else
                 "indexed_global_geopolitics" if GEO_EVENT.search(title) else
                 "indexed_crypto_news" if RELEVANT_REGULATION.search(title) else
-                "indexed_global_macro" if RELEVANT_MACRO.search(title) else None
+                "indexed_global_macro" if (
+                    RELEVANT_MACRO.search(title) or WORLD_MACRO.search(title)
+                ) else None
             )
             if category is None:
                 continue

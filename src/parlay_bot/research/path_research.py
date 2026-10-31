@@ -184,7 +184,7 @@ def evaluate_path(manifests: list[Path], *, horizon: int, side: str,
     ambiguity_fraction = ambiguous / (ambiguous + len(samples))
     passed = (
         ambiguity_fraction <= 0.05
-        len(provenance["months"]) >= 6
+        and len(provenance["months"]) >= 6
         and all(
             item["brier_gain"] > MIN_GAIN
             and item["ece_10"] <= 0.12

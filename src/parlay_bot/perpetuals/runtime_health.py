@@ -76,6 +76,11 @@ class RuntimeHealthMonitor:
         faults: dict[str, str] = {}
         self.initialize()
         with self.store.connect() as conn:
+            active = {
+                row["issue_key"] for row in conn.execute(
+                    "SELECT issue_key FROM rival_runtime_health_incidents WHERE state='OPEN'"
+                ).fetchall()
+            }
             if learning_enabled:
                 cycle = conn.execute(
                     """SELECT completed_at,math_ok,ai_settlement_ok,model_review_ok
@@ -83,7 +88,7 @@ class RuntimeHealthMonitor:
                        ORDER BY completed_at DESC LIMIT 1"""
                 ).fetchone()
                 age = _age(stamp, cycle["completed_at"]) if cycle else None
-                if age is None and warm:
+                if age is None and (warm or "learning_missing" in active):
                     faults["learning_missing"] = "no valid completed learning cycle"
                 elif age is not None and age > timedelta(minutes=16):
                     faults["learning_stalled"] = f"last completed cycle {int(age.total_seconds()//60)}m ago"
@@ -121,7 +126,7 @@ class RuntimeHealthMonitor:
                     row = feeds.get((venue, asset))
                     key = f"feed:{venue}:{asset}"
                     if row is None:
-                        if warm:
+                        if warm or key in active:
                             faults[key] = "never attempted"
                         continue
                     success_age = _age(stamp, row["last_success_at"])
@@ -179,6 +184,7 @@ class RuntimeHealthMonitor:
                         f"{matched}/{n} prospective actionable family forecasts "
                         "have a source-matched book"
                     )
+            if learning_enabled:
                 regressions = conn.execute(
                     """SELECT venue,contract,quote,family,COUNT(*) AS n,
                               AVG(model_brier) AS model_score,
@@ -200,7 +206,7 @@ class RuntimeHealthMonitor:
                         )
             if import_enabled:
                 import_age = _age(stamp, import_checked_at)
-                if import_age is None and warm:
+                if import_age is None and (warm or "import_unverified" in active):
                     faults["import_unverified"] = "no verified candidate scan"
                 elif import_age is not None and import_age > timedelta(hours=7):
                     faults["import_stalled"] = "candidate scan overdue by more than 7 hours"

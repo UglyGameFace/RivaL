@@ -45,7 +45,7 @@ def test_cdna_parser_exact_symbol_and_freshness_are_not_model_probabilities():
                          requested="BTC-2026", checked_at=now)
     with pytest.raises(CDNAUnavailable, match="bid/ask"):
         parse_cdna_price(payload(bid="nan"), requested="BTC-2026", checked_at=now)
-    with pytest.raises(CDNAUnavailable, match="source update"):
+    with pytest.raises(CDNAUnavailable, match="UTC offset"):
         parse_cdna_price(
             payload(at=now.replace(tzinfo=None)),
             requested="BTC-2026", checked_at=now,

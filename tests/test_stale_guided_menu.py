@@ -89,6 +89,9 @@ def _guided_custom_ids(bot):
             "rival:guided:cdna-quote",
             "rival:guided:dk-independent-ai",
         } <= found
+        # Discord does not route items with no explicit custom_id across
+        # a restart; those are not persistent fallback IDs.
+        found.discard(None)
         return found
     finally:
         home.stop()

@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
+import itertools
 import io
 import json
 import math
@@ -115,7 +116,7 @@ def parse_daily_metrics(payload: bytes, *, asset: str, day: date) -> list[dict]:
         raise HistoryImportError("empty or missing Binance metrics observations")
     result.sort(key=lambda item: item["source_labeled_at"])
     if any(a["source_labeled_at"] == b["source_labeled_at"]
-           for a, b in zip(result, result[1:])):
+           for a, b in itertools.pairwise(result)):
         raise HistoryImportError("duplicate historical metrics source timestamp")
     # The original source row index is kept for audit. If the official source
     # CSV wasn't sorted, derived records are now strictly event-time sorted.

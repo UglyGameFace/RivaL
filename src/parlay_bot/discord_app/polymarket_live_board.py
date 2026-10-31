@@ -301,6 +301,9 @@ class LivePolymarketBoardService:
         """
         if self._closed or self.research is None:
             return False
+        reviewer = getattr(self.research, "ai", None)
+        if reviewer is None or not getattr(reviewer, "available", False):
+            return False
         cached = self.peek(asset, horizon)
         if cached is None:
             await self.preview(asset, horizon)

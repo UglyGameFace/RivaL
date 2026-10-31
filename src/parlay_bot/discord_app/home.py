@@ -420,6 +420,7 @@ class GuidedHome(discord.ui.View):
         venues: tuple[str, ...] = (),
         auto_hunt: AutoHuntService | None = None,
         training_status: Callable[[str, int], dict] | None = None,
+        polymarket_status: Callable[[str, int], dict] | None = None,
         kalshi: KalshiCryptoBrowser | None = None,
     ) -> None:
         super().__init__(timeout=900)
@@ -439,6 +440,7 @@ class GuidedHome(discord.ui.View):
         self.venues = venues
         self.research_factory = research_factory
         self.training_status = training_status
+        self.polymarket_status = polymarket_status
         self.kalshi = kalshi
         self._kalshi_refresh = False
         self.live_source: str | None = None
@@ -717,7 +719,10 @@ class GuidedHome(discord.ui.View):
                     inline=False,
                 )
             elif market == "polymarket":
-                if self.training_status is None:
+                # Keep exact-contract evidence independent of historical
+                # Drive imports, exchange promotion and checkpoint reads.
+                poly_reader = self.polymarket_status or self.training_status
+                if poly_reader is None:
                     poly = (
                         "Polymarket learning statistics aren't connected to "
                         "this menu. This is a data-read status, NOT a "
@@ -727,10 +732,13 @@ class GuidedHome(discord.ui.View):
                     try:
                         status = await asyncio.wait_for(
                             asyncio.to_thread(
-                                self.training_status, self.coin, self.horizon,
+                                poly_reader, self.coin, self.horizon,
                             ), timeout=1.5,
                         )
-                        learning = status.get("polymarket_learning")
+                        learning = (
+                            status if self.polymarket_status is not None
+                            else status.get("polymarket_learning")
+                        )
                         if not isinstance(learning, dict):
                             poly = (
                                 "No Polymarket outcome summary was returned. "

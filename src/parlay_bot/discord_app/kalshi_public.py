@@ -10,7 +10,7 @@ import asyncio
 import logging
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -87,6 +87,9 @@ class KalshiMarket:
     no_ask: float | None
     rules: str
     series_ticker: str | None = None
+    quote_source: str = "unverified"
+    yes_ask_size: float | None = None
+    no_ask_size: float | None = None
 
 
 @dataclass(frozen=True)
@@ -127,8 +130,51 @@ def parse_markets(
                 else "Rules not verified"
             ),
             series_ticker=series_ticker,
+            quote_source="market_summary",
         ))
     return tuple(entries)
+
+
+def parse_orderbook(payload: object) -> tuple[float | None, float | None, float | None, float | None]:
+    """Derive executable top-of-book asks from the opposite-side Kalshi bids.
+
+    Kalshi's public orderbook_fp exposes YES/NO *bids* only. A summary ASK
+    without a positive counterparty size cannot establish tradable depth.
+    Missing sides remain missing; never substitute last trade or market midpoint.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("orderbook_fp"), dict):
+        raise ValueError("missing official Kalshi orderbook_fp")
+    book = payload["orderbook_fp"]
+
+    def best_bid(side: str) -> tuple[float, float] | None:
+        rows = book.get(side)
+        if not isinstance(rows, list) or len(rows) > 10000:
+            raise ValueError("invalid Kalshi orderbook levels")
+        best: tuple[float, float] | None = None
+        for level in rows:
+            if not isinstance(level, list) or len(level) != 2:
+                raise ValueError("malformed Kalshi bid level")
+            raw_price, raw_size = level
+            if not isinstance(raw_price, str) or not isinstance(raw_size, str):
+                raise ValueError("Kalshi fixed-point book fields must be strings")
+            try:
+                price, size = float(raw_price), float(raw_size)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError("invalid fixed-point bid") from exc
+            if not (math.isfinite(price) and 0 < price < 1 and
+                    math.isfinite(size) and size > 0):
+                raise ValueError("invalid or zero-depth Kalshi bid")
+            if best is None or price > best[0]:
+                best = price, size
+        return best
+
+    yes_bid = best_bid("yes_dollars")
+    no_bid = best_bid("no_dollars")
+    # YES bought from a resting NO bid, and vice versa.
+    yes_ask = round(1.0 - no_bid[0], 6) if no_bid else None
+    no_ask = round(1.0 - yes_bid[0], 6) if yes_bid else None
+    return (yes_ask, no_ask, no_bid[1] if no_bid else None,
+            yes_bid[1] if yes_bid else None)
 
 
 class KalshiCryptoBrowser:
@@ -231,7 +277,36 @@ class KalshiCryptoBrowser:
                              asset, type(exc).__name__)
                 raise ValueError("Kalshi public market data unavailable") from exc
             unique = {m.ticker: m for group in responses for m in group}
-            markets = tuple(sorted(unique.values(), key=lambda m: m.close_time))[:4]
+            listed = tuple(sorted(unique.values(), key=lambda m: m.close_time))[:4]
+
+            async def verify_book(market: KalshiMarket) -> KalshiMarket:
+                try:
+                    response = await self._client.get(
+                        _ROOT + f"/markets/{market.ticker}/orderbook",
+                    )
+                    response.raise_for_status()
+                    yes_ask, no_ask, yes_size, no_size = parse_orderbook(
+                        response.json(),
+                    )
+                    return replace(
+                        market, yes_ask=yes_ask, no_ask=no_ask,
+                        yes_ask_size=yes_size, no_ask_size=no_size,
+                        quote_source="orderbook",
+                    )
+                except (httpx.HTTPError, ValueError, TypeError) as exc:
+                    _LOG.info(
+                        "Kalshi book unavailable ticker=%s reason=%s",
+                        market.ticker, type(exc).__name__,
+                    )
+                    # Never pass a stale summary ASK to the forward learner.
+                    return replace(
+                        market, yes_ask=None, no_ask=None,
+                        quote_source="unavailable",
+                    )
+
+            markets = tuple(await asyncio.gather(
+                *(verify_book(market) for market in listed),
+            ))
             observed_at = datetime.now(UTC)
             snapshot = KalshiSnapshot(
                 asset=asset, checked_at=observed_at,

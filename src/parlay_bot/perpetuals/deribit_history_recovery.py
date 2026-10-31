@@ -17,12 +17,12 @@ import httpx
 
 from parlay_bot.perpetuals.history_inventory import six_complete_months_start
 from parlay_bot.perpetuals.history_recovery import (
-    align_forward_month_cursor,
     _ALLOWED,
     _STEP,
     GateHistoryRecovery,
     _num,
     _utc,
+    align_forward_month_cursor,
     contiguous_forward_next,
 )
 from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle, MarketDataError

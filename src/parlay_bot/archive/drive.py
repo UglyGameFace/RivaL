@@ -561,8 +561,7 @@ class GoogleDriveArchiveClient:
             raise ValueError("candidate import limit must be 1..20")
         if page_token is not None and (
             not 1 <= len(page_token) <= 1000
-            or any(not (ch.isascii() and (ch.isalnum() or ch in "-_="))
-                   for ch in page_token)
+            or any(not ch.isascii() or not ch.isprintable() for ch in page_token)
         ):
             raise ValueError("invalid Drive listing cursor")
         await self._verify_folder_boundary()
@@ -591,8 +590,7 @@ class GoogleDriveArchiveClient:
         next_page = data.get("nextPageToken")
         if next_page is not None and (
             not isinstance(next_page, str) or not 1 <= len(next_page) <= 1000
-            or any(not (ch.isascii() and (ch.isalnum() or ch in "-_="))
-                   for ch in next_page)
+            or any(not ch.isascii() or not ch.isprintable() for ch in next_page)
         ):
             raise DriveArchiveError("invalid research pagination cursor")
         candidates = []

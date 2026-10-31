@@ -257,6 +257,7 @@ def test_polymarket_performance_counts_only_recent_valid_issued_forecasts(tmp_pa
         ("old-issuance-new-resolution", 9, 0.75, 0.9),
         ("fresh-invalid-probability", 2, 1, 1.4),
         ("forecast-after-expiry", 0.5, 1, 0.9),
+        ("wrong-condition-id", 2, 1, 0.9),
     ]
     try:
         with store.connect() as conn:
@@ -285,12 +286,13 @@ def test_polymarket_performance_counts_only_recent_valid_issued_forecasts(tmp_pa
                        (slug,condition_id,direction,resolved_at,observed_at,
                         receipt_sha256,receipt_json)
                        VALUES (?,?,?,?,?,?,?)""",
-                    (slug, f"condition-{i}", "UP", resolved.isoformat(),
+                    (slug, "different-condition" if slug == "wrong-condition-id"
+                     else f"condition-{i}", "UP", resolved.isoformat(),
                      (resolved + timedelta(minutes=1)).isoformat(), "c" * 64, "{}"),
                 )
         report = service.learner.summary(asset="BTC", horizon=5)
         assert report["score_window_days"] == 7
-        assert report["learned_contracts"] == 4  # Lifetime labels, not accuracy
+        assert report["learned_contracts"] == 5  # Lifetime labels, not accuracy
         assert report["settled_forward_contracts"] == 1
         assert report["forward_brier"] == pytest.approx(0.04)
         assert report["market_baseline_brier"] == pytest.approx(0.16)

@@ -1,3 +1,14 @@
+## ACTIVE TASK: Honest Bot Performance vs Practice UI (2026-10-31)
+
+- Objective: move personal My Results into Practice; show source-specific prospective prediction accuracy and persistent learning evidence under a separate Bot Performance home tab, without modifying forecasts, trades, model promotion or notification workers.
+- Baseline: `main@9b172ad6622e14af7bbf23fa00af8373259102b1`. Branch `feature/rival-performance-practice-separation-20261031`, [PR #157](https://github.com/UglyGameFace/RivaL/pull/157).
+- Root cause: the personal imaginary portfolio shared one screen with bot accuracy; the displayed 7-day exchange settled count omitted the decided-only directional accuracy denominator. Polymarket contract labels, pre-outcome model calls and exchange forward outcomes were visually conflated; learning evidence was buried under Advanced.
+- Changes: separate menus, market-specific evidence with explicit sample sizes/baselines/lineage, persisted live math-cycle heartbeat, no false Polymarket accuracy from training labels, source-scoped learning details, shorter Crypto market-selection copy, and regression tests. Exchange forward SQL now exposes correct/decided and requires non-null baseline scores for Brier superiority claims.
+- Validation: PR CI in progress as of initial record; inspect exact head and correct any failures. No live Discloud, current market data, or Discord interaction has been verified by this PR. Prior 49.7% screen is an observed example only, not a proven independent prediction edge.
+- Pending: CI green, code review, authorized merge, main/Discloud checks, owner-visible hosted navigation and real learning metrics. Empirical skill and after-cost profitability remain open under issue #6. Do not confuse a release upload with verified production behavior.
+
+---
+
 ## ACTIVE TASK: Polymarket exact tie-rule offline scoring (2026-10-31)
 
 - Independent defect: `polymarket_contract_audit.audit_contract_predictions` labeled a zero-change oracle window as UP for **every** event, borrowing a rule that is not universally proven for each listed contract. That could manufacture historical model wins and apparent after-cost gains.

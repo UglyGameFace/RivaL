@@ -123,7 +123,7 @@ async def test_live_buttons_stay_attached_during_slow_render(tmp_path):
         assert all(item.view is home for item in live_items)
         # The old visible button must acknowledge a new tap even if the
         # first request still has a slow render pending.
-        button = next(item for item in live_items if item.custom_id == "rival:guided:live")
+        button = next(item for item in live_items if item.custom_id == "rival:guided:crypto-desk")
         tap = asyncio.create_task(button.callback(second))
         await asyncio.sleep(0.01)
         second.response.defer.assert_awaited_once()

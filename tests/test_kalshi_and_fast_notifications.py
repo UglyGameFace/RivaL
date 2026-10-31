@@ -39,6 +39,7 @@ async def test_notification_options_does_not_call_database_or_redraw_lock(
         edit_original_response=AsyncMock(),
     )
     try:
+        home.live_source = "polymarket"
         home.navigate("live")
         # If the navigation tries to acquire the old redraw lock it would
         # deadlock: the test holds it across the entire callback.
@@ -51,7 +52,7 @@ async def test_notification_options_does_not_call_database_or_redraw_lock(
         assert "Notifications" in args["embed"].title
         assert home.page == "live"  # original tracker is untouched
         interaction.edit_original_response.assert_not_awaited()
-        assert "Polymarket Global" in (await home.render()).title
+        assert "Polymarket" in (await home.render()).title
     finally:
         home.stop()
         await bot.kalshi_browser.aclose()

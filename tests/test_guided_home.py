@@ -84,7 +84,7 @@ async def test_every_page_has_home_back_explain_without_dead_buttons(tmp_path):
     bot = _client(tmp_path)
     home = _home(bot)
     try:
-        for page in ("discover", "sports", "crypto", "practice", "results",
+        for page in ("discover", "sports", "crypto", "crypto-desk", "practice", "results",
                      "help", "advanced", "live", "slip", "forecast", "quote",
                      "feeds", "trust"):
             home.navigate("home")
@@ -526,13 +526,16 @@ async def test_live_mode_and_retired_shift_toggles_do_not_restart_spam(tmp_path)
     try:
         assert "Crypto" in _labels(home)
         interaction = _interaction()
-        await home.act(interaction, "live")
+        await home.act(interaction, "crypto-desk")
+        assert home.live_source is None
+        home.live_source = "polymarket"
+        await home.act(interaction, "desk-call")
         shown = interaction.edit_original_response.await_args.kwargs["view"]
         assert "Track in DMs" in _labels(shown)
         assert "Stop Tracking" in _labels(shown)
         await home.act(interaction, "hunt")
         settings = interaction.edit_original_response.await_args.kwargs["view"]
-        assert {"Track Crypto", "Watch Forecast", "Stop All"}.issubset(set(_labels(settings)))
+        assert {"Choose Market", "Exchange Forecast", "Stop All"}.issubset(set(_labels(settings)))
         assert "Changes ON" not in _labels(settings)
         assert "Changes OFF" not in _labels(settings)
         # Old live-shift buttons cannot reactivate notifications after retirement.
@@ -576,6 +579,7 @@ async def test_live_mode_opens_one_automatic_tracker_without_extra_market_polls(
     )
     try:
         interaction = _interaction()
+        home.live_source = "polymarket"
         await home.act(interaction, "live")
         rendered = interaction.edit_original_response.await_args.kwargs["view"]
         labels = _labels(rendered)
@@ -585,7 +589,7 @@ async def test_live_mode_opens_one_automatic_tracker_without_extra_market_polls(
         assert "Follow Polymarket" not in labels
         assert "Check Now" not in labels
         embed = await home.render()
-        assert "TRACKING BTC 5m" in embed.description
+        assert "ON • This market" in " ".join(str(f.value) for f in embed.fields)
         provider.window_board.assert_not_awaited()
         await home.act(interaction, "poly-start")
         board_service.start.assert_awaited_once_with(

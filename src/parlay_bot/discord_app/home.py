@@ -2047,7 +2047,10 @@ class GuidedHome(discord.ui.View):
                             # Explicit click only. Existing free-model budget and
                             # independent exchange evidence gates apply unchanged.
                             panel.opinion = await asyncio.wait_for(
-                                panel.ai.ask(asset=self.coin, venues=panel.venues),
+                                panel.ai.ask(
+                                    asset=self.coin, venues=panel.venues,
+                                    requester_id=interaction.user.id,
+                                ),
                                 timeout=22,
                             )
                         except Exception as exc:  # noqa: BLE001

@@ -125,6 +125,16 @@ class GateHistoryRecovery:
         with self.store.connect() as conn:
             conn.executescript(
                 """
+                CREATE TABLE IF NOT EXISTS perp_history_gap_repair (
+                    venue TEXT NOT NULL,
+                    asset TEXT NOT NULL,
+                    opened_at TEXT NOT NULL,
+                    attempted_at TEXT,
+                    retry_after TEXT NOT NULL,
+                    PRIMARY KEY (venue,asset,opened_at)
+                );
+                CREATE INDEX IF NOT EXISTS idx_perp_history_gap_due
+                    ON perp_history_gap_repair (venue,asset,retry_after,opened_at);
                 CREATE TABLE IF NOT EXISTS perp_history_recovery (
                     venue TEXT NOT NULL,
                     asset TEXT NOT NULL,
@@ -232,6 +242,67 @@ class GateHistoryRecovery:
                  retry_after.isoformat() if retry_after else None, asset),
             )
 
+    def _record_skipped_gap(
+        self, asset: str, *, start: datetime, first: datetime, now: datetime,
+    ) -> None:
+        """Persist each genuinely skipped leading candle without rewinding history."""
+        count = int((first - start) / _STEP)
+        if not 0 < count <= self.page_bars:
+            raise ValueError("invalid bounded historical gap")
+        with self.store.connect() as conn:
+            for slot in range(count):
+                opened = start + slot * _STEP
+                conn.execute(
+                    """INSERT INTO perp_history_gap_repair
+                       (venue,asset,opened_at,retry_after)
+                       VALUES ('gate',?,?,?)
+                       ON CONFLICT(venue,asset,opened_at) DO NOTHING""",
+                    (asset, opened.isoformat(),
+                     (now + timedelta(hours=6)).isoformat()),
+                )
+
+    def _pending_gaps(self, asset: str, *, now: datetime) -> int:
+        """Only gaps within the active six-calendar-month evidence window."""
+        floor = six_months_prior(now).isoformat()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT COUNT(*) AS n FROM perp_history_gap_repair
+                   WHERE venue='gate' AND asset=? AND opened_at>=?""",
+                (asset, floor),
+            ).fetchone()
+        return int(row["n"])
+
+    def _claim_due_gap(
+        self, asset: str, *, now: datetime, end: datetime,
+    ) -> datetime | None:
+        """Atomically rate-limit exactly one missing five-minute bar per cycle."""
+        floor = six_months_prior(now).isoformat()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """UPDATE perp_history_gap_repair SET
+                     attempted_at=?, retry_after=?
+                   WHERE venue='gate' AND asset=?
+                     AND opened_at=(
+                       SELECT opened_at FROM perp_history_gap_repair
+                       WHERE venue='gate' AND asset=? AND opened_at>=?
+                         AND opened_at<? AND retry_after<=?
+                       ORDER BY opened_at LIMIT 1
+                     ) AND retry_after<=?
+                   RETURNING opened_at""",
+                (now.isoformat(), (now + timedelta(hours=6)).isoformat(),
+                 asset, asset, floor, end.isoformat(), now.isoformat(),
+                 now.isoformat()),
+            ).fetchone()
+        return _utc(datetime.fromisoformat(str(row["opened_at"]))) if row else None
+
+    def _complete_gap(self, asset: str, opened: datetime) -> None:
+        with self.store.connect() as conn:
+            conn.execute(
+                """DELETE FROM perp_history_gap_repair
+                   WHERE venue='gate' AND asset=? AND opened_at=?""",
+                (asset, opened.isoformat()),
+            )
+
     async def fetch_asset(
         self, asset: str, *, now: datetime | None = None,
     ) -> int:
@@ -246,12 +317,23 @@ class GateHistoryRecovery:
         cursor = _utc(datetime.fromisoformat(str(position["next_opened_at"])))
         end = clock.replace(minute=clock.minute // 5 * 5,
                             second=0, microsecond=0) - timedelta(hours=4)
+        repairing = False
         if cursor >= end:
-            await asyncio.to_thread(
-                self._advance, asset, now=clock, next_open=None, status="caught_up",
+            gap = await asyncio.to_thread(
+                self._claim_due_gap, asset, now=clock, end=end,
             )
-            return 0
-        until = min(cursor + self.page_bars * _STEP, end)
+            if gap is None:
+                pending = await asyncio.to_thread(
+                    self._pending_gaps, asset, now=clock,
+                )
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=None,
+                    status="gaps_pending" if pending else "caught_up",
+                )
+                return 0
+            cursor = gap
+            repairing = True
+        until = min(cursor + (1 if repairing else self.page_bars) * _STEP, end)
         symbol = f"{asset}_USDT"
         try:
             contract = await self._get(f"contracts/{symbol}", {})
@@ -305,9 +387,16 @@ class GateHistoryRecovery:
                     _num(row.get("v")) * multiplier, -1,
                 ))
             if not rows:
-                # Never advance past an empty window: an upstream page
-                # with no bars is an API gap, not coverage. Retrying
-                # later preserves the cursor (mirrors OKX).
+                # A failed gap retry stays in its durable queue. Its own
+                # six-hour deadline was advanced during the atomic claim.
+                # Never rewind the authoritative forward cursor.
+                if repairing:
+                    await asyncio.to_thread(
+                        self._advance, asset, now=clock,
+                        next_open=None, status="gaps_pending",
+                    )
+                    return 0
+                # Never advance past an empty forward window.
                 await asyncio.to_thread(
                     self._advance, asset, now=clock, next_open=None,
                     empty=True, status="upstream_empty",
@@ -323,14 +412,26 @@ class GateHistoryRecovery:
                 batch = MarketBatch((), tuple(candles), 5, observed)
                 result = await asyncio.to_thread(self.market.ingest, batch)
                 added = result.inserted_candles
-            next_open = contiguous_forward_next(
-                cursor, until, [candle.opened_at for candle in candles],
-            )
-            await asyncio.to_thread(
-                self._advance, asset, now=clock, next_open=next_open,
-                inserted=added, empty=not bool(rows),
-                status="progress",
-            )
+            if repairing:
+                if any(candle.opened_at == cursor for candle in candles):
+                    await asyncio.to_thread(self._complete_gap, asset, cursor)
+                next_open = cursor + _STEP
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=None,
+                    inserted=added, status="gap_repair",
+                )
+            else:
+                received = [candle.opened_at for candle in candles]
+                next_open = contiguous_forward_next(cursor, until, received)
+                if cursor not in received and next_open > cursor:
+                    await asyncio.to_thread(
+                        self._record_skipped_gap, asset,
+                        start=cursor, first=next_open, now=clock,
+                    )
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=next_open,
+                    inserted=added, status="progress",
+                )
             _LOG.info(
                 "RivaL Gate historical recovery asset=%s received=%d "
                 "inserted=%d through=%s",
@@ -372,4 +473,9 @@ class GateHistoryRecovery:
                           inserted_bars,empty_windows,status,retry_after
                    FROM perp_history_recovery ORDER BY asset""",
             ).fetchall()
-        return [dict(x) for x in rows]
+        output = [dict(x) for x in rows]
+        for item in output:
+            item["pending_gap_bars"] = self._pending_gaps(
+                str(item["asset"]), now=datetime.now(UTC),
+            )
+        return output

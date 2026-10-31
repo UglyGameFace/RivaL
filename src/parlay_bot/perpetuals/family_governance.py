@@ -265,3 +265,45 @@ class FamilyPromotion:
         if not timedelta(0)<=stamp-tested<=FRESH_FOR:
             return None
         return row["selected_family"] if row["selected_family"] in FAMILIES else None
+
+    def venue_summary(self, *, asset,venue,contract,quote,horizon,
+                      model_version,now=None):
+        """Signal proof for precisely the same promoted model and market.
+
+        No borrowing logistic or fused scores for the family version.
+        The response is a *research watch* only, not real fills.
+        """
+        family=self.selected(asset=asset,venue=venue,contract=contract,
+                             quote=quote,horizon=horizon,now=now)
+        rejected={
+            "settled":0,"hit_rate":None,"model_beats_baseline":False,
+            "watch_evidence_passes":False,"watch_days":0,
+            "watch_reason":"family did not earn current source-specific promotion",
+        }
+        if family is None or model_version!=family:
+            return rejected
+        with self.store.connect() as conn:
+            row=conn.execute(
+                """SELECT evidence_json FROM rival_family_promotion
+                   WHERE venue=? AND contract=? AND quote=? AND asset=?
+                    AND horizon_minutes=? AND status='promoted_paper'
+                    AND selected_family=?""",
+                (venue,contract,quote,asset,horizon,family),
+            ).fetchone()
+        if row is None:
+            return rejected
+        try:
+            info=json.loads(row["evidence_json"])[family]
+            if not (info["qualified"] and info["targets"]>=MIN_WINDOWS
+                    and info["days"]>=MIN_DAYS
+                    and info["cost_proof"]["severe"]["qualified"]):
+                return rejected
+            return {
+                "settled":info["targets"],"hit_rate":None,
+                "model_beats_baseline":True,
+                "watch_evidence_passes":True,"watch_days":info["days"],
+                "watch_reason":"source-specific future/quote paper proof passed",
+                "real_fills_verified":False,
+            }
+        except (ValueError,TypeError,KeyError):
+            return rejected

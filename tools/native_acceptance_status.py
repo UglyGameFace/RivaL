@@ -52,8 +52,8 @@ def render_status(report: dict | None, run_url: str) -> str:
     if report is None:
         lines.extend([
             "**BLOCKED: No source-native research report was produced.**",
-            "Check the job for missing private Drive authorization, restore errors, "
-            "or failures before research. This is not a successful training run.",
+            ("Check the job for missing private Drive authorization, restore errors, "
+             "or failures before research. This is not a successful training run."),
         ])
     else:
         status = report.get("status")
@@ -90,17 +90,17 @@ def render_status(report: dict | None, run_url: str) -> str:
                 )
     lines.extend([
         "",
-        "**Still independently required, regardless of a green workflow:** "
+        ("**Still independently required, regardless of a green workflow:** "
         "proof of the exact published model's import into hosted PostgreSQL; "
         "unattended model-SHA-specific predictions issued before outcomes; "
         "150 unique resolved future targets spanning 21 UTC days; "
         "at least 80% matched exact-venue quote coverage; "
         "positive challenger-versus-incumbent severe and conservative "
-        "after-cost *paper* comparisons and calibration checks.",
+        "after-cost *paper* comparisons and calibration checks."),
         "",
-        "Real fills, fees, funding, and slippage are not independently verified. "
+        ("Real fills, fees, funding, and slippage are not independently verified. "
         "**NO CALL and incumbent retention remain authoritative.** "
-        "This status is private archive research evidence, **not** live-trading proof.",
+        "This status is private archive research evidence, **not** live-trading proof."),
     ])
     return "\n".join(lines)
 

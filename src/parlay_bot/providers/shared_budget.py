@@ -96,12 +96,22 @@ class SharedProviderBudget:
                         # preserves the prior pessimistic reservation.
                         projected = 0
                 spent = max(claim.observed, projected)
-                limit = claim.maximum
-                reserve = claim.reserve
+                # Provider reserve and owner reserve are independent ceilings;
+                # do not charge the provider reserve against the owner ceiling.
+                effective_limit = (
+                    claim.maximum - claim.reserve
+                    if claim.maximum is not None else None
+                )
                 if claim.owner_cap and owner is not None:
                     owner_limit = owner.maximum_units - owner.reserve_units
-                    limit = min(limit, owner_limit) if limit is not None else owner_limit
-                available = claim.requested if limit is None else limit - reserve - spent
+                    effective_limit = (
+                        min(effective_limit, owner_limit)
+                        if effective_limit is not None else owner_limit
+                    )
+                available = (
+                    claim.requested if effective_limit is None
+                    else effective_limit - spent
+                )
                 if available <= 0:
                     raise QuotaReserveReached(
                         "Shared " + self.provider + " " + claim.metric + " budget exhausted"

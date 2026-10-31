@@ -14,6 +14,7 @@ from parlay_bot.discord_app.presentation import display_book
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.model_competition import FAMILIES
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
 from parlay_bot.perpetuals.markets import HORIZONS
@@ -62,7 +63,7 @@ def recent_watches(
     with market.store.connect() as connection:
         rows = connection.execute(
             """SELECT venue,contract,quote,asset,horizon_minutes,
-                      model_version,issued_at,target_opened_at,
+                      model_version,reference_opened_at,issued_at,target_opened_at,
                       reference_close,probability_up,training_evaluated
                FROM perp_forward_audit
                WHERE asset=? AND settled_at IS NULL"""
@@ -73,6 +74,46 @@ def recent_watches(
         ).fetchall()
     if not rows:
         return []
+    # A paper-qualified family may replace only the corresponding read-only
+    # prediction for its exact source + horizon. No old forecast is edited.
+    # If the optional promotion ledger is unavailable, use the incumbent.
+    promoted = {}
+    family_rows = {}
+    try:
+        with market.store.connect() as connection:
+            promotions = connection.execute(
+                """SELECT venue,contract,quote,horizon_minutes,selected_family,
+                          evaluated_at FROM rival_family_promotion
+                   WHERE asset=? AND status='promoted_paper'""",
+                (asset,),
+            ).fetchall()
+            for choice in promotions:
+                family = str(choice["selected_family"])
+                checked = _utc(str(choice["evaluated_at"]))
+                if (family in FAMILIES and timedelta(0) <= instant-checked
+                        <= timedelta(hours=48)):
+                    key = (choice["venue"],choice["contract"],choice["quote"],
+                           int(choice["horizon_minutes"]))
+                    promoted[key] = family
+            if promoted:
+                candidates = connection.execute(
+                    """SELECT venue,contract,quote,horizon_minutes,family,
+                              reference_opened_at,issued_at,
+                              target_opened_at,probability_up,training_count
+                       FROM rival_model_shadow_forecasts
+                       WHERE asset=? AND issued_at>=? AND issued_at<=?""",
+                    (asset,(instant-timedelta(minutes=20)).isoformat(),
+                     instant.isoformat()),
+                ).fetchall()
+                family_rows = {
+                    (x["venue"],x["contract"],x["quote"],
+                     int(x["horizon_minutes"]),x["reference_opened_at"],
+                     x["issued_at"],x["family"]): x
+                    for x in candidates
+                }
+    except Exception:  # noqa: BLE001 - optional family read fails to incumbent
+        promoted = {}
+        family_rows = {}
     feeds = {
         (str(x["venue"]), str(x["asset"])): x
         for x in market.feed_health()
@@ -87,7 +128,20 @@ def recent_watches(
             target = _utc(str(row["target_opened_at"]))
             horizon = int(row["horizon_minutes"])
             probability = float(row["probability_up"])
+            selected_version = str(row["model_version"])
+            selected_training = int(row["training_evaluated"])
             venue = str(row["venue"])
+            scope = (venue,str(row["contract"]),str(row["quote"]),horizon)
+            family = promoted.get(scope)
+            if family:
+                paired = family_rows.get(
+                    (*scope,row["reference_opened_at"],row["issued_at"],family),
+                )
+                if (paired is not None and
+                        paired["target_opened_at"] == row["target_opened_at"]):
+                    probability = float(paired["probability_up"])
+                    selected_version = family
+                    selected_training = int(paired["training_count"])
             if (
                 horizon not in HORIZONS
                 or (horizon_minutes is not None and horizon != horizon_minutes)
@@ -125,14 +179,15 @@ def recent_watches(
                 continue
             accepted.append({
                 "asset": asset, "venue": venue,
+                "contract": str(row["contract"]), "quote": str(row["quote"]),
                 "horizon_minutes": horizon,
                 "issued": issued, "target": target, "price": price,
                 "price_observed_at": observed,
-                "model_version": str(row["model_version"]),
+                "model_version": selected_version,
                 "probability_up": probability,
                 "direction": "UP" if probability > 0.5 else "DOWN",
                 "direction_probability": max(probability, 1 - probability),
-                "training_evaluated": int(row["training_evaluated"]),
+                "training_evaluated": selected_training,
             })
         except (KeyError, ValueError, TypeError, OverflowError):
             continue

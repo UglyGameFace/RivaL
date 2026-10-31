@@ -10,6 +10,11 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
+
+# Discloud runs the source tree in-place, not as an installed package.
+# Match main.py's source path setup for standalone console invocations.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from parlay_bot.config import Settings
 from parlay_bot.perpetuals.unattended_acceptance import unattended_acceptance_receipt

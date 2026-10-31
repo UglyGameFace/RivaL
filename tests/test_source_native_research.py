@@ -35,7 +35,6 @@ def _seed_month(market, *, venue="hyperliquid", contract="BTC",
                 quote="USDC", month=9, remove=None):
     first = datetime(2026, month, 1, tzinfo=UTC)
     last = first.replace(month=month + 1)
-    end = first + timedelta(minutes=5)
     data = []
     total = int((last - first).total_seconds() / 300)
     for i in range(total):
@@ -190,3 +189,31 @@ async def test_native_research_fails_closed_when_archive_has_no_months(tmp_path)
     assert result["published_models"] == 0
     assert result["promoted_live"] is False
     assert result["profitability_verified"] is False
+
+
+def test_native_boosted_contract_is_accepted_only_for_its_exact_source(native_market):
+    from parlay_bot.research.candidate_registry import (
+        ResearchCandidateRegistry, verified_candidate,
+    )
+    from tests.test_portable_boosted_forward import _document
+
+    doc = _document()
+    scope = doc["model_spec"]["identity"]
+    scope.update(venue="hyperliquid", contract="BTC", quote="USDC")
+    doc["model_sha256"] = hashlib.sha256(json.dumps(
+        doc["model_spec"], sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    data = json.dumps(doc).encode()
+    assert verified_candidate(data)["asset"] == "BTC"
+    registry = ResearchCandidateRegistry(native_market.store)
+    now = datetime(2026, 10, 31, tzinfo=UTC)
+    registry.import_verified("sourceExactModel", data, now=now-timedelta(days=4))
+    assert len(registry.compatible_boosters(
+        venue="hyperliquid", contract="BTC", quote="USDC", horizon=5, now=now,
+    )) == 1
+    assert registry.compatible_boosters(
+        venue="binance", contract="BTCUSDT", quote="USDT", horizon=5, now=now,
+    ) == []
+    assert registry.compatible_boosters(
+        venue="hyperliquid", contract="BTC", quote="USD", horizon=5, now=now,
+    ) == []

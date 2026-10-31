@@ -12,7 +12,6 @@ import csv
 import io
 import json
 import math
-import re
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 

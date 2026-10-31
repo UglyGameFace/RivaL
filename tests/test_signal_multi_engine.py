@@ -85,7 +85,7 @@ async def test_promoted_slot_serves_fused_watch_with_disclosure(tmp_path, caplog
     try:
         seed_candle_and_feed(market, now)
         seed_multi_watch(market, now, probability=0.68)
-        seed_multi_settled(store, now, count=50, days_span=1, base_offset_days=1)
+        seed_multi_settled(store, now, count=50, days_span=6, base_offset_days=6)
         seed_promotion_row(store, now)
         with caplog.at_level(logging.INFO, logger="parlay_bot.discord_app.signals"):
             signal = await signal_embed(
@@ -140,6 +140,25 @@ async def test_promoted_but_unproven_challenger_is_unverified(tmp_path):
             now=now,
         )
         assert "UNVERIFIED" in signal.title
+        assert "WATCH" not in signal.title
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_promoted_fused_single_day_win_stays_research(tmp_path):
+    now = datetime.now(UTC).replace(microsecond=0)
+    store = SQLiteHotStore(tmp_path / "promoted-one-day.sqlite")
+    market = PerpetualMarketStore(store)
+    try:
+        seed_candle_and_feed(market, now)
+        seed_multi_watch(market, now, probability=0.68)
+        seed_multi_settled(store, now, count=50, days_span=1, base_offset_days=1)
+        seed_promotion_row(store, now)
+        signal = await signal_embed(
+            market, mock_books(now), asset="BTC", horizon_minutes=5, now=now,
+        )
+        assert "INSUFFICIENT PROOF" in signal.title
         assert "WATCH" not in signal.title
     finally:
         store.close()

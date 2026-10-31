@@ -2451,15 +2451,22 @@ class RivalDiscordClient(discord.Client):
                 if self.perp_collector is not None:
                     from parlay_bot.research.source_native import NativeMonthlyPublisher
 
-                    published = await NativeMonthlyPublisher(
-                        self.perp_collector.market, self.archive_runtime.drive,
-                        self.settings.rival_archive_local_dir,
-                    ).run_once(now=datetime.now(UTC), max_batches=2)
-                    if published:
-                        _LOG.info(
-                            "RivaL source-exact research archived=%d complete "
-                            "venue/month snapshots; live calls unchanged",
-                            len(published),
+                    try:
+                        published = await NativeMonthlyPublisher(
+                            self.perp_collector.market, self.archive_runtime.drive,
+                            self.settings.rival_archive_local_dir,
+                        ).run_once(now=datetime.now(UTC), max_batches=2)
+                        if published:
+                            _LOG.info(
+                                "RivaL source-exact research archived=%d complete "
+                                "venue/month snapshots; live calls unchanged",
+                                len(published),
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - preserve the existing archive
+                        _LOG.exception(
+                            "RivaL optional source-native publication failed safely"
                         )
                 if self.archive_runtime.perpetual_service is not None:
                     copied = await self.archive_runtime.perpetual_service.archive_ready(

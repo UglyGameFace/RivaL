@@ -81,6 +81,18 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          name: public-supplemental-source-smoke
+          path: |
+            public-evidence/binance_um_funding/
+            public-evidence/binance_um_mark_klines/
+            public-evidence/binance_um_index_klines/
+            public-evidence/binance_um_premium_klines/
+            public-evidence/reports/supplemental-*.json
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
           name: public-history-smoke-reports
           path: public-evidence/quality.json
           if-no-files-found: ignore

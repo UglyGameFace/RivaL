@@ -78,7 +78,7 @@ def parse_daily_metrics(payload: bytes, *, asset: str, day: date) -> list[dict]:
         if not isinstance(timestamp, str):
             raise HistoryImportError("missing metrics time")
         try:
-            labeled = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+            labeled = datetime.fromisoformat(timestamp)
         except ValueError as exc:
             raise HistoryImportError("invalid metrics timestamp") from exc
         if labeled.utcoffset() is None:

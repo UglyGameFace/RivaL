@@ -8,6 +8,7 @@ OHLC ambiguity excludes the path rather than inventing a profitable fill.
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import math
 import statistics
@@ -32,7 +33,7 @@ def _sigma(candles, index: int, steps: int) -> float:
     closes = [float(c.close_price) for c in candles[index-LOOKBACK:index+1]]
     if any(not math.isfinite(v) or v <= 0 for v in closes):
         raise ValueError("invalid prior prices")
-    returns = [math.log(b/a) for a,b in zip(closes, closes[1:])]
+    returns = [math.log(b/a) for a,b in itertools.pairwise(closes)]
     return max(.0001, min(.25, statistics.pstdev(returns)*math.sqrt(steps)))
 
 

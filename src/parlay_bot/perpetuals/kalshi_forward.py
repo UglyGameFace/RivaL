@@ -11,7 +11,7 @@ import json
 import math
 import re
 import threading
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 MODEL = "kalshi-online-logit-shadow-v1"
 MIN_TRAINED = 100
@@ -189,7 +189,7 @@ class KalshiForwardResearch:
         """Only an actual official settled YES/NO receipt becomes a label."""
         now = _iso(checked_at)
         if not isinstance(payload, dict) or not isinstance(payload.get("market"), dict):
-            raise ValueError("missing official Kalshi market payload")
+            raise TypeError("missing official Kalshi market payload")
         market = payload["market"]
         if market.get("ticker") != ticker or market.get("status") != "settled":
             return False
@@ -200,7 +200,7 @@ class KalshiForwardResearch:
         if not isinstance(settlement_at, str):
             return False
         try:
-            settled = datetime.fromisoformat(settlement_at.replace("Z", "+00:00"))
+            settled = datetime.fromisoformat(settlement_at)
             settled_at = _iso(settled)
         except ValueError:
             return False

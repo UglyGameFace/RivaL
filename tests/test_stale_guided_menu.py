@@ -71,7 +71,7 @@ def _guided_custom_ids(bot):
         found: set[str] = set()
         for page in ("home", "discover", "sports", "slip", "crypto", "forecast", "quote",
                      "practice", "results", "help", "advanced", "feeds", "trust",
-                     "hunt", "live"):
+                     "hunt", "live", "crypto-desk"):
             home.navigate("home")
             home.navigate(page)
             home._buttons()
@@ -318,7 +318,7 @@ async def test_stale_live_mode_recovers_navigation_but_not_toggle(tmp_path):
         live = _interaction()
         await _item_by_custom_id(views[2], "rival:guided:live").callback(live)
         fresh = live.edit_original_response.await_args.kwargs["view"]
-        assert fresh.page == "live"
+        assert fresh.page == "crypto-desk"
         assert fresh.note == _STALE_NOTE
         fresh.stop()
         toggle = _interaction()

@@ -166,7 +166,7 @@ async def test_draftkings_assisted_menu_reuses_existing_ai_without_cdna_data(tmp
         home.horizon = 60
         home._buttons()
         labels = [x.label for x in home.children if hasattr(x, "label")]
-        assert "Find CDNA Contract" in labels
+        assert "Find My Coin" in labels
         assert "Check CDNA Quote" in labels
         assert "Independent AI" in labels
         assert "Open DraftKings Predictions" in labels

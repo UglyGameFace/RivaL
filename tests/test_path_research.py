@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from parlay_bot.research.free_history import _persist
+from parlay_bot.research.learning import assemble
 from parlay_bot.research.path_research import (
     HORIZONS,
     LOOKBACK,
@@ -15,7 +16,6 @@ from parlay_bot.research.path_research import (
     evaluate_path,
     trace_barriers,
 )
-from parlay_bot.research.learning import assemble
 
 
 def _bar(*, high: float, low: float) -> dict:

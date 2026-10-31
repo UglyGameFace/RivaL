@@ -1,6 +1,7 @@
 """Official-event intake, point-in-time history, and signal veto regression tests."""
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 
@@ -12,6 +13,7 @@ from parlay_bot.perpetuals.event_intelligence import (
     SOURCES,
     EventIntelligence,
     _ics,
+    _indexed_news,
     _rss,
 )
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -47,6 +49,8 @@ def _calendar(at: datetime) -> bytes:
 def _client(now: datetime, release: datetime, *, bad_sec: bool = False):
     def handler(request):
         url = str(request.url)
+        if request.url.host == "api.gdeltproject.org":
+            return httpx.Response(200, json={"articles": []})
         if url == SOURCES["bls_calendar"][0]:
             return httpx.Response(200, content=_calendar(release))
         if url == SOURCES["fed_monetary"][0]:
@@ -100,8 +104,8 @@ def test_durable_first_seen_revisions_and_no_call_calendar_window(tmp_path):
     release = stamp + timedelta(minutes=15)
     with _client(stamp, release) as http:
         first = intel.refresh(now=stamp, client=http)
-    assert first["sources_checked"] == 3
-    assert first["sources_ok"] == 3
+    assert first["sources_checked"] == 4
+    assert first["sources_ok"] == 4
     state = intel.context(asset="BTC", horizon=5, now=stamp)
     assert state["decision"] == "pause"
     assert state["event_risk_cleared"] is False
@@ -122,7 +126,7 @@ def test_durable_first_seen_revisions_and_no_call_calendar_window(tmp_path):
     assert second["sources_checked"] == 0
     with _client(stamp, release) as http:
         third = intel.refresh(now=stamp+timedelta(minutes=31), client=http)
-    assert third["sources_ok"] == 3
+    assert third["sources_ok"] == 4
     with store.connect() as db:
         assert db.execute(
             "SELECT first_seen_at FROM rival_macro_events WHERE source='bls_calendar'",
@@ -139,8 +143,8 @@ def test_one_source_outage_is_isolated_and_does_not_invent_all_clear(tmp_path):
     stamp = datetime(2026, 11, 6, 13, 15, tzinfo=UTC)
     with _client(stamp, stamp+timedelta(minutes=15), bad_sec=True) as http:
         report = intel.refresh(now=stamp, client=http)
-    assert report["sources_checked"] == 3
-    assert report["sources_ok"] == 2
+    assert report["sources_checked"] == 4
+    assert report["sources_ok"] == 3
     assert report["source_failures"][0]["source"] == "sec_releases"
     state = intel.context(asset="SOL", horizon=15, now=stamp)
     assert state["sources"]["sec_releases"] == "unavailable_or_stale"
@@ -175,3 +179,53 @@ async def test_signal_is_vetoed_before_market_books_or_llm_calls(tmp_path):
     assert "Employment Situation" in response.description
     assert verdict["is_watch"] is False
     assert verdict["event_risk"] == "official_release_window"
+
+
+def test_indexed_world_news_is_research_only_and_never_claims_publication(tmp_path):
+    now = datetime(2026, 11, 6, 13, 15, tzinfo=UTC)
+    seen = (now-timedelta(minutes=4)).strftime("%Y%m%dT%H%M%SZ")
+    valid = [
+        {"title": "Bitcoin exchange hack draws scrutiny",
+         "url": "https://www.reuters.com/world/crypto/hack-report/",
+         "seendate": seen},
+        {"title": "Government sanctions could affect financial markets",
+         "url": "https://apnews.com/article/sanctions-financial-markets",
+         "seendate": seen},
+        {"title": "World markets are fine, trust us",
+         "url": "https://untrusted.example/potentially-fake-story",
+         "seendate": seen},
+        {"title": "Celebrity cooking show",
+         "url": "https://www.bbc.com/food/cooking/",
+         "seendate": seen},
+    ]
+    records = _indexed_news(json.dumps({"articles": valid}).encode(), now)
+    assert len(records) == 2
+    assert all(x["published_at"] is None for x in records)
+    assert all(x["upstream_index_seen_at"] == (
+        now-timedelta(minutes=4)).isoformat() for x in records)
+    assert {x["category"] for x in records} == {
+        "indexed_crypto_incident", "indexed_global_geopolitics",
+    }
+
+    def handler(request):
+        if request.url.host == "api.gdeltproject.org":
+            assert request.url.params["timespan"] == "1h"
+            return httpx.Response(200, json={"articles": valid})
+        return httpx.Response(503)
+
+    intel = EventIntelligence(SQLiteHotStore(tmp_path / "index.sqlite"))
+    with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+        status = intel.refresh(now=now, client=http)
+    assert status["sources_ok"] == 1
+    assert len(status["source_failures"]) == 3
+    state = intel.context(asset="BTC", horizon=15, now=now)
+    assert state["status"] == "unavailable"  # no verified official source
+    assert state["decision"] == "no_verified_active_pause"
+    assert not state["event_risk_cleared"]
+    indexed = [x for x in state["events"] if x["source"] == "global_news_index"]
+    assert len(indexed) == 2
+    assert all(e["provenance"] == "indexed_secondary_unverified" for e in indexed)
+    assert all(e["source_published_at"] is None for e in indexed)
+    assert all(e["market_direction_inferred"] is False for e in indexed)
+    assert all(e["upstream_index_seen_at"] is not None for e in indexed)
+

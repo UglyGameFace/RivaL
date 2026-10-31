@@ -62,7 +62,7 @@ def _binance_download(client: httpx.Client, url: str) -> bytes:
         checksum = _fetch(client, url + ".CHECKSUM", limit=1024).decode("ascii").strip()
     except UnicodeError as exc:
         raise HistoryImportError("non-ASCII Binance checksum") from exc
-    match = re.fullmatch(r"([0-9A-Fa-f]{64})\\s+\\*?([A-Za-z0-9_.-]+)", checksum)
+    match = re.fullmatch(r"([0-9A-Fa-f]{64})\s+\*?([A-Za-z0-9_.-]+)", checksum)
     if match is None or match[2] != filename:
         raise HistoryImportError("missing or mismatched official Binance checksum")
     payload = _fetch(client, url)

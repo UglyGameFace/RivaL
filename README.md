@@ -72,8 +72,12 @@ asks remain market prices, never calibrated model probabilities.
 
 Type **`/rival`**. The beginner menu shows:
 
-- **Crypto:** current verified Polymarket contracts and a separate exchange
-  research forecast path.
+- **Crypto:** begins on verified analysis and accuracy, not a default
+  Polymarket contract. Choose **Polymarket** (exact listed Up/Down contract
+  calls and one updating DM), **Exchange Futures** (separately measured
+  exchange-model forecasts), or **Kalshi** (read-only listings; no validated
+  Kalshi-specific prediction model). Then choose coin and supported window
+  before viewing any call or opting into tracking.
 - **Sports:** available games, sportsbook prices, and research-only slips.
 - **Notifications:** see whether personal trackers are on and stop all of them.
 - **My Results:** verified forward outcomes and fake-money practice results.

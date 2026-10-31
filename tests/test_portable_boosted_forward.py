@@ -12,11 +12,11 @@ from parlay_bot.perpetuals.features import LabeledExample
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
-from parlay_bot.research.boosted_portable import (
-    certified_export, predict_portable, validate_portable,
-)
+from parlay_bot.research.boosted_portable import predict_portable, validate_portable
 from parlay_bot.research.candidate_registry import (
-    CandidateValidationError, ResearchCandidateRegistry, verified_candidate,
+    CandidateValidationError,
+    ResearchCandidateRegistry,
+    verified_candidate,
 )
 
 
@@ -141,13 +141,13 @@ def test_exact_source_boosted_artifact_issues_immutable_future_paper_forecast(
     comp = ShadowModelCompetition(hot)
     issued = now-timedelta(seconds=20)
     target = now+timedelta(minutes=5)
-    arguments = dict(
-        conn=None, samples=_samples(now), features=(.25,)*10, now=now,
-        venue="binance", contract="BTCUSDT", quote="USDT", asset="BTC",
-        horizon=5, reference_opened_at=now-timedelta(minutes=5),
-        target_opened_at=target, issued_at=issued,
-        incumbent_up=.6, baseline_up=.45, boosters=same,
-    )
+    arguments = {
+        "conn": None, "samples": _samples(now), "features": (.25,)*10, "now": now,
+        "venue": "binance", "contract": "BTCUSDT", "quote": "USDT", "asset": "BTC",
+        "horizon": 5, "reference_opened_at": now-timedelta(minutes=5),
+        "target_opened_at": target, "issued_at": issued,
+        "incumbent_up": .6, "baseline_up": .45, "boosters": same,
+    }
     with hot.connect() as conn:
         arguments["conn"] = conn
         assert comp.issue(**arguments) == 3

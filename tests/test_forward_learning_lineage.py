@@ -61,3 +61,30 @@ def test_forward_learning_lineage_tracks_real_seed_and_unknown_legacy(tmp_path):
     with pytest.raises(ValueError):
         monitor.learning_lineage_summary(asset="DOGE", horizon_minutes=5, now=now)
     hot.close()
+
+@pytest.mark.asyncio
+async def test_results_page_shows_actual_training_provenance_without_claiming_accuracy(tmp_path):
+    from parlay_bot.discord_app.research_dashboard import (
+        ResearchDashboard, _compact_embed,
+    )
+
+    store = SQLiteHotStore(tmp_path / "results-lineage.sqlite")
+    market = PerpetualMarketStore(store)
+    view = ResearchDashboard(
+        owner_id=24, market=market, ai=None,
+        venues=("hyperliquid",), shadow_enabled=True,
+    )
+    try:
+        view.screen = "accuracy"
+        view.section = "lineage"
+        view._rebuild()
+        embed = await view.render()
+        values = {field.name: field.value for field in embed.fields}
+        proof = values["Model training actually used"]
+        assert "No issued forecasts to audit" in proof
+        assert "Training evidence is NOT a measured win rate" in proof
+        compact = _compact_embed(embed, screen="accuracy", section="lineage")
+        assert any(f.name == "Model training actually used" for f in compact.fields)
+    finally:
+        view.stop()
+        store.close()

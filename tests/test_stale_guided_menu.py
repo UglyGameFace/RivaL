@@ -215,7 +215,7 @@ def _seed_watch(market, now):
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 "hyperliquid", "BTC", "USDC", "BTC", 5,
-                "prospective-logistic-shadow-v1",
+                "prospective-logistic-persistent-v3",
                 opened.isoformat(), 81001,
                 (now - timedelta(seconds=30)).isoformat(),
                 (now + timedelta(seconds=120)).isoformat(),

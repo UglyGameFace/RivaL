@@ -26,6 +26,7 @@ from parlay_bot.perpetuals.model_checkpoints import LiveModelCheckpoints
 from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
+from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
 
 _LOG = logging.getLogger(__name__)
 MODEL = "prospective-logistic-persistent-v3"
@@ -734,22 +735,27 @@ class ForwardAccuracyMonitor:
 
     def venue_summary(
         self, *, asset: str, venue: str, horizon: int,
-        now: datetime | None = None,
+        now: datetime | None = None, model_version: str | None = None,
     ) -> dict:
-        """Seven-day accuracy for ONE source; this is the WATCH gate.
+        """Same-venue, same-model seven-day results and conservative WATCH proof.
 
-        The portfolio summary groups all venues together. Applying its
-        verdict to one venue lets a bad source inherit good sources'
-        record, or a good source get blocked by bad ones. A venue with
-        fewer than 50 settled forecasts reports model_beats_baseline=None:
-        insufficient evidence, never a pass and never a watch.
+        A positive mean over 50 rows is a descriptive score, not evidence
+        of a repeatable advantage. WATCH additionally requires a positive
+        day-block lower bound and observations spanning five valid UTC days.
+        Scoring remains read-only; no model promotion is inferred.
         """
         if asset not in ASSETS:
             raise ValueError("invalid asset")
         if horizon not in HORIZONS:
             raise ValueError("invalid horizon")
+        if model_version is not None and not model_version.strip():
+            raise ValueError("invalid model version")
         stamp = utc(now or datetime.now(UTC))
         start = (stamp - timedelta(days=7)).isoformat()
+        version_clause = " AND model_version=?" if model_version is not None else ""
+        params = (asset, venue, horizon, start, stamp.isoformat())
+        if model_version is not None:
+            params += (model_version,)
         self.initialize()
         with self.store.connect() as conn:
             row = conn.execute(
@@ -767,16 +773,49 @@ class ForwardAccuracyMonitor:
                                    THEN baseline_brier ELSE 0 END) AS baseline_sum
                    FROM perp_forward_audit
                    WHERE asset=? AND venue=? AND horizon_minutes=?
-                     AND issued_at>=? AND issued_at<=?""",
-                (asset, venue, horizon, start, stamp.isoformat()),
+                     AND issued_at>=? AND issued_at<=?"""
+                + version_clause,
+                params,
             ).fetchone()
+            daily = conn.execute(
+                """SELECT substr(issued_at,1,10) AS issue_day,
+                          COUNT(*) AS n,
+                          SUM(model_brier) AS model_sum,
+                          SUM(baseline_brier) AS baseline_sum,
+                          SUM(CASE WHEN model_brier IS NULL
+                                    OR baseline_brier IS NULL
+                                    OR outcome_up IS NULL
+                                    OR outcome_up NOT IN (0,1)
+                                    OR model_brier NOT BETWEEN 0 AND 1
+                                    OR baseline_brier NOT BETWEEN 0 AND 1
+                                   THEN 1 ELSE 0 END) AS invalid_rows
+                   FROM perp_forward_audit
+                   WHERE asset=? AND venue=? AND horizon_minutes=?
+                     AND issued_at>=? AND issued_at<=?
+                     AND settled_at IS NOT NULL"""
+                + version_clause
+                + " GROUP BY substr(issued_at,1,10)",
+                params,
+            ).fetchall()
         n = int(row["settled"] or 0)
         decided = int(row["decided"] or 0)
-        brier = float(row["model_sum"]) / n if n else None
-        baseline = float(row["baseline_sum"]) / n if n else None
+        brier = (float(row["model_sum"]) / n
+                 if n and row["model_sum"] is not None else None)
+        baseline = (float(row["baseline_sum"]) / n
+                    if n and row["baseline_sum"] is not None else None)
+        if brier is not None and not math.isfinite(brier):
+            brier = None
+        if baseline is not None and not math.isfinite(baseline):
+            baseline = None
+        block_proof = day_block_watch_evidence(daily)
         return {
             "issued": int(row["issued"]), "settled": n,
             "hit_rate": int(row["correct"] or 0) / decided if decided else None,
             "brier": brier, "baseline_brier": baseline,
-            "model_beats_baseline": brier < baseline if n >= 50 else None,
+            "model_beats_baseline": (
+                brier < baseline if n >= 50 and brier is not None
+                and baseline is not None else None
+            ),
+            "model_version": model_version,
+            **block_proof,
         }

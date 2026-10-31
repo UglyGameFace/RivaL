@@ -29,6 +29,7 @@ evaluation therefore fails safe to the incumbent, never to a challenger.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.governance import score_paired_forward
@@ -41,6 +42,7 @@ from parlay_bot.perpetuals.multi_exchange import (
     MODEL as MULTI_MODEL,
 )
 from parlay_bot.perpetuals.profit_proof import COST_SCENARIOS
+from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
 
 _LOG = logging.getLogger(__name__)
 
@@ -404,10 +406,36 @@ def multi_summary(
                 stamp.isoformat(),
             ),
         ).fetchone()
+        daily = conn.execute(
+            """SELECT substr(issued_at,1,10) AS issue_day,
+                      COUNT(*) AS n,
+                      SUM(challenger_brier) AS model_sum,
+                      SUM(incumbent_brier) AS baseline_sum,
+                      SUM(CASE WHEN challenger_brier IS NULL
+                                OR incumbent_brier IS NULL
+                                OR outcome_up IS NULL
+                                OR outcome_up NOT IN (0,1)
+                                OR challenger_brier NOT BETWEEN 0 AND 1
+                                OR incumbent_brier NOT BETWEEN 0 AND 1
+                               THEN 1 ELSE 0 END) AS invalid_rows
+               FROM perp_multi_forward
+               WHERE asset=? AND horizon_minutes=? AND model_version=?
+                 AND issued_at>=? AND issued_at<=?
+                 AND settled_at IS NOT NULL
+               GROUP BY substr(issued_at,1,10)""",
+            (asset, horizon, MULTI_MODEL,
+             (stamp - timedelta(days=7)).isoformat(), stamp.isoformat()),
+        ).fetchall()
     n = int(row["settled"] or 0)
     decided = int(row["decided"] or 0)
-    challenger = float(row["challenger_sum"]) / n if n else None
-    incumbent = float(row["incumbent_sum"]) / n if n else None
+    challenger = (float(row["challenger_sum"]) / n
+                  if n and row["challenger_sum"] is not None else None)
+    incumbent = (float(row["incumbent_sum"]) / n
+                 if n and row["incumbent_sum"] is not None else None)
+    if challenger is not None and not math.isfinite(challenger):
+        challenger = None
+    if incumbent is not None and not math.isfinite(incumbent):
+        incumbent = None
     return {
         "issued": int(row["issued"]),
         "settled": n,
@@ -416,5 +444,9 @@ def multi_summary(
         "baseline_brier": incumbent,
         "challenger_brier": challenger,
         "incumbent_brier": incumbent,
-        "model_beats_baseline": (challenger < incumbent if n >= 50 else None),
+        "model_beats_baseline": (
+            challenger < incumbent if n >= 50 and challenger is not None
+            and incumbent is not None else None
+        ),
+        **day_block_watch_evidence(daily),
     }

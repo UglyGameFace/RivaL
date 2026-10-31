@@ -98,10 +98,11 @@ def _proof(
 
 def _venue_proof(
     market: PerpetualMarketStore, *, asset: str, horizon: int, venue: str,
-    now: datetime,
+    now: datetime, model_version: str | None = None,
 ) -> dict:
     return ForwardAccuracyMonitor(market).venue_summary(
         asset=asset, venue=venue, horizon=horizon, now=now,
+        model_version=model_version,
     )
 
 
@@ -301,13 +302,25 @@ async def signal_embed(
         return validated
 
     def _default_evidence() -> dict:
-        return {"settled": 0, "hit_rate": None, "model_beats_baseline": None}
+        return {
+            "settled": 0, "hit_rate": None, "model_beats_baseline": None,
+            "watch_evidence_passes": False, "watch_days": 0,
+            "watch_reason": "unavailable",
+        }
 
+    forecast_for_venue = {
+        venue: next(w for w in prioritized if w["venue"] == venue)
+        for venue in candidate_venues
+    }
     shared_multi_proof: dict | None = None
 
     async def _venue_proof_or_default(venue: str) -> dict:
         if engine == "multi" and shared_multi_proof is not None:
             return shared_multi_proof
+        # Never borrow scores from another model when a legacy forecast
+        # omitted its model identity.
+        if not forecast_for_venue[venue].get("model_version"):
+            return _default_evidence()
         started = time.monotonic()
         try:
             return await bounded(
@@ -315,6 +328,7 @@ async def signal_embed(
                 lambda: asyncio.to_thread(
                     _venue_proof, market, asset=asset, horizon=horizon_minutes,
                     venue=venue, now=stamp,
+                    model_version=forecast_for_venue[venue].get("model_version"),
                 ),
                 max_seconds=2.5,
             )
@@ -411,6 +425,7 @@ async def signal_embed(
         beating_venues = [
             venue for venue in strong_venues
             if venue_proofs[venue].get("model_beats_baseline") is True
+            and venue_proofs[venue].get("watch_evidence_passes") is True
         ]
         if not beating_venues:
             return _no_signal(
@@ -455,6 +470,7 @@ async def signal_embed(
         and model_strength(float(validated[venue][0]["probability_up"]))
         == "directional watch"
         and venue_proofs[venue].get("model_beats_baseline") is True
+        and venue_proofs[venue].get("watch_evidence_passes") is True
         and _direction(float(validated[venue][0]["probability_up"])) != "FLAT"
     ]
     if qualified_venues:
@@ -527,6 +543,16 @@ async def signal_embed(
             + ("higher" if direction == "UP" else "lower")
             + ". This is an observed directional watch, not a validated "
               "profitable entry or a trade recommendation."
+        )
+    elif (strength == "directional watch" and venue_beats is True
+            and not venue_evidence.get("watch_evidence_passes")
+            and direction != "FLAT"):
+        verdict = f"🔎 {direction} RESEARCH • INSUFFICIENT PROOF"
+        message = (
+            "The model's average score beats its baseline, but the "
+            "same-model forecasts lack sufficient independent UTC-day "
+            "coverage or a positive day-block uncertainty bound. "
+            "No evidence-qualified WATCH is issued."
         )
     elif (strength == "directional watch" and venue_beats is None
             and direction != "FLAT"):
@@ -642,6 +668,12 @@ async def signal_embed(
                " • Trails baseline" if venue_beats is False else
                " • Unverified (needs 50 settled)")
         )
+        track_lines.append(
+            "WATCH day-block proof: "
+            + ("PASS" if venue_evidence.get("watch_evidence_passes")
+               else f"WITHHELD ({venue_evidence.get('watch_reason', 'unavailable')})")
+            + f" • {venue_evidence.get('watch_days', 0)} qualifying UTC days"
+        )
     else:
         track_lines.append(
             f"{chosen['venue']} venue record not evaluated "
@@ -684,6 +716,7 @@ async def signal_embed(
         alt_state = (
             "qualified"
             if alt_beats is True
+            and venue_proofs[venue].get("watch_evidence_passes") is True
             and model_strength(alt_prob) == "directional watch"
             else "unqualified" if alt_beats is False else "unverified"
         )

@@ -49,7 +49,7 @@ def seed_prediction(market, now, *, venue, probability, expires_in=420):
                 probability_up,baseline_up,training_evaluated)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                venue, contract, quote, "BTC", 5, "prospective-logistic-shadow-v1",
+                venue, contract, quote, "BTC", 5, "prospective-logistic-persistent-v3",
                 opened.isoformat(), 81001,
                 (now - timedelta(seconds=30)).isoformat(),
                 (now + timedelta(seconds=expires_in - 300)).isoformat(),
@@ -59,12 +59,13 @@ def seed_prediction(market, now, *, venue, probability, expires_in=420):
 
 
 def seed_settled(market, now, *, venue, count=50, beating=True, correct=30,
-                 model_brier=None):
+                 model_brier=None, days_span=6):
     """Settled rows deciding one venue's 7-day verdict (50+ to qualify)."""
     ForwardAccuracyMonitor(market).initialize()
     with market.store.connect() as conn:
         for i in range(count):
-            issued = now - timedelta(days=1) + timedelta(minutes=i)
+            issued = (now - timedelta(days=6)
+                      + timedelta(days=i % days_span, minutes=i))
             conn.execute(
                 """INSERT INTO perp_forward_audit
                    (venue,contract,quote,asset,horizon_minutes,model_version,
@@ -276,5 +277,77 @@ async def test_signal_venues_are_raced_not_tried_one_after_another(tmp_path, cap
         )
         assert "RivaL signal asset=BTC horizon=5" in caplog.text
         assert "book_venue=hyperliquid" in caplog.text
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_single_day_brier_win_is_not_enough_for_watch(tmp_path):
+    """Fifty overlapping forecasts on one lucky day must not qualify."""
+    now = datetime.now(UTC).replace(microsecond=0)
+    store = SQLiteHotStore(tmp_path / "single-day.sqlite")
+    market = PerpetualMarketStore(store)
+    try:
+        seed_prediction(market, now, venue="hyperliquid", probability=.64)
+        seed_settled(market, now, venue="hyperliquid", days_span=1)
+        proof = ForwardAccuracyMonitor(market).venue_summary(
+            asset="BTC", venue="hyperliquid", horizon=5, now=now,
+            model_version="prospective-logistic-persistent-v3",
+        )
+        assert proof["model_beats_baseline"] is True
+        assert proof["watch_evidence_passes"] is False
+        assert proof["watch_reason"] == "insufficient_days"
+        signal = await signal_embed(
+            market, mock_quotes(now), asset="BTC", horizon_minutes=5, now=now,
+        )
+        assert "INSUFFICIENT PROOF" in signal.title
+        assert "WATCH" not in signal.title
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_marginal_brier_win_cannot_qualify_a_watch(tmp_path):
+    now = datetime.now(UTC).replace(microsecond=0)
+    store = SQLiteHotStore(tmp_path / "small-gain.sqlite")
+    market = PerpetualMarketStore(store)
+    try:
+        seed_prediction(market, now, venue="hyperliquid", probability=.64)
+        seed_settled(market, now, venue="hyperliquid", model_brier=.249)
+        proof = ForwardAccuracyMonitor(market).venue_summary(
+            asset="BTC", venue="hyperliquid", horizon=5, now=now,
+            model_version="prospective-logistic-persistent-v3",
+        )
+        assert proof["model_beats_baseline"] is True
+        assert proof["watch_evidence_passes"] is False
+        assert proof["watch_reason"] == "uncertain_gain"
+        signal = await signal_embed(
+            market, mock_quotes(now), asset="BTC", horizon_minutes=5, now=now,
+        )
+        assert "INSUFFICIENT PROOF" in signal.title
+        assert "WATCH" not in signal.title
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_other_model_history_never_qualifies_a_new_model(tmp_path):
+    now = datetime.now(UTC).replace(microsecond=0)
+    store = SQLiteHotStore(tmp_path / "model-mismatch.sqlite")
+    market = PerpetualMarketStore(store)
+    try:
+        seed_prediction(market, now, venue="hyperliquid", probability=.64)
+        seed_settled(market, now, venue="hyperliquid")
+        with store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_forward_audit SET model_version=?
+                   WHERE settled_at IS NULL AND venue='hyperliquid'""",
+                ("new-unproven-model-v4",),
+            )
+        signal = await signal_embed(
+            market, mock_quotes(now), asset="BTC", horizon_minutes=5, now=now,
+        )
+        assert "UNVERIFIED" in signal.title
+        assert "WATCH" not in signal.title
     finally:
         store.close()

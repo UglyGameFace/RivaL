@@ -37,7 +37,7 @@ class OracleReference:
 def oracle_features(notice, reference: OracleReference, *, now: datetime) -> tuple[float, ...]:
     """Reject mismatched oracle, missing strike, stale price and unknown rules."""
     if not isinstance(reference, OracleReference):
-        raise ValueError("verified oracle reference required")
+        raise TypeError("verified oracle reference required")
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("UTC reference clock required")
     checked = now.astimezone(UTC)

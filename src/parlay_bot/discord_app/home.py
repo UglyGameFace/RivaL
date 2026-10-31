@@ -767,132 +767,28 @@ class GuidedHome(discord.ui.View):
                 )
             elif market == "exchange":
                 embed.add_field(
-                    name="What this market means",
+                    name="Crypto perpetual futures",
                     value=(
-                        "**Crypto perpetual futures:** Long/short exposure "
-                        "on exchanges such as Hyperliquid, Binance Futures, "
-                        "OKX, Gate, and Bitget. These are NOT DraftKings "
-                        "Sportsbook futures or DraftKings Predictions.\n"
-                        "RivaL reads exchange research, not a matched "
-                        "YES/NO betting contract."
-                    ), inline=False,
-                )
-                if self.market is None:
-                    accuracy = "Exchange collector is not connected in this session."
-                else:
-                    try:
-                        result = await asyncio.wait_for(
-                            asyncio.to_thread(
-                                ForwardAccuracyMonitor(self.market).summary,
-                                asset=self.coin,
-                            ), timeout=1.3,
-                        )
-                        sample = result["last_7d"][self.horizon]
-                        hits = sample["hit_rate"]
-                        accuracy = (
-                            f"{sample['settled']} verified settled of "
-                            f"{sample['issued']} forecasts in the last 7 days.\n"
-                            + (
-                                f"Correct direction: {hits:.1%} "
-                                "(forward exchange-candle outcomes)"
-                                if hits is not None else
-                                "Not enough verified forward outcomes for a reliable win rate."
-                            )
-                        )
-                    except Exception:  # noqa: BLE001
-                        _LOG.exception(
-                            "RivaL selected exchange results read failed "
-                            "asset=%s horizon=%s", self.coin, self.horizon,
-                        )
-                        accuracy = (
-                            "Could not load exchange results right now. "
-                            "That does not establish the model's accuracy."
-                        )
-                embed.add_field(
-                    name=f"Exchange forecast results • {self.coin} {self.horizon}m",
-                    value=accuracy, inline=False,
-                )
-                embed.add_field(
-                    name="Next action",
-                    value="**Get Exchange Forecast** checks the exchange model; "
-                          "**Follow Forecast** keeps one private watch. "
-                          "This is not a Polymarket contract call.",
+                        "These are exchange-price forecasts for leveraged futures, "
+                        "**not** matched Polymarket, Kalshi, or DraftKings contracts.\n"
+                        "**Get Exchange Forecast** requests a live research signal; "
+                        "**Follow Forecast** tracks one forecast.\n"
+                        "Use **Home → Bot Performance → Crypto Perpetuals** "
+                        "for the actual forward score, denominator, and learning record."
+                    ),
                     inline=False,
                 )
             elif market == "polymarket":
-                # Keep exact-contract evidence independent of historical
-                # Drive imports, exchange promotion and checkpoint reads.
-                poly_reader = self.polymarket_status or self.training_status
-                if poly_reader is None:
-                    poly = (
-                        "Polymarket learning statistics aren't connected to "
-                        "this menu. This is a data-read status, NOT a "
-                        "confirmed Polymarket outage or a 0% win rate."
-                    )
-                else:
-                    try:
-                        status = await asyncio.wait_for(
-                            asyncio.to_thread(
-                                poly_reader, self.coin, self.horizon,
-                            ), timeout=1.5,
-                        )
-                        learning = (
-                            status if self.polymarket_status is not None
-                            else status.get("polymarket_learning")
-                        )
-                        if not isinstance(learning, dict):
-                            poly = (
-                                "No Polymarket outcome summary was returned. "
-                                "The exchange-candle archive cannot replace it."
-                            )
-                        else:
-                            learned = int(learning.get("learned_contracts") or 0)
-                            settled = int(learning.get("settled_forward_contracts") or 0)
-                            model_brier = learning.get("forward_brier")
-                            baseline_brier = learning.get("market_baseline_brier")
-                            proof = (
-                                f"Model Brier: {model_brier:.4f} • "
-                                f"Market Brier: {baseline_brier:.4f}"
-                                if model_brier is not None
-                                and baseline_brier is not None
-                                else "Not enough settled model forecasts "
-                                     "to compare with market prices."
-                            )
-                            poly = (
-                                f"Verified contract outcomes learned: **{learned}**\n"
-                                f"Prospective model calls resolved: **{settled}**\n"
-                                f"{proof}\n"
-                                "These are Polymarket contracts only, "
-                                "not exchange-futures predictions."
-                            )
-                    except Exception:  # noqa: BLE001
-                        _LOG.exception(
-                            "RivaL Polymarket learning query failed "
-                            "asset=%s horizon=%s", self.coin, self.horizon,
-                        )
-                        poly = (
-                            "Couldn't read Polymarket learning statistics "
-                            "right now. Contract feed availability is a "
-                            "different check. No win rate is being guessed."
-                        )
                 embed.add_field(
-                    name=f"🧠 Polymarket model progress • {self.coin} {self.horizon}m",
-                    value=poly[:1024], inline=False,
-                )
-                embed.add_field(
-                    name="Is there a proven betting advantage?",
+                    name="Exact Polymarket contracts",
                     value=(
-                        "**Not yet.** RivaL must beat this contract market's "
-                        "own prices on enough future settled outcomes AND "
-                        "after fees/spread. Training labels alone do not "
-                        "prove an edge."
-                    ), inline=False,
-                )
-                embed.add_field(
-                    name="Next action",
-                    value="**View Contract Call** checks the exact listed "
-                          "UP/DOWN contract. **Track Market** keeps one "
-                          "updated DM. A quote is not a verified win probability.",
+                        "**View Contract Call** checks the currently listed "
+                        "Up/Down contract and its genuine quote.\n"
+                        "**Track Market** updates one DM when meaningful changes happen.\n"
+                        "Use **Home → Bot Performance → Polymarket** for "
+                        "settled contract forecasts, model scores, and "
+                        "how many outcomes the model has learned from."
+                    ),
                     inline=False,
                 )
         elif p == "discover":

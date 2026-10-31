@@ -57,6 +57,7 @@ from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
 from parlay_bot.perpetuals.hyperliquid_history_recovery import (
     HyperliquidHistoryRecovery,
 )
+from parlay_bot.perpetuals.kalshi_forward import KalshiForwardResearch
 from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
 from parlay_bot.perpetuals.lighter_history_recovery import LighterHistoryRecovery
 from parlay_bot.perpetuals.live_quotes import (
@@ -445,7 +446,8 @@ class RivalDiscordClient(discord.Client):
             if isinstance(self.gemini_research, OpenRouterResearch) else None,
         )
         self.auto_hunt.contract_research = self.polymarket_research
-        self.kalshi_browser = KalshiCryptoBrowser()
+        self.kalshi_forward = KalshiForwardResearch(self.store)
+        self.kalshi_browser = KalshiCryptoBrowser(forward=self.kalshi_forward)
         self.polymarket_board = LivePolymarketBoardService(
             bot=self,
             store=LivePolymarketBoardStore(self.store),
@@ -497,6 +499,7 @@ class RivalDiscordClient(discord.Client):
             polymarket_status=self.polymarket_learning_status,
             dkex_status=DKeXPublicReports(self.store).summary,
             kalshi=self.kalshi_browser,
+            kalshi_status=self.kalshi_forward.summary,
         )
 
     def _register_commands(self) -> None:

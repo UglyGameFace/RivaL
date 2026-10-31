@@ -423,6 +423,7 @@ class GuidedHome(discord.ui.View):
         polymarket_status: Callable[[str, int], dict] | None = None,
         dkex_status: Callable[[], dict] | None = None,
         kalshi: KalshiCryptoBrowser | None = None,
+        kalshi_status: Callable[..., dict] | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
@@ -444,6 +445,7 @@ class GuidedHome(discord.ui.View):
         self.polymarket_status = polymarket_status
         self.dkex_status = dkex_status
         self.kalshi = kalshi
+        self.kalshi_status = kalshi_status
         self._kalshi_refresh = False
         self.live_source: str | None = None
         self.page = "home"
@@ -628,14 +630,44 @@ class GuidedHome(discord.ui.View):
                     )[:1024], inline=False,
                 )
             elif market == "kalshi":
+                progress = (
+                    "No validated Kalshi-specific RivaL model yet. "
+                    "Real market outcomes are being collected where supported."
+                )
+                if self.kalshi_status is not None:
+                    try:
+                        evidence = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.kalshi_status, asset=self.coin,
+                            ), timeout=1.1,
+                        )
+                        count = evidence["candidate_forward_resolved"]
+                        candidate = evidence["candidate_brier"]
+                        market_baseline = evidence["kalshi_quote_baseline_brier"]
+                        comparison = (
+                            f"Model Brier: {candidate:.4f}; "
+                            f"Kalshi baseline: {market_baseline:.4f}"
+                            if candidate is not None and market_baseline is not None
+                            else "No independent model-vs-Kalshi outcome comparison yet."
+                        )
+                        progress = (
+                            "No validated Kalshi-specific RivaL model yet.\n"
+                            f"Recorded Kalshi markets: **{evidence['observed']}**\n"
+                            f"Verified settlements learned: **{evidence['trained_labels']}**\n"
+                            f"Forward challenger outcomes: **{count}**\n"
+                            f"{comparison}\n"
+                            "Research only. Model approval requires prospective "
+                            "evidence and verified after-fee advantage."
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("Kalshi forward evidence unavailable")
+                        progress = (
+                            "Could not read Kalshi model evidence. "
+                            "This is not proof the Kalshi public feed is offline."
+                        )
                 embed.add_field(
-                    name="🎯 Kalshi prediction accuracy",
-                    value=(
-                        "No validated Kalshi-specific RivaL model. "
-                        "You can browse verified available contracts, "
-                        "but no UP/DOWN prediction will be invented. "
-                        "Polymarket results do not transfer to Kalshi."
-                    ), inline=False,
+                    name=f"🎯 Kalshi model validation • {self.coin}",
+                    value=progress[:1024], inline=False,
                 )
                 embed.add_field(
                     name="Next action",

@@ -3,11 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
+
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
 import discord
+import httpx
 from discord import app_commands
 
 from parlay_bot.archive.drive import DriveArchiveFolders, GoogleDriveArchiveClient
@@ -53,6 +56,7 @@ from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
 from parlay_bot.perpetuals.deribit_history_recovery import DeribitHistoryRecovery
 from parlay_bot.perpetuals.dydx_history_recovery import DydxHistoryRecovery
+from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import GeminiResearch
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
@@ -77,9 +81,11 @@ from parlay_bot.perpetuals.polybolt_twap import PolyBoltTWAP
 from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
+from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
+from parlay_bot.perpetuals.unattended_acceptance import unattended_acceptance_receipt
 from parlay_bot.providers.errors import QuotaReserveReached
 from parlay_bot.providers.oddspapi import OddsPapiClient
 from parlay_bot.providers.owner_limits import OwnerLimitStore
@@ -139,6 +145,10 @@ class RivalDiscordClient(discord.Client):
 
         self.store = build_hot_store(settings)
         self.store.initialize()
+        self.health_monitor = RuntimeHealthMonitor(self.store)
+        self._health_task: asyncio.Task[None] | None = None
+        self._health_restarts: dict[str, list[datetime]] = {}
+        self._health_acceptance_seen = False
         _LOG.info(
             "RivaL operational storage initialized (backend=%s)",
             self.store.database.backend,
@@ -843,6 +853,41 @@ class RivalDiscordClient(discord.Client):
                     for name, task in workers
                 ), inline=False,
             )
+            try:
+                snapshot = await asyncio.wait_for(
+                    asyncio.to_thread(self.health_monitor.snapshot), timeout=4,
+                )
+                problems = snapshot["issues"]
+                detail = (
+                    f"Last host watchdog: {snapshot['checked_at'] or 'never'}\n"
+                    + ("Open incidents: " + ", ".join(
+                        p["issue_key"] for p in problems[:8])
+                       if problems else "No currently persisted incidents")
+                )
+            except Exception:  # noqa: BLE001
+                detail = "Host health database unverified"
+            embed.add_field(
+                name="Independent host watchdog",
+                value=detail[:1024], inline=False,
+            )
+            if self.autonomous is not None and self.stream_shadow is not None:
+                try:
+                    receipt = await asyncio.wait_for(
+                        asyncio.to_thread(unattended_acceptance_receipt, self.store),
+                        timeout=4,
+                    )
+                    statement = (
+                        f"{receipt['status']} • quoted and scored "
+                        f"{receipt['source_quoted']}/{receipt['paired_scored']} "
+                        "recent paired challenger outcomes. "
+                        "Not a restart proof or approval."
+                    )
+                except Exception:  # noqa: BLE001
+                    statement = "Hosted end-to-end evidence could not be verified"
+                embed.add_field(
+                    name="Unattended acceptance receipt",
+                    value=statement[:1024], inline=False,
+                )
             try:
                 latest = await asyncio.to_thread(
                     self.store.get_runtime_state,
@@ -1792,6 +1837,17 @@ class RivalDiscordClient(discord.Client):
                     self._candidate_import_loop(),
                     name="rival-verified-offline-candidate-import",
                 )
+        # Independent of Discord commands and data collection. A dead worker
+        # cannot rely on its own finally block to report a failure.
+        try:
+            await asyncio.to_thread(self.health_monitor.initialize)
+            if self.stream_shadow is not None:
+                await asyncio.to_thread(FamilyQuoteShadow(self.store).initialize)
+            self._health_task = asyncio.create_task(
+                self._health_loop(), name="rival-process-health-watchdog",
+            )
+        except Exception:  # noqa: BLE001 - monitoring must not stop trading-free research
+            _LOG.exception("RivaL host watchdog could not initialize")
 
     async def on_ready(self) -> None:
         self.discord_ready_at = datetime.now(UTC)
@@ -2400,6 +2456,143 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL candidate import from Drive unavailable")
             await asyncio.sleep(21600)
 
+    async def _health_loop(self) -> None:
+        """Recover exited workers only, never clone a possibly busy worker."""
+        await self.wait_until_ready()
+        while not self.is_closed():
+            faults: dict[str, str] = {}
+            now = datetime.now(UTC)
+            workers = (
+                ("_perp_task", self._perp_loop, "rival-perp-auto-collector"),
+                ("_shadow_task", self._shadow_loop, "rival-shadow-learning"),
+                ("_history_task", self._history_loop, "rival-perp-history-recovery"),
+                ("_candidate_task", self._candidate_import_loop,
+                 "rival-verified-offline-candidate-import"),
+                ("_stream_shadow_task", self._stream_shadow_loop,
+                 "rival-stream-forward-cost-audit"),
+                ("_archive_task", self._archive_loop, "rival-cold-archive"),
+                ("_sports_results_task", self._sports_results_loop,
+                 "rival-sports-final-results"),
+                ("_sports_task", self._sports_loop, "rival-sports-current-refresh"),
+                ("_kalshi_research_task", self._kalshi_research_loop,
+                 "rival-silent-kalshi-research"),
+                ("_poly_research_task", self._poly_research_loop,
+                 "rival-silent-polymarket-learning"),
+                ("_poly_board_task", self._poly_board_loop,
+                 "rival-auto-polymarket-board"),
+                ("_polybolt_task", self.polybolt.run, "rival-read-only-chainlink-twap"),
+                ("_target_task", self._target_loop, "rival-personal-direction-updates"),
+            )
+            for attr, method, name in workers:
+                task = getattr(self, attr)
+                if task is None or not task.done():
+                    continue
+                faults[f"worker:{name}"] = "background worker exited unexpectedly"
+                # Three restarts per rolling hour, at most one per minute.
+                # Cancelling a blocked to_thread DB operation then starting
+                # a duplicate worker is unsafe, so pending tasks are never
+                # force-restarted. Persistently dead workers remain alerted.
+                previous = [
+                    t for t in self._health_restarts.get(attr, [])
+                    if now-t < timedelta(hours=1)
+                ]
+                self._health_restarts[attr] = previous
+                if len(previous) >= 3 or (
+                    previous and now-previous[-1] < timedelta(minutes=1)
+                ):
+                    faults[f"worker:{name}"] = "restart budget exhausted or cooling down"
+                    continue
+                self._health_restarts[attr].append(now)
+                setattr(self, attr, asyncio.create_task(method(), name=name))
+                _LOG.warning("RivaL watchdog restarted exited worker %s", name)
+            try:
+                feeds = (
+                    tuple((venue, asset)
+                          for venue in self.perp_collector.providers
+                          for asset in self.perp_collector.assets)
+                    if self.perp_collector is not None else ()
+                )
+                observed = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self.health_monitor.inspect, now=now,
+                        expected_feeds=feeds,
+                        learning_enabled=self.autonomous is not None,
+                        streaming_enabled=self.live_stream is not None,
+                        import_enabled=self.offline_registry is not None,
+                        import_checked_at=self.candidate_sync_checked_at,
+                        import_status=self.candidate_sync_status,
+                    ),
+                    timeout=15,
+                )
+                faults.update(observed)
+                # The underlying normal settlement cycle already performs the
+                # same idempotent recovery. Help when it is delayed, but never
+                # manufacture missing target candles or overwrite outcomes.
+                if ("settlement_backlog" in observed and
+                        self.forward_audit is not None):
+                    recent = await asyncio.wait_for(
+                        asyncio.to_thread(self.forward_audit._settle, now), timeout=15,
+                    )
+                    recovered = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.forward_audit.reconcile_stale_settlements,
+                            now, limit=120,
+                        ), timeout=15,
+                    )
+                    recovered += recent
+                    if recovered:
+                        _LOG.info(
+                            "RivaL watchdog repaired %d causally settleable forecasts",
+                            recovered,
+                        )
+                if self.autonomous is not None and self.stream_shadow is not None:
+                    receipt = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            unattended_acceptance_receipt, self.store, now=now,
+                        ), timeout=15,
+                    )
+                    if (receipt["status"] == "HOST_EVIDENCE_PRESENT"
+                            and not self._health_acceptance_seen):
+                        self._health_acceptance_seen = True
+                        _LOG.info(
+                            "RivaL hosted unattended model-to-quote receipt "
+                            "matched_scored=%d source_quoted=%d; "
+                            "restart and promotion still require separate proof",
+                            receipt["paired_scored"], receipt["source_quoted"],
+                        )
+                events = await asyncio.wait_for(
+                    asyncio.to_thread(self.health_monitor.publish, faults, now=now),
+                    timeout=15,
+                )
+                webhook = os.environ.get("RIVAL_HEALTH_DISCORD_WEBHOOK_URL", "")
+                if (events and webhook.startswith((
+                    "https://discord.com/api/webhooks/",
+                    "https://discordapp.com/api/webhooks/",
+                ))):
+                    # Dedicated optional owner alert route; no user DMs or
+                    # market data secrets. Transition-only messages.
+                    async with httpx.AsyncClient(timeout=5) as client:
+                        for offset in range(0, len(events), 8):
+                            batch = events[offset:offset+8]
+                            message = "RivaL host health transitions:\n" + "\n".join(
+                                f"{state}: {key} • {detail}"
+                                for state, key, detail in batch
+                            )
+                            try:
+                                response = await client.post(
+                                    webhook, json={"content": message[:1900]},
+                                )
+                                response.raise_for_status()
+                            except (httpx.HTTPError, TimeoutError):
+                                _LOG.exception("RivaL operator health alert delivery failed")
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - independent watcher keeps polling
+                _LOG.exception(
+                    "RivaL watchdog check unavailable; health is unverified"
+                )
+            await asyncio.sleep(120)
+
     def polymarket_learning_status(self, asset: str, horizon: int) -> dict:
         """Read Polymarket contract scores without querying exchange/Drive state."""
         self.polymarket_research.initialize()
@@ -2504,6 +2697,11 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self._health_task is not None:
+            self._health_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._health_task
+            self._health_task = None
         if self._polybolt_task is not None:
             self._polybolt_task.cancel()
             with suppress(asyncio.CancelledError):

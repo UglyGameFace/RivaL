@@ -244,7 +244,20 @@ class OwnerLimitsView(discord.ui.View):
                     else:
                         report = await asyncio.wait_for(provider.get_usage(), timeout=6)
                         remaining = report.monthly_remaining_entities
-                        if remaining is None:
+                        if report.monthly_unlimited_entities:
+                            used = (
+                                f"{report.monthly_current_entities:,}"
+                                if report.monthly_current_entities is not None
+                                else "not reported"
+                            )
+                            value = (
+                                f"Provider plan: {report.tier or 'not reported'}\\n"
+                                f"Monthly objects: **provider-confirmed unlimited**; used: {used}\\n"
+                                "Owner safety ceiling still applies when configured."
+                            )
+                            if report.monthly_current_entities is None and self.store.get("sportsgameodds"):
+                                value += "\\nOwner cap blocked: provider did not report monthly usage."
+                        elif remaining is None:
                             value = "Unknown monthly provider allowance; event requests blocked."
                         else:
                             value = (

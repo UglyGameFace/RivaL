@@ -143,7 +143,7 @@ def parse_orderbook(payload: object) -> tuple[float | None, float | None, float 
     Missing sides remain missing; never substitute last trade or market midpoint.
     """
     if not isinstance(payload, dict) or not isinstance(payload.get("orderbook_fp"), dict):
-        raise ValueError("missing official Kalshi orderbook_fp")
+        raise TypeError("missing official Kalshi orderbook_fp")
     book = payload["orderbook_fp"]
 
     def best_bid(side: str) -> tuple[float, float] | None:
@@ -156,7 +156,7 @@ def parse_orderbook(payload: object) -> tuple[float | None, float | None, float 
                 raise ValueError("malformed Kalshi bid level")
             raw_price, raw_size = level
             if not isinstance(raw_price, str) or not isinstance(raw_size, str):
-                raise ValueError("Kalshi fixed-point book fields must be strings")
+                raise TypeError("Kalshi fixed-point book fields must be strings")
             try:
                 price, size = float(raw_price), float(raw_size)
             except (TypeError, ValueError, OverflowError) as exc:

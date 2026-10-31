@@ -120,3 +120,87 @@ async def test_legacy_live_button_cannot_auto_pick_polymarket(tmp_path):
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_platform_choice_explains_perpetuals_and_draftkings_without_fake_calls(tmp_path):
+    bot = _client(tmp_path)
+    home = _home(bot)
+    try:
+        home.navigate("crypto-desk")
+        home._buttons()
+        selector = next(
+            x for x in home.children if x.custom_id == "rival:guided:market"
+        )
+        assert [o.value for o in selector.options] == [
+            "polymarket", "exchange", "kalshi", "draftkings",
+        ]
+        assert "DraftKings" in next(
+            o.description for o in selector.options if o.value == "exchange"
+        )
+        start = await home.render()
+        text = "\n".join(x.value for x in start.fields)
+        assert "DraftKings Predictions" in text
+        assert "Not DraftKings" in text
+        assert "Hyperliquid" in text
+        assert "Exchange forecast results" not in str(start.to_dict())
+
+        home.live_source = "draftkings"
+        home._buttons()
+        assert "View Contract Call" not in _labels(home)
+        assert "Get Exchange Forecast" not in _labels(home)
+        assert "Follow Forecast" not in _labels(home)
+        assert all(x.custom_id != "rival:guided:coin" for x in home.children)
+        draft = await home.render()
+        draft_text = str(draft.to_dict())
+        assert "not connected" in draft_text.lower()
+        assert "no verified DraftKings" in draft_text
+        assert "Exchange forecast results" not in draft_text
+
+        home.live_source = "exchange"
+        exchange = await home.render()
+        exchange_text = str(exchange.to_dict())
+        assert "Crypto perpetual futures" in exchange_text
+        assert "not a Polymarket" in exchange_text.lower()
+        assert "Polymarket model progress" not in exchange_text
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_polymarket_zero_training_is_not_reported_as_provider_outage(tmp_path):
+    bot = _client(tmp_path)
+    home = _home(bot)
+    try:
+        home.navigate("crypto-desk")
+        home.live_source = "polymarket"
+        home.training_status = lambda asset, horizon: {
+            "polymarket_learning": {
+                "learned_contracts": 0,
+                "settled_forward_contracts": 0,
+                "forward_brier": None,
+                "market_baseline_brier": None,
+            },
+        }
+        pane = await home.render()
+        names = {x.name: x.value for x in pane.fields}
+        stats = next(v for k,v in names.items() if "Polymarket model progress" in k)
+        assert "Verified contract outcomes learned: **0**" in stats
+        assert "Not enough settled model forecasts" in stats
+        assert "unavailable" not in stats.lower()
+        assert "Exchange forecast results" not in str(pane.to_dict())
+        assert "Not yet" in names["Is there a proven betting advantage?"]
+
+        home.training_status = None
+        not_connected = await home.render()
+        evidence = str(not_connected.to_dict())
+        assert "statistics aren't connected to this menu" in evidence
+        assert "0% win rate" in evidence
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()

@@ -14,8 +14,8 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from parlay_bot.discord_app.data_dashboard import MARKET_SYMBOLS
-from parlay_bot.perpetuals.history_inventory import six_months_prior
 from parlay_bot.perpetuals.event_intelligence import EventIntelligence
+from parlay_bot.perpetuals.history_inventory import six_months_prior
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
 

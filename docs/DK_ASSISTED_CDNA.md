@@ -10,13 +10,15 @@ mathematics/free AI, and do not place bets.
 independent research horizon. Buttons:
 
 1. **Find My Coin** automatically searches public Crypto.com Predictions events
-   for the selected BTC/ETH/SOL/XRP coin on demand and returns real trading symbols found in official event contract
-   listings. An event search result is NOT an automatic DraftKings contract ID.
+   for the selected BTC/ETH/SOL/XRP coin on demand and lists up to two
+   symbol-verified candidate contracts, with fresh quoted prices if available. An event search result is NOT an automatic DraftKings contract ID.
 2. **Check CDNA Quote** reads one exact contract price from
    `GET https://data-api.crypto.com/api/v1/predictions/contracts/{symbol}/price`.
    Displays original bid, ask, source update age, market status and freshness.
-3. **Independent AI** opens RivaL's preexisting, free-only exchange-data
-   research panel for the selected coin. RivaL does not send CDNA fields to
+3. **Independent AI** requests one free-only AI assessment from RivaL's
+   existing exchange-data engine for the selected coin, then opens the result
+   in the research panel. The AI engine chooses its supported horizons,
+   which may differ from the selected DraftKings research window. RivaL does not send CDNA fields to
    OpenRouter, Gemini, any model or any statistical-learning pipeline.
 4. **Open DraftKings Predictions** opens the external official website so the
    user can verify the actual DraftKings contract, settlement rules, price,

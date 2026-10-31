@@ -22,6 +22,11 @@ from parlay_bot.providers.errors import (
     QuotaReserveReached,
 )
 from parlay_bot.providers.owner_limits import OwnerLimitStore
+from parlay_bot.providers.shared_budget import (
+    UNKNOWN_PERIOD,
+    QuotaClaim,
+    SharedProviderBudget,
+)
 
 
 class _CooldownGate:
@@ -68,6 +73,10 @@ class OddsPapiClient:
             raise ValueError("quota_reserve cannot be negative")
 
         self._owner_limits = owner_limits
+        self._shared_budget = (
+            SharedProviderBudget(owner_limits.store, provider="oddspapi", api_key=api_key)
+            if owner_limits is not None else None
+        )
         self._api_key = api_key
         self._quota_reserve = quota_reserve
         self._account_cache_seconds = account_cache_seconds
@@ -116,6 +125,14 @@ class OddsPapiClient:
             # concurrently running collectors sharing this client.
             async with self._budget_lock:
                 await self._ensure_billable_capacity()
+                if self._shared_budget is not None:
+                    snapshot = await self.get_account()
+                    claim = QuotaClaim(
+                        metric="requests", period=UNKNOWN_PERIOD,
+                        observed=snapshot.request_count, maximum=snapshot.request_limit,
+                        reserve=self._quota_reserve, requested=1, owner_cap=True,
+                    )
+                    await asyncio.to_thread(self._shared_budget.reserve, claim)
                 return await self._request_unlocked(
                     path, params=params, endpoint=endpoint,
                     billable=billable, headers=headers,

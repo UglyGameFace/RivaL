@@ -36,3 +36,13 @@ usability and evidence-correctness patch. RivaL cannot claim DraftKings
 Predictions support until lawful/authorized contract prices, exact matching,
 settlement receipts and genuine forward model validation exist; no scraping,
 guessed odds or imported Polymarket probabilities.
+
+## Root-cause correction for unavailable Polymarket stats
+
+Previously the Polymarket panel called `training_status`, which first queried
+the offline-candidate registry, the exchange learning heartbeat, and automatic
+exchange model promotion. An exception or timeout in any of those unrelated
+paths could hide valid Polymarket outcome counts. The menu now reads directly
+through `polymarket_learning_status` using only Polymarket research and
+outcome tables. It still fails closed on genuine database errors and logs the
+specific asset/timeframe without inventing zeros.

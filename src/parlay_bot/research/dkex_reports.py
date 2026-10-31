@@ -14,7 +14,6 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import date, datetime
-from urllib.parse import urlsplit
 
 OFFICIAL_REPORT_PAGES = {
     "market": "https://railbirdexchange.com/daily-market-reports",
@@ -56,8 +55,8 @@ def parse_daily_report(
         raise ValueError("DKeX report bytes or checksum are not verified")
     if (
         not symbol_column or not isinstance(symbol_column, str)
-        or kind == "settlement" and not price_column
-        or price_column is not None and not isinstance(price_column, str)
+        or (kind == "settlement" and not price_column)
+        or (price_column is not None and not isinstance(price_column, str))
     ):
         raise ValueError("explicit DKeX column mapping required")
     try:
@@ -189,7 +188,7 @@ class DKeXPublicReports:
             "contract_rows": row["contracts"],
             "latest_report_day": row["latest_date"],
             "settled_contract_rows": settlements["total"],
-            "void_or_half_settlements": settlements["voids"] or 0,
+            "half_value_settlements": settlements["voids"] or 0,
             "live_quotes_connected": False,
             "contract_specific_forward_win_rate": None,
             "official_source_independently_verified": False,

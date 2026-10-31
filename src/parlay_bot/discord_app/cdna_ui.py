@@ -41,17 +41,24 @@ def cdna_coin_embed(
         color=discord.Color.orange(),
     )
     for symbol, title, event, price in results[:2]:
-        quote = (
-            f"Bid {price.bid:.4f} • Ask {price.ask:.4f}\n"
-            f"Source updated: {discord.utils.format_dt(price.updated_at, style='R')}\n"
-            f"{'Recent source update' if price.fresh else 'STALE / NOT TRADING'}"
-            if price is not None else "No usable verified quote; do not infer a price."
-        )
+        if price is None:
+            quote = "No verifiable quote; price must not be inferred."
+        elif not price.fresh:
+            quote = "STALE / NOT TRADING. Price withheld."
+        else:
+            quote = (
+                f"Crypto.com bid {price.bid:.4f} • ask {price.ask:.4f}\\n"
+                f"Source updated: {discord.utils.format_dt(price.updated_at, style='R')}"
+            )
         embed.add_field(
             name=symbol[:100],
-            value=f"{title[:110]}\nEvent: {event[:120]}\n{quote}",
+            value=(
+                f"{title[:110]}\\nEvent: {event[:120]}\\n{quote}\\n"
+                "DraftKings strike/expiry/proposition matching: NOT VERIFIED."
+            ),
             inline=False,
         )
+
     if not results:
         embed.add_field(
             name="NO BET • No matching CDNA candidates",

@@ -122,7 +122,7 @@ class _Market(discord.ui.Select["GuidedHome"]):
                     value="exchange", default=selected == "exchange",
                 ),
                 discord.SelectOption(
-                    label="Kalshi (browse only)", description="Event contracts; no validated RivaL model",
+                    label="Kalshi research", description="Contract prices and experimental model; no approved call",
                     value="kalshi", default=selected == "kalshi",
                 ),
                 discord.SelectOption(

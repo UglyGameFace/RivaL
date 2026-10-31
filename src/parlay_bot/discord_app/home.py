@@ -421,6 +421,7 @@ class GuidedHome(discord.ui.View):
         auto_hunt: AutoHuntService | None = None,
         training_status: Callable[[str, int], dict] | None = None,
         polymarket_status: Callable[[str, int], dict] | None = None,
+        dkex_status: Callable[[], dict] | None = None,
         kalshi: KalshiCryptoBrowser | None = None,
     ) -> None:
         super().__init__(timeout=900)
@@ -441,6 +442,7 @@ class GuidedHome(discord.ui.View):
         self.research_factory = research_factory
         self.training_status = training_status
         self.polymarket_status = polymarket_status
+        self.dkex_status = dkex_status
         self.kalshi = kalshi
         self._kalshi_refresh = False
         self.live_source: str | None = None
@@ -654,6 +656,34 @@ class GuidedHome(discord.ui.View):
                         "View: https://predictions.draftkings.com/en"
                     ), inline=False,
                 )
+                if self.dkex_status is not None:
+                    try:
+                        records = await asyncio.wait_for(
+                            asyncio.to_thread(self.dkex_status), timeout=1.2,
+                        )
+                        count = int(records.get("daily_reports") or 0)
+                        observed = int(records.get("settled_contract_rows") or 0)
+                        evidence = (
+                            f"**{count}** public daily files archived; "
+                            f"**{observed}** settlement rows. "
+                            "These are delayed reports, not live contract odds "
+                            "or verified forward model wins."
+                            if count else
+                            "No official daily DKeX reports have been "
+                            "archived by RivaL yet. Public daily market and "
+                            "settlement reports exist; real-time actionable "
+                            "contract data is still not connected."
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("DKeX research evidence read failed")
+                        evidence = (
+                            "Could not read local DKeX public report records. "
+                            "No live DraftKings model or odds are being assumed."
+                        )
+                    embed.add_field(
+                        name="DKeX public research evidence",
+                        value=evidence, inline=False,
+                    )
                 embed.add_field(
                     name="Two different DraftKings products",
                     value=(

@@ -57,6 +57,28 @@ jobs:
             --out public-evidence football --league E0 --season 2526
           python -m parlay_bot.research.audit \
             --root public-evidence --months 1 --out public-evidence/quality.json
+      - name: Probe official supplemental crypto archives without model promotion
+        id: supplemental_provider
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python -m parlay_bot.research.supplemental_history \
+            --months 1 --assets BTC --one-minute --max-new 5 \
+            --root public-evidence --report-dir public-evidence/reports
+      - name: Report missing supplemental provider proof
+        if: steps.supplemental_provider.outcome != 'success'
+        run: echo "::warning::Supplementary Binance source access/integrity not verified in this PR."
+      - name: Probe official positioning archive and June time-label normalization
+        id: positioning_provider
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python -m parlay_bot.research.supplemental_metrics \
+            --days 45 --assets BTC --max-new 1 \
+            --root public-evidence --report-dir public-evidence/reports
+      - name: Report missing positioning archive proof
+        if: steps.positioning_provider.outcome != 'success'
+        run: echo "::warning::Positioning history source access/integrity is not verified in this PR."
       - name: Mark external access as unverified if unavailable
         if: steps.provider.outcome != 'success'
         run: echo "::warning::Official provider access or full-month validation failed; do not claim real-source proof."
@@ -65,6 +87,21 @@ jobs:
         with:
           name: verified-binance-public-history
           path: public-evidence/binance_um_klines/
+          if-no-files-found: ignore
+          retention-days: 7
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: public-supplemental-source-smoke
+          path: |
+            public-evidence/binance_um_klines/
+            public-evidence/binance_um_funding/
+            public-evidence/binance_um_mark_klines/
+            public-evidence/binance_um_index_klines/
+            public-evidence/binance_um_premium_klines/
+            public-evidence/binance_um_daily_metrics/
+            public-evidence/reports/supplemental-*.json
+            public-evidence/reports/metrics-*.json
           if-no-files-found: ignore
           retention-days: 7
       - uses: actions/upload-artifact@v4
@@ -141,6 +178,42 @@ jobs:
           python-version: "3.11"
       - name: Install
         run: python -m pip install -e ".[dev]"
+      - name: Collect and privately archive verified supplemental crypto research
+        # Supplemental data is additive. A blocked or rate-limited external
+        # source must not disable the verified base-price training workflow.
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          months="${{ github.event.inputs.months || '6' }}"
+          case "$months" in
+            1|2|3|4|5|6|7|8|9|10|11|12|13|14|15|16|17|18|19|20|21|22|23|24|25|26|27|28|29|30|31|32|33|34|35|36) ;;
+            *) echo "Invalid month count"; exit 1 ;;
+          esac
+          args=()
+          if [[ -n "$RIVAL_DRIVE_ROOT_FOLDER_ID" && -n "$RIVAL_DRIVE_HISTORY_FOLDER_ID" && -n "$RIVAL_DRIVE_MANIFESTS_FOLDER_ID" && -n "$RIVAL_DRIVE_STAGING_FOLDER_ID" && -n "$RIVAL_DRIVE_MODELS_FOLDER_ID" && -n "$RIVAL_DRIVE_REPORTS_FOLDER_ID" && -n "$RIVAL_DRIVE_OAUTH_CLIENT_ID" && -n "$RIVAL_DRIVE_OAUTH_CLIENT_SECRET" && -n "$RIVAL_DRIVE_OAUTH_REFRESH_TOKEN" ]]; then
+            args+=(--publish)
+          else
+            echo "::warning::Supplemental history will stay in CI artifacts without private Drive credentials."
+          fi
+          python -m parlay_bot.research.supplemental_history \
+            --months "$months" --assets BTC ETH SOL XRP --one-minute --passes 2 --max-new 100 \
+            --root data/research-history --report-dir data/research-reports "${args[@]}"
+      - name: Retain supplementary historical source evidence if Drive is unavailable
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rival-verified-supplemental-research
+          path: |
+            data/research-history/binance_um_klines/
+            data/research-history/binance_um_funding/
+            data/research-history/binance_um_mark_klines/
+            data/research-history/binance_um_index_klines/
+            data/research-history/binance_um_premium_klines/
+            data/research-history/polymarket_token_history/
+            data/research-history/kalshi_contract_candles/
+          if-no-files-found: ignore
+          retention-days: 3
       - name: Collect six months, audit, train isolated candidates and verify warehouse copies
         run: |
           set -euo pipefail

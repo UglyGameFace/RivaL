@@ -22,6 +22,7 @@ SOURCES = {
     "binance_um_funding", "binance_um_mark_klines",
     "binance_um_index_klines", "binance_um_premium_klines",
     "polymarket_token_history", "kalshi_contract_candles",
+    "binance_um_daily_metrics",
 }
 
 

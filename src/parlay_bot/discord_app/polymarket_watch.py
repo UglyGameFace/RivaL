@@ -69,6 +69,9 @@ class PolymarketNotice:
     research: object | None = None
     research_note: str | None = None
     rules: str | None = None
+    # Set exclusively by an authenticated, source-matched oracle adapter.
+    # The public Gamma/CLOB reader has no such reference and leaves this None.
+    oracle_reference: object | None = None
 
     @property
     def venue(self) -> str:
@@ -298,10 +301,27 @@ class PolymarketReader:
             raise MarketUnavailable("market_closed")
         if _decode_array(market.get("outcomes")) != ["Up", "Down"]:
             raise MarketUnavailable("outcome_mapping")
-        if horizon == 60 and market.get("resolutionSource") != (
-            f"https://www.binance.com/en/trade/{asset}_USDT"
-        ):
-            raise MarketUnavailable("hourly_settlement_source")
+        if horizon == 60:
+            settlement = market.get("resolutionSource")
+            details = market.get("description")
+            binance_spot = settlement == f"https://www.binance.com/en/trade/{asset}_USDT"
+            # Do not assume hourly means Binance: current Polymarket
+            # Up/Down resolution documentation also describes Chainlink
+            # TWAP. Admit it only when the published exact market specifies
+            # a compatible source and independently corroborating rules.
+            chainlink_twap = (
+                isinstance(settlement, str)
+                and settlement.startswith("https://data.chain.link/streams/")
+                and f"{asset.lower()}-usd" in settlement.lower()
+                and "twap-60s" in settlement.lower()
+                and isinstance(details, str)
+                and "chainlink" in details.lower()
+                and ("twap" in details.lower()
+                     or "time-weighted average" in details.lower())
+                and re.search(r"60[ -]?(?:second|sec|s)", details.lower()) is not None
+            )
+            if not (binance_spot or chainlink_twap):
+                raise MarketUnavailable("hourly_settlement_source")
         active = (
             event.get("active") is True and market.get("active") is True
             and market.get("acceptingOrders") is True

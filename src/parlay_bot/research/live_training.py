@@ -42,15 +42,28 @@ def historical_features(rows, identity):
     return vectors
 
 
-def _fit(samples, *, l2):
+def _fit(samples, *, l2, rate=.0125, epochs=4, active=None):
+    """Train exclusively on the past segment, using the live ten-feature contract.
+
+    Candidate families differ in learning rate, regularization or feature
+    subset, but always emit eleven weights usable by the existing live model.
+    No validation or test label is used for gradient steps.
+    """
+    if not (0 <= l2 <= .1 and 0 < rate <= .05 and 1 <= epochs <= 6):
+        raise ValueError("invalid historical candidate hyperparameters")
+    enabled = frozenset(range(10) if active is None else active)
+    if not enabled or not enabled <= set(range(10)):
+        raise ValueError("invalid historical feature subset")
     base = (sum(s[3] for s in samples)+5)/(len(samples)+10)
     weights = [math.log(base/(1-base)), *([0.] * 10)]
-    for _ in range(4):
+    for _ in range(epochs):
         for _, _, features, y in samples:
             x = (1., *features)
             error = y-_sigmoid(sum(w*v for w, v in zip(weights, x)))
             for i, v in enumerate(x):
-                weights[i] += .0125 * (error*v - (l2*weights[i] if i else 0))
+                if i and i-1 not in enabled:
+                    continue
+                weights[i] += rate * (error*v - (l2*weights[i] if i else 0))
     return weights, base
 
 
@@ -90,7 +103,20 @@ def evaluate_compatible(manifests, *, horizon, prepared=None):
         weights, base = _fit(train, l2=l2)
         compared.append((f"logistic-l2-{l2:g}", weights, base,
                          _score(validation, weights, base)))
-    pooled = [sum(v[1][i] for v in compared)/len(compared) for i in range(11)]
+    # Small prespecified family; all choices are made on the SAME purged
+    # validation period. Never tune to the final test period.
+    for method, options in (
+        ("slow-conservative-logit", {"l2": .005, "rate": .006, "epochs": 3}),
+        ("fast-regularized-logit", {"l2": .003, "rate": .018, "epochs": 4}),
+        ("trend-only-logit", {"l2": .005, "rate": .01, "epochs": 4,
+                              "active": (0, 1, 5, 6)}),
+    ):
+        weights, base = _fit(train, **options)
+        compared.append((method, weights, base,
+                         _score(validation, weights, base)))
+    # Ensemble ONLY the full-feature L2 family. A sparse model should not
+    # quietly overwrite its inactive feature weights through averaging.
+    pooled = [sum(v[1][i] for v in compared[:3])/3 for i in range(11)]
     compared.append(("regularized-logit-ensemble", pooled, compared[0][2],
                      _score(validation, pooled, compared[0][2])))
     method, weights, base, validation_scores = min(compared, key=lambda v: v[3]["brier"])

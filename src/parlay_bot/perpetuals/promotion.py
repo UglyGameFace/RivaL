@@ -139,11 +139,12 @@ def evaluate_promotion(
                 AND e.target_opened_at=q.target_opened_at
                WHERE e.asset=? AND e.horizon_minutes=?
                  AND e.model_version=? AND q.state='EXIT_QUOTED'
+                 AND e.settled_at IS NOT NULL AND e.settled_at<=?
                  AND e.issued_at>=? AND e.issued_at<=?""",
             (
                 asset,
                 horizon,
-                MULTI_MODEL,
+                MULTI_MODEL, stamp.isoformat(),
                 (stamp - timedelta(days=7)).isoformat(),
                 stamp.isoformat(),
             ),

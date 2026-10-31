@@ -1788,7 +1788,7 @@ class RivalDiscordClient(discord.Client):
                         try:
                             await asyncio.wait_for(
                                 asyncio.to_thread(
-                                    self.polymarket_research.learner.observe,
+                                    self.polymarket_research.study,
                                     notice,
                                 ), timeout=8,
                             )

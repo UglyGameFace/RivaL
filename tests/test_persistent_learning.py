@@ -182,3 +182,21 @@ def test_final_holdout_does_not_select_or_fit_historical_weights():
     assert first['model_spec']['weights'] == second['model_spec']['weights']
     assert first['model_spec']['method'] == second['model_spec']['method']
     assert first['out_of_sample_test'] != second['out_of_sample_test']
+
+
+def test_prespecified_historical_model_family_keeps_live_feature_contract():
+    from parlay_bot.research.live_training import _fit
+    examples = [
+        (datetime(2026, 1, 1, tzinfo=UTC),
+         datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=5),
+         tuple(float((i+j)%5)/10 for j in range(10)), i % 2)
+        for i in range(150)
+    ]
+    samples = [(a, b, tuple(c), y) for a,b,c,y in examples]
+    sparse, _ = _fit(samples, l2=.005, rate=.01, active=(0,1,5,6))
+    slow, _ = _fit(samples, l2=.005, rate=.006, epochs=3)
+    assert len(sparse) == len(slow) == 11
+    assert all(sparse[i+1] == 0 for i in set(range(10)) - {0,1,5,6})
+    assert slow != sparse
+    with pytest.raises(ValueError):
+        _fit(samples, l2=.005, active=())

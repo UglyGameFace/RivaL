@@ -18,6 +18,10 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
 from parlay_bot.perpetuals.polymarket_learning import PolymarketOutcomeLearner
+from parlay_bot.perpetuals.polymarket_oracle import (
+    OracleReference,
+    PolymarketOracleChallenger,
+)
 from parlay_bot.storage.hot import RelationalHotStore
 
 _LOG = logging.getLogger(__name__)
@@ -45,6 +49,7 @@ class PolymarketResearch:
         self.store = store
         self.ai = ai
         self.learner = PolymarketOutcomeLearner(store)
+        self.oracle_challenger = PolymarketOracleChallenger(store)
         self._learning_tasks: dict[str, asyncio.Task] = {}
         self._math_calls: dict[str, ContractCall] = {}
         self._initialized = False
@@ -87,7 +92,28 @@ class PolymarketResearch:
                     );
                 """)
             self.learner.initialize()
+            self.oracle_challenger.initialize()
             self._initialized = True
+
+    def study(self, notice):
+        """Continue book learning silently; oracle learning needs exact evidence.
+
+        Do not derive Chainlink settlement inputs from futures or Binance
+        exchange quotes. When no verified oracle adapter has supplied a
+        matching reference, v2 correctly remains untrained.
+        """
+        self.initialize()
+        result = self.learner.observe(notice)
+        reference = getattr(notice, "oracle_reference", None)
+        if isinstance(reference, OracleReference):
+            try:
+                self.oracle_challenger.observe(notice, reference)
+            except ValueError:
+                _LOG.info(
+                    "RivaL oracle challenger input rejected asset=%s horizon=%s",
+                    notice.asset, notice.horizon,
+                )
+        return result
 
     def _saved(self, slug: str) -> ContractCall | None:
         self.initialize()
@@ -173,7 +199,7 @@ class PolymarketResearch:
             async def learn():
                 try:
                     await asyncio.to_thread(self.initialize)
-                    result = await asyncio.to_thread(self.learner.observe, notice)
+                    result = await asyncio.to_thread(self.study, notice)
                     if result is not None and not self._closed:
                         self._math_calls[notice.slug] = ContractCall(
                             slug=notice.slug, asset=notice.asset, horizon=notice.horizon,

@@ -201,16 +201,28 @@ class MultiExchangeResearch:
         for (asset, horizon, target), grouped in sorted(groups.items()):
             if len(grouped) < MIN_QUORUM:
                 continue
-            candidates = [
-                SourceForecast(
+            candidates = []
+            for venue, row in sorted(grouped.items()):
+                source_health = feed_by_key[(venue, asset)]
+                # A venue with an old successful poll must not receive the
+                # same confidence weight as a genuinely current feed. This
+                # applies quality BEFORE the existing independent-origin
+                # and 40%-cap fusion, never inventing missing observations.
+                forecast_lag = (stamp - _time(row["issued_at"])).total_seconds()
+                health_lag = (stamp - _time(source_health["last_success_at"])).total_seconds()
+                candle_lag = (stamp - _time(source_health["last_candle_close"])).total_seconds()
+                quality = max(.2, min(1., 1. - (
+                    .4 * forecast_lag / MAX_SOURCE_AGE.total_seconds()
+                    + .2 * health_lag / 900.
+                    + .2 * candle_lag / 1200.
+                )))
+                candidates.append(SourceForecast(
                     source=venue, origin=venue, asset=asset,
                     quote="USD-DIRECTION", horizon_minutes=horizon,
                     observed_at=_time(row["issued_at"]),
-                    probability_up=float(row["probability_up"]), quality=1.0,
+                    probability_up=float(row["probability_up"]), quality=quality,
                     reference_price=float(row["reference_close"]),
-                )
-                for venue, row in sorted(grouped.items())
-            ]
+                ))
 
             def historical_skill(
                 candidate_asset: str, _quote: str, origin: str, candidate_horizon: int,
@@ -238,6 +250,7 @@ class MultiExchangeResearch:
                 {
                     "venue": item.origin, "issued_at": utc(item.observed_at).isoformat(),
                     "probability": item.probability_up, "weight": weight,
+                    "quality": item.quality,
                 }
                 for item, weight in zip(combined.contributors, combined.weights)
             ], separators=(",", ":"), allow_nan=False)

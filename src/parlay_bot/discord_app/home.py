@@ -1787,16 +1787,59 @@ class GuidedHome(discord.ui.View):
             return
         await interaction.response.defer(thinking=False)
         _LOG.info("Guided interaction acknowledged action=%s", action)
-        if action == "back":
+        if action == "desk-call":
+            if self.live_source is None:
+                self.note = "Choose a market first. No call was requested."
+            elif self.live_source == "exchange":
+                self.navigate("forecast")
+            elif self.live_source in ("polymarket", "kalshi"):
+                self.navigate("live")
+        elif action == "desk-track":
+            if self.live_source == "polymarket":
+                tracker = getattr(
+                    getattr(self.auto_hunt, "bot", None),
+                    "polymarket_board", None,
+                )
+                if tracker is None:
+                    self.note = "Polymarket tracking is unavailable."
+                else:
+                    try:
+                        ok, message = await asyncio.wait_for(
+                            tracker.start(
+                                interaction.user, asset=self.coin,
+                                horizon=self.horizon,
+                            ), timeout=12,
+                        )
+                        self.note = ("✅ " if ok else "⏳ ") + message
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("Starting selected Polymarket tracker failed")
+                        self.note = "Tracking could not be confirmed."
+            elif self.live_source == "exchange":
+                try:
+                    ok, message = await self.targets.follow(
+                        interaction.user, asset=self.coin,
+                        horizon_minutes=self.horizon,
+                    )
+                    self.note = ("✅ " if ok else "⏳ ") + message
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("Following selected exchange forecast failed")
+                    self.note = "Forecast follow could not be confirmed."
+            else:
+                self.note = "Choose a trackable market first. Kalshi is browse-only."
+        elif action == "live" and self.live_source is None:
+            # Legacy Live Mode buttons must not silently choose Polymarket.
+            self.navigate("crypto-desk")
+        elif action == "back":
             self.page = self.back_stack.pop() if self.back_stack else "home"
             self.note = None
         elif action in ("live-poly", "live-kalshi", "live-dk", "kalshi"):
+            # Old unsupported DraftKings shortcut no longer presents fake calls.
             self.live_source = {
                 "live-poly": "polymarket", "live-kalshi": "kalshi",
-                "live-dk": "draftkings", "kalshi": "kalshi",
+                "kalshi": "kalshi", "live-dk": None,
             }[action]
-            self.navigate("live")
-        elif action in ("home", "discover", "sports", "crypto", "hunt", "live", "practice",
+            self.navigate("live" if self.live_source is not None else "crypto-desk")
+        elif action in ("home", "discover", "sports", "crypto", "crypto-desk", "hunt", "live", "practice",
                         "results", "help", "advanced", "feeds", "trust"):
             self.navigate(action)
             if action == "sports":
@@ -2082,12 +2125,13 @@ class GuidedHome(discord.ui.View):
 # stateful action and is never run from stale state.
 _STALE_SAFE_PAGES = {
     "home": "home",
-    "discover": "live",
+    "discover": "crypto-desk",
     "sports": "sports",
     "crypto": "crypto",
     "hunt": "hunt",
     "hunt-tools": "hunt",
-    "live": "live",
+    "live": "crypto-desk",
+    "crypto-desk": "crypto-desk",
     "practice": "practice",
     "results": "results",
     "help": "help",
@@ -2123,6 +2167,7 @@ _STALE_BUTTONS_C = (
     "live", "live-on", "live-off", "poly-start", "poly-stop",
     "hunt-tools", "kalshi", "kalshi-refresh",
     "live-poly", "live-kalshi", "live-dk", "stop-all",
+    "crypto-desk", "desk-call", "desk-track",
 )
 
 

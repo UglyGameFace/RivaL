@@ -49,9 +49,18 @@ python -m parlay_bot.research.supplemental_history --months 6 \
 
 The separate `.github/workflows/verified-daily-metrics.yml` runs on main
 updates and daily. It backfills up to 215 past days of BTC/ETH/SOL/XRP
-Binance positioning data with a 100-partition per-run cap and digest-checked
-Actions cache continuation, then uses the same authorized Drive publisher and
-verified readback when available. The cache is an optimization, not provider
+Binance positioning data using four independent asset-specific GitHub Actions
+matrix jobs (at most three active simultaneously). Each asset has a separate
+digest-checked Actions cache, a bounded 215-partition intake budget and unique
+CI artifact name, so a successful source can finish its six-month catch-up
+within **one workflow run** instead of requiring nine daily runs. Failed,
+unavailable or interrupted partitions retain verified checkpoints and resume
+on later runs. This is bounded parallel ingestion, not removal of provenance,
+checksum, event-time or model-admission safeguards. Successful completion time
+still depends on provider availability, GitHub queueing and authenticated
+Drive readback.
+
+The same authorized Drive publisher and verified readback are used when available. The cache is an optimization, not provider
 integrity evidence. The upload journal saves receipt IDs only **after**
 the publisher has fetched and verified the private Drive bytes.
 

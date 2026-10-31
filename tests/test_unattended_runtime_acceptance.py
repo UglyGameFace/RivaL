@@ -15,7 +15,7 @@ from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
 from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
 from parlay_bot.perpetuals.unattended_acceptance import unattended_acceptance_receipt
-from parlay_bot.storage.hot import SQLiteHotStore
+from parlay_bot.storage.hot import PostgresHotStore, SQLiteHotStore
 
 
 def _book(at: datetime, *, bid: float = 100.0, ask: float = 100.1):
@@ -46,6 +46,7 @@ def _run_acceptance(store, now):
     forward.initialize()
     comp = ShadowModelCompetition(store)
     quotes = FamilyQuoteShadow(store)
+    quotes.initialize()
     reference = now-timedelta(minutes=5)
     with store.connect() as conn:
         conn.execute(
@@ -200,3 +201,41 @@ def test_health_incident_transitions_persist_and_do_not_spam(tmp_path):
         assert monitor.snapshot()["issues"] == []
     finally:
         store.close()
+
+
+def test_backend_acceptance_and_postgres_connection_pool_reboot(learning_store):
+    """CI exercises SQLite and real isolated PostgreSQL, not just a mock cursor."""
+    store = learning_store
+    wall = datetime.now(UTC).replace(second=0,microsecond=0)
+    now = wall.replace(minute=wall.minute//5*5)-timedelta(minutes=20)
+    _, _, resolved = _run_acceptance(store,now)
+    if store.database.backend == "postgres":
+        # Simulate a killed app connection pool while keeping its schema and
+        # issued evidence, exactly the restart failure mode we care about.
+        dsn = store.database.dsn
+        store.close()
+        reopened = PostgresHotStore(dsn)
+    else:
+        reopened = store
+    try:
+        forward = ForwardAccuracyMonitor(PerpetualMarketStore(reopened))
+        forward.initialize()
+        assert forward._settle(resolved+timedelta(minutes=1)) == 0
+        assert ShadowModelCompetition(reopened).settle(
+            now=resolved+timedelta(minutes=1),
+        ) == 0
+        receipt = unattended_acceptance_receipt(
+            reopened,now=resolved+timedelta(minutes=1),
+        )
+        assert receipt["paired_scored"] == 2
+        assert receipt["source_quoted"] == 2
+        with reopened.connect() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) AS n FROM perp_forward_audit"
+            ).fetchone()["n"] == 1
+            assert conn.execute(
+                "SELECT COUNT(*) AS n FROM rival_family_quote_shadow"
+            ).fetchone()["n"] == 2
+    finally:
+        if reopened is not store:
+            reopened.close()

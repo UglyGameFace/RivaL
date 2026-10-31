@@ -68,14 +68,14 @@ async def test_contract_call_is_saved_once_and_survives_restart(hot):
     reviewer = ai()
     service = PolymarketResearch(hot, ai=reviewer)
     current = notice()
-    assert service.observe(current) is None
-    assert service.observe(current) is None
+    assert service.observe(current, request_ai=True) is None
+    assert service.observe(current, request_ai=True) is None
     call = await service.wait(current.slug)
     assert call.direction == "UP" and call.slug == current.slug
     assert call.expires == current.expires
     reviewer.review_contract.assert_awaited_once()
     restarted = PolymarketResearch(hot, ai=ai())
-    restarted.observe(current)
+    restarted.observe(current, request_ai=True)
     assert await restarted.wait(current.slug) == call
     restarted.ai.review_contract.assert_not_awaited()
     with hot.connect() as conn:
@@ -98,7 +98,7 @@ async def test_foreign_or_expired_ai_reply_cannot_become_a_contract_call(hot):
     }
     service = PolymarketResearch(hot, ai=reviewer)
     current = notice()
-    service.observe(current)
+    service.observe(current, request_ai=True)
     assert await service.wait(current.slug) is None
     assert "did not match" in service.status(current.slug)
     assert service._saved(current.slug) is None
@@ -112,7 +112,7 @@ async def test_stale_or_incomplete_inputs_never_consume_ai_quota(hot):
     for bad in (replace(current, quote_at=current.quote_at-timedelta(seconds=26)),
                 replace(current, condition_id=None),
                 replace(current, expires=current.quote_at-timedelta(seconds=1))):
-        assert service.observe(bad) is None
+        assert service.observe(bad, request_ai=True) is None
     service.ai.review_contract.assert_not_awaited()
     assert not service._pending
     await service.aclose()
@@ -208,7 +208,7 @@ async def test_hourly_market_requires_current_year_time_and_real_binance_rule(mo
 async def test_terminal_resolution_receipt_matches_forecast_and_is_immutable(hot):
     service = PolymarketResearch(hot, ai=ai())
     current = notice()
-    service.observe(current)
+    service.observe(current, request_ai=True)
     call = await service.wait(current.slug)
     row = {"condition_id": CONDITION, "status": "resolved", "extended_review": False,
            "transaction_hash": "0x"+"b"*64, "resolved_block": 999,
@@ -242,11 +242,11 @@ async def test_meaningful_live_change_can_append_an_immutable_revision(hot, monk
     current = notice(clock[0])
     reviewer = ai()
     service = PolymarketResearch(hot, ai=reviewer)
-    service.observe(current)
+    service.observe(current, request_ai=True)
     first = await service.wait(current.slug)
     clock[0] += timedelta(seconds=61)
     changed = replace(current, up_ask=.72, down_ask=.30, quote_at=clock[0], received_at=clock[0])
-    assert service.observe(changed) is first
+    assert service.observe(changed, request_ai=True) is first
     second = await service.wait(current.slug)
     assert second.issued_at > first.issued_at
     assert second.evidence_sha256 != first.evidence_sha256
@@ -256,4 +256,29 @@ async def test_meaningful_live_change_can_append_an_immutable_revision(hot, monk
     assert json.loads(rows[0]["evidence_json"])["up_ask"] == .60
     assert json.loads(rows[1]["evidence_json"])["up_ask"] == .72
     assert reviewer.review_contract.await_count == 2
+    await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_background_polymarket_board_never_uses_free_ai_budget(hot):
+    reviewer = ai()
+    service = PolymarketResearch(hot, ai=reviewer)
+    current = notice()
+    assert service.observe(current) is None
+    assert service.observe(current) is None
+    # Learning and training remain independent of optional LLM quota.
+    if service._learning_tasks:
+        await asyncio.gather(*service._learning_tasks.values())
+    reviewer.review_contract.assert_not_awaited()
+    assert not service._pending
+    assert service._saved(current.slug) is None
+    with hot.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_polymarket_observations"
+        ).fetchone()["n"] == 1
+    # One explicit choice can initiate exactly one AI review.
+    assert service.observe(current, request_ai=True) is None
+    call = await service.wait(current.slug)
+    assert call is not None
+    reviewer.review_contract.assert_awaited_once()
     await service.aclose()

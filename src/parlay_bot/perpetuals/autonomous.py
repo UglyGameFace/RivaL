@@ -483,22 +483,6 @@ class AutonomousResearch:
         started = datetime.now(UTC)
         issued = settled = ai_count = 0
         math_ok = settlement_ok = review_ok = gemini_ok = True
-        # Scheduled macro releases and verified regulator announcements are
-        # researched even when nobody is using Discord. Never do HTTP on
-        # the event loop or silently promote a news headline into a model.
-        try:
-            event_status = await asyncio.to_thread(self.events.refresh)
-            if event_status["sources_checked"]:
-                _LOG.info(
-                    "RivaL official event research sources_ok=%s checked=%s "
-                    "events_seen=%s failures=%s",
-                    event_status["sources_ok"], event_status["sources_checked"],
-                    event_status["events_seen"], len(event_status["source_failures"]),
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - preserve the independent math cycle
-            _LOG.exception("RivaL official macro/event research unavailable")
         try:
             issued, settled = await asyncio.to_thread(self.forward.run_once)
         except asyncio.CancelledError:
@@ -558,4 +542,20 @@ class AutonomousResearch:
             raise
         except Exception:  # noqa: BLE001
             _LOG.exception("RivaL automatic learning heartbeat failed to persist")
+        # Research news AFTER recording the regular math/AI cycle, so even a
+        # slow official-source server cannot delay core forecast issuance.
+        # Poll attempts are durably throttled per source across restarts.
+        try:
+            event_status = await asyncio.to_thread(self.events.refresh)
+            if event_status["sources_checked"]:
+                _LOG.info(
+                    "RivaL official event research sources_ok=%s checked=%s "
+                    "events_seen=%s failures=%s",
+                    event_status["sources_ok"], event_status["sources_checked"],
+                    event_status["events_seen"], len(event_status["source_failures"]),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - preserve the independent math cycle
+            _LOG.exception("RivaL official macro/event research unavailable")
         return issued, settled, ai_count

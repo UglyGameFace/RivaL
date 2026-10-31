@@ -301,3 +301,40 @@ def test_missing_pair_scores_are_not_treated_as_zero(tmp_path):
         assert venue["model_beats_baseline"] is None
     finally:
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_detailed_accuracy_survives_incomplete_paired_scores(tmp_path):
+    from parlay_bot.discord_app.research_dashboard import ResearchDashboard
+
+    store = SQLiteHotStore(tmp_path / "incomplete-dashboard.sqlite")
+    market = PerpetualMarketStore(store)
+    monitor = ForwardAccuracyMonitor(market)
+    now = datetime.now(UTC)
+    seed(market, now=now)
+    view = None
+    try:
+        assert monitor.run_once(now=now)[0] == 3
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE perp_forward_audit SET settled_at=?, outcome_up=1, "
+                "model_brier=NULL, baseline_brier=0.2 "
+                "WHERE venue='hyperliquid' AND asset='BTC' AND horizon_minutes=5",
+                ((now + timedelta(minutes=5)).isoformat(),),
+            )
+        view = ResearchDashboard(
+            owner_id=42, market=market, ai=None,
+            venues=("hyperliquid",), shadow_enabled=True,
+        )
+        view.screen = "accuracy"
+        view.section = "five"
+        view._rebuild()
+        embed = await view.render()
+        values = {f.name: f.value for f in embed.fields}
+        assert "No measurable accuracy yet" in values["Forward 5-minute evaluation"]
+        assert "settled: **1**" in values["Forward 5-minute evaluation"]
+        assert "valid scored pairs: **0**" in values["Forward 5-minute evaluation"]
+    finally:
+        if view is not None:
+            view.stop()
+        store.close()

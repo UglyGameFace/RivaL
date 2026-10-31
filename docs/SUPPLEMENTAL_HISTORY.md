@@ -9,7 +9,8 @@ sports workers, Polymarket tracker or Kalshi learner.
 
 | Category | Research source / availability | Actual meaning |
 | --- | --- | --- |
-| Historical funding | Official Binance USD-M monthly fundingRate ZIP and matching CHECKSUM | Past funding payments/rates, not future funding, realized account payments or execution proof |
+| Historical funding | Official Binance USD-M monthly fundingRate ZIP and matching CHECKSUM | Past funding rates, not verified actual account payments or execution proof |
+| Open interest and positioning | Official Binance USD-M daily metrics ZIPs: open interest, top-trader ratios, long-short ratios and taker-volume ratios | 5m historical measurements with explicit pre/post June 25, 2026 timestamp labeling; source capture/publication time not independently authenticated |
 | Exchange reference prices | Official Binance USD-M markPriceKlines and indexPriceKlines, 5m | Venue-specific mark/index histories, **not** the precise official Polymarket/Kalshi oracle |
 | Futures premium | Official Binance USD-M premiumIndexKlines, 5m, including negative premiums | Exchange premium history, no inferred tradable market depth |
 | Higher-frequency BTC/ETH/SOL | The **existing** `free_history binance --interval 1m` and normal base 5m imports | Historical OHLCV granularity; within-candle TP-vs-stop ordering can remain unknown |
@@ -45,6 +46,32 @@ python -m parlay_bot.research.supplemental_history --months 6 \
   --assets BTC ETH SOL --max-new 100 \
   --root data/research-history --report-dir data/research-reports
 ```
+
+The separate `.github/workflows/verified-daily-metrics.yml` runs on main
+updates and daily. It backfills up to 215 past days of BTC/ETH/SOL/XRP
+Binance positioning data with a 100-partition per-run cap and digest-checked
+Actions cache continuation, then uses the same authorized Drive publisher and
+verified readback when available. The cache is an optimization, not provider
+integrity evidence. The upload journal saves receipt IDs only **after**
+the publisher has fetched and verified the private Drive bytes.
+
+```bash
+python -m parlay_bot.research.supplemental_metrics --days 215 \
+  --assets BTC ETH SOL XRP --max-new 100 --plan
+python -m parlay_bot.research.supplemental_metrics --days 215 \
+  --assets BTC ETH SOL XRP --max-new 100
+```
+
+**Timestamp caution:** official Binance public-data issue
+[binance-public-data #491](https://github.com/binance/binance-public-data/issues/491)
+reports that on 2026-06-25 the USD-M `metrics` daily archive changed
+`create_time` labels from end-of-window to start-of-window, creating an
+ambiguous duplicated 00:00 boundary in adjacent days. Each normalized record
+keeps `source_date`, `source_labeled_at`, `label_regime`,
+`boundary_caution`, and a conservatively delayed
+`conservative_feature_after_at`. None of these are real-time observation
+timestamps, and **no live forecasting model is authorized to use them without
+separately validating publication lag and point-in-time availability.**
 
 The standard monthly GitHub historical workflow now runs the bounded public
 supplementary acquisition alongside the existing base pipeline. Publishing to

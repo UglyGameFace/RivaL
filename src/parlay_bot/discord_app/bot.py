@@ -2169,7 +2169,7 @@ class RivalDiscordClient(discord.Client):
 
     def polymarket_learning_status(self, asset: str, horizon: int) -> dict:
         """Read Polymarket contract scores without querying exchange/Drive state."""
-        self.polymarket_research.learner.initialize()
+        self.polymarket_research.initialize()
         return self.polymarket_research.learner.summary(asset=asset, horizon=horizon)
 
     def training_status(self, asset: str, horizon: int) -> dict:

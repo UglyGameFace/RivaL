@@ -1,5 +1,5 @@
 """Regression tests for conservative GitHub branch retirement."""
-from tools.retire_merged_branches import retirement_candidates, retire
+from tools.retire_merged_branches import retire, retirement_candidates
 
 
 def branch(name, sha="abc", protected=False):

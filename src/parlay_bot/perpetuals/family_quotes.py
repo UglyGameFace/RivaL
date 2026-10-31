@@ -12,7 +12,7 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.perpetuals.live_quotes import BookQuote, PerpReferenceBook
 from parlay_bot.perpetuals.model_competition import FAMILIES
 from parlay_bot.perpetuals.profit_proof import (
-    COST_SCENARIOS, ENTRY_GRACE, EXIT_GRACE, NOTIONAL_USDT,
+    ENTRY_GRACE, EXIT_GRACE, NOTIONAL_USDT,
 )
 
 SCORE_THRESHOLD = .56

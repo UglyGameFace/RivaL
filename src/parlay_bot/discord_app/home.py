@@ -988,7 +988,7 @@ class GuidedHome(discord.ui.View):
                             if item.yes_ask is not None and item.no_ask is not None:
                                 both = item.yes_ask + item.no_ask
                                 quote_context = (
-                                    f"YES needs >{item.yes_ask:.0%} wins; "
+                                    f"For a standard $1 payout, YES needs >{item.yes_ask:.0%} wins; "
                                     f"NO needs >{item.no_ask:.0%} wins to break "
                                     f"even before fees. Both asks total ${both:.2f}. "
                                     "These are price thresholds, NOT forecasts."

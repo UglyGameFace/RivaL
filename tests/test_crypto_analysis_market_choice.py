@@ -151,6 +151,11 @@ async def test_platform_choice_explains_perpetuals_and_draftkings_without_fake_c
         assert "Get Exchange Forecast" not in _labels(home)
         assert "Follow Forecast" not in _labels(home)
         assert all(x.custom_id != "rival:guided:coin" for x in home.children)
+        # Old Discord components can still be clicked after switching the
+        # selected provider. They must never borrow a Polymarket signal.
+        await home.act(_interaction(), "desk-call")
+        assert home.page == "crypto-desk"
+        assert "not connected" in home.note
         draft = await home.render()
         draft_text = str(draft.to_dict())
         assert "not connected" in draft_text.lower()

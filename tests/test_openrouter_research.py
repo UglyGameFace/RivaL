@@ -30,7 +30,7 @@ def model(name, *, paid=False, expiry=None, endpoint=True):
 def test_catalog_strictly_excludes_paid_expired_and_non_code_models():
     now = datetime(2026, 10, 30, 20, tzinfo=UTC)
     data = {"data": [
-        model("recursive/flint-v1.0:free"),
+        model("openai/gpt-oss-120b:free"),
         model("cohere/north-mini-code:free",
               expiry=(now-timedelta(seconds=1)).isoformat()),
         model("cohere/north-mini-code:free", paid=True),
@@ -39,7 +39,7 @@ def test_catalog_strictly_excludes_paid_expired_and_non_code_models():
         model("openai/gpt-6"),
     ]}
     assert module.eligible_free_coding_models(data, now=now) == (
-        "recursive/flint-v1.0:free",
+        "openai/gpt-oss-120b:free",
     )
     assert module.eligible_free_coding_models({"data": [
         model("cohere/north-mini-code:free", paid=True)
@@ -95,13 +95,15 @@ async def test_free_only_coding_reviewer_uses_verified_evidence_and_budget(monke
         assert req.headers["authorization"] == "Bearer test-secret"
         if req.url.path == "/api/v1/models":
             return httpx.Response(200, json={"data": [
-                model("recursive/flint-v1.0:free"),
+                model("openai/gpt-oss-120b:free"),
                 model("cohere/north-mini-code:free"),
                 model("cohere/north-mini-code:free", paid=True),
             ]})
         assert req.url.path == "/api/v1/chat/completions"
         body = __import__("json").loads(req.content)
-        assert body["model"] == "recursive/flint-v1.0:free"
+        assert body["models"] == [
+            "openai/gpt-oss-120b:free", "cohere/north-mini-code:free",
+        ]
         assert "Chainlink" in body["messages"][0]["content"]
         assert body["messages"][1]["content"] == (
             '{"sources":[{"venue":"hyperliquid"},'
@@ -121,9 +123,9 @@ async def test_free_only_coding_reviewer_uses_verified_evidence_and_budget(monke
             market, api_key="test-secret", client=client,
         )
         models = await reviewer.list_advertised_models()
-        assert models[0] == "recursive/flint-v1.0:free"
+        assert models[0] == "openai/gpt-oss-120b:free"
         result = await reviewer.ask(asset="BTC", venues=("hyperliquid", "okx"))
-        assert result.model == "recursive/flint-v1.0:free"
+        assert result.model == "openai/gpt-oss-120b:free"
         assert result.direction == "uncertain"
         assert result.evidence_sha256 == "sha-of-verified-input"
         assert len(market.saved) == 1
@@ -210,10 +212,10 @@ async def test_contract_review_uses_selected_target_and_rejects_foreign_reply(re
 
     def respond(req):
         if req.url.path.endswith("/models"):
-            return httpx.Response(200, json={"data": [model("recursive/flint-v1.0:free")]})
+            return httpx.Response(200, json={"data": [model("openai/gpt-oss-120b:free")]})
         body = json.loads(req.content)
         payloads.append(body)
-        assert body["model"] == "recursive/flint-v1.0:free"
+        assert body["model"] == "openai/gpt-oss-120b:free"
         assert json.loads(body["messages"][1]["content"])["target"] == "polymarket"
         assert "exchange candles" not in body["messages"][1]["content"]
         return httpx.Response(200, json={"model": body["model"], "choices": [{"message": {
@@ -245,9 +247,9 @@ async def test_contract_and_exchange_reviews_share_one_persisted_quota(tmp_path,
 
     def respond(req):
         if req.url.path.endswith("/models"):
-            return httpx.Response(200, json={"data": [model("recursive/flint-v1.0:free")]})
+            return httpx.Response(200, json={"data": [model("openai/gpt-oss-120b:free")]})
         completions.append(req)
-        return httpx.Response(200, json={"model": "recursive/flint-v1.0:free", "choices": [{"message": {
+        return httpx.Response(200, json={"model": "openai/gpt-oss-120b:free", "choices": [{"message": {
             "content": json.dumps({"slug": "one-market", "direction": "up", "confidence": "low",
                                    "thesis": "Contract research", "risk": "Unvalidated"})}}]})
 
@@ -279,7 +281,7 @@ async def test_contract_quota_warning_is_local_and_names_exact_hold(monkeypatch)
     }
     def respond(request):
         assert request.url.path.endswith("/models")
-        return httpx.Response(200, json={"data": [model("recursive/flint-v1.0:free")]})
+        return httpx.Response(200, json={"data": [model("openai/gpt-oss-120b:free")]})
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
         reviewer = module.OpenRouterResearch(market, api_key="test", client=client)
         with pytest.raises(ResearchUnavailable) as err:

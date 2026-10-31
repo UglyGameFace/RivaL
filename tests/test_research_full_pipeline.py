@@ -167,3 +167,37 @@ async def test_actual_drive_restore_byte_hash_not_just_metadata(tmp_path):
             )
     finally:
         await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_crypto_qualification_is_independent_of_optional_football_outages(tmp_path):
+    sample_month(tmp_path, 2024, 1)
+    sample_month(tmp_path, 2024, 2)
+    report = await run_pipeline(
+        root=tmp_path, months=["2024-01", "2024-02"], assets=["BTC"],
+        intervals=["1h"], seasons=["2526"], leagues=["E0"],
+        collect_enabled=False, publish_enabled=False,
+        max_new=1, report_dir=tmp_path / "reports",
+    )
+    assert report["crypto_sources_complete"] is True
+    assert report["all_requested_data_complete"] is False
+    assert report["quality"]["missing_sports_archives"] == [
+        {"league": "E0", "season": "2526"},
+    ]
+    assert report["compatible_candidate_count"] == 0
+    assert report["compatible_candidate_passed"] == 0
+
+
+def test_default_historical_plan_researches_crypto_without_football():
+    import subprocess
+    import sys
+
+    result = subprocess.run(
+        [sys.executable, "-m", "parlay_bot.research.production",
+         "--plan", "--months", "1", "--assets", "BTC",
+         "--intervals", "5m"],
+        capture_output=True, text=True, check=True,
+    )
+    plan = json.loads(result.stdout)
+    assert plan["jobs"]
+    assert all(job[0] == "binance" for job in plan["jobs"])

@@ -21,13 +21,13 @@ from parlay_bot.discord_app.opportunities import (
     recent_multi_watches,
     recent_watches,
 )
+from parlay_bot.perpetuals.event_intelligence import EventIntelligence
 from parlay_bot.perpetuals.forward_audit import (
     MODEL as FORWARD_MODEL,
 )
 from parlay_bot.perpetuals.forward_audit import (
     ForwardAccuracyMonitor,
 )
-from parlay_bot.perpetuals.event_intelligence import EventIntelligence
 from parlay_bot.perpetuals.live_quotes import (
     BookQuote,
     PerpReferenceBook,

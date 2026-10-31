@@ -16,7 +16,6 @@ from parlay_bot.perpetuals.calibration_validation import unique_window_calibrati
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.model_competition import FAMILIES
-from parlay_bot.perpetuals.profit_proof import COST_SCENARIOS
 
 MIN_WINDOWS = 150
 MIN_DAYS = 21
@@ -72,6 +71,8 @@ class FamilyPromotion:
         # The optional quote ledger may not have seen a venue book yet.
         # Research promotion still records a strict HELD decision.
         from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
+        from parlay_bot.perpetuals.profit_proof import COST_SCENARIOS
+
         FamilyQuoteShadow(self.store).initialize()
         # Prove the exact same selected stream, not other venues of the asset.
         with self.store.connect() as conn:

@@ -1,3 +1,15 @@
+## ACTIVE TASK: Hosted sports recovery evidence and stale dashboard lifecycle (2026-10-31)
+
+- Objective: prevent stale Research/Data dashboard taps from vanishing after Discord restart/timeout, and expose actual hosted sports settlement progress, not Discloud upload-only claims.
+- Baseline: main `021f1a0a52b95a1ea37b7d89c89dfc28ac34d9c7` after merged #146; no other PR open at start. Auto-Hunt stays retired.
+- Root causes: only GuidedHome had persistent component fallbacks; expired Research/Data controls were discarded, including misleading Analyze/Follow taps. Sports results worker logged six-hour DB counts without persisting cycle evidence or exposing it in the live health command.
+- Changes: exact-ID persistent, dispatch-only Research/Data recovery views that build new per-invoker private panels and never replay old AI/Follow actions or selections. Existing detached-item recovery now covers all three namespaces. Sports health uses actual runtime Postgres/SQLite final, scored, unresolved, excluded, started-unresolved fixture counts; last worker pass persisted with provider state and cycle counts. Results and forecast ledgers remain immutable. Sports repair runs each 30 min, while per-fixture provider retry stays six hours with shared quota reserves.
+- Verification: PR CI with Ruff/PostgreSQL/pytest; check exact merged main and Discloud file acceptance. Hosted Discord command use, real provider outcome progression, and lag/backlog trends remain unverified until observed on the running host.
+- Rollback: revert code, safe persistent status row remains; no destructive migration, orders or extra AI calls.
+- Remaining audit: historical data hole recovery, AI-budget per-user fairness, contract rule/oracle and tie validation, provider-specific forward model skill are separate unresolved scopes. Issues #6, #66, #138 remain open where evidence is missing.
+
+---
+
 ## ACTIVE TASK: Audit P1 WATCH confidence guard (2026-10-31)
 
 - Objective: prevent a 50-row, single-day or barely-positive Brier result from being labeled an evidence-qualified crypto WATCH. Do **not** restore Auto-Hunt: sports scanner is a future independent feature only after real API coverage.

@@ -3,14 +3,16 @@ from __future__ import annotations
 
 import discord
 
-from parlay_bot.parlays.manual import available_selections, selected_slip
+from parlay_bot.parlays.manual import available_selections, quote_is_fresh, selected_slip
 
 
 class _Pick(discord.ui.Select):
     def __init__(self, parent: ManualParlayView):
         self.parent_picker = parent
+        # Freeze option identity: choices may expire while the menu is open.
+        self.candidates = tuple(parent.visible)
         options = []
-        for i, row in enumerate(parent.visible):
+        for i, row in enumerate(self.candidates):
             options.append(discord.SelectOption(
                 label=f"{row['event_name'][:55]}",
                 description=f"{row['market_name'] or row['market_id']}: {row['outcome_name'] or row['outcome_id']} @ {row['price_decimal']:.2f}"[:100],
@@ -20,8 +22,22 @@ class _Pick(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction) -> None:
         parent = self.parent_picker
-        candidate = parent.visible[int(self.values[0])]
-        if any(row["fixture_id"] == candidate["fixture_id"] for row in parent.legs):
+        index = int(self.values[0])
+        if not 0 <= index < len(self.candidates):
+            await interaction.response.send_message("Reopen the menu for current prices.", ephemeral=True)
+            return
+        candidate = self.candidates[index]
+        if not quote_is_fresh(candidate):
+            await interaction.response.send_message(
+                "That quote or game expired. Reopen Sports for a fresh price.",
+                ephemeral=True,
+            )
+            return
+        if any(
+            row.get("provider") == candidate.get("provider")
+            and row["fixture_id"] == candidate["fixture_id"]
+            for row in parent.legs
+        ):
             await interaction.response.send_message(
                 "Only one pick per game is supported. Remove the existing leg first.",
                 ephemeral=True,
@@ -29,6 +45,15 @@ class _Pick(discord.ui.Select):
             return
         if len(parent.legs) >= 6:
             await interaction.response.send_message("Maximum six legs.", ephemeral=True)
+            return
+        if parent.legs and (
+            parent.legs[0]["bookmaker"] != candidate["bookmaker"]
+            or parent.legs[0].get("provider") != candidate.get("provider")
+        ):
+            await interaction.response.send_message(
+                "Different odds sources cannot be mixed in one slip. Clear it first.",
+                ephemeral=True,
+            )
             return
         parent.legs.append(candidate)
         parent.page = 0
@@ -58,11 +83,15 @@ class ManualParlayView(discord.ui.View):
     @property
     def visible(self):
         rows = [r for r in self.rows if
+                quote_is_fresh(r) and
                 (self.sport is None or r["sport_name"] == self.sport) and
                 (self.game is None or r["fixture_id"] == self.game) and
                 (self.category is None or self._category(r) == self.category) and
                 (self.book is None or r["bookmaker"] == self.book) and
-                (not self.legs or r["bookmaker"] == self.legs[0]["bookmaker"])]
+                (not self.legs or (
+                    r["bookmaker"] == self.legs[0]["bookmaker"]
+                    and r.get("provider") == self.legs[0].get("provider")
+                ))]
         return rows[self.page * 25:(self.page + 1) * 25]
 
     @staticmethod
@@ -78,20 +107,21 @@ class ManualParlayView(discord.ui.View):
 
     def refresh_components(self):
         self.clear_items()
-        if self.rows:
-            sports = sorted({r["sport_name"] for r in self.rows if r["sport_name"]})
+        fresh = [r for r in self.rows if quote_is_fresh(r)]
+        if fresh:
+            sports = sorted({r["sport_name"] for r in fresh if r["sport_name"]})
             self.add_item(_Filter(self, "sport", sports))
-            books = sorted({r["bookmaker"] for r in self.rows})
+            books = sorted({r["bookmaker"] for r in fresh})
             if self.game is None:
                 self.add_item(_Filter(self, "book", books))
             games = {}
-            for r in self.rows:
+            for r in fresh:
                 if (self.sport is None or r["sport_name"] == self.sport) and (self.book is None or r["bookmaker"] == self.book):
                     games.setdefault(r["fixture_id"], r["event_name"])
             if games and self.game is None:
                 self.add_item(_Filter(self, "game", list(games.items())))
             if self.game is not None:
-                categories = sorted({self._category(r) for r in self.rows if r["fixture_id"] == self.game})
+                categories = sorted({self._category(r) for r in fresh if r["fixture_id"] == self.game})
                 self.add_item(_Filter(self, "category", categories))
             if self.game is not None and self.category is not None and self.visible:
                 self.add_item(_Pick(self))
@@ -112,21 +142,27 @@ class ManualParlayView(discord.ui.View):
                 f"{row['outcome_name'] or row['outcome_id']} | "
                 f"{row['price_decimal']:.2f} | {row['implied_probability']:.1%} implied"
             )
-        if self.legs:
+        if self.legs and all(quote_is_fresh(row) for row in self.legs):
             slip = selected_slip(self.legs)
             lines.append(
                 f"**Combined odds:** {slip['combined_decimal_odds']:.2f} | "
-                f"**Combined implied probability:** {slip['combined_implied_probability']:.1%}\n"
+                f"**Combined implied probability:** {slip['combined_implied_probability']:.1%}\\n"
                 "Independent-fixture assumption; not a calibrated win forecast."
             )
-        if not self.rows:
+        elif self.legs:
+            lines.append(
+                "**Quote expired:** Saved slip is for reference only. "
+                "Clear it and rebuild using current prices."
+            )
+        fresh = [r for r in self.rows if quote_is_fresh(r)]
+        if not fresh:
             lines.append("No fresh eligible upcoming prices. PASS; try again after the next scheduled refresh.")
         elif not self.visible:
             lines.append("No matching selections. Try another game or category.")
-        if self.rows:
-            lines.append(f"**Available:** {len({r['fixture_id'] for r in self.rows})} games, "
-                         f"{len({r['sport_name'] for r in self.rows})} sports, "
-                         f"{len({r['bookmaker'] for r in self.rows})} sportsbooks.")
+        if fresh:
+            lines.append(f"**Available:** {len({(r['provider'], r['fixture_id']) for r in fresh})} games, "
+                         f"{len({r['sport_name'] for r in fresh})} sports, "
+                         f"{len({r['bookmaker'] for r in fresh})} sportsbooks.")
         return discord.Embed(title="Build Your Own Parlay", description="\n\n".join(lines)[:4000])
 
     async def redraw(self, interaction):

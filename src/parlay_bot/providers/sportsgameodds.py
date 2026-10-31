@@ -4,6 +4,7 @@ import asyncio
 import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, Self
 
 import httpx
@@ -23,6 +24,8 @@ class SportsGameOddsUsage:
     monthly_current_entities: int | None
     minute_max_requests: int | None
     minute_current_requests: int
+    monthly_unlimited_entities: bool = False
+    monthly_period_end: datetime | None = None
 
     @property
     def monthly_remaining_entities(self) -> int | None:
@@ -92,6 +95,8 @@ class SportsGameOddsClient:
         # Guard event reads against concurrently refreshing collectors.
         self._event_lock = asyncio.Lock()
         self._projected_entities: int | None = None
+        self._projected_month_end: datetime | None = None
+        self._rate_limited_until = 0.0
 
     async def __aenter__(self) -> Self:
         return self
@@ -110,15 +115,37 @@ class SportsGameOddsClient:
         params: Mapping[str, object] | None = None,
         throttled: bool = True,
     ) -> httpx.Response:
+        if time.monotonic() < self._rate_limited_until:
+            raise ProviderRateLimited(
+                "SportsGameOdds provider throttled; no request attempted"
+            )
         if throttled:
             await self._gate.wait()
+        # Another coroutine may have reached a 429 while we waited.
+        if time.monotonic() < self._rate_limited_until:
+            raise ProviderRateLimited(
+                "SportsGameOdds provider throttled; no request attempted"
+            )
         headers = {"x-api-key": self._api_key}
         response = await self._client.get(path, params=params, headers=headers)
 
         if response.status_code == 429:
             retry_after = response.headers.get("Retry-After")
-            suffix = f" retry_after={retry_after}" if retry_after else ""
-            raise ProviderRateLimited(f"SportsGameOdds rate limited {path}.{suffix}")
+            # Retry-After is often a delay in seconds. Never trust an
+            # unbounded or malformed value; default to one minute instead of
+            # repeatedly probing a depleted provider account.
+            try:
+                delay = float(retry_after) if retry_after is not None else 60.0
+                if not 1 <= delay <= 3600:
+                    delay = 60.0
+            except ValueError:
+                delay = 60.0
+            self._rate_limited_until = max(
+                self._rate_limited_until, time.monotonic() + delay,
+            )
+            raise ProviderRateLimited(
+                f"SportsGameOdds rate limited {path}; retry paused"
+            )
         if response.status_code >= 400:
             raise httpx.HTTPStatusError(
                 f"SportsGameOdds request failed with {response.status_code}",
@@ -179,6 +206,28 @@ class SportsGameOddsClient:
         self._league_cache = (time.monotonic(), result)
         return result
 
+    @staticmethod
+    def _unlimited_monthly(month: Mapping[str, Any]) -> bool:
+        return any(
+            month.get(key) == "unlimited"
+            for key in ("max-entities", "maxEntitiesPerInterval", "max_entities")
+        )
+
+    @staticmethod
+    def _provider_month_end(month: Mapping[str, Any]) -> datetime | None:
+        raw = month.get("currentIntervalEndTime")
+        if raw is None:
+            raw = month.get("intervalEndTime")
+        if not isinstance(raw, str):
+            return None
+        try:
+            stamp = datetime.fromisoformat(raw)
+            if stamp.utcoffset() is None:
+                return None
+            return stamp.astimezone(UTC)
+        except (ValueError, OverflowError):
+            return None
+
     async def get_usage(self) -> SportsGameOddsUsage:
         payload = self._payload(await self._request("/account/usage", throttled=False))
         data = payload.get("data")
@@ -227,33 +276,76 @@ class SportsGameOddsClient:
             monthly_current_entities=monthly_current,
             minute_max_requests=minute_max,
             minute_current_requests=minute_current or 0,
+            monthly_unlimited_entities=self._unlimited_monthly(month),
+            monthly_period_end=self._provider_month_end(month),
         )
 
     async def _safe_event_limit(self, requested: int) -> int:
-        """Fail closed on unknown usage; guard calls under the event lock."""
+        """Respect official limits, including genuine paid unlimited periods.
+
+        An absent or malformed max is NOT the same as a documented "unlimited"
+        subscription. The provider's rolling 30-day period is authoritative;
+        never reset projections merely because the UTC month changed.
+        """
         if requested < 1:
             raise ValueError("requested event limit must be positive")
         usage = await self.get_usage()
+        unlimited = usage.monthly_unlimited_entities
         if (
-            usage.monthly_max_entities is None
-            or usage.monthly_current_entities is None
-            or usage.monthly_max_entities < 0
-            or usage.monthly_current_entities < 0
-            or usage.monthly_current_entities > usage.monthly_max_entities
+            (usage.monthly_max_entities is None and not unlimited)
+            or (usage.monthly_max_entities is not None and usage.monthly_max_entities < 0)
+            or (usage.monthly_current_entities is not None and usage.monthly_current_entities < 0)
+            or (usage.monthly_max_entities is not None and usage.monthly_current_entities is None)
+            or (
+                usage.monthly_max_entities is not None
+                and usage.monthly_current_entities is not None
+                and usage.monthly_current_entities > usage.monthly_max_entities
+            )
         ):
-            raise QuotaReserveReached("SportsGameOdds monthly usage unknown; event requests paused")
-        observed = max(usage.monthly_current_entities, self._projected_entities or 0)
+            raise QuotaReserveReached(
+                "SportsGameOdds monthly usage unknown; event requests paused"
+            )
+
+        # A new provider-issued rolling-period boundary is the only reliable
+        # reset. No calendar-month assumptions. Old/missing period metadata
+        # remains conservative and uses the highest observed local counter.
+        if usage.monthly_period_end is not None:
+            if self._projected_month_end is not None:
+                if usage.monthly_period_end < self._projected_month_end:
+                    raise QuotaReserveReached(
+                        "SportsGameOdds returned an older billing period; event requests paused"
+                    )
+                if usage.monthly_period_end > self._projected_month_end:
+                    self._projected_entities = None
+            self._projected_month_end = usage.monthly_period_end
+
+        if usage.monthly_current_entities is None:
+            # A provider-authorized unlimited plan needs no monthly entity
+            # counter UNLESS the owner set a local monthly safety ceiling.
+            observed = self._projected_entities or 0
+        else:
+            observed = max(usage.monthly_current_entities, self._projected_entities or 0)
         self._projected_entities = observed
-        remaining = usage.monthly_max_entities - observed - self._monthly_entity_reserve
+
+        # Unlimited is authorized only by the provider's explicit literal.
+        remaining = (
+            None if unlimited
+            else usage.monthly_max_entities - observed - self._monthly_entity_reserve
+        )
         owner = self._owner_limits.get("sportsgameodds") if self._owner_limits else None
         if owner is not None:
+            if usage.monthly_current_entities is None:
+                raise QuotaReserveReached(
+                    "SportsGameOdds cannot enforce owner budget without provider usage"
+                )
             owner_remaining = owner.maximum_units - observed - owner.reserve_units
             if owner_remaining <= 0:
                 raise QuotaReserveReached("Owner-configured SportsGameOdds budget exhausted")
-            remaining = min(remaining, owner_remaining)
-        if remaining <= 0:
+            remaining = min(remaining, owner_remaining) if remaining is not None else owner_remaining
+
+        if remaining is not None and remaining <= 0:
             raise QuotaReserveReached("SportsGameOdds monthly entity reserve reached")
-        return min(requested, remaining)
+        return min(requested, remaining) if remaining is not None else requested
 
     def _reserve_event_entities(self, count: int) -> None:
         """Reserve pessimistically before network dispatch; failures may bill."""

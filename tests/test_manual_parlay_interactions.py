@@ -1,6 +1,7 @@
 """Regression coverage for private parlay interaction guards and controls."""
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -16,6 +17,9 @@ def quote(fixture, key, price=2.0):
         "event_name": fixture, "market_name": "Winner",
         "outcome_name": "Home", "market_id": "winner",
         "outcome_id": "home", "sport_name": "Basketball",
+        "provider": "oddspapi",
+        "observed_at": datetime.now(UTC).isoformat(),
+        "start_time": (datetime.now(UTC) + timedelta(hours=1)).isoformat(),
     }
 
 

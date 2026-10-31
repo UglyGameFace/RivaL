@@ -28,7 +28,7 @@ class SportsGameOddsUsage:
     monthly_max_entities: int | None
     monthly_current_entities: int | None
     minute_max_requests: int | None
-    minute_current_requests: int
+    minute_current_requests: int | None
     monthly_unlimited_entities: bool = False
     monthly_period_end: datetime | None = None
     minute_period_end: datetime | None = None
@@ -286,7 +286,7 @@ class SportsGameOddsClient:
             monthly_max_entities=monthly_max,
             monthly_current_entities=monthly_current,
             minute_max_requests=minute_max,
-            minute_current_requests=minute_current or 0,
+            minute_current_requests=minute_current,
             monthly_unlimited_entities=self._unlimited_monthly(month),
             monthly_period_end=self._provider_month_end(month),
             minute_period_end=self._provider_month_end(minute),
@@ -377,6 +377,15 @@ class SportsGameOddsClient:
             reserve=self._monthly_entity_reserve,
             requested=requested, partial=partial, owner_cap=True,
         )]
+        if (
+            usage.minute_max_requests is not None
+            and (
+                usage.minute_current_requests is None
+                or usage.minute_current_requests < 0
+                or usage.minute_current_requests > usage.minute_max_requests
+            )
+        ):
+            raise QuotaReserveReached("SportsGameOdds minute usage unknown or inconsistent")
         if (
             usage.minute_max_requests is not None
             and usage.minute_period_end is not None

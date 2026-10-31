@@ -15,7 +15,7 @@ six-month historical rerun admitted **zero of nine** candidates. Do not bypass
 those gates or treat the historical archive as if it had been loaded in every
 prediction.
 
-Use `ForwardAccuracyMonitor.learning_lineage_summary(asset="BTC",
+In Discord, open **Results → Training actually used** for a concise, source-specific answer about the current mathematical models. Old forecasts without new lineage remain UNKNOWN. No claimed historical seed means the current code has not proven it consumed a screened six-month model.\n\nUse `ForwardAccuracyMonitor.learning_lineage_summary(asset="BTC",
 horizon_minutes=5)` to inspect the latest 100 real forecasts issued within
 seven days. Results distinguish forecasts with known evidence, old forecasts
 with unknown lineage, and genuinely historically seeded forecasts. A zero

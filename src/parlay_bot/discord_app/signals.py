@@ -27,6 +27,7 @@ from parlay_bot.perpetuals.forward_audit import (
 from parlay_bot.perpetuals.forward_audit import (
     ForwardAccuracyMonitor,
 )
+from parlay_bot.perpetuals.event_intelligence import EventIntelligence
 from parlay_bot.perpetuals.live_quotes import (
     BookQuote,
     PerpReferenceBook,
@@ -161,6 +162,37 @@ async def signal_embed(
     stamp = stamp.astimezone(UTC)
     if market is None:
         return _no_signal(asset, horizon_minutes, "Market collection is disconnected.")
+
+    # Only verified official-event windows trigger a deterministic NO CALL.
+    # Event feeds are polled off-loop by AutonomousResearch, never here.
+    try:
+        event_context = await bounded(
+            "macro-events",
+            lambda: asyncio.to_thread(
+                EventIntelligence(market.store).context,
+                asset=asset, horizon=horizon_minutes, now=stamp,
+            ),
+            max_seconds=1.0,
+        )
+    except SignalStageTimeout:
+        raise
+    except Exception:  # noqa: BLE001 - don't invent an event all-clear
+        _LOG.exception("RivaL macro-event risk lookup unavailable")
+        event_context = {"decision": "not_verified", "status": "unavailable"}
+    if event_context["decision"] == "pause":
+        event = next(
+            (e for e in event_context["events"] if e["risk_window_active"]), None,
+        )
+        label = event["title"][:115] if event else "Official economic event"
+        if decision_out is not None:
+            decision_out["event_risk"] = "official_release_window"
+            decision_out["is_watch"] = False
+        return _no_signal(
+            asset, horizon_minutes,
+            f"Scheduled or newly published official event: {label}. "
+            "New entries are withheld during this event-risk window. "
+            "This is a volatility precaution, not a predicted price direction.",
+        )
 
     try:
         watches_started = time.monotonic()

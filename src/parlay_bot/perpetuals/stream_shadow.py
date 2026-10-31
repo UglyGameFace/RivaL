@@ -6,11 +6,12 @@ inside a short exit window, and count every missed exit as missing evidence.
 """
 from __future__ import annotations
 
+import logging
 import math
 from datetime import UTC, datetime, timedelta
 
-from parlay_bot.perpetuals.forward_audit import MODEL
 from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
+from parlay_bot.perpetuals.forward_audit import MODEL
 from parlay_bot.perpetuals.live_quotes import BookQuote, PerpReferenceBook
 from parlay_bot.perpetuals.profit_proof import (
     COST_SCENARIOS,
@@ -177,8 +178,7 @@ class StreamShadowLedger:
         # already committed live quote observation.
         try:
             self._family_quote_shadow.observe(quote, now=stamp)
-        except Exception:  # noqa: BLE001 - independent research ledger
-            import logging
+        except Exception:  # independent research ledger
             logging.getLogger(__name__).exception("Family quote proof unavailable")
         return result
 

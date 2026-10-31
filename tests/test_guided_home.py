@@ -342,9 +342,8 @@ async def test_guided_results_uses_strict_source_matched_cost_proof(tmp_path):
     home.stream_shadow = audit
     try:
         home.navigate("performance")
-        home.live_source = "exchange"
         home._buttons()
-        assert "Profit Proof" in _labels(home)
+        assert "Profit Proof" not in _labels(home)
         i = _interaction()
         await home.act(i, "proof")
         audit.report.assert_called_once_with(
@@ -437,56 +436,37 @@ async def test_ten_source_and_ensemble_discord_commands_are_private_on_android(t
 
 
 @pytest.mark.asyncio
-async def test_advanced_plain_english_pages_do_not_expose_dev_jargon(tmp_path):
-    from unittest.mock import Mock
-
+async def test_advanced_tools_and_legacy_pages_do_not_duplicate_metrics(tmp_path):
     bot = _client(tmp_path)
     home = _home(bot)
     try:
         home.navigate("advanced")
         home._buttons()
-        assert {"Are My Prices Fresh?", "Is RivaL Improving?",
-                "Technical Research"}.issubset(set(_labels(home)))
-        assert "rival-profit-proof" not in (await home.render()).description
-        assert "/rival-tools" in (await home.render()).description
+        labels = set(_labels(home))
+        assert {"Bot Performance", "Technical Research", "API Usage & Limits",
+                "Manual Price Target"}.issubset(labels)
+        assert "Are My Prices Fresh?" not in labels
+        assert "Is RivaL Improving?" not in labels
+        assert len((await home.render()).description) < 180
 
+        # Old persisted buttons must work, but should not open a second report.
         home.navigate("feeds")
+        assert home.page == "performance"
+        home.navigate("trust")
+        assert home.page == "performance"
         home._buttons()
         assert "Refresh" in _labels(home)
-        no_collection = await home.render()
-        assert "not connected" in no_collection.fields[0].value
-
-        stamp = datetime.now(UTC)
-        row = {
-            "venue": "hyperliquid", "asset": "BTC", "status": "ok",
-            "last_success_at": stamp.isoformat(),
-            "last_candle_close": (stamp - timedelta(minutes=5)).isoformat(),
-        }
-        feed_store = Mock()
-        feed_store.feed_health.return_value = [row]
-        home.market = feed_store
-        home.venues = ("hyperliquid", "binance")
-        fresh = await home.render()
-        assert "1 of 2 exchanges" in fresh.fields[0].name
-        assert "hyperliquid" in fresh.fields[0].value
-        assert "binance" in fresh.fields[0].value
-
-        home.navigate("trust")
-        home.live_source = "exchange"
-        home._buttons()
-        no_model = await home.render()
-        assert "Not verified" in no_model.fields[0].value
-        research = Mock()
-        research.report.return_value = {
-            "settled": 2, "days": 1, "max_sources": 3,
-            "brier_improvement": -0.02,
-        }
-        home.multi = research
-        evidence = await home.render()
-        assert "NOT beaten the original" in evidence.fields[0].value
-        assert "Not yet" in evidence.fields[1].value
-        research.report.assert_called_once_with(asset="BTC", horizon_minutes=5)
+        assert "Learning Details" not in _labels(home)
+        assert "Data Health" not in _labels(home)
+        assert "Profit Proof" not in _labels(home)
         assert "Home" in _labels(home)
+        view = await home.render()
+        assert view.title == "📊 RivaL Performance | BTC 5m"
+        assert [f.name for f in view.fields] == [
+            "📈 Exchange accuracy", "🎯 Polymarket",
+            "🧠 Learning", "📡 System status",
+        ]
+        assert all(len(field.value) < 1025 for field in view.fields)
     finally:
         home.stop()
         await bot.zip_resolver.aclose()

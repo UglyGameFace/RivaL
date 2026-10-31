@@ -1,3 +1,13 @@
+## ACTIVE TASK: Single-page mobile Bot Performance overhaul (2026-10-31)
+
+- Owner live feedback after merged #157: Bot Performance, Learning Details, Data Health, and Advanced duplicate content, require needless market selection and bury accuracy behind walls of prose. The old "no forecast cycle recorded yet" screen was misleading.
+- Root cause: `home._latest_forward_cycle` used `market.connect()` even though the authoritative store is `market.store.connect()`; the catch-all silently turned this read error into a false empty result. Forecast collector/freshness data alone never verifies the forecast worker ran.
+- Change: [PR #158](https://github.com/UglyGameFace/RivaL/pull/158), branch `refactor/rival-one-page-performance-20261031`, base `main@a833cbfaa59def4df109067fa5946f1e4eeaacef`. One four-field overview with exchange score/denominator/baseline, source-specific Polymarket model settlements vs labels, persisted live learning and historical seed use, and feed + forecast-cycle status. Coin/horizon + refresh; optional technical research. Legacy feeds/trust routes open the overview. Separate advanced technical owner controls and personal paper results remain.
+- Scope safeguards: no AI calls, forecast worker changes, orders, model promotion, schema migration, budget relaxations, or reclassification of correlated cross-exchange forecasts as independent bets.
+- Validation: independent GitHub PR CI runs pending initial review; new DB-backed regression for forecast-cycle read, compact-field and backward-compatibility tests. Correct any failures before merge. Hosted Discloud runtime, real improvement and after-cost profitability require separate checks. Retain issue #6.
+
+---
+
 ## ACTIVE TASK: Honest Bot Performance vs Practice UI (2026-10-31)
 
 - Objective: move personal My Results into Practice; show source-specific prospective prediction accuracy and persistent learning evidence under a separate Bot Performance home tab, without modifying forecasts, trades, model promotion or notification workers.

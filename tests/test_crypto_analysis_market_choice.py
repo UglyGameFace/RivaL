@@ -184,35 +184,32 @@ async def test_platform_choice_explains_perpetuals_and_draftkings_without_fake_c
 
 
 @pytest.mark.asyncio
-async def test_polymarket_zero_training_is_not_reported_as_provider_outage(tmp_path):
+async def test_dashboard_shows_polymarket_outcomes_without_market_choice(tmp_path):
     bot = _client(tmp_path)
     home = _home(bot)
     try:
         home.navigate("performance")
-        home.live_source = "polymarket"
+        assert home.live_source is None
         home._buttons()
+        assert all(x.custom_id != "rival:guided:market" for x in home.children)
         home.polymarket_status = lambda asset, horizon: {
             "observed_contracts": 99,
             "learned_contracts": 99,
             "settled_forward_contracts": 0,
             "forward_brier": None,
             "market_baseline_brier": None,
-            "verified_trading_edge": False,
         }
         pane = await home.render()
         fields = {x.name: x.value for x in pane.fields}
-        assert "99" in fields["Polymarket contract learning"]
-        assert "Pre-outcome model forecasts resolved: **0**" in fields[
-            "Polymarket contract learning"
-        ]
-        assert "Not measured yet" in fields["Actual contract forecast accuracy"]
-        assert "49.7%" not in str(pane.to_dict())
-        assert "Model-vs-baseline" not in str(pane.to_dict())
-        assert "Profit Proof" not in _labels(home)
+        assert "99" in fields["🎯 Polymarket"]
+        assert "**0** model calls settled" in fields["🎯 Polymarket"]
+        assert "not measured" in fields["🎯 Polymarket"]
+        assert "Choose a market" not in str(pane.to_dict())
+        assert len(pane.fields) == 4
 
         home.polymarket_status = None
         offline = await home.render()
-        assert "records unavailable" in str(offline.to_dict())
+        assert "Polymarket results unavailable" in str(offline.to_dict())
         assert "0% win rate" not in str(offline.to_dict())
     finally:
         home.stop()
@@ -222,12 +219,11 @@ async def test_polymarket_zero_training_is_not_reported_as_provider_outage(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_polymarket_stats_never_depend_on_exchange_or_drive_status(tmp_path):
+async def test_polymarket_stats_do_not_require_exchange_or_drive(tmp_path):
     bot = _client(tmp_path)
     home = _home(bot)
     try:
         home.navigate("performance")
-        home.live_source = "polymarket"
 
         def unrelated_training(_asset, _horizon):
             raise RuntimeError("Unrelated exchange/Drive query failed")
@@ -239,20 +235,18 @@ async def test_polymarket_stats_never_depend_on_exchange_or_drive_status(tmp_pat
             "settled_forward_contracts": 5,
             "forward_brier": .21,
             "market_baseline_brier": .24,
-            "verified_trading_edge": False,
-            "model": "contract-model",
         }
         view = await home.render()
         body = str(view.to_dict())
-        assert "Settled labels used to update model: **12**" in body
-        assert "Pre-outcome model forecasts resolved: **5**" in body
+        assert "**12** past outcomes learned" in body
+        assert "**5** model calls settled" in body
         assert "0.2100" in body
         assert "0.2400" in body
-        assert "Exchange forecasts" not in body
+        assert "No verified live learning status" in body
         home.navigate("trust")
+        assert home.page == "performance"
         detail = await home.render()
-        assert "contract-model" in str(detail.to_dict())
-        assert "Settled outcomes actually used for training" in str(detail.to_dict())
+        assert len(detail.fields) == 4
     finally:
         home.stop()
         await bot.zip_resolver.aclose()
@@ -261,7 +255,7 @@ async def test_polymarket_stats_never_depend_on_exchange_or_drive_status(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_exchange_performance_shows_real_denominator_baseline_and_learning(
+async def test_exchange_performance_one_page_shows_sample_and_learning(
     tmp_path, monkeypatch,
 ):
     from parlay_bot.discord_app import home as home_module
@@ -278,10 +272,7 @@ async def test_exchange_performance_shows_real_denominator_baseline_and_learning
                     "brier": .251, "baseline_brier": .249,
                     "model_beats_baseline": False,
                 }
-                return {
-                    "last_7d": {5: recent},
-                    "prior_7d": {5: {"hit_rate": .52}},
-                }
+                return {"last_7d": {5: recent}, "prior_7d": {5: {"hit_rate": .52}}}
 
             def learning_lineage_summary(self, *, asset, horizon_minutes):
                 assert (asset, horizon_minutes) == ("BTC", 5)
@@ -302,25 +293,27 @@ async def test_exchange_performance_shows_real_denominator_baseline_and_learning
             },
             "active_offline_model": False,
         }
+        home.polymarket_status = lambda _asset, _horizon: {
+            "learned_contracts": 99, "settled_forward_contracts": 0,
+            "forward_brier": None, "market_baseline_brier": None,
+        }
         home.navigate("performance")
-        home.live_source = "exchange"
         home._buttons()
-        assert {"Learning Details", "Profit Proof", "Data Health"}.issubset(
-            set(_labels(home))
-        )
+        assert "Refresh" in _labels(home)
+        assert "Learning Details" not in _labels(home)
+        assert "Data Health" not in _labels(home)
         assert len(home.children) <= 25
         assert max(x.row for x in home.children) <= 4
         pane = await home.render()
         body = str(pane.to_dict())
-        assert "4,159" in body
-        assert "4,150" in body
-        assert "2,063/4,150" in body
-        assert "49.7%" in body
+        assert len(pane.fields) == 4
+        assert "4,159" in body and "4,150" in body
+        assert "2,063/4,150" in body and "49.7%" in body
         assert "0.2510" in body and "0.2490" in body
-        assert "not below its saved baseline" in body
-        assert "14" in body and "historical seed" in body
-        assert "New forecasts: **4**; settled: **7**" in body
-        assert "historical challenger in service: **no**" in body.lower()
+        assert "99" in body and "not measured" in body
+        assert "14" in body and "Historical seed used" in body
+        assert "Issued **4**" in body and "settled **7**" in body
+        assert "Offline challenger serving: **no**" in body
         assert "practice usdt" not in body.lower()
     finally:
         home.stop()

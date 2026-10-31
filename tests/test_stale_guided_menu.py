@@ -167,7 +167,7 @@ async def test_stale_coin_select_recovers_with_chosen_coin(tmp_path):
         _, kwargs = interaction.edit_original_response.await_args
         fresh = kwargs["view"]
         assert fresh.coin == "ETH"
-        assert fresh.page == "crypto"
+        assert fresh.page == "crypto-desk"
         fresh.stop()
     finally:
         await bot.zip_resolver.aclose()

@@ -1359,6 +1359,266 @@ class GuidedHome(discord.ui.View):
                           "to inspect scored predictions.",
                     inline=False,
                 )
+        elif p == "performance":
+            source = self.live_source
+            embed = discord.Embed(
+                title=f"📊 Bot Performance | {self.coin} {self.horizon}m",
+                description=(
+                    "RivaL's **real recorded predictions**, not your practice trades. "
+                    "Choose a market to see its own score. Each market uses different "
+                    "contracts, outcomes, and models."
+                ),
+                color=discord.Color.blurple(),
+            )
+            if source is None:
+                embed.add_field(
+                    name="Choose a market above",
+                    value=(
+                        "**Crypto Perpetuals:** Forward exchange-price forecasts.\n"
+                        "**Polymarket:** Exact Up/Down contract outcomes and model calls.\n"
+                        "**Kalshi:** Separate contract evidence.\n"
+                        "**DraftKings:** No verified connected prediction model.\n"
+                        "No score is merged across these markets."
+                    ),
+                    inline=False,
+                )
+            elif source == "exchange":
+                if self.market is None:
+                    embed.add_field(
+                        name="Exchange forecast score",
+                        value="Forecast ledger not connected. Accuracy unavailable.",
+                        inline=False,
+                    )
+                else:
+                    try:
+                        monitor = ForwardAccuracyMonitor(self.market)
+                        audit = await asyncio.wait_for(
+                            asyncio.to_thread(monitor.summary, asset=self.coin),
+                            timeout=2.5,
+                        )
+                        part = audit["last_7d"][self.horizon]
+                        old = audit["prior_7d"][self.horizon]
+                        decided = part.get("decided")
+                        correct = part.get("correct")
+                        rate = part.get("hit_rate")
+                        if rate is None:
+                            score = "No settled directional forecasts to score."
+                        elif decided is None or correct is None:
+                            score = f"Directional hit rate: **{rate:.1%}** (denominator unavailable)"
+                        else:
+                            score = (
+                                f"Directional hit rate: **{rate:.1%}** "
+                                f"({correct:,}/{decided:,} decided and settled)"
+                            )
+                        brier = part.get("brier")
+                        baseline = part.get("baseline_brier")
+                        if brier is None or baseline is None:
+                            comparison = "Model-vs-baseline probability error unavailable."
+                        else:
+                            comparison = (
+                                f"Probability error (Brier): **{brier:.4f}** "
+                                f"vs saved baseline **{baseline:.4f}**. Lower is better."
+                            )
+                        prior = old.get("hit_rate")
+                        embed.add_field(
+                            name="Exchange forecasts | last 7 days",
+                            value=(
+                                f"**{part['issued']:,}** issued, "
+                                f"**{part['settled']:,}** settled\n"
+                                f"{score}\n{comparison}\n"
+                                f"Previous 7 days: "
+                                f"**{prior:.1%}** directional hit rate"
+                                if prior is not None else
+                                f"**{part['issued']:,}** issued, "
+                                f"**{part['settled']:,}** settled\n"
+                                f"{score}\n{comparison}\n"
+                                "Previous 7 days: no scored rate"
+                            )[:1024],
+                            inline=False,
+                        )
+                        verdict = part.get("model_beats_baseline")
+                        embed.add_field(
+                            name="Has the model beaten the baseline?",
+                            value=(
+                                "Lower Brier error than its saved baseline in this "
+                                "seven-day aggregate; **not** proven trading profit."
+                                if verdict is True else
+                                "No. The model's error is not below its saved baseline."
+                                if verdict is False else
+                                "Not verified. At least 50 resolved forecasts and "
+                                "comparable probability scores are required."
+                            ) + (
+                                "\nMulti-exchange rows can share the same price event; "
+                                "these are **not independent bets**."
+                            ),
+                            inline=False,
+                        )
+                        lineage = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                monitor.learning_lineage_summary,
+                                asset=self.coin, horizon_minutes=self.horizon,
+                            ), timeout=2.5,
+                        )
+                        embed.add_field(
+                            name="Was historical learning used in live forecasts?",
+                            value=(
+                                f"Latest {lineage['forecasts']} forecasts checked "
+                                f"(up to 100 from 7 days).\n"
+                                f"Saved model/feature lineage: "
+                                f"**{lineage['lineage_proven']}** verified; "
+                                f"**{lineage['lineage_unknown']}** unknown.\n"
+                                f"Forecasts with a verified historical seed: "
+                                f"**{lineage['historically_seeded']}**.\n"
+                                "A historical seed proves model input provenance, "
+                                "**not** better accuracy."
+                            )[:1024], inline=False,
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("Exchange performance evidence unavailable")
+                        embed.add_field(
+                            name="Exchange forecast score",
+                            value="Cannot verify exchange forecasts or learning lineage right now.",
+                            inline=False,
+                        )
+                if self.training_status is not None:
+                    try:
+                        state = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.training_status, self.coin, self.horizon,
+                            ), timeout=2.5,
+                        )
+                        cycle = state.get("live_learning")
+                        if not isinstance(cycle, dict):
+                            learning = "No completed live learning heartbeat recorded."
+                        else:
+                            math_ok = cycle.get("math_ok")
+                            learning = (
+                                f"Last completed cycle: "
+                                f"**{cycle.get('completed_at') or 'unavailable'}**\n"
+                                f"Math cycle: **{'successful' if math_ok else 'failed or unverified'}**\n"
+                                f"New forecasts: **{cycle.get('math_issued', 'unknown')}**; "
+                                f"settled: **{cycle.get('math_settled', 'unknown')}**"
+                            )
+                        embed.add_field(
+                            name="Automatic learning activity",
+                            value=(
+                                f"{learning}\n"
+                                f"Serving engine: **{state.get('live_engine') or 'unverified'}**\n"
+                                f"Historical challenger in service: "
+                                f"**{'yes' if state.get('active_offline_model') else 'no'}**"
+                            )[:1024],
+                            inline=False,
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("Learning heartbeat unavailable in Bot Performance")
+                        embed.add_field(
+                            name="Automatic learning activity",
+                            value="Live learning status unavailable; no training run assumed.",
+                            inline=False,
+                        )
+            elif source == "polymarket":
+                if self.polymarket_status is None:
+                    embed.add_field(
+                        name="Polymarket evidence",
+                        value="Contract-specific outcome records unavailable. "
+                              "This does not mean the exchange feed is down.",
+                        inline=False,
+                    )
+                else:
+                    try:
+                        poly = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.polymarket_status, self.coin, self.horizon,
+                            ), timeout=2.5,
+                        )
+                        learned = int(poly["learned_contracts"])
+                        observed = int(poly["observed_contracts"])
+                        resolved = int(poly["settled_forward_contracts"])
+                        embed.add_field(
+                            name="Polymarket contract learning",
+                            value=(
+                                f"Contracts observed: **{observed:,}**\n"
+                                f"Settled labels used to update model: **{learned:,}**\n"
+                                f"Pre-outcome model forecasts resolved: **{resolved:,}**\n"
+                                "Learning from an outcome is **not** a correct prediction."
+                            ), inline=False,
+                        )
+                        brier = poly.get("forward_brier")
+                        baseline = poly.get("market_baseline_brier")
+                        if resolved and brier is not None and baseline is not None:
+                            score = (
+                                f"Model probability error: **{brier:.4f}**\n"
+                                f"Quoted-market baseline: **{baseline:.4f}**\n"
+                                "Lower is better. Sample size and trading costs "
+                                "still matter."
+                            )
+                        else:
+                            score = (
+                                "**Not measured yet.** No settled pre-outcome "
+                                "contract forecasts with comparable model "
+                                "and market-price errors."
+                            )
+                        embed.add_field(
+                            name="Actual contract forecast accuracy",
+                            value=score, inline=False,
+                        )
+                        embed.add_field(
+                            name="Verified after-cost edge",
+                            value=(
+                                "Not demonstrated." if not poly.get("verified_trading_edge")
+                                else "Model evidence reports a verified edge; "
+                                     "review venue costs and settlements."
+                            ), inline=False,
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("Polymarket performance evidence unavailable")
+                        embed.add_field(
+                            name="Polymarket evidence",
+                            value="Unable to read contract-specific learning or forecast scores.",
+                            inline=False,
+                        )
+            elif source == "kalshi":
+                if self.kalshi_status is None:
+                    embed.add_field(name="Kalshi", value="No Kalshi evidence reader connected.")
+                else:
+                    try:
+                        status = await asyncio.wait_for(
+                            asyncio.to_thread(self.kalshi_status, asset=self.coin),
+                            timeout=2.5,
+                        )
+                        embed.add_field(
+                            name="Kalshi model progress",
+                            value=(
+                                f"Recorded contracts: **{status['observed']}**\n"
+                                f"Book-verified records: "
+                                f"**{status['book_verified_observed']}**\n"
+                                f"Book-backed future outcomes: "
+                                f"**{status['candidate_forward_resolved']}**\n"
+                                "No approved Kalshi-specific model yet. "
+                                "Historic labels aren't prediction wins."
+                            ), inline=False,
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("Kalshi performance read failed")
+                        embed.add_field(name="Kalshi", value="Model evidence currently unavailable.")
+            else:
+                embed.add_field(
+                    name="DraftKings Predictions",
+                    value="No verified live contract-model feed or forward performance "
+                          "is connected. Independent exchange forecasts must not "
+                          "be reported as DraftKings accuracy.",
+                    inline=False,
+                )
+            embed.add_field(
+                name="What counts as real progress?",
+                value=(
+                    "A prediction is saved **before** its outcome, later resolved "
+                    "under the same market rules, scored against a baseline, "
+                    "and shown separately from paper trades. "
+                    "A learning heartbeat or archive count alone is not proof of improvement."
+                ),
+                inline=False,
+            )
         elif p == "feeds":
             embed = discord.Embed(
                 title=f"📡 Are the Prices Fresh? | {self.coin}",

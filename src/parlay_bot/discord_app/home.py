@@ -48,9 +48,11 @@ if TYPE_CHECKING:
 
 _LOG = logging.getLogger(__name__)
 COINS = RESEARCH_ASSETS
+MARKET_NAMES = {"polymarket": "Polymarket", "exchange": "Exchange Futures", "kalshi": "Kalshi"}
 EXPLAIN = {
     "home": "Choose Crypto, Sports, Notifications, Results, or Practice. No bets are placed.",
     "discover": "Old menus can open Crypto or Practice. No actual trades are placed.",
+    "crypto-desk": "Choose a market, coin and timeframe. Polymarket contract calls and exchange forecasts have different evidence; Kalshi is browse-only until its own model is proven.",
     "live": "Track one verified Polymarket contract DM, updated only on meaningful changes. Contract AI calls are labeled separately and market prices are not win probabilities.",
     "hunt": "Track Polymarket in one live DM or follow an exchange forecast. Old price-shift DMs have been retired; Stop All cancels personal updates.",
     "hunt-tools": "Old Auto-Hunt notifications retired. Use Notifications.",
@@ -98,11 +100,42 @@ class _Button(discord.ui.Button["GuidedHome"]):
                       interaction.response.is_done())
 
 
+class _Market(discord.ui.Select["GuidedHome"]):
+    """Never preselect Polymarket for a new user."""
+
+    def __init__(self, selected: str | None) -> None:
+        super().__init__(
+            placeholder="1. Choose a market", row=0,
+            custom_id="rival:guided:market",
+            options=[
+                discord.SelectOption(
+                    label="Polymarket", description="Verified Up/Down contracts",
+                    value="polymarket", default=selected == "polymarket",
+                ),
+                discord.SelectOption(
+                    label="Exchange Futures", description="Separate exchange forecast research",
+                    value="exchange", default=selected == "exchange",
+                ),
+                discord.SelectOption(
+                    label="Kalshi (browse only)", description="No verified Kalshi prediction model",
+                    value="kalshi", default=selected == "kalshi",
+                ),
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        self.view.live_source = self.values[0]
+        self.view.note = None
+        await interaction.response.defer()
+        await self.view.redraw(interaction)
+
+
 class _Coin(discord.ui.Select["GuidedHome"]):
-    def __init__(self, selected: str) -> None:
+    def __init__(self, selected: str, *, row: int = 0) -> None:
         names = ASSET_NAMES
         super().__init__(
-            placeholder="Choose a coin", row=0, custom_id="rival:guided:coin",
+            placeholder="Choose a coin", row=row, custom_id="rival:guided:coin",
             options=[
                 discord.SelectOption(
                     label=f"{names[c]} ({c})", value=c, default=c == selected,
@@ -119,9 +152,9 @@ class _Coin(discord.ui.Select["GuidedHome"]):
 
 
 class _Horizon(discord.ui.Select["GuidedHome"]):
-    def __init__(self, selected: int) -> None:
+    def __init__(self, selected: int, *, row: int = 1) -> None:
         super().__init__(
-            placeholder="Choose how far ahead", row=1,
+            placeholder="Choose how far ahead", row=row,
             custom_id="rival:guided:horizon",
             options=[
                 discord.SelectOption(
@@ -141,9 +174,9 @@ class _Horizon(discord.ui.Select["GuidedHome"]):
 class _PolymarketHorizon(discord.ui.Select["GuidedHome"]):
     """Only show timeframes that the verified Polymarket reader supports."""
 
-    def __init__(self, selected: int) -> None:
+    def __init__(self, selected: int, *, row: int = 1) -> None:
         super().__init__(
-            placeholder="Choose a listed market window", row=1,
+            placeholder="Choose a listed market window", row=row,
             custom_id="rival:guided:horizon",
             options=[
                 discord.SelectOption(
@@ -398,7 +431,7 @@ class GuidedHome(discord.ui.View):
         self.training_status = training_status
         self.kalshi = kalshi
         self._kalshi_refresh = False
-        self.live_source = "polymarket"
+        self.live_source: str | None = None
         self.page = "home"
         self.back_stack: list[str] = []
         self.coin = "BTC"
@@ -430,7 +463,7 @@ class GuidedHome(discord.ui.View):
         p = self.page
         if p == "home":
             for title, action, row, emoji in (
-                ("Crypto", "live", 0, "📈"),
+                ("Crypto", "crypto-desk", 0, "📈"),
                 ("Sports", "sports", 0, "🏆"),
                 ("Notifications", "hunt", 1, "🔔"),
                 ("My Results", "results", 1, "📊"),
@@ -439,8 +472,21 @@ class GuidedHome(discord.ui.View):
                 self._add(title, action, row, emoji, action == "live")
             self._add("Help", "help", 3, "❓")
         elif p == "discover":
-            self._add("Crypto", "live", 0, "📈", True)
+            self._add("Crypto", "crypto-desk", 0, "📈", True)
             self._add("Practice", "practice", 0, "💵")
+        elif p == "crypto-desk":
+            self.add_item(_Market(self.live_source))
+            self.add_item(_Coin(self.coin, row=1))
+            if self.live_source != "kalshi":
+                self.add_item(_PolymarketHorizon(self.horizon, row=2))
+            if self.live_source == "polymarket":
+                self._add("View Contract Call", "desk-call", 3, "🎯", True)
+                self._add("Track Market", "desk-track", 3, "🔔")
+            elif self.live_source == "exchange":
+                self._add("Get Exchange Forecast", "desk-call", 3, "🎯", True)
+                self._add("Follow Forecast", "desk-track", 3, "🔔")
+            elif self.live_source == "kalshi":
+                self._add("Browse Kalshi", "desk-call", 3, "🔎", True)
         elif p == "sports":
             self._add("Choose State", "state", 0, "🗺️")
             self._add("Enter ZIP", "zip", 0, "📍")
@@ -458,25 +504,22 @@ class GuidedHome(discord.ui.View):
             self._add("Refresh Forecast" if p == "forecast" else "Get Signal",
                       "forecast", 2, "🔄" if p == "forecast" else "🎯", True)
             self._add("Watch Forecast", "follow", 2, "🔔")
-            self._add("Live Markets", "live", 3, "⚡")
+            self._add("Market & Accuracy", "crypto-desk", 3, "📊")
         elif p == "live":
             self.add_item(_Coin(self.coin))
             if self.live_source == "polymarket":
                 self.add_item(_PolymarketHorizon(self.horizon))
                 self._add("Track in DMs", "poly-start", 2, "🔔", True)
                 self._add("Stop Tracking", "poly-stop", 2, "🔕")
-                self._add("Exchange Forecast", "crypto", 3, "📈")
-                if self.kalshi is not None:
-                    self._add("Kalshi", "live-kalshi", 3, "📊")
-            else:
-                self._add("Refresh Markets", "kalshi-refresh", 2, "🔄", True)
-                self._add("Polymarket", "live-poly", 3, "📈")
+            elif self.live_source == "kalshi":
+                self._add("Refresh Kalshi", "kalshi-refresh", 2, "🔄", True)
+            self._add("Analysis & Markets", "crypto-desk", 3, "📊")
         elif p == "hunt":
-            self._add("Track Crypto", "live", 0, "📈", True)
-            self._add("Watch Forecast", "crypto", 0, "🎯")
+            self._add("Choose Market", "crypto-desk", 0, "📈", True)
+            self._add("Exchange Forecast", "crypto", 0, "🎯")
             self._add("Stop All", "stop-all", 1, "🛑")
         elif p == "kalshi":
-            self._add("Polymarket", "live", 0, "📈", True)
+            self._add("Analysis & Markets", "crypto-desk", 0, "📊", True)
         elif p == "hunt-tools":
             self._add("Notifications", "hunt", 0, "🔔", True)
         elif p == "practice":
@@ -495,7 +538,7 @@ class GuidedHome(discord.ui.View):
             self._add("Can I Trust Predictions?", "trust", 2, "✅")
         elif p == "help":
             self._add("Start with Sports", "sports", 0, "🏆")
-            self._add("Try Crypto", "crypto", 0, "📈")
+            self._add("Analyze Crypto", "crypto-desk", 0, "📈")
             self._add("Practice Safely", "practice", 1, "💵")
         elif p == "advanced":
             self._add("Are My Prices Fresh?", "feeds", 0, "📡")
@@ -521,7 +564,7 @@ class GuidedHome(discord.ui.View):
             self.back_stack.append(self.page)
             self.back_stack = self.back_stack[-12:]
         self.page = page
-        if page == "live" and self.horizon not in (5, 15, 60):
+        if page in ("live", "crypto-desk") and self.horizon not in (5, 15, 60):
             self.horizon = 5
         self.note = None
 

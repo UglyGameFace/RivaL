@@ -8,6 +8,12 @@ on:
 permissions:
   contents: read
 
+# Prevent stale pushes to the same PR from occupying every runner slot.
+# Keep main protected from cancellation; only supersede unmerged branch CI.
+concurrency:
+  group: rival-ci-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 jobs:
   test:
     runs-on: ubuntu-latest

@@ -234,10 +234,18 @@ def evaluate_compatible_boosters(manifests, *, horizon, prepared=None, estimator
 
 def evaluate_directory(root: Path, *, qualified_streams, artifact_dir=None):
     groups = defaultdict(list)
-    for path in sorted((root / "binance_um_klines").glob("*.manifest.json")):
+    for path in sorted((root / "binance_um_klines").glob("*.manifest.json")) + sorted(
+        (root / "verified_venue_perp_klines").glob("*.manifest.json")
+    ):
         meta = json.loads(path.read_text(encoding="utf-8"))
         key = (meta.get("contract"), meta.get("interval_minutes"))
-        if key[1] == 5 and key in qualified_streams:
+        source_key = (meta.get("venue"), meta.get("contract"),
+                      meta.get("quote"), meta.get("interval_minutes"))
+        if key[1] == 5 and (
+            (meta.get("source") == "binance_um_klines" and key in qualified_streams)
+            or (meta.get("source") == "verified_venue_perp_klines"
+                and source_key in qualified_streams)
+        ):
             groups[key].append(path)
     results = []
     for paths in groups.values():

@@ -69,10 +69,12 @@ def _rows(manifest_path: Path) -> tuple[dict, list[dict]]:
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         if (
             manifest.get("schema_version") != SCHEMA
-            or manifest.get("source") != "binance_um_klines"
+            or manifest.get("source") not in {"binance_um_klines", "verified_venue_perp_klines"}
             or manifest.get("checksum_verified") is not True
             or manifest.get("prospective_forecast") is not False
             or manifest.get("time_reference") != "exchange_candle_open_not_first_observed_at"
+            or (manifest.get("source") == "verified_venue_perp_klines"
+                and manifest.get("source_integrity") != "postgres-first-observed-at-v1")
         ):
             raise HistoryImportError("ineligible historical source")
         name = manifest.get("file")
@@ -84,6 +86,16 @@ def _rows(manifest_path: Path) -> tuple[dict, list[dict]]:
         rows = [json.loads(line) for line in payload.splitlines() if line]
         if len(rows) != manifest.get("records") or not rows:
             raise HistoryImportError("historical row count mismatch")
+        if manifest["source"] == "verified_venue_perp_klines":
+            for row in rows:
+                if (not isinstance(row, dict)
+                    or row.get("venue") != manifest.get("venue")
+                    or row.get("contract") != manifest.get("contract")
+                    or row.get("quote") != manifest.get("quote")
+                    or row.get("interval_minutes") != 5
+                    or _as_datetime(row["first_observed_at"]) <
+                       _as_datetime(row["closed_at"])):
+                    raise HistoryImportError("unverified source-native historical record")
         return manifest, rows
     except (OSError, json.JSONDecodeError, KeyError, TypeError) as exc:
         raise HistoryImportError("unreadable or invalid history manifest") from exc
@@ -108,11 +120,23 @@ def assemble(manifests: list[Path]) -> tuple[dict, list[dict], dict]:
         meta, records = _rows(path)
         key = (meta.get("venue"), meta.get("contract"),
                meta.get("quote"), meta.get("interval_minutes"))
-        if key[0] != "binance" or key[2] != "USDT" or key[3] not in INTERVALS.values():
-            raise HistoryImportError("unexpected instrument identity")
+        if meta["source"] == "binance_um_klines":
+            if key[0] != "binance" or key[2] != "USDT":
+                raise HistoryImportError("unexpected Binance instrument identity")
+        elif (key[0] not in {
+            "hyperliquid", "dydx", "bitget", "gate", "okx",
+            "kucoin", "deribit", "lighter", "phemex",
+        } or key[2] not in {"USDT", "USDC", "USD"}):
+            raise HistoryImportError("unexpected native research venue or quote")
+        if key[3] not in INTERVALS.values():
+            raise HistoryImportError("unexpected instrument interval")
         if identity is not None and key != identity:
             raise HistoryImportError("do not mix instruments, venues or timeframes")
         identity = key
+        if (meta["source"] == "verified_venue_perp_klines"
+            and (meta.get("venue"), meta.get("contract"),
+                 meta.get("quote"), meta.get("interval_minutes")) != key):
+            raise HistoryImportError("source-native manifest identity mismatch")
         first_month = records[0]["opened_at"][:7]
         if first_month in months:
             raise HistoryImportError("duplicate monthly dataset")

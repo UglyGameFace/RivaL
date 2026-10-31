@@ -1,3 +1,11 @@
+## Active outcome: source-native six-month research → future-only proof (2026-10-31)
+- Objective: Repair the mismatch between active RivaL venues and Binance-only historical boosted research; retain all preexisting model/cost/NO CALL safeguards.
+- Branch / PR: `feature/source-native-research-bridge-20261031` / #166.
+- Findings: Six-month recovery sources already populate real per-venue PostgreSQL 5m candles, but prior `boosted_models.evaluate_directory` and live-compatible logistic trainer read Binance archive manifests only; candidate identity checks also hardcoded Binance/USDT. Imported native candidates are not automatically live-approved.
+- Changes: Add bounded source-exact full-calendar-month exporter with first-observed-at and byte digests; reuse private Drive archive and persist monthly receipts; verify paired manifest/history reads before training; expand existing logistic and boosted offline researchers and registry to native matching venue/contract/quote; schedule one source-only GitHub training job per day; cover incomplete, wrong-source, stale and duplicate cases with regression tests; paginate model imports across archive cycles.
+- Acceptance still missing until proven from production: Hosted collector must actually have 6 contiguous complete months per native venue/source; private Drive native manifests must be published; source-specific prospective forecast issuance, future-only settlements, matched bid/ask quotes, conservative paper after-cost qualifications and separately authenticated actual fills/fees/funding/slippage must be independently audited. Zero previously published Binance boosted models passed their retrospective screen. NEVER auto-promote or claim improved live accuracy from a green training workflow.
+- Validation state: PR CI pending, do not call merged or deployed until exact checks and release succeed. Related issues #151 and #6 remain OPEN.
+
 ## ACTIVE TASK: Portable boosted families and independent future cost proof (2026-10-31)
 
 - Objective: finish #151 and #6 as ONE integrated intelligence system, not a replacement stack. Preserve ten-venue collectors, six-month verified history, online logistic/NB/kNN, immutable issuance/settlement, read-only watch, Discord UX and NO CALL. Research and actual execution evidence are different claims.

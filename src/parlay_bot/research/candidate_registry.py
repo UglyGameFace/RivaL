@@ -11,7 +11,7 @@ import math
 import threading
 from datetime import UTC, datetime, timedelta
 
-from parlay_bot.perpetuals.markets import ASSETS, HORIZONS
+from parlay_bot.perpetuals.markets import ASSETS, HORIZONS, asset_for_contract
 from parlay_bot.perpetuals.model_checkpoints import FEATURE_CONTRACT, TARGET_CONTRACT
 from parlay_bot.research.boosted_portable import validate_portable
 from parlay_bot.storage.hot import RelationalHotStore
@@ -35,7 +35,7 @@ def verified_candidate(payload: bytes) -> dict:
         spec = source["model_spec"]
         identity = spec["identity"]
         contract = str(identity["contract"])
-        asset = contract.removesuffix("USDT")
+        asset = asset_for_contract(contract)
         horizon = int(spec["horizon_minutes"])
         boosted = spec.get("model") == "portable-boosted-binary-v1"
         weights = spec.get("weights")
@@ -78,8 +78,15 @@ def verified_candidate(payload: bytes) -> dict:
             spec["model"] not in ("offline-logistic-multi-horizon-v1",
                                   "offline-live-contract-logistic-v3",
                                   "portable-boosted-binary-v1")
-            or identity["venue"] != "binance"
-            or identity["quote"] != "USDT"
+            or (identity["venue"] != "binance"
+                and (not (compatible or boosted)
+                     or identity["venue"] not in {
+                         "hyperliquid", "dydx", "bitget", "gate", "okx",
+                         "kucoin", "deribit", "lighter", "phemex",
+                     }))
+            or (identity["quote"] != "USDT"
+                and (not (compatible or boosted)
+                     or identity["quote"] not in {"USDC", "USD"}))
             or asset not in ASSETS
             or horizon not in (HORIZONS if (compatible or boosted)
                                else (5, 15, 60, 240, 1440, 10080))
@@ -268,7 +275,7 @@ class ResearchCandidateRegistry:
                 "ON a.model_sha256=c.model_sha256 WHERE a.compatible=1 "
                 "AND c.retrospective_screen='passed' AND c.horizon_minutes=? AND c.asset=? "
                 "ORDER BY c.first_imported_at DESC,c.model_sha256 LIMIT 30",
-                (horizon, contract.removesuffix('USDT')),
+                (horizon, asset_for_contract(contract)),
             ).fetchall()
         found = []
         for row in rows:
@@ -298,7 +305,7 @@ class ResearchCandidateRegistry:
                 "ON a.model_sha256=c.model_sha256 WHERE a.compatible=1 "
                 "AND c.retrospective_screen='passed' AND c.horizon_minutes=? AND c.asset=? "
                 "ORDER BY c.first_imported_at DESC,c.model_sha256 LIMIT 60",
-                (horizon, contract.removesuffix("USDT")),
+                (horizon, asset_for_contract(contract)),
             ).fetchall()
         found = {}
         for row in rows:

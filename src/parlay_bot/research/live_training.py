@@ -35,6 +35,11 @@ def historical_features(rows, identity):
     ) for r in rows]
     vectors = {}
     for index in range(INDICATOR_BARS-1, len(candles)):
+        # Indicators never bridge a five-minute source gap, even when
+        # the final target happens to align after a later recovery.
+        if (candles[index].opened_at - candles[index-INDICATOR_BARS+1].opened_at
+            != timedelta(minutes=5*(INDICATOR_BARS-1))):
+            continue
         try:
             vectors[index] = feature_vector(candles[index-INDICATOR_BARS+1:index+1])
         except ValueError:
@@ -159,11 +164,19 @@ def evaluate_compatible(manifests, *, horizon, prepared=None):
 
 def evaluate_directory(root: Path, *, qualified_streams):
     groups = defaultdict(list)
-    for p in sorted((root/"binance_um_klines").glob("*.manifest.json")):
+    for p in sorted((root / "binance_um_klines").glob("*.manifest.json")) + sorted(
+        (root / "verified_venue_perp_klines").glob("*.manifest.json")
+    ):
         # assemble performs all byte-checksum and chronology verification.
         meta = json.loads(p.read_text())
         key = (meta.get("contract"), meta.get("interval_minutes"))
-        if key[1] == 5 and key in qualified_streams:
+        source_key = (meta.get("venue"), meta.get("contract"),
+                      meta.get("quote"), meta.get("interval_minutes"))
+        if key[1] == 5 and (
+            (meta.get("source") == "binance_um_klines" and key in qualified_streams)
+            or (meta.get("source") == "verified_venue_perp_klines"
+                and source_key in qualified_streams)
+        ):
             groups[key].append(p)
     results = []
     for paths in groups.values():

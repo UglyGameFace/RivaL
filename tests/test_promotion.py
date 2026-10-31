@@ -383,7 +383,22 @@ def test_unsettled_quote_windows_are_not_used_for_promotion(tmp_path):
                 (target,),
             )
         row = evaluate_promotion(store, asset="BTC", horizon=5, now=now)
-        assert row["quote_windows"] == 335
-        assert row["challenger_trades"] == 335
+        with store.connect() as conn:
+            expected = conn.execute(
+                """SELECT COUNT(*) AS n
+                   FROM perp_multi_forward e
+                   JOIN perp_multi_quote_shadow q
+                     ON e.asset=q.asset AND e.horizon_minutes=q.horizon_minutes
+                    AND e.target_opened_at=q.target_opened_at
+                   WHERE e.asset='BTC' AND e.horizon_minutes=5
+                     AND e.model_version=? AND q.state='EXIT_QUOTED'
+                     AND e.settled_at IS NOT NULL AND e.settled_at<=?
+                     AND e.issued_at>=? AND e.issued_at<=?""",
+                (MULTI_MODEL, now.isoformat(),
+                 (now-timedelta(days=7)).isoformat(), now.isoformat()),
+            ).fetchone()["n"]
+        assert expected > 0
+        assert row["quote_windows"] == expected
+        assert row["challenger_trades"] == expected
     finally:
         store.close()

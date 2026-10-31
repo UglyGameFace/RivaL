@@ -11,7 +11,9 @@ import pytest
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.bot import RivalDiscordClient
 from parlay_bot.discord_app.cdna_public import (
-    CDNAPersonalReader, CDNAUnavailable, parse_cdna_price,
+    CDNAPersonalReader,
+    CDNAUnavailable,
+    parse_cdna_price,
 )
 from parlay_bot.discord_app.cdna_ui import CDNAPersonalModal
 

@@ -78,8 +78,10 @@ def retirement_candidates(branches: list[dict], pull_requests: list[dict]):
     return eligible, retained
 
 
-def ref_path(name: str) -> str:
-    return f"/repos/{REPOSITORY}/git/refs/heads/{quote(name, safe='/')}"
+def ref_path(name: str, *, delete: bool = False) -> str:
+    # GitHub's GET endpoint is singular /git/ref; DELETE is plural /git/refs.
+    route = "refs" if delete else "ref"
+    return f"/repos/{REPOSITORY}/git/{route}/heads/{quote(name, safe='/')}"
 
 
 def retire(api: GitHubAPI, candidates: list[tuple[str, str]], apply: bool):
@@ -113,7 +115,7 @@ def retire(api: GitHubAPI, candidates: list[tuple[str, str]], apply: bool):
             continue
 
         try:
-            api.request("DELETE", path)
+            api.request("DELETE", ref_path(name, delete=True))
         except HTTPError as error:
             if error.code == 404:
                 skipped.append((name, "already absent"))

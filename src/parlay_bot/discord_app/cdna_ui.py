@@ -31,9 +31,9 @@ def cdna_coin_embed(
 ) -> discord.Embed:
     """Present provider observations only, with no trading recommendation."""
     embed = discord.Embed(
-        title=f"CDNA | {asset} candidate contracts",
+        title=f"Crypto.com Predictions (CDNA) | {asset} references",
         description=(
-            "**Independent public CDNA market references only.** "
+            "**Crypto.com Predictions (CDNA), NOT DraftKings. Independent public references only.** "
             "No contract has been matched to a specific DraftKings listing, "
             "strike, expiry, settlement rule, or actual entry price. "
             "No UP/DOWN bet is approved."
@@ -41,17 +41,24 @@ def cdna_coin_embed(
         color=discord.Color.orange(),
     )
     for symbol, title, event, price in results[:2]:
-        quote = (
-            f"Bid {price.bid:.4f} • Ask {price.ask:.4f}\n"
-            f"Source updated: {discord.utils.format_dt(price.updated_at, style='R')}\n"
-            f"{'Recent source update' if price.fresh else 'STALE / NOT TRADING'}"
-            if price is not None else "No usable verified quote; do not infer a price."
-        )
+        if price is None:
+            quote = "No verifiable quote; price must not be inferred."
+        elif not price.fresh:
+            quote = "STALE / NOT TRADING. Price withheld."
+        else:
+            quote = (
+                f"Crypto.com bid {price.bid:.4f} • ask {price.ask:.4f}\\n"
+                f"Source updated: {discord.utils.format_dt(price.updated_at, style='R')}"
+            )
         embed.add_field(
             name=symbol[:100],
-            value=f"{title[:110]}\nEvent: {event[:120]}\n{quote}",
+            value=(
+                f"{title[:110]}\\nEvent: {event[:120]}\\n{quote}\\n"
+                "DraftKings strike/expiry/proposition matching: NOT VERIFIED."
+            ),
             inline=False,
         )
+
     if not results:
         embed.add_field(
             name="NO BET • No matching CDNA candidates",
@@ -113,7 +120,7 @@ class CDNAPersonalModal(discord.ui.Modal):
             if self.search:
                 results = await self.reader.search_contracts(str(self.input.value))
                 embed = discord.Embed(
-                    title="CDNA • Matching contracts",
+                    title="Crypto.com Predictions (CDNA) • NOT DraftKings",
                     description=(
                         "Provider contract discovery only. Symbols are NOT "
                         "verified DraftKings matches. Enter an exact symbol "
@@ -137,10 +144,10 @@ class CDNAPersonalModal(discord.ui.Modal):
             else:
                 price = await self.reader.quote(str(self.input.value).strip())
                 embed = discord.Embed(
-                    title=f"CDNA • {price.symbol}",
+                    title=f"Crypto.com Predictions (CDNA) • {price.symbol}",
                     description=(
                         f"**{price.title}**\n"
-                        "**Independent reference, NOT a verified DraftKings quote.** "
+                        "**Crypto.com Predictions reference, NOT a DraftKings executable quote.** "
                         "Use the exact DraftKings contract, settlement rules, "
                         "and actual entry price to assess any bet."
                     ),
@@ -148,13 +155,17 @@ class CDNAPersonalModal(discord.ui.Modal):
                           else discord.Color.orange(),
                 )
                 embed.add_field(
-                    name="Public contract quote",
+                    name="Crypto.com reference • unverified DraftKings terms",
                     value=(
-                        f"Bid **{price.bid:.4f}** • Ask **{price.ask:.4f}**\n"
-                        f"Provider status: **{price.status[:35]}**\n"
-                        f"Source update: {discord.utils.format_dt(price.updated_at, style='R')}\n"
-                        f"Quote age: {max(0, int((price.checked_at - price.updated_at).total_seconds()))}s\n"
-                        f"**{'Source time recent' if price.fresh else 'STALE / NOT TRADING'}**"
+                        (
+                            f"Bid **{price.bid:.4f}** • Ask **{price.ask:.4f}**\\n"
+                            if price.fresh else
+                            "**STALE • Price withheld. NOT TRADING.**\\n"
+                        )
+                        + f"Provider status: **{price.status[:35]}**\\n"
+                        + f"Source update: {discord.utils.format_dt(price.updated_at, style='R')}\\n"
+                        + "Strike, expiry, proposition and settlement mapping to "
+                          "DraftKings: **NOT VERIFIED**."
                     ),
                     inline=False,
                 )
@@ -169,7 +180,7 @@ class CDNAPersonalModal(discord.ui.Modal):
                     inline=False,
                 )
             embed.set_footer(
-                text="Owner-only read-only API • No automated polling or AI use of CDNA data"
+                text="Owner-only Crypto.com reference • NOT DraftKings • no AI or orders"
             )
             await interaction.edit_original_response(embed=embed)
         except CDNAUnavailable as exc:

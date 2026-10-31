@@ -282,13 +282,22 @@ class KalshiForwardResearch:
                 "result": result, "settlement_ts": settlement_at,
             }, sort_keys=True, separators=(",", ":"))
             receipt_hash = hashlib.sha256(receipt.encode()).hexdigest()
+            # Legacy summary-price rows lack executable book provenance.
+            # Keep their official result but never update model weights.
+            book_verified = conn.execute(
+                "SELECT 1 FROM rival_kalshi_book_evidence WHERE ticker=?",
+                (ticker,),
+            ).fetchone() is not None
             conn.execute(
                 """UPDATE rival_kalshi_forward
                    SET result=?,settlement_at=?,verified_at=?,
                        settlement_evidence_sha256=?,learned_at=?
                    WHERE ticker=? AND result IS NULL""",
-                (result, settled_at, now, receipt_hash, now, ticker),
+                (result, settled_at, now, receipt_hash,
+                 now if book_verified else None, ticker),
             )
+            if not book_verified:
+                return True
             asset = original["asset"]
             series = original["series_ticker"]
             suffix = " FOR UPDATE" if self.store.database.backend == "postgres" else ""

@@ -76,6 +76,22 @@ def _guided_custom_ids(bot):
             home.navigate(page)
             home._buttons()
             found |= _custom_ids(home)
+        # Each crypto-desk market reveals different buttons. A test that
+        # checks only the default market misses the owner-only CDNA trio.
+        for market in (None, "polymarket", "exchange", "kalshi", "draftkings"):
+            home.navigate("home")
+            home.navigate("crypto-desk")
+            home.live_source = market
+            home._buttons()
+            found |= _custom_ids(home)
+        assert {
+            "rival:guided:cdna-auto",
+            "rival:guided:cdna-quote",
+            "rival:guided:dk-independent-ai",
+        } <= found
+        # Discord does not route items with no explicit custom_id across
+        # a restart; those are not persistent fallback IDs.
+        found.discard(None)
         return found
     finally:
         home.stop()

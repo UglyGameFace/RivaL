@@ -494,7 +494,7 @@ class AutonomousResearch:
             fused = await asyncio.to_thread(self.multi.issue)
             _LOG.info(
                 "RivaL multi-source shadow issued=%s paired_settled=%s "
-                "promotion=disabled", fused, paired,
+                "promotion=guarded_hourly_not_this_log", fused, paired,
             )
         except asyncio.CancelledError:
             raise

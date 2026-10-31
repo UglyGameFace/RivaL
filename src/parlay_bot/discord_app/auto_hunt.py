@@ -1458,7 +1458,8 @@ class AutoHuntActions(discord.ui.View):
 
 class AutoHuntService:
     def __init__(self, *, bot: discord.Client, market, quotes, store: AutoHuntStore,
-                 stream_shadow=None) -> None:
+                 stream_shadow=None, alerts_enabled: bool = True) -> None:
+        self.alerts_enabled = alerts_enabled
         self.bot = bot
         self.market = market
         self.quotes = quotes
@@ -1555,6 +1556,11 @@ class AutoHuntService:
     async def subscribe(
         self, user: discord.abc.User, *, source: str = "forecasts",
     ) -> tuple[bool, str]:
+        if not self.alerts_enabled:
+            return False, (
+                "Old Auto-Hunt notifications are retired. Use /rival → "
+                "Notifications to track one live card or forecast instead."
+            )
         if source not in ("forecasts", "polymarket"):
             return False, "Unsupported alert source."
         if source == "forecasts" and self.market is None:
@@ -1593,6 +1599,8 @@ class AutoHuntService:
     async def update_preference(
         self, user_id: int, field: str, value: object,
     ) -> dict:
+        if not self.alerts_enabled and value == 1:
+            raise ValueError("Old Auto-Hunt alerts are retired. Use Notifications.")
         async with self._user_lock(str(user_id)):
             if field in ("direction_changes", "live_shifts") and value == 1:
                 if field == "live_shifts" and getattr(self.bot, "live_stream", None) is None:
@@ -1629,6 +1637,8 @@ class AutoHuntService:
     async def toggle_tier(self, user_id: int, tier: str) -> tuple[bool, str]:
         """Flip one independent tier. Turning a tier ON subscribes the user
         if needed; turning one OFF never touches the other tiers."""
+        if not self.alerts_enabled:
+            return False, "Old Auto-Hunt tiers are retired. Use Notifications."
         if tier not in TIERS:
             return False, "Unsupported alert tier."
         async with self._user_lock(str(user_id)):
@@ -1650,6 +1660,8 @@ class AutoHuntService:
             )
 
     async def status(self, user_id: int) -> str:
+        if not self.alerts_enabled:
+            return "OFF • Auto-Hunt delivery retired. Use Notifications for live tracking."
         try:
             active = await asyncio.to_thread(self.store.enabled, str(user_id))
         except Exception:  # noqa: BLE001 - storage fail closed
@@ -1820,7 +1832,7 @@ class AutoHuntService:
         The scanner reads cached WebSocket order books only. This method
         does not fetch price data per Discord member or change model forecasts.
         """
-        if not notices:
+        if not notices or not self.alerts_enabled:
             return 0
         subs = await asyncio.to_thread(self.store.subscribers)
         total = 0
@@ -1875,13 +1887,19 @@ class AutoHuntService:
             if isinstance(result, int):
                 total += result
             else:
-                _LOG.warning("Live trend alert delivery failed safely")
+                if isinstance(result, BaseException):
+                    _LOG.error(
+                        "Live trend delivery failed: %s", type(result).__name__,
+                        exc_info=(type(result), result, result.__traceback__),
+                    )
         return total
 
     async def cycle(self, *, scope: str = "all") -> int:
         # Only one scan and one candidate set per cycle, regardless of users.
         if scope not in ("all", "forecasts", "polymarket"):
             raise ValueError("Unsupported alert scan scope")
+        if not self.alerts_enabled:
+            return 0
         async with AsyncExitStack() as locks:
             if scope != "polymarket":
                 await locks.enter_async_context(self._cycle_lock)

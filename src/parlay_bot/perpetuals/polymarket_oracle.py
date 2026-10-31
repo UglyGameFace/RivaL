@@ -8,6 +8,7 @@ the existing book-only learner continues without invented threshold distance.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import re
 import threading
@@ -71,8 +72,20 @@ def oracle_features(notice, reference: OracleReference, *, now: datetime) -> tup
             or not re.search(r"60[ -]?(?:second|sec|s)", rule)):
             raise ValueError("current short-window oracle rule not verified")
     elif notice.horizon == 60:
-        if reference.method != "binance-spot-hourly" or "binance" not in source:
-            raise ValueError("hourly spot oracle rule not verified")
+        # Do not hardcode an exchange from the timeframe: current official
+        # Up/Down rules describe Chainlink TWAP, while individual listed
+        # contracts may publish another exact settlement source.
+        chainlink = (
+            reference.method == "chainlink-twap-60s"
+            and "chainlink" in source and "twap" in rule
+            and re.search(r"60[ -]?(?:second|sec|s)", rule)
+        )
+        binance = (
+            reference.method == "binance-spot-hourly"
+            and "binance" in source and "binance" in rule and "hour" in rule
+        )
+        if not (chainlink or binance):
+            raise ValueError("hourly oracle rule not verified")
     else:
         raise ValueError("unsupported oracle settlement horizon")
     base = book_features(notice)

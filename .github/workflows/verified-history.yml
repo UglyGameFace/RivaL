@@ -130,6 +130,7 @@ jobs:
           python - <<'PY'
           import math
           from parlay_bot.research.boosted_models import FAMILIES, _estimators
+          from parlay_bot.research.boosted_portable import certified_export
           factories, unavailable = _estimators()
           assert set(factories) == set(FAMILIES), unavailable
           x = [[(i % (7 + j)) / 12 for j in range(10)] for i in range(500)]
@@ -141,6 +142,10 @@ jobs:
               assert len(scores) == 25, name
               assert all(math.isfinite(float(p[1])) and 0 <= float(p[1]) <= 1
                          for p in scores), name
+              if name in ("lightgbm", "xgboost", "catboost"):
+                  portable, error = certified_export(model, name, x[:25])
+                  assert portable["trees"] and error <= 1e-6
+                  print("Native/portable parity:", name, error)
               print("Verified offline CPU model:", name)
           PY
 
@@ -180,7 +185,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: six-month-crypto-research-reports
-          path: data/research-reports/*.json
+          path: |
+            data/research-reports/*.json
+            data/research-reports/boosted-models/*.json
           retention-days: 7
           if-no-files-found: ignore
 

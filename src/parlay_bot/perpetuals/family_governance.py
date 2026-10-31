@@ -100,7 +100,14 @@ class FamilyPromotion:
                  (stamp-LOOKBACK).isoformat(),stamp.isoformat()),
             ).fetchall()
         scored={}
-        for family in FAMILIES:
+        # Distinct immutable boosted artifacts compete only on their own
+        # source-specific future records, never as one pooled model family.
+        observed_families = sorted({
+            str(row["family"]) for row in forecasts
+            if str(row["family"]).startswith("boosted_")
+            and len(str(row["family"])) <= 64
+        })
+        for family in list(FAMILIES) + observed_families:
             # Models train from their own venue/horizon labels. Only uniquely
             # aligned target windows can contribute independent evidence.
             seen=set()
@@ -293,7 +300,26 @@ class FamilyPromotion:
             return None
         if not timedelta(0)<=stamp-tested<=FRESH_FOR:
             return None
-        return row["selected_family"] if row["selected_family"] in FAMILIES else None
+        selected = str(row["selected_family"])
+        if selected in FAMILIES:
+            return selected
+        if not selected.startswith("boosted_"):
+            return None
+        # A missing/revoked/mismatched artifact cannot keep its old paper
+        # promotion record indefinitely. It must still be a viable exact
+        # source research model at the moment of a watch.
+        from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
+        try:
+            candidates = ResearchCandidateRegistry(self.store).compatible_boosters(
+                venue=venue, contract=contract, quote=quote,
+                horizon=horizon, now=stamp,
+            )
+        except (ValueError, TypeError, KeyError):
+            return None
+        return selected if any(
+            selected == f"boosted_{candidate['family']}_{candidate['model_sha256'][:12]}"
+            for candidate in candidates
+        ) else None
 
     def venue_summary(self, *, asset,venue,contract,quote,horizon,
                       model_version,now=None):

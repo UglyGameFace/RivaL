@@ -2339,24 +2339,41 @@ class RivalDiscordClient(discord.Client):
         assert self.offline_registry is not None
         while not self.is_closed():
             try:
-                items = await asyncio.wait_for(
-                    self.research_drive.read_verified_research_candidates(
-                        limit=10,
-                    ), timeout=45,
-                )
                 saved = 0
-                for file_id, payload in items:
-                    try:
-                        imported = await asyncio.to_thread(
-                            self.offline_registry.import_document,
-                            file_id, payload,
-                        )
-                        saved += imported
-                    except ValueError:
-                        _LOG.warning(
-                            "RivaL offline research candidate failed "
-                            "model-contract verification"
-                        )
+                pages = 0
+                cursor = None
+                seen_cursors = set()
+                # A single latest-ten listing can exclude every older coin,
+                # timeframe and trained model when new artifacts are published.
+                # Bound the scan, keep all existing candidates immutable, and
+                # perform expensive reads off the Discord interaction path.
+                for _ in range(6):
+                    items, next_cursor = await asyncio.wait_for(
+                        self.research_drive.read_verified_research_candidates(
+                            limit=20, page_token=cursor, return_next_page=True,
+                        ), timeout=90,
+                    )
+                    pages += 1
+                    for file_id, payload in items:
+                        try:
+                            imported = await asyncio.to_thread(
+                                self.offline_registry.import_document,
+                                file_id, payload,
+                            )
+                            saved += imported
+                        except ValueError:
+                            _LOG.warning(
+                                "RivaL offline research candidate failed "
+                                "model-contract verification"
+                            )
+                    if not next_cursor:
+                        break
+                    if next_cursor == cursor or next_cursor in seen_cursors:
+                        raise ValueError("repeated verified-model Drive cursor")
+                    seen_cursors.add(next_cursor)
+                    cursor = next_cursor
+                if cursor and next_cursor:
+                    _LOG.warning("RivaL model inventory scan capped at %d pages", pages)
                 self.candidate_sync_status = f"verified_read_{saved}_candidates"
                 self.candidate_sync_checked_at = datetime.now(UTC)
                 _LOG.info("RivaL verified historical candidate reads=%d", saved)

@@ -607,6 +607,18 @@ class ForwardAccuracyMonitor:
                     ):
                         metrics["target_expired"] += 1
                         continue
+                    # Fetch immutable historical artifacts OUTSIDE the forecast
+                    # transaction. A blocked Drive/database read must never
+                    # roll back the existing incumbent. Missing source-exact
+                    # artifacts simply mean no boosted shadow prediction.
+                    boosters = ()
+                    try:
+                        boosters = self.market.historical_challengers.registry.compatible_boosters(
+                            venue=venue, contract=contract, quote=quote,
+                            horizon=horizon, now=issued_at,
+                        )
+                    except Exception:  # noqa: BLE001 - optional research inputs
+                        _LOG.exception("RivaL boosted artifact lookup unavailable")
                     # Store regime and model fingerprints BEFORE the target
                     # closes, in the same DB transaction as the forecast.
                     # Existing predictions are never retro-tagged using
@@ -683,6 +695,7 @@ class ForwardAccuracyMonitor:
                                     reference_opened_at=last.opened_at,
                                     target_opened_at=target_open, issued_at=issued_at,
                                     incumbent_up=probability, baseline_up=baseline,
+                                    boosters=boosters,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger
                                 conn.execute("ROLLBACK TO SAVEPOINT rival_shadow_prediction")

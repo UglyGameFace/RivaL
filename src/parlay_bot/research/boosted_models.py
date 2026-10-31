@@ -16,6 +16,7 @@ from pathlib import Path
 
 from parlay_bot.perpetuals.markets import HORIZONS
 from parlay_bot.perpetuals.model_checkpoints import FEATURE_CONTRACT, TARGET_CONTRACT, canonical
+from parlay_bot.research.boosted_portable import certified_export
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.learning import _metrics, assemble
 from parlay_bot.research.live_training import compatible_partitions, historical_features
@@ -85,7 +86,7 @@ def _scores(model, samples, base):
     return _metrics(scored, base)
 
 
-def evaluate_compatible_boosters(manifests, *, horizon, prepared=None, estimators=None):
+def evaluate_compatible_boosters(manifests, *, horizon, prepared=None, estimators=None, artifact_dir=None):
     """Fit a single source-specific offline experiment, never a live model."""
     identity, rows, provenance = assemble(manifests) if prepared is None else prepared[:3]
     vectors = historical_features(rows, identity) if prepared is None else prepared[3]
@@ -157,7 +158,63 @@ def evaluate_compatible_boosters(manifests, *, horizon, prepared=None, estimator
               and all(m["brier_gain"] > .005
                       and m["ece_10"] <= .10 and m["days"] >= 7
                       for m in (validation_score, test_score)))
+    portable_candidates = []
+    if artifact_dir is not None:
+        # Export all independent native tree families after validation choice.
+        # The final test was not used for model selection. Every prospective
+        # challenger must pass independent future outcome and cost proof.
+        directory = Path(artifact_dir)
+        directory.mkdir(parents=True, exist_ok=True)
+        for name, trained_model, val_score in compared:
+            if name not in ("lightgbm", "xgboost", "catboost"):
+                continue
+            test_metrics = _scores(trained_model, test, base)
+            try:
+                held_vectors = [row[2] for row in validation[:64]]
+                portable, parity_error = certified_export(trained_model, name, held_vectors)
+                portable_spec = {
+                    "model": "portable-boosted-binary-v1",
+                    "family": name, "identity": identity,
+                    "horizon_minutes": horizon,
+                    "feature_contract": FEATURE_CONTRACT,
+                    "target_contract": TARGET_CONTRACT,
+                    "portable_model": portable,
+                    "native_parity_max_error": parity_error,
+                    "training_input_sha256": input_digest,
+                    "training_count": len(fitted),
+                    "train_cutoff": train[-1][1].isoformat(),
+                    "validation_cutoff": test[0][0].isoformat(),
+                    "evaluation_completed_through": test[-1][1].isoformat(),
+                    "source_sha256_by_month": provenance["source_sha256_by_month"],
+                }
+                candidate_sha = hashlib.sha256(canonical(portable_spec).encode()).hexdigest()
+                artifact = {
+                    "research_only": True, "live_model_promoted": False,
+                    "model_sha256": candidate_sha, "model_spec": portable_spec,
+                    "validation": val_score, "out_of_sample_test": test_metrics,
+                }
+                data = canonical(artifact).encode()
+                if len(data) > 2_000_000:
+                    raise ValueError("portable artifact too large")
+                name_part = identity["venue"] + "-" + identity["contract"]
+                file = directory / f"boosted-{name_part}-{horizon}-{name}-{candidate_sha[:20]}.json"
+                file.write_bytes(data)
+                portable_candidates.append({
+                    "family": name, "model_sha256": candidate_sha,
+                    "path": str(file), "size": len(data),
+                    "native_parity_max_error": parity_error,
+                    "retrospective_passed": (
+                        len(provenance["months"]) >= 6
+                        and all(m["brier_gain"] > .005 and m["ece_10"] <= .10
+                                and m["days"] >= 7
+                                for m in (val_score, test_metrics))
+                    ),
+                })
+            except (ValueError, TypeError, KeyError, IndexError, OverflowError,
+                    AttributeError) as exc:
+                unavailable[name + "_portable_export"] = type(exc).__name__
     return {
+        "portable_candidates": portable_candidates,
         "schema_version": "rival-boosted-tree-research-v1",
         "status": "evaluated",
         "identity": identity, "horizon_minutes": horizon,
@@ -175,7 +232,7 @@ def evaluate_compatible_boosters(manifests, *, horizon, prepared=None, estimator
     }
 
 
-def evaluate_directory(root: Path, *, qualified_streams):
+def evaluate_directory(root: Path, *, qualified_streams, artifact_dir=None):
     groups = defaultdict(list)
     for path in sorted((root / "binance_um_klines").glob("*.manifest.json")):
         meta = json.loads(path.read_text(encoding="utf-8"))
@@ -190,7 +247,7 @@ def evaluate_directory(root: Path, *, qualified_streams):
         for horizon in HORIZONS:
             try:
                 results.append(evaluate_compatible_boosters(
-                    paths, horizon=horizon, prepared=prepared,
+                    paths, horizon=horizon, prepared=prepared, artifact_dir=artifact_dir,
                 ))
             except HistoryImportError:
                 continue

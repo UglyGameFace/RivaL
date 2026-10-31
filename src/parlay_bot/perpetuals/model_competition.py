@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
+from parlay_bot.research.boosted_portable import predict_portable
 
 FAMILIES = ("gaussian_nb_v1", "knn21_v1")
 MIN_TRAIN = 80
@@ -123,9 +124,26 @@ class ShadowModelCompetition:
 
     def issue(self, conn, *, samples, features, now, venue, contract, quote,
               asset, horizon, reference_opened_at, target_opened_at, issued_at,
-              incumbent_up, baseline_up):
+              incumbent_up, baseline_up, boosters=()):
         """Call only inside the incumbent forecast's *successful* transaction."""
         predictions = shadow_predictions(samples, features, as_of=now)
+        # Exact-source historical boosters enter the SAME immutable future
+        # comparison as existing live families, never the incumbent weights.
+        eligible_boosters = {}
+        for item in boosters:
+            identity = item.get("identity", {})
+            if (tuple(identity.get(key) for key in ("venue", "contract", "quote"))
+                    != (venue, contract, quote)
+                    or item.get("horizon_minutes") != horizon
+                    or utc(datetime.fromisoformat(item["imported_at"])) > utc(issued_at)
+                    or utc(datetime.fromisoformat(item["evaluation_completed_through"]))
+                       >= utc(issued_at)):
+                continue
+            family = f"boosted_{item['family']}_{item['model_sha256'][:12]}"
+            eligible_boosters[family] = item
+            predictions[family] = predict_portable(
+                item["portable_model"], features, trusted=True,
+            )
         if not predictions:
             return 0
         # Training provenance is persisted at issuance, never reconstructed
@@ -153,7 +171,10 @@ class ShadowModelCompetition:
                 (venue,contract,quote,asset,horizon,family,
                  utc(reference_opened_at).isoformat(),utc(issued_at).isoformat(),
                  utc(target_opened_at).isoformat(),probability,
-                 incumbent_up,baseline_up,len(eligible),fingerprint),
+                 incumbent_up,baseline_up,
+                  (len(eligible) if family not in eligible_boosters else 0),
+                  (fingerprint if family not in eligible_boosters
+                   else eligible_boosters[family]["model_sha256"])),
             )
             saved += int(row.rowcount == 1)
         return saved
@@ -246,7 +267,11 @@ class ShadowModelCompetition:
                  stamp.isoformat(),stamp.isoformat()),
             ).fetchall()
         results = {}
-        for family in FAMILIES:
+        all_families = list(FAMILIES) + sorted({
+            str(row['family']) for row in rows
+            if str(row['family']).startswith('boosted_')
+        })
+        for family in all_families:
             scoped = {}
             invalid = 0
             for row in rows:

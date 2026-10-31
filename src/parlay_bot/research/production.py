@@ -86,6 +86,24 @@ async def _archive(
         )
         models.append({"model_sha256": evaluation["model_sha256"],
                        "drive_id": obj.file_id, "readback_verified": True})
+    boosted_files = [
+        item for result in research.get("boosted_evaluations", [])
+        for item in result.get("portable_candidates", [])
+    ]
+    if len(boosted_files) > 100:
+        raise HistoryImportError("too many portable candidates for bounded archival")
+    for item in boosted_files:
+        path = Path(item["path"])
+        artifact = _artifact(path, 1)
+        if path.stat().st_size != item["size"]:
+            raise HistoryImportError("portable model artifact changed before upload")
+        obj = await drive.ensure_research_output(
+            artifact=artifact, batch_id="candidate-" + artifact.sha256[:24],
+            kind="model",
+        )
+        models.append({"model_sha256": item["model_sha256"],
+                       "family": item["family"], "drive_id": obj.file_id,
+                       "readback_verified": True})
     return {
         "archived_partitions": len(uploaded), "verified_history_ids": uploaded,
         "report_drive_id": report_obj.file_id,
@@ -163,11 +181,12 @@ async def run_pipeline(
     research["compatible_evaluations"] = evaluate_live_contracts(
         root, qualified_streams=valid & expected_streams,
     )
-    # Tree models are trained on the same verified, purged source splits.
-    # Their reports are research-only; weights cannot be imported into the
-    # logistic checkpoint registry and never serve signals.
+    # Tree models train on exactly the verified, purged source partitions.
+    # Portable native-parity artifacts remain research-only until later source-
+    # matched futures and paper-cost evidence independently qualify them.
     research["boosted_evaluations"] = evaluate_boosted_models(
         root, qualified_streams=valid & expected_streams,
+        artifact_dir=report_dir / "boosted-models",
     )
     # Evaluate target-before-stop path distributions on the SAME audited
     # five-minute futures manifests. These are separate research-only
@@ -197,6 +216,8 @@ async def run_pipeline(
         "crypto_sources_complete": crypto_complete,
         "compatible_candidate_count": len(research["compatible_evaluations"]),
         "boosted_model_evaluations": len(research["boosted_evaluations"]),
+        "portable_boosted_artifacts": sum(len(v.get("portable_candidates", []))
+                                         for v in research["boosted_evaluations"]),
         "boosted_models_evaluated": sum(
             item.get("status") == "evaluated"
             for item in research["boosted_evaluations"]

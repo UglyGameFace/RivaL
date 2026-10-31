@@ -170,7 +170,7 @@ def collect_daily_metrics(
     client: httpx.Client, *, root: Path, days: list[date],
     assets: list[str], max_new: int = 80,
 ) -> dict:
-    if not 1 <= max_new <= 100 or len(set(days)) != len(days):
+    if not 1 <= max_new <= 220 or len(set(days)) != len(days):
         raise ValueError("invalid metrics workload")
     if not assets or len(set(assets)) != len(assets) or not set(assets) <= ASSETS:
         raise ValueError("invalid metrics asset set")

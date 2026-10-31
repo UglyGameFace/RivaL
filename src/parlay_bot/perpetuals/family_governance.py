@@ -68,6 +68,10 @@ class FamilyPromotion:
     def evaluate(self, *, asset, venue, contract, quote, horizon, now=None):
         stamp=utc(now or datetime.now(UTC))
         self.initialize()
+        # The optional quote ledger may not have seen a venue book yet.
+        # Research promotion still records a strict HELD decision.
+        from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
+        FamilyQuoteShadow(self.store).initialize()
         # Prove the exact same selected stream, not other venues of the asset.
         with self.store.connect() as conn:
             forecasts=conn.execute(
@@ -89,7 +93,7 @@ class FamilyPromotion:
                    WHERE s.asset=? AND s.venue=? AND s.contract=?
                     AND s.quote=? AND s.horizon_minutes=?
                     AND s.issued_at>=? AND s.issued_at<=?
-                   ORDER BY s.family,s.target_opened_at LIMIT 12000""",
+                   ORDER BY s.family,s.target_opened_at LIMIT 24000""",
                 (asset,venue,contract,quote,horizon,
                  (stamp-LOOKBACK).isoformat(),stamp.isoformat()),
             ).fetchall()

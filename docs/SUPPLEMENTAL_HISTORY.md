@@ -163,8 +163,15 @@ A five-minute bar hitting an unresolved profit barrier and stop simultaneously
 has no provable hit order and is **excluded**. Future windows do not overlap;
 gaps are rejected. Momentum cohorts, baselines and smoothing are fitted only on
 chronological training history. The validation period and purged final test
-are scored separately with Brier, calibration and minimum-day gates; research
-candidate admission also requires six verified source months. Exclusion counts
+are scored separately with Brier, calibration and minimum-day gates. The same
+training-only cohort model also retains terminal *signed log-return*
+distributions at the prespecified 10th, 25th, 50th, 75th and 90th percentiles,
+and scores those distributions with proper quantile-pinball loss against the
+unconditional training baseline. Candidate admission also requires six
+verified source months, positive held-out distribution skill, and no more
+than 5% unresolved same-bar first-touch paths. All probabilities are
+*conditional on paths with observable first-touch order*; ambiguous exclusions
+are reported, not silently counted as wins. Exclusion counts
 and original source digests remain in the production research report and
 verified Drive report when publishing is authorized.
 

@@ -29,8 +29,8 @@ def _prepared():
     opened = datetime(2026, 1, 1, tzinfo=UTC)
     for index in range(1200):
         stamp = opened + timedelta(minutes=5 * index)
-        price = (100 + .01 * index if index < 900
-                 else 109 - .02 * (index - 900))
+        price = (100 + .01 * index - (.04 if index % 23 == 0 else 0)
+                 if index < 900 else 109 - .02 * (index - 900))
         rows.append({
             "opened_at": stamp.isoformat(),
             "closed_at": (stamp + timedelta(minutes=5, milliseconds=-1)).isoformat(),

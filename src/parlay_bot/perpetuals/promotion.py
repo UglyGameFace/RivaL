@@ -29,6 +29,7 @@ evaluation therefore fails safe to the incumbent, never to a challenger.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.governance import score_paired_forward
@@ -427,8 +428,14 @@ def multi_summary(
         ).fetchall()
     n = int(row["settled"] or 0)
     decided = int(row["decided"] or 0)
-    challenger = float(row["challenger_sum"]) / n if n else None
-    incumbent = float(row["incumbent_sum"]) / n if n else None
+    challenger = (float(row["challenger_sum"]) / n
+                  if n and row["challenger_sum"] is not None else None)
+    incumbent = (float(row["incumbent_sum"]) / n
+                 if n and row["incumbent_sum"] is not None else None)
+    if challenger is not None and not math.isfinite(challenger):
+        challenger = None
+    if incumbent is not None and not math.isfinite(incumbent):
+        incumbent = None
     return {
         "issued": int(row["issued"]),
         "settled": n,
@@ -437,6 +444,9 @@ def multi_summary(
         "baseline_brier": incumbent,
         "challenger_brier": challenger,
         "incumbent_brier": incumbent,
-        "model_beats_baseline": (challenger < incumbent if n >= 50 else None),
+        "model_beats_baseline": (
+            challenger < incumbent if n >= 50 and challenger is not None
+            and incumbent is not None else None
+        ),
         **day_block_watch_evidence(daily),
     }

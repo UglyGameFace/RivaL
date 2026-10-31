@@ -15,7 +15,7 @@ def _fields(embed) -> dict[str, str]:
 
 
 @pytest.mark.asyncio
-async def test_feeds_page_shows_system_health_when_nothing_recorded(tmp_path) -> None:
+async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) -> None:
     bot = _client(tmp_path)
     home = _home(bot)
     market = PerpetualMarketStore(bot.store)
@@ -23,15 +23,24 @@ async def test_feeds_page_shows_system_health_when_nothing_recorded(tmp_path) ->
     home.market = market
     home.collector = CurrentBoardCollector(client=None, store=bot.store)
     home.venues = ("hyperliquid",)
-    home.page = "feeds"
+    home.navigate("feeds")  # Old link now opens the one-page scorecard.
     try:
+        assert home.page == "performance"
         embed = await home.render()
         fields = _fields(embed)
-        assert "System health" in fields
-        health = fields["System health"]
-        assert "Crypto ingestion: no successful ingestion recorded" in health
-        assert "Forecast cycle: no cycle recorded yet" in health
-        assert "Sports refresh: no completed refresh yet" in health
+        assert len(fields) == 4
+        health = fields["📡 System status"]
+        assert "Feeds: **0/1** fresh" in health
+        assert "Forecast cycle: **no readable cycle record**" in health
+
+        from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+
+        ForwardAccuracyMonitor(market).run_once()
+        recorded = await home.render()
+        after = _fields(recorded)["📡 System status"]
+        assert "Forecast check:" in after
+        assert "**0** issued" in after
+        assert "no readable cycle record" not in after
     finally:
         home.stop()
         await bot.zip_resolver.aclose()

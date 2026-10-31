@@ -324,6 +324,7 @@ class _AskButton(discord.ui.Button["ResearchDashboard"]):
                 raise ResearchUnavailable("Gemini research is unavailable.")
             dashboard.opinion = await dashboard.ai.ask(
                 asset=dashboard.asset, venues=dashboard.venues,
+                requester_id=interaction.user.id,
             )
         except (ResearchUnavailable, InsufficientEvidence) as exc:
             dashboard.message = str(exc)

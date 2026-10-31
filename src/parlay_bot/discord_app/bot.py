@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import time
-
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 

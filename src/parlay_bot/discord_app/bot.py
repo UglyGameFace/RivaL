@@ -57,6 +57,7 @@ from parlay_bot.perpetuals.collector import PerpetualMarketCollector
 from parlay_bot.perpetuals.deribit_history_recovery import DeribitHistoryRecovery
 from parlay_bot.perpetuals.dydx_history_recovery import DydxHistoryRecovery
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
 from parlay_bot.perpetuals.gemini_research import GeminiResearch
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
@@ -81,6 +82,7 @@ from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
 from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
+from parlay_bot.perpetuals.unattended_acceptance import unattended_acceptance_receipt
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
@@ -146,6 +148,7 @@ class RivalDiscordClient(discord.Client):
         self.health_monitor = RuntimeHealthMonitor(self.store)
         self._health_task: asyncio.Task[None] | None = None
         self._health_restarts: dict[str, list[datetime]] = {}
+        self._health_acceptance_seen = False
         _LOG.info(
             "RivaL operational storage initialized (backend=%s)",
             self.store.database.backend,
@@ -867,6 +870,24 @@ class RivalDiscordClient(discord.Client):
                 name="Independent host watchdog",
                 value=detail[:1024], inline=False,
             )
+            if self.autonomous is not None and self.stream_shadow is not None:
+                try:
+                    receipt = await asyncio.wait_for(
+                        asyncio.to_thread(unattended_acceptance_receipt, self.store),
+                        timeout=4,
+                    )
+                    statement = (
+                        f"{receipt['status']} • quoted and scored "
+                        f"{receipt['source_quoted']}/{receipt['paired_scored']} "
+                        "recent paired challenger outcomes. "
+                        "Not a restart proof or approval."
+                    )
+                except Exception:  # noqa: BLE001
+                    statement = "Hosted end-to-end evidence could not be verified"
+                embed.add_field(
+                    name="Unattended acceptance receipt",
+                    value=statement[:1024], inline=False,
+                )
             try:
                 latest = await asyncio.to_thread(
                     self.store.get_runtime_state,
@@ -1820,6 +1841,8 @@ class RivalDiscordClient(discord.Client):
         # cannot rely on its own finally block to report a failure.
         try:
             await asyncio.to_thread(self.health_monitor.initialize)
+            if self.stream_shadow is not None:
+                await asyncio.to_thread(FamilyQuoteShadow(self.store).initialize)
             self._health_task = asyncio.create_task(
                 self._health_loop(), name="rival-process-health-watchdog",
             )
@@ -2506,16 +2529,35 @@ class RivalDiscordClient(discord.Client):
                 # manufacture missing target candles or overwrite outcomes.
                 if ("settlement_backlog" in observed and
                         self.forward_audit is not None):
+                    recent = await asyncio.wait_for(
+                        asyncio.to_thread(self.forward_audit._settle, now), timeout=15,
+                    )
                     recovered = await asyncio.wait_for(
                         asyncio.to_thread(
                             self.forward_audit.reconcile_stale_settlements,
                             now, limit=120,
                         ), timeout=15,
                     )
+                    recovered += recent
                     if recovered:
                         _LOG.info(
                             "RivaL watchdog repaired %d causally settleable forecasts",
                             recovered,
+                        )
+                if self.autonomous is not None and self.stream_shadow is not None:
+                    receipt = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            unattended_acceptance_receipt, self.store, now=now,
+                        ), timeout=15,
+                    )
+                    if (receipt["status"] == "HOST_EVIDENCE_PRESENT"
+                            and not self._health_acceptance_seen):
+                        self._health_acceptance_seen = True
+                        _LOG.info(
+                            "RivaL hosted unattended model-to-quote receipt "
+                            "matched_scored=%d source_quoted=%d; "
+                            "restart and promotion still require separate proof",
+                            receipt["paired_scored"], receipt["source_quoted"],
                         )
                 events = await asyncio.wait_for(
                     asyncio.to_thread(self.health_monitor.publish, faults, now=now),
@@ -2531,13 +2573,14 @@ class RivalDiscordClient(discord.Client):
                     async with httpx.AsyncClient(timeout=5) as client:
                         for state, key, detail in events[:8]:
                             try:
-                                await client.post(
+                                response = await client.post(
                                     webhook,
                                     json={"content": (
                                         f"RivaL host health {state}: "
                                         f"{key} • {detail}"
                                     )[:1900]},
                                 )
+                                response.raise_for_status()
                             except (httpx.HTTPError, TimeoutError):
                                 _LOG.exception("RivaL operator health alert delivery failed")
             except asyncio.CancelledError:

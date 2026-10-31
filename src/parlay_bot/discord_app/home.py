@@ -2028,19 +2028,42 @@ class GuidedHome(discord.ui.View):
                     panel.asset = self.coin
                     panel.screen = "ai"
                     panel.section = "overview"
+                    if panel.ai is not None and panel.ai.available and panel.market is not None:
+                        try:
+                            # Explicit click only. Existing free-model budget and
+                            # independent exchange evidence gates apply unchanged.
+                            panel.opinion = await asyncio.wait_for(
+                                panel.ai.ask(asset=self.coin, venues=panel.venues),
+                                timeout=22,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            # No provider data, API credentials or internal paths
+                            # may leak in exception messages to Discord.
+                            _LOG.info("Requested independent AI unavailable: %s", type(exc).__name__)
+                            panel.message = (
+                                "Independent AI has no qualified response right now. "
+                                "NO BET. Math and market lookup remain separate."
+                            )
+                    else:
+                        panel.message = (
+                            "Independent exchange AI is not configured or no "
+                            "validated exchange evidence is connected. NO BET."
+                        )
                     panel._rebuild()
                     await interaction.followup.send(
                         content=(
-                            f"Independent {self.coin} exchange research ({self.horizon}m "
-                            "selected on the market menu). AI does NOT receive "
-                            "Crypto.com quotes, CDNA contracts, or DraftKings prices; "
-                            "its directional lean is NOT a matched DraftKings bet."
+                            f"Independent {self.coin} exchange AI research. "
+                            "RivaL uses its model-supported horizons, which may "
+                            f"differ from the {self.horizon}m selected market window. "
+                            "AI NEVER receives Crypto.com/CDNA data or DraftKings "
+                            "quotes. Its lean is NOT a matched DraftKings bet."
                         ),
-                        embed=await panel.render(), view=panel, ephemeral=True,
+                        embed=await asyncio.wait_for(panel.render(), timeout=10),
+                        view=panel, ephemeral=True,
                     )
                     self.note = (
-                        "Independent AI opened privately. No Crypto.com data "
-                        "was sent to a model or used for training."
+                        "Independent AI requested with exchange-only inputs. "
+                        "No Crypto.com data went to a model or training."
                     )
                 except Exception:  # noqa: BLE001
                     _LOG.exception("Independent DraftKings-adjacent AI failed")

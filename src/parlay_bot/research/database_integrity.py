@@ -7,7 +7,6 @@ private database connection string and individual user records stay private.
 from __future__ import annotations
 
 import json
-
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.storage.hot import RelationalHotStore

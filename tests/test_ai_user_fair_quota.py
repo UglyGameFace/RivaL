@@ -22,6 +22,7 @@ def market(request, tmp_path):
     else:
         store = SQLiteHotStore(tmp_path / "fair.sqlite")
     market = PerpetualMarketStore(store)
+    market.initialize()
     model = f"free-fair-{uuid.uuid4().hex}"
     try:
         yield market, model

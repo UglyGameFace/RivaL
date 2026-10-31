@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence, build_evidence
 from parlay_bot.perpetuals.forward_audit import MODEL as FORWARD_MODEL
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.event_intelligence import EventIntelligence
 from parlay_bot.perpetuals.gemini_research import GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -49,6 +50,7 @@ class AutonomousResearch:
         self.market = market
         self.store = market.store
         self.forward = ForwardAccuracyMonitor(market)
+        self.events = EventIntelligence(self.store)
         self.multi = MultiExchangeResearch(self.store)
         self.ai = ai
         self.venues = venues
@@ -69,6 +71,7 @@ class AutonomousResearch:
                 return
             self.forward.initialize()
             self.multi.initialize()
+            self.events.initialize()
             with self.store.connect() as conn:
                 conn.executescript(
                     """
@@ -480,6 +483,22 @@ class AutonomousResearch:
         started = datetime.now(UTC)
         issued = settled = ai_count = 0
         math_ok = settlement_ok = review_ok = gemini_ok = True
+        # Scheduled macro releases and verified regulator announcements are
+        # researched even when nobody is using Discord. Never do HTTP on
+        # the event loop or silently promote a news headline into a model.
+        try:
+            event_status = await asyncio.to_thread(self.events.refresh)
+            if event_status["sources_checked"]:
+                _LOG.info(
+                    "RivaL official event research sources_ok=%s checked=%s "
+                    "events_seen=%s failures=%s",
+                    event_status["sources_ok"], event_status["sources_checked"],
+                    event_status["events_seen"], len(event_status["source_failures"]),
+                )
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - preserve the independent math cycle
+            _LOG.exception("RivaL official macro/event research unavailable")
         try:
             issued, settled = await asyncio.to_thread(self.forward.run_once)
         except asyncio.CancelledError:

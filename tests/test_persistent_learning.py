@@ -46,6 +46,9 @@ def test_online_memory_survives_rolling_eviction_and_learns_once(tmp_path):
     restarted = LiveModelCheckpoints(hot)
     learned = restarted.fit((*original[30:], latest), as_of=now+timedelta(minutes=5))
     assert learned.updates == 81  # Eviction does not erase the first 30 updates.
+    assert learned.training_labels == 81
+    assert learned.historical_training_labels == 0
+    assert learned.historical_seed_sha256 is None
     assert learned.final_weights != prior.final_weights
     assert restarted.fit((*original[30:], latest), as_of=now+timedelta(minutes=6)) == learned
     hot.close()
@@ -69,6 +72,9 @@ def test_only_exact_screened_past_artifacts_can_seed_research(tmp_path):
     restored = LiveModelCheckpoints(hot).fit(rows, as_of=now+timedelta(seconds=1), seed=candidate)
     assert state == restored
     assert LiveModelCheckpoints(hot).summary()['historical_seeded_checkpoints'] == 1
+    assert state.historical_seed_sha256 == candidate["model_sha256"]
+    assert state.historical_training_labels == candidate["training_count"]
+    assert state.training_labels == state.historical_training_labels + state.updates
     assert registry.summary(asset='BTC',horizon=5)['active_offline_model'] is False
     hot.close()
 

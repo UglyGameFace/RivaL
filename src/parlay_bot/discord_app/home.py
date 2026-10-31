@@ -1428,10 +1428,29 @@ class GuidedHome(discord.ui.View):
             if isinstance(challengers, dict):
                 for family, summary in challengers.items():
                     label = "Naive Bayes" if family.startswith("gaussian") else "kNN"
-                    state = ("passed future research screen" if summary["qualified_research"]
-                             else "not yet proven")
-                    learning_text += (f"\n{label} shadow: {state} "
-                                      f"({summary['targets']} targets / {summary['days']} days)")
+                    state = ("passed source-matched research screen"
+                             if summary["qualified_research"] else "not yet proven")
+                    source = summary.get("selected_source") or "no verified source"
+                    learning_text += (
+                        f"\n{label}: {state} "
+                        f"({summary['targets']} targets / {summary['days']} days; {source})"
+                    )
+                    # One concise diagnosis, not another dashboard section.
+                    regimes = summary.get("by_regime") or {}
+                    recorded = [
+                        (name, data) for name, data in regimes.items()
+                        if data["forecasts"] >= 10
+                    ]
+                    if recorded:
+                        name, data = max(
+                            recorded,
+                            key=lambda item: item[1]["high_confidence_misses"],
+                        )
+                        if data["high_confidence_misses"]:
+                            learning_text += (
+                                f"\n  Highest-confidence misses: "
+                                f"{data['high_confidence_misses']} in {name} conditions"
+                            )
             embed.add_field(name="🧠 Learning", value=learning_text[:1024], inline=False)
 
             health = reports.get("health")

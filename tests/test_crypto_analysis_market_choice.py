@@ -147,6 +147,10 @@ async def test_platform_choice_explains_perpetuals_and_draftkings_without_fake_c
 
         home.live_source = "draftkings"
         home._buttons()
+        assert any(
+            getattr(x, "url", None) == "https://predictions.draftkings.com/en"
+            for x in home.children
+        )
         assert "View Contract Call" not in _labels(home)
         assert "Get Exchange Forecast" not in _labels(home)
         assert "Follow Forecast" not in _labels(home)

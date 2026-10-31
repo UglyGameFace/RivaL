@@ -131,6 +131,24 @@ def test_batch_uses_bounded_retries_and_reports_gaps(tmp_path):
     assert url.endswith("BTCUSDT-metrics-2026-06-24.zip")
 
 
+def test_full_asset_backfill_budget_is_bounded_and_preserves_gap_accounting(tmp_path):
+    dates = [date(2026, 6, 24), date(2026, 6, 25)]
+    # The accelerated workflow gives each asset its own isolated CI job and
+    # 215-day budget, without relaxing checksum or source-gap verification.
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda request: httpx.Response(404),
+    )) as client:
+        status = collect_daily_metrics(client, root=tmp_path, days=dates,
+                                       assets=["BTC"], max_new=215)
+        assert status["planned"] == 2
+        assert status["rejected"] == 2
+        assert status["remaining"] == 0
+        assert status["downloaded"] == 0
+        with pytest.raises(ValueError, match="invalid metrics workload"):
+            collect_daily_metrics(client, root=tmp_path, days=dates,
+                                  assets=["BTC"], max_new=221)
+
+
 def test_days_exclude_today_and_reject_future_dates():
     today = datetime(2026, 10, 31, 16, tzinfo=UTC)
     days = _days(3, now=today)

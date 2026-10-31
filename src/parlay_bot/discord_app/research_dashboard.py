@@ -45,6 +45,7 @@ _SECTIONS = {
         ("overview", "Overview"),
         ("engine", "Engine health"),
         ("readiness", "Forecast readiness"),
+        ("lineage", "Training actually used"),
         ("venue", "Exchange blocker"),
         ("five", "5-minute results"),
         ("fifteen", "15-minute results"),
@@ -72,6 +73,7 @@ _FIELD_GROUPS = {
     "accuracy": {
         "engine": ("Automatic learning engine", "Forward issue audit"),
         "readiness": ("Mathematical forecast readiness",),
+        "lineage": ("Model training actually used",),
         "venue": ("Why this exchange",),
         "five": ("Forward 5-minute evaluation", "Math 5m"),
         "fifteen": ("Forward 15-minute evaluation", "Math 15m"),
@@ -886,6 +888,55 @@ class ResearchDashboard(discord.ui.View):
             # Only request expensive, detailed proof when the user
             # actually opens that page. This is a fresh DB query, not
             # a 5-minute stale widget or an LLM-generated number.
+            if self.section == "lineage":
+                try:
+                    monitor = ForwardAccuracyMonitor(self.market)
+                    rows = []
+                    for horizon in (5, 15, 60):
+                        proof = await asyncio.to_thread(
+                            monitor.learning_lineage_summary,
+                            asset=self.asset, horizon_minutes=horizon,
+                        )
+                        if not proof["forecasts"]:
+                            rows.append(f"**{horizon}m:** No issued forecasts to audit.")
+                        elif not proof["latest_lineage_verified"]:
+                            rows.append(
+                                f"**{horizon}m:** Latest forecast predates training proof. "
+                                f"{proof['lineage_unknown']} of "
+                                f"{proof['forecasts']} lineage records unknown."
+                            )
+                        else:
+                            seed = proof["latest_historical_seed_sha256"]
+                            history = (
+                                f"Verified historical seed `{seed[:10]}` "
+                                f"({proof['latest_historical_training_labels']} labels)"
+                                if seed else "No validated historical model used"
+                            )
+                            rows.append(
+                                f"**{horizon}m:** {history}; "
+                                f"**{proof['latest_online_training_updates']}** "
+                                "online updates. "
+                                f"{proof['historically_seeded']} of "
+                                f"{proof['lineage_proven']} recorded forecasts "
+                                "had a historical seed."
+                            )
+                    embed.add_field(
+                        name="Model training actually used",
+                        value=(
+                            "\n".join(rows)
+                            + "\nTraining evidence is NOT a measured win rate. "
+                              "An unapproved six-month archive does not count "
+                              "as live model training."
+                        )[:1024], inline=False,
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL model training lineage unavailable")
+                    embed.add_field(
+                        name="Model training actually used",
+                        value="Cannot verify the source of recent model weights. "
+                              "Do not assume six-month training was applied.",
+                        inline=False,
+                    )
             if self.section == "ledger":
                 try:
                     issued = await asyncio.to_thread(

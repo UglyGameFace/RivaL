@@ -24,6 +24,10 @@ class WalkForwardResult:
     accuracy: float | None
     candidate_beats_baseline: bool
     final_weights: tuple[float, ...]
+    # Evidence about weights used, not prospective performance scores.
+    training_labels: int = 0
+    historical_training_labels: int = 0
+    historical_seed_sha256: str | None = None
 
 
 def _sigmoid(value: float) -> float:

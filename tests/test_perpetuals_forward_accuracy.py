@@ -52,6 +52,30 @@ def test_live_predictions_are_immutable_deduped_and_settled_once(tmp_path):
             ).fetchall()
         assert len(records) == 3
         assert {x["horizon_minutes"] for x in records} == {5, 15, 60}
+        # Lineage must be captured at the actual issuance, with the same
+        # weights/feature fingerprints, and never recreated on replay.
+        with store.connect() as conn:
+            lineage = conn.execute(
+                "SELECT * FROM rival_forward_model_lineage ORDER BY horizon_minutes"
+            ).fetchall()
+            regimes = conn.execute(
+                "SELECT * FROM perp_forward_regimes ORDER BY horizon_minutes"
+            ).fetchall()
+        assert len(lineage) == len(regimes) == 3
+        for row, regime in zip(lineage, regimes):
+            assert row["weights_sha256"] == regime["weights_sha256"]
+            assert row["feature_sha256"] == regime["feature_sha256"]
+            assert row["historical_seed_sha256"] is None
+            assert row["historical_training_labels"] == 0
+            assert row["online_training_updates"] > 0
+            assert row["training_labels"] == row["online_training_updates"]
+        evidence = monitor.learning_lineage_summary(
+            asset="BTC", horizon_minutes=5, now=now + timedelta(seconds=1),
+        )
+        assert evidence["forecasts"] == 1
+        assert evidence["lineage_proven"] == 1
+        assert evidence["historically_seeded"] == 0
+        assert evidence["latest_lineage_verified"] is True
         assert all(0 < x["probability_up"] < 1 for x in records)
         assert all(int(x["training_evaluated"]) >= 20 for x in records)
         assert all(x["settled_at"] is None for x in records)

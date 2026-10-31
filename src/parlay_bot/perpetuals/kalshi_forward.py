@@ -11,7 +11,7 @@ import json
 import math
 import re
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 MODEL = "kalshi-online-logit-shadow-v1"
 MIN_TRAINED = 100
@@ -90,6 +90,10 @@ class KalshiForwardResearch:
                     );
                     CREATE INDEX IF NOT EXISTS idx_kalshi_pending
                         ON rival_kalshi_forward (result, close_at);
+                    CREATE TABLE IF NOT EXISTS rival_kalshi_settlement_checks (
+                        ticker TEXT PRIMARY KEY,
+                        checked_at TEXT NOT NULL
+                    );
                     CREATE TABLE IF NOT EXISTS rival_kalshi_shadow_weights (
                         asset TEXT NOT NULL,
                         series_ticker TEXT NOT NULL,
@@ -178,12 +182,34 @@ class KalshiForwardResearch:
         self.initialize()
         with self.store.connect() as conn:
             rows = conn.execute(
-                """SELECT ticker FROM rival_kalshi_forward
-                   WHERE result IS NULL AND close_at<=?
-                   ORDER BY close_at LIMIT ?""",
-                (_iso(now), limit),
+                """SELECT f.ticker FROM rival_kalshi_forward f
+                   LEFT JOIN rival_kalshi_settlement_checks c
+                     ON c.ticker=f.ticker
+                   WHERE f.result IS NULL AND f.close_at<=?
+                     AND (c.checked_at IS NULL OR c.checked_at<=?)
+                   ORDER BY COALESCE(c.checked_at,f.close_at),f.close_at
+                   LIMIT ?""",
+                (_iso(now), _iso(now - timedelta(minutes=3)), limit),
             ).fetchall()
         return tuple(row["ticker"] for row in rows)
+
+    def mark_settlement_check(self, *, ticker: str, at: datetime) -> bool:
+        """Fair persistent polling; an unfinalized old market can't starve others."""
+        self.initialize()
+        with self._lock, self.store.connect() as conn:
+            found = conn.execute(
+                "SELECT ticker FROM rival_kalshi_forward "
+                "WHERE ticker=? AND result IS NULL", (ticker,),
+            ).fetchone()
+            if found is None:
+                return False
+            conn.execute(
+                """INSERT INTO rival_kalshi_settlement_checks (ticker,checked_at)
+                   VALUES (?,?)
+                   ON CONFLICT(ticker) DO UPDATE SET checked_at=excluded.checked_at""",
+                (ticker, _iso(at)),
+            )
+            return True
 
     def settle(self, *, ticker: str, payload: object, checked_at: datetime) -> bool:
         """Only an actual official settled YES/NO receipt becomes a label."""
@@ -191,7 +217,10 @@ class KalshiForwardResearch:
         if not isinstance(payload, dict) or not isinstance(payload.get("market"), dict):
             raise TypeError("missing official Kalshi market payload")
         market = payload["market"]
-        if market.get("ticker") != ticker or market.get("status") != "settled":
+        if (
+            market.get("ticker") != ticker
+            or market.get("status") not in ("settled", "finalized")
+        ):
             return False
         result = market.get("result")
         if result not in ("yes", "no"):

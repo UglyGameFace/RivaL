@@ -101,7 +101,7 @@ def test_corrupt_market_history_fails_closed(tmp_path, wrong):
 
 
 def test_source_allowlist_rejects_malicious_paths_and_partial_month():
-    for asset in ("../BTC", "XRP", "BTC/../../"):
+    for asset in ("../BTC", "BTC/../../", "UNKNOWN"):
         with pytest.raises(HistoryImportError):
             binance_archive_url(asset=asset, interval="5m", month="2024-01")
     with pytest.raises(HistoryImportError):
@@ -191,3 +191,9 @@ def test_football_no_retrospective_result_as_live_signal(tmp_path):
     row["odds_snapshot_time_verified"] = True
     with pytest.raises(HistoryImportError):
         bookmaker_benchmark([row])
+
+
+def test_xrp_archive_is_allowed_with_exact_source_contract():
+    url = binance_archive_url(asset="XRP", interval="5m", month="2026-09")
+    assert "XRPUSDT" in url
+    assert "XRPUSDT-5m-2026-09.zip" in url

@@ -12,6 +12,7 @@ import json
 import sys
 from pathlib import Path
 
+
 def main() -> int:
     # Discloud runs source files in-place and doesn't pip-install this package.
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))

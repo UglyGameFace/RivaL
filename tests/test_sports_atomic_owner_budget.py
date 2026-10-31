@@ -232,3 +232,30 @@ async def test_verified_rolling_month_end_resets_only_when_provider_reports_next
         # This fixture does not lower current to make the test meaningful.
         await provider.get_events(league_ids=["NBA"], limit=3)
     assert calls == ["3", "3"]
+
+
+@pytest.mark.asyncio
+async def test_provider_429_circuit_breaks_followup_requests_without_retry():
+    from parlay_bot.providers.errors import ProviderRateLimited
+
+    calls = []
+    def handler(req):
+        calls.append(req.url.path)
+        if req.url.path == "/v2/account/usage":
+            return httpx.Response(200, json=usage())
+        return httpx.Response(429, headers={"Retry-After": "60"})
+    async with httpx.AsyncClient(
+        base_url="https://api.sportsgameodds.com/v2",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        provider = SportsGameOddsClient(
+            "test", client=client, monthly_entity_reserve=0,
+            request_cooldown_seconds=0,
+        )
+        with pytest.raises(ProviderRateLimited):
+            await provider.get_events(league_ids=["NBA"], limit=1)
+        with pytest.raises(ProviderRateLimited, match="throttled"):
+            await provider.get_events(league_ids=["NBA"], limit=1)
+        with pytest.raises(ProviderRateLimited, match="throttled"):
+            await provider.get_available_leagues()
+    assert calls == ["/v2/account/usage", "/v2/events"]

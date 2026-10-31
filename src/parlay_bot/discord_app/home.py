@@ -12,6 +12,12 @@ import discord
 
 from parlay_bot.discord_app.alert_control import stop_all_notifications
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
+from parlay_bot.discord_app.cdna_public import CDNAPersonalReader
+from parlay_bot.discord_app.cdna_ui import (
+    CDNAPersonalModal,
+    cdna_coin_embed,
+    verify_cdna_owner,
+)
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
 from parlay_bot.discord_app.polymarket_live_board import matching_call
@@ -52,7 +58,7 @@ MARKET_NAMES = {
     "polymarket": "Polymarket Up/Down",
     "exchange": "Crypto perpetual futures",
     "kalshi": "Kalshi event contracts",
-    "draftkings": "DraftKings Predictions (not connected)",
+    "draftkings": "DraftKings Predictions • Assisted",
 }
 EXPLAIN = {
     "home": "Choose Crypto, Sports, Notifications, Results, or Practice. No bets are placed.",
@@ -182,11 +188,16 @@ class _Horizon(discord.ui.Select["GuidedHome"]):
 
 
 class _PolymarketHorizon(discord.ui.Select["GuidedHome"]):
-    """Only show timeframes that the verified Polymarket reader supports."""
+    """Three research horizons; do not imply another venue lists them."""
 
-    def __init__(self, selected: int, *, row: int = 1) -> None:
+    def __init__(
+        self, selected: int, *, row: int = 1, market: str = "polymarket",
+    ) -> None:
         super().__init__(
-            placeholder="Choose a listed market window", row=row,
+            placeholder=(
+                "Choose an independent research horizon"
+                if market != "polymarket" else "Choose a listed market window"
+            ), row=row,
             custom_id="rival:guided:horizon",
             options=[
                 discord.SelectOption(
@@ -424,6 +435,7 @@ class GuidedHome(discord.ui.View):
         dkex_status: Callable[[], dict] | None = None,
         kalshi: KalshiCryptoBrowser | None = None,
         kalshi_status: Callable[..., dict] | None = None,
+        cdna_personal: CDNAPersonalReader | None = None,
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
@@ -446,6 +458,7 @@ class GuidedHome(discord.ui.View):
         self.dkex_status = dkex_status
         self.kalshi = kalshi
         self.kalshi_status = kalshi_status
+        self.cdna_personal = cdna_personal
         self._kalshi_refresh = False
         self.live_source: str | None = None
         self.page = "home"
@@ -492,10 +505,11 @@ class GuidedHome(discord.ui.View):
             self._add("Practice", "practice", 0, "💵")
         elif p == "crypto-desk":
             self.add_item(_Market(self.live_source))
-            if self.live_source != "draftkings":
-                self.add_item(_Coin(self.coin, row=1))
-            if self.live_source not in ("kalshi", "draftkings"):
-                self.add_item(_PolymarketHorizon(self.horizon, row=2))
+            self.add_item(_Coin(self.coin, row=1))
+            if self.live_source != "kalshi":
+                self.add_item(_PolymarketHorizon(
+                    self.horizon, row=2, market=self.live_source or "polymarket",
+                ))
             if self.live_source == "polymarket":
                 self._add("View Contract Call", "desk-call", 3, "🎯", True)
                 self._add("Track Market", "desk-track", 3, "🔔")
@@ -505,10 +519,13 @@ class GuidedHome(discord.ui.View):
             elif self.live_source == "kalshi":
                 self._add("Check Kalshi Contracts", "desk-call", 3, "🔎", True)
             elif self.live_source == "draftkings":
+                self._add("Find My Coin", "cdna-auto", 3, "🔎", True)
+                self._add("Check CDNA Quote", "cdna-quote", 3, "💱")
+                self._add("Independent AI", "dk-independent-ai", 3, "🧠")
                 self.add_item(discord.ui.Button(
                     label="Open DraftKings Predictions",
                     url="https://predictions.draftkings.com/en",
-                    row=3,
+                    row=4,
                 ))
         elif p == "sports":
             self._add("Choose State", "state", 0, "🗺️")
@@ -629,8 +646,9 @@ class GuidedHome(discord.ui.View):
                         "on exchanges like Hyperliquid, Binance Futures and OKX. "
                         "**Not DraftKings.**\n"
                         "**Kalshi:** Separate YES/NO event contracts; browse only.\n"
-                        "**DraftKings Predictions:** Crypto event contracts, "
-                        "currently not connected to RivaL.\n"
+                        "**DraftKings Predictions:** Assisted mode. Owner-only "
+                        "CDNA public quote reference, and independent RivaL AI "
+                        "on exchange data; no confirmed contract match.\n"
                         "**DraftKings Sportsbook:** Sports odds and championship "
                         "futures belong under **Sports**, not Crypto Perpetuals."
                     )[:1024], inline=False,
@@ -686,16 +704,22 @@ class GuidedHome(discord.ui.View):
                 )
             elif market == "draftkings":
                 embed.add_field(
-                    name="DraftKings Predictions • not connected",
+                    name="DraftKings Predictions • Assisted research",
                     value=(
-                        "DraftKings Predictions has crypto YES/NO event "
-                        "contracts, but RivaL has **no verified DraftKings "
-                        "live price feed, contract-specific trained model "
-                        "or settled prediction statistics**. No prediction "
-                        "or accuracy is borrowed from Polymarket, Kalshi "
-                        "or leveraged futures.\n"
-                        "View: https://predictions.draftkings.com/en"
-                    ), inline=False,
+                        f"**Coin:** {self.coin} • **Independent forecast window:** "
+                        f"{self.horizon}m\n"
+                        "**Find My Coin:** Automatically find public CDNA candidates; "
+                        "CDNA and DraftKings contracts are NOT automatically the same.\n"
+                        "**Check CDNA Quote:** One owner-only personal reference; "
+                        "no automatic feed, saved provider data, or orders.\n"
+                        "**Independent AI:** RivaL's existing free AI examines "
+                        "independent exchange research for this coin, NOT "
+                        "CDNA or DraftKings prices or contract outcomes.\n"
+                        "**No verified DraftKings live price feed, contract-specific "
+                        "trained model, or settled prediction statistics yet.** "
+                        "Use DraftKings' own listed strike, settlement terms, "
+                        "fees, and executable quote before a decision."
+                    )[:1024], inline=False,
                 )
                 if self.dkex_status is not None:
                     try:
@@ -1676,7 +1700,11 @@ class GuidedHome(discord.ui.View):
             stream_shadow=self.stream_shadow, multi=self.multi,
             venues=self.venues, auto_hunt=self.auto_hunt,
             training_status=self.training_status,
+            polymarket_status=self.polymarket_status,
+            dkex_status=self.dkex_status,
             kalshi=self.kalshi,
+            kalshi_status=self.kalshi_status,
+            cdna_personal=self.cdna_personal,
         )
         view.page = self.page
         view.back_stack = list(self.back_stack)
@@ -1896,6 +1924,57 @@ class GuidedHome(discord.ui.View):
         if action in ("zip", "state", "target", "funds"):
             await interaction.response.send_modal(_Entry(self, action))
             return
+        if action == "cdna-auto":
+            if self.page != "crypto-desk" or self.live_source != "draftkings":
+                await interaction.response.send_message(
+                    "Choose DraftKings Assisted research first.", ephemeral=True,
+                )
+                return
+            if self.cdna_personal is None:
+                await interaction.response.send_message(
+                    "CDNA personal research isn't configured.", ephemeral=True,
+                )
+                return
+            if not await verify_cdna_owner(interaction, self.owner_id):
+                await interaction.response.send_message(
+                    "Only the verified application owner may use personal CDNA data.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                results = await asyncio.wait_for(
+                    self.cdna_personal.discover_coin(self.coin), timeout=11,
+                )
+                await interaction.edit_original_response(
+                    embed=cdna_coin_embed(self.coin, results),
+                )
+            except (TimeoutError, Exception):  # noqa: BLE001
+                _LOG.exception("CDNA owner-requested coin discovery unavailable")
+                await interaction.edit_original_response(
+                    content=(
+                        "CDNA lookup unavailable. NO BET. "
+                        "Independent exchange AI is still separate."
+                    ),
+                )
+            return
+        if action in ("cdna-search", "cdna-quote"):
+            if self.page != "crypto-desk" or self.live_source != "draftkings":
+                await interaction.response.send_message(
+                    "Choose DraftKings Assisted research first.", ephemeral=True,
+                )
+            elif self.cdna_personal is None:
+                await interaction.response.send_message(
+                    "Personal CDNA lookup is not configured.", ephemeral=True,
+                )
+            else:
+                await interaction.response.send_modal(
+                    CDNAPersonalModal(
+                        owner_id=self.owner_id, reader=self.cdna_personal,
+                        search=action == "cdna-search",
+                    ),
+                )
+            return
         if action == "hunt-config":
             # Acknowledge old settings-button interactions before any read.
             await interaction.response.defer(ephemeral=True, thinking=True)
@@ -1947,7 +2026,56 @@ class GuidedHome(discord.ui.View):
             return
         await interaction.response.defer(thinking=False)
         _LOG.info("Guided interaction acknowledged action=%s", action)
-        if action == "desk-call":
+        if action == "dk-independent-ai":
+            if self.live_source != "draftkings" or self.research_factory is None:
+                self.note = "Choose DraftKings and enable independent research first."
+            else:
+                try:
+                    panel = self.research_factory(self.owner_id)
+                    panel.asset = self.coin
+                    panel.screen = "ai"
+                    panel.section = "overview"
+                    if panel.ai is not None and panel.ai.available and panel.market is not None:
+                        try:
+                            # Explicit click only. Existing free-model budget and
+                            # independent exchange evidence gates apply unchanged.
+                            panel.opinion = await asyncio.wait_for(
+                                panel.ai.ask(asset=self.coin, venues=panel.venues),
+                                timeout=22,
+                            )
+                        except Exception as exc:  # noqa: BLE001
+                            # No provider data, API credentials or internal paths
+                            # may leak in exception messages to Discord.
+                            _LOG.info("Requested independent AI unavailable: %s", type(exc).__name__)
+                            panel.message = (
+                                "Independent AI has no qualified response right now. "
+                                "NO BET. Math and market lookup remain separate."
+                            )
+                    else:
+                        panel.message = (
+                            "Independent exchange AI is not configured or no "
+                            "validated exchange evidence is connected. NO BET."
+                        )
+                    panel._rebuild()
+                    await interaction.followup.send(
+                        content=(
+                            f"Independent {self.coin} exchange AI research. "
+                            "RivaL uses its model-supported horizons, which may "
+                            f"differ from the {self.horizon}m selected market window. "
+                            "AI NEVER receives Crypto.com/CDNA data or DraftKings "
+                            "quotes. Its lean is NOT a matched DraftKings bet."
+                        ),
+                        embed=await asyncio.wait_for(panel.render(), timeout=10),
+                        view=panel, ephemeral=True,
+                    )
+                    self.note = (
+                        "Independent AI requested with exchange-only inputs. "
+                        "No Crypto.com data went to a model or training."
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("Independent DraftKings-adjacent AI failed")
+                    self.note = "Independent AI research unavailable; no market call."
+        elif action == "desk-call":
             if self.live_source is None:
                 self.note = "Choose a market first. No call was requested."
             elif self.live_source == "exchange":

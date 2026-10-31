@@ -17,6 +17,7 @@ from parlay_bot.collectors.the_odds_api import TheOddsApiCollector
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.alert_control import stop_all_notifications
 from parlay_bot.discord_app.auto_hunt import AutoHuntActions, AutoHuntService, AutoHuntStore
+from parlay_bot.discord_app.cdna_public import CDNAPersonalReader
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
 from parlay_bot.discord_app.home import (
     GuidedHome,
@@ -460,6 +461,9 @@ class RivalDiscordClient(discord.Client):
         self._polybolt_task: asyncio.Task[None] | None = None
         self.kalshi_forward = KalshiForwardResearch(self.store)
         self.kalshi_browser = KalshiCryptoBrowser(forward=self.kalshi_forward)
+        # Owner-triggered personal-only reference; never feed to AI,
+        # learning, persistence, or automatic prediction collectors.
+        self.cdna_personal = CDNAPersonalReader()
         self._kalshi_research_task: asyncio.Task[None] | None = None
         self.polymarket_board = LivePolymarketBoardService(
             bot=self,
@@ -513,6 +517,7 @@ class RivalDiscordClient(discord.Client):
             dkex_status=DKeXPublicReports(self.store).summary,
             kalshi=self.kalshi_browser,
             kalshi_status=self.kalshi_forward.summary,
+            cdna_personal=self.cdna_personal,
         )
 
     def _register_commands(self) -> None:
@@ -2372,6 +2377,7 @@ class RivalDiscordClient(discord.Client):
                 await self._kalshi_research_task
             self._kalshi_research_task = None
         await self.kalshi_browser.aclose()
+        await self.cdna_personal.aclose()
         if self._poly_board_task is not None:
             self._poly_board_task.cancel()
             with suppress(asyncio.CancelledError):

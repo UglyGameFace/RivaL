@@ -236,6 +236,12 @@ def test_kalshi_validation_must_be_per_exact_series_not_pooled(tmp_path):
                  "a"*64, "b"*64, "[0,0,0]", .5,.5,.5,.95,
                  "yes", (at+timedelta(minutes=20)).isoformat()),
             )
+            db.execute(
+                """INSERT INTO rival_kalshi_book_evidence
+                   (ticker,observed_at,yes_ask_depth,no_ask_depth)
+                   VALUES (?,?,?,?)""",
+                (f"{series}-{i}", at.isoformat(), 10., 10.),
+            )
     proof = ledger.summary(asset="BTC")
     assert proof["candidate_forward_resolved"] == 160
     assert proof["candidate_brier"] < proof["kalshi_quote_baseline_brier"]
@@ -246,3 +252,29 @@ def test_kalshi_validation_must_be_per_exact_series_not_pooled(tmp_path):
         for series in proof["by_series"].values()
     )
     assert not proof["approved_model"]
+
+
+def test_legacy_summary_labels_never_count_as_verified_book_edge(tmp_path):
+    ledger = KalshiForwardResearch(SQLiteHotStore(tmp_path / "legacy-scores.sqlite"))
+    ledger.initialize()
+    at = datetime(2026, 8, 1, tzinfo=UTC)
+    with ledger.store.connect() as db:
+        db.execute(
+            """INSERT INTO rival_kalshi_forward
+               (ticker,asset,series_ticker,close_at,issued_at,
+                first_quote_sha256,market_rules_sha256,
+                features_json,baseline_yes,yes_ask,no_ask,candidate_yes,
+                result,settlement_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("KXBTC15M-LEGACY", "BTC", "KXBTC15M",
+             (at + timedelta(minutes=15)).isoformat(), at.isoformat(),
+             "a" * 64, "b" * 64, "[0,0,0]", .5, .47, .56, .90,
+             "yes", (at + timedelta(minutes=20)).isoformat()),
+        )
+    score = ledger.summary(asset="BTC")
+    assert score["observed"] == 1
+    assert score["legacy_unverified_settlements"] == 1
+    assert score["book_verified_observed"] == 0
+    assert score["candidate_forward_resolved"] == 0
+    assert score["candidate_research_evidence_qualified"] is False
+    assert score["approved_model"] is False

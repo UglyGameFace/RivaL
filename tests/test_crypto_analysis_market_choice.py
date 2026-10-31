@@ -167,7 +167,7 @@ async def test_platform_choice_explains_perpetuals_and_draftkings_without_fake_c
         draft = await home.render()
         draft_text = str(draft.to_dict())
         assert "not connected" in home.note
-        assert "no verified DraftKings" in draft_text
+        assert "No verified DraftKings" in draft_text
         assert "Exchange forecast results" not in draft_text
 
         home.live_source = "exchange"

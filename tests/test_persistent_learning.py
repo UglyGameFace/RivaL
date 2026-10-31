@@ -243,3 +243,57 @@ def test_seed_diagnosis_distinguishes_missing_rejected_and_source_mismatch(tmp_p
                      ('f'*64,))
     assert registry.summary(asset='BTC', horizon=5, live_venues=('binance',))['active_offline_model'] is False
     hot.close()
+
+
+def test_polymarket_performance_counts_only_recent_valid_issued_forecasts(tmp_path):
+    """Recent resolutions cannot turn old or impossible calls into recent wins."""
+    store = SQLiteHotStore(tmp_path / "poly-seven-day.sqlite")
+    service = PolymarketResearch(store)
+    service.initialize()
+    now = datetime.now(UTC)
+    examples = [
+        # slug, issued days ago, expired days ago, probability
+        ("fresh-valid", 2, 1, 0.8),
+        ("old-issuance-new-resolution", 9, 0.75, 0.9),
+        ("fresh-invalid-probability", 2, 1, 1.4),
+        ("forecast-after-expiry", 0.5, 1, 0.9),
+    ]
+    try:
+        with store.connect() as conn:
+            for i, (slug, issue_days, expiry_days, probability) in enumerate(examples):
+                expires = now - timedelta(days=expiry_days)
+                issued = now - timedelta(days=issue_days)
+                resolved = max(expires, issued) + timedelta(minutes=2)
+                conn.execute(
+                    """INSERT INTO rival_polymarket_observations
+                       (slug,condition_id,asset,horizon,resolution_source,
+                        expires_at,observed_at,features_json,evidence_sha256,learned_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (slug, f"condition-{i}", "BTC", 5, "polymarket",
+                     expires.isoformat(), (expires - timedelta(hours=2)).isoformat(),
+                     "[]", "a" * 64, now.isoformat()),
+                )
+                conn.execute(
+                    """INSERT INTO rival_polymarket_model_forward
+                       (slug,model_version,issued_at,weights_sha256,probability_up,market_baseline)
+                       VALUES (?,?,?,?,?,?)""",
+                    (slug, "polymarket-terminal-book-logistic-v1", issued.isoformat(),
+                     "b" * 64, probability, 0.6),
+                )
+                conn.execute(
+                    """INSERT INTO rival_polymarket_ai_outcomes
+                       (slug,condition_id,direction,resolved_at,observed_at,
+                        receipt_sha256,receipt_json)
+                       VALUES (?,?,?,?,?,?,?)""",
+                    (slug, f"condition-{i}", "UP", resolved.isoformat(),
+                     (resolved + timedelta(minutes=1)).isoformat(), "c" * 64, "{}"),
+                )
+        report = service.learner.summary(asset="BTC", horizon=5)
+        assert report["score_window_days"] == 7
+        assert report["learned_contracts"] == 4  # Lifetime labels, not accuracy
+        assert report["settled_forward_contracts"] == 1
+        assert report["forward_brier"] == pytest.approx(0.04)
+        assert report["market_baseline_brier"] == pytest.approx(0.16)
+        assert report["verified_trading_edge"] is False
+    finally:
+        store.close()

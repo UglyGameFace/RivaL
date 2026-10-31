@@ -127,7 +127,7 @@ async def test_official_result_lookup_is_bounded_verified_and_reuses_quota():
         if req.url.path == "/account/usage":
             return httpx.Response(200, json={
                 "success": True, "data": {
-                    "tier": "amateur", "rateLimits": {},
+                    "tier": "amateur", "rateLimits": {"per-month": {"max-entities": 2500, "current-entities": 100}},
                 },
             })
         assert req.url.path == "/events"
@@ -158,7 +158,7 @@ async def test_result_lookup_rejects_wrong_events():
     def handler(req):
         if req.url.path == "/account/usage":
             return httpx.Response(200, json={"success": True, "data": {
-                "rateLimits": {},
+                "rateLimits": {"per-month": {"max-entities": 2500, "current-entities": 100}},
             }})
         return httpx.Response(200, json={"success": True, "data": [
             {"eventID": "not-requested"},

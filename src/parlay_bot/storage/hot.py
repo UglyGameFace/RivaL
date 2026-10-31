@@ -149,6 +149,17 @@ class RelationalHotStore:
                     state_value TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
+
+                CREATE TABLE IF NOT EXISTS owner_api_limit_audit (
+                    audit_id TEXT PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    changed_at TEXT NOT NULL,
+                    previous_json TEXT,
+                    new_json TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_owner_api_limit_audit_provider
+                    ON owner_api_limit_audit(provider,changed_at);
                 """
             )
             self._ensure_column(connection, "current_odds", "market_name", "TEXT")

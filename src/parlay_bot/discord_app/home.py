@@ -1322,11 +1322,14 @@ class GuidedHome(discord.ui.View):
                     "**Unavailable** (no settled directional forecasts)"
                 )
                 brier, baseline = part.get("brier"), part.get("baseline_brier")
-                comparison = (
-                    f"Brier error: **{brier:.4f}** vs baseline **{baseline:.4f}**"
-                    if brier is not None and baseline is not None else
-                    "Baseline comparison: unavailable"
-                )
+                if brier is not None and baseline is not None:
+                    verdict = part.get("model_beats_baseline")
+                    comparison = (
+                        f"vs baseline: **{'better' if verdict is True else 'not better' if verdict is False else 'unproven'}** "
+                        f"(Brier {brier:.4f} vs {baseline:.4f})"
+                    )
+                else:
+                    comparison = "Baseline comparison: unavailable"
                 embed.add_field(
                     name="📈 Exchange accuracy",
                     value=(
@@ -1382,8 +1385,14 @@ class GuidedHome(discord.ui.View):
                     if isinstance(lineage, dict) and lineage.get("forecasts") else
                     "Historical seed usage: not verified"
                 )
+                checkpoint = training.get("model_checkpoints")
+                saved = (
+                    f"\nSaved model checkpoints: **{checkpoint['persisted_checkpoints']}**"
+                    if isinstance(checkpoint, dict)
+                    and checkpoint.get("persisted_checkpoints") is not None else ""
+                )
                 learning_text = (
-                    f"{cycle_text}\n{history}\n"
+                    f"{cycle_text}\n{history}{saved}\n"
                     f"Offline challenger serving: "
                     f"**{'yes' if training.get('active_offline_model') else 'no'}**"
                 )

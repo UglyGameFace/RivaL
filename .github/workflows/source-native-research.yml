@@ -1,0 +1,88 @@
+name: Source-exact private venue model research
+
+on:
+  workflow_dispatch:
+    inputs:
+      venue:
+        description: "Exact source venue to research (not Binance)"
+        required: true
+        type: choice
+        options:
+          - hyperliquid
+          - dydx
+          - bitget
+          - gate
+          - okx
+          - kucoin
+          - deribit
+          - lighter
+          - phemex
+  schedule:
+    # One bounded venue per day, rather than nine full retrains at once.
+    - cron: "43 5 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-source-native-research
+  cancel-in-progress: false
+
+jobs:
+  offline-venue-research:
+    if: vars.RIVAL_NATIVE_RESEARCH_ENABLED != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 85
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install offline research libraries
+        run: python -m pip install -e ".[dev,ml-research]"
+      - name: Research ONE live venue on verified private source bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in RIVAL_DRIVE_ROOT_FOLDER_ID RIVAL_DRIVE_HISTORY_FOLDER_ID \
+            RIVAL_DRIVE_MANIFESTS_FOLDER_ID RIVAL_DRIVE_STAGING_FOLDER_ID \
+            RIVAL_DRIVE_MODELS_FOLDER_ID RIVAL_DRIVE_REPORTS_FOLDER_ID \
+            RIVAL_DRIVE_OAUTH_CLIENT_ID RIVAL_DRIVE_OAUTH_CLIENT_SECRET \
+            RIVAL_DRIVE_OAUTH_REFRESH_TOKEN; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Private Drive authorization is not configured ($name)."
+              exit 1
+            fi
+          done
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            VENUE="${{ github.event.inputs.venue }}"
+          else
+            VENUE="$(python - <<'PY'
+          from datetime import UTC, datetime
+          venues = ("hyperliquid","dydx","bitget","gate","okx",
+                    "kucoin","deribit","lighter","phemex")
+          print(venues[datetime.now(UTC).date().toordinal() % len(venues)])
+          PY
+          )"
+          fi
+          echo "Researching actual warehouse source: $VENUE"
+          python -m parlay_bot.research.source_native_offline \
+            --venue "$VENUE" --months 6 --publish
+      - name: Preserve research-only evidence, never provider raw files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-native-offline-reports
+          path: data/native-reports/*.json
+          if-no-files-found: ignore
+          retention-days: 14

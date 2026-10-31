@@ -1935,13 +1935,15 @@ class GuidedHome(discord.ui.View):
                     "CDNA personal research isn't configured.", ephemeral=True,
                 )
                 return
+            # A remote Discord application ownership check can consume the
+            # full interaction ACK window; defer BEFORE performing it.
+            await interaction.response.defer(ephemeral=True, thinking=True)
             if not await verify_cdna_owner(interaction, self.owner_id):
-                await interaction.response.send_message(
+                await interaction.followup.send(
                     "Only the verified application owner may use personal CDNA data.",
                     ephemeral=True,
                 )
                 return
-            await interaction.response.defer(ephemeral=True, thinking=True)
             try:
                 results = await asyncio.wait_for(
                     self.cdna_personal.discover_coin(self.coin), timeout=11,

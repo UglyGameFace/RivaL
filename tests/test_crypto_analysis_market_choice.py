@@ -174,7 +174,7 @@ async def test_platform_choice_explains_perpetuals_and_draftkings_without_fake_c
         exchange = await home.render()
         exchange_text = str(exchange.to_dict())
         assert "Crypto perpetual futures" in exchange_text
-        assert "not a polymarket" in exchange_text.lower()
+        assert "not** matched Polymarket" in exchange_text
         assert "Polymarket model progress" not in exchange_text
     finally:
         home.stop()
@@ -188,30 +188,32 @@ async def test_polymarket_zero_training_is_not_reported_as_provider_outage(tmp_p
     bot = _client(tmp_path)
     home = _home(bot)
     try:
-        home.navigate("crypto-desk")
+        home.navigate("performance")
         home.live_source = "polymarket"
-        home.training_status = lambda asset, horizon: {
-            "polymarket_learning": {
-                "learned_contracts": 0,
-                "settled_forward_contracts": 0,
-                "forward_brier": None,
-                "market_baseline_brier": None,
-            },
+        home._buttons()
+        home.polymarket_status = lambda asset, horizon: {
+            "observed_contracts": 99,
+            "learned_contracts": 99,
+            "settled_forward_contracts": 0,
+            "forward_brier": None,
+            "market_baseline_brier": None,
+            "verified_trading_edge": False,
         }
         pane = await home.render()
-        names = {x.name: x.value for x in pane.fields}
-        stats = next(v for k,v in names.items() if "Polymarket model progress" in k)
-        assert "Verified contract outcomes learned: **0**" in stats
-        assert "Not enough settled model forecasts" in stats
-        assert "unavailable" not in stats.lower()
-        assert "Exchange forecast results" not in str(pane.to_dict())
-        assert "Not yet" in names["Is there a proven betting advantage?"]
+        fields = {x.name: x.value for x in pane.fields}
+        assert "99" in fields["Polymarket contract learning"]
+        assert "Pre-outcome model forecasts resolved: **0**" in fields[
+            "Polymarket contract learning"
+        ]
+        assert "Not measured yet" in fields["Actual contract forecast accuracy"]
+        assert "49.7%" not in str(pane.to_dict())
+        assert "Model-vs-baseline" not in str(pane.to_dict())
+        assert "Profit Proof" not in _labels(home)
 
-        home.training_status = None
-        not_connected = await home.render()
-        evidence = str(not_connected.to_dict())
-        assert "statistics aren't connected to this menu" in evidence
-        assert "0% win rate" in evidence
+        home.polymarket_status = None
+        offline = await home.render()
+        assert "records unavailable" in str(offline.to_dict())
+        assert "0% win rate" not in str(offline.to_dict())
     finally:
         home.stop()
         await bot.zip_resolver.aclose()
@@ -224,23 +226,102 @@ async def test_polymarket_stats_never_depend_on_exchange_or_drive_status(tmp_pat
     bot = _client(tmp_path)
     home = _home(bot)
     try:
-        home.navigate("crypto-desk")
+        home.navigate("performance")
         home.live_source = "polymarket"
-        def broken_exchange_training(_asset, _horizon):
+
+        def unrelated_training(_asset, _horizon):
             raise RuntimeError("Unrelated exchange/Drive query failed")
-        home.training_status = broken_exchange_training
+
+        home.training_status = unrelated_training
         home.polymarket_status = lambda _asset, _horizon: {
+            "observed_contracts": 18,
             "learned_contracts": 12,
             "settled_forward_contracts": 5,
             "forward_brier": .21,
             "market_baseline_brier": .24,
+            "verified_trading_edge": False,
+            "model": "contract-model",
         }
         view = await home.render()
         body = str(view.to_dict())
-        assert "Verified contract outcomes learned: **12**" in body
-        assert "Prospective model calls resolved: **5**" in body
-        assert "Model Brier: 0.2100" in body
-        assert "Exchange forecast results" not in body
+        assert "Settled labels used to update model: **12**" in body
+        assert "Pre-outcome model forecasts resolved: **5**" in body
+        assert "0.2100" in body
+        assert "0.2400" in body
+        assert "Exchange forecasts" not in body
+        home.navigate("trust")
+        detail = await home.render()
+        assert "contract-model" in str(detail.to_dict())
+        assert "Settled outcomes actually used for training" in str(detail.to_dict())
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_exchange_performance_shows_real_denominator_baseline_and_learning(
+    tmp_path, monkeypatch,
+):
+    from parlay_bot.discord_app import home as home_module
+
+    bot = _client(tmp_path)
+    home = _home(bot)
+    try:
+        class Audit:
+            def summary(self, *, asset):
+                assert asset == "BTC"
+                recent = {
+                    "issued": 4159, "settled": 4150, "decided": 4150,
+                    "correct": 2063, "hit_rate": 2063/4150,
+                    "brier": .251, "baseline_brier": .249,
+                    "model_beats_baseline": False,
+                }
+                return {
+                    "last_7d": {5: recent},
+                    "prior_7d": {5: {"hit_rate": .52}},
+                }
+
+            def learning_lineage_summary(self, *, asset, horizon_minutes):
+                assert (asset, horizon_minutes) == ("BTC", 5)
+                return {
+                    "forecasts": 100, "lineage_proven": 100,
+                    "lineage_unknown": 0, "historically_seeded": 14,
+                }
+
+        monkeypatch.setattr(
+            home_module, "ForwardAccuracyMonitor", lambda _market: Audit(),
+        )
+        home.market = object()
+        home.training_status = lambda asset, horizon: {
+            "live_engine": "prospective-logistic-persistent-v3",
+            "live_learning": {
+                "completed_at": "2026-10-31T13:00:00+00:00",
+                "math_ok": True, "math_issued": 4, "math_settled": 7,
+            },
+            "active_offline_model": False,
+        }
+        home.navigate("performance")
+        home.live_source = "exchange"
+        home._buttons()
+        assert {"Learning Details", "Profit Proof", "Data Health"}.issubset(
+            set(_labels(home))
+        )
+        assert len(home.children) <= 25
+        assert max(x.row for x in home.children) <= 4
+        pane = await home.render()
+        body = str(pane.to_dict())
+        assert "4,159" in body
+        assert "4,150" in body
+        assert "2,063/4,150" in body
+        assert "49.7%" in body
+        assert "0.2510" in body and "0.2490" in body
+        assert "not below its saved baseline" in body
+        assert "14" in body and "historical seed" in body
+        assert "New forecasts: **4**; settled: **7**" in body
+        assert "historical challenger in service: **no**" in body.lower()
+        assert "practice usdt" not in body.lower()
     finally:
         home.stop()
         await bot.zip_resolver.aclose()

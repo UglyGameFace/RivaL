@@ -700,8 +700,8 @@ class ForwardAccuracyMonitor:
 
         def empty() -> dict:
             return {
-                "issued": 0, "settled": 0, "hit_rate": None,
-                "brier": None, "baseline_brier": None,
+                "issued": 0, "settled": 0, "decided": 0, "correct": 0,
+                "hit_rate": None, "brier": None, "baseline_brier": None,
                 "venues": 0, "model_beats_baseline": None,
             }
 
@@ -720,11 +720,13 @@ class ForwardAccuracyMonitor:
             baseline = float(row["baseline_sum"]) / n if n else None
             cohorts[cohort][horizon] = {
                 "issued": int(row["issued"]), "settled": n,
+                "decided": decided, "correct": int(row["correct"] or 0),
                 "hit_rate": int(row["correct"] or 0) / decided if decided else None,
                 "brier": brier, "baseline_brier": baseline,
                 "venues": int(row["venues"] or 0),
                 "model_beats_baseline": (
-                    brier < baseline if n >= 50 else None
+                    brier < baseline if n >= 50 and brier is not None
+                    and baseline is not None else None
                 ),
             }
         return {

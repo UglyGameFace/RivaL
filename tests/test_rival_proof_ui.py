@@ -55,3 +55,46 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
     finally:
         view.stop()
         store.close()
+
+
+def test_forward_score_counts_only_decided_predictions_in_accuracy_denominator(tmp_path):
+    from datetime import UTC, datetime, timedelta
+
+    from parlay_bot.perpetuals.forward_audit import MODEL
+
+    store = SQLiteHotStore(tmp_path / "forward-score-denominator.sqlite")
+    market = PerpetualMarketStore(store)
+    monitor = ForwardAccuracyMonitor(market)
+    try:
+        monitor.initialize()
+        stamp = datetime.now(UTC)
+        with store.connect() as conn:
+            for i, (probability, result) in enumerate(
+                ((.9, 1), (.1, 1), (.5, 0))
+            ):
+                issued = stamp - timedelta(minutes=20 + i)
+                conn.execute(
+                    """INSERT INTO perp_forward_audit (
+                         venue,contract,quote,asset,horizon_minutes,model_version,
+                         reference_opened_at,reference_close,issued_at,
+                         target_opened_at,probability_up,baseline_up,
+                         training_evaluated,settled_at,outcome_up,realized_close,
+                         model_brier,baseline_brier
+                       ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        "hyperliquid", "BTC", "USDC", "BTC", 5, MODEL,
+                        issued.isoformat(), 100., issued.isoformat(),
+                        (issued + timedelta(minutes=5)).isoformat(),
+                        probability, .5, 100, stamp.isoformat(), result, 101.,
+                        (probability - result) ** 2, (.5 - result) ** 2,
+                    ),
+                )
+        score = monitor.summary(asset="BTC", now=stamp)["last_7d"][5]
+        assert score["issued"] == 3
+        assert score["settled"] == 3
+        assert score["decided"] == 2
+        assert score["correct"] == 1
+        assert score["hit_rate"] == .5
+        assert score["model_beats_baseline"] is None
+    finally:
+        store.close()

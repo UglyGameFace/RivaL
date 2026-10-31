@@ -64,13 +64,13 @@ async def test_beginner_home_begins_simple_and_keeps_advanced_features(tmp_path)
         assert tools.get_command("practice") is not None
         assert home.page == "home"
         assert set(_labels(home)) == {
-            "Crypto", "Sports", "Notifications", "My Results",
+            "Crypto", "Sports", "Notifications", "Bot Performance",
             "Practice", "Help",
         }
         assert len(home.children) <= 25
         assert max(item.row for item in home.children) <= 4
         embed = await home.render()
-        assert "Find a live crypto market" in embed.description
+        assert "bot's real" in embed.description
         assert "No real bets" in embed.description
     finally:
         home.stop()
@@ -85,6 +85,7 @@ async def test_every_page_has_home_back_explain_without_dead_buttons(tmp_path):
     home = _home(bot)
     try:
         for page in ("discover", "sports", "crypto", "crypto-desk", "practice", "results",
+                     "performance",
                      "help", "advanced", "live", "slip", "forecast", "quote",
                      "feeds", "trust"):
             home.navigate("home")
@@ -222,9 +223,10 @@ async def test_practice_uses_fake_balance_and_real_quote_gate(tmp_path):
             "actual_profit_verified"
         ] is False
         await home.act(i, "results")
-        assert "Real-Money Profit" in [
-            field.name for field in (await home.render()).fields
-        ]
+        result = await home.render()
+        assert "My Practice Results" in result.title
+        assert "Practice is not performance" in [f.name for f in result.fields]
+        assert "Bot Forecasts" not in str(result.to_dict())
     finally:
         home.stop()
         await bot.zip_resolver.aclose()
@@ -339,7 +341,10 @@ async def test_guided_results_uses_strict_source_matched_cost_proof(tmp_path):
     }
     home.stream_shadow = audit
     try:
-        home.navigate("results")
+        home.navigate("performance")
+        home.live_source = "exchange"
+        home._buttons()
+        assert "Profit Proof" in _labels(home)
         i = _interaction()
         await home.act(i, "proof")
         audit.report.assert_called_once_with(
@@ -467,6 +472,7 @@ async def test_advanced_plain_english_pages_do_not_expose_dev_jargon(tmp_path):
         assert "binance" in fresh.fields[0].value
 
         home.navigate("trust")
+        home.live_source = "exchange"
         home._buttons()
         no_model = await home.render()
         assert "Not verified" in no_model.fields[0].value

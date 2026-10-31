@@ -9,7 +9,10 @@ import pytest
 
 from parlay_bot.discord_app.home import install_view_dispatch_logging
 from parlay_bot.discord_app.stale_dashboards import (
-    DATA_BUTTONS, DATA_SELECTS, RESEARCH_BUTTONS, RESEARCH_SELECTS,
+    DATA_BUTTONS,
+    DATA_SELECTS,
+    RESEARCH_BUTTONS,
+    RESEARCH_SELECTS,
     build_stale_dashboard_views,
 )
 
@@ -87,9 +90,9 @@ def test_detached_research_or_data_entry_uses_persistent_fallback():
         healthy = SimpleNamespace(view=object())
         found = {}
         views = {11: {key: stale}, None: {key: healthy}}
-        def dispatch(*args):
-            found["item"] = views[11].get(key) or views[None][key]
-            return found["item"]
+        def dispatch(*args, _found=found, _views=views, _key=key):
+            _found["item"] = _views[11].get(_key) or _views[None][_key]
+            return _found["item"]
         store = SimpleNamespace(_views=views, dispatch_view=dispatch)
         client = SimpleNamespace(_connection=SimpleNamespace(_view_store=store))
         install_view_dispatch_logging(client)

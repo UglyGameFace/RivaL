@@ -1279,7 +1279,7 @@ class GuidedHome(discord.ui.View):
         elif p == "performance":
             embed = discord.Embed(
                 title=f"📊 RivaL Performance | {self.coin} {self.horizon}m",
-                description="Last 7 days of recorded forecasts. Your fake trades are under Practice.",
+                description="Forecast scores: last 7 days. Learning comparisons: 14 days. Practice results are separate.",
                 color=discord.Color.blurple(),
             )
             # Independent database reads: a stalled feed must not suppress the
@@ -1415,6 +1415,16 @@ class GuidedHome(discord.ui.View):
                     f"{training.get('seed_reason', 'Historical model eligibility unavailable')}\n"
                     f"Import check: {str(training.get('drive_status') or 'unavailable').replace('_', ' ')}"
                 )
+                if training.get("slot_imported") is not None:
+                    learning_text += (
+                        f"\nThis {self.coin} {self.horizon}m slot: "
+                        f"{training['slot_imported']} imported, "
+                        f"{training.get('slot_compatible', 0)} input-compatible, "
+                        f"{training.get('slot_live_source_matched', 0)} "
+                        "offline-screened and matched to a live source. "
+                        f"Active historical challenger: "
+                        f"{'yes' if training.get('active_offline_model') else 'no'}."
+                    )
             benefit = exchange.get("benefit") if isinstance(exchange, dict) else None
             if isinstance(benefit, dict):
                 verdict = {"supported": "supported against both baselines",

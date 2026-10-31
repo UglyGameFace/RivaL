@@ -1,6 +1,6 @@
 """Only exact, immutable Kalshi contract evidence may reach beginner menus."""
-from datetime import UTC, datetime, timedelta
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 
 import pytest
 

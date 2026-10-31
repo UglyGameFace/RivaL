@@ -20,13 +20,13 @@ from parlay_bot.providers.owner_limits import OwnerLimitStore
 class SportsGameOddsUsage:
     tier: str | None
     monthly_max_entities: int | None
-    monthly_current_entities: int
+    monthly_current_entities: int | None
     minute_max_requests: int | None
     minute_current_requests: int
 
     @property
     def monthly_remaining_entities(self) -> int | None:
-        if self.monthly_max_entities is None:
+        if self.monthly_max_entities is None or self.monthly_current_entities is None:
             return None
         return max(self.monthly_max_entities - self.monthly_current_entities, 0)
 
@@ -89,6 +89,9 @@ class SportsGameOddsClient:
             headers={"x-api-key": api_key},
         )
         self._gate = _CooldownGate(request_cooldown_seconds)
+        # Guard event reads against concurrently refreshing collectors.
+        self._event_lock = asyncio.Lock()
+        self._projected_entities: int | None = None
 
     async def __aenter__(self) -> Self:
         return self
@@ -221,36 +224,43 @@ class SportsGameOddsClient:
         return SportsGameOddsUsage(
             tier=str(data.get("tier")) if data.get("tier") is not None else None,
             monthly_max_entities=monthly_max,
-            monthly_current_entities=monthly_current or 0,
+            monthly_current_entities=monthly_current,
             minute_max_requests=minute_max,
             minute_current_requests=minute_current or 0,
         )
 
     async def _safe_event_limit(self, requested: int) -> int:
+        """Fail closed on unknown usage; guard calls under the event lock."""
         if requested < 1:
             raise ValueError("requested event limit must be positive")
-
         usage = await self.get_usage()
-        remaining = usage.monthly_remaining_entities
-        if remaining is None:
-            return requested
-
+        if (
+            usage.monthly_max_entities is None
+            or usage.monthly_current_entities is None
+            or usage.monthly_max_entities < 0
+            or usage.monthly_current_entities < 0
+            or usage.monthly_current_entities > usage.monthly_max_entities
+        ):
+            raise QuotaReserveReached("SportsGameOdds monthly usage unknown; event requests paused")
+        observed = max(usage.monthly_current_entities, self._projected_entities or 0)
+        self._projected_entities = observed
+        remaining = usage.monthly_max_entities - observed
         owner = self._owner_limits.get("sportsgameodds") if self._owner_limits else None
         if owner is not None:
-            # A configured owner cap is an additional hard ceiling, never a
-            # replacement for the provider's authoritative monthly allowance.
-            safe_owner = owner.maximum_units - usage.monthly_current_entities - owner.reserve_units
-            if safe_owner <= 0:
+            owner_remaining = owner.maximum_units - observed - owner.reserve_units
+            if owner_remaining <= 0:
                 raise QuotaReserveReached("Owner-configured SportsGameOdds budget exhausted")
-        safe_remaining = remaining - self._monthly_entity_reserve
-        if owner is not None:
-            safe_remaining = min(safe_remaining, safe_owner)
-        if safe_remaining <= 0:
-            raise QuotaReserveReached(
-                "SportsGameOdds monthly entity reserve protected: "
-                f"{remaining} entities remain; reserve is {self._monthly_entity_reserve}"
-            )
-        return min(requested, safe_remaining)
+            remaining = min(remaining, owner_remaining)
+        remaining -= self._monthly_entity_reserve
+        if remaining <= 0:
+            raise QuotaReserveReached("SportsGameOdds monthly entity reserve reached")
+        return min(requested, remaining)
+
+    def _reserve_event_entities(self, count: int) -> None:
+        """Reserve pessimistically before network dispatch; failures may bill."""
+        if self._projected_entities is None or count < 1:
+            raise RuntimeError("Event usage must be checked before reservation")
+        self._projected_entities += count
 
     async def get_result_events(self, event_ids: tuple[str, ...]) -> list[dict[str, Any]]:
         """Bounded official eventID lookup for already observed fixtures.
@@ -264,16 +274,18 @@ class SportsGameOddsClient:
             for e in event_ids
         ):
             raise ValueError("Invalid bounded result lookup")
-        budget = await self._safe_event_limit(len(event_ids))
-        if budget < len(event_ids):
-            raise QuotaReserveReached("Results lookup blocked by provider quota reserve")
-        response = self._payload(await self._request(
-            "/events", params={
-                ("eventID" if len(event_ids) == 1 else "eventIDs"):
-                    ",".join(event_ids),
-                "limit": len(event_ids),
-            },
-        ))
+        async with self._event_lock:
+            budget = await self._safe_event_limit(len(event_ids))
+            if budget < len(event_ids):
+                raise QuotaReserveReached("Results lookup blocked by provider quota reserve")
+            self._reserve_event_entities(len(event_ids))
+            response = self._payload(await self._request(
+                "/events", params={
+                    ("eventID" if len(event_ids) == 1 else "eventIDs"):
+                        ",".join(event_ids),
+                    "limit": len(event_ids),
+                },
+            ))
         data = response.get("data")
         if not isinstance(data, list) or len(data) > len(event_ids):
             raise ProviderProtocolError("Malformed finalized event batch")
@@ -297,14 +309,13 @@ class SportsGameOddsClient:
         if not leagues:
             raise ValueError("At least one league ID is required")
 
-        safe_limit = await self._safe_event_limit(limit)
         params: dict[str, object] = {
             "leagueID": ",".join(leagues),
             "oddsAvailable": "true",
             "started": "false",
             "cancelled": "false",
             "includeAltLines": "false",
-            "limit": safe_limit,
+            "limit": limit,
         }
         if bookmaker_ids:
             books = [item.strip() for item in bookmaker_ids if item.strip()]
@@ -313,7 +324,11 @@ class SportsGameOddsClient:
         if cursor:
             params["cursor"] = cursor
 
-        payload = self._payload(await self._request("/events", params=params))
+        async with self._event_lock:
+            safe_limit = await self._safe_event_limit(limit)
+            params["limit"] = safe_limit
+            self._reserve_event_entities(safe_limit)
+            payload = self._payload(await self._request("/events", params=params))
         data = payload.get("data")
         if not isinstance(data, list):
             raise ProviderProtocolError("SportsGameOdds events response has no data list")

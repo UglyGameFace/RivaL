@@ -8,7 +8,6 @@ the existing book-only learner continues without invented threshold distance.
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import re
 import threading
@@ -126,7 +125,10 @@ class PolymarketOracleChallenger:
             self._initialized = True
 
     def observe(self, notice, reference: OracleReference, *, now: datetime | None = None):
-        stamp = (now or datetime.now(UTC)).astimezone(UTC)
+        stamp = now or datetime.now(UTC)
+        if stamp.tzinfo is None or stamp.utcoffset() is None:
+            raise ValueError("oracle prediction clock must be timezone-aware")
+        stamp = stamp.astimezone(UTC)
         features = oracle_features(notice, reference, now=stamp)
         if (not notice.condition_id or not notice.up_token_id
             or not notice.down_token_id or notice.up_token_id == notice.down_token_id):

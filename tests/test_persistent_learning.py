@@ -189,7 +189,7 @@ def test_prespecified_historical_model_family_keeps_live_feature_contract():
     examples = [
         (datetime(2026, 1, 1, tzinfo=UTC),
          datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=5),
-         (float((i+j)%5)/10 for j in range(10)), i % 2)
+         tuple(float((i+j)%5)/10 for j in range(10)), i % 2)
         for i in range(150)
     ]
     samples = [(a, b, tuple(c), y) for a,b,c,y in examples]

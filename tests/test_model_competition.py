@@ -12,7 +12,6 @@ from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.model_competition import (
     FAMILIES, ShadowModelCompetition, shadow_predictions,
 )
-from parlay_bot.storage.hot import SQLiteHotStore
 
 
 def _samples(*, now, venue="hyperliquid"):

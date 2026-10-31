@@ -1,3 +1,13 @@
+## ACTIVE TASK: Crypto analysis landing and explicit provider selection (2026-10-30)
+
+- Objective: Replace assumed Polymarket default and oversized contract board with verified model-accuracy landing and explicit Polymarket, Exchange Futures, Kalshi selection.
+- Implementation: PR #125 (https://github.com/UglyGameFace/RivaL/pull/125), branch refactor/rival-crypto-analysis-market-choice-20261030, based on merged PR #124.
+- Evidence: independently measured 7-day forward exchange accuracy (settled/issued/hit-rate); Polymarket separately shows verified learned resolved contracts and settled forward model calls; Kalshi is read-only with no supported prediction engine.
+- Controls: choose provider, coin, window; only selected provider's Get Call and Follow actions appear. Contract details show exact issued prediction vs WAIT, actual quote and tracker status; no real orders.
+- Compatibility: old Live buttons land on selector instead of silently starting Polymarket; stale-source selects recover without sending tracking DMs. No changes to historical weights or research promotion.
+- Release: exact-head Ruff + PostgreSQL pytest required, merge only after green, then verify main+Discloud and hosted Discord navigation and no unwanted DMs. Accuracy improvements remain unverified.
+
+---
 ## ACTIVE TASK: Simplify user-facing RivaL and retire duplicate non-prediction DMs (2026-10-30)
 
 - Owner requirement: simplify all beginner menus, remove overlapping Auto-Hunt and notification spam, and retain genuine prediction/learning. **Unlimited is only a legacy delivery cap, not unlimited AI or proof of a trade signal.**

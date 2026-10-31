@@ -293,3 +293,114 @@ async def test_contract_quota_warning_is_local_and_names_exact_hold(monkeypatch)
     assert "18/18" in message
     assert "not proof of OpenRouter account quota exhaustion" in message
     assert "<t:" in message
+
+
+@pytest.mark.asyncio
+async def test_upstream_503_pauses_free_requests_instead_of_hammering_provider(monkeypatch):
+    market = FakeMarket()
+    monkeypatch.setattr(
+        module, "build_evidence",
+        lambda *_args, **_kwargs: ({"sources": [1, 2, 3]}, "verified-digest"),
+    )
+    requests = []
+    def respond(req):
+        requests.append(req.url.path)
+        if req.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [model("openai/gpt-oss-120b:free")]})
+        return httpx.Response(503, json={"error": {"message": "upstream unavailable"}})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        reviewer = module.OpenRouterResearch(market, api_key="test-secret", client=client)
+        with pytest.raises(ResearchUnavailable, match="HTTP 503"):
+            await reviewer.ask(asset="BTC", venues=("a", "b", "c"))
+    assert requests == ["/api/v1/models", "/api/v1/chat/completions"]
+    assert market.calls == 1
+    assert market.pauses
+    assert market.pauses[0]["seconds"] == 1800
+    assert market.saved == []
+
+
+@pytest.mark.asyncio
+async def test_fallback_only_uses_two_verified_free_models_and_records_served_model(monkeypatch):
+    import json
+    market = FakeMarket()
+    monkeypatch.setattr(
+        module, "build_evidence",
+        lambda *_args, **_kwargs: ({"sources": [1, 2, 3]}, "verified-digest"),
+    )
+    sent = []
+    def respond(req):
+        if req.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [
+                model("openai/gpt-oss-120b:free"),
+                model("poolside/laguna-s-2.1:free"),
+                model("nvidia/nemotron-3.5-lightning:free"),
+                model("cohere/north-mini-code:free", paid=True),
+            ]})
+        body = json.loads(req.content)
+        sent.append(body)
+        assert "model" not in body
+        assert body["models"] == [
+            "openai/gpt-oss-120b:free", "poolside/laguna-s-2.1:free",
+        ]
+        assert all(name.endswith(":free") for name in body["models"])
+        return httpx.Response(200, json={
+            "model": "poolside/laguna-s-2.1:free",
+            "choices": [{"message": {"content": json.dumps({
+                "direction": "uncertain", "confidence": "low",
+                "thesis": "Provider fallback. No edge proved.",
+                "risk": "Loss possible.",
+            })}}],
+        })
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        reviewer = module.OpenRouterResearch(market, api_key="test", client=client)
+        result = await reviewer.ask(asset="ETH", venues=("a", "b", "c"))
+    assert result.model == "poolside/laguna-s-2.1:free"
+    assert market.saved[0]["model"] == result.model
+    assert market.calls == 1
+    assert len(sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_reject_unexpected_paid_fallback_even_if_provider_claims_success(monkeypatch):
+    import json
+    market = FakeMarket()
+    monkeypatch.setattr(
+        module, "build_evidence",
+        lambda *_args, **_kwargs: ({"sources": [1, 2, 3]}, "verified-digest"),
+    )
+    def respond(req):
+        if req.url.path.endswith("/models"):
+            return httpx.Response(200, json={"data": [
+                model("openai/gpt-oss-120b:free"),
+                model("nvidia/nemotron-3.5-lightning:free"),
+            ]})
+        return httpx.Response(200, json={
+            "model": "openai/gpt-6",
+            "choices": [{"message": {"content": json.dumps({
+                "direction": "up", "confidence": "high",
+                "thesis": "This is not a permitted free model.",
+                "risk": "Paid substitution rejected.",
+            })}}],
+        })
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        reviewer = module.OpenRouterResearch(market, api_key="test", client=client)
+        with pytest.raises(ResearchUnavailable, match="validation"):
+            await reviewer.ask(asset="ETH", venues=("a", "b", "c"))
+    assert market.calls == 1
+    assert market.saved == []
+
+
+def test_failing_recursive_flint_is_not_a_routing_candidate():
+    now = datetime(2026, 10, 30, 22, tzinfo=UTC)
+    found = module.eligible_free_coding_models({"data": [
+        model("recursive/flint-v1.0:free"),
+        model("openai/gpt-oss-120b:free"),
+        model("poolside/laguna-s-2.1:free", expiry=(now+timedelta(days=1)).isoformat()),
+        model("nvidia/nemotron-3.5-lightning:free"),
+    ]}, now=now)
+    assert found == (
+        "openai/gpt-oss-120b:free",
+        "poolside/laguna-s-2.1:free",
+        "nvidia/nemotron-3.5-lightning:free",
+    )
+    assert "recursive/flint-v1.0:free" not in found

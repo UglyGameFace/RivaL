@@ -27,6 +27,7 @@ MIN_HOLDOUT = 50
 MIN_UTC_DAYS = 7
 MIN_COHORT = 30
 MIN_GAIN = 0.002
+QUANTILES = (0.1, 0.25, 0.5, 0.75, 0.9)
 
 
 @dataclass(frozen=True)
@@ -36,6 +37,7 @@ class PathSample:
     aligned: bool
     tp1: int
     tp2: int
+    terminal_signed_log_return: float
 
 
 def trace_barriers(*, entry: float, sigma_horizon: float, side: str,
@@ -116,10 +118,18 @@ def _samples(rows: list[dict], *, horizon: int, side: str) -> tuple[list[PathSam
             continue
         momentum = math.log(prior[-1]/prior[-4])
         aligned = momentum > 0 if side == "long" else momentum < 0
+        terminal = float(future[-1]["close"])
+        if not math.isfinite(terminal) or terminal <= 0:
+            discarded["invalid_past"] += 1
+            continue
+        signed_return = math.log(terminal / prior[-1])
+        if side == "short":
+            signed_return = -signed_return
         samples.append(PathSample(
             issued_at=_as_datetime(rows[i]["closed_at"]),
             expires_at=_as_datetime(rows[i + count]["closed_at"]),
             aligned=aligned, tp1=outcome[0], tp2=outcome[1],
+            terminal_signed_log_return=signed_return,
         ))
     return samples, discarded
 
@@ -134,6 +144,54 @@ def _holdout_scores(samples: list[PathSample], *, cohort: dict,
         ]
         result[label] = _metrics(results, baseline[label])
     return result
+
+
+
+def _quantiles(values: list[float]) -> dict[str, float]:
+    """Prespecified empirical return distribution, fitted only on training."""
+    if not values or any(not math.isfinite(v) for v in values):
+        raise ValueError("invalid training return sample")
+    ordered = sorted(values)
+    last = len(ordered) - 1
+    result = {}
+    for q in QUANTILES:
+        at = last*q
+        low = int(at)
+        delta = at - low
+        value = ordered[low]*(1-delta) + ordered[min(last, low+1)]*delta
+        result[f"p{int(q*100)}"] = value
+    return result
+
+
+def _distribution_score(samples: list[PathSample], *, cohorts: dict,
+                        baseline: dict) -> dict:
+    """Proper quantile-pinball scores versus a frozen unconditional prior."""
+    model_loss = baseline_loss = covered = 0.0
+    for sample in samples:
+        y = sample.terminal_signed_log_return
+        pred = cohorts[sample.aligned]
+        for q in QUANTILES:
+            key = f"p{int(q*100)}"
+            for point, kind in ((pred[key], "model"), (baseline[key], "baseline")):
+                score = (q - int(y < point))*(y - point)
+                if kind == "model":
+                    model_loss += score
+                else:
+                    baseline_loss += score
+        covered += int(pred["p10"] <= y <= pred["p90"])
+    n = len(samples)
+    if n == 0:
+        raise ValueError("empty return distribution holdout")
+    normalizer = n*len(QUANTILES)
+    return {
+        "count": n,
+        "days": len({s.expires_at.date() for s in samples}),
+        "pinball_loss": round(model_loss/normalizer, 9),
+        "baseline_pinball_loss": round(baseline_loss/normalizer, 9),
+        "pinball_gain": round((baseline_loss-model_loss)/normalizer, 9),
+        "p10_p90_coverage": round(covered/n, 6),
+        "conditional_on_unambiguous_paths": True,
+    }
 
 
 def evaluate_path(manifests: list[Path], *, horizon: int, side: str,
@@ -177,6 +235,19 @@ def evaluate_path(manifests: list[Path], *, horizon: int, side: str,
     }
     validation_scores = _holdout_scores(validation, cohort=cohort, baseline=base)
     test_scores = _holdout_scores(test, cohort=cohort, baseline=base)
+    # Separate terminal price distribution. Neither validation nor test
+    # prices can change the training-quantile model or its unconditional prior.
+    return_prior = _quantiles([s.terminal_signed_log_return for s in train])
+    return_cohorts = {
+        aligned: _quantiles([s.terminal_signed_log_return for s in group])
+        for aligned, group in by_cohort.items()
+    }
+    validation_scores["terminal_distribution"] = _distribution_score(
+        validation, cohorts=return_cohorts, baseline=return_prior,
+    )
+    test_scores["terminal_distribution"] = _distribution_score(
+        test, cohorts=return_cohorts, baseline=return_prior,
+    )
     # Removing unknown first-hit orders is a form of outcome-dependent
     # selection. Report its frequency and refuse offline qualification when
     # the omitted fraction is material, rather than claiming universal skill.
@@ -190,7 +261,12 @@ def evaluate_path(manifests: list[Path], *, horizon: int, side: str,
             and item["ece_10"] <= 0.12
             and item["days"] >= MIN_UTC_DAYS
             for period in (validation_scores, test_scores)
-            for item in period.values()
+            for label, item in period.items()
+            if label != "terminal_distribution"
+        )
+        and all(
+            period["terminal_distribution"]["pinball_gain"] > 0
+            for period in (validation_scores, test_scores)
         )
     )
     spec = {
@@ -199,6 +275,10 @@ def evaluate_path(manifests: list[Path], *, horizon: int, side: str,
         "barriers": {"tp1_sigma": 1, "tp2_sigma": 2, "stop_sigma": 1},
         "cohort": {"aligned": cohort[True], "not_aligned": cohort[False]},
         "baseline": base, "train_count": len(train),
+        "terminal_signed_log_return_quantiles": {
+            "aligned": return_cohorts[True], "not_aligned": return_cohorts[False],
+            "unconditional": return_prior,
+        },
         "training_outcomes_through": max(s.expires_at for s in train).isoformat(),
         "validation_outcomes_through": max(s.expires_at for s in validation).isoformat(),
         "test_outcomes_through": max(s.expires_at for s in test).isoformat(),

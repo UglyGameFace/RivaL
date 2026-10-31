@@ -92,6 +92,12 @@ class KalshiForwardResearch:
                     );
                     CREATE INDEX IF NOT EXISTS idx_kalshi_pending
                         ON rival_kalshi_forward (result, close_at);
+                    CREATE TABLE IF NOT EXISTS rival_kalshi_book_evidence (
+                        ticker TEXT PRIMARY KEY,
+                        observed_at TEXT NOT NULL,
+                        yes_ask_depth DOUBLE PRECISION NOT NULL,
+                        no_ask_depth DOUBLE PRECISION NOT NULL
+                    );
                     CREATE TABLE IF NOT EXISTS rival_kalshi_settlement_checks (
                         ticker TEXT PRIMARY KEY,
                         checked_at TEXT NOT NULL
@@ -188,6 +194,13 @@ class KalshiForwardResearch:
                  state["weights_sha256"] if candidate is not None else None,
                  trained if candidate is not None else None),
             )
+            if count.rowcount == 1:
+                conn.execute(
+                    """INSERT INTO rival_kalshi_book_evidence
+                       (ticker,observed_at,yes_ask_depth,no_ask_depth)
+                       VALUES (?,?,?,?) ON CONFLICT(ticker) DO NOTHING""",
+                    (market.ticker, stamp, market.yes_ask_size, market.no_ask_size),
+                )
             return count.rowcount == 1
 
     def pending(self, *, now: datetime, limit: int = 2) -> tuple[str, ...]:
@@ -334,7 +347,11 @@ class KalshiForwardResearch:
                           baseline_yes,candidate_yes,candidate_weights_sha256,
                           candidate_training_labels
                    FROM rival_kalshi_forward WHERE ticker=? AND asset=?
-                     AND series_ticker=?""",
+                     AND series_ticker=?
+                     AND EXISTS (
+                       SELECT 1 FROM rival_kalshi_book_evidence b
+                       WHERE b.ticker=rival_kalshi_forward.ticker
+                     )""",
                 (market.ticker, asset, series),
             ).fetchone()
         if row is None or row["market_rules_sha256"] != hashlib.sha256(
@@ -377,9 +394,24 @@ class KalshiForwardResearch:
             rows = conn.execute(
                 """SELECT ticker,series_ticker,candidate_yes,baseline_yes,
                           result,issued_at,settlement_at
-                   FROM rival_kalshi_forward WHERE asset=? AND result IS NOT NULL
-                     AND candidate_yes IS NOT NULL AND settlement_at>issued_at
-                   ORDER BY issued_at""", (asset,),
+                   FROM rival_kalshi_forward f
+                   JOIN rival_kalshi_book_evidence b ON b.ticker=f.ticker
+                   WHERE f.asset=? AND f.result IS NOT NULL
+                     AND f.candidate_yes IS NOT NULL AND f.settlement_at>f.issued_at
+                   ORDER BY f.issued_at""", (asset,),
+            ).fetchall()
+            verified_rows = conn.execute(
+                """SELECT COUNT(*) AS total FROM rival_kalshi_book_evidence b
+                   JOIN rival_kalshi_forward f ON f.ticker=b.ticker
+                   WHERE f.asset=?""", (asset,),
+            ).fetchone()
+            legacy = conn.execute(
+                """SELECT series_ticker,COUNT(*) AS total
+                   FROM rival_kalshi_forward f WHERE asset=?
+                   AND result IS NOT NULL AND NOT EXISTS (
+                       SELECT 1 FROM rival_kalshi_book_evidence b
+                       WHERE b.ticker=f.ticker
+                   ) GROUP BY series_ticker""", (asset,),
             ).fetchall()
             states = conn.execute(
                 "SELECT updates FROM rival_kalshi_shadow_weights WHERE asset=?",
@@ -388,6 +420,9 @@ class KalshiForwardResearch:
         # NEVER pool heterogeneous Kalshi series into a promotion vote.
         # BTC 5m, BTC 15m, and BTC price-above-$X are different target/rule
         # families even when their exact tickers share an underlying coin.
+        legacy_by_series = {
+            row["series_ticker"]: int(row["total"]) for row in legacy
+        }
         by_series = {}
         combined = []
         for row in rows:
@@ -413,9 +448,13 @@ class KalshiForwardResearch:
                 and evidence["daily_brier_gain_lower_bound"] is not None
                 and evidence["daily_brier_gain_lower_bound"] > 0
                 and evidence["positive_day_share"] >= .60
+                # Prior summary-quote labels may have trained legacy weights.
+                # No model from a contaminated series is eligible to promote.
+                and legacy_by_series.get(series, 0) == 0
             )
             per_series[series] = {
                 **evidence, "research_gate_passed": eligible,
+                "legacy_unverified_settlements": legacy_by_series.get(series, 0),
                 "approved_model": False, "verified_after_cost": False,
             }
         evidence_qualified = any(
@@ -424,6 +463,8 @@ class KalshiForwardResearch:
         return {
             "provider": "kalshi", "model": MODEL, "asset": asset,
             "observed": int(counts["observed"]),
+            "book_verified_observed": int(verified_rows["total"]),
+            "legacy_unverified_settlements": sum(legacy_by_series.values()),
             "settled": int(counts["settled"] or 0),
             "trained_labels": sum(int(state["updates"]) for state in states),
             "candidate_forward_resolved": score["count"],

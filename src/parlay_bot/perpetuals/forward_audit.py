@@ -819,6 +819,140 @@ class ForwardAccuracyMonitor:
             ).fetchall()
         return evaluate_regimes([dict(row) for row in rows], as_of=stamp)
 
+    def boosted_production_evidence(self, *, asset: str, now: datetime | None = None) -> dict:
+        """Read only ACTUAL imported model, frozen future, and book-quote rows.
+
+        This is a host-DB delivery/forward canary, not a backtest and not a
+        profitable-trading claim. Never treat historical research uploads,
+        snapshots from other venues, or simulated costs as actual fills.
+        """
+        if asset not in ASSETS:
+            raise ValueError("unsupported model evidence asset")
+        stamp = utc(now or datetime.now(UTC))
+        cutoff = (stamp - timedelta(days=30)).isoformat()
+        from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
+        from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
+
+        self.initialize()
+        FamilyQuoteShadow(self.store).initialize()
+        FamilyPromotion(self.store).initialize()
+        ResearchCandidateRegistry(self.store).initialize()
+        with self.store.connect() as conn:
+            imported = conn.execute(
+                """SELECT COUNT(*) AS total,
+                    SUM(CASE WHEN c.retrospective_screen='passed'
+                         AND a.compatible=1 THEN 1 ELSE 0 END) AS screened
+                   FROM rival_offline_candidates c
+                   JOIN rival_offline_model_artifacts a
+                    ON a.model_sha256=c.model_sha256
+                   WHERE c.asset=? AND a.model_spec_json
+                    LIKE '%"model":"portable-boosted-binary-v1"%'""",
+                (asset,),
+            ).fetchone()
+            forecasts = conn.execute(
+                """SELECT s.venue,s.contract,s.quote,s.horizon_minutes,s.family,
+                          COUNT(*) AS issued,
+                          SUM(CASE WHEN s.settled_at IS NOT NULL
+                                   AND s.outcome_up IN (0,1)
+                                   AND s.model_brier IS NOT NULL
+                                   THEN 1 ELSE 0 END) AS settled,
+                          MAX(s.issued_at) AS last_issued_at,
+                          MAX(s.settled_at) AS last_settled_at
+                   FROM rival_model_shadow_forecasts s
+                   WHERE s.asset=? AND s.family LIKE 'boosted_%'
+                     AND s.issued_at>=? AND s.issued_at<=?
+                   GROUP BY s.venue,s.contract,s.quote,s.horizon_minutes,s.family""",
+                (asset,cutoff,stamp.isoformat()),
+            ).fetchall()
+            quotes = conn.execute(
+                """SELECT venue,contract,quote,horizon_minutes,family,
+                          COUNT(*) AS observed_entries,
+                          SUM(CASE WHEN state='EXIT_QUOTED'
+                                   THEN 1 ELSE 0 END) AS observed_exits,
+                          SUM(CASE WHEN state='MISSED_EXIT'
+                                   THEN 1 ELSE 0 END) AS missing_exits
+                   FROM rival_family_quote_shadow
+                   WHERE asset=? AND family LIKE 'boosted_%'
+                    AND issued_at>=? AND issued_at<=?
+                   GROUP BY venue,contract,quote,horizon_minutes,family""",
+                (asset,cutoff,stamp.isoformat()),
+            ).fetchall()
+            selections = conn.execute(
+                """SELECT venue,contract,quote,horizon_minutes,selected_family,
+                          status,evaluated_at FROM rival_family_promotion
+                   WHERE asset=? AND selected_family LIKE 'boosted_%'""",
+                (asset,),
+            ).fetchall()
+        keys = ("venue","contract","quote","horizon_minutes","family")
+        by_quote = {tuple(q[k] for k in keys): q for q in quotes}
+        scopes = []
+        for row in forecasts:
+            key = tuple(row[k] for k in keys)
+            quote = by_quote.get(key)
+            scopes.append({
+                "venue": str(row["venue"]), "contract": str(row["contract"]),
+                "quote": str(row["quote"]), "horizon": int(row["horizon_minutes"]),
+                "family": str(row["family"]), "issued": int(row["issued"]),
+                "settled": int(row["settled"] or 0),
+                "quote_entries": int(quote["observed_entries"]) if quote else 0,
+                "quote_exits": int(quote["observed_exits"] or 0) if quote else 0,
+                "missing_exits": int(quote["missing_exits"] or 0) if quote else 0,
+                "last_issued_at": str(row["last_issued_at"]),
+                "last_settled_at": str(row["last_settled_at"])
+                                   if row["last_settled_at"] else None,
+            })
+        scopes.sort(key=lambda x: (x["last_issued_at"], x["issued"]), reverse=True)
+        confirmed_paper = []
+        for row in selections:
+            try:
+                checked = utc(datetime.fromisoformat(str(row["evaluated_at"])))
+            except (ValueError,TypeError,OverflowError):
+                continue
+            if (row["status"] == "promoted_paper" and
+                timedelta(0) <= stamp-checked <= timedelta(hours=48) and
+                any(s["venue"] == row["venue"] and
+                    s["contract"] == row["contract"] and
+                    s["quote"] == row["quote"] and
+                    s["horizon"] == row["horizon_minutes"] and
+                    s["family"] == row["selected_family"] for s in scopes)):
+                confirmed_paper.append({
+                    "venue": str(row["venue"]), "contract": str(row["contract"]),
+                    "horizon": int(row["horizon_minutes"]),
+                    "family": str(row["selected_family"]),
+                    "checked_at": checked.isoformat(),
+                })
+        issued = sum(x["issued"] for x in scopes)
+        settled = sum(x["settled"] for x in scopes)
+        exits = sum(x["quote_exits"] for x in scopes)
+        qualified = int(imported["screened"] or 0)
+        # Note: paper promotion is not authenticated real-money cost proof.
+        if not qualified:
+            reason = "No screened portable boosted artifact imported into this bot database"
+        elif not issued:
+            reason = "Imported trees await source-matched genuine future forecasts"
+        elif not settled:
+            reason = "Immutable boosted forecasts await independently observed future outcomes"
+        elif not exits:
+            reason = "Boosted forecasts settled; matched entry and exit book quotes missing"
+        elif not confirmed_paper:
+            reason = "Future and quote data exist; 21-day severe after-cost paper proof not qualified"
+        else:
+            reason = "Fresh model-family PAPER qualification recorded; actual fills still unverified"
+        return {
+            "as_of": stamp.isoformat(), "window_days": 30, "asset": asset,
+            "portable_imported": int(imported["total"] or 0),
+            "portable_screened": qualified,
+            "issued": issued, "settled": settled,
+            "quote_entries": sum(x["quote_entries"] for x in scopes),
+            "quote_exits": exits,
+            "missing_exits": sum(x["missing_exits"] for x in scopes),
+            "scopes": scopes[:8], "scopes_count": len(scopes),
+            "fresh_paper_promotions": confirmed_paper,
+            "actual_fills_verified": False,
+            "actual_fees_funding_slippage_verified": False,
+            "status_reason": reason,
+        }
+
     def summary(self, *, asset: str, now: datetime | None = None) -> dict:
         """Aggregate source-scored accuracy inside PostgreSQL, not in Discord.
 

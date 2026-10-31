@@ -186,6 +186,21 @@ class KalshiCryptoBrowser:
         except (ValueError, TypeError, httpx.HTTPError, RuntimeError):
             _LOG.exception("Kalshi shadow evidence unavailable; browser stays read-only")
 
+    async def contract_research(
+        self, *, asset: str, market: KalshiMarket, observed_at: datetime,
+    ) -> dict | None:
+        """Issue/fetch immutable research without borrowing another venue's odds."""
+        if self._forward is None:
+            return None
+
+        def read() -> dict | None:
+            # The background recorder may not have run yet. The first valid
+            # quote wins, and the store's unique ticker prevents re-issuance.
+            self._forward.observe(asset=asset, market=market, at=observed_at)
+            return self._forward.contract_preview(asset=asset, market=market)
+
+        return await asyncio.to_thread(read)
+
     async def browse(self, asset: str, *, refresh: bool = False) -> KalshiSnapshot:
         if asset not in _SYMBOLS:
             raise ValueError("Unknown Kalshi crypto asset")

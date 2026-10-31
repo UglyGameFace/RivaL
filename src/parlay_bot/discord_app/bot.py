@@ -818,13 +818,27 @@ class RivalDiscordClient(discord.Client):
             oracle_status = self.polybolt.status()
             oracle_text = (
                 "PolyBolt TWAP: "
-                + ("authenticated" if oracle_status["connected"] else
-                   "credentials needed" if not oracle_status["configured"] else
-                   "not connected")
-                + " • fresh Chainlink TWAP: "
+                + (
+                    "LIVE verified oracle samples" if oracle_status["valid_twap_live"]
+                    else "authenticated, awaiting fresh TWAP"
+                    if oracle_status["connected"]
+                    else "authenticated, awaiting subscription"
+                    if oracle_status["authenticated"]
+                    else "credentials needed" if not oracle_status["configured"]
+                    else "not authenticated"
+                )
+                + "\nFresh Chainlink assets: "
                 + (", ".join(oracle_status["assets_fresh"])
                    if oracle_status["assets_fresh"] else "none verified")
-                + " • oracle-v2 is research-only"
+                + "\nSource samples accepted since start: "
+                + str(oracle_status["accepted_twap_samples"])
+                + "\nLast valid source update: "
+                + (oracle_status["last_valid_twap_at"] or "none")
+                + "\nConnections attempted: "
+                + str(oracle_status["reconnects"])
+                + "\nProvider state: "
+                + str(oracle_status["last_error"] or "no error reported")
+                + "\nOracle-v2 remains research-only"
             )
             embed.add_field(
                 name="Polymarket oracle research",
@@ -1585,6 +1599,10 @@ class RivalDiscordClient(discord.Client):
         ):
             self._polybolt_task = asyncio.create_task(
                 self.polybolt.run(), name="rival-read-only-chainlink-twap",
+            )
+            _LOG.info(
+                "RivaL PolyBolt read-only worker started; "
+                "CLOB credentials configured; awaiting authenticated price proof"
             )
         elif not self.polybolt.configured:
             _LOG.info(

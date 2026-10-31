@@ -303,7 +303,7 @@ def test_live_polymarket_hourly_settlement_source_follows_quote_not_timeframe():
 
 @pytest.mark.asyncio
 async def test_market_picker_and_live_board_do_not_spend_free_ai_quota(tmp_path):
-    hot, store, service, _channel, _user, _edited = _setup(tmp_path)
+    hot, _store, service, _channel, _user, _edited = _setup(tmp_path)
     now = datetime.now(UTC)
     start = datetime.fromtimestamp(int(now.timestamp()) // 300 * 300, UTC)
     current = PolymarketListedWindow(

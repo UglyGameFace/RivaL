@@ -36,7 +36,7 @@ class _FailingAi:
     available = True
     model = "gemini-3.8-flash"
 
-    async def ask(self, *, asset, venues):
+    async def ask(self, *, asset, venues, requester_id=None):
         assert asset == "BTC" and venues == ("hyperliquid", "dydx")
         raise ResearchUnavailable("Gemini model unavailable (HTTP 404).")
 

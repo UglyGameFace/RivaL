@@ -8,10 +8,13 @@ promotion may be manufactured from retrospective OHLCV data.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+from importlib.metadata import PackageNotFoundError, version
 from collections import defaultdict
 from pathlib import Path
 
+from parlay_bot.perpetuals.markets import HORIZONS
 from parlay_bot.perpetuals.model_checkpoints import FEATURE_CONTRACT, TARGET_CONTRACT, canonical
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.learning import _metrics, assemble
@@ -96,7 +99,7 @@ def evaluate_compatible_boosters(manifests, *, horizon, prepared=None, estimator
         return {"status": "dependencies_missing", "identity": identity,
                 "horizon_minutes": horizon, "unavailable": unavailable,
                 "live_model_promoted": False}
-    # A bounded *stratified-in-time*, not recency-only, subset retains
+    # A bounded, temporally spaced (not recency-only) subset retains
     # coverage throughout the original six-month training interval.
     stride = max(1, math.ceil(len(train) / MAX_TRAIN))
     fitted = train[::stride]
@@ -126,8 +129,21 @@ def evaluate_compatible_boosters(manifests, *, horizon, prepared=None, estimator
         compared, key=lambda x: (x[2]["brier"], x[0]),
     )
     test_score = _scores(champion, test, base)
+    try:
+        package = {"hist_gradient_boosting": "scikit-learn", "lightgbm": "lightgbm",
+                   "xgboost": "xgboost", "catboost": "catboost"}[family]
+        package_version = version(package)
+    except PackageNotFoundError:
+        package_version = "test-double-or-unavailable"
+    # Every research identity names the exact known training inputs and
+    # library version. It is NOT a weights hash or an importable checkpoint.
+    input_digest = hashlib.sha256(canonical([
+        [x[0].isoformat(), x[1].isoformat(), x[2], x[3]] for x in fitted
+    ]).encode()).hexdigest()
     spec = {
         "model": "boosted-offline-research-v1", "family": family,
+        "training_input_sha256": input_digest,
+        "package_version": package_version,
         "identity": identity, "horizon_minutes": horizon,
         "feature_contract": FEATURE_CONTRACT, "target_contract": TARGET_CONTRACT,
         "source_sha256_by_month": provenance["source_sha256_by_month"],
@@ -162,12 +178,10 @@ def evaluate_compatible_boosters(manifests, *, horizon, prepared=None, estimator
 def evaluate_directory(root: Path, *, qualified_streams):
     groups = defaultdict(list)
     for path in sorted((root / "binance_um_klines").glob("*.manifest.json")):
-        import json
         meta = json.loads(path.read_text(encoding="utf-8"))
         key = (meta.get("contract"), meta.get("interval_minutes"))
         if key[1] == 5 and key in qualified_streams:
             groups[key].append(path)
-    from parlay_bot.perpetuals.markets import HORIZONS
     results = []
     for paths in groups.values():
         identity, rows, provenance = assemble(paths)

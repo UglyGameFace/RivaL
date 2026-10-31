@@ -127,11 +127,24 @@ class PolyBoltTWAP:
             self._last_error = None
             return 0
         if operation == "error":
-            self._last_error = str(message.get("code") or "provider_error")[:55]
+            raw_code = message.get("code")
+            code = raw_code if raw_code in (
+                "auth_invalid", "auth_required", "auth_unavailable",
+                "bad_filter", "bad_channel", "sub_limit", "rate_limited",
+            ) else "provider_error"
+            self._last_error = code
             self._subscribed = False
+            _LOG.warning(
+                "RivaL PolyBolt provider error code=%s (no credentials logged)",
+                code,
+            )
             return 0
         if operation == "subscribed":
             if message.get("channel") == CHANNEL and self._authenticated:
+                if not self._subscribed:
+                    _LOG.info(
+                        "RivaL PolyBolt Chainlink TWAP subscription accepted"
+                    )
                 self._subscribed = True
             return 0
         if message.get("channel") != CHANNEL or not self._authenticated:

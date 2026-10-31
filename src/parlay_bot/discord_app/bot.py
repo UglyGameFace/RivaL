@@ -70,6 +70,7 @@ from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 from parlay_bot.perpetuals.paper_ledger import PaperLedger
 from parlay_bot.perpetuals.phemex_history_recovery import PhemexHistoryRecovery
+from parlay_bot.perpetuals.polybolt_twap import PolyBoltTWAP
 from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
@@ -446,6 +447,14 @@ class RivalDiscordClient(discord.Client):
             if isinstance(self.gemini_research, OpenRouterResearch) else None,
         )
         self.auto_hunt.contract_research = self.polymarket_research
+        def secret_value(value):
+            return value.get_secret_value() if value is not None else None
+        self.polybolt = PolyBoltTWAP(
+            api_key=secret_value(settings.polymarket_clob_api_key),
+            secret=secret_value(settings.polymarket_clob_api_secret),
+            passphrase=secret_value(settings.polymarket_clob_api_passphrase),
+        )
+        self._polybolt_task: asyncio.Task[None] | None = None
         self.kalshi_forward = KalshiForwardResearch(self.store)
         self.kalshi_browser = KalshiCryptoBrowser(forward=self.kalshi_forward)
         self._kalshi_research_task: asyncio.Task[None] | None = None
@@ -1552,6 +1561,19 @@ class RivalDiscordClient(discord.Client):
             self._poly_board_task = asyncio.create_task(
                 self._poly_board_loop(), name="rival-auto-polymarket-board",
             )
+        if (
+            self.settings.rival_polybolt_enabled
+            and self.polybolt.configured
+            and self._polybolt_task is None
+        ):
+            self._polybolt_task = asyncio.create_task(
+                self.polybolt.run(), name="rival-read-only-chainlink-twap",
+            )
+        elif not self.polybolt.configured:
+            _LOG.info(
+                "RivaL oracle-v2 waiting for official PolyBolt CLOB API credentials; "
+                "book-only Polymarket research remains available"
+            )
         if self._poly_research_task is None:
             self._poly_research_task = asyncio.create_task(
                 self._poly_research_loop(), name="rival-silent-polymarket-learning",
@@ -1831,10 +1853,21 @@ class RivalDiscordClient(discord.Client):
                 async def study(notice, limiter=budget) -> bool:
                     async with limiter:
                         try:
+                            from dataclasses import replace
+                            # Only an authenticated, nonstale and same-source
+                            # PolyBolt reference may feed oracle v2 training.
+                            reference = (
+                                self.polybolt.reference(notice)
+                                if self.settings.rival_polybolt_enabled else None
+                            )
+                            enriched = (
+                                replace(notice, oracle_reference=reference)
+                                if reference is not None else notice
+                            )
                             await asyncio.wait_for(
                                 asyncio.to_thread(
                                     self.polymarket_research.study,
-                                    notice,
+                                    enriched,
                                 ), timeout=8,
                             )
                             return True
@@ -2290,6 +2323,11 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self._polybolt_task is not None:
+            self._polybolt_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._polybolt_task
+            self._polybolt_task = None
         if self._kalshi_research_task is not None:
             self._kalshi_research_task.cancel()
             with suppress(asyncio.CancelledError):

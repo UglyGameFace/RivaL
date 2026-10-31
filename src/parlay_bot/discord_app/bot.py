@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from contextlib import suppress
@@ -38,6 +39,7 @@ from parlay_bot.discord_app.presentation import onboarding_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.discord_app.signals import signal_embed
 from parlay_bot.discord_app.sports_discovery import sports_discovery_embed
+from parlay_bot.discord_app.stale_dashboards import build_stale_dashboard_views
 from parlay_bot.discord_app.stream_proof import stream_proof_embed
 from parlay_bot.discord_app.targeting import DirectionTargetService, DirectionTargetStore
 from parlay_bot.discord_app.views import LocationView, OnboardingView
@@ -85,6 +87,7 @@ from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
 from parlay_bot.research.database_integrity import (
     perpetual_evidence_backlog,
+    sports_runtime_snapshot,
     sports_settlement_backlog,
     sports_settlement_exclusions,
 )
@@ -524,6 +527,28 @@ class RivalDiscordClient(discord.Client):
             cdna_personal=self.cdna_personal,
         )
 
+    def _build_research_dashboard(self, owner_id: int) -> ResearchDashboard:
+        collector = self.perp_collector
+        return ResearchDashboard(
+            owner_id=owner_id,
+            market=collector.market if collector is not None else None,
+            ai=self.gemini_research,
+            venues=tuple(collector.providers) if collector is not None else (),
+            shadow_enabled=self.shadow_monitor is not None,
+            target_service=self.direction_targets,
+        )
+
+    def _build_data_dashboard(self, owner_id: int) -> MarketDataDashboard:
+        collector = self.perp_collector
+        return MarketDataDashboard(
+            owner_id=owner_id,
+            market=collector.market if collector is not None else None,
+            venues=tuple(collector.providers) if collector is not None else (),
+            assets=collector.assets if collector is not None else (),
+            interval_seconds=self.settings.rival_perp_collection_seconds,
+            enabled=collector is not None,
+        )
+
     def _register_commands(self) -> None:
         # Three obvious shortcuts plus one optional tools namespace.
         # All legacy operations remain available; ordinary users navigate
@@ -830,6 +855,44 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001
                 description = "Sportsbook refresh state unavailable"
             embed.add_field(name="Actual source status", value=description, inline=False)
+            try:
+                recovery = await asyncio.wait_for(
+                    asyncio.to_thread(sports_runtime_snapshot, self.store),
+                    timeout=4,
+                )
+                last = recovery["last_cycle"]
+                last_text = (
+                    f"{last['at']} UTC • provider={last.get('provider', 'unknown')}"
+                    f" • new finals={last.get('new_finals', 0)}"
+                    f" • local reconciled={last.get('reconciled', 0)}"
+                    if last is not None else
+                    "No completed poll/reconciliation cycle recorded"
+                )
+                exclusions = recovery["exclusions"]
+                exclusion_text = ", ".join(
+                    f"{reason}: {count}" for reason, count in sorted(exclusions.items())
+                ) or "none"
+                recovery_text = (
+                    f"Saved provider-final results: {recovery['final_events']}"
+                    f" • latest {recovery['last_final_at'] or 'none'}\n"
+                    f"Scored prospective forecasts: {recovery['scored_forecasts']}"
+                    f" • latest {recovery['last_scored_at'] or 'none'}\n"
+                    f"Saved finals awaiting score: {recovery['unsettled_finalized']}\n"
+                    f"Started fixtures lacking final evidence: "
+                    f"{recovery['started_missing_results']}\n"
+                    f"Excluded forecasts (not wins): {exclusion_text[:170]}\n"
+                    f"Last worker cycle: {last_text}"
+                )
+            except Exception:  # noqa: BLE001 - preserve command ACK if DB is slow
+                _LOG.exception("RivaL hosted sports settlement snapshot unavailable")
+                recovery_text = (
+                    "Live database settlement proof unavailable. "
+                    "A successful Discloud upload is not settlement evidence."
+                )
+            embed.add_field(
+                name="Hosted sports settlement recovery",
+                value=recovery_text[:1024], inline=False,
+            )
             oracle_status = self.polybolt.status()
             oracle_text = (
                 "PolyBolt TWAP: "
@@ -1535,15 +1598,7 @@ class RivalDiscordClient(discord.Client):
         )
         async def rival_data(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
-            collector = self.perp_collector
-            dashboard = MarketDataDashboard(
-                owner_id=interaction.user.id,
-                market=collector.market if collector is not None else None,
-                venues=tuple(collector.providers) if collector is not None else (),
-                assets=collector.assets if collector is not None else (),
-                interval_seconds=self.settings.rival_perp_collection_seconds,
-                enabled=collector is not None,
-            )
+            dashboard = self._build_data_dashboard(interaction.user.id)
             await interaction.edit_original_response(
                 embed=await dashboard.render(), view=dashboard,
             )
@@ -1554,15 +1609,7 @@ class RivalDiscordClient(discord.Client):
         )
         async def rival_research(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
-            collector = self.perp_collector
-            dashboard = ResearchDashboard(
-                owner_id=interaction.user.id,
-                market=collector.market if collector is not None else None,
-                ai=self.gemini_research,
-                venues=tuple(collector.providers) if collector is not None else (),
-                shadow_enabled=self.shadow_monitor is not None,
-                    target_service=self.direction_targets,
-            )
+            dashboard = self._build_research_dashboard(interaction.user.id)
             await interaction.edit_original_response(
                 embed=await dashboard.render(), view=dashboard,
             )
@@ -1581,8 +1628,12 @@ class RivalDiscordClient(discord.Client):
         # menus are silently discarded and the menu looks dead.
         for stale_view in build_stale_guided_menu_views(self._build_guided_home):
             self.add_view(stale_view)
+        for stale_view in build_stale_dashboard_views(
+            self._build_research_dashboard, self._build_data_dashboard,
+        ):
+            self.add_view(stale_view)
         self.add_view(AutoHuntActions())
-        _LOG.info("RivaL stale guided-menu and restart-safe hunt views registered")
+        _LOG.info("RivaL guided, research, data and hunt recovery views registered")
         await asyncio.to_thread(self.auto_hunt.store.initialize)
         await asyncio.to_thread(self.polymarket_board.store.initialize)
         await asyncio.to_thread(self.polymarket_research.initialize)
@@ -1754,6 +1805,9 @@ class RivalDiscordClient(discord.Client):
         assert self.sports_results is not None
         assert self.current_provider is not None
         while not self.is_closed():
+            cycle_provider = "not_due"
+            cycle_new_finals = 0
+            cycle_reconciled = 0
             try:
                 now = datetime.now(UTC)
                 due = await asyncio.to_thread(
@@ -1784,6 +1838,8 @@ class RivalDiscordClient(discord.Client):
                                 "RivaL finalized sports result withheld: conflicting "
                                 "or incomplete provider evidence"
                             )
+                    cycle_provider = "checked"
+                    cycle_new_finals = verified
                     await asyncio.to_thread(
                         self.sports_results.mark_checked, due, now=seen,
                     )
@@ -1803,10 +1859,12 @@ class RivalDiscordClient(discord.Client):
                         len(due), verified,
                     )
             except QuotaReserveReached as exc:
+                cycle_provider = "quota_deferred"
                 _LOG.info("RivaL sports result audit deferred by quota reserve: %s", exc)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - quota/provider faults never block Discord
+                cycle_provider = "unavailable"
                 _LOG.exception("RivaL sports result verification unavailable")
             # This is local PostgreSQL work, not another provider request.
             # Run it even when no fixtures were due, the provider is down,
@@ -1815,6 +1873,7 @@ class RivalDiscordClient(discord.Client):
                 reconciled = await asyncio.to_thread(
                     self.sports_results.reconcile_unsettled, limit=100,
                 )
+                cycle_reconciled = len(reconciled)
                 if reconciled:
                     _LOG.info(
                         "RivaL sports backlog repaired events=%d leagues=%d",
@@ -1839,16 +1898,30 @@ class RivalDiscordClient(discord.Client):
                 remaining = await asyncio.to_thread(
                     sports_settlement_backlog, self.store,
                 )
+                excluded = await asyncio.to_thread(sports_settlement_exclusions, self.store)
                 _LOG.info(
                     "RivaL sports DB integrity unsettled_finalized=%d exclusions=%s",
-                    remaining,
-                    await asyncio.to_thread(sports_settlement_exclusions, self.store),
+                    remaining, excluded,
+                )
+                await asyncio.to_thread(
+                    self.store.set_runtime_state,
+                    "rival:sports-results:last-cycle",
+                    json.dumps({
+                        "at": datetime.now(UTC).isoformat(),
+                        "provider": cycle_provider,
+                        "new_finals": cycle_new_finals,
+                        "reconciled": cycle_reconciled,
+                        "unsettled_finalized": remaining,
+                        "exclusions": excluded,
+                    }, sort_keys=True, separators=(",", ":")),
                 )
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - monitoring is best effort
                 _LOG.exception("RivaL sports DB integrity check unavailable")
-            await asyncio.sleep(21600)
+            # Every 30 minutes recheck saved results; provider-specific
+            # 6-hour per-fixture retry and shared quota reserves remain intact.
+            await asyncio.sleep(1800)
 
     async def _kalshi_research_loop(self) -> None:
         """Quietly collect real public Kalshi quotes and settled receipts.

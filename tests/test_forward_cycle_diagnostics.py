@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from parlay_bot.discord_app.home import _latest_forward_cycle
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor, select_live_streams
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -52,6 +53,11 @@ def test_empty_engine_cycle_is_recorded_in_postgres_compatible_schema(tmp_path):
         assert result["short_history"] == 0
         assert result["issued_forecasts"] == 0
         assert result["settled_forecasts"] == 0
+        shown = _latest_forward_cycle(market)
+        assert shown is not None
+        assert shown["issued"] == 0
+        assert shown["expired"] == 0
+        assert shown["checked_at"].tzinfo is not None
     finally:
         store.close()
 

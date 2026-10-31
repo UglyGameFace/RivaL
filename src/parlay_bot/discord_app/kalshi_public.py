@@ -164,14 +164,25 @@ class KalshiCryptoBrowser:
                 self._forward.pending, now=datetime.now(UTC), limit=2,
             )
             for ticker in pending:
-                # The ticker is always from an immutable previously recorded
-                # official Kalshi quote, not a caller-supplied URL.
-                response = await self._client.get(_ROOT + f"/markets/{ticker}")
-                response.raise_for_status()
-                await asyncio.to_thread(
-                    self._forward.settle, ticker=ticker,
-                    payload=response.json(), checked_at=datetime.now(UTC),
-                )
+                # Reserve the next check BEFORE network access. A contract that
+                # has closed but is not yet settled must not starve the others.
+                checked_at = datetime.now(UTC)
+                if not await asyncio.to_thread(
+                    self._forward.mark_settlement_check,
+                    ticker=ticker, at=checked_at,
+                ):
+                    continue
+                try:
+                    response = await self._client.get(_ROOT + f"/markets/{ticker}")
+                    response.raise_for_status()
+                    await asyncio.to_thread(
+                        self._forward.settle, ticker=ticker,
+                        payload=response.json(), checked_at=datetime.now(UTC),
+                    )
+                except (httpx.HTTPError, TypeError, ValueError):
+                    _LOG.warning(
+                        "Kalshi settlement not yet verifiable ticker=%s", ticker,
+                    )
         except (ValueError, TypeError, httpx.HTTPError, RuntimeError):
             _LOG.exception("Kalshi shadow evidence unavailable; browser stays read-only")
 

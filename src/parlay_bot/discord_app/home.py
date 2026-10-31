@@ -292,23 +292,10 @@ def _performance_exchange(market: object, asset: str, horizon: int) -> dict:
     except Exception:  # noqa: BLE001 - independent score read
         _LOG.exception("Active learning evidence unavailable")
         benefit = None
-    try:
-        challengers = ShadowModelCompetition(market.store).report(
-            asset=asset, horizon=horizon,
-        )
-    except Exception:  # noqa: BLE001 - diagnostic cannot hide incumbent proof
-        _LOG.exception("Multi-model research read unavailable")
-        challengers = None
-    path_evidence = None
-    if horizon in (15, 60):
-        try:
-            path_evidence = ProspectivePathLedger(market.store).report(
-                asset=asset, horizon=horizon,
-            )
-        except Exception:  # noqa: BLE001 - no invented results on read errors
-            _LOG.exception("Prospective first-passage evidence read unavailable")
-    return {"score": score, "lineage": lineage, "benefit": benefit,
-            "challengers": challengers, "path_evidence": path_evidence}
+    # Deep challenger and TP/stop reports belong in Detailed Research. Pulling
+    # them into this 3.5s mobile overview previously timed out the entire
+    # exchange score, then silently overflowed Discord's 1024-char field cap.
+    return {"score": score, "lineage": lineage, "benefit": benefit}
 
 
 def _performance_health(market: object) -> dict:
@@ -1297,8 +1284,8 @@ class GuidedHome(discord.ui.View):
                 description="Last 7 days of recorded forecasts. Your fake trades are under Practice.",
                 color=discord.Color.blurple(),
             )
-            # Read independent sources concurrently. One slow or broken provider
-            # must not hide the other venue's real results on mobile.
+            # Independent database reads: a stalled feed must not suppress the
+            # separately persisted forecast-cycle heartbeat or venue scores.
             readers = {}
             if self.market is not None:
                 readers["exchange"] = asyncio.wait_for(
@@ -1306,10 +1293,12 @@ class GuidedHome(discord.ui.View):
                         _performance_exchange, self.market, self.coin, self.horizon,
                     ), timeout=3.5,
                 )
-                readers["health"] = asyncio.wait_for(
-                    asyncio.to_thread(
-                        _performance_health, self.market,
-                    ), timeout=3.5,
+                readers["feeds"] = asyncio.wait_for(
+                    asyncio.to_thread(self.market.feed_health), timeout=3.5,
+                )
+                readers["cycle"] = asyncio.wait_for(
+                    asyncio.to_thread(_latest_forward_cycle, self.market),
+                    timeout=3.5,
                 )
             if self.polymarket_status is not None:
                 readers["polymarket"] = asyncio.wait_for(
@@ -1349,12 +1338,18 @@ class GuidedHome(discord.ui.View):
                     )
                 else:
                     comparison = "Baseline comparison: unavailable"
+                scored = int(part.get("scored", part["settled"]) or 0)
+                coverage = (
+                    f"\nOnly {scored:,}/{part['settled']:,} settlements have "
+                    "valid paired scores; unscored records excluded"
+                    if scored != part["settled"] else ""
+                )
                 embed.add_field(
                     name="📈 Exchange accuracy",
                     value=(
                         f"{accuracy}\n"
-                        f"{part['settled']:,} settled / {part['issued']:,} issued\n"
-                        f"{comparison}"
+                        f"{part['settled']:,} settled / {part['issued']:,} issued"
+                        f"{coverage}\n{comparison}"
                     ), inline=False,
                 )
 
@@ -1373,9 +1368,10 @@ class GuidedHome(discord.ui.View):
                     if resolved and model_error is not None and quote_error is not None
                     else "Accuracy: **not measured** (no comparable settled calls)"
                 )
+                window = int(poly.get("score_window_days", 7))
                 value = (
-                    f"**{resolved:,}** model calls settled · "
-                    f"**{learned:,}** past outcomes learned\n{scored}"
+                    f"Last {window} days: **{resolved:,}** model calls settled · "
+                    f"**{learned:,}** past outcomes learned (all time)\n{scored}"
                 )
             embed.add_field(name="🎯 Polymarket", value=value, inline=False)
 
@@ -1426,64 +1422,33 @@ class GuidedHome(discord.ui.View):
                 verdict = {"supported": "supported against both baselines",
                            "not_improving": "not demonstrated",
                            "insufficient": "not enough future outcomes"}[benefit["status"]]
-                learning_text += (f"\nCurrent learning benefit: **{verdict}** "
+                learning_text += (f"\nCurrent learning benefit (14d): **{verdict}** "
                                   f"({benefit['targets']} target groups / {benefit['days']} days)")
                 if benefit.get("brier") is not None:
                     learning_text += (f"\nError: {benefit['brier']:.4f} vs "
                                       f"{benefit['baseline_brier']:.4f} past-rate / 0.2500 coin-flip")
             else:
-                learning_text += "\nCurrent learning benefit: unavailable"
-            challengers = exchange.get("challengers") if isinstance(exchange, dict) else None
-            if isinstance(challengers, dict):
-                for family, summary in challengers.items():
-                    label = "Naive Bayes" if family.startswith("gaussian") else "kNN"
-                    state = ("passed source-matched research screen"
-                             if summary["qualified_research"] else "not yet proven")
-                    source = summary.get("selected_source") or "no verified source"
-                    learning_text += (
-                        f"\n{label}: {state} "
-                        f"({summary['targets']} targets / {summary['days']} days; {source})"
-                    )
-                    # One concise diagnosis, not another dashboard section.
-                    regimes = summary.get("by_regime") or {}
-                    recorded = [
-                        (name, data) for name, data in regimes.items()
-                        if data["forecasts"] >= 10
-                    ]
-                    if recorded:
-                        name, data = max(
-                            recorded,
-                            key=lambda item: item[1]["high_confidence_misses"],
-                        )
-                        if data["high_confidence_misses"]:
-                            learning_text += (
-                                f"\n  Highest-confidence misses: "
-                                f"{data['high_confidence_misses']} in {name} conditions"
-                            )
-            path_evidence = exchange.get("path_evidence") if isinstance(exchange, dict) else None
-            if isinstance(path_evidence, dict) and path_evidence:
-                scopes = sorted(
-                    path_evidence.items(),
-                    key=lambda item: item[1]["tp1"]["targets"], reverse=True,
+                learning_text += "\nCurrent learning benefit: unavailable; NOT proven"
+            # Full family/regime and TP-before-stop evidence is available in
+            # Detailed Research, where each section can be read independently.
+            # Never silently slice the main learning field at 1024 chars.
+            if len(learning_text) > 1024:
+                learning_text = (
+                    "Learning summary exceeds Discord's display limit. "
+                    "Use Detailed Research → Accuracy → Training actually used "
+                    "for the complete source-matched evidence."
                 )
-                scope, proof = scopes[0]
-                learning_text += (
-                    f"\nPath research ({scope}): TP1 {proof['tp1']['targets']} "
-                    f"settled target groups / {proof['tp1']['days']} days; "
-                    f"TP2 {proof['tp2']['targets']} groups. "
-                    "Research only, no approved trade."
-                )
-            embed.add_field(name="🧠 Learning", value=learning_text[:1024], inline=False)
+            embed.add_field(name="🧠 Learning", value=learning_text, inline=False)
 
-            health = reports.get("health")
-            if isinstance(health, Exception):
-                _LOG.warning("Performance feed/cycle read failed: %s", type(health).__name__)
-            if not isinstance(health, dict):
-                health_text = "Market feed and forecast-cycle health unavailable."
+            # Keep the two health reports independent: a slow feed query
+            # cannot turn a healthy forecast worker into "unavailable".
+            now = datetime.now(UTC)
+            feeds = reports.get("feeds")
+            if not isinstance(feeds, (list, tuple)):
+                feeds_text = "Feeds: **read failed or timed out; status unknown**"
             else:
-                now = datetime.now(UTC)
                 fresh = set()
-                for row in health["feeds"]:
+                for row in feeds:
                     if row.get("asset") != self.coin or row.get("venue") not in self.venues:
                         continue
                     try:
@@ -1495,25 +1460,28 @@ class GuidedHome(discord.ui.View):
                             fresh.add(row["venue"])
                     except (ValueError, TypeError):
                         continue
-                feeds = (
+                feeds_text = (
                     f"Feeds: **{len(fresh)}/{len(self.venues)}** fresh"
                     if self.venues else "Feed coverage: not configured"
                 )
-                diag = health["cycle"]
-                if diag is None:
-                    cycle_text = "Forecast cycle: **no cycle recorded**"
-                elif diag.get("status") == "unavailable":
-                    cycle_text = "Forecast cycle: **read failed; status unknown**"
-                else:
-                    age = int((now - diag["checked_at"].astimezone(UTC)).total_seconds() // 60)
-                    cycle_text = (
-                        f"Forecast check: **{age}m ago** "
-                        f"({'fresh' if 0 <= age <= 10 else 'stale/invalid time'}), "
-                        f"**{diag['issued']}** issued"
-                    )
-                health_text = f"{feeds}\n{cycle_text}"
+            diag = reports.get("cycle")
+            if isinstance(diag, Exception) or (diag is not None and not isinstance(diag, dict)):
+                cycle_text = "Forecast cycle: **read failed or timed out; status unknown**"
+            elif diag is None:
+                cycle_text = "Forecast cycle: **no cycle recorded**"
+            elif diag.get("status") == "unavailable":
+                cycle_text = "Forecast cycle: **read failed; status unknown**"
+            else:
+                age = int((now - diag["checked_at"].astimezone(UTC)).total_seconds() // 60)
+                cycle_text = (
+                    f"Forecast check: **{age}m ago** "
+                    f"({'fresh' if 0 <= age <= 10 else 'stale/invalid time'}), "
+                    f"**{diag['issued']}** issued"
+                )
+            health_text = f"{feeds_text}\n{cycle_text}"
             embed.add_field(name="📡 System status", value=health_text, inline=False)
-            embed.set_footer(text="Exchange forecasts and contract calls are scored separately")
+            embed.timestamp = datetime.now(UTC)
+            embed.set_footer(text="Live database read • Exchange and contract scores differ • No proven trading edge")
         elif p == "help":
             embed = discord.Embed(
                 title="❓ Getting Started",

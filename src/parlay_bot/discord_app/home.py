@@ -34,8 +34,6 @@ from parlay_bot.perpetuals.live_quotes import QuoteUnavailable, quote_embed
 from parlay_bot.perpetuals.markets import ASSET_NAMES
 from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
-from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
-from parlay_bot.perpetuals.path_forward import ProspectivePathLedger
 from parlay_bot.providers.owner_limits import OwnerLimitStore
 
 if TYPE_CHECKING:

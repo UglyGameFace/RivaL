@@ -292,6 +292,56 @@ class KalshiForwardResearch:
             )
             return True
 
+    def contract_preview(self, *, asset: str, market) -> dict | None:
+        """Read only the already-frozen candidate for this exact Kalshi contract.
+
+        A shadow model is never an approved or executable trade call. A model
+        trained after this first issuance cannot rewrite this prediction.
+        """
+        if asset not in ("BTC", "ETH", "SOL", "XRP"):
+            raise ValueError("unrecognized Kalshi asset")
+        series = getattr(market, "series_ticker", None)
+        if not isinstance(series, str) or not market.ticker.startswith(series + "-"):
+            return None
+        if not isinstance(market.rules, str) or not market.rules.strip():
+            return None
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT asset,series_ticker,issued_at,close_at,market_rules_sha256,
+                          baseline_yes,candidate_yes,candidate_weights_sha256,
+                          candidate_training_labels
+                   FROM rival_kalshi_forward WHERE ticker=? AND asset=?
+                     AND series_ticker=?""",
+                (market.ticker, asset, series),
+            ).fetchone()
+        if row is None or row["market_rules_sha256"] != hashlib.sha256(
+            market.rules.encode()
+        ).hexdigest():
+            return None
+        if row["close_at"] != _iso(market.close_time):
+            return None
+        candidate = row["candidate_yes"]
+        labels = row["candidate_training_labels"]
+        digest = row["candidate_weights_sha256"]
+        if candidate is not None and (
+            not math.isfinite(candidate) or not 0 < candidate < 1
+            or labels is None or int(labels) < MIN_TRAINED
+            or not isinstance(digest, str) or len(digest) != 64
+        ):
+            raise ValueError("Invalid frozen Kalshi model prediction")
+        return {
+            "ticker": market.ticker,
+            "series_ticker": series,
+            "issued_at": row["issued_at"],
+            "baseline_yes": float(row["baseline_yes"]),
+            "candidate_yes": float(candidate) if candidate is not None else None,
+            "candidate_training_labels": int(labels) if labels is not None else 0,
+            "model": MODEL,
+            "approved_model": False,
+            "verified_after_cost": False,
+        }
+
     def summary(self, *, asset: str) -> dict:
         if asset not in ("BTC", "ETH", "SOL", "XRP"):
             raise ValueError("unrecognized Kalshi asset")

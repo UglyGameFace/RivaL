@@ -12,6 +12,23 @@ decision engine, a new subscription or a paid API dependency.
   `https://www.sec.gov/news/pressreleases.rss`
 - BLS official downloadable news-release calendar:
   `https://www.bls.gov/schedule/news_release/bls.ics`
+- Global headline **discovery, not verification**: the free, keyless
+  GDELT DOC API (`https://api.gdeltproject.org/api/v2/doc/doc`), restricted
+  to a static crypto/macro/geopolitical query, an overlapping one-hour
+  rolling window, at most 40 articles per poll, and an explicit list of
+  established news-site hostnames. Domain allowlisting does **not**
+  authenticate an article or establish the truth of its headline. Original
+  news-site pages are never fetched.
+
+GDELT articles are separately marked `indexed_secondary_unverified`,
+retain their original publisher link and upstream index-first-seen time,
+and have `published_at=null` because an index timestamp is **not** a
+publisher's original publication clock. Unknown headlines are skipped;
+crypto incident, macro and geopolitical topics are only text-matched
+research leads. GDELT never earns a government-source credibility label,
+and cannot cause an automatic trading direction or NO CALL by itself.
+`rival_macro_index_provenance` stores original upstream index time and
+display-only publisher domain alongside the immutable first-observed records.
 
 A source-specific failed request is recorded as unavailable and cannot
 silently become an "all clear". Each official source has a bounded response
@@ -53,6 +70,14 @@ collectors and genuinely issued paper forecasts keep running for honest
 ongoing learning; this does not backdate results or erase previous calls.
 
 ### Still unproven / next work tracked in Issue #151
+Global index results are not complete world news; website access, coverage,
+language and query filtering limit the sample. Multi-source corroboration,
+source reputation calibration and origin-authenticated reporting remain
+required before classifying any individual story as verified. The existing
+OpenRouter and Gemini research prompts are updated to interpret official
+source evidence and treat third-party indexed headlines as unverified data,
+never higher authority than source-matched mathematical risk controls.
+
 Full newswire coverage, economic expectation/actual *surprise*, economic
 data vintages, event-to-market causal validation, institutional/ETF activity,
 credible on-chain/derivatives context, political-event contract settlement,

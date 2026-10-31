@@ -8,6 +8,7 @@ An LLM may explain the recorded context but cannot override the rule.
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import re
 import threading
@@ -24,7 +25,25 @@ SOURCES = {
     "fed_monetary": ("https://www.federalreserve.gov/feeds/press_monetary.xml", "rss"),
     "sec_releases": ("https://www.sec.gov/news/pressreleases.rss", "rss"),
     "bls_calendar": ("https://www.bls.gov/schedule/news_release/bls.ics", "ics"),
+    "global_news_index": ("https://api.gdeltproject.org/api/v2/doc/doc", "indexed_json"),
 }
+# GDELT is an index, NOT an official publisher or a verified original article.
+# Its 60-minute rolling window overlaps the durable 30-minute poll interval.
+GDELT_PARAMS = {
+    "query": ('(bitcoin OR ethereum OR cryptocurrency OR stablecoin OR '
+              '"federal reserve" OR "central bank" OR inflation OR '
+              'sanctions OR tariffs OR "oil prices" OR "exchange outage") '
+              "sourcelang:english"),
+    "mode": "artlist", "format": "json", "timespan": "1h",
+    "maxrecords": "40", "sort": "datedesc",
+}
+# Publishing source authenticity is NOT asserted merely because GDELT indexed
+# a URL. Bound link presentation to established news domains; do not fetch
+# their pages, redirect through them, or use their headline as a trading rule.
+INDEXED_NEWS_DOMAINS = (
+    "reuters.com", "apnews.com", "bbc.com", "bloomberg.com",
+    "ft.com", "coindesk.com", "theblock.co",
+)
 POLL_EVERY = timedelta(minutes=30)
 FRESH_FOR = timedelta(hours=2)
 MAX_BYTES = 1_500_000
@@ -36,11 +55,24 @@ BLS_HIGH_IMPACT = (
 )
 RELEVANT_REGULATION = re.compile(
     r"\b(crypto|cryptocurrency|digital asset|bitcoin|ethereum|ether|"
-    r"stablecoin|tokeniz|exchange.traded fund|etf)\b", re.IGNORECASE,
+    r"stablecoin|tokeniz\w*|exchange.traded fund|etf)\b", re.IGNORECASE,
 )
 RELEVANT_MACRO = re.compile(
     r"\b(fomc|federal open market|interest rate|monetary policy|"
     r"discount rate|federal funds)\b", re.IGNORECASE,
+)
+CRYPTO_INCIDENT = re.compile(
+    r"\b(hack|hacked|exploit|breach|outage|insolvenc\w*|"
+    r"liquidat\w*|depeg|bankrupt\w*|phishing)\b", re.IGNORECASE,
+)
+WORLD_MACRO = re.compile(
+    r"\b(inflation|interest rate\w*|central bank|recession|"
+    r"oil prices|economic slowdown|financial crisis|bond yield\w*|"
+    r"currency crisis)\b", re.IGNORECASE,
+)
+GEO_EVENT = re.compile(
+    r"\b(sanction\w*|tariff\w*|diplomatic|war|ceasefire|"
+    r"conflict|export control\w*)\b", re.IGNORECASE,
 )
 
 
@@ -61,6 +93,58 @@ def _official_link(source: str, url: str) -> str:
     if parsed.scheme != "https" or parsed.hostname != host or parsed.username:
         raise ValueError("unverified event source URL")
     return url
+
+
+def _indexed_link(url: str) -> str:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme != "https" or parsed.username or parsed.password
+        or parsed.port not in (None, 443)
+        or not any(host == d or host.endswith("." + d)
+                   for d in INDEXED_NEWS_DOMAINS)
+    ):
+        raise ValueError("indexed news link is not a permitted news domain")
+    return url
+
+
+def _indexed_news(payload: bytes, now: datetime) -> list[dict]:
+    """Research leads only; GDELT index time is NOT article publication time."""
+    items = json.loads(payload)
+    if not isinstance(items, dict) or not isinstance(items.get("articles"), list):
+        raise TypeError("invalid global news index response")
+    result = []
+    for record in items["articles"][:MAX_ITEMS]:
+        if not isinstance(record, dict):
+            continue
+        try:
+            title = _title(record.get("title") or "")
+            url = _indexed_link(str(record.get("url") or ""))
+            raw_seen = str(record.get("seendate") or "")
+            seen = datetime.strptime(raw_seen, "%Y%m%dT%H%M%SZ").replace(tzinfo=UTC)
+            if not now-timedelta(hours=12) <= seen <= now+timedelta(minutes=5):
+                continue
+            category = (
+                "indexed_crypto_incident" if CRYPTO_INCIDENT.search(title)
+                and RELEVANT_REGULATION.search(title) else
+                "indexed_global_geopolitics" if GEO_EVENT.search(title) else
+                "indexed_crypto_news" if RELEVANT_REGULATION.search(title) else
+                "indexed_global_macro" if (
+                    RELEVANT_MACRO.search(title) or WORLD_MACRO.search(title)
+                ) else None
+            )
+            if category is None:
+                continue
+            result.append({
+                "uid": _identity("global_news_index", url),
+                "title": title, "url": url, "category": category,
+                "published_at": None, "scheduled_at": None,
+                "upstream_index_seen_at": seen.isoformat(),
+                "publisher_domain": urlparse(url).hostname,
+            })
+        except (TypeError, ValueError, OverflowError):
+            continue
+    return result
 
 
 def _title(raw: str) -> str:
@@ -203,6 +287,13 @@ class EventIntelligence:
                         ON rival_macro_events(category,scheduled_at);
                     CREATE INDEX IF NOT EXISTS idx_macro_observed
                         ON rival_macro_events(first_seen_at);
+                    CREATE TABLE IF NOT EXISTS rival_macro_index_provenance (
+                        source TEXT NOT NULL,
+                        event_id TEXT NOT NULL,
+                        first_upstream_index_seen_at TEXT NOT NULL,
+                        publisher_domain TEXT NOT NULL,
+                        PRIMARY KEY(source,event_id)
+                    );
                     CREATE TABLE IF NOT EXISTS rival_macro_revisions (
                         source TEXT NOT NULL,
                         event_id TEXT NOT NULL,
@@ -246,7 +337,19 @@ class EventIntelligence:
                 if source not in SOURCES or len(item["uid"]) != 64:
                     raise ValueError("invalid event provenance")
                 # Only the source's own official link can identify this item.
-                _official_link(source, item["url"])
+                if source == "global_news_index":
+                    _indexed_link(item["url"])
+                    if not item.get("upstream_index_seen_at"):
+                        raise ValueError("missing index timestamp")
+                    conn.execute(
+                        """INSERT INTO rival_macro_index_provenance(
+                           source,event_id,first_upstream_index_seen_at,publisher_domain
+                           ) VALUES (?,?,?,?) ON CONFLICT DO NOTHING""",
+                        (source, item["uid"], item["upstream_index_seen_at"],
+                         item["publisher_domain"]),
+                    )
+                else:
+                    _official_link(source, item["url"])
                 encoded = "|".join(str(item.get(k) or "") for k in (
                     "title", "url", "category", "published_at", "scheduled_at",
                 ))
@@ -290,7 +393,10 @@ class EventIntelligence:
                     continue
                 summary["sources_checked"] += 1
                 try:
-                    with http.stream("GET", url, follow_redirects=False) as response:
+                    with http.stream(
+                        "GET", url, follow_redirects=False,
+                        params=GDELT_PARAMS if kind == "indexed_json" else None,
+                    ) as response:
                         response.raise_for_status()
                         if response.is_redirect:
                             raise ValueError("official source redirected")
@@ -299,12 +405,15 @@ class EventIntelligence:
                             payload.extend(chunk)
                             if len(payload) > MAX_BYTES:
                                 raise ValueError("source size budget exceeded")
-                    rows = (_rss(bytes(payload), source, stamp)
-                            if kind == "rss" else _ics(bytes(payload), stamp))
+                    rows = (
+                        _rss(bytes(payload), source, stamp) if kind == "rss"
+                        else _ics(bytes(payload), stamp) if kind == "ics"
+                        else _indexed_news(bytes(payload), stamp)
+                    )
                     summary["events_seen"] += self._store(source, rows, stamp)
                     summary["sources_ok"] += 1
                     self._status(source, stamp, "ok")
-                except (httpx.HTTPError, ValueError, ET.ParseError, UnicodeError) as exc:
+                except (httpx.HTTPError, ValueError, TypeError, ET.ParseError, UnicodeError) as exc:
                     code = type(exc).__name__[:60]
                     self._status(source, stamp, "unavailable")
                     summary["source_failures"].append({"source": source, "error": code})
@@ -326,12 +435,15 @@ class EventIntelligence:
                     "SELECT source,last_success_at,status FROM rival_macro_sources",
                 ).fetchall()
                 events = conn.execute(
-                    """SELECT source,title,url,category,published_at,scheduled_at,
-                              first_seen_at,content_sha256
-                       FROM rival_macro_events
-                       WHERE (scheduled_at>=? AND scheduled_at<=?)
-                          OR (first_seen_at>=? AND first_seen_at<=?)
-                       ORDER BY first_seen_at DESC LIMIT 80""",
+                    """SELECT e.source,e.title,e.url,e.category,
+                              e.published_at,e.scheduled_at,e.first_seen_at,
+                              e.content_sha256,p.first_upstream_index_seen_at
+                       FROM rival_macro_events AS e
+                       LEFT JOIN rival_macro_index_provenance AS p
+                         ON p.source=e.source AND p.event_id=e.event_id
+                       WHERE (e.scheduled_at>=? AND e.scheduled_at<=?)
+                          OR (e.first_seen_at>=? AND e.first_seen_at<=?)
+                       ORDER BY e.first_seen_at DESC LIMIT 80""",
                     ((stamp-timedelta(minutes=35)).isoformat(),
                      (stamp+timedelta(days=3)).isoformat(),
                      (stamp-timedelta(hours=6)).isoformat(), stamp.isoformat()),
@@ -385,6 +497,12 @@ class EventIntelligence:
                     "content_sha256": e["content_sha256"],
                     "risk_window_active": bool(pause),
                     "market_direction_inferred": False,
+                    "provenance": (
+                        "indexed_secondary_unverified"
+                        if e["source"] == "global_news_index" else
+                        "official_release_or_calendar"
+                    ),
+                    "upstream_index_seen_at": e.get("first_upstream_index_seen_at"),
                 })
         candidates.sort(key=lambda e: (not e["risk_window_active"],
                                         e["scheduled_at"] or e["first_seen_at"]))
@@ -392,7 +510,8 @@ class EventIntelligence:
         # coverage. No feed data means unknown, NEVER an empirical all clear.
         return {
             "status": "official_sources_available" if any(
-                value == "fresh" for value in sources.values()
+                sources.get(name) == "fresh"
+                for name in ("fed_monetary", "sec_releases", "bls_calendar")
             ) else "unavailable",
             "decision": "pause" if paused else "no_verified_active_pause",
             "event_risk_cleared": False,

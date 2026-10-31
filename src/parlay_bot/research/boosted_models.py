@@ -10,8 +10,8 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from importlib.metadata import PackageNotFoundError, version
 from collections import defaultdict
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 from parlay_bot.perpetuals.markets import HORIZONS

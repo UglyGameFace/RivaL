@@ -94,6 +94,86 @@ class CDNAPersonalReader:
         if self._owned:
             await self._client.aclose()
 
+    async def search_contracts(self, keyword: str) -> tuple[tuple[str, str, str], ...]:
+        """Discover trading symbols from actual official event contract listings."""
+        if (
+            not isinstance(keyword, str) or len(keyword.strip()) < 2
+            or len(keyword) > 40 or not re.fullmatch(r"[A-Za-z0-9 ]{2,40}", keyword)
+        ):
+            raise CDNAUnavailable("Search using a coin name or ticker")
+        now = datetime.now(UTC)
+        async with self._lock:
+            if self._blocked_until is not None and now < self._blocked_until:
+                raise CDNAUnavailable("CDNA access is paused")
+            last = self._last.get("search:" + keyword.upper())
+            if last is not None and now - last < _MIN_INTERVAL:
+                raise CDNAUnavailable("Recent search; retry after 12 seconds")
+            self._last["search:" + keyword.upper()] = now
+            try:
+                response = await self._client.get(
+                    _ROOT + "/events/search",
+                    params={"q": keyword.strip(), "limit": 5},
+                )
+                if response.status_code in (401, 403, 429):
+                    self._blocked_until = now + timedelta(minutes=5)
+                    raise CDNAUnavailable("CDNA search is denied or rate limited")
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict) or not isinstance(
+                    payload.get("data"), list,
+                ):
+                    raise CDNAUnavailable("CDNA event search response invalid")
+                matches: list[tuple[str, str, str]] = []
+                for event in payload["data"][:3]:
+                    if not isinstance(event, dict):
+                        continue
+                    event_id = event.get("id")
+                    title = event.get("title")
+                    if (
+                        not isinstance(event_id, str)
+                        or re.fullmatch(
+                            r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-"
+                            r"[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
+                            event_id,
+                        ) is None
+                        or not isinstance(title, str) or not title.strip()
+                    ):
+                        continue
+                    contracts = await self._client.get(
+                        _ROOT + f"/events/{event_id}/contracts",
+                    )
+                    if contracts.status_code in (401, 403, 429):
+                        self._blocked_until = now + timedelta(minutes=5)
+                        raise CDNAUnavailable("CDNA contract list access denied")
+                    contracts.raise_for_status()
+                    body = contracts.json()
+                    if not isinstance(body, dict) or not isinstance(
+                        body.get("data"), list,
+                    ):
+                        raise CDNAUnavailable("CDNA contract list invalid")
+                    for row in body["data"][:10]:
+                        if not isinstance(row, dict):
+                            continue
+                        symbol = row.get("symbol")
+                        contract_title = row.get("title")
+                        if (
+                            isinstance(symbol, str) and _SYMBOL.fullmatch(symbol)
+                            and isinstance(contract_title, str)
+                            and contract_title.strip()
+                        ):
+                            matches.append(
+                                (symbol, contract_title[:110], title[:125]),
+                            )
+                        if len(matches) >= 6:
+                            break
+                    if len(matches) >= 6:
+                        break
+                return tuple(matches)
+            except CDNAUnavailable:
+                raise
+            except (httpx.HTTPError, ValueError, TypeError) as exc:
+                raise CDNAUnavailable("CDNA contract discovery unavailable") from exc
+
     async def quote(self, symbol: str) -> CDNAPrice:
         if not isinstance(symbol, str) or not _SYMBOL.fullmatch(symbol):
             raise CDNAUnavailable("Enter a real CDNA contract trading symbol")

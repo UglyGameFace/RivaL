@@ -268,3 +268,34 @@ def test_stale_or_unavailable_model_never_becomes_directional_call():
         assert "No current contract-specific AI call" in embed.description
         assert "Polymarket AI WAIT" in embed.title
         assert "99.0%" not in str(embed.to_dict())
+
+
+def test_live_polymarket_hourly_settlement_source_follows_quote_not_timeframe():
+    now = datetime(2026, 10, 30, 12, 10, tzinfo=UTC)
+    start = now.replace(minute=0)
+    market = PolymarketListedWindow(
+        asset="BTC", horizon=60, slug="btc-up-or-down-test",
+        opens=start, closes=start+timedelta(hours=1),
+        accepting_orders=True, price_to_beat=72000.,
+    )
+    def picture(source):
+        notice = PolymarketNotice(
+            asset="BTC", horizon=60, issued=start, expires=market.closes,
+            slug=market.slug, up_ask=.55, down_ask=.48,
+            quote_at=now, resolution_source=source,
+        )
+        board = PolymarketWindowBoard(
+            checked_at=now, current=market, next_window=None,
+            current_quote=notice,
+        )
+        result = live_polymarket_embed(board, None, asset="BTC", horizon=60)
+        return next(f.value for f in result.fields if f.name == "Settlement source")
+
+    assert "Chainlink" in picture(
+        "https://data.chain.link/streams/btc-usd-twap-60s-streams"
+    )
+    assert "Binance" not in picture(
+        "https://data.chain.link/streams/btc-usd-twap-60s-streams"
+    )
+    assert "Binance" in picture("https://www.binance.com/en/trade/BTC_USDT")
+    assert "not verified" in picture(None)

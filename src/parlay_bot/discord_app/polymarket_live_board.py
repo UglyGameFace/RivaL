@@ -190,10 +190,23 @@ def live_polymarket_embed(
             else "Not published or verified; never estimated from another exchange",
             inline=False,
         )
-        embed.add_field(name="Settlement source", value=(
-            f"Binance {asset}/USDT hourly candle, as specified by this Polymarket event"
-            if horizon == 60 else "The Chainlink reference in this event's published rules"
-        ), inline=False)
+        source = quote.resolution_source if quote is not None else None
+        if source and "chain.link" in source.lower():
+            resolution_text = (
+                "Chainlink reference from this contract's published market. "
+                "Use the exact event rules for the settlement observation."
+            )
+        elif source and "binance.com" in source.lower():
+            resolution_text = (
+                "Binance reference from this contract's published market. "
+                "Do not substitute a perpetual futures candle."
+            )
+        else:
+            resolution_text = (
+                "Exact settlement source not verified in this quote. "
+                "Open the listed contract to check its rules."
+            )
+        embed.add_field(name="Settlement source", value=resolution_text, inline=False)
     if valid:
         embed.add_field(name=f"🧠 {snapshot.kind} contract call", value=f"**{direction}** • {snapshot.thesis}", inline=False)
         embed.add_field(name="Call timing", value=(

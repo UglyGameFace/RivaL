@@ -196,9 +196,9 @@ async def test_native_research_fails_closed_when_archive_has_no_months(tmp_path)
     assert result["published_models"] == 0
     assert result["promoted_live"] is False
     assert result["profitability_verified"] is False
-    saved = json.loads(
-        (tmp_path / "reports/source-hyperliquid-research.json").read_text()
-    )
+    reports = list((tmp_path / "reports").glob("source-hyperliquid-research-*.json"))
+    assert len(reports) == 1
+    saved = json.loads(reports[0].read_text())
     assert saved["status"] == "source_months_incomplete"
     assert saved["published_models"] == 0
     assert saved["requested_months"] == [

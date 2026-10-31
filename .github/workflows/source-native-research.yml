@@ -87,7 +87,7 @@ jobs:
           import os
           from pathlib import Path
 
-          reports = sorted(Path("data/native-reports").glob("source-*-research.json"))
+          reports = sorted(Path("data/native-reports").glob("source-*-research-*.json"))
           lines = ["### Source-native acceptance", ""]
           if not reports:
               lines.append("No source-native report was produced. Check workflow authorization and errors.")

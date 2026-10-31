@@ -17,12 +17,21 @@ on:
           - deribit
           - lighter
           - phemex
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/source-native-research.yml"
+      - "src/parlay_bot/research/source_native.py"
+      - "src/parlay_bot/research/source_native_offline.py"
+      - "tools/native_acceptance_status.py"
+      - "tests/test_native_acceptance_status.py"
   schedule:
     # One bounded venue per day, rather than nine full retrains at once.
     - cron: "43 5 * * *"
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: rival-source-native-research
@@ -112,6 +121,11 @@ jobs:
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
               summary.write("\n".join(lines) + "\n")
           PY
+      - name: Persist actual acceptance result without duplicate issue notifications
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/native_acceptance_status.py
       - name: Preserve research-only evidence, never provider raw files
         if: always()
         uses: actions/upload-artifact@v4

@@ -16,6 +16,8 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
+from parlay_bot.research.boosted_portable import predict_portable
+from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
 
 FAMILIES = ("gaussian_nb_v1", "knn21_v1")
 MIN_TRAIN = 80
@@ -126,6 +128,18 @@ class ShadowModelCompetition:
               incumbent_up, baseline_up):
         """Call only inside the incumbent forecast's *successful* transaction."""
         predictions = shadow_predictions(samples, features, as_of=now)
+        # Exact-source historical boosters enter the SAME immutable future
+        # comparison as existing live families, never the incumbent weights.
+        boosters = {}
+        for item in ResearchCandidateRegistry(self.store).compatible_boosters(
+            venue=venue, contract=contract, quote=quote,
+            horizon=horizon, now=utc(issued_at),
+        ):
+            family = f"boosted_{item['family']}_{item['model_sha256'][:12]}"
+            boosters[family] = item
+            predictions[family] = predict_portable(
+                item["portable_model"], features, trusted=True,
+            )
         if not predictions:
             return 0
         # Training provenance is persisted at issuance, never reconstructed
@@ -153,7 +167,10 @@ class ShadowModelCompetition:
                 (venue,contract,quote,asset,horizon,family,
                  utc(reference_opened_at).isoformat(),utc(issued_at).isoformat(),
                  utc(target_opened_at).isoformat(),probability,
-                 incumbent_up,baseline_up,len(eligible),fingerprint),
+                 incumbent_up,baseline_up,
+                  (len(eligible) if family not in boosters else 0),
+                  (fingerprint if family not in boosters
+                   else boosters[family]["model_sha256"])),
             )
             saved += int(row.rowcount == 1)
         return saved
@@ -246,7 +263,11 @@ class ShadowModelCompetition:
                  stamp.isoformat(),stamp.isoformat()),
             ).fetchall()
         results = {}
-        for family in FAMILIES:
+        all_families = list(FAMILIES) + sorted({
+            str(row['family']) for row in rows
+            if str(row['family']).startswith('boosted_')
+        })
+        for family in all_families:
             scoped = {}
             invalid = 0
             for row in rows:

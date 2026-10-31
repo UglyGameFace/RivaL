@@ -14,7 +14,7 @@ from typing import Any
 
 import httpx
 
-from parlay_bot.perpetuals.history_inventory import six_months_prior
+from parlay_bot.perpetuals.history_inventory import six_complete_months_start, six_months_prior
 from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle, MarketDataError
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS as _ALLOWED
@@ -27,6 +27,42 @@ def _utc(value: datetime) -> datetime:
     if value.utcoffset() is None:
         raise ValueError("aware clock required")
     return value.astimezone(UTC)
+
+
+def align_forward_month_cursor(conn, *, venue: str, asset: str,
+                               now: datetime, row: dict) -> dict:
+    """Repair persisted rolling-lookback cursors, once, without wiping candles.
+
+    Previous recovery started on the SAME DAY six months ago, making the
+    earliest completed training month impossible. Move the start/cursor back
+    to UTC month-start only if the saved origin is later. Compare-and-swap
+    prevents overriding another worker's concurrent cursor advancement.
+    The existing candle ledger remains immutable and ingestion idempotent.
+    """
+    floor = six_complete_months_start(now)
+    origin = _utc(datetime.fromisoformat(str(row["started_from"])))
+    if origin <= floor:
+        return row
+    with_origin = str(row["started_from"])
+    with_cursor = str(row["next_opened_at"])
+    conn.execute(
+        """UPDATE perp_history_recovery
+           SET started_from=?, next_opened_at=?, status='progress',
+               retry_after=NULL, attempted_at=NULL
+           WHERE venue=? AND asset=?
+             AND started_from=? AND next_opened_at=?""",
+        (floor.isoformat(), floor.isoformat(), venue, asset,
+         with_origin, with_cursor),
+    )
+    fresh = conn.execute(
+        "SELECT * FROM perp_history_recovery WHERE venue=? AND asset=?",
+        (venue, asset),
+    ).fetchone()
+    if fresh is None:
+        raise RuntimeError("source recovery row disappeared during boundary repair")
+    _LOG.info("RivaL %s calendar-month cursor check asset=%s origin=%s target=%s",
+              venue, asset, with_origin, floor.isoformat())
+    return dict(fresh)
 
 
 def _num(value: Any, *, positive: bool = False) -> float:
@@ -174,7 +210,10 @@ class GateHistoryRecovery:
                 (asset,),
             ).fetchone()
             if existing is not None:
-                row = dict(existing)
+                row = align_forward_month_cursor(
+                    conn, venue="gate", asset=asset, now=now,
+                    row=dict(existing),
+                )
                 if (
                     row.get("status") == "caught_up"
                     and not row.get("inserted_bars")
@@ -204,10 +243,7 @@ class GateHistoryRecovery:
                         (asset,),
                     ).fetchone())
                 return row
-            initial = six_months_prior(now).replace(
-                minute=six_months_prior(now).minute // 5 * 5,
-                second=0, microsecond=0,
-            ).isoformat()
+            initial = six_complete_months_start(now).isoformat()
             conn.execute(
                 """INSERT INTO perp_history_recovery
                    (venue,asset,started_from,next_opened_at)

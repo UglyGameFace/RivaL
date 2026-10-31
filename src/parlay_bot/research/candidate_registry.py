@@ -304,11 +304,9 @@ class ResearchCandidateRegistry:
             < timedelta(hours=48)
             and any(
                 r["model_sha256"] == selected["selected_sha256"]
-                and (lambda identity: (
-                    identity["venue"], identity["contract"], identity["quote"]
-                ) == (
-                    selected["venue"], selected["contract"], selected["quote"]
-                ))(json.loads(r["model_spec_json"])["identity"])
+                and tuple(json.loads(r["model_spec_json"])["identity"][key]
+                          for key in ("venue", "contract", "quote"))
+                == tuple(selected[key] for key in ("venue", "contract", "quote"))
                 for r in matched
             )
         )

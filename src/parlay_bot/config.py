@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     # AI reviewers use a shared free allowance. No owner request should
     # silently consume it; opt in explicitly to background LLM calls.
     rival_gemini_auto_enabled: bool = Field(default=False)
+    # Guard against old Discloud environments still setting the legacy flag
+    # true: unattended LLM requests require a second deliberate opt-in.
+    rival_ai_background_opt_in: bool = Field(default=False)
 
     # Official licensed Polymarket PolyBolt Chainlink TWAP (NOT free CLOB book).
     # Three CLOB credentials are used ONLY for the read-only live WS auth.

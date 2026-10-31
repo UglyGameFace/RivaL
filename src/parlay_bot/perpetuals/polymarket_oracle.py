@@ -132,6 +132,8 @@ class PolymarketOracleChallenger:
                         issued_at TEXT NOT NULL, weights_sha256 TEXT NOT NULL,
                         probability_up DOUBLE PRECISION NOT NULL,
                         market_baseline DOUBLE PRECISION NOT NULL,
+                        input_evidence_sha256 TEXT NOT NULL,
+                        oracle_receipt_sha256 TEXT NOT NULL,
                         PRIMARY KEY(slug,model_version)
                     );
                 """)
@@ -234,9 +236,11 @@ class PolymarketOracleChallenger:
             conn.execute(
                 """INSERT INTO rival_poly_oracle_forward
                    (slug,model_version,issued_at,weights_sha256,probability_up,
-                    market_baseline) VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                    market_baseline,input_evidence_sha256,oracle_receipt_sha256)
+                   VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
                 (notice.slug, MODEL, stamp.isoformat(), sha, p,
-                 notice.up_ask/(notice.up_ask+notice.down_ask)),
+                 notice.up_ask/(notice.up_ask+notice.down_ask),
+                 digest, reference.source_receipt_sha256),
             )
         return {"model": MODEL, "probability_up": p, "training_labels": updates,
                 "research_only": True, "verified_trading_edge": False}

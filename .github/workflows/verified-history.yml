@@ -63,7 +63,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m parlay_bot.research.supplemental_history \
-            --months 1 --assets BTC --max-new 4 \
+            --months 1 --assets BTC --one-minute --max-new 5 \
             --root public-evidence --report-dir public-evidence/reports
       - name: Report missing supplemental provider proof
         if: steps.supplemental_provider.outcome != 'success'
@@ -94,6 +94,7 @@ jobs:
         with:
           name: public-supplemental-source-smoke
           path: |
+            public-evidence/binance_um_klines/
             public-evidence/binance_um_funding/
             public-evidence/binance_um_mark_klines/
             public-evidence/binance_um_index_klines/
@@ -196,7 +197,7 @@ jobs:
             echo "::warning::Supplemental history will stay in CI artifacts without private Drive credentials."
           fi
           python -m parlay_bot.research.supplemental_history \
-            --months "$months" --assets BTC ETH SOL XRP --max-new 100 \
+            --months "$months" --assets BTC ETH SOL XRP --one-minute --passes 2 --max-new 100 \
             --root data/research-history --report-dir data/research-reports "${args[@]}"
       - name: Retain supplementary historical source evidence if Drive is unavailable
         if: always()
@@ -204,6 +205,7 @@ jobs:
         with:
           name: rival-verified-supplemental-research
           path: |
+            data/research-history/binance_um_klines/
             data/research-history/binance_um_funding/
             data/research-history/binance_um_mark_klines/
             data/research-history/binance_um_index_klines/

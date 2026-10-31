@@ -106,6 +106,7 @@ async def test_live_desk_shows_actual_verified_market_and_switches_provider_in_p
                 ticker="KXBTC-TEST", title="Bitcoin above the threshold?",
                 close_time=now+timedelta(hours=1),
                 yes_ask=0.4, no_ask=0.61, rules="Separate Kalshi rule",
+                quote_source="orderbook", yes_ask_size=10.0, no_ask_size=12.0,
             ),),
         ))
         other = await home.render()

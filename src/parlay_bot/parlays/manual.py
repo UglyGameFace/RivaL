@@ -36,7 +36,7 @@ def available_selections(
             f"""SELECT selection_key,provider,fixture_id,bookmaker,
                        market_id,market_name,outcome_id,outcome_name,
                        player_id,player_name,line_value,price_decimal,
-                       price_american,observed_at,sport_name,
+                       price_american,observed_at,start_time,sport_name,
                        tournament_name,participant1_name,participant2_name
                 FROM (
                     SELECT c.selection_key,c.provider,c.fixture_id,c.bookmaker,
@@ -76,12 +76,43 @@ def available_selections(
     return result
 
 
+
+def quote_is_fresh(
+    row: dict, *, now: datetime | None = None,
+    max_age: timedelta = timedelta(minutes=30),
+) -> bool:
+    """A cached quote is never usable once its observation or fixture expires.
+
+    Strictly require timestamps: UI menus may remain open longer than the
+    provider TTL, and date-less quotes must never silently become valid.
+    """
+    instant = now or datetime.now(UTC)
+    if instant.tzinfo is None or instant.utcoffset() is None or max_age <= timedelta(0):
+        raise ValueError("invalid quote verification clock")
+    instant = instant.astimezone(UTC)
+    try:
+        observed = datetime.fromisoformat(str(row["observed_at"]))
+        starts = datetime.fromisoformat(str(row["start_time"]))
+        if observed.utcoffset() is None or starts.utcoffset() is None:
+            return False
+        return (
+            instant - max_age <= observed.astimezone(UTC) <= instant
+            and starts.astimezone(UTC) > instant
+            and isfinite(float(row["price_decimal"]))
+            and float(row["price_decimal"]) > 1
+        )
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return False
+
+
 def selected_slip(selections: list[dict]) -> dict:
     if not 1 <= len(selections) <= 6:
         raise ValueError("Choose between 1 and 6 legs")
     if len({row["bookmaker"] for row in selections}) != 1:
         raise ValueError("Choose selections from one sportsbook")
-    if len({row["fixture_id"] for row in selections}) != len(selections):
+    if len({row.get("provider") for row in selections}) != 1:
+        raise ValueError("Quotes from different providers cannot be combined")
+    if len({(row.get("provider"), row["fixture_id"]) for row in selections}) != len(selections):
         raise ValueError("Same-game legs need a verified correlation model")
     if len({row["selection_key"] for row in selections}) != len(selections):
         raise ValueError("Duplicate selection")

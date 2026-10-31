@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import discord
 import httpx
 import pytest
 
@@ -268,7 +269,6 @@ async def test_one_click_owner_auth_blocks_all_provider_calls():
 @pytest.mark.asyncio
 async def test_single_click_research_uses_only_existing_exchange_ai(tmp_path):
     from tests.test_guided_home import _interaction
-    import discord
     bot = RivalDiscordClient(Settings(
         _env_file=None, rival_storage_backend="sqlite",
         rival_db_path=str(tmp_path / "single_click.sqlite"), discord_token=None,

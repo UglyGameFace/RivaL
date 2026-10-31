@@ -61,7 +61,7 @@ MARKET_NAMES = {
     "draftkings": "DraftKings Predictions • NOT CONNECTED",
 }
 EXPLAIN = {
-    "home": "Choose Crypto, Sports, Notifications, Results, or Practice. No bets are placed.",
+    "home": "Crypto and Sports are for market research. Bot Performance shows forecast evidence; Practice contains only imaginary trading.",
     "discover": "Old menus can open Crypto or Practice. No actual trades are placed.",
     "crypto-desk": "Choose the platform you actually use. Event contracts (Polymarket, Kalshi, DraftKings Predictions) are NOT cryptocurrency perpetuals (Binance, Hyperliquid, OKX, etc.). Each platform needs separate verified calls and accuracy.",
     "live": "Track one verified Polymarket contract DM, updated only on meaningful changes. Contract AI calls are labeled separately and market prices are not win probabilities.",
@@ -74,7 +74,8 @@ EXPLAIN = {
     "forecast": "A directional watch is research, not a proven profitable bet. Weak model probabilities are NO SIGNAL. Prices must match the forecast venue; genuine forward accuracy and expiry are shown.",
     "quote": "Ask is the price you might buy at; bid is the price you might sell at. These quotes are not guaranteed fills.",
     "practice": "Everything in Practice Money is fictional. Buying means you expect a rise; selling means you expect a fall. Fake gains never count as proven real profit.",
-    "results": "Practice results are your own fake trades. Model accuracy is measured separately from later verified market outcomes. Real profit is not yet proven.",
+    "results": "Your personal practice results use only fictional trades and funds. They never count toward the bot's prediction record.",
+    "performance": "Bot Performance reports source-specific prospective forecasts, settled results and learning evidence. Exchange forecasts do not score Polymarket contracts; counts of learned labels are not prediction wins.",
     "help": "Choose Crypto for separate event-contract platforms or leveraged crypto exchange forecasts. DraftKings Sportsbook futures are sports bets, not perpetual crypto futures. Sports is for sportsbook odds.",
     "advanced": "Optional checks for whether data is fresh and whether RivaL is improving. You do not need any of this to request a prediction.",
     "feeds": "Fresh means RivaL recently received a genuine completed market candle. That is different from a live streaming price or a prediction.",
@@ -495,7 +496,7 @@ class GuidedHome(discord.ui.View):
                 ("Crypto", "crypto-desk", 0, "📈"),
                 ("Sports", "sports", 0, "🏆"),
                 ("Notifications", "hunt", 1, "🔔"),
-                ("My Results", "results", 1, "📊"),
+                ("Bot Performance", "performance", 1, "📊"),
                 ("Practice", "practice", 2, "💵"),
             ):
                 self._add(title, action, row, emoji, action == "live")
@@ -568,14 +569,19 @@ class GuidedHome(discord.ui.View):
             self._add("Practice Sell $25", "sell", 1, "📉")
             self._add("Close Fake Trade", "close", 2, "✅")
             self._add("Set Fake Balance", "funds", 2, "💵")
-            self._add("See My Results", "results", 3, "📊")
+            self._add("My Practice Results", "results", 3, "📊")
         elif p == "results":
-            self._add("Practice Money", "practice", 3, "💵")
+            self._add("Back to Practice", "practice", 0, "💵", True)
+        elif p == "performance":
+            self.add_item(_Market(self.live_source))
+            self.add_item(_Coin(self.coin, row=1))
+            if self.live_source != "kalshi":
+                self.add_item(_PolymarketHorizon(
+                    self.horizon, row=2, market=self.live_source or "polymarket",
+                ))
+            self._add("Learning Details", "trust", 3, "🧠", True)
+            self._add("Price Feed Health", "feeds", 3, "📡")
             self._add("Advanced Tools", "advanced", 3, "⚙️")
-            self.add_item(_Coin(self.coin))
-            self.add_item(_Horizon(self.horizon))
-            self._add("Check Profit Evidence", "proof", 2, "🔍")
-            self._add("Can I Trust Predictions?", "trust", 2, "✅")
         elif p == "help":
             self._add("Start with Sports", "sports", 0, "🏆")
             self._add("Analyze Crypto", "crypto-desk", 0, "📈")
@@ -1314,8 +1320,8 @@ class GuidedHome(discord.ui.View):
                     "**100% imaginary funds.** Practice Buy expects prices to "
                     "rise; Practice Sell expects a drop. Neither submits an order."
                     if p == "practice" else
-                    "Your personal fictional trade record is separate from "
-                    "the bot's market prediction accuracy."
+                    "Only your personal imaginary trades appear here. "
+                    "See Bot Performance for the bot's actual predictions."
                 ),
                 color=discord.Color.blurple(),
             )
@@ -1346,33 +1352,11 @@ class GuidedHome(discord.ui.View):
                     ), inline=False,
                 )
             else:
-                if self.market is not None:
-                    try:
-                        audit = await asyncio.to_thread(
-                            ForwardAccuracyMonitor(self.market).summary,
-                            asset=self.coin,
-                        )
-                        part = audit["last_7d"][self.horizon]
-                        hit = part["hit_rate"]
-                        embed.add_field(
-                            name=f"Bot Forecasts | {self.coin} {self.horizon}m",
-                            value=(
-                                f"{part['settled']} settled of "
-                                f"{part['issued']} predictions in 7 days\n"
-                                + (f"Direction correct: {hit:.1%}" if hit is not None
-                                   else "Not enough verified outcomes")
-                            ), inline=False,
-                        )
-                    except Exception:  # noqa: BLE001
-                        _LOG.exception("Guided results lookup failed")
-                        embed.add_field(
-                            name="Bot Forecasts",
-                            value="Reliable market accuracy unavailable.",
-                            inline=False,
-                        )
                 embed.add_field(
-                    name="Real-Money Profit",
-                    value="**NOT PROVEN.** Practice wins are not actual payouts.",
+                    name="Practice is not performance",
+                    value="These are fictional balances and trades, not RivaL's forecast "
+                          "accuracy or actual profit. Open **Bot Performance** from Home "
+                          "to inspect scored predictions.",
                     inline=False,
                 )
         elif p == "feeds":
@@ -1661,8 +1645,8 @@ class GuidedHome(discord.ui.View):
                     "1. **Crypto:** inspect live markets or separate exchange forecasts.\n"
                     "2. **Sports:** choose your state and browse odds.\n"
                     "3. **Notifications:** enable tracking and stop it anytime.\n"
-                    "4. **My Results:** inspect recorded accuracy and practice.\n"
-                    "5. **Practice:** experiment using fake money only.\n\n"
+                    "4. **Bot Performance:** verify forecast scores and learning.\n"
+                    "5. **Practice:** trade imaginary funds and see your own results.\n\n"
                     "**WAIT** means evidence is insufficient. No bets are placed."
                 ), color=discord.Color.blurple(),
             )
@@ -2174,7 +2158,7 @@ class GuidedHome(discord.ui.View):
             }[action]
             self.navigate("live" if self.live_source is not None else "crypto-desk")
         elif action in ("home", "discover", "sports", "crypto", "crypto-desk", "hunt", "live", "practice",
-                        "results", "help", "advanced", "feeds", "trust"):
+                        "results", "performance", "help", "advanced", "feeds", "trust"):
             self.navigate(action)
             if action == "sports":
                 await self._refresh_odds()

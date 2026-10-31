@@ -36,6 +36,7 @@ from parlay_bot.discord_app.polymarket_live_board import (
 )
 from parlay_bot.discord_app.presentation import onboarding_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
+from parlay_bot.discord_app.stale_dashboards import build_stale_dashboard_views
 from parlay_bot.discord_app.signals import signal_embed
 from parlay_bot.discord_app.sports_discovery import sports_discovery_embed
 from parlay_bot.discord_app.stream_proof import stream_proof_embed
@@ -522,6 +523,28 @@ class RivalDiscordClient(discord.Client):
             kalshi=self.kalshi_browser,
             kalshi_status=self.kalshi_forward.summary,
             cdna_personal=self.cdna_personal,
+        )
+
+    def _build_research_dashboard(self, owner_id: int) -> ResearchDashboard:
+        collector = self.perp_collector
+        return ResearchDashboard(
+            owner_id=owner_id,
+            market=collector.market if collector is not None else None,
+            ai=self.gemini_research,
+            venues=tuple(collector.providers) if collector is not None else (),
+            shadow_enabled=self.shadow_monitor is not None,
+            target_service=self.direction_targets,
+        )
+
+    def _build_data_dashboard(self, owner_id: int) -> MarketDataDashboard:
+        collector = self.perp_collector
+        return MarketDataDashboard(
+            owner_id=owner_id,
+            market=collector.market if collector is not None else None,
+            venues=tuple(collector.providers) if collector is not None else (),
+            assets=collector.assets if collector is not None else (),
+            interval_seconds=self.settings.rival_perp_collection_seconds,
+            enabled=collector is not None,
         )
 
     def _register_commands(self) -> None:
@@ -1535,15 +1558,7 @@ class RivalDiscordClient(discord.Client):
         )
         async def rival_data(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
-            collector = self.perp_collector
-            dashboard = MarketDataDashboard(
-                owner_id=interaction.user.id,
-                market=collector.market if collector is not None else None,
-                venues=tuple(collector.providers) if collector is not None else (),
-                assets=collector.assets if collector is not None else (),
-                interval_seconds=self.settings.rival_perp_collection_seconds,
-                enabled=collector is not None,
-            )
+            dashboard = self._build_data_dashboard(interaction.user.id)
             await interaction.edit_original_response(
                 embed=await dashboard.render(), view=dashboard,
             )
@@ -1554,15 +1569,7 @@ class RivalDiscordClient(discord.Client):
         )
         async def rival_research(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
-            collector = self.perp_collector
-            dashboard = ResearchDashboard(
-                owner_id=interaction.user.id,
-                market=collector.market if collector is not None else None,
-                ai=self.gemini_research,
-                venues=tuple(collector.providers) if collector is not None else (),
-                shadow_enabled=self.shadow_monitor is not None,
-                    target_service=self.direction_targets,
-            )
+            dashboard = self._build_research_dashboard(interaction.user.id)
             await interaction.edit_original_response(
                 embed=await dashboard.render(), view=dashboard,
             )
@@ -1581,8 +1588,12 @@ class RivalDiscordClient(discord.Client):
         # menus are silently discarded and the menu looks dead.
         for stale_view in build_stale_guided_menu_views(self._build_guided_home):
             self.add_view(stale_view)
+        for stale_view in build_stale_dashboard_views(
+            self._build_research_dashboard, self._build_data_dashboard,
+        ):
+            self.add_view(stale_view)
         self.add_view(AutoHuntActions())
-        _LOG.info("RivaL stale guided-menu and restart-safe hunt views registered")
+        _LOG.info("RivaL guided, research, data and hunt recovery views registered")
         await asyncio.to_thread(self.auto_hunt.store.initialize)
         await asyncio.to_thread(self.polymarket_board.store.initialize)
         await asyncio.to_thread(self.polymarket_research.initialize)

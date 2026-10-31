@@ -161,16 +161,30 @@ async def run_pipeline(
     research["compatible_evaluations"] = evaluate_live_contracts(
         root, qualified_streams=valid & expected_streams,
     )
-    data_complete = (
+    # Report crypto completeness independently. Optional football history
+    # must never make verified six-month crypto learning look unavailable.
+    crypto_complete = (
         quality["all_requested_streams_qualified"]
+        and not any(
+            job[0] == "binance" and not _already_present(root, job)
+            for job in jobs
+        )
+    )
+    data_complete = (
+        crypto_complete
         and not quality["missing_sports_archives"]
-        and not acquisition["rejected"]
         and not acquisition["remaining"]
     )
     report = {
         "schema_version": "rival-full-history-pipeline-v1",
         "source_months": months, "assets": assets, "intervals": intervals,
         "acquisition": acquisition, "quality": quality, "research": research,
+        "crypto_sources_complete": crypto_complete,
+        "compatible_candidate_count": len(research["compatible_evaluations"]),
+        "compatible_candidate_passed": sum(
+            bool(item["research_candidate_passed"])
+            for item in research["compatible_evaluations"]
+        ),
         "all_requested_data_complete": data_complete,
         "live_model_promoted": False, "live_accuracy_improved_verified": False,
         "auto_betting_enabled": False,
@@ -215,7 +229,9 @@ def main(argv: list[str] | None = None) -> int:
                         default=["BTC", "ETH", "SOL"])
     parser.add_argument("--intervals", nargs="+", choices=sorted(INTERVALS),
                         default=list(DEFAULT_INTERVALS))
-    parser.add_argument("--seasons", nargs="*", default=["2425", "2526"])
+    # Sports backfill is a separate opt-in, not a prerequisite for a
+    # monthly cryptocurrency model. Preserve explicit --seasons behavior.
+    parser.add_argument("--seasons", nargs="*", default=[])
     parser.add_argument("--leagues", nargs="+", choices=sorted(LEAGUES),
                         default=["E0", "D1", "I1", "SP1", "F1"])
     parser.add_argument("--max-new", type=int, default=100)
@@ -246,6 +262,9 @@ def main(argv: list[str] | None = None) -> int:
         "acquisition": report["acquisition"],
         "qualified": report["all_requested_data_complete"],
         "evaluation_count": len(report["research"]["evaluations"]),
+        "compatible_candidate_count": report["compatible_candidate_count"],
+        "compatible_candidate_passed": report["compatible_candidate_passed"],
+        "crypto_sources_complete": report["crypto_sources_complete"],
         "warehouse": report["warehouse_status"],
         "report": report["local_report_path"],
     }, indent=2, sort_keys=True))

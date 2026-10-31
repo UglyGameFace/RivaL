@@ -317,6 +317,10 @@ async def signal_embed(
     async def _venue_proof_or_default(venue: str) -> dict:
         if engine == "multi" and shared_multi_proof is not None:
             return shared_multi_proof
+        # Never borrow scores from another model when a legacy forecast
+        # omitted its model identity.
+        if not forecast_for_venue[venue].get("model_version"):
+            return _default_evidence()
         started = time.monotonic()
         try:
             return await bounded(

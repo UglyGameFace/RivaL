@@ -13,8 +13,9 @@ from typing import Any
 
 import httpx
 
-from parlay_bot.perpetuals.history_inventory import six_months_prior
+from parlay_bot.perpetuals.history_inventory import six_complete_months_start
 from parlay_bot.perpetuals.history_recovery import (
+    align_forward_month_cursor,
     _ALLOWED,
     _STEP,
     GateHistoryRecovery,
@@ -63,10 +64,7 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                 (asset,),
             ).fetchone()
             if row is None:
-                before = six_months_prior(now)
-                start = before.replace(
-                    minute=before.minute // 5 * 5, second=0, microsecond=0,
-                ).isoformat()
+                start = six_complete_months_start(now).isoformat()
                 conn.execute(
                     """INSERT INTO perp_history_recovery
                        (venue,asset,started_from,next_opened_at)
@@ -79,7 +77,9 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                     (asset,),
                 ).fetchone()
         assert row is not None
-        return dict(row)
+        return align_forward_month_cursor(
+            conn, venue="kucoin", asset=asset, now=now, row=dict(row),
+        )
 
     def _advance(
         self, asset: str, *, now: datetime, next_open: datetime | None,

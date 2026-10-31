@@ -55,7 +55,7 @@ def test_immutable_daily_settlement_evidence_and_voids(tmp_path, backend):
         assert report["daily_reports"] == 2
         assert report["contract_rows"] == 5
         assert report["settled_contract_rows"] == 3
-        assert report["void_or_half_settlements"] == 1
+        assert report["half_value_settlements"] == 1
         assert report["latest_report_day"] == "2026-10-28"
         assert report["official_source_independently_verified"] is False
         assert report["live_quotes_connected"] is False

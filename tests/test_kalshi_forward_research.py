@@ -17,6 +17,7 @@ def market(i: int, at: datetime, *, asset="BTC", series="KXBTC15M"):
         no_ask=.51 if i % 2 else .58,
         rules="BTC Crypto price settlement according to Kalshi's rule",
         series_ticker=series,
+        quote_source="orderbook", yes_ask_size=10.0, no_ask_size=10.0,
     )
 
 
@@ -127,6 +128,7 @@ def test_incomplete_kalshi_source_or_settlement_fails_closed(tmp_path):
         ledger.observe(asset="BTC", market=KalshiMarket(
             ticker=m.ticker,title=m.title,close_time=m.close_time,
             yes_ask=None,no_ask=.5,rules=m.rules,series_ticker=m.series_ticker,
+            quote_source="orderbook", yes_ask_size=10.0, no_ask_size=10.0,
         ),at=start)
     assert ledger.observe(asset="BTC", market=m, at=start)
     pending = ledger.pending(now=start+timedelta(minutes=16))
@@ -152,6 +154,11 @@ async def test_kalshi_browser_records_official_market_without_user_messages(tmp_
                 "ticker":"KXBTC15M","title":"Bitcoin 15m",
                 "category":"Crypto",
             }]})
+        if req.url.path.endswith("/orderbook"):
+            return httpx.Response(200,json={"orderbook_fp":{
+                "yes_dollars":[["0.4900","10.00"]],
+                "no_dollars":[["0.4800","10.00"]],
+            }})
         if req.url.path.endswith("/markets"):
             return httpx.Response(200,json={"markets":[{
                 "ticker":"KXBTC15M-ABC","title":"BTC above X",

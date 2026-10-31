@@ -32,6 +32,7 @@ from parlay_bot.discord_app.price_targets import (
     price_result,
 )
 from parlay_bot.discord_app.signals import model_strength
+from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.promotion import promoted_engine
 from parlay_bot.storage.hot import RelationalHotStore
 
@@ -72,6 +73,8 @@ class TargetSnapshot:
     # Walk-forward research examples actually evaluated for this model
     # (NOT the settled forward win rate nor six months of oracle labels).
     training_evaluated: int | None = None
+    # Only real venue-specific future outcome evidence may authorize a WATCH.
+    evidence_qualified: bool = False
 
     @property
     def fingerprint(self) -> str:
@@ -87,6 +90,7 @@ class TargetSnapshot:
             "price": round(self.price, 8) if self.price is not None else None,
             "issued": self.issued_at.isoformat() if self.issued_at else None,
             "ends": self.ends_at.isoformat() if self.ends_at else None,
+            "evidence_qualified": self.evidence_qualified,
         }, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -142,8 +146,33 @@ def target_snapshot(
         if direction == "WAIT":
             return TargetSnapshot(
                 asset, horizon_minutes, "WAIT",
-                "The current model is tied; there is no directional call.",
+                "NO CALL: the latest model is tied.",
                 status="tied",
+            )
+        if model_strength(p) != "directional watch":
+            return TargetSnapshot(
+                asset, horizon_minutes, "WAIT",
+                "NO CALL: the latest prediction is too close to a coin flip.",
+                status="weak_model",
+            )
+        try:
+            evidence = ForwardAccuracyMonitor(market).venue_summary(
+                asset=asset, venue=str(watch["venue"]), horizon=horizon_minutes,
+                now=stamp, model_version=watch.get("model_version"),
+            )
+            qualified = (
+                evidence.get("model_beats_baseline") is True
+                and evidence.get("watch_evidence_passes") is True
+            )
+        except Exception:  # noqa: BLE001 - missing outcome proof is NO CALL
+            _LOG.exception("RivaL target model qualification unavailable")
+            qualified = False
+        if not qualified:
+            return TargetSnapshot(
+                asset, horizon_minutes, "WAIT",
+                "NO CALL: this exchange/model has not proved reliable "
+                "on enough genuine future outcomes across multiple days.",
+                status="unqualified_model",
             )
         return TargetSnapshot(
             asset=asset, horizon_minutes=horizon_minutes,
@@ -156,6 +185,7 @@ def target_snapshot(
             issued_at=watch["issued"],
             ends_at=ends,
             status="ok",
+            evidence_qualified=True,
             training_evaluated=(
                 int(watch["training_evaluated"])
                 if int(watch.get("training_evaluated") or 0) > 0
@@ -174,11 +204,11 @@ def target_embed(snapshot: TargetSnapshot) -> discord.Embed:
         model_strength(snapshot.probability)
         if snapshot.probability is not None else "invalid"
     )
-    qualified_watch = strength == "directional watch"
+    qualified_watch = snapshot.evidence_qualified and strength == "directional watch"
     labels = {
         "UP": "📈 UP WATCH" if qualified_watch else "🟠 UP LEAN • NO SIGNAL",
         "DOWN": "📉 DOWN WATCH" if qualified_watch else "🟠 DOWN LEAN • NO SIGNAL",
-        "WAIT": "⏳ WAIT • NO SIGNAL",
+        "WAIT": "⏳ WAIT • NO CALL • NO VERIFIED EDGE",
     }
     colors = {
         "UP": discord.Color.green() if qualified_watch else discord.Color.orange(),

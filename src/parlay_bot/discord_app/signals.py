@@ -557,13 +557,13 @@ async def signal_embed(
         return _no_signal(asset, horizon_minutes, "Screening completed.")
 
     if venue_beats is False:
-        verdict = "⛔ PASS • MODEL UNDERPERFORMING"
+        verdict = "⛔ NO CALL • PASS • MODEL UNDERPERFORMING"
         message = (
             f"Recent {chosen['venue']} forward scores do not beat a simple "
             "baseline."
         )
     elif book is None:
-        verdict = "⏳ WAIT • MARKET PRICE UNAVAILABLE"
+        verdict = "⏳ NO CALL • WAIT • MARKET PRICE UNAVAILABLE"
         message = (
             "A forecast exists, but no matching current exchange order book "
             "could be verified. No other exchange price was substituted."
@@ -579,7 +579,7 @@ async def signal_embed(
     elif (strength == "directional watch" and venue_beats is True
             and not venue_evidence.get("watch_evidence_passes")
             and direction != "FLAT"):
-        verdict = f"🔎 {direction} RESEARCH • INSUFFICIENT PROOF"
+        verdict = "⏳ NO CALL • INSUFFICIENT PROOF"
         message = (
             "The model's average score beats its baseline, but the "
             "same-model forecasts lack sufficient independent UTC-day "
@@ -588,7 +588,7 @@ async def signal_embed(
         )
     elif (strength == "directional watch" and venue_beats is None
             and direction != "FLAT"):
-        verdict = f"🔎 {direction} RESEARCH • UNVERIFIED"
+        verdict = "⏳ NO CALL • UNVERIFIED MODEL"
         message = (
             f"The {chosen['venue']} track record could not be verified: "
             "too few settled forecasts for this venue, or the lookup "
@@ -596,8 +596,8 @@ async def signal_embed(
             "as an evidence-qualified watch."
         )
     else:
-        verdict = f"🟠 {direction} LEAN • NO SIGNAL" if direction != "FLAT" else (
-            "⏳ WAIT • NO DIRECTION"
+        verdict = f"⏳ NO CALL • {direction} LEAN • NO SIGNAL" if direction != "FLAT" else (
+            "⏳ NO CALL • NO DIRECTION"
         )
         message = (
             f"Raw {max(probability, 1 - probability):.1%} model probability is "
@@ -643,7 +643,8 @@ async def signal_embed(
     embed.add_field(
         name="Model and expiry",
         value=(
-            f"**{direction}** • raw {max(probability, 1 - probability):.1%} "
+            f"**{direction if is_watch else 'NO CALL'}** • raw model {direction} "
+            f"{max(probability, 1 - probability):.1%} "
             f"({strength})\n"
             f"Source: **{chosen['venue']}** • "
             f"Issued {discord.utils.format_dt(chosen['issued'], style='R')}\n"

@@ -23,6 +23,7 @@ from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS, asset_for_contract
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.perpetuals.model_checkpoints import LiveModelCheckpoints
+from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
 from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
@@ -103,6 +104,7 @@ class ForwardAccuracyMonitor:
                 self.market.historical_challengers = HistoricalChallengers(self.store, self.market.live_model_checkpoints)
             self.market.historical_challengers.initialize()
             self._initialize_schema()
+            ShadowModelCompetition(self.store).initialize()
             self.market._forward_schema_ready = True
 
     def _initialize_schema(self) -> None:
@@ -498,6 +500,12 @@ class ForwardAccuracyMonitor:
             raise ValueError("prospective forecast time cannot be in the future")
         self.initialize()
         settled = self._settle(stamp)
+        # Causal shadow forecasts settle only against already-verified matching
+        # incumbent outcomes. No new provider calls, Discord messages or fills.
+        try:
+            ShadowModelCompetition(self.store).settle(now=stamp)
+        except Exception:  # noqa: BLE001 - shadow research never blocks the live learner
+            _LOG.exception("RivaL multi-model shadow settlement unavailable")
         if stamp.minute < 5:
             try:
                 reconciled = self.reconcile_stale_settlements(stamp)
@@ -640,6 +648,28 @@ class ForwardAccuracyMonitor:
                                  tested.updates,
                                  tested.historical_seed_sha256),
                             )
+                            # New models issue alongside, not in place of,
+                            # the existing live model. Same transaction and
+                            # immutable target/venue identity as the incumbent.
+                            # Isolate optional model failures from the
+                            # authoritative incumbent insert on both backends.
+                            # PostgreSQL transactions must clear a failed
+                            # statement before they can commit incumbent work.
+                            conn.execute("SAVEPOINT rival_shadow_prediction")
+                            try:
+                                ShadowModelCompetition(self.store).issue(
+                                    conn, samples=samples, features=features,
+                                    now=stamp, venue=venue, contract=contract, quote=quote,
+                                    asset=asset, horizon=horizon,
+                                    reference_opened_at=last.opened_at,
+                                    target_opened_at=target_open, issued_at=issued_at,
+                                    incumbent_up=probability, baseline_up=baseline,
+                                )
+                            except Exception:  # noqa: BLE001 - optional challenger
+                                conn.execute("ROLLBACK TO SAVEPOINT rival_shadow_prediction")
+                                _LOG.exception("RivaL shadow model failed; incumbent preserved")
+                            finally:
+                                conn.execute("RELEASE SAVEPOINT rival_shadow_prediction")
                         issued += int(record.rowcount == 1)
                         metrics["duplicate_forecasts"] += int(record.rowcount == 0)
             except (ValueError, TypeError, ArithmeticError) as exc:

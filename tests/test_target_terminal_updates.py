@@ -173,7 +173,13 @@ async def test_price_goal_hit_edit_is_delivered_and_stops(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_direction_lean_flip_edit_is_delivered(tmp_path):
+async def test_direction_lean_flip_edit_is_delivered(tmp_path, monkeypatch):
+    # This tests single-message update mechanics. Prospective qualification
+    # is tested independently and is required in the real tracker.
+    monkeypatch.setattr(
+        ForwardAccuracyMonitor, 'venue_summary',
+        lambda *_a, **_kw: {'model_beats_baseline': True, 'watch_evidence_passes': True},
+    )
     now = datetime.now(UTC).replace(microsecond=0)
     store, market = _market(tmp_path, now)
     dm = DummyDM()

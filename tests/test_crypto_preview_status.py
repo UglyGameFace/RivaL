@@ -104,15 +104,16 @@ def test_snapshot_status_feed_error(tmp_path, monkeypatch):
     assert snap.probability is None
 
 
-def test_snapshot_status_ok(tmp_path):
+def test_raw_probabilities_do_not_claim_verified_future_accuracy(tmp_path):
     now = datetime.now(UTC).replace(microsecond=0)
     snap = target_snapshot(
         _market(tmp_path, now, probability_up=0.68),
         asset="BTC", horizon_minutes=5, now=now,
     )
-    assert snap.status == "ok"
-    assert snap.direction == "UP"
-    assert snap.probability == 0.68
+    assert snap.status == "unqualified_model"
+    assert snap.direction == "WAIT"
+    assert snap.probability is None
+    assert "NO CALL" in snap.detail
 
 
 def test_status_does_not_change_follow_fingerprint():

@@ -80,11 +80,11 @@ from parlay_bot.providers.oddspapi import OddsPapiClient
 from parlay_bot.providers.owner_limits import OwnerLimitStore
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
-from parlay_bot.research.dkex_reports import DKeXPublicReports
 from parlay_bot.research.database_integrity import (
     perpetual_evidence_backlog,
     sports_settlement_backlog,
 )
+from parlay_bot.research.dkex_reports import DKeXPublicReports
 from parlay_bot.research.sports_results import (
     ResultIntegrityError,
     SportsResultStore,

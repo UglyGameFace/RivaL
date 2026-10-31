@@ -187,6 +187,16 @@ class ShadowModelCompetition:
             ).fetchall()
             total = 0
             for row in rows:
+                # Reject impossible pre-close settlements even when a legacy
+                # row incorrectly marks its incumbent as settled.
+                try:
+                    end = utc(datetime.fromisoformat(str(row["target_opened_at"])))
+                    issued = utc(datetime.fromisoformat(str(row["issued_at"])))
+                    settled = utc(datetime.fromisoformat(str(row["verified_settled_at"])))
+                    if not issued < end + timedelta(minutes=5) < settled <= utc(now):
+                        continue
+                except (TypeError, ValueError, OverflowError):
+                    continue
                 y = int(row["verified_outcome_up"])
                 update = conn.execute(
                     """UPDATE rival_model_shadow_forecasts SET settled_at=?,
@@ -205,62 +215,146 @@ class ShadowModelCompetition:
             return total
 
     def report(self, *, asset, horizon, now=None) -> dict:
-        """Day-blocked, same-target, same-market prospective comparisons.
+        """Research comparisons per *actual* venue, not a pooled fake winner.
 
-        Different venues observing the same BTC target are correlated and
-        count as ONE event; none of these scores qualifies a trade or promotion.
+        Outcome groups from different venues can describe aggregate behavior,
+        but never cross-subsidize the decision that one instrument's family
+        has earned prospective research eligibility. Regime attributions are
+        derived solely from immutable at-issuance tags.
         """
         stamp = utc(now or datetime.now(UTC))
         self.initialize()
         with self.store.connect() as conn:
             rows = conn.execute(
-                """SELECT family,target_opened_at,model_brier,incumbent_brier,
-                          baseline_brier,outcome_up
-                   FROM rival_model_shadow_forecasts
-                   WHERE asset=? AND horizon_minutes=? AND issued_at>=?
-                    AND issued_at<=? AND settled_at IS NOT NULL
-                    AND settled_at<=?
-                   ORDER BY family,target_opened_at""",
+                """SELECT s.family,s.venue,s.contract,s.quote,s.issued_at,
+                          s.target_opened_at,s.settled_at,s.outcome_up,
+                          s.probability_up,s.model_brier,s.incumbent_brier,
+                          s.baseline_brier,r.regime
+                   FROM rival_model_shadow_forecasts s
+                   LEFT JOIN perp_forward_regimes r
+                    ON r.venue=s.venue AND r.contract=s.contract
+                    AND r.quote=s.quote
+                    AND r.horizon_minutes=s.horizon_minutes
+                    AND r.reference_opened_at=s.reference_opened_at
+                    AND r.issued_at=s.issued_at
+                    AND r.model_version='prospective-logistic-persistent-v3'
+                   WHERE s.asset=? AND s.horizon_minutes=? AND s.issued_at>=?
+                    AND s.issued_at<=? AND s.settled_at IS NOT NULL
+                    AND s.settled_at<=?
+                   ORDER BY s.family,s.target_opened_at""",
                 (asset,horizon,(stamp-timedelta(days=14)).isoformat(),
                  stamp.isoformat(),stamp.isoformat()),
             ).fetchall()
         results = {}
         for family in FAMILIES:
-            grouped = {}
+            scoped = {}
+            invalid = 0
             for row in rows:
-                if row["family"] != family or row["outcome_up"] not in (0,1):
+                if row["family"] != family:
                     continue
-                target = str(row["target_opened_at"])
-                if int(datetime.fromisoformat(target).timestamp()) % (horizon*60):
+                try:
+                    target = utc(datetime.fromisoformat(str(row["target_opened_at"])))
+                    issued = utc(datetime.fromisoformat(str(row["issued_at"])))
+                    settled = utc(datetime.fromisoformat(str(row["settled_at"])))
+                    scores = tuple(float(row[k]) for k in (
+                        "probability_up", "model_brier",
+                        "incumbent_brier", "baseline_brier",
+                    ))
+                    if (row["outcome_up"] not in (0, 1)
+                            or not issued < target + timedelta(minutes=5) < settled <= stamp
+                            or int(target.timestamp()) % (horizon*60)
+                            or not all(math.isfinite(v) and 0 <= v <= 1 for v in scores)):
+                        invalid += 1
+                        continue
+                except (ValueError, TypeError, OverflowError):
+                    invalid += 1
                     continue
-                if any(row[key] is None or not math.isfinite(row[key])
-                       or not 0 <= row[key] <= 1
-                       for key in ("model_brier","incumbent_brier","baseline_brier")):
-                    continue
-                grouped.setdefault(target, []).append(row)
-            scored = [
-                (target,
-                 sum(r["model_brier"] for r in group)/len(group),
-                 sum(r["incumbent_brier"] for r in group)/len(group),
-                 sum(r["baseline_brier"] for r in group)/len(group))
-                for target, group in sorted(grouped.items())
-                if len({r["outcome_up"] for r in group}) == 1
+                key = (str(row["venue"]), str(row["contract"]), str(row["quote"]))
+                # A target belongs to one instrument only. Multiple conflicting
+                # rows in a scope invalidate that scope's target.
+                scoped.setdefault(key, {}).setdefault(target.isoformat(), []).append(row)
+            per_venue = {}
+            regime_failures = {}
+            for key, targets in sorted(scoped.items()):
+                evaluated = []
+                for target, group in sorted(targets.items()):
+                    if len(group) != 1:
+                        invalid += len(group)
+                        continue
+                    row = group[0]
+                    m, i, b = (
+                        float(row["model_brier"]), float(row["incumbent_brier"]),
+                        float(row["baseline_brier"]),
+                    )
+                    evaluated.append((target,m,i,b))
+                    regime = str(row["regime"] or "unknown")
+                    point = regime_failures.setdefault(regime, {
+                        "forecasts": 0, "wrong_direction": 0,
+                        "high_confidence_misses": 0, "model_error_sum": 0.0,
+                        "incumbent_error_sum": 0.0,
+                    })
+                    miss = int((float(row["probability_up"]) > .5) != bool(row["outcome_up"]))
+                    point["forecasts"] += 1
+                    point["wrong_direction"] += miss
+                    point["high_confidence_misses"] += (
+                        miss and abs(float(row["probability_up"]) - .5) >= .10
+                    )
+                    point["model_error_sum"] += m
+                    point["incumbent_error_sum"] += i
+                incumbent = score_paired_forward([(t,m,i) for t,m,i,_ in evaluated])
+                base = score_paired_forward([(t,m,b) for t,m,_,b in evaluated])
+                coin = score_paired_forward([(t,m,.25) for t,m,_,_ in evaluated])
+                eligible = all(
+                    x.status == "qualified_shadow" for x in (incumbent, base, coin)
+                )
+                per_venue["/".join(key)] = {
+                    "targets": incumbent.targets, "days": incumbent.days,
+                    "model_brier": incumbent.model_brier,
+                    "incumbent_brier": incumbent.baseline_brier,
+                    "base_rate_brier": base.baseline_brier,
+                    "qualified_research": eligible,
+                    "reason": "passed prospective research screen" if eligible
+                              else incumbent.reason if incumbent.status != "qualified_shadow"
+                              else base.reason if base.status != "qualified_shadow"
+                              else coin.reason,
+                }
+            # Select a single independently proven source for the headline.
+            # Conflicting BTC outcomes across venues must never be averaged
+            # into a fake source-agnostic record.
+            source_winners = [
+                key for key, proof in per_venue.items() if proof["qualified_research"]
             ]
-            incumbent = score_paired_forward([(t,m,i) for t,m,i,_ in scored])
-            base = score_paired_forward([(t,m,b) for t,m,_,b in scored])
-            coin = score_paired_forward([(t,m,.25) for t,m,_,_ in scored])
+            best_source = (
+                source_winners[0] if source_winners
+                else max(per_venue, key=lambda key: per_venue[key]["targets"])
+                if per_venue else None
+            )
+            headline = per_venue.get(best_source, {})
+            regimes = {
+                regime: {
+                    "forecasts": d["forecasts"],
+                    "wrong_direction": d["wrong_direction"],
+                    "high_confidence_misses": d["high_confidence_misses"],
+                    "model_brier": d["model_error_sum"] / d["forecasts"],
+                    "incumbent_brier": d["incumbent_error_sum"] / d["forecasts"],
+                }
+                for regime,d in sorted(regime_failures.items())
+            }
             results[family] = {
-                "targets": incumbent.targets, "days": incumbent.days,
-                "brier": incumbent.model_brier,
-                "incumbent_brier": incumbent.baseline_brier,
-                "baseline_brier": base.baseline_brier,
-                "qualified_research": all(
-                    result.status == "qualified_shadow"
-                    for result in (incumbent,base,coin)
-                ),
-                "reason": incumbent.reason if incumbent.status != "qualified_shadow"
-                          else base.reason if base.status != "qualified_shadow"
-                          else coin.reason,
+                "targets": headline.get("targets", 0),
+                "days": headline.get("days", 0),
+                "brier": headline.get("model_brier"),
+                "incumbent_brier": headline.get("incumbent_brier"),
+                "baseline_brier": headline.get("base_rate_brier"),
+                "selected_source": best_source,
+                "qualified_research": bool(source_winners),
+                "qualified_sources": source_winners,
+                "by_venue": per_venue,
+                "by_regime": regimes,
+                "invalid_rows": invalid,
+                "reason": ("source-specific prospective screen passed"
+                           if source_winners else
+                           "No source-specific forward superiority proven"),
                 "live_approved": False,
             }
         return results

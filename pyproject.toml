@@ -25,6 +25,13 @@ dev = [
 archive = [
   "duckdb>=1.1,<2",
 ]
+ml-research = [
+  # Offline GitHub research runner only, never the Discloud bot host.
+  "scikit-learn>=1.5,<2",
+  "lightgbm>=4.5,<5",
+  "xgboost>=2.1,<4",
+  "catboost>=1.2,<2",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

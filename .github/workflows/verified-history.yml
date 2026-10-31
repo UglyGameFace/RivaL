@@ -112,6 +112,38 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  boosted-model-library-smoke:
+    # Prove real optional ML wheels work on the research runner. This job
+    # never accesses a live bot, credentials, production DB or provider data.
+    if: github.event_name == 'pull_request' && vars.RIVAL_BOOSTED_PR_SMOKE != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install offline model families only
+        run: python -m pip install -e ".[ml-research]"
+      - name: Fit and predict with every supported real CPU family
+        run: |
+          python - <<'PY'
+          import math
+          from parlay_bot.research.boosted_models import FAMILIES, _estimators
+          factories, unavailable = _estimators()
+          assert set(factories) == set(FAMILIES), unavailable
+          x = [[(i % (7 + j)) / 12 for j in range(10)] for i in range(500)]
+          labels = [int(i % 3 == 0) for i in range(500)]
+          for name in FAMILIES:
+              model = factories[name]()
+              model.fit(x, labels)
+              scores = model.predict_proba(x[:25])
+              assert len(scores) == 25, name
+              assert all(math.isfinite(float(p[1])) and 0 <= float(p[1]) <= 1
+                         for p in scores), name
+              print("Verified offline CPU model:", name)
+          PY
+
   full-six-month-public-crypto:
     # One full public multi-resolution proof succeeded on PR #49.
     # Further expensive PR reruns require an explicit repository variable.
@@ -177,7 +209,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev,ml-research]"
       - name: Collect and privately archive verified supplemental crypto research
         # Supplemental data is additive. A blocked or rate-limited external
         # source must not disable the verified base-price training workflow.
@@ -256,6 +288,8 @@ jobs:
           print("Source months:", len(report.get("source_months", [])))
           print("Crypto streams complete:", report.get("crypto_sources_complete", False))
           print("Live-compatible candidates:", report.get("compatible_candidate_count", 0))
+          print("Boosted-family evaluations:", report.get("boosted_models_evaluated", 0))
+          print("Retrospectively passing boosted candidates:", report.get("boosted_candidates_retrospectively_passed", 0))
           print("Screened-in historical candidates:", report.get("compatible_candidate_passed", 0))
           print("Research evaluations:", len(report.get("research", {}).get("evaluations", [])))
           print("Live model promoted:", report.get("live_model_promoted", False))

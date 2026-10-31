@@ -18,6 +18,7 @@ from parlay_bot.archive.drive import GoogleDriveArchiveClient
 from parlay_bot.config import Settings
 from parlay_bot.research.audit import audit_catalog
 from parlay_bot.research.batch import _already_present, collect, complete_months, targets
+from parlay_bot.research.boosted_models import evaluate_directory as evaluate_boosted_models
 from parlay_bot.research.free_history import ASSETS, INTERVALS, LEAGUES, HistoryImportError
 from parlay_bot.research.learning import evaluate_directory
 from parlay_bot.research.live_training import evaluate_directory as evaluate_live_contracts
@@ -162,6 +163,12 @@ async def run_pipeline(
     research["compatible_evaluations"] = evaluate_live_contracts(
         root, qualified_streams=valid & expected_streams,
     )
+    # Tree models are trained on the same verified, purged source splits.
+    # Their reports are research-only; weights cannot be imported into the
+    # logistic checkpoint registry and never serve signals.
+    research["boosted_evaluations"] = evaluate_boosted_models(
+        root, qualified_streams=valid & expected_streams,
+    )
     # Evaluate target-before-stop path distributions on the SAME audited
     # five-minute futures manifests. These are separate research-only
     # scenario models, never interchangeable with live binary labels or
@@ -189,6 +196,15 @@ async def run_pipeline(
         "acquisition": acquisition, "quality": quality, "research": research,
         "crypto_sources_complete": crypto_complete,
         "compatible_candidate_count": len(research["compatible_evaluations"]),
+        "boosted_model_evaluations": len(research["boosted_evaluations"]),
+        "boosted_models_evaluated": sum(
+            item.get("status") == "evaluated"
+            for item in research["boosted_evaluations"]
+        ),
+        "boosted_candidates_retrospectively_passed": sum(
+            item.get("research_candidate_passed") is True
+            for item in research["boosted_evaluations"]
+        ),
         "path_research_evaluated": len(research["path_research"]["evaluations"]),
         "path_research_candidates_passed": sum(
             bool(item["research_candidate_passed"])

@@ -72,12 +72,15 @@ def _score(samples, weights, base):
                       s[3], s[0].date().isoformat()) for s in samples], base)
 
 
-def evaluate_compatible(manifests, *, horizon, prepared=None):
-    identity, rows, provenance = assemble(manifests) if prepared is None else prepared[:3]
+def compatible_partitions(rows, vectors, *, horizon, identity):
+    """The ONE live-compatible, source-specific, gap-safe time split.
+
+    Model families share these purged partitions; the test's labels are not
+    available to choose a family, calibrator or training hyperparameters.
+    """
     if identity["interval_minutes"] != 5 or horizon not in HORIZONS:
         raise HistoryImportError("live-compatible research needs exact 5m source bars")
-    vectors = historical_features(rows, identity) if prepared is None else prepared[3]
-    step = horizon//5
+    step = horizon // 5
     examples = []
     for i in range(INDICATOR_BARS-1, len(rows)-step, step):
         if i not in vectors:
@@ -98,6 +101,16 @@ def evaluate_compatible(manifests, *, horizon, prepared=None):
     test = examples[b:]
     if len(train) < 300 or min(len(validation), len(test)) < 100:
         raise HistoryImportError("insufficient purged compatible holdouts")
+    return train, validation, test
+
+
+def evaluate_compatible(manifests, *, horizon, prepared=None):
+    identity, rows, provenance = assemble(manifests) if prepared is None else prepared[:3]
+    vectors = historical_features(rows, identity) if prepared is None else prepared[3]
+    train, validation, test = compatible_partitions(
+        rows, vectors, horizon=horizon, identity=identity,
+    )
+    test_start = test[0][0]
     compared = []
     for l2 in (0., .001, .01):
         weights, base = _fit(train, l2=l2)

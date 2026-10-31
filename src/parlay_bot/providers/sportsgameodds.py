@@ -244,14 +244,13 @@ class SportsGameOddsClient:
             raise QuotaReserveReached("SportsGameOdds monthly usage unknown; event requests paused")
         observed = max(usage.monthly_current_entities, self._projected_entities or 0)
         self._projected_entities = observed
-        remaining = usage.monthly_max_entities - observed
+        remaining = usage.monthly_max_entities - observed - self._monthly_entity_reserve
         owner = self._owner_limits.get("sportsgameodds") if self._owner_limits else None
         if owner is not None:
             owner_remaining = owner.maximum_units - observed - owner.reserve_units
             if owner_remaining <= 0:
                 raise QuotaReserveReached("Owner-configured SportsGameOdds budget exhausted")
             remaining = min(remaining, owner_remaining)
-        remaining -= self._monthly_entity_reserve
         if remaining <= 0:
             raise QuotaReserveReached("SportsGameOdds monthly entity reserve reached")
         return min(requested, remaining)

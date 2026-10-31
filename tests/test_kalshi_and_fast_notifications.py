@@ -47,8 +47,8 @@ async def test_notification_options_does_not_call_database_or_redraw_lock(
         response.send_message.assert_awaited_once()
         args = response.send_message.await_args.kwargs
         assert args["ephemeral"] is True
-        assert args["view"].page == "hunt-tools"
-        assert "Optional Alert Types" in args["embed"].title
+        assert args["view"].page == "hunt"
+        assert "Notifications" in args["embed"].title
         assert home.page == "live"  # original tracker is untouched
         interaction.edit_original_response.assert_not_awaited()
         assert "Polymarket Global" in (await home.render()).title

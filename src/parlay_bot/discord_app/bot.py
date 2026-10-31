@@ -15,6 +15,7 @@ from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.collectors.oddspapi_current import OddsPapiCurrentCollector
 from parlay_bot.collectors.the_odds_api import TheOddsApiCollector
 from parlay_bot.config import Settings
+from parlay_bot.discord_app.alert_control import stop_all_notifications
 from parlay_bot.discord_app.auto_hunt import AutoHuntActions, AutoHuntService, AutoHuntStore
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
 from parlay_bot.discord_app.home import (
@@ -58,7 +59,6 @@ from parlay_bot.perpetuals.hyperliquid_history_recovery import (
 )
 from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
 from parlay_bot.perpetuals.lighter_history_recovery import LighterHistoryRecovery
-from parlay_bot.perpetuals.live_direction import LiveDirectionScanner
 from parlay_bot.perpetuals.live_quotes import (
     PublicBestQuoteClient,
     QuoteUnavailable,
@@ -420,13 +420,8 @@ class RivalDiscordClient(discord.Client):
             StreamShadowLedger(self.store) if self.live_stream is not None else None
         )
         self._stream_shadow_task: asyncio.Task[None] | None = None
-        self._live_direction_task: asyncio.Task[None] | None = None
-        self._live_delivery_task: asyncio.Task[None] | None = None
-        self._live_shift_queue: asyncio.Queue | None = None
-        self.live_direction = (
-            LiveDirectionScanner(self.live_stream)
-            if self.live_stream is not None else None
-        )
+        # Redundant momentum-notification delivery was retired; streaming
+        # books still feed forward research and quote provenance.
         self.quote_profit = (
             ProspectiveQuoteProfitMonitor(self.store)
             if self.forward_audit is not None else None
@@ -444,9 +439,6 @@ class RivalDiscordClient(discord.Client):
             quotes=self.public_quotes, store=AutoHuntStore(self.store),
             stream_shadow=self.stream_shadow,
         )
-        self._hunt_event = asyncio.Event()
-        self._hunt_task: asyncio.Task[None] | None = None
-        self._poly_hunt_task: asyncio.Task[None] | None = None
         self.polymarket_research = PolymarketResearch(
             self.store, ai=self.gemini_research
             if isinstance(self.gemini_research, OpenRouterResearch) else None,
@@ -461,6 +453,7 @@ class RivalDiscordClient(discord.Client):
             research=self.polymarket_research,
         )
         self._poly_board_task: asyncio.Task[None] | None = None
+        self._poly_research_task: asyncio.Task[None] | None = None
 
         self._register_commands()
 
@@ -1276,34 +1269,16 @@ class RivalDiscordClient(discord.Client):
 
         @self.tree.command(
             name="rival-stop",
-            description="Stop all personal forecast and Auto-Hunt DM alerts.",
+            description="Stop all your personal RivaL notifications and tracking.",
         )
         async def rival_stop(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
-            # Revoke both independently. A broken old target message must
-            # never prevent canceling the new Auto-Hunt subscription.
-            failures = []
-            hunt = watch = False
-            try:
-                hunt = await self.auto_hunt.stop(interaction.user.id)
-            except Exception:  # noqa: BLE001 - preserve the other cancel path
-                _LOG.exception("RivaL Auto-Hunt cancellation failed")
-                failures.append("Auto-Hunt")
-            try:
-                watch = await self.direction_targets.stop(interaction.user.id)
-            except Exception:  # noqa: BLE001 - preserve the other cancel path
-                _LOG.exception("RivaL personal target cancellation failed")
-                failures.append("personal target")
-            if failures:
-                message = (
-                    "Could not confirm stopping " + ", ".join(failures) +
-                    ". Please retry /rival-stop. Other alert stops were applied."
-                )
-            else:
-                message = (
-                    "All personal alerts stopped." if watch or hunt else
-                    "No active personal alerts."
-                )
+            message = await stop_all_notifications(
+                interaction.user.id,
+                auto_hunt=self.auto_hunt,
+                targets=self.direction_targets,
+                tracker=self.polymarket_board,
+            )
             await interaction.edit_original_response(content=message)
 
         @tools_group.command(
@@ -1559,16 +1534,8 @@ class RivalDiscordClient(discord.Client):
         # worker inserts predictions caused live PostgreSQL deadlocks.
         if self.autonomous is not None:
             await asyncio.to_thread(self.autonomous.initialize)
-        # Polymarket market watching is independent of the crypto candle
-        # collector. The worker itself stays idle until a user opts in.
-        if self._hunt_task is None:
-            self._hunt_task = asyncio.create_task(
-                self._hunt_loop(), name="rival-auto-hunt-selected-source-alerts",
-            )
-        if self._poly_hunt_task is None:
-            self._poly_hunt_task = asyncio.create_task(
-                self._poly_hunt_loop(), name="rival-auto-hunt-polymarket-alerts",
-            )
+        # Retired duplicated Auto-Hunt alert producers. Live Polymarket
+        # tracking and optional verified direction-shift notices continue.
         if self._target_task is None:
             self._target_task = asyncio.create_task(
                 self._target_loop(), name="rival-personal-direction-updates",
@@ -1576,6 +1543,10 @@ class RivalDiscordClient(discord.Client):
         if self._poly_board_task is None:
             self._poly_board_task = asyncio.create_task(
                 self._poly_board_loop(), name="rival-auto-polymarket-board",
+            )
+        if self._poly_research_task is None:
+            self._poly_research_task = asyncio.create_task(
+                self._poly_research_loop(), name="rival-silent-polymarket-learning",
             )
         if (self.current_collector is not None or self.oddspapi_collector is not None or self.the_odds_api_collector is not None) and self._sports_task is None:
             self._sports_task = asyncio.create_task(
@@ -1614,15 +1585,6 @@ class RivalDiscordClient(discord.Client):
 
         if self.live_stream is not None:
             self.live_stream.start()
-            if self.live_direction is not None and self._live_direction_task is None:
-                self._live_shift_queue = asyncio.Queue(maxsize=32)
-                self._live_delivery_task = asyncio.create_task(
-                    self._live_shift_delivery_loop(),
-                    name="rival-live-alert-delivery",
-                )
-                self._live_direction_task = asyncio.create_task(
-                    self._live_direction_loop(), name="rival-live-direction-scanner",
-                )
             if self._stream_shadow_task is None:
                 self._stream_shadow_task = asyncio.create_task(
                     self._stream_shadow_loop(), name="rival-stream-forward-cost-audit",
@@ -1803,87 +1765,54 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL sports DB integrity check unavailable")
             await asyncio.sleep(21600)
 
-    async def _live_direction_loop(self) -> None:
-        """Evaluate locally cached live books each second, no REST requests.
+    async def _poly_research_loop(self) -> None:
+        """Study genuine listed contracts silently, without consuming AI quota.
 
-        Sending Discord DMs is detached, so one slow user cannot pause
-        the actual trend scanner for eight seconds or more.
+        The original market snapshot is frozen per exact contract. Only a
+        verified binary terminal resolution can become a new training label.
+        Never send DMs for price ticks or for incomplete model evidence.
         """
-        await self.wait_until_ready()
-        assert self.live_direction is not None
-        assert self._live_shift_queue is not None
-        _LOG.info("RivaL live market direction scanner sample_period=1s")
-        while not self.is_closed():
-            started = asyncio.get_running_loop().time()
-            try:
-                notices = self.live_direction.observe()
-                for notice in notices:
-                    try:
-                        self._live_shift_queue.put_nowait(notice)
-                    except asyncio.QueueFull:
-                        _LOG.warning(
-                            "RivaL live alert queue saturated; skipped alert "
-                            "asset=%s (no ambiguous notification delivered)",
-                            notice.asset,
-                        )
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                _LOG.exception("RivaL live trend scanner failed safely")
-            elapsed = asyncio.get_running_loop().time() - started
-            await asyncio.sleep(max(0.1, 1.0 - elapsed))
-
-    async def _live_shift_delivery_loop(self) -> None:
-        """Bounded independent Discord network delivery of scanner events."""
-        await self.wait_until_ready()
-        assert self._live_shift_queue is not None
-        while not self.is_closed():
-            try:
-                candidate = await self._live_shift_queue.get()
-                try:
-                    await asyncio.wait_for(
-                        self.auto_hunt.live_cycle([candidate]), timeout=20,
-                    )
-                finally:
-                    self._live_shift_queue.task_done()
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001
-                _LOG.exception("RivaL live trend delivery failed safely")
-
-    async def _hunt_loop(self) -> None:
-        """Inspect fresh persisted forecasts without waiting for slow research work."""
-        await self.wait_until_ready()
-        while not self.is_closed():
-            try:
-                count = await self.auto_hunt.cycle(scope="forecasts")
-                if count:
-                    _LOG.info("RivaL Auto-Hunt new private alerts delivered=%d", count)
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001 - alert outages cannot stop collector
-                _LOG.exception("RivaL Auto-Hunt check failed safely")
-            try:
-                await asyncio.wait_for(self._hunt_event.wait(), timeout=15.0)
-            except TimeoutError:
-                pass
-            self._hunt_event.clear()
-
-    async def _poly_hunt_loop(self) -> None:
-        """Public market notices keep polling during slow exchange/DB research."""
         await self.wait_until_ready()
         while not self.is_closed():
             started = time.monotonic()
             try:
-                count = await self.auto_hunt.cycle(scope="polymarket")
+                # One shared capped public read, not one network request per
+                # Discord subscriber. Live tracker reuses the same reader.
+                notices = await asyncio.wait_for(
+                    self.auto_hunt.polymarket.active(), timeout=16,
+                )
+                budget = asyncio.Semaphore(2)
+
+                async def study(notice, limiter=budget) -> bool:
+                    async with limiter:
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    self.polymarket_research.learner.observe,
+                                    notice,
+                                ), timeout=8,
+                            )
+                            return True
+                        except Exception:  # noqa: BLE001 - isolate source
+                            _LOG.exception(
+                                "RivaL silent Polymarket study failed asset=%s horizon=%s",
+                                notice.asset, notice.horizon,
+                            )
+                            return False
+
+                studied = await asyncio.gather(*(study(n) for n in notices))
+                if studied:
+                    _LOG.info(
+                        "RivaL silent Polymarket research observed=%d studied=%d "
+                        "notifications=0 ai_requests=0",
+                        len(notices), sum(studied),
+                    )
                 self.polymarket_research.maybe_settle(self.auto_hunt.polymarket)
-                if count:
-                    _LOG.info("RivaL Polymarket private alerts delivered=%d", count)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001
-                _LOG.exception("RivaL Polymarket alert cycle failed safely")
-            await asyncio.sleep(max(0.1, 15 - (time.monotonic() - started)))
+                _LOG.exception("RivaL silent Polymarket learning temporarily unavailable")
+            await asyncio.sleep(max(1, 90 - (time.monotonic() - started)))
 
     async def _poly_board_loop(self) -> None:
         """Automatically roll verified markets and forecasts in existing DMs."""
@@ -1892,6 +1821,11 @@ class RivalDiscordClient(discord.Client):
             started = time.monotonic()
             try:
                 changed = await self.polymarket_board.cycle()
+                # Receipt settlement is still required for learning even
+                # though duplicated Polymarket Auto-Hunt notices are retired.
+                # This schedules an asyncio task, and must run on the event
+                # loop, not inside a worker thread.
+                self.polymarket_research.maybe_settle(self.auto_hunt.polymarket)
                 if changed:
                     _LOG.info(
                         "RivaL verified live Polymarket boards updated=%d",
@@ -2043,8 +1977,6 @@ class RivalDiscordClient(discord.Client):
                         "math_settled=%s ai_issued=%s",
                         issued, settled, ai_issued,
                     )
-                    if issued:
-                        self._hunt_event.set()
                 except asyncio.CancelledError:
                     raise
                 except Exception:  # noqa: BLE001
@@ -2309,27 +2241,16 @@ class RivalDiscordClient(discord.Client):
 
     async def close(self) -> None:
         await self.kalshi_browser.aclose()
-        if self._poly_hunt_task is not None:
-            self._poly_hunt_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._poly_hunt_task
-            self._poly_hunt_task = None
         if self._poly_board_task is not None:
             self._poly_board_task.cancel()
             with suppress(asyncio.CancelledError):
                 await self._poly_board_task
             self._poly_board_task = None
-        if self._live_direction_task is not None:
-            self._live_direction_task.cancel()
+        if self._poly_research_task is not None:
+            self._poly_research_task.cancel()
             with suppress(asyncio.CancelledError):
-                await self._live_direction_task
-            self._live_direction_task = None
-        if self._live_delivery_task is not None:
-            self._live_delivery_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._live_delivery_task
-            self._live_delivery_task = None
-        self._live_shift_queue = None
+                await self._poly_research_task
+            self._poly_research_task = None
         if self.live_stream is not None:
             await self.live_stream.aclose()
         if self._stream_shadow_task is not None:
@@ -2337,11 +2258,6 @@ class RivalDiscordClient(discord.Client):
             with suppress(asyncio.CancelledError):
                 await self._stream_shadow_task
             self._stream_shadow_task = None
-        if self._hunt_task is not None:
-            self._hunt_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._hunt_task
-            self._hunt_task = None
         await self.polymarket_board.aclose()
         await self.auto_hunt.aclose()
         await self.polymarket_research.aclose()

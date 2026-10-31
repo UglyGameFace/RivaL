@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from parlay_bot.discord_app.alert_control import stop_all_notifications
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
@@ -48,11 +49,11 @@ if TYPE_CHECKING:
 _LOG = logging.getLogger(__name__)
 COINS = RESEARCH_ASSETS
 EXPLAIN = {
-    "home": "Find crypto or sports research, choose private alerts, or inspect recorded results. No wagers are placed.",
-    "discover": "Choose Predict Crypto for model research, Auto-Hunt for opt-in alerts, or Practice Money for simulated trades. No profits are established.",
-    "live": "Start Auto-Track once for one automatically updated private market card. Current and next Polymarket events are separate from their share prices and from exchange-candle model research. Because no Polymarket-specific calibrated edge is verified, the decision is WAIT, never a share price misrepresented as a prediction.",
-    "hunt": "Live Mode is the main market tracker. Optional price, model, qualified-watch and shift notifications retain their settings under Other Alert Types. Market share prices are not win probabilities.",
-    "hunt-tools": "Optional old alerts only. Your Polymarket Global live tracker is independent; toggles cannot produce verified predictions.",
+    "home": "Choose Crypto, Sports, Notifications, Results, or Practice. No bets are placed.",
+    "discover": "Old menus can open Crypto or Practice. No actual trades are placed.",
+    "live": "Track one verified Polymarket contract DM, updated only on meaningful changes. Contract AI calls are labeled separately and market prices are not win probabilities.",
+    "hunt": "Track Polymarket in one live DM or follow an exchange forecast. Old price-shift DMs have been retired; Stop All cancels personal updates.",
+    "hunt-tools": "Old Auto-Hunt notifications retired. Use Notifications.",
     "kalshi": "Kalshi is a different US prediction exchange. Its public prices and settlement rules must not inherit Polymarket Global forecast signals.",
     "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
     "slip": "A parlay combines picks. All legs must win for the parlay to win. No real wager is placed here.",
@@ -61,7 +62,7 @@ EXPLAIN = {
     "quote": "Ask is the price you might buy at; bid is the price you might sell at. These quotes are not guaranteed fills.",
     "practice": "Everything in Practice Money is fictional. Buying means you expect a rise; selling means you expect a fall. Fake gains never count as proven real profit.",
     "results": "Practice results are your own fake trades. Model accuracy is measured separately from later verified market outcomes. Real profit is not yet proven.",
-    "help": "Start at Home. For sports, select your state. For crypto, choose a coin and press Get Signal. To learn without real money, open Practice Money.",
+    "help": "Choose Crypto for prediction markets, Exchange Forecast for separate research, Sports for odds, Notifications for tracking, and Practice for fake trades.",
     "advanced": "Optional checks for whether data is fresh and whether RivaL is improving. You do not need any of this to request a prediction.",
     "feeds": "Fresh means RivaL recently received a genuine completed market candle. That is different from a live streaming price or a prediction.",
     "trust": "A successful prediction is not necessarily a profitable trade. The combined model must beat the old model on later matched results and after trading costs.",
@@ -73,7 +74,7 @@ class _Button(discord.ui.Button["GuidedHome"]):
                  emoji: str | None = None, primary: bool = False) -> None:
         if action == "forecast":
             style = discord.ButtonStyle.success
-        elif action in ("stop", "hunt-off", "poly-stop"):
+        elif action in ("stop", "hunt-off", "poly-stop", "stop-all"):
             style = discord.ButtonStyle.danger
         else:
             style = (
@@ -428,20 +429,18 @@ class GuidedHome(discord.ui.View):
         self.clear_items()
         p = self.page
         if p == "home":
-            items = (
-                ("Find Opportunities", "discover", 0, "🔎"),
-                ("My Alerts", "hunt", 0, "🔔"),
-                ("Sports & Odds", "sports", 1, "🏆"),
+            for title, action, row, emoji in (
+                ("Crypto", "live", 0, "📈"),
+                ("Sports", "sports", 0, "🏆"),
+                ("Notifications", "hunt", 1, "🔔"),
                 ("My Results", "results", 1, "📊"),
-                ("Live Mode", "live", 2, "⚡"),
-            )
-            for title, action, row, emoji in items:
-                self._add(title, action, row, emoji, action == "sports")
+                ("Practice", "practice", 2, "💵"),
+            ):
+                self._add(title, action, row, emoji, action == "live")
+            self._add("Help", "help", 3, "❓")
         elif p == "discover":
-            self._add("Predict Crypto", "crypto", 0, "📈", True)
-            self._add("Auto-Hunt Alerts", "hunt", 0, "🔔")
-            self._add("Practice Money", "practice", 1, "💵")
-            self._add("Help Me Start", "help", 1, "❓")
+            self._add("Crypto", "live", 0, "📈", True)
+            self._add("Practice", "practice", 0, "💵")
         elif p == "sports":
             self._add("Choose State", "state", 0, "🗺️")
             self._add("Enter ZIP", "zip", 0, "📍")
@@ -456,46 +455,30 @@ class GuidedHome(discord.ui.View):
         elif p in ("crypto", "forecast", "quote"):
             self.add_item(_Coin(self.coin))
             self.add_item(_Horizon(self.horizon))
-            self._add(
-                "Refresh Signal" if p == "forecast" else "Get Signal",
-                "forecast", 2, "🔄" if p == "forecast" else "🎯", True,
-            )
-            self._add("Follow Exchange Forecast", "follow", 2, "🔔")
-            self._add("Auto-Hunt", "hunt", 2, "🔔")
-            self._add("See Buy/Sell Prices", "quote", 3, "💱")
-            self._add("Stop My Alerts", "stop", 3, "🔕")
+            self._add("Refresh Forecast" if p == "forecast" else "Get Signal",
+                      "forecast", 2, "🔄" if p == "forecast" else "🎯", True)
+            self._add("Watch Forecast", "follow", 2, "🔔")
+            self._add("Live Markets", "live", 3, "⚡")
         elif p == "live":
             self.add_item(_Coin(self.coin))
             if self.live_source == "polymarket":
                 self.add_item(_PolymarketHorizon(self.horizon))
-                self._add("Start Auto-Track", "poly-start", 2, "⚡", True)
-                self._add("Stop Auto-Track", "poly-stop", 2, "🔕")
-            elif self.live_source == "kalshi":
-                self._add("Update Kalshi", "kalshi-refresh", 2, "🔄")
-            self._add("Alert Settings", "hunt-tools", 2, "⚙️")
-            self._add("Polymarket", "live-poly", 3, "⚡",
-                      self.live_source == "polymarket")
-            self._add("Kalshi", "live-kalshi", 3, "📊",
-                      self.live_source == "kalshi")
-            self._add("DraftKings", "live-dk", 3, "🔒")
+                self._add("Track in DMs", "poly-start", 2, "🔔", True)
+                self._add("Stop Tracking", "poly-stop", 2, "🔕")
+                self._add("Exchange Forecast", "crypto", 3, "📈")
+                if self.kalshi is not None:
+                    self._add("Kalshi", "live-kalshi", 3, "📊")
+            else:
+                self._add("Refresh Markets", "kalshi-refresh", 2, "🔄", True)
+                self._add("Polymarket", "live-poly", 3, "📈")
         elif p == "hunt":
-            self._add("Live Mode", "live", 0, "⚡", True)
-            self._add("Alert Status", "hunt-status", 0, "🔎")
-            self._add("Notification Filters", "hunt-config", 1, "⚙️")
-            self._add("Other Alert Types", "hunt-tools", 1, "🔔")
-            self._add("Stop Old Alerts", "hunt-off", 2, "🔕")
+            self._add("Track Crypto", "live", 0, "📈", True)
+            self._add("Watch Forecast", "crypto", 0, "🎯")
+            self._add("Stop All", "stop-all", 1, "🛑")
         elif p == "kalshi":
-            self.add_item(_Coin(self.coin))
-            self._add("Refresh Kalshi", "kalshi-refresh", 2, "🔄", True)
-            self._add("Polymarket Live", "live", 2, "⚡")
+            self._add("Polymarket", "live", 0, "📈", True)
         elif p == "hunt-tools":
-            self._add("Polymarket Price Notices", "hunt-poly", 0, "📊")
-            self._add("Model Research", "hunt-on", 0, "📈")
-            self._add("Research Toggle", "hunt-research", 1, "🔔")
-            self._add("Qualified Watches Toggle", "hunt-qualified", 1, "✅")
-            self._add("Live Shift Alerts ON", "live-on", 2, "⚡")
-            self._add("Live Shift Alerts OFF", "live-off", 2, "🔕")
-            self._add("Notification Filters", "hunt-config", 3, "⚙️")
+            self._add("Notifications", "hunt", 0, "🔔", True)
         elif p == "practice":
             self.add_item(_Coin(self.coin))
             self._add("Practice Buy $25", "buy", 1, "📈", True)
@@ -525,9 +508,9 @@ class GuidedHome(discord.ui.View):
             if p == "trust":
                 self.add_item(_Horizon(self.horizon))
             self._add("Refresh", p, 2, "🔄", True)
-        self._add("Home", "home", 4, "🏠")
-        self._add("Back", "back", 4, "↩️")
-        self._add("Explain This", "explain", 4, "❓")
+        if p != "home":
+            self._add("Home", "home", 4, "🏠")
+            self._add("Back", "back", 4, "↩️")
 
     def navigate(self, page: str) -> None:
         if page == self.page:
@@ -553,51 +536,15 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title="RivaL | Betting Genie",
                 description=(
-                    "**What would you like to do?**\n"
-                    "Choose a button below. Every result is checked against "
-                    "its real source, and a missing result is never invented. "
-                    "No real bets or orders are placed."
+                    "Find a live crypto market, compare sports odds, or "
+                    "manage your personal tracking.\n"
+                    "Private research only. No real bets or orders are placed."
                 ), color=discord.Color.blurple(),
-            )
-            embed.add_field(
-                name="🔎 Find Opportunities",
-                value="Crypto forecasts, practice, and research watches",
-                inline=True,
-            )
-            embed.add_field(
-                name="🔔 My Alerts",
-                value="Follow verified markets and manage notifications",
-                inline=True,
-            )
-            embed.add_field(
-                name="🏆 Sports & Odds",
-                value="Compare available sportsbook prices",
-                inline=True,
-            )
-            embed.add_field(
-                name="📊 My Results",
-                value="Measured prediction accuracy and practice results",
-                inline=True,
-            )
-            embed.add_field(
-                name="⚡ Live Mode",
-                value="Watch genuine live price shifts and control private alerts",
-                inline=False,
-            )
-            embed.add_field(
-                name="Private research only",
-                value="No real bets or orders are placed.",
-                inline=False,
             )
         elif p == "discover":
             embed = discord.Embed(
-                title="🔎 Find Opportunities",
-                description=(
-                    "Choose a fresh crypto forecast, opt in to research "
-                    "notifications, or practice with fake money. A forecast "
-                    "does not automatically match a betting market's rules, "
-                    "and positive expected betting value is not established."
-                ),
+                title="RivaL | Start Here",
+                description="Open Crypto for verified markets or Practice for fake trades.",
                 color=discord.Color.blurple(),
             )
         elif p in ("live", "kalshi"):
@@ -629,7 +576,7 @@ class GuidedHome(discord.ui.View):
             }.get(source, "Polymarket Global")
             embed = discord.Embed(
                 title=(
-                    f"⚡ Live Markets | {provider} • {self.coin}"
+                    f"📈 Crypto Markets | {provider} • {self.coin}"
                     + (f" {self.horizon}m" if source == "polymarket" else "")
                 ),
                 description=(
@@ -795,69 +742,48 @@ class GuidedHome(discord.ui.View):
                     ),
                     inline=False,
                 )
-            embed.set_footer(
-                text="Provider buttons below • live asks are prices, not probabilities "
-                     "• No orders",
-            )
-        elif p == "hunt-tools":
-            embed = discord.Embed(
-                title="Optional Alert Types | Advanced",
-                description=(
-                    "Only enable notifications you need. These are "
-                    "existing independent alerts, not separate "
-                    "Polymarket prediction engines. Your saved "
-                    "subscriptions have not been changed."
-                ),
-                color=discord.Color.orange(),
-            )
-            embed.add_field(
-                name="Market prices are not model predictions",
-                value="Polymarket alerts report share prices; model "
-                      "research reports exchange forecasts; Qualified "
-                      "Watches require stricter evidence but are NOT "
-                      "verified Polymarket betting edges.",
-                inline=False,
-            )
-        elif p == "hunt":
-            try:
-                status = (
-                    await asyncio.wait_for(
-                        self.auto_hunt.status(self.owner_id), timeout=1.2,
+            embed.set_footer(text="Share prices are not probabilities • No orders")
+        elif p in ("hunt", "hunt-tools"):
+            tracker = getattr(getattr(self.auto_hunt, "bot", None),
+                              "polymarket_board", None)
+
+            async def current(read):
+                if read is None:
+                    return None
+                try:
+                    return await asyncio.wait_for(
+                        asyncio.to_thread(read, str(self.owner_id)), timeout=0.9,
                     )
-                    if self.auto_hunt is not None else
-                    "Unavailable until market collection is configured"
-                )
-            except (TimeoutError, Exception):  # noqa: BLE001
-                status = "Alert status is busy; your preferences were not changed."
+                except Exception:  # noqa: BLE001
+                    return "unknown"
+
+            market = await current(tracker.store.get if tracker else None)
+            exchange = await current(self.targets.store.get if self.targets else None)
+            prefs = await current(
+                self.auto_hunt.store.preferences if self.auto_hunt else None
+            )
+            legacy = (
+                "Legacy price-shift alerts have been retired."
+                if prefs is not None else
+                "Old alert preferences unavailable."
+            )
+
+            def status(value):
+                if value == "unknown":
+                    return "Checking…"
+                return "ON" if value is not None else "OFF"
+
             embed = discord.Embed(
-                title="🔔 My Alerts | Auto-Hunt",
-                description="**Your alert status**\n" + status,
+                title="🔔 Notifications",
+                description=(
+                    f"**Polymarket tracking:** {status(market)}\n"
+                    f"**Exchange forecast watch:** {status(exchange)}\n"
+                    f"{legacy}\n\n"
+                    "Tracking updates one private message. No price-change "
+                    "or Auto-Hunt notification spam. Background model training "
+                    "does not DM you. **Stop All** cancels your personal updates."
+                ),
                 color=discord.Color.blurple(),
-            )
-            embed.add_field(
-                name="📊 Polymarket",
-                value="Get notices for real listed Up/Down market prices. "
-                      "A market price is **not** a predicted win rate.",
-                inline=False,
-            )
-            embed.add_field(
-                name="📈 RivaL forecasts",
-                value="Get new model research, or choose separately "
-                      "screened qualified watches. Neither guarantees a win.",
-                inline=False,
-            )
-            embed.add_field(
-                name="⚙️ Your filters",
-                value="Customize coins, 5m/15m alerts, Up/Down, price limit, "
-                      "time remaining, and direction changes.",
-                inline=False,
-            )
-            embed.add_field(
-                name="Important",
-                value="Alerts have daily limits and require working DMs. "
-                      "The global Polymarket feed is not Polymarket US. "
-                      "No real bets are placed.",
-                inline=False,
             )
         elif p == "sports":
             # Browsing the sports menu is not a bet recommendation. In
@@ -1398,14 +1324,12 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title="❓ Getting Started",
                 description=(
-                    "1. Press **Home** whenever you feel lost.\n"
-                    "2. **Sports**: choose your state, then browse games.\n"
-                    "3. **Crypto**: choose a coin and time, then see a forecast.\n"
-                    "4. **Practice Money**: try fake buys and sells.\n"
-                    "5. **My Results**: check your practice trades.\n"
-                    "6. **Advanced**: optional data freshness and model accuracy.\n\n"
-                    "**PASS** means the evidence doesn't support a pick. "
-                    "That is a useful answer, not a broken button."
+                    "1. **Crypto:** inspect live markets or separate exchange forecasts.\n"
+                    "2. **Sports:** choose your state and browse odds.\n"
+                    "3. **Notifications:** enable tracking and stop it anytime.\n"
+                    "4. **My Results:** inspect recorded accuracy and practice.\n"
+                    "5. **Practice:** experiment using fake money only.\n\n"
+                    "**WAIT** means evidence is insufficient. No bets are placed."
                 ), color=discord.Color.blurple(),
             )
         else:
@@ -1643,14 +1567,17 @@ class GuidedHome(discord.ui.View):
 
     async def act(self, interaction: discord.Interaction, action: str) -> None:
         if action == "hunt-tools":
-            # Navigation must never wait for a contested PostgreSQL checkout.
-            # A fresh private response is sent without editing the older menu
-            # or taking the shared render lock.
+            # Old navigation controls can open the one notification center
+            # without touching PostgreSQL or the shared redraw lock.
             fresh = self._display_generation()
-            fresh.navigate("hunt-tools")
+            fresh.navigate("hunt")
             fresh._buttons()
             await interaction.response.send_message(
-                embed=await fresh.render(), view=fresh, ephemeral=True,
+                embed=discord.Embed(
+                    title="🔔 Notifications",
+                    description="Track Crypto, watch an exchange forecast, or Stop All.",
+                    color=discord.Color.blurple(),
+                ), view=fresh, ephemeral=True,
             )
             return
         if action == "explain":
@@ -1662,31 +1589,10 @@ class GuidedHome(discord.ui.View):
             await interaction.response.send_modal(_Entry(self, action))
             return
         if action == "hunt-config":
-            # Discord must be acknowledged BEFORE PostgreSQL pool access.
+            # Acknowledge old settings-button interactions before any read.
             await interaction.response.defer(ephemeral=True, thinking=True)
-            if self.auto_hunt is None:
-                await interaction.followup.send(
-                    "Auto-Hunt is unavailable.", ephemeral=True,
-                )
-                return
-            from parlay_bot.discord_app.hunt_settings import HuntSettingsView
-
-            try:
-                prefs = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self.auto_hunt.store.preferences, str(self.owner_id),
-                    ), timeout=2,
-                )
-                view = HuntSettingsView(self.owner_id, self.auto_hunt, prefs)
-                await interaction.edit_original_response(
-                    content=view.render(), view=view,
-                )
-            except (TimeoutError, Exception):  # noqa: BLE001
-                _LOG.exception("RivaL Auto-Hunt settings slow or unavailable")
-                await interaction.edit_original_response(
-                    content="Settings are busy. The previous preferences "
-                            "were not changed; open Customize Alerts again.",
-                )
+            self.navigate("hunt")
+            await self.redraw(interaction)
             return
         if action == "api-limits":
             # Owner lookup is a remote Discord request. Acknowledge
@@ -1771,6 +1677,15 @@ class GuidedHome(discord.ui.View):
                 self.note = f"PASS: {exc}. Nothing was placed."
         elif action in ("forecast", "quote"):
             self.navigate(action)
+        elif action == "stop-all":
+            tracker = getattr(getattr(self.auto_hunt, "bot", None),
+                              "polymarket_board", None)
+            result = await stop_all_notifications(
+                self.owner_id, auto_hunt=self.auto_hunt,
+                targets=self.targets, tracker=tracker,
+            )
+            self.navigate("hunt")
+            self.note = result
         elif action in ("poly-start", "poly-stop"):
             self.live_source = "polymarket"
             self.navigate("live")
@@ -1805,56 +1720,28 @@ class GuidedHome(discord.ui.View):
                     _LOG.exception("Stopping live Polymarket DM failed safely")
                     self.note = "Could not confirm stopping the live tracker."
         elif action in ("live-on", "live-off"):
-            self.navigate("live")
-            if self.auto_hunt is None:
-                self.note = "Live alerts are unavailable; no change saved."
-            else:
-                try:
-                    prefs = await self.auto_hunt.update_preference(
-                        self.owner_id, "live_shifts",
-                        1 if action == "live-on" else 0,
-                    )
-                    self.note = (
-                        "Live price-shift DMs enabled. You will only get "
-                        "confirmed changes that pass your filters."
-                        if prefs["live_shifts"] else
-                        "Live price-shift DMs disabled. Other alert types are unchanged."
-                    )
-                except (ValueError, TimeoutError, discord.HTTPException) as exc:
-                    self.note = f"Live alerts unchanged: {exc}"
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("Live alert preference failed")
-                    self.note = "Live alerts unchanged; unable to save preference."
+            self.navigate("hunt")
+            self.note = (
+                "Legacy price-shift DMs were retired because they are not "
+                "predictions. Tracking and background learning are unaffected."
+            )
         elif action in ("hunt-on", "hunt-poly", "hunt-off", "hunt-status",
                          "hunt-research", "hunt-qualified"):
-            if self.auto_hunt is None:
-                self.note = "Auto-Hunt unavailable. No subscription saved."
-            elif action in ("hunt-on", "hunt-poly"):
-                _, self.note = await self.auto_hunt.subscribe(
-                    interaction.user,
-                    source="polymarket" if action == "hunt-poly" else "forecasts",
-                )
-            elif action == "hunt-off":
-                ended = await self.auto_hunt.stop(self.owner_id)
-                self.note = "Auto-Hunt stopped." if ended else "Auto-Hunt was already off."
-            elif action in ("hunt-research", "hunt-qualified"):
-                _, self.note = await self.auto_hunt.toggle_tier(
-                    self.owner_id,
-                    "research" if action == "hunt-research" else "qualified",
-                )
-            else:
-                self.note = await self.auto_hunt.status(self.owner_id)
             self.navigate("hunt")
+            self.note = "Auto-Hunt retired. Use Track Crypto or Changes instead."
         elif action in ("follow", "stop"):
             try:
                 if action == "stop":
-                    done = await self.targets.stop(self.owner_id)
-                    hunt_done = (
-                        await self.auto_hunt.stop(self.owner_id)
-                        if self.auto_hunt is not None else False
+                    tracker = getattr(
+                        getattr(self.auto_hunt, "bot", None),
+                        "polymarket_board", None,
                     )
-                    self.note = ("Private alerts stopped." if done or hunt_done else
-                                 "You have no active alerts.")
+                    result = await stop_all_notifications(
+                        self.owner_id, auto_hunt=self.auto_hunt,
+                        targets=self.targets, tracker=tracker,
+                    )
+                    self.navigate("hunt")
+                    self.note = result
                 else:
                     ok, message = await self.targets.follow(
                         interaction.user, asset=self.coin,
@@ -2047,11 +1934,11 @@ class GuidedHome(discord.ui.View):
 # stateful action and is never run from stale state.
 _STALE_SAFE_PAGES = {
     "home": "home",
-    "discover": "discover",
+    "discover": "live",
     "sports": "sports",
     "crypto": "crypto",
     "hunt": "hunt",
-    "hunt-tools": "hunt-tools",
+    "hunt-tools": "hunt",
     "live": "live",
     "practice": "practice",
     "results": "results",
@@ -2087,7 +1974,7 @@ _STALE_BUTTONS_B = (
 _STALE_BUTTONS_C = (
     "live", "live-on", "live-off", "poly-start", "poly-stop",
     "hunt-tools", "kalshi", "kalshi-refresh",
-    "live-poly", "live-kalshi", "live-dk",
+    "live-poly", "live-kalshi", "live-dk", "stop-all",
 )
 
 

@@ -169,7 +169,9 @@ def seed_strict_21_day_paired_proof(store, now):
 
 
 def test_qualified_challenger_with_quote_proof_promotes(tmp_path):
-    now = datetime.now(UTC).replace(microsecond=0)
+    # Keep synthetic 5-minute windows inside complete UTC days. Near
+    # midnight a one-sample partial UTC day can falsely fail day-block stress.
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "promo.sqlite")
     try:
         seed_strict_21_day_paired_proof(store, now)
@@ -183,7 +185,7 @@ def test_qualified_challenger_with_quote_proof_promotes(tmp_path):
 
 
 def test_trailing_challenger_holds(tmp_path):
-    now = datetime.now(UTC).replace(microsecond=0)
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "hold.sqlite")
     try:
         row = promote(store, now, challenger=0.30)
@@ -194,7 +196,7 @@ def test_trailing_challenger_holds(tmp_path):
 
 
 def test_insufficient_targets_hold(tmp_path):
-    now = datetime.now(UTC).replace(microsecond=0)
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "thin.sqlite")
     try:
         seed_multi_settled(store, now, count=50)
@@ -207,7 +209,7 @@ def test_insufficient_targets_hold(tmp_path):
 
 
 def test_qualified_brier_but_thin_quotes_hold(tmp_path):
-    now = datetime.now(UTC).replace(microsecond=0)
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "thinquote.sqlite")
     try:
         seed_multi_settled(store, now, count=100)
@@ -221,7 +223,9 @@ def test_qualified_brier_but_thin_quotes_hold(tmp_path):
 
 
 def test_promotion_demotes_when_evidence_collapses(tmp_path):
-    now = datetime.now(UTC).replace(microsecond=0)
+    # Keep synthetic 5-minute windows inside complete UTC days. Near
+    # midnight a one-sample partial UTC day can falsely fail day-block stress.
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "demote.sqlite")
     try:
         seed_strict_21_day_paired_proof(store, now)
@@ -245,7 +249,7 @@ def test_promotion_demotes_when_evidence_collapses(tmp_path):
 
 def test_no_trade_windows_cannot_promote(tmp_path):
     """Twenty cash-vs-cash windows prove no executable skill (P0)."""
-    now = datetime.now(UTC).replace(microsecond=0)
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "notrade.sqlite")
     try:
         seed_multi_settled(
@@ -264,7 +268,7 @@ def test_no_trade_windows_cannot_promote(tmp_path):
 
 
 def test_challenger_losing_after_costs_holds(tmp_path):
-    now = datetime.now(UTC).replace(microsecond=0)
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "loses.sqlite")
     try:
         seed_multi_settled(store, now, count=100)
@@ -281,7 +285,7 @@ def test_challenger_losing_after_costs_holds(tmp_path):
 
 def test_challenger_trading_at_loss_does_not_beat_cash(tmp_path):
     """A challenger that trades at a loss does not beat a cash incumbent."""
-    now = datetime.now(UTC).replace(microsecond=0)
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "cash.sqlite")
     try:
         seed_multi_settled(
@@ -298,7 +302,9 @@ def test_challenger_trading_at_loss_does_not_beat_cash(tmp_path):
 
 
 def test_stale_promotion_falls_back_to_live(tmp_path):
-    now = datetime.now(UTC).replace(microsecond=0)
+    # Keep synthetic 5-minute windows inside complete UTC days. Near
+    # midnight a one-sample partial UTC day can falsely fail day-block stress.
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "stale.sqlite")
     try:
         seed_strict_21_day_paired_proof(store, now)
@@ -319,7 +325,7 @@ def test_stale_promotion_falls_back_to_live(tmp_path):
 
 
 def test_multi_summary_needs_fifty_settled(tmp_path):
-    now = datetime.now(UTC).replace(microsecond=0)
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "summary.sqlite")
     try:
         seed_multi_settled(

@@ -17,7 +17,11 @@ from parlay_bot.discord_app.bot import RivalDiscordClient
 from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
 from parlay_bot.perpetuals.deribit_history_recovery import DeribitHistoryRecovery
 from parlay_bot.perpetuals.dydx_history_recovery import DydxHistoryRecovery
-from parlay_bot.perpetuals.history_inventory import history_inventory, six_months_prior
+from parlay_bot.perpetuals.history_inventory import (
+    history_inventory,
+    six_complete_months_start,
+    six_months_prior,
+)
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
 from parlay_bot.perpetuals.hyperliquid_history_recovery import HyperliquidHistoryRecovery
@@ -89,6 +93,17 @@ async def test_xrp_gate_backfill_and_six_month_audit_keep_true_provenance(tmp_pa
     worker = GateHistoryRecovery(
         market, assets=("XRP",), page_bars=12, client=client,
     )
+    # This test audits a *resumed* rolling-window page. Its already-certified
+    # origin is full-calendar Apr 1; the saved cursor has advanced to Apr 30.
+    # A new worker must preserve that progress, not re-fetch Apr 1 repeatedly.
+    worker.initialize()
+    with hot.connect() as conn:
+        conn.execute(
+            """INSERT INTO perp_history_recovery
+               (venue,asset,started_from,next_opened_at,status)
+               VALUES ('gate','XRP',?,?,'progress')""",
+            (six_complete_months_start(CLOCK).isoformat(), cursor.isoformat()),
+        )
     try:
         assert await worker.run_once(now=CLOCK) == 12
         assert len(seen) == 2

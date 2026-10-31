@@ -13,7 +13,7 @@ from typing import Any
 
 import httpx
 
-from parlay_bot.perpetuals.history_inventory import six_months_prior
+from parlay_bot.perpetuals.history_inventory import six_complete_months_start
 from parlay_bot.perpetuals.history_recovery import (
     _ALLOWED,
     _STEP,
@@ -153,10 +153,7 @@ class OkxHistoryRecovery(GateHistoryRecovery):
         ):
             return 0
         cursor = _utc(datetime.fromisoformat(str(position["next_opened_at"])))
-        start = six_months_prior(clock).replace(
-            minute=six_months_prior(clock).minute // 5 * 5,
-            second=0, microsecond=0,
-        )
+        start = six_complete_months_start(clock)
         if cursor <= start:
             await asyncio.to_thread(
                 self._advance, asset, now=clock, next_open=None,

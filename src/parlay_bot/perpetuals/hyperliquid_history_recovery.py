@@ -17,13 +17,14 @@ from typing import Any
 
 import httpx
 
-from parlay_bot.perpetuals.history_inventory import six_months_prior
+from parlay_bot.perpetuals.history_inventory import six_complete_months_start
 from parlay_bot.perpetuals.history_recovery import (
     _ALLOWED,
     _STEP,
     GateHistoryRecovery,
     _num,
     _utc,
+    align_forward_month_cursor,
     contiguous_forward_next,
 )
 from parlay_bot.perpetuals.hyperliquid import (
@@ -101,11 +102,11 @@ class HyperliquidHistoryRecovery(GateHistoryRecovery):
                 (asset,),
             ).fetchone()
             if existing is not None:
-                return dict(existing)
-            initial = six_months_prior(now).replace(
-                minute=six_months_prior(now).minute // 5 * 5,
-                second=0, microsecond=0,
-            ).isoformat()
+                return align_forward_month_cursor(
+                    conn, venue="hyperliquid", asset=asset, now=now,
+                    row=dict(existing),
+                )
+            initial = six_complete_months_start(now).isoformat()
             conn.execute(
                 """INSERT INTO perp_history_recovery
                    (venue,asset,started_from,next_opened_at)

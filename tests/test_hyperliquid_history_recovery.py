@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
-from parlay_bot.perpetuals.history_inventory import six_months_prior
+from parlay_bot.perpetuals.history_inventory import six_complete_months_start
 from parlay_bot.perpetuals.hyperliquid_history_recovery import (
     HyperliquidHistoryRecovery,
 )
@@ -62,8 +62,8 @@ async def test_hyperliquid_six_month_history_recovers_restart_safe(tmp_path):
         assert first["venue"] == "hyperliquid"
         assert first["status"] == "progress"
         assert first["inserted_bars"] == 12
-        seed = six_months_prior(NOW).replace(
-            minute=six_months_prior(NOW).minute // 5 * 5,
+        seed = six_complete_months_start(NOW).replace(
+            minute=six_complete_months_start(NOW).minute // 5 * 5,
             second=0, microsecond=0)
         assert first["next_opened_at"] == (seed + 12 * STEP).isoformat()
         assert await worker.run_once(now=NOW + timedelta(minutes=5)) == 12
@@ -106,8 +106,8 @@ async def test_hyperliquid_empty_page_does_not_advance_cursor(tmp_path):
     try:
         assert await worker.run_once(now=NOW) == 0
         row = worker.progress()[0]
-        seed = six_months_prior(NOW).replace(
-            minute=six_months_prior(NOW).minute // 5 * 5,
+        seed = six_complete_months_start(NOW).replace(
+            minute=six_complete_months_start(NOW).minute // 5 * 5,
             second=0, microsecond=0)
         assert row["next_opened_at"] == seed.isoformat()
         assert row["status"] == "upstream_empty"

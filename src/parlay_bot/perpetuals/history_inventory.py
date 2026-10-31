@@ -20,6 +20,17 @@ def six_months_prior(moment: datetime) -> datetime:
     return now.replace(year=year, month=month, day=day)
 
 
+def six_complete_months_start(moment: datetime) -> datetime:
+    """UTC midnight on the first of the earliest SIX completed calendar months.
+
+    Rolling six-month lookback is appropriate for some live dashboards,
+    but does not meet the six-full-month model training contract. Kept
+    separate from six_months_prior to preserve existing rolling reports.
+    """
+    lookback = six_months_prior(moment)
+    return lookback.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
 def history_inventory(
     market: PerpetualMarketStore, *,
     asset: str, venues: tuple[str, ...], now: datetime | None = None,

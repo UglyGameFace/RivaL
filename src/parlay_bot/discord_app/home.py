@@ -58,7 +58,7 @@ MARKET_NAMES = {
     "polymarket": "Polymarket Up/Down",
     "exchange": "Crypto perpetual futures",
     "kalshi": "Kalshi event contracts",
-    "draftkings": "DraftKings Predictions • Assisted",
+    "draftkings": "DraftKings Predictions • NOT CONNECTED",
 }
 EXPLAIN = {
     "home": "Choose Crypto, Sports, Notifications, Results, or Practice. No bets are placed.",
@@ -646,7 +646,7 @@ class GuidedHome(discord.ui.View):
                         "on exchanges like Hyperliquid, Binance Futures and OKX. "
                         "**Not DraftKings.**\n"
                         "**Kalshi:** Separate YES/NO event contracts; browse only.\n"
-                        "**DraftKings Predictions:** Assisted mode. Owner-only "
+                        "**DraftKings Predictions:** NOT connected. Owner-only "
                         "CDNA public quote reference, and independent RivaL AI "
                         "on exchange data; no confirmed contract match.\n"
                         "**DraftKings Sportsbook:** Sports odds and championship "
@@ -669,8 +669,8 @@ class GuidedHome(discord.ui.View):
                         candidate = evidence["candidate_brier"]
                         market_baseline = evidence["kalshi_quote_baseline_brier"]
                         comparison = (
-                            f"Model Brier: {candidate:.4f}; "
-                            f"Kalshi baseline: {market_baseline:.4f}"
+                            f"Cross-series pooled Brier (NOT eligible): {candidate:.4f}; "
+                            f"pooled quote baseline: {market_baseline:.4f}"
                             if candidate is not None and market_baseline is not None
                             else "No independent model-vs-Kalshi outcome comparison yet."
                         )
@@ -678,7 +678,7 @@ class GuidedHome(discord.ui.View):
                             "No validated Kalshi-specific RivaL model yet.\n"
                             f"Recorded Kalshi markets: **{evidence['observed']}**\n"
                             f"Book-verified market records: **{evidence['book_verified_observed']}**\n"
-                            f"Verified settlements learned: **{evidence['trained_labels']}**\n"
+                            f"Shadow weight updates (legacy may be included): **{evidence['trained_labels']}**\n"
                             f"Legacy summary-price settlements excluded: "
                             f"**{evidence['legacy_unverified_settlements']}**\n"
                             f"Book-backed forward outcomes: **{count}**\n"
@@ -704,9 +704,9 @@ class GuidedHome(discord.ui.View):
                 )
             elif market == "draftkings":
                 embed.add_field(
-                    name="DraftKings Predictions • Assisted research",
+                    name="DraftKings Predictions • NOT CONNECTED (references only)",
                     value=(
-                        f"**Coin:** {self.coin} • **Independent forecast window:** "
+                        f"**Coin:** {self.coin} • **Exchange research window only (not contract expiry):** "
                         f"{self.horizon}m\n"
                         "**Find My Coin:** Automatically find public CDNA candidates; "
                         "CDNA and DraftKings contracts are NOT automatically the same.\n"
@@ -1927,7 +1927,7 @@ class GuidedHome(discord.ui.View):
         if action == "cdna-auto":
             if self.page != "crypto-desk" or self.live_source != "draftkings":
                 await interaction.response.send_message(
-                    "Choose DraftKings Assisted research first.", ephemeral=True,
+                    "Choose DraftKings (not connected) for independent references.", ephemeral=True,
                 )
                 return
             if self.cdna_personal is None:
@@ -2489,6 +2489,7 @@ _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",
     "feeds", "research", "api-limits", "hunt-on",
     "hunt-off", "hunt-status", "explain",
+    "cdna-auto", "cdna-quote", "dk-independent-ai",
 )
 
 
@@ -2603,7 +2604,7 @@ class _StaleGuidedMenuBase(discord.ui.View):
 
 
 class StaleGuidedMenuViewA(_StaleGuidedMenuBase):
-    """First slice of the stale-menu fallback (20 button custom_ids)."""
+    """First slice of the stale-menu fallback (25 button custom_ids)."""
 
     def __init__(self, home_factory: Callable[[int], GuidedHome]) -> None:
         super().__init__(home_factory)

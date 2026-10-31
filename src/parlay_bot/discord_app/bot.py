@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import time
 from contextlib import suppress
@@ -88,6 +89,7 @@ from parlay_bot.research.database_integrity import (
     perpetual_evidence_backlog,
     sports_settlement_backlog,
     sports_settlement_exclusions,
+    sports_runtime_snapshot,
 )
 from parlay_bot.research.dkex_reports import DKeXPublicReports
 from parlay_bot.research.sports_results import (
@@ -853,6 +855,44 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001
                 description = "Sportsbook refresh state unavailable"
             embed.add_field(name="Actual source status", value=description, inline=False)
+            try:
+                recovery = await asyncio.wait_for(
+                    asyncio.to_thread(sports_runtime_snapshot, self.store),
+                    timeout=4,
+                )
+                last = recovery["last_cycle"]
+                last_text = (
+                    f"{last['at']} UTC • provider={last.get('provider', 'unknown')}"
+                    f" • new finals={last.get('new_finals', 0)}"
+                    f" • local reconciled={last.get('reconciled', 0)}"
+                    if last is not None else
+                    "No completed poll/reconciliation cycle recorded"
+                )
+                exclusions = recovery["exclusions"]
+                exclusion_text = ", ".join(
+                    f"{reason}: {count}" for reason, count in sorted(exclusions.items())
+                ) or "none"
+                recovery_text = (
+                    f"Saved provider-final results: {recovery['final_events']}"
+                    f" • latest {recovery['last_final_at'] or 'none'}\n"
+                    f"Scored prospective forecasts: {recovery['scored_forecasts']}"
+                    f" • latest {recovery['last_scored_at'] or 'none'}\n"
+                    f"Saved finals awaiting score: {recovery['unsettled_finalized']}\n"
+                    f"Started fixtures lacking final evidence: "
+                    f"{recovery['started_missing_results']}\n"
+                    f"Excluded forecasts (not wins): {exclusion_text[:170]}\n"
+                    f"Last worker cycle: {last_text}"
+                )
+            except Exception:  # noqa: BLE001 - preserve command ACK if DB is slow
+                _LOG.exception("RivaL hosted sports settlement snapshot unavailable")
+                recovery_text = (
+                    "Live database settlement proof unavailable. "
+                    "A successful Discloud upload is not settlement evidence."
+                )
+            embed.add_field(
+                name="Hosted sports settlement recovery",
+                value=recovery_text[:1024], inline=False,
+            )
             oracle_status = self.polybolt.status()
             oracle_text = (
                 "PolyBolt TWAP: "
@@ -1765,6 +1805,9 @@ class RivalDiscordClient(discord.Client):
         assert self.sports_results is not None
         assert self.current_provider is not None
         while not self.is_closed():
+            cycle_provider = "not_due"
+            cycle_new_finals = 0
+            cycle_reconciled = 0
             try:
                 now = datetime.now(UTC)
                 due = await asyncio.to_thread(
@@ -1795,6 +1838,8 @@ class RivalDiscordClient(discord.Client):
                                 "RivaL finalized sports result withheld: conflicting "
                                 "or incomplete provider evidence"
                             )
+                    cycle_provider = "checked"
+                    cycle_new_finals = verified
                     await asyncio.to_thread(
                         self.sports_results.mark_checked, due, now=seen,
                     )
@@ -1814,10 +1859,12 @@ class RivalDiscordClient(discord.Client):
                         len(due), verified,
                     )
             except QuotaReserveReached as exc:
+                cycle_provider = "quota_deferred"
                 _LOG.info("RivaL sports result audit deferred by quota reserve: %s", exc)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - quota/provider faults never block Discord
+                cycle_provider = "unavailable"
                 _LOG.exception("RivaL sports result verification unavailable")
             # This is local PostgreSQL work, not another provider request.
             # Run it even when no fixtures were due, the provider is down,
@@ -1826,6 +1873,7 @@ class RivalDiscordClient(discord.Client):
                 reconciled = await asyncio.to_thread(
                     self.sports_results.reconcile_unsettled, limit=100,
                 )
+                cycle_reconciled = len(reconciled)
                 if reconciled:
                     _LOG.info(
                         "RivaL sports backlog repaired events=%d leagues=%d",
@@ -1850,16 +1898,30 @@ class RivalDiscordClient(discord.Client):
                 remaining = await asyncio.to_thread(
                     sports_settlement_backlog, self.store,
                 )
+                excluded = await asyncio.to_thread(sports_settlement_exclusions, self.store)
                 _LOG.info(
                     "RivaL sports DB integrity unsettled_finalized=%d exclusions=%s",
-                    remaining,
-                    await asyncio.to_thread(sports_settlement_exclusions, self.store),
+                    remaining, excluded,
+                )
+                await asyncio.to_thread(
+                    self.store.set_runtime_state,
+                    "rival:sports-results:last-cycle",
+                    json.dumps({
+                        "at": datetime.now(UTC).isoformat(),
+                        "provider": cycle_provider,
+                        "new_finals": cycle_new_finals,
+                        "reconciled": cycle_reconciled,
+                        "unsettled_finalized": remaining,
+                        "exclusions": excluded,
+                    }, sort_keys=True, separators=(",", ":")),
                 )
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - monitoring is best effort
                 _LOG.exception("RivaL sports DB integrity check unavailable")
-            await asyncio.sleep(21600)
+            # Every 30 minutes recheck saved results; provider-specific
+            # 6-hour per-fixture retry and shared quota reserves remain intact.
+            await asyncio.sleep(1800)
 
     async def _kalshi_research_loop(self) -> None:
         """Quietly collect real public Kalshi quotes and settled receipts.

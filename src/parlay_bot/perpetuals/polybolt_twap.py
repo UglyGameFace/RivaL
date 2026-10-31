@@ -219,7 +219,7 @@ class PolyBoltTWAP:
         ]
         mean_step = sum(
             (b.observed_at-a.observed_at).total_seconds()
-            for a, b in zip(sampled, sampled[1:])
+            for a, b in itertools.pairwise(sampled)
         )/len(squared)
         remaining_seconds = (notice.expires-current).total_seconds()
         if not 5 < remaining_seconds <= 3600:

@@ -37,9 +37,9 @@ from parlay_bot.discord_app.polymarket_live_board import (
 )
 from parlay_bot.discord_app.presentation import onboarding_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
-from parlay_bot.discord_app.stale_dashboards import build_stale_dashboard_views
 from parlay_bot.discord_app.signals import signal_embed
 from parlay_bot.discord_app.sports_discovery import sports_discovery_embed
+from parlay_bot.discord_app.stale_dashboards import build_stale_dashboard_views
 from parlay_bot.discord_app.stream_proof import stream_proof_embed
 from parlay_bot.discord_app.targeting import DirectionTargetService, DirectionTargetStore
 from parlay_bot.discord_app.views import LocationView, OnboardingView

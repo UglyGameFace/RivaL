@@ -121,7 +121,11 @@ def parse_markets(
             ticker=ticker, title=title[:170], close_time=end,
             yes_ask=_ask(row.get("yes_ask_dollars")),
             no_ask=_ask(row.get("no_ask_dollars")),
-            rules=(rules[:220] if isinstance(rules, str) else "Rules not verified"),
+            # Never hash only the first characters of a settlement rule.
+            rules=(
+                rules if isinstance(rules, str) and 0 < len(rules) <= 16000
+                else "Rules not verified"
+            ),
             series_ticker=series_ticker,
         ))
     return tuple(entries)

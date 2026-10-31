@@ -204,3 +204,32 @@ async def test_polymarket_zero_training_is_not_reported_as_provider_outage(tmp_p
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_polymarket_stats_never_depend_on_exchange_or_drive_status(tmp_path):
+    bot = _client(tmp_path)
+    home = _home(bot)
+    try:
+        home.navigate("crypto-desk")
+        home.live_source = "polymarket"
+        def broken_exchange_training(_asset, _horizon):
+            raise RuntimeError("Unrelated exchange/Drive query failed")
+        home.training_status = broken_exchange_training
+        home.polymarket_status = lambda _asset, _horizon: {
+            "learned_contracts": 12,
+            "settled_forward_contracts": 5,
+            "forward_brier": .21,
+            "market_baseline_brier": .24,
+        }
+        view = await home.render()
+        body = str(view.to_dict())
+        assert "Verified contract outcomes learned: **12**" in body
+        assert "Prospective model calls resolved: **5**" in body
+        assert "Model Brier: 0.2100" in body
+        assert "Exchange forecast results" not in body
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()

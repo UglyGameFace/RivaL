@@ -44,6 +44,11 @@ With the host's actual `RIVAL_DATABASE_URL` set, run:
 python tools/unattended_acceptance.py
 ```
 
+Run this in the Discloud application's console or via its authenticated
+application-console API, **not** in an unrelated GitHub runner without the
+production database connection. The production upload includes this CLI
+under `tools/` and its imports work in Discloud's uninstalled `src/` layout.
+
 No Discord command, login or UI interaction occurs. Exit code **0** means
 at least one actual persisted source-exact model and incumbent pair meets:
 
@@ -71,3 +76,44 @@ Release criteria remain 21+ days and 150 genuinely future unique targets
 per model/source, sufficient real quotes (80% or better), calibrated
 superiority to meaningful baselines and positive after-cost stress
 results. NO CALL remains authoritative until those independent gates pass.
+
+## When to declare operational acceptance
+
+Record the exact running deployed commit, then check the following *against
+the actual host and DB*, not a test fixture or a successful deployment upload:
+
+1. **Causal receipt:** host CLI exits 0 and returns `HOST_EVIDENCE_PRESENT`.
+   Confirm at least one source-matched challenger has issuance, verified
+   pre-outcome identity/probability, independently later settlement, scored
+   incumbent comparison and real prospective matching entry/exit book quotes.
+2. **Controlled process restart:** capture the original forecast/quote
+   primary keys, counts and settlement timestamps, restart the *Discloud
+   bot process*, then check the same records still exist, the old rows were
+   not duplicated or overwritten, and a later worker cycle processes new
+   live input. Merely reopening a DB pool in CI is not a hosted restart.
+3. **External health:** an independent Discloud status check reports the
+   bot running after restart. Compare `host_watchdog.checked_at` at two
+   separate observations and ensure it advances; confirm the critical
+   workers/feed health and eligible settlement backlog have no unresolved
+   incidents. Verify the operator alert route actually delivers a test
+   incident if external alert delivery is required.
+
+Only after all three steps are independently demonstrated should a dated
+operational release receipt read `OPERATIONAL_ACCEPTANCE: PASS`.
+Otherwise use `UNVERIFIED` or `FAIL` with a named blocker.
+
+This is NOT `PREDICTIVE_EDGE_APPROVED`. That still requires prospective
+21-day/150-outcome, source-matched quote coverage and the existing
+calibration/after-cost governance gates. Neither operator actions nor the
+host CLI should override `NO CALL`.
+
+### Evidence handoff
+
+Discloud's official application client exposes authenticated app status,
+logs, restart and console-command operations. Use its existing owner's
+account/credentials through approved host tooling; never paste the Discloud
+token or PostgreSQL URL into a public issue, build log or chat. If the
+authenticated console API returns only command acknowledgment rather than
+stdout/exit status, obtain the actual probe receipt from the running host
+or an explicitly scoped read-only DB connection. An acknowledged command
+is not an acceptance result.

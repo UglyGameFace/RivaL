@@ -397,7 +397,7 @@ def source_month_readiness(
                      AND month<=?""",
                 (venue, contract, quote, months[0], months[-1]),
             ).fetchall()
-        except Exception as exc:  # noqa: BLE001 - DB adapters differ
+        except Exception as exc:
             message = str(exc).lower()
             if "no such table" not in message and "does not exist" not in message:
                 raise

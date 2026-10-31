@@ -223,7 +223,7 @@ def test_seed_diagnosis_distinguishes_missing_rejected_and_source_mismatch(tmp_p
     assert registry.summary(**scope)['slot_compatible'] == 0
     registry.import_verified('failed', compatible_artifact(gain=-.01))
     assert 'failed' in registry.summary(**scope)['seed_reason']
-    registry.import_verified('passed', compatible_artifact())
+    passed_candidate = registry.import_verified('passed', compatible_artifact())
     report = registry.summary(**scope)
     assert report['slot_passed'] == 1
     assert report['slot_live_source_matched'] == 0
@@ -231,7 +231,7 @@ def test_seed_diagnosis_distinguishes_missing_rejected_and_source_mismatch(tmp_p
     assert 'future' in registry.summary(asset='BTC', horizon=5, live_venues=('binance',))['seed_reason']
     # A past, venue-specific selection cannot be reported as currently active
     # after the venue has been disabled. Its recorded evidence stays intact.
-    sha = report['candidate']['model_sha256']
+    sha = passed_candidate['model_sha256']
     with hot.connect() as conn:
         conn.execute('INSERT INTO rival_history_selection VALUES (?,?,?,?,?,?,?,?)',
                      ('binance', 'BTCUSDT', 'USDT', 5, datetime.now(UTC).isoformat(),

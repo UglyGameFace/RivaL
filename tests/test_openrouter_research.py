@@ -404,3 +404,53 @@ def test_failing_recursive_flint_is_not_a_routing_candidate():
         "nvidia/nemotron-3.5-lightning:free",
     )
     assert "recursive/flint-v1.0:free" not in found
+
+
+@pytest.mark.asyncio
+async def test_repeat_request_reuses_cached_served_fallback_without_spending(monkeypatch):
+    """An actual fallback is the audit identity and must be a cache hit."""
+    market = FakeMarket()
+    digest = "c" * 64
+    monkeypatch.setattr(
+        module, "build_evidence",
+        lambda *_args, **_kw: ({"sources": [1, 2, 3]}, digest),
+    )
+    consulted = []
+    fallback = "cohere/north-mini-code:free"
+
+    def cached(**kwargs):
+        consulted.append((kwargs["model"], kwargs["evidence_sha256"]))
+        if kwargs["model"] == fallback and kwargs["evidence_sha256"] == digest:
+            return {
+                "issued_at": "2026-10-31T00:00:00+00:00",
+                "direction": "uncertain", "confidence": "low",
+                "thesis": "Cached fallback research", "risk": "Uncertain",
+                "source_count": 3,
+            }
+        return None
+
+    market.cached_ai_research = cached
+    calls = []
+
+    def respond(req):
+        calls.append(req.url.path)
+        assert req.url.path == "/api/v1/models", "Cache hit must not call AI"
+        return httpx.Response(200, json={"data": [
+            model("openai/gpt-oss-120b:free"),
+            model(fallback),
+        ]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        reviewer = module.OpenRouterResearch(market, api_key="test-secret", client=client)
+        result = await reviewer.ask(asset="BTC", venues=("a", "b", "c"))
+        assert result.model == fallback
+        assert result.from_cache
+        assert result.evidence_sha256 == digest
+        assert result.thesis == "Cached fallback research"
+    assert consulted == [
+        ("openai/gpt-oss-120b:free", digest),
+        (fallback, digest),
+    ]
+    assert calls == ["/api/v1/models"]
+    assert market.calls == 0
+    assert market.saved == []

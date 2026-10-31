@@ -169,10 +169,12 @@ class ShadowModelCompetition:
         stamp = utc(now).isoformat()
         with self.store.connect() as conn:
             rows = conn.execute(
-                """SELECT s.*,f.outcome_up,f.settled_at AS verified_settled_at
+                """SELECT s.*,f.outcome_up AS verified_outcome_up,
+                          f.settled_at AS verified_settled_at
                    FROM rival_model_shadow_forecasts s
                    JOIN perp_forward_audit f
-                    ON f.venue=s.venue AND f.contract=s.contract
+                    ON f.model_version='prospective-logistic-persistent-v3'
+                    AND f.venue=s.venue AND f.contract=s.contract
                     AND f.quote=s.quote AND f.asset=s.asset
                     AND f.horizon_minutes=s.horizon_minutes
                     AND f.reference_opened_at=s.reference_opened_at
@@ -185,7 +187,7 @@ class ShadowModelCompetition:
             ).fetchall()
             total = 0
             for row in rows:
-                y = int(row["outcome_up"])
+                y = int(row["verified_outcome_up"])
                 update = conn.execute(
                     """UPDATE rival_model_shadow_forecasts SET settled_at=?,
                         outcome_up=?,model_brier=?,incumbent_brier=?,baseline_brier=?

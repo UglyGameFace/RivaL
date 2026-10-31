@@ -75,7 +75,12 @@ class Settings(BaseSettings):
     rival_gemini_model: str = Field(default="gemini-3.8-flash")
     rival_gemini_daily_max: int = Field(default=24, ge=1, le=96)
     rival_gemini_cooldown_seconds: int = Field(default=900, ge=60, le=86400)
-    rival_gemini_auto_enabled: bool = Field(default=True)
+    # AI reviewers use a shared free allowance. No owner request should
+    # silently consume it; opt in explicitly to background LLM calls.
+    rival_gemini_auto_enabled: bool = Field(default=False)
+    # Guard against old Discloud environments still setting the legacy flag
+    # true: unattended LLM requests require a second deliberate opt-in.
+    rival_ai_background_opt_in: bool = Field(default=False)
 
     # Official licensed Polymarket PolyBolt Chainlink TWAP (NOT free CLOB book).
     # Three CLOB credentials are used ONLY for the read-only live WS auth.

@@ -1892,7 +1892,35 @@ class GuidedHome(discord.ui.View):
                 self.note = "Choose a market first. No call was requested."
             elif self.live_source == "exchange":
                 self.navigate("forecast")
-            elif self.live_source in ("polymarket", "kalshi"):
+            elif self.live_source == "polymarket":
+                self.navigate("live")
+                board = getattr(
+                    getattr(self.auto_hunt, "bot", None),
+                    "polymarket_board", None,
+                )
+                if callable(getattr(board, "request_contract_ai", None)):
+                    try:
+                        started = await asyncio.wait_for(
+                            board.request_contract_ai(self.coin, self.horizon),
+                            timeout=2.5,
+                        )
+                        if started:
+                            self.note = (
+                                "Requested one optional free AI contract review. "
+                                "Mathematical learning remains independent."
+                            )
+                        else:
+                            self.note = (
+                                "No fresh contract available for an AI review. "
+                                "No AI request was made."
+                            )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("User-initiated contract AI review unavailable")
+                        self.note = (
+                            "Could not confirm a contract-specific AI request. "
+                            "The market and math remain available."
+                        )
+            elif self.live_source == "kalshi":
                 self.navigate("live")
             else:
                 self.note = (

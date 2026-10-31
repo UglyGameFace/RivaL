@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import discord
 import pytest
@@ -299,3 +299,52 @@ def test_live_polymarket_hourly_settlement_source_follows_quote_not_timeframe():
     )
     assert "Binance" in picture("https://www.binance.com/en/trade/BTC_USDT")
     assert "not verified" in picture(None)
+
+
+@pytest.mark.asyncio
+async def test_market_picker_and_live_board_do_not_spend_free_ai_quota(tmp_path):
+    hot, _store, service, _channel, _user, _edited = _setup(tmp_path)
+    now = datetime.now(UTC)
+    start = datetime.fromtimestamp(int(now.timestamp()) // 300 * 300, UTC)
+    current = PolymarketListedWindow(
+        asset="BTC", horizon=5, slug=f"btc-updown-5m-{int(start.timestamp())}",
+        opens=start, closes=now+timedelta(minutes=4),
+        accepting_orders=True, price_to_beat=65000.,
+    )
+    notice = PolymarketNotice(
+        asset="BTC", horizon=5, slug=current.slug, issued=start,
+        expires=current.closes, up_ask=.6, down_ask=.4, quote_at=now,
+        condition_id="0x"+"1"*64,
+        up_token_id="1"*60, down_token_id="2"*60,
+        resolution_source="https://data.chain.link",
+    )
+    board = PolymarketWindowBoard(
+        checked_at=now, current=current, next_window=None,
+        current_quote=notice,
+    )
+    calls = Mock(return_value=None)
+    research = SimpleNamespace(
+        ai=SimpleNamespace(available=True),
+        observe=calls, peek=lambda slug: None,
+        status=lambda slug: "No call requested.",
+        refresh_note=lambda slug: None,
+        wait=AsyncMock(),
+    )
+    service.reader = SimpleNamespace(window_board=AsyncMock(return_value=board))
+    service.research = research
+    try:
+        await service._observation("BTC", 5)
+        calls.assert_called_once_with(notice)
+        # Explicit contract call is the ONLY API-capable path.
+        assert await service.request_contract_ai("BTC", 5)
+        assert calls.call_count == 2
+        assert calls.call_args.kwargs == {"request_ai": True}
+        # Further auto board/price refreshes must remain math-only.
+        await service._observation("BTC", 5)
+        assert calls.call_args.kwargs == {}
+        research.ai.available = False
+        assert not await service.request_contract_ai("BTC", 5)
+        assert calls.call_count == 3
+    finally:
+        await service.aclose()
+        hot.close()

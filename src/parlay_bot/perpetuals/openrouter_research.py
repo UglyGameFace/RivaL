@@ -322,10 +322,26 @@ class OpenRouterResearch:
                     daily_max=self.daily_max, cooldown_seconds=60,
                 )
                 retry = status.get("retry_at")
+                cause = {
+                    "daily_budget_exhausted": "RivaL daily AI budget exhausted",
+                    "minimum_spacing": "AI request cooldown still active",
+                    "provider_error_pause": "AI provider-error pause active",
+                }
+                reasons = status.get("reasons") or ()
+                details = ", ".join(cause.get(code, "AI safety hold") for code in reasons)
+                remaining = (
+                    f" Used {status.get('requests_today', '?')}/"
+                    f"{status.get('rival_daily_limit', self.daily_max)} "
+                    "of RivaL's daily free-AI reservations."
+                )
                 raise ResearchUnavailable(
-                    "Free AI budget or request spacing reached. "
-                    + (f"Next request <t:{int(retry.timestamp())}:R>. " if retry else "")
-                    + "Live quotes continue; AI calls retain their actual issue time."
+                    (details or "AI request could not be reserved.")
+                    + remaining
+                    + (f" Next allowed <t:{int(retry.timestamp())}:R>."
+                       if retry else "")
+                    + " This is RivaL's local limit, not proof of "
+                    "OpenRouter account quota exhaustion. Live mathematical "
+                    "learning continues without an AI request."
                 )
             result = await self._complete(
                 selected=models[0], evidence=evidence, now=now,

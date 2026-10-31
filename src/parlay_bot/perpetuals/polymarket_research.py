@@ -166,8 +166,12 @@ class PolymarketResearch:
     def refresh_note(self, slug: str) -> str | None:
         return self.status(slug) if slug in self._pending or slug in self._status else None
 
-    def observe(self, notice) -> ContractCall | None:
-        """Start at most one bounded review per contract, without blocking UI."""
+    def observe(self, notice, *, request_ai: bool = False) -> ContractCall | None:
+        """Learn mathematically without spending AI quota unless explicitly requested.
+
+        Background market boards and previews must never trigger OpenRouter
+        calls. A deliberate user action can opt into experimental AI review.
+        """
         if self._closed:
             return None
         now = datetime.now(UTC)
@@ -220,6 +224,10 @@ class PolymarketResearch:
                 if not task.cancelled():
                     task.exception()
             learning.add_done_callback(learned)
+        if not request_ai:
+            # Ordinary board refreshes and silent training use zero LLM tokens.
+            # Existing validated model research still runs above.
+            return self.peek(notice.slug)
         cached = self._calls.get(notice.slug)
         if cached is not None and not self._needs_refresh(cached, notice, now):
             return cached or self.peek(notice.slug)

@@ -293,6 +293,30 @@ class LivePolymarketBoardService:
             return None
         return self.peek(asset, horizon)
 
+    async def request_contract_ai(self, asset: str, horizon: int) -> bool:
+        """Spend a shared free-AI request ONLY for an explicit contract call.
+
+        Preview may warm the real order book, but a tracker, board cycle or
+        background refresh never invokes this method.
+        """
+        if self._closed or self.research is None:
+            return False
+        reviewer = getattr(self.research, "ai", None)
+        if reviewer is None or not getattr(reviewer, "available", False):
+            return False
+        cached = self.peek(asset, horizon)
+        if cached is None:
+            await self.preview(asset, horizon)
+            cached = self.peek(asset, horizon)
+        if cached is None or cached[0].current_quote is None:
+            return False
+        notice = cached[0].current_quote
+        now = datetime.now(UTC)
+        if notice.expires <= now or now-notice.quote_at > timedelta(seconds=25):
+            return False
+        self.research.observe(notice, request_ai=True)
+        return True
+
     async def wait_ready(self, asset: str, horizon: int):
         if self._closed:
             return None

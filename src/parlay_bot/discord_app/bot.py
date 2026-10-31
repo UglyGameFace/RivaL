@@ -403,7 +403,10 @@ class RivalDiscordClient(discord.Client):
                 ai=self.gemini_research,
                 venues=tuple(self.perp_collector.providers),
                 assets=self.perp_collector.assets,
-                auto_ai=settings.rival_gemini_auto_enabled,
+                auto_ai=(
+                    settings.rival_gemini_auto_enabled
+                    and settings.rival_ai_background_opt_in
+                ),
             )
             if self.forward_audit is not None and self.perp_collector is not None
             else None

@@ -109,6 +109,11 @@ class FamilyPromotion:
             for row in forecasts:
                 if row["family"]!=family:
                     continue
+                # A still-open future target is not corrupt evidence.
+                # Only genuinely settled observations enter the candidate
+                # score, and missing quote exits remain a denominator loss.
+                if row["settled_at"] is None or row["outcome_up"] is None:
+                    continue
                 try:
                     issued=utc(datetime.fromisoformat(str(row["issued_at"])))
                     target=utc(datetime.fromisoformat(str(row["target_opened_at"])))

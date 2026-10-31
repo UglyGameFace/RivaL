@@ -580,8 +580,10 @@ class GuidedHome(discord.ui.View):
                     self.horizon, row=2, market=self.live_source or "polymarket",
                 ))
             self._add("Learning Details", "trust", 3, "🧠", True)
-            self._add("Price Feed Health", "feeds", 3, "📡")
-            self._add("Advanced Tools", "advanced", 3, "⚙️")
+            if self.live_source == "exchange":
+                self._add("Profit Proof", "proof", 3, "🔍")
+            self._add("Data Health", "feeds", 3, "📡")
+            self._add("Advanced", "advanced", 3, "⚙️")
         elif p == "help":
             self._add("Start with Sports", "sports", 0, "🏆")
             self._add("Analyze Crypto", "crypto-desk", 0, "📈")
@@ -625,8 +627,8 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title="RivaL | Betting Genie",
                 description=(
-                    "Find a live crypto market, compare sports odds, or "
-                    "manage your personal tracking.\n"
+                    "Analyze crypto and sports, check the bot's real "
+                    "prediction record, or practice with imaginary money.\n"
                     "Private research only. No real bets or orders are placed."
                 ), color=discord.Color.blurple(),
             )
@@ -1211,7 +1213,7 @@ class GuidedHome(discord.ui.View):
             stats = await asyncio.to_thread(self.paper.summary, str(self.owner_id))
             money = stats["practice"]
             embed = discord.Embed(
-                title=("💵 My Practice Money" if p == "practice" else "📊 My Results"),
+                title=("💵 My Practice Money" if p == "practice" else "💵 My Practice Results"),
                 description=(
                     "**100% imaginary funds.** Practice Buy expects prices to "
                     "rise; Practice Sell expects a drop. Neither submits an order."
@@ -1652,10 +1654,9 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title=f"📊 Is RivaL Actually Improving? | {self.coin} {self.horizon}m",
                 description=(
-                    "RivaL compares the new combined model against the old "
-                    "model using predictions made **before** prices changed. "
-                    "Until it proves better after trading costs, both remain "
-                    "research, not winning bets."
+                    "Source-specific learning evidence for the selected market. "
+                    "A completed training cycle is not proof of prediction "
+                    "accuracy or after-cost profit."
                 ),
                 color=discord.Color.orange(),
             )

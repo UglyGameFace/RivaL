@@ -79,10 +79,10 @@ class LighterHistoryRecovery(GateHistoryRecovery):
                        WHERE venue='lighter' AND asset=?""",
                     (asset,),
                 ).fetchone()
-        assert row is not None
-        return align_forward_month_cursor(
-            conn, venue="lighter", asset=asset, now=now, row=dict(row),
-        )
+            assert row is not None
+            return align_forward_month_cursor(
+                conn, venue="lighter", asset=asset, now=now, row=dict(row),
+            )
 
     def _advance(
         self, asset: str, *, now: datetime, next_open: datetime | None,

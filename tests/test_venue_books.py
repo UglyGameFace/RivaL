@@ -197,7 +197,7 @@ def _seed_okx_prediction(market, now, *, probability: float) -> None:
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 "okx", "BTC-USDT-SWAP", "USDT", "BTC", 5,
-                "prospective-logistic-shadow-v1",
+                "prospective-logistic-persistent-v3",
                 opened.isoformat(), 81001,
                 (now - timedelta(seconds=30)).isoformat(),
                 (now + timedelta(seconds=120)).isoformat(),

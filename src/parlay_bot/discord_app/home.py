@@ -2176,6 +2176,15 @@ class GuidedHome(discord.ui.View):
             else:
                 try:
                     panel = self.research_factory(self.owner_id)
+                    # Bot Performance's drill-down must open its own evidence,
+                    # not send users through an unrelated Opportunities tab.
+                    if (self.page == "performance"
+                        and hasattr(panel, "screen")
+                        and hasattr(panel, "_rebuild")):
+                        panel.asset = self.coin
+                        panel.screen = "accuracy"
+                        panel.section = "lineage"
+                        panel._rebuild()
                     await interaction.followup.send(
                         embed=await panel.render(), view=panel,
                         ephemeral=True,

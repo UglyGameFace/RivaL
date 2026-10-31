@@ -54,7 +54,7 @@ _SECTIONS = {
         ("gemini", "Gemini results"),
         ("ledger", "Prediction ledger"),
         ("regimes", "Market-regime skill"),
-        ("costs", "Actual cost proof"),
+        ("costs", "Costs (not verified)"),
         ("method", "Scoring method"),
     ),
     "ai": (
@@ -1128,6 +1128,14 @@ class ResearchDashboard(discord.ui.View):
                         "profitability. No live orders are placed."
                     ), inline=False,
                 )
+            # The selected evidence above is already fresh and source-specific.
+            # Do not run every other accuracy, analytics and readiness query
+            # for lineage, ledger, regime or cost screens. The old full-render
+            # path did this despite showing at most two fields on a phone.
+            if self.section in ("lineage", "ledger", "regimes", "costs"):
+                embed.set_footer(text="Read-only database evidence • No trading approval")
+                return embed
+
             # Read-only proof that the autonomous engine actually attempted
             # its last scheduled research cycle. Do not confuse zero issued
             # forecasts with a failed learning process.
@@ -1256,6 +1264,11 @@ class ResearchDashboard(discord.ui.View):
                 "from the SAME exchange after outcomes are observed. "
                 "No live bets or automated trading."
             )
+            if self.section == "engine":
+                # Engine/worker health is a distinct live read. It must not
+                # depend on slow accuracy baselines or external AI analytics.
+                embed.set_footer(text="Live cycle and issuance diagnostics • Not skill proof")
+                return embed
             if self.market is None or not self.shadow_enabled:
                 embed.add_field(
                     name="Accuracy tracking",
@@ -1333,9 +1346,11 @@ class ResearchDashboard(discord.ui.View):
                         stats = report["last_7d"][horizon]
                         earlier = report["prior_7d"][horizon]
                         n = stats["settled"]
-                        if n == 0:
+                        scored = int(stats.get("scored", n) or 0)
+                        if n == 0 or scored == 0:
                             value = (
-                                f"Issued: **{stats['issued']}** · settled: **0**. "
+                                f"Issued: **{stats['issued']}** · settled: **{n}**, "
+                                f"valid scored pairs: **{scored}**. "
                                 "No measurable accuracy yet."
                             )
                         else:
@@ -1347,10 +1362,20 @@ class ResearchDashboard(discord.ui.View):
                                 f"Issued: **{stats['issued']}**, settled: "
                                 f"**{n}** across {stats['venues']} venues.\n"
                                 f"Directional hit rate: **{hit}**.\n"
-                                f"Brier loss: **{stats['brier']:.4f}** vs "
-                                f"baseline **{stats['baseline_brier']:.4f}** "
-                                "(lower is better)."
+                                + (
+                                    f"Brier loss: **{stats['brier']:.4f}** vs "
+                                    f"baseline **{stats['baseline_brier']:.4f}** "
+                                    "(lower is better)."
+                                    if stats["brier"] is not None
+                                    and stats["baseline_brier"] is not None
+                                    else "Brier comparison unavailable: unscored settlements."
+                                )
                             )
+                            if scored != n:
+                                value += (
+                                    f"\nOnly {scored}/{n} settled records have "
+                                    "valid paired scores. No approval inferred."
+                                )
                             if stats["model_beats_baseline"] is None:
                                 value += (
                                     "\nNot enough completed trials to "
@@ -1363,7 +1388,10 @@ class ResearchDashboard(discord.ui.View):
                                        else "does not beat")
                                     + " baseline in this window."
                                 )
-                        if earlier["settled"] >= 50 and n >= 50:
+                        if (earlier["settled"] >= 50 and n >= 50
+                            and earlier["brier"] is not None and stats["brier"] is not None
+                            and earlier.get("scored", earlier["settled"]) == earlier["settled"]
+                            and scored == n):
                             value += (
                                 f"\nPrevious non-overlapping 7 days: "
                                 f"{earlier['settled']} settled; "

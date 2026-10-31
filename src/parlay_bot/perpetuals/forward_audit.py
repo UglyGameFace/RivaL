@@ -954,7 +954,7 @@ class ForwardAccuracyMonitor:
         }
 
     def summary(self, *, asset: str, now: datetime | None = None) -> dict:
-        """Aggregate source-scored accuracy inside PostgreSQL, not in Discord.
+        """Aggregate valid paired future scores without counting missing errors as zero.
 
         Across nine collecting exchanges, two horizons and two weeks this otherwise
         returns hundreds of thousands of old forecast rows for one click.
@@ -969,30 +969,27 @@ class ForwardAccuracyMonitor:
         with self.store.connect() as conn:
             rows = conn.execute(
                 """SELECT horizon_minutes,
-                          CASE WHEN issued_at>=? THEN 'recent' ELSE 'prior' END AS cohort,
-                          COUNT(*) AS issued,
-                          SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END) AS settled,
-                          SUM(CASE WHEN settled_at IS NOT NULL
-                                    AND probability_up<>0.5 THEN 1 ELSE 0 END) AS decided,
-                          SUM(CASE WHEN settled_at IS NOT NULL
-                                    AND ((probability_up>0.5 AND outcome_up=1)
-                                    OR (probability_up<0.5 AND outcome_up=0))
-                                   THEN 1 ELSE 0 END) AS correct,
-                          SUM(CASE WHEN settled_at IS NOT NULL
-                                   THEN model_brier ELSE 0 END) AS model_sum,
-                          SUM(CASE WHEN settled_at IS NOT NULL
-                                   THEN baseline_brier ELSE 0 END) AS baseline_sum,
-                          COUNT(DISTINCT CASE WHEN settled_at IS NOT NULL
-                                              THEN venue END) AS venues
-                   FROM perp_forward_audit
-                   WHERE asset=? AND issued_at>=? AND issued_at<=?
+                           CASE WHEN issued_at>=? THEN 'recent' ELSE 'prior' END AS cohort,
+                           COUNT(*) AS issued,
+                           SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END) AS settled,
+                           SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 THEN 1 ELSE 0 END) AS scored,
+                           SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 AND probability_up<>0.5 THEN 1 ELSE 0 END) AS decided,
+                           SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 AND
+                                ((probability_up>0.5 AND outcome_up=1)
+                                 OR (probability_up<0.5 AND outcome_up=0))
+                                THEN 1 ELSE 0 END) AS correct,
+                           SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 THEN model_brier ELSE 0 END) AS model_sum,
+                           SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 THEN baseline_brier ELSE 0 END) AS baseline_sum,
+                           COUNT(DISTINCT CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 THEN venue END) AS venues
+                    FROM perp_forward_audit
+                    WHERE asset=? AND issued_at>=? AND issued_at<=?
                    GROUP BY horizon_minutes, cohort""",
                 (start, asset, prior, stamp.isoformat()),
             ).fetchall()
 
         def empty() -> dict:
             return {
-                "issued": 0, "settled": 0, "decided": 0, "correct": 0,
+                "issued": 0, "settled": 0, "scored": 0, "decided": 0, "correct": 0,
                 "hit_rate": None, "brier": None, "baseline_brier": None,
                 "venues": 0, "model_beats_baseline": None,
             }
@@ -1006,18 +1003,19 @@ class ForwardAccuracyMonitor:
             cohort = str(row["cohort"])
             if horizon not in HORIZONS or cohort not in cohorts:
                 continue
-            n = int(row["settled"] or 0)
+            n = int(row["scored"] or 0)
+            settled = int(row["settled"] or 0)
             decided = int(row["decided"] or 0)
             brier = float(row["model_sum"]) / n if n else None
             baseline = float(row["baseline_sum"]) / n if n else None
             cohorts[cohort][horizon] = {
-                "issued": int(row["issued"]), "settled": n,
-                "decided": decided, "correct": int(row["correct"] or 0),
+                "issued": int(row["issued"]), "settled": settled,
+                "scored": n, "decided": decided, "correct": int(row["correct"] or 0),
                 "hit_rate": int(row["correct"] or 0) / decided if decided else None,
                 "brier": brier, "baseline_brier": baseline,
                 "venues": int(row["venues"] or 0),
                 "model_beats_baseline": (
-                    brier < baseline if n >= 50 and brier is not None
+                    brier < baseline if n >= 50 and n == settled and brier is not None
                     and baseline is not None else None
                 ),
             }
@@ -1055,16 +1053,14 @@ class ForwardAccuracyMonitor:
             row = conn.execute(
                 """SELECT COUNT(*) AS issued,
                           SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END) AS settled,
-                          SUM(CASE WHEN settled_at IS NOT NULL
-                                    AND probability_up<>0.5 THEN 1 ELSE 0 END) AS decided,
-                          SUM(CASE WHEN settled_at IS NOT NULL
-                                    AND ((probability_up>0.5 AND outcome_up=1)
-                                    OR (probability_up<0.5 AND outcome_up=0))
-                                   THEN 1 ELSE 0 END) AS correct,
-                          SUM(CASE WHEN settled_at IS NOT NULL
-                                   THEN model_brier ELSE 0 END) AS model_sum,
-                          SUM(CASE WHEN settled_at IS NOT NULL
-                                   THEN baseline_brier ELSE 0 END) AS baseline_sum
+                          SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 THEN 1 ELSE 0 END) AS scored,
+                          SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 AND probability_up<>0.5 THEN 1 ELSE 0 END) AS decided,
+                          SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 AND
+                               ((probability_up>0.5 AND outcome_up=1)
+                                OR (probability_up<0.5 AND outcome_up=0))
+                               THEN 1 ELSE 0 END) AS correct,
+                          SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 THEN model_brier ELSE 0 END) AS model_sum,
+                          SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 THEN baseline_brier ELSE 0 END) AS baseline_sum
                    FROM perp_forward_audit
                    WHERE asset=? AND venue=? AND horizon_minutes=?
                      AND issued_at>=? AND issued_at<=?"""
@@ -1080,6 +1076,7 @@ class ForwardAccuracyMonitor:
                                     OR baseline_brier IS NULL
                                     OR outcome_up IS NULL
                                     OR outcome_up NOT IN (0,1)
+                                    OR probability_up NOT BETWEEN 0 AND 1
                                     OR model_brier NOT BETWEEN 0 AND 1
                                     OR baseline_brier NOT BETWEEN 0 AND 1
                                    THEN 1 ELSE 0 END) AS invalid_rows
@@ -1091,7 +1088,8 @@ class ForwardAccuracyMonitor:
                 + " GROUP BY substr(issued_at,1,10)",
                 params,
             ).fetchall()
-        n = int(row["settled"] or 0)
+        settled = int(row["settled"] or 0)
+        n = int(row["scored"] or 0)
         decided = int(row["decided"] or 0)
         brier = (float(row["model_sum"]) / n
                  if n and row["model_sum"] is not None else None)
@@ -1103,11 +1101,12 @@ class ForwardAccuracyMonitor:
             baseline = None
         block_proof = day_block_watch_evidence(daily)
         return {
-            "issued": int(row["issued"]), "settled": n,
+            "issued": int(row["issued"]), "settled": settled,
+            "scored": n,
             "hit_rate": int(row["correct"] or 0) / decided if decided else None,
             "brier": brier, "baseline_brier": baseline,
             "model_beats_baseline": (
-                brier < baseline if n >= 50 and brier is not None
+                brier < baseline if n >= 50 and n == settled and brier is not None
                 and baseline is not None else None
             ),
             "model_version": model_version,

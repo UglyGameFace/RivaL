@@ -100,3 +100,35 @@ async def test_sports_page_shows_persisted_pause_notice(tmp_path) -> None:
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_feed_read_failure_does_not_hide_recorded_cycle(tmp_path, monkeypatch) -> None:
+    """A slow/broken feed must not erase the separately persisted engine status."""
+    from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+
+    bot = _client(tmp_path)
+    home = _home(bot)
+    market = PerpetualMarketStore(bot.store)
+    market.initialize()
+    ForwardAccuracyMonitor(market).run_once()
+    home.market = market
+    home.venues = ("hyperliquid",)
+    home.navigate("performance")
+
+    def broken_feed():
+        raise RuntimeError("simulated feed database failure")
+
+    monkeypatch.setattr(market, "feed_health", broken_feed)
+    try:
+        embed = await home.render()
+        status = _fields(embed)["📡 System status"]
+        assert "Feeds: **read failed or timed out; status unknown**" in status
+        assert "Forecast check:" in status
+        assert "**0** issued" in status
+        assert len(embed.fields) == 4
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()

@@ -1,0 +1,50 @@
+name: Retire verified merged branches
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/retire-merged-branches.yml"
+      - "tools/retire_merged_branches.py"
+  schedule:
+    - cron: "23 8 * * *"
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "Actually delete exact merged-head branches (false previews only)"
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: read
+
+concurrency:
+  group: rival-verified-branch-retirement
+  cancel-in-progress: false
+
+jobs:
+  retire:
+    if: github.repository == 'UglyGameFace/RivaL' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Preview or retire exact merged-head branches
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          APPLY: ${{ github.event_name != 'workflow_dispatch' || inputs.apply }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$APPLY" == "true" ]]; then
+            python tools/retire_merged_branches.py --apply
+          else
+            python tools/retire_merged_branches.py
+          fi

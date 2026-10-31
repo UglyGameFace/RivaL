@@ -651,6 +651,7 @@ class GuidedHome(discord.ui.View):
                             else "No independent model-vs-Kalshi outcome comparison yet."
                         )
                         progress = (
+                            "No validated Kalshi-specific RivaL model yet.\n"
                             f"Recorded Kalshi markets: **{evidence['observed']}**\n"
                             f"Verified settlements learned: **{evidence['trained_labels']}**\n"
                             f"Forward challenger outcomes: **{count}**\n"

@@ -8,12 +8,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
-import hashlib
 import io
 import json
 import math
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx

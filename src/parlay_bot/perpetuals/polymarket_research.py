@@ -102,6 +102,7 @@ class PolymarketResearch:
         exchange quotes. When no verified oracle adapter has supplied a
         matching reference, v2 correctly remains untrained.
         """
+        self.initialize()
         result = self.learner.observe(notice)
         reference = getattr(notice, "oracle_reference", None)
         if isinstance(reference, OracleReference):

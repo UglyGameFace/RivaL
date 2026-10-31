@@ -33,6 +33,8 @@ from parlay_bot.discord_app.price_targets import (
 )
 from parlay_bot.discord_app.signals import model_strength
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.family_governance import FamilyPromotion
+from parlay_bot.perpetuals.model_competition import FAMILIES
 from parlay_bot.perpetuals.promotion import promoted_engine
 from parlay_bot.storage.hot import RelationalHotStore
 
@@ -156,10 +158,18 @@ def target_snapshot(
                 status="weak_model",
             )
         try:
-            evidence = ForwardAccuracyMonitor(market).venue_summary(
-                asset=asset, venue=str(watch["venue"]), horizon=horizon_minutes,
-                now=stamp, model_version=watch.get("model_version"),
-            )
+            if watch.get("model_version") in FAMILIES:
+                evidence = FamilyPromotion(market.store).venue_summary(
+                    asset=asset, venue=str(watch["venue"]),
+                    contract=str(watch["contract"]), quote=str(watch["quote"]),
+                    horizon=horizon_minutes, now=stamp,
+                    model_version=watch["model_version"],
+                )
+            else:
+                evidence = ForwardAccuracyMonitor(market).venue_summary(
+                    asset=asset, venue=str(watch["venue"]), horizon=horizon_minutes,
+                    now=stamp, model_version=watch.get("model_version"),
+                )
             qualified = (
                 evidence.get("model_beats_baseline") is True
                 and evidence.get("watch_evidence_passes") is True

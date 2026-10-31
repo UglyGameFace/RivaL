@@ -17,8 +17,8 @@ import httpx
 from parlay_bot.archive.drive import GoogleDriveArchiveClient
 from parlay_bot.config import Settings
 from parlay_bot.research.audit import audit_catalog
-from parlay_bot.research.boosted_models import evaluate_directory as evaluate_boosted_models
 from parlay_bot.research.batch import _already_present, collect, complete_months, targets
+from parlay_bot.research.boosted_models import evaluate_directory as evaluate_boosted_models
 from parlay_bot.research.free_history import ASSETS, INTERVALS, LEAGUES, HistoryImportError
 from parlay_bot.research.learning import evaluate_directory
 from parlay_bot.research.live_training import evaluate_directory as evaluate_live_contracts

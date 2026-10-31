@@ -517,6 +517,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--months", type=int, default=6)
     parser.add_argument("--assets", nargs="+", choices=sorted(ASSETS), default=["BTC", "ETH", "SOL"])
     parser.add_argument("--max-new", type=int, default=100)
+    parser.add_argument("--passes", type=int, choices=(1, 2, 3), default=1,
+                        help="Up to three digest-idempotent bounded passes for large archives")
     parser.add_argument("--one-minute", action="store_true",
                         help="Also retain verified one-minute Binance candles using existing importer")
     parser.add_argument("--contract-manifest", type=Path,
@@ -532,8 +534,23 @@ def main(argv: list[str] | None = None) -> int:
         if args.plan:
             print(json.dumps({"jobs": jobs, "requested": len(jobs)}, indent=2))
             return 0
+        result = {
+            "planned": len(jobs), "already_verified": 0, "downloaded": 0,
+            "rejected": 0, "remaining": len(jobs), "failed": [],
+            "live_predictions_modified": False,
+        }
         with httpx.Client() as client:
-            result = collect_supplemental(client, root=args.root, jobs=jobs, max_new=args.max_new)
+            for _ in range(args.passes):
+                part = collect_supplemental(
+                    client, root=args.root, jobs=jobs, max_new=args.max_new,
+                )
+                result["already_verified"] = part["already_verified"]
+                result["downloaded"] += part["downloaded"]
+                result["rejected"] += part["rejected"]
+                result["remaining"] = part["remaining"]
+                result["failed"].extend(part["failed"])
+                if part["rejected"] or not part["remaining"]:
+                    break
         report = _report_status(args.root, jobs, result)
         args.report_dir.mkdir(parents=True, exist_ok=True)
         encoded = (json.dumps(report, sort_keys=True, indent=2) + "\n").encode()
@@ -545,7 +562,7 @@ def main(argv: list[str] | None = None) -> int:
             report["drive"] = asyncio.run(_publish_all(args.root, path, jobs))
         print(json.dumps({"acquisition": result, "coverage": report["verified_coverage"],
                           "report": str(path), "drive": report.get("drive")}, sort_keys=True))
-        return 1 if result["rejected"] else 0
+        return 1 if result["rejected"] or result["remaining"] else 0
     except (HistoryImportError, OSError, RuntimeError, KeyError, TypeError) as exc:
         parser.exit(1, f"Supplemental research blocked: {exc}\n")
 

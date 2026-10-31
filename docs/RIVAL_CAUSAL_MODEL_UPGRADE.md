@@ -47,7 +47,9 @@ This model only records an original observation when an exact-source
 `OracleReference` with an immutable original receipt digest, matching
 asset/source/method and tightly bounded source timestamps is provided. Short
 markets require Chainlink 60-second TWAP rules. Hourly contracts must use their
-published Binance spot hourly source; no cross-horizon label substitution.
+published, individually verified settlement source, including Chainlink
+TWAP where the actual rules specify it; Binance spot is allowed only where
+the actual event rules explicitly say so. No cross-horizon label substitution.
 Training uses only separately verified matching binary terminal receipts,
 and weights are persisted per asset/horizon/resolution source. The first
 prospective score per contract is frozen. Its Brier score is compared with
@@ -55,7 +57,7 @@ the saved market-price baseline; all scores remain research-only.
 
 **Important production blocker:** RivaL's existing Gamma/CLOB reader provides
 the published threshold and contract books, but does NOT currently supply an
-authenticated live Chainlink TWAP/settlement-matched spot feed or a
+authorized live Chainlink TWAP/settlement-matched source feed or a
 source-synchronized horizon-volatility measurement. Accordingly the
 `oracle_reference` field stays None in the actual reader; v2 safely abstains
 rather than substituting a Bitget/Binance perpetual price. This change builds
@@ -93,3 +95,9 @@ just to get a higher call volume.
    and do not interpret AI explanations or model confidence as proven edges.
 
 No orders, new paid API, or new Discord permissions are introduced.
+
+Polymarket's October 2026 developer changelog documents the licensed
+PolyBolt `price.crypto.twap` channel (CLOB credentials required). The older
+RTDS reference-price topics are legacy; they must not be presented as the
+new authoritative live adapter. This PR does not add either stream without
+verified access, timestamps and source-specific matching.

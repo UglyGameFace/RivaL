@@ -135,3 +135,16 @@ class SharedProviderBudget:
                     (self.account_key, claim.metric, period, total, stamp),
                 )
         return tuple(granted for _claim, _total, _period, granted in planned)
+
+    def snapshot(self, metric: str) -> dict[str, object] | None:
+        """Local reserved high-water mark, never mistaken for provider billing."""
+        if metric not in ("monthly_entities", "minute_requests", "requests"):
+            raise ValueError("Unknown shared quota metric")
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT period_key,projected_units,updated_at
+                   FROM rival_provider_quota_reservations
+                   WHERE account_key=? AND metric=?""",
+                (self.account_key, metric),
+            ).fetchone()
+        return dict(row) if row is not None else None

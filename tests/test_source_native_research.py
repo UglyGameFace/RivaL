@@ -52,13 +52,17 @@ def _seed_month(market, *, venue="hyperliquid", contract="BTC",
             observed.isoformat(), close, close+1, close-1, close, 12., 4,
         ))
     with market.store.connect() as conn:
-        conn.executemany(
-            """INSERT INTO perp_market_candles
-               (venue,contract,quote,interval_minutes,opened_at,closed_at,
-                first_observed_at,open_price,high_price,low_price,close_price,
-                volume_base,trades) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            data,
-        )
+        # The production compatibility wrapper intentionally exposes only
+        # execute, not DB-driver-specific executemany. Batch below SQLite's
+        # minimum variable limit and keep PostgreSQL parameter counts bounded.
+        prefix = """INSERT INTO perp_market_candles
+                    (venue,contract,quote,interval_minutes,opened_at,closed_at,
+                     first_observed_at,open_price,high_price,low_price,close_price,
+                     volume_base,trades) VALUES """
+        for offset in range(0, len(data), 50):
+            batch = data[offset:offset + 50]
+            slots = ",".join(["(" + ",".join("?" for _ in range(13)) + ")"] * len(batch))
+            conn.execute(prefix + slots, tuple(value for row in batch for value in row))
     return total
 
 

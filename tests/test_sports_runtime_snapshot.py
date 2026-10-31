@@ -15,6 +15,7 @@ def test_hosted_snapshot_shows_actual_results_and_unsettled_counts(tmp_path):
     store = SQLiteHotStore(tmp_path / "runtime.sqlite")
     sports = SportsResultStore(store)
     try:
+        store.initialize()
         sports.initialize()
         now = datetime(2026, 10, 21, tzinfo=UTC)
         empty = sports_runtime_snapshot(store, now=now)
@@ -43,6 +44,7 @@ def test_hosted_snapshot_shows_actual_results_and_unsettled_counts(tmp_path):
 def test_malformed_runtime_state_does_not_poison_immutable_counts(tmp_path):
     store = SQLiteHotStore(tmp_path / "runtime-bad.sqlite")
     try:
+        store.initialize()
         SportsResultStore(store).initialize()
         store.set_runtime_state("rival:sports-results:last-cycle", "not-json")
         snapshot = sports_runtime_snapshot(store)

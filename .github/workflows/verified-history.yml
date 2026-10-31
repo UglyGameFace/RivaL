@@ -57,6 +57,17 @@ jobs:
             --out public-evidence football --league E0 --season 2526
           python -m parlay_bot.research.audit \
             --root public-evidence --months 1 --out public-evidence/quality.json
+      - name: Probe official supplemental crypto archives without model promotion
+        id: supplemental_provider
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python -m parlay_bot.research.supplemental_history \
+            --months 1 --assets BTC --max-new 4 \
+            --root public-evidence --report-dir public-evidence/reports
+      - name: Report missing supplemental provider proof
+        if: steps.supplemental_provider.outcome != 'success'
+        run: echo "::warning::Supplementary Binance source access/integrity not verified in this PR."
       - name: Mark external access as unverified if unavailable
         if: steps.provider.outcome != 'success'
         run: echo "::warning::Official provider access or full-month validation failed; do not claim real-source proof."

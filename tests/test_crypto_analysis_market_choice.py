@@ -161,7 +161,7 @@ async def test_platform_choice_explains_perpetuals_and_draftkings_without_fake_c
         exchange = await home.render()
         exchange_text = str(exchange.to_dict())
         assert "Crypto perpetual futures" in exchange_text
-        assert "not a Polymarket" in exchange_text.lower()
+        assert "not a polymarket" in exchange_text.lower()
         assert "Polymarket model progress" not in exchange_text
     finally:
         home.stop()

@@ -659,8 +659,11 @@ class GuidedHome(discord.ui.View):
                         progress = (
                             "No validated Kalshi-specific RivaL model yet.\n"
                             f"Recorded Kalshi markets: **{evidence['observed']}**\n"
+                            f"Book-verified market records: **{evidence['book_verified_observed']}**\n"
                             f"Verified settlements learned: **{evidence['trained_labels']}**\n"
-                            f"Forward challenger outcomes: **{count}**\n"
+                            f"Legacy summary-price settlements excluded: "
+                            f"**{evidence['legacy_unverified_settlements']}**\n"
+                            f"Book-backed forward outcomes: **{count}**\n"
                             f"{comparison}\n"
                             "Research only. Model approval requires prospective "
                             "evidence and verified after-fee advantage."

@@ -274,7 +274,8 @@ async def test_background_polymarket_board_never_uses_free_ai_budget(hot):
     assert service._saved(current.slug) is None
     with hot.connect() as conn:
         assert conn.execute(
-            "SELECT COUNT(*) AS n FROM rival_polymarket_observations"
+            "SELECT COUNT(*) AS n FROM rival_polymarket_observations WHERE slug=?",
+            (current.slug,),
         ).fetchone()["n"] == 1
     # One explicit choice can initiate exactly one AI review.
     assert service.observe(current, request_ai=True) is None

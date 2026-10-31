@@ -584,6 +584,111 @@ class GuidedHome(discord.ui.View):
                     "Private research only. No real bets or orders are placed."
                 ), color=discord.Color.blurple(),
             )
+        elif p == "crypto-desk":
+            market = self.live_source
+            selected = MARKET_NAMES.get(market, "Not selected")
+            embed = discord.Embed(
+                title=f"📊 RivaL | Crypto Analysis • {self.coin}",
+                description=(
+                    "**Your analysis and accuracy dashboard**\n"
+                    "Choose a market below, then your coin and timeframe. "
+                    "A forecast is shown only for the market you select.\n"
+                    f"**Selected market:** {selected}\n"
+                    "**Betting advantage:** Not verified. No real orders."
+                ),
+                color=discord.Color.blurple(),
+            )
+            if market == "kalshi":
+                embed.add_field(
+                    name="🎯 Kalshi prediction accuracy",
+                    value=(
+                        "No validated Kalshi-specific RivaL model. "
+                        "You can browse verified available contracts, "
+                        "but no UP/DOWN prediction will be invented."
+                    ), inline=False,
+                )
+            else:
+                if self.market is None:
+                    accuracy = "Exchange forecast data unavailable."
+                else:
+                    try:
+                        result = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                ForwardAccuracyMonitor(self.market).summary,
+                                asset=self.coin,
+                            ), timeout=1.3,
+                        )
+                        sample = result["last_7d"][self.horizon]
+                        hits = sample["hit_rate"]
+                        accuracy = (
+                            f"{sample['settled']} verified settled of "
+                            f"{sample['issued']} forecasts in the last 7 days.\n"
+                            + (
+                                f"Correct direction: {hits:.1%} (historical live outcomes)"
+                                if hits is not None else
+                                "Correct direction: not established"
+                            )
+                        )
+                    except Exception:  # noqa: BLE001 - menu remains accessible
+                        accuracy = "Exchange outcome evidence unavailable right now."
+                embed.add_field(
+                    name=f"📈 Exchange forecast results • {self.coin} {self.horizon}m",
+                    value=accuracy + "\nNot Polymarket contract accuracy.",
+                    inline=False,
+                )
+                if self.training_status is None:
+                    poly = "Polymarket-specific learning status unavailable."
+                else:
+                    try:
+                        status = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.training_status, self.coin, self.horizon,
+                            ), timeout=1.5,
+                        )
+                        learning = status.get("polymarket_learning") or {}
+                        poly = (
+                            f"Verified resolved contracts learned: "
+                            f"{learning.get('learned_contracts', 0)}\n"
+                            f"Forward model forecasts settled: "
+                            f"{learning.get('settled_forward_contracts', 0)}\n"
+                            "No validated Polymarket betting win rate yet."
+                        )
+                    except Exception:  # noqa: BLE001 - no invented counts
+                        poly = "Polymarket outcome evidence unavailable right now."
+                embed.add_field(
+                    name="🧠 Polymarket-specific model evidence",
+                    value=poly, inline=False,
+                )
+            if market == "polymarket":
+                embed.add_field(
+                    name="Next action",
+                    value="**View Contract Call** checks the exact listed contract. "
+                          "**Track Market** maintains one updated DM. "
+                          "Share prices are not RivaL predictions.",
+                    inline=False,
+                )
+            elif market == "exchange":
+                embed.add_field(
+                    name="Next action",
+                    value="**Get Exchange Forecast** reads an exchange model, "
+                          "not a Polymarket betting call. "
+                          "**Follow Forecast** updates one private watch.",
+                    inline=False,
+                )
+            elif market == "kalshi":
+                embed.add_field(
+                    name="Next action",
+                    value="**Browse Kalshi** shows actual available contracts "
+                          "and published rules. Prediction calls are not yet supported.",
+                    inline=False,
+                )
+            else:
+                embed.add_field(
+                    name="Start here",
+                    value="Select **Polymarket**, **Exchange Futures**, or **Kalshi**. "
+                          "Nothing is being tracked or subscribed automatically.",
+                    inline=False,
+                )
         elif p == "discover":
             embed = discord.Embed(
                 title="RivaL | Start Here",

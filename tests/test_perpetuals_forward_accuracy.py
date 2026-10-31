@@ -263,3 +263,41 @@ def test_settlement_queue_prefers_oldest_eligible_outcomes_after_downtime(tmp_pa
             assert abs(scored["baseline_brier"] - .25) < 1e-9
     finally:
         store.close()
+
+
+def test_missing_pair_scores_are_not_treated_as_zero(tmp_path):
+    """Settled but unscored rows cannot inflate Brier skill or hit rate."""
+    store = SQLiteHotStore(tmp_path / "incomplete-scores.sqlite")
+    market = PerpetualMarketStore(store)
+    monitor = ForwardAccuracyMonitor(market)
+    now = datetime.now(UTC)
+    seed(market, now=now)
+    try:
+        assert monitor.run_once(now=now)[0] == 3
+        # Reproduce an incomplete/malformed persisted settlement: "settled"
+        # alone is NOT proof that a comparable model/baseline pair exists.
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE perp_forward_audit SET settled_at=?, outcome_up=1, "
+                "model_brier=NULL, baseline_brier=0.2 "
+                "WHERE venue='hyperliquid' AND asset='BTC' AND horizon_minutes=5",
+                ((now + timedelta(minutes=5)).isoformat(),),
+            )
+        recent = monitor.summary(asset="BTC", now=now + timedelta(minutes=7))["last_7d"][5]
+        assert recent["settled"] == 1
+        assert recent["scored"] == 0
+        assert recent["decided"] == 0
+        assert recent["hit_rate"] is None
+        assert recent["brier"] is None
+        assert recent["baseline_brier"] is None
+        assert recent["model_beats_baseline"] is None
+
+        venue = monitor.venue_summary(
+            asset="BTC", venue="hyperliquid", horizon=5, now=now + timedelta(minutes=7),
+        )
+        assert venue["settled"] == 1
+        assert venue["scored"] == 0
+        assert venue["brier"] is None
+        assert venue["model_beats_baseline"] is None
+    finally:
+        store.close()

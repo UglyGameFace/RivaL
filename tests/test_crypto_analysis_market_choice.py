@@ -19,6 +19,7 @@ async def test_crypto_entry_starts_with_analysis_and_no_implicit_market(tmp_path
         await home.act(event, "crypto-desk")
         assert home.page == "crypto-desk"
         assert home.live_source is None
+        home._buttons()  # Real Discord receives a replacement view after navigation.
         assert "View Contract Call" not in _labels(home)
         assert "Track Market" not in _labels(home)
         assert "Get Exchange Forecast" not in _labels(home)

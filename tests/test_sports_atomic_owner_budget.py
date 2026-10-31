@@ -83,11 +83,12 @@ async def test_concurrent_provider_requests_respect_owner_cap_with_stale_usage(t
                 "test", client=client, owner_limits=limits,
                 request_cooldown_seconds=0, monthly_entity_reserve=0,
             )
-            await asyncio.gather(*(
+            outcomes = await asyncio.gather(*(
                 provider.get_events(league_ids=["NBA"], limit=3)
                 for _ in range(3)
-            ))
+            ), return_exceptions=True)
             assert sent == [3, 1]
+            assert sum(isinstance(x, QuotaReserveReached) for x in outcomes) == 1
     finally:
         store.close()
 

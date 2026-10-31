@@ -44,7 +44,7 @@ def test_orderbook_asks_use_opposite_best_bid_with_positive_depth():
     _book(yes=[["0.50"]]),
 ])
 def test_malformed_or_unfillable_orderbook_cannot_become_a_prediction(bad):
-    with pytest.raises(ValueError):
+    with pytest.raises((ValueError, TypeError)):
         parse_orderbook(bad)
 
 

@@ -174,6 +174,49 @@ class CDNAPersonalReader:
             except (httpx.HTTPError, ValueError, TypeError) as exc:
                 raise CDNAUnavailable("CDNA contract discovery unavailable") from exc
 
+    async def discover_coin(
+        self, asset: str,
+    ) -> tuple[tuple[str, str, str, CDNAPrice | None], ...]:
+        """One deliberate owner action: find and inspect a bounded number of
+        CDNA candidates. Never identify them as DraftKings contracts.
+
+        Coin-only matching cannot prove exact event, strike, expiry, oracle,
+        venue execution price, or fees. Those remain unverified.
+        """
+        names = {
+            "BTC": "Bitcoin", "ETH": "Ethereum",
+            "SOL": "Solana", "XRP": "XRP",
+        }
+        if asset not in names:
+            raise CDNAUnavailable("Choose BTC, ETH, SOL or XRP first")
+        results = await self.search_contracts(asset)
+        if not results:
+            results = await self.search_contracts(names[asset])
+        # Require an exact coin term instead of substring guessing:
+        # BTC must never match ABTC2, and ETH must never match BETH.
+        tokens = {"BTC": ("BTC", "BITCOIN"), "ETH": ("ETH", "ETHEREUM"),
+                  "SOL": ("SOL", "SOLANA"), "XRP": ("XRP",)}
+        aliases = tokens[asset]
+        unique: list[tuple[str, str, str]] = []
+        for symbol, title, event in results:
+            source = f"{symbol} {title} {event}".upper()
+            if not any(re.search(
+                rf"(?<![A-Z0-9]){word}(?![A-Z0-9])", source,
+            ) for word in aliases):
+                continue
+            if not any(row[0] == symbol for row in unique):
+                unique.append((symbol, title, event))
+            if len(unique) >= 2:
+                break
+        found: list[tuple[str, str, str, CDNAPrice | None]] = []
+        for symbol, title, event in unique:
+            try:
+                quote = await self.quote(symbol)
+            except CDNAUnavailable:
+                quote = None
+            found.append((symbol, title, event, quote))
+        return tuple(found)
+
     async def quote(self, symbol: str) -> CDNAPrice:
         if not isinstance(symbol, str) or not _SYMBOL.fullmatch(symbol):
             raise CDNAUnavailable("Enter a real CDNA contract trading symbol")

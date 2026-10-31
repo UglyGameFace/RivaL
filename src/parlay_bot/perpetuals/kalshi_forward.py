@@ -11,7 +11,9 @@ import json
 import math
 import re
 import threading
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+from parlay_bot.research.probability_evidence import binary_outcome_evidence
 
 MODEL = "kalshi-online-logit-shadow-v1"
 MIN_TRAINED = 100
@@ -90,6 +92,10 @@ class KalshiForwardResearch:
                     );
                     CREATE INDEX IF NOT EXISTS idx_kalshi_pending
                         ON rival_kalshi_forward (result, close_at);
+                    CREATE TABLE IF NOT EXISTS rival_kalshi_settlement_checks (
+                        ticker TEXT PRIMARY KEY,
+                        checked_at TEXT NOT NULL
+                    );
                     CREATE TABLE IF NOT EXISTS rival_kalshi_shadow_weights (
                         asset TEXT NOT NULL,
                         series_ticker TEXT NOT NULL,
@@ -178,12 +184,34 @@ class KalshiForwardResearch:
         self.initialize()
         with self.store.connect() as conn:
             rows = conn.execute(
-                """SELECT ticker FROM rival_kalshi_forward
-                   WHERE result IS NULL AND close_at<=?
-                   ORDER BY close_at LIMIT ?""",
-                (_iso(now), limit),
+                """SELECT f.ticker FROM rival_kalshi_forward f
+                   LEFT JOIN rival_kalshi_settlement_checks c
+                     ON c.ticker=f.ticker
+                   WHERE f.result IS NULL AND f.close_at<=?
+                     AND (c.checked_at IS NULL OR c.checked_at<=?)
+                   ORDER BY COALESCE(c.checked_at,f.close_at),f.close_at
+                   LIMIT ?""",
+                (_iso(now), _iso(now - timedelta(minutes=3)), limit),
             ).fetchall()
         return tuple(row["ticker"] for row in rows)
+
+    def mark_settlement_check(self, *, ticker: str, at: datetime) -> bool:
+        """Fair persistent polling; an unfinalized old market can't starve others."""
+        self.initialize()
+        with self._lock, self.store.connect() as conn:
+            found = conn.execute(
+                "SELECT ticker FROM rival_kalshi_forward "
+                "WHERE ticker=? AND result IS NULL", (ticker,),
+            ).fetchone()
+            if found is None:
+                return False
+            conn.execute(
+                """INSERT INTO rival_kalshi_settlement_checks (ticker,checked_at)
+                   VALUES (?,?)
+                   ON CONFLICT(ticker) DO UPDATE SET checked_at=excluded.checked_at""",
+                (ticker, _iso(at)),
+            )
+            return True
 
     def settle(self, *, ticker: str, payload: object, checked_at: datetime) -> bool:
         """Only an actual official settled YES/NO receipt becomes a label."""
@@ -191,7 +219,10 @@ class KalshiForwardResearch:
         if not isinstance(payload, dict) or not isinstance(payload.get("market"), dict):
             raise TypeError("missing official Kalshi market payload")
         market = payload["market"]
-        if market.get("ticker") != ticker or market.get("status") != "settled":
+        if (
+            market.get("ticker") != ticker
+            or market.get("status") not in ("settled", "finalized")
+        ):
             return False
         result = market.get("result")
         if result not in ("yes", "no"):
@@ -272,7 +303,8 @@ class KalshiForwardResearch:
                    FROM rival_kalshi_forward WHERE asset=?""", (asset,),
             ).fetchone()
             rows = conn.execute(
-                """SELECT candidate_yes,baseline_yes,result,issued_at,yes_ask,no_ask
+                """SELECT ticker,series_ticker,candidate_yes,baseline_yes,
+                          result,issued_at,settlement_at
                    FROM rival_kalshi_forward WHERE asset=? AND result IS NOT NULL
                      AND candidate_yes IS NOT NULL AND settlement_at>issued_at
                    ORDER BY issued_at""", (asset,),
@@ -281,30 +313,57 @@ class KalshiForwardResearch:
                 "SELECT updates FROM rival_kalshi_shadow_weights WHERE asset=?",
                 (asset,),
             ).fetchall()
-        n = len(rows)
-        cand = (
-            sum((r["candidate_yes"] - int(r["result"] == "yes")) ** 2 for r in rows) / n
-            if n else None
-        )
-        baseline = (
-            sum((r["baseline_yes"] - int(r["result"] == "yes")) ** 2 for r in rows) / n
-            if n else None
-        )
-        days = len({r["issued_at"][:10] for r in rows})
-        # Do not promote based merely on retrospective training, or a
-        # favorable few bets. Kalshi after-fee execution isn't proven.
-        evidence_qualified = bool(
-            n >= MIN_PROSPECTIVE and days >= MIN_DAYS
-            and cand is not None and baseline is not None
-            and cand + .005 < baseline
+        # NEVER pool heterogeneous Kalshi series into a promotion vote.
+        # BTC 5m, BTC 15m, and BTC price-above-$X are different target/rule
+        # families even when their exact tickers share an underlying coin.
+        by_series = {}
+        combined = []
+        for row in rows:
+            example = {
+                "contract_id": row["ticker"], "issued_at": row["issued_at"],
+                "settlement_at": row["settlement_at"],
+                "prediction": row["candidate_yes"],
+                "baseline": row["baseline_yes"],
+                "outcome": int(row["result"] == "yes"),
+            }
+            combined.append(example)
+            by_series.setdefault(row["series_ticker"], []).append(example)
+        score = binary_outcome_evidence(combined)
+        per_series = {}
+        for series, examples in sorted(by_series.items()):
+            evidence = binary_outcome_evidence(examples)
+            eligible = bool(
+                evidence["count"] >= MIN_PROSPECTIVE
+                and evidence["days"] >= MIN_DAYS
+                and evidence["brier_gain"] is not None
+                and evidence["brier_gain"] >= .005
+                and evidence["model_ece"] <= .10
+                and evidence["daily_brier_gain_lower_bound"] is not None
+                and evidence["daily_brier_gain_lower_bound"] > 0
+                and evidence["positive_day_share"] >= .60
+            )
+            per_series[series] = {
+                **evidence, "research_gate_passed": eligible,
+                "approved_model": False, "verified_after_cost": False,
+            }
+        evidence_qualified = any(
+            data["research_gate_passed"] for data in per_series.values()
         )
         return {
             "provider": "kalshi", "model": MODEL, "asset": asset,
             "observed": int(counts["observed"]),
             "settled": int(counts["settled"] or 0),
             "trained_labels": sum(int(state["updates"]) for state in states),
-            "candidate_forward_resolved": n, "candidate_forward_days": days,
-            "candidate_brier": cand, "kalshi_quote_baseline_brier": baseline,
+            "candidate_forward_resolved": score["count"],
+            "candidate_forward_days": score["days"],
+            "candidate_brier": score["model_brier"],
+            "kalshi_quote_baseline_brier": score["market_brier"],
+            "candidate_log_loss": score["model_log_loss"],
+            "market_baseline_log_loss": score["market_log_loss"],
+            "candidate_calibration_error": score["model_ece"],
+            "market_baseline_calibration_error": score["market_ece"],
+            "candidate_daily_gain_lower_bound": score["daily_brier_gain_lower_bound"],
+            "by_series": per_series,
             "candidate_research_evidence_qualified": evidence_qualified,
             "approved_model": False, "verified_betting_advantage": False,
         }

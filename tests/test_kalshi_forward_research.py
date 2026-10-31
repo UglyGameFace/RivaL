@@ -170,3 +170,72 @@ async def test_kalshi_browser_records_official_market_without_user_messages(tmp_
             await asyncio.gather(*browser._study_tasks)
         assert ledger.summary(asset="BTC")["observed"] == 1
         await browser.aclose()
+
+
+def test_unsettled_kalshi_market_does_not_starve_later_results(tmp_path):
+    ledger = KalshiForwardResearch(SQLiteHotStore(tmp_path / "fairness.sqlite"))
+    start = datetime(2026, 8, 1, tzinfo=UTC)
+    for i in range(5):
+        ledger.observe(asset="BTC", market=market(i, start), at=start)
+    due = start+timedelta(minutes=16)
+    first = ledger.pending(now=due, limit=2)
+    assert first == ("KXBTC15M-0", "KXBTC15M-1")
+    for ticker in first:
+        assert ledger.mark_settlement_check(ticker=ticker, at=due)
+    # Must rotate across a restart; do not spin on one never-settled ticker.
+    reopened = KalshiForwardResearch(ledger.store)
+    second = reopened.pending(now=due, limit=2)
+    assert second == ("KXBTC15M-2", "KXBTC15M-3")
+    for ticker in second:
+        assert reopened.mark_settlement_check(ticker=ticker, at=due)
+    assert reopened.pending(now=due, limit=2) == ("KXBTC15M-4",)
+    assert reopened.pending(now=due+timedelta(minutes=4), limit=2) == (
+        "KXBTC15M-4", "KXBTC15M-0",
+    )
+    assert not reopened.mark_settlement_check(ticker="UNKNOWN", at=due)
+
+
+def test_finalized_status_with_real_settlement_receipt_can_train(tmp_path):
+    ledger = KalshiForwardResearch(SQLiteHotStore(tmp_path / "finalized.sqlite"))
+    start = datetime(2026, 8, 1, tzinfo=UTC)
+    m = market(1, start)
+    ledger.observe(asset="BTC", market=m, at=start)
+    event = receipt(m, "yes", start+timedelta(minutes=20))
+    event["market"]["status"] = "finalized"
+    assert ledger.settle(
+        ticker=m.ticker, payload=event,
+        checked_at=start+timedelta(minutes=21),
+    )
+    assert ledger.summary(asset="BTC")["trained_labels"] == 1
+
+
+def test_kalshi_validation_must_be_per_exact_series_not_pooled(tmp_path):
+    ledger = KalshiForwardResearch(SQLiteHotStore(tmp_path / "no-pooling.sqlite"))
+    ledger.initialize()
+    start = datetime(2026, 8, 1, tzinfo=UTC)
+    with ledger.store.connect() as db:
+        for i in range(160):
+            at = start+timedelta(days=i % 21, minutes=i)
+            series = "KXBTC15M" if i % 2 else "KXBTC1H"
+            db.execute(
+                """INSERT INTO rival_kalshi_forward
+                   (ticker,asset,series_ticker,close_at,issued_at,
+                    first_quote_sha256,market_rules_sha256,
+                    features_json,baseline_yes,yes_ask,no_ask,candidate_yes,
+                    result,settlement_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (f"{series}-{i}", "BTC",series,
+                 (at+timedelta(minutes=15)).isoformat(),at.isoformat(),
+                 "a"*64, "b"*64, "[0,0,0]", .5,.5,.5,.95,
+                 "yes", (at+timedelta(minutes=20)).isoformat()),
+            )
+    proof = ledger.summary(asset="BTC")
+    assert proof["candidate_forward_resolved"] == 160
+    assert proof["candidate_brier"] < proof["kalshi_quote_baseline_brier"]
+    assert proof["candidate_research_evidence_qualified"] is False
+    assert set(proof["by_series"]) == {"KXBTC15M","KXBTC1H"}
+    assert all(
+        not series["research_gate_passed"]
+        for series in proof["by_series"].values()
+    )
+    assert not proof["approved_model"]

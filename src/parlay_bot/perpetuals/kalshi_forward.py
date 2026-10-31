@@ -70,6 +70,7 @@ class KalshiForwardResearch:
                     CREATE TABLE IF NOT EXISTS rival_kalshi_forward (
                         ticker TEXT PRIMARY KEY,
                         asset TEXT NOT NULL,
+                        series_ticker TEXT NOT NULL,
                         close_at TEXT NOT NULL,
                         issued_at TEXT NOT NULL,
                         first_quote_sha256 TEXT NOT NULL,
@@ -90,12 +91,14 @@ class KalshiForwardResearch:
                     CREATE INDEX IF NOT EXISTS idx_kalshi_pending
                         ON rival_kalshi_forward (result, close_at);
                     CREATE TABLE IF NOT EXISTS rival_kalshi_shadow_weights (
-                        asset TEXT PRIMARY KEY,
+                        asset TEXT NOT NULL,
+                        series_ticker TEXT NOT NULL,
                         model_version TEXT NOT NULL,
                         weights_json TEXT NOT NULL,
                         weights_sha256 TEXT NOT NULL,
                         updates INTEGER NOT NULL,
-                        trained_at TEXT NOT NULL
+                        trained_at TEXT NOT NULL,
+                        PRIMARY KEY(asset,series_ticker)
                     );
                 """)
             self._ready = True
@@ -104,8 +107,14 @@ class KalshiForwardResearch:
         """First quote frozen forever. No invalid or incomplete ask becomes data."""
         if asset not in ("BTC", "ETH", "SOL", "XRP"):
             raise ValueError("unrecognized Kalshi asset")
-        if re.fullmatch(r"[A-Z0-9-]{2,110}", market.ticker) is None:
-            raise ValueError("unverified Kalshi ticker")
+        series = getattr(market, "series_ticker", None)
+        if (
+            re.fullmatch(r"[A-Z0-9-]{2,110}", market.ticker) is None
+            or not isinstance(series, str)
+            or re.fullmatch(r"[A-Z0-9-]{2,80}", series) is None
+            or not market.ticker.startswith(series + "-")
+        ):
+            raise ValueError("unverified Kalshi market/series identity")
         if not market.rules or market.rules == "Rules not verified":
             return False
         stamp = _iso(at)
@@ -123,13 +132,16 @@ class KalshiForwardResearch:
             zero = json.dumps([0., 0., 0., 0.])
             conn.execute(
                 """INSERT INTO rival_kalshi_shadow_weights
-                   (asset,model_version,weights_json,weights_sha256,updates,trained_at)
-                   VALUES (?,?,?,?,0,?) ON CONFLICT DO NOTHING""",
-                (asset, MODEL, zero, hashlib.sha256(zero.encode()).hexdigest(), stamp),
+                   (asset,series_ticker,model_version,weights_json,
+                    weights_sha256,updates,trained_at)
+                   VALUES (?,?,?,?,?,0,?) ON CONFLICT DO NOTHING""",
+                (asset, series, MODEL, zero,
+                 hashlib.sha256(zero.encode()).hexdigest(), stamp),
             )
             state = conn.execute(
-                "SELECT * FROM rival_kalshi_shadow_weights WHERE asset=?",
-                (asset,),
+                "SELECT * FROM rival_kalshi_shadow_weights "
+                "WHERE asset=? AND series_ticker=?",
+                (asset,series),
             ).fetchone()
             weights = json.loads(state["weights_json"])
             if (
@@ -145,13 +157,14 @@ class KalshiForwardResearch:
             )
             count = conn.execute(
                 """INSERT INTO rival_kalshi_forward
-                   (ticker,asset,close_at,issued_at,first_quote_sha256,
+                   (ticker,asset,series_ticker,close_at,issued_at,first_quote_sha256,
                     market_rules_sha256,features_json,baseline_yes,
                     yes_ask,no_ask,candidate_yes,candidate_weights_sha256,
                     candidate_training_labels)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(ticker) DO NOTHING""",
-                (market.ticker, asset, _iso(market.close_time), stamp, digest,
+                (market.ticker, asset, series, _iso(market.close_time),
+                 stamp, digest,
                  rules_sha, json.dumps(features), baseline,
                  market.yes_ask, market.no_ask, candidate,
                  state["weights_sha256"] if candidate is not None else None,
@@ -221,10 +234,12 @@ class KalshiForwardResearch:
                 (result, settled_at, now, receipt_hash, now, ticker),
             )
             asset = original["asset"]
+            series = original["series_ticker"]
             suffix = " FOR UPDATE" if self.store.database.backend == "postgres" else ""
             state = conn.execute(
-                "SELECT * FROM rival_kalshi_shadow_weights WHERE asset=?" + suffix,
-                (asset,),
+                "SELECT * FROM rival_kalshi_shadow_weights "
+                "WHERE asset=? AND series_ticker=?" + suffix,
+                (asset,series),
             ).fetchone()
             weights = json.loads(state["weights_json"])
             features = json.loads(original["features_json"])
@@ -240,8 +255,9 @@ class KalshiForwardResearch:
             conn.execute(
                 """UPDATE rival_kalshi_shadow_weights SET
                    weights_json=?,weights_sha256=?,updates=updates+1,trained_at=?
-                   WHERE asset=?""",
-                (encoded, hashlib.sha256(encoded.encode()).hexdigest(), now, asset),
+                   WHERE asset=? AND series_ticker=?""",
+                (encoded, hashlib.sha256(encoded.encode()).hexdigest(),
+                 now, asset, series),
             )
             return True
 
@@ -261,10 +277,10 @@ class KalshiForwardResearch:
                      AND candidate_yes IS NOT NULL AND settlement_at>issued_at
                    ORDER BY issued_at""", (asset,),
             ).fetchall()
-            state = conn.execute(
+            states = conn.execute(
                 "SELECT updates FROM rival_kalshi_shadow_weights WHERE asset=?",
                 (asset,),
-            ).fetchone()
+            ).fetchall()
         n = len(rows)
         cand = (
             sum((r["candidate_yes"] - int(r["result"] == "yes")) ** 2 for r in rows) / n
@@ -286,7 +302,7 @@ class KalshiForwardResearch:
             "provider": "kalshi", "model": MODEL, "asset": asset,
             "observed": int(counts["observed"]),
             "settled": int(counts["settled"] or 0),
-            "trained_labels": int(state["updates"]) if state else 0,
+            "trained_labels": sum(int(state["updates"]) for state in states),
             "candidate_forward_resolved": n, "candidate_forward_days": days,
             "candidate_brier": cand, "kalshi_quote_baseline_brier": baseline,
             "candidate_research_evidence_qualified": evidence_qualified,

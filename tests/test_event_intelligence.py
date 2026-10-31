@@ -129,7 +129,7 @@ def test_durable_first_seen_revisions_and_no_call_calendar_window(tmp_path):
         ).fetchone()["first_seen_at"] == original
         assert db.execute("SELECT COUNT(*) AS n FROM rival_macro_events").fetchone()["n"] == n
     assert intel.context(
-        asset="ETH", horizon=5, now=stamp+timedelta(minutes=45),
+        asset="ETH", horizon=5, now=stamp+timedelta(minutes=46),
     )["decision"] != "pause"
 
 

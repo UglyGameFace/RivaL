@@ -62,7 +62,7 @@ def test_only_exact_screened_past_artifacts_can_seed_research(tmp_path):
     registry.import_verified('failed', compatible_artifact(gain=-.01))
     scope = {'venue': 'binance', 'contract': 'BTCUSDT', 'quote': 'USDT', 'horizon': 5, 'now': now}
     assert registry.compatible_seed(**scope) is None
-    registry.import_verified('passed', compatible_artifact())
+    registry.import_verified('passed', compatible_artifact(), now=now)
     candidate = registry.compatible_seed(**scope)
     assert candidate is not None
     assert registry.compatible_seed(**{**scope,'venue':'bitget'}) is None
@@ -79,12 +79,15 @@ def test_only_exact_screened_past_artifacts_can_seed_research(tmp_path):
     hot.close()
 
 
-def test_research_challenger_needs_actual_paired_forward_proof_and_rolls_back(tmp_path):
-    hot = SQLiteHotStore(tmp_path/'selection.sqlite')
+@pytest.mark.parametrize('blocker', [None, 'missing_baseline', 'strong_baseline',
+                                     'pre_import', 'late_issue', 'single_day'])
+def test_research_challenger_needs_actual_paired_forward_proof_and_rolls_back(learning_store, blocker):
+    hot = learning_store
     PerpetualMarketStore(hot).initialize()
     now = datetime.now(UTC).replace(second=0,microsecond=0)
     registry = ResearchCandidateRegistry(hot)
-    registry.import_verified('passed',compatible_artifact())
+    registry.import_verified('passed',compatible_artifact(),
+                             now=now-timedelta(days=10) if blocker != 'pre_import' else now)
     candidate = registry.compatible_seed(venue='binance',contract='BTCUSDT',quote='USDT',horizon=5,now=now)
     rows = tuple(replace(s,venue='binance',contract='BTCUSDT',quote='USDT') for s in samples(now))
     states = LiveModelCheckpoints(hot)
@@ -96,7 +99,9 @@ def test_research_challenger_needs_actual_paired_forward_proof_and_rolls_back(tm
     assert monitor.choose(rows,rows[-1].features,last,horizon=5,now=now,incumbent=incumbent) == incumbent
     with hot.connect() as conn:
         for day in range(1,9):
-            start = (now-timedelta(days=day)).replace(hour=0,minute=0)
+            start = (now-timedelta(days=day if blocker != 'single_day' else 1)).replace(hour=0,minute=0)
+            if blocker == 'single_day':
+                start += timedelta(minutes=day*200)
             for index in range(20):
                 target = start+timedelta(minutes=index*10)
                 conn.execute('''INSERT INTO rival_history_forward
@@ -104,12 +109,19 @@ def test_research_challenger_needs_actual_paired_forward_proof_and_rolls_back(tm
                      issued_at,target_opened_at,probability_up,incumbent_up,weights_sha256,outcome_up,settled_at)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
                     (candidate['model_sha256'],'binance','BTCUSDT','USDT',5,
-                     (target-timedelta(minutes=5)).isoformat(),100.,(target-timedelta(minutes=4)).isoformat(),
+                     (target-timedelta(minutes=5)).isoformat(),100.,
+                     (target+timedelta(minutes=6) if blocker == 'late_issue' else target-timedelta(minutes=4)).isoformat(),
                      target.isoformat(),.9,.5,'a'*64,1,(target+timedelta(minutes=5)).isoformat()))
+                if blocker != 'missing_baseline':
+                    conn.execute('INSERT INTO rival_history_forward_baselines VALUES (?,?,?,?,?,?,?,?)',
+                                 (candidate['model_sha256'],'binance','BTCUSDT','USDT',5,
+                                  (target-timedelta(minutes=5)).isoformat(),
+                                  (target+timedelta(minutes=6) if blocker == 'late_issue' else target-timedelta(minutes=4)).isoformat(),
+                                  .99 if blocker == 'strong_baseline' else .5))
     monitor.choose(rows,rows[-1].features,last,horizon=5,now=now,incumbent=incumbent)
     with hot.connect() as conn:
         selected = conn.execute('SELECT * FROM rival_history_selection').fetchone()
-        assert selected['selected_sha256'] == candidate['model_sha256']
+        assert selected['selected_sha256'] == (candidate['model_sha256'] if blocker is None else None)
         conn.execute('UPDATE rival_history_forward SET probability_up=.1 WHERE outcome_up IS NOT NULL')
     assert monitor.choose(rows,rows[-1].features,last,horizon=5,now=now,incumbent=incumbent) == incumbent
     with hot.connect() as conn:
@@ -200,3 +212,21 @@ def test_prespecified_historical_model_family_keeps_live_feature_contract():
     assert slow != sparse
     with pytest.raises(ValueError):
         _fit(samples, l2=.005, active=())
+
+
+def test_seed_diagnosis_distinguishes_missing_rejected_and_source_mismatch(tmp_path):
+    hot = SQLiteHotStore(tmp_path/'diagnosis.sqlite')
+    registry = ResearchCandidateRegistry(hot)
+    scope = {'asset': 'BTC', 'horizon': 5, 'live_venues': ('hyperliquid',)}
+    assert registry.summary(**scope)['slot_imported'] == 0
+    registry.import_verified('legacy', artifact())
+    assert registry.summary(**scope)['slot_compatible'] == 0
+    registry.import_verified('failed', compatible_artifact(gain=-.01))
+    assert 'failed' in registry.summary(**scope)['seed_reason']
+    registry.import_verified('passed', compatible_artifact())
+    report = registry.summary(**scope)
+    assert report['slot_passed'] == 1
+    assert report['slot_live_source_matched'] == 0
+    assert 'no configured live' in report['seed_reason']
+    assert 'future' in registry.summary(asset='BTC', horizon=5, live_venues=('binance',))['seed_reason']
+    hot.close()

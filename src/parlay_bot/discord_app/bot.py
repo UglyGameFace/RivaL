@@ -2379,7 +2379,10 @@ class RivalDiscordClient(discord.Client):
 
         self.polymarket_research.initialize()
         offline = (
-            self.offline_registry.summary(asset=asset, horizon=horizon)
+            self.offline_registry.summary(
+                asset=asset, horizon=horizon,
+                live_venues=tuple(self.perp_collector.providers) if self.perp_collector else (),
+            )
             if self.offline_registry is not None else
             {"total": 0, "candidate": None, "active_offline_model": False}
         )

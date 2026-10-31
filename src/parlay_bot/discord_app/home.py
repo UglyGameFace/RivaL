@@ -285,7 +285,12 @@ def _performance_exchange(market: object, asset: str, horizon: int) -> dict:
     except Exception:  # noqa: BLE001 - scores must survive lineage failures
         _LOG.exception("Performance historical lineage read failed")
         lineage = None
-    return {"score": score, "lineage": lineage}
+    try:
+        benefit = monitor.active_learning_evidence(asset=asset, horizon_minutes=horizon)
+    except Exception:  # noqa: BLE001 - independent score read
+        _LOG.exception("Active learning evidence unavailable")
+        benefit = None
+    return {"score": score, "lineage": lineage, "benefit": benefit}
 
 
 def _performance_health(market: object) -> dict:
@@ -296,7 +301,7 @@ def _performance_health(market: object) -> dict:
     }
 
 def _latest_forward_cycle(market: object) -> dict | None:
-    """Latest forward-cycle row, or None when it cannot be read.
+    """Latest cycle; None means absent, unavailable means the read failed.
 
     Runs in a worker thread: the store connection is synchronous. Positional
     row access keeps this valid for both the SQLite and Postgres stores.
@@ -310,7 +315,7 @@ def _latest_forward_cycle(market: object) -> dict | None:
             ).fetchone()
     except Exception:  # noqa: BLE001 - health display must never break the menu
         _LOG.exception("Forward-cycle diagnostics read failed")
-        return None
+        return {"status": "unavailable"}
     if row is None:
         return None
     checked = row[0]
@@ -318,18 +323,15 @@ def _latest_forward_cycle(market: object) -> dict | None:
         try:
             checked = datetime.fromisoformat(checked)
         except ValueError:
-            return None
+            return {"status": "unavailable"}
     if not isinstance(checked, datetime) or checked.tzinfo is None:
-        if isinstance(checked, datetime):
-            checked = checked.replace(tzinfo=UTC)
-        else:
-            return None
+        return {"status": "unavailable"}
     try:
         issued = int(row[1] or 0)
         expired = int(row[2] or 0)
     except (TypeError, ValueError):
-        return None
-    return {"checked_at": checked, "issued": issued, "expired": expired}
+        return {"status": "unavailable"}
+    return {"status": "recorded", "checked_at": checked, "issued": issued, "expired": expired}
 
 
 def _crypto_preview_headline(snapshot: TargetSnapshot | None) -> str:
@@ -1323,9 +1325,8 @@ class GuidedHome(discord.ui.View):
                 )
                 brier, baseline = part.get("brier"), part.get("baseline_brier")
                 if brier is not None and baseline is not None:
-                    verdict = part.get("model_beats_baseline")
                     comparison = (
-                        f"vs baseline: **{'better' if verdict is True else 'not better' if verdict is False else 'unproven'}** "
+                        f"Mean error: **{'lower' if brier < baseline else 'not lower'}** than baseline "
                         f"(Brier {brier:.4f} vs {baseline:.4f})"
                     )
                 else:
@@ -1370,9 +1371,15 @@ class GuidedHome(discord.ui.View):
                 if isinstance(cycle, dict):
                     completed = cycle.get("completed_at")
                     stamp = str(completed)[:16].replace("T", " ") + " UTC" if completed else "unknown"
+                    try:
+                        age = datetime.now(UTC)-datetime.fromisoformat(str(completed)).astimezone(UTC)
+                        state = ("fresh" if timedelta(0) <= age <= timedelta(minutes=10)
+                                 else "stale/invalid time")
+                    except (ValueError, TypeError):
+                        state = "time unverified"
                     cycle_text = (
                         f"Last math cycle: **{stamp}** "
-                        f"({'OK' if cycle.get('math_ok') else 'failed/unverified'})\n"
+                        f"({state if cycle.get('math_ok') else 'failed/unverified'})\n"
                         f"Issued **{cycle.get('math_issued', '?')}** · "
                         f"settled **{cycle.get('math_settled', '?')}** in that cycle"
                     )
@@ -1381,8 +1388,8 @@ class GuidedHome(discord.ui.View):
                 lineage = exchange.get("lineage") if isinstance(exchange, dict) else None
                 history = (
                     f"Historical seed used: **{lineage['historically_seeded']}**/"
-                    f"**{lineage['forecasts']}** recent forecasts"
-                    if isinstance(lineage, dict) and lineage.get("forecasts") else
+                    f"**{lineage['lineage_proven']}** verified recent forecasts"
+                    if isinstance(lineage, dict) and lineage.get("lineage_proven") else
                     "Historical seed usage: not verified"
                 )
                 checkpoint = training.get("model_checkpoints")
@@ -1393,9 +1400,21 @@ class GuidedHome(discord.ui.View):
                 )
                 learning_text = (
                     f"{cycle_text}\n{history}{saved}\n"
-                    f"Offline challenger serving: "
-                    f"**{'yes' if training.get('active_offline_model') else 'no'}**"
+                    f"{training.get('seed_reason', 'Historical model eligibility unavailable')}\n"
+                    f"Import check: {str(training.get('drive_status') or 'unavailable').replace('_', ' ')}"
                 )
+            benefit = exchange.get("benefit") if isinstance(exchange, dict) else None
+            if isinstance(benefit, dict):
+                verdict = {"supported": "supported against both baselines",
+                           "not_improving": "not demonstrated",
+                           "insufficient": "not enough future outcomes"}[benefit["status"]]
+                learning_text += (f"\nCurrent learning benefit: **{verdict}** "
+                                  f"({benefit['targets']} target groups / {benefit['days']} days)")
+                if benefit.get("brier") is not None:
+                    learning_text += (f"\nError: {benefit['brier']:.4f} vs "
+                                      f"{benefit['baseline_brier']:.4f} past-rate / 0.2500 coin-flip")
+            else:
+                learning_text += "\nCurrent learning benefit: unavailable"
             embed.add_field(name="🧠 Learning", value=learning_text[:1024], inline=False)
 
             health = reports.get("health")
@@ -1424,12 +1443,14 @@ class GuidedHome(discord.ui.View):
                 )
                 diag = health["cycle"]
                 if diag is None:
-                    cycle_text = "Forecast cycle: **no readable cycle record**"
+                    cycle_text = "Forecast cycle: **no cycle recorded**"
+                elif diag.get("status") == "unavailable":
+                    cycle_text = "Forecast cycle: **read failed; status unknown**"
                 else:
-                    age = max(0, int((now - diag["checked_at"].astimezone(UTC)).total_seconds() // 60))
+                    age = int((now - diag["checked_at"].astimezone(UTC)).total_seconds() // 60)
                     cycle_text = (
                         f"Forecast check: **{age}m ago** "
-                        f"({'fresh' if age <= 10 else 'stale'}), "
+                        f"({'fresh' if 0 <= age <= 10 else 'stale/invalid time'}), "
                         f"**{diag['issued']}** issued"
                     )
                 health_text = f"{feeds}\n{cycle_text}"

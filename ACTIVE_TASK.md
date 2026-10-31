@@ -1,3 +1,15 @@
+## ACTIVE TASK: Historical seed diagnosis, current learning evidence and future-only challenger gates (2026-10-31)
+
+- Objective: explain absent seeds, measure current learned-policy benefit, correct health reporting, and require truly prospective baseline wins before historical challenger selection.
+- Baseline: main `bd84d3d`; branch `fix/learning-evidence-health-20261031`. No open PR at start; old dirty checkouts were preserved. Existing issues #6 and #151 remain unresolved empirical/broader capability work.
+- Findings: October 30 repository evidence records zero admitted historical candidates. The trainer/registry accept Binance source-matched artifacts; the default live candle collector excludes region-blocked Binance. Six-month files therefore do not establish any live seed use. Saved checkpoints and pooled old forecasts cannot prove current learned weights help.
+- Changes: scoped seed inventory/reasons plus import status; 14-day current adaptive-policy comparison against causal base rate and coin flip on aligned, undisputed target groups, with lineage isolation and existing day-block evidence gates. Health distinguishes absent rows from read errors and flags stale/future heartbeat timestamps. Historical challengers atomically save contemporaneous base-rate comparisons; require future post-import outcomes and wins against online incumbent, base rate and coin flip. Legacy rows cannot gain baselines retrospectively. Existing cost/trading gates remain separate.
+- Compatibility: additive baseline table; immutable forecasts/checkpoints retained; no history relabeling, cross-venue weight transfer, regional bypass, new provider requests, orders, or forced promotion. Losing evidence returns to the original online learner. Revert code to roll back; additive table may remain.
+- Validation: focused SQLite regressions and Ruff pass; full local suite and GitHub PostgreSQL CI pending. New adversarial fixtures cover absent baselines, pre-import/late forecasts, stronger baselines, insufficient days, old seeds and grouped cross-venue samples.
+- Production limits: this workspace has no verified running Discloud database connection. Actual current scores, hosted menu and import counts remain unverified; no improved accuracy or production deployment claimed. Future market outcomes cannot be manufactured now. Next: finish full/PG validation, review PR; after authorized merge verify main/release and hosted dashboard evidence.
+
+---
+
 ## ACTIVE TASK: Single-page mobile Bot Performance overhaul (2026-10-31)
 
 - Owner live feedback after merged #157: Bot Performance, Learning Details, Data Health, and Advanced duplicate content, require needless market selection and bury accuracy behind walls of prose. The old "no forecast cycle recorded yet" screen was misleading.

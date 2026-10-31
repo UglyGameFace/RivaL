@@ -241,7 +241,7 @@ class ResearchCandidateRegistry:
         self.initialize()
         with self.store.connect() as conn:
             rows = conn.execute(
-                "SELECT c.model_sha256,a.model_spec_json,c.holdout_brier FROM "
+                "SELECT c.model_sha256,a.model_spec_json,c.holdout_brier,c.first_imported_at FROM "
                 "rival_offline_candidates c JOIN rival_offline_model_artifacts a "
                 "ON a.model_sha256=c.model_sha256 WHERE a.compatible=1 "
                 "AND c.retrospective_screen='passed' AND c.horizon_minutes=? AND c.asset=? "
@@ -255,15 +255,17 @@ class ResearchCandidateRegistry:
             identity = spec["identity"]
             if (sha == row["model_sha256"] and
                 (identity["venue"], identity["contract"], identity["quote"]) == (venue, contract, quote)
-                and datetime.fromisoformat(spec["evaluation_completed_through"]) < now):
-                found.append({**spec, "model_sha256": sha, "retrospective_screen": "passed"})
+                and datetime.fromisoformat(spec["evaluation_completed_through"]) < now
+                and datetime.fromisoformat(row["first_imported_at"]) <= now):
+                found.append({**spec, "model_sha256": sha, "retrospective_screen": "passed",
+                              "imported_at": row["first_imported_at"]})
         return found[:2]
 
     def compatible_seed(self, **scope):
         found = self.compatible_candidates(**scope)
         return found[0] if found else None
 
-    def summary(self, *, asset: str, horizon: int) -> dict:
+    def summary(self, *, asset: str, horizon: int, live_venues=None) -> dict:
         if asset not in ASSETS or horizon not in HORIZONS:
             raise ValueError("unsupported research slot")
         self.initialize()
@@ -280,14 +282,39 @@ class ResearchCandidateRegistry:
             total = conn.execute(
                 "SELECT COUNT(*) AS n FROM rival_offline_candidates",
             ).fetchone()["n"]
+            inventory = conn.execute(
+                "SELECT c.retrospective_screen,a.compatible,a.model_spec_json "
+                "FROM rival_offline_candidates c LEFT JOIN rival_offline_model_artifacts a "
+                "ON a.model_sha256=c.model_sha256 WHERE c.asset=? AND c.horizon_minutes=?",
+                (asset, horizon),
+            ).fetchall()
             selected = conn.execute(
                 "SELECT * FROM rival_history_selection WHERE contract=? AND horizon_minutes=? "
                 "ORDER BY evaluated_at DESC LIMIT 1", (asset+'USDT', horizon),
             ).fetchone()
         active = bool(selected and selected["selected_sha256"] and
-                      datetime.now(UTC)-datetime.fromisoformat(selected["evaluated_at"]) <
+                      timedelta(0) <= datetime.now(UTC)-datetime.fromisoformat(selected["evaluated_at"]) <
                       timedelta(hours=48))
+        compatible = [r for r in inventory if r["compatible"] == 1]
+        passed = [r for r in compatible if r["retrospective_screen"] == "passed"]
+        matched = [r for r in passed if live_venues is None or
+                   json.loads(r["model_spec_json"])["identity"]["venue"] in live_venues]
+        if not inventory:
+            seed_reason = "No historical models imported for this coin/window"
+        elif not compatible:
+            seed_reason = "Imported models use different live inputs"
+        elif not passed:
+            seed_reason = "Historical candidates failed the offline accuracy screen"
+        elif not matched:
+            seed_reason = "Screened historical source has no configured live candle collector"
+        elif not active:
+            seed_reason = "Historical candidates await sufficient future baseline wins"
+        else:
+            seed_reason = "Historical challenger selected on paired future outcomes"
         return {"total": int(total), "candidate": dict(row) if row else None,
+                "seed_reason": seed_reason, "slot_imported": len(inventory),
+                "slot_compatible": len(compatible), "slot_passed": len(passed),
+                "slot_live_source_matched": len(matched),
                 "active_offline_model": active,
                 "historical_selection": dict(selected) if selected else None,
                 "reason": selected["reason"] if selected else "No paired-forward-qualified compatible historical challenger"}

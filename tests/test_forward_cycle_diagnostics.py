@@ -164,3 +164,13 @@ def test_each_five_minute_cycle_samples_all_available_assets_and_rotates_venues(
     assert select_live_streams([], slot=0) == []
     with pytest.raises(ValueError):
         select_live_streams(sources, slot=-1)
+
+
+def test_failed_cycle_read_is_not_reported_as_no_cycle(tmp_path):
+    store = SQLiteHotStore(tmp_path / 'unavailable.sqlite')
+    market = PerpetualMarketStore(store)
+    # Missing table is a failed read, not evidence the worker has never run.
+    assert _latest_forward_cycle(market) == {'status': 'unavailable'}
+    ForwardAccuracyMonitor(market).initialize()
+    assert _latest_forward_cycle(market) is None
+    store.close()

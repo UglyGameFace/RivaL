@@ -1346,9 +1346,11 @@ class ResearchDashboard(discord.ui.View):
                         stats = report["last_7d"][horizon]
                         earlier = report["prior_7d"][horizon]
                         n = stats["settled"]
-                        if n == 0:
+                        scored = int(stats.get("scored", n) or 0)
+                        if n == 0 or scored == 0:
                             value = (
-                                f"Issued: **{stats['issued']}** · settled: **0**. "
+                                f"Issued: **{stats['issued']}** · settled: **{n}**, "
+                                f"valid scored pairs: **{scored}**. "
                                 "No measurable accuracy yet."
                             )
                         else:
@@ -1360,10 +1362,20 @@ class ResearchDashboard(discord.ui.View):
                                 f"Issued: **{stats['issued']}**, settled: "
                                 f"**{n}** across {stats['venues']} venues.\n"
                                 f"Directional hit rate: **{hit}**.\n"
-                                f"Brier loss: **{stats['brier']:.4f}** vs "
-                                f"baseline **{stats['baseline_brier']:.4f}** "
-                                "(lower is better)."
+                                + (
+                                    f"Brier loss: **{stats['brier']:.4f}** vs "
+                                    f"baseline **{stats['baseline_brier']:.4f}** "
+                                    "(lower is better)."
+                                    if stats["brier"] is not None
+                                    and stats["baseline_brier"] is not None
+                                    else "Brier comparison unavailable: unscored settlements."
+                                )
                             )
+                            if scored != n:
+                                value += (
+                                    f"\nOnly {scored}/{n} settled records have "
+                                    "valid paired scores. No approval inferred."
+                                )
                             if stats["model_beats_baseline"] is None:
                                 value += (
                                     "\nNot enough completed trials to "
@@ -1376,7 +1388,10 @@ class ResearchDashboard(discord.ui.View):
                                        else "does not beat")
                                     + " baseline in this window."
                                 )
-                        if earlier["settled"] >= 50 and n >= 50:
+                        if (earlier["settled"] >= 50 and n >= 50
+                            and earlier["brier"] is not None and stats["brier"] is not None
+                            and earlier.get("scored", earlier["settled"]) == earlier["settled"]
+                            and scored == n):
                             value += (
                                 f"\nPrevious non-overlapping 7 days: "
                                 f"{earlier['settled']} settled; "

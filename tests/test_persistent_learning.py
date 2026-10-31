@@ -229,4 +229,17 @@ def test_seed_diagnosis_distinguishes_missing_rejected_and_source_mismatch(tmp_p
     assert report['slot_live_source_matched'] == 0
     assert 'no configured live' in report['seed_reason']
     assert 'future' in registry.summary(asset='BTC', horizon=5, live_venues=('binance',))['seed_reason']
+    # A past, venue-specific selection cannot be reported as currently active
+    # after the venue has been disabled. Its recorded evidence stays intact.
+    sha = report['candidate']['model_sha256']
+    with hot.connect() as conn:
+        conn.execute('INSERT INTO rival_history_selection VALUES (?,?,?,?,?,?,?,?)',
+                     ('binance', 'BTCUSDT', 'USDT', 5, datetime.now(UTC).isoformat(),
+                      sha, 'previously selected', '{}'))
+    assert registry.summary(**scope)['active_offline_model'] is False
+    assert registry.summary(asset='BTC', horizon=5, live_venues=('binance',))['active_offline_model']
+    with hot.connect() as conn:
+        conn.execute('UPDATE rival_history_selection SET selected_sha256=?',
+                     ('f'*64,))
+    assert registry.summary(asset='BTC', horizon=5, live_venues=('binance',))['active_offline_model'] is False
     hot.close()

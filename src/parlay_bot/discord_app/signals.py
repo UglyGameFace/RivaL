@@ -22,6 +22,9 @@ from parlay_bot.discord_app.opportunities import (
     recent_watches,
 )
 from parlay_bot.perpetuals.event_intelligence import EventIntelligence
+from parlay_bot.perpetuals.family_governance import FamilyPromotion
+from parlay_bot.perpetuals.model_competition import FAMILIES
+from parlay_bot.perpetuals.readiness import _source_identity
 from parlay_bot.perpetuals.forward_audit import (
     MODEL as FORWARD_MODEL,
 )
@@ -101,6 +104,12 @@ def _venue_proof(
     market: PerpetualMarketStore, *, asset: str, horizon: int, venue: str,
     now: datetime, model_version: str | None = None,
 ) -> dict:
+    if model_version in FAMILIES:
+        contract, quote = _source_identity(venue, asset)
+        return FamilyPromotion(market.store).venue_summary(
+            asset=asset, venue=venue, contract=contract, quote=quote,
+            horizon=horizon, now=now, model_version=model_version,
+        )
     return ForwardAccuracyMonitor(market).venue_summary(
         asset=asset, venue=venue, horizon=horizon, now=now,
         model_version=model_version,

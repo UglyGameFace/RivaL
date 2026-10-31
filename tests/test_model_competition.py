@@ -10,7 +10,9 @@ from parlay_bot.perpetuals.features import LabeledExample
 from parlay_bot.perpetuals.forward_audit import MODEL, ForwardAccuracyMonitor
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.model_competition import (
-    FAMILIES, ShadowModelCompetition, shadow_predictions,
+    FAMILIES,
+    ShadowModelCompetition,
+    shadow_predictions,
 )
 
 

@@ -103,8 +103,7 @@ class RuntimeHealthMonitor:
                        FROM perp_forward_cycle_diagnostics
                        ORDER BY checked_at DESC LIMIT 1"""
                 ).fetchone()
-                if diagnostic:
-                    if (
+                if (diagnostic and
                         int(diagnostic["selected_streams"]) > 0
                         and int(diagnostic["issued_forecasts"]) == 0
                         and int(diagnostic["insufficient_causal_labels"]) == 0
@@ -113,8 +112,8 @@ class RuntimeHealthMonitor:
                         and int(diagnostic["short_history"]) == 0
                         and (_age(stamp, diagnostic["checked_at"]) or timedelta.max)
                         < timedelta(minutes=16)
-                    ):
-                        faults["missing_forecasts"] = "eligible sources selected but no forecasts issued"
+                ):
+                    faults["missing_forecasts"] = "eligible sources selected but no forecasts issued"
             if expected_feeds:
                 rows = conn.execute(
                     """SELECT venue,asset,status,last_attempt_at,last_success_at,
@@ -132,14 +131,14 @@ class RuntimeHealthMonitor:
                     success_age = _age(stamp, row["last_success_at"])
                     candle_age = _age(stamp, row["last_candle_close"])
                     attempted_age = _age(stamp, row["last_attempt_at"])
-                    if (success_age is None or success_age > timedelta(minutes=20)
-                            or candle_age is None or candle_age > timedelta(minutes=25)
-                            or attempted_age is None or attempted_age > timedelta(minutes=20)):
-                        if warm or row["last_success_at"]:
-                            faults[key] = (
-                                f"source={row['status']} failures={row['failure_count']} "
-                                "no verified fresh completed candle"
-                            )
+                    if ((success_age is None or success_age > timedelta(minutes=20)
+                         or candle_age is None or candle_age > timedelta(minutes=25)
+                         or attempted_age is None or attempted_age > timedelta(minutes=20))
+                            and (warm or row["last_success_at"])):
+                        faults[key] = (
+                            f"source={row['status']} failures={row['failure_count']} "
+                            "no verified fresh completed candle"
+                        )
             if learning_enabled:
                 # Count only genuinely later, source-exact, settleable outcomes.
                 backlog = conn.execute(

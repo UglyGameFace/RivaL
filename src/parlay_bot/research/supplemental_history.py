@@ -25,6 +25,7 @@ from parlay_bot.research.free_history import (
     _fetch,
     _month_key,
     _persist,
+    ingest_binance,
     _sha,
 )
 
@@ -39,7 +40,7 @@ KINDS = {
     "premium": ("premiumIndexKlines", "binance_um_premium_klines"),
 }
 HISTORY_SOURCES = frozenset(v[1] for v in KINDS.values()) | {
-    "polymarket_token_history", "kalshi_contract_candles",
+    "polymarket_token_history", "kalshi_contract_candles", "binance_um_klines",
 }
 _MAX_CONTRACT_POINTS = 100_000
 _MAX_CONTRACT_JOBS = 40
@@ -345,11 +346,17 @@ def _resume_verified(out_dir: Path, source: str, key: str) -> bool:
     return False
 
 
-def supplemental_jobs(months: list[str], assets: list[str]) -> list[tuple]:
+def supplemental_jobs(
+    months: list[str], assets: list[str], *, include_one_minute: bool = False,
+) -> list[tuple]:
     if len(set(months)) != len(months) or not set(assets) <= ASSETS:
         raise HistoryImportError("invalid supplemental coverage")
-    return [("binance", asset, kind, _month_key(month))
+    jobs = [("binance", asset, kind, _month_key(month))
             for month in months for asset in assets for kind in KINDS]
+    if include_one_minute:
+        jobs.extend(("binance_1m", asset, _month_key(month))
+                    for month in months for asset in assets)
+    return jobs
 
 
 def _identity(job: tuple) -> tuple[str, str]:
@@ -357,6 +364,11 @@ def _identity(job: tuple) -> tuple[str, str]:
     if family == "binance":
         _, asset, kind, month = job
         return KINDS[kind][1], f"{asset}USDT-{kind}-{month}"
+    if family == "binance_1m":
+        _, asset, month = job
+        if asset not in ASSETS:
+            raise HistoryImportError("unsupported minute candle contract")
+        return "binance_um_klines", f"{asset}USDT-1m-{_month_key(month)}"
     if family == "polymarket":
         _, condition, token, start, end, fidelity = job
         return "polymarket_token_history", (
@@ -388,6 +400,11 @@ def collect_supplemental(
             if job[0] == "binance":
                 ingest_binance_supplement(client, asset=job[1], kind=job[2],
                                            month=job[3], out_dir=root)
+            elif job[0] == "binance_1m":
+                ingest_binance(
+                    client, asset=job[1], interval="1m", month=job[2],
+                    out_dir=root,
+                )
             elif job[0] == "polymarket":
                 ingest_polymarket_token(
                     client, condition_id=job[1], token_id=job[2],
@@ -467,14 +484,15 @@ def _report_status(root: Path, jobs: list[tuple], acquired: dict) -> dict:
     }
 
 
-async def _publish_all(root: Path, report_path: Path) -> dict:
+async def _publish_all(root: Path, report_path: Path, jobs: list[tuple]) -> dict:
     from parlay_bot.config import Settings
     from parlay_bot.research.publish import _artifact, _drive, prepare, publish
     drive = _drive(Settings())
     try:
         transferred = []
-        for source in sorted(HISTORY_SOURCES):
-            for path in sorted((root / source).glob("*.manifest.json")):
+        for job in jobs:
+            source, key = _identity(job)
+            for path in sorted((root / source).glob(key + "--*.manifest.json")):
                 transferred.append(await publish(drive, prepare(path)))
         artifact = _artifact(report_path, 1)
         obj = await drive.ensure_research_output(
@@ -499,6 +517,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--months", type=int, default=6)
     parser.add_argument("--assets", nargs="+", choices=sorted(ASSETS), default=["BTC", "ETH", "SOL"])
     parser.add_argument("--max-new", type=int, default=100)
+    parser.add_argument("--one-minute", action="store_true",
+                        help="Also retain verified one-minute Binance candles using existing importer")
     parser.add_argument("--contract-manifest", type=Path,
                         help="Exact IDs/times; no inferred market identity or contract resolution")
     parser.add_argument("--publish", action="store_true", help="Use existing verified private Drive publisher")
@@ -506,7 +526,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         months = complete_months(now=datetime.now(UTC), count=args.months)
-        jobs = supplemental_jobs(months, args.assets) + _load_contract_jobs(args.contract_manifest)
+        jobs = supplemental_jobs(
+            months, args.assets, include_one_minute=args.one_minute,
+        ) + _load_contract_jobs(args.contract_manifest)
         if args.plan:
             print(json.dumps({"jobs": jobs, "requested": len(jobs)}, indent=2))
             return 0
@@ -520,7 +542,7 @@ def main(argv: list[str] | None = None) -> int:
             raise HistoryImportError("conflicting supplemental report")
         path.write_bytes(encoded)
         if args.publish:
-            report["drive"] = asyncio.run(_publish_all(args.root, path))
+            report["drive"] = asyncio.run(_publish_all(args.root, path, jobs))
         print(json.dumps({"acquisition": result, "coverage": report["verified_coverage"],
                           "report": str(path), "drive": report.get("drive")}, sort_keys=True))
         return 1 if result["rejected"] else 0

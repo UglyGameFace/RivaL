@@ -33,20 +33,13 @@ async def run_native_research(
     """Research-only. A successful run is NOT forward accuracy or profitability."""
     if venue not in VENUES or len(months) != 6:
         raise HistoryImportError("six exact consecutive months and active venue required")
-    if sorted(months) != months or months != complete_months(
-        now=datetime.fromisoformat(months[-1] + "-28T00:00:00+00:00").replace(
-            month=(int(months[-1][-2:]) % 12) + 1,
-            year=int(months[-1][:4]) + int(months[-1][-2:] == "12"),
-        ),
-        count=6,
+    # Contiguous calendar months and one venue only; never stitch distant
+    # periods into a fake six-month learning window.
+    from parlay_bot.research.audit import _next_month
+    if sorted(months) != months or any(
+        _next_month(a) != b for a, b in zip(months, months[1:])
     ):
-        # Contiguous month arithmetic. Never combine arbitrarily separated
-        # market regimes into a fake six-month coverage claim.
-        from parlay_bot.research.audit import _next_month
-        if sorted(months) != months or any(
-            _next_month(a) != b for a, b in zip(months, months[1:])
-        ):
-            raise HistoryImportError("nonconsecutive source-native research months")
+        raise HistoryImportError("nonconsecutive source-native research months")
     artifacts = await restore_verified_source_months(
         drive, venue=venue, months=months, root=root,
     )

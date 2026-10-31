@@ -108,7 +108,7 @@ def _run_acceptance(store, now):
     assert all(
         proof["targets"] == 1
         and proof["brier"] is not None
-        and proof["incumbent_brier"] == .16
+        and abs(proof["incumbent_brier"]-.16) < 1e-9
         and not proof["live_approved"]
         for proof in report.values()
     )

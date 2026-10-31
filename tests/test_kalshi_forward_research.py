@@ -278,3 +278,33 @@ def test_legacy_summary_labels_never_count_as_verified_book_edge(tmp_path):
     assert score["candidate_forward_resolved"] == 0
     assert score["candidate_research_evidence_qualified"] is False
     assert score["approved_model"] is False
+
+
+def test_legacy_summary_quote_settles_without_contaminating_shadow_weights(tmp_path):
+    ledger = KalshiForwardResearch(SQLiteHotStore(tmp_path / "kalshi-legacy-training.sqlite"))
+    at = datetime(2026, 8, 1, tzinfo=UTC)
+    m = market(1, at)
+    assert ledger.observe(asset="BTC", market=m, at=at)
+    with ledger.store.connect() as db:
+        # Recreate pre-#139 forward rows that lacked verifiable book depth.
+        db.execute("DELETE FROM rival_kalshi_book_evidence WHERE ticker=?", (m.ticker,))
+    assert ledger.settle(
+        ticker=m.ticker, payload=receipt(m, "yes", at+timedelta(minutes=20)),
+        checked_at=at+timedelta(minutes=21),
+    )
+    with ledger.store.connect() as db:
+        stored = db.execute(
+            "SELECT result,settlement_at,learned_at FROM rival_kalshi_forward WHERE ticker=?",
+            (m.ticker,),
+        ).fetchone()
+        weights = db.execute(
+            "SELECT updates,weights_json FROM rival_kalshi_shadow_weights "
+            "WHERE asset='BTC' AND series_ticker=?",
+            (m.series_ticker,),
+        ).fetchone()
+    assert stored["result"] == "yes"
+    assert stored["settlement_at"] is not None
+    assert stored["learned_at"] is None
+    assert weights["updates"] == 0
+    assert ledger.summary(asset="BTC")["legacy_unverified_settlements"] == 1
+    assert ledger.summary(asset="BTC")["trained_labels"] == 0

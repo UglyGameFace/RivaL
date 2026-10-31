@@ -73,7 +73,7 @@ _FIELD_GROUPS = {
     "accuracy": {
         "engine": ("Automatic learning engine", "Forward issue audit"),
         "readiness": ("Mathematical forecast readiness",),
-        "lineage": ("Model training actually used",),
+        "lineage": ("Model training actually used", "Boosted model production proof"),
         "venue": ("Why this exchange",),
         "five": ("Forward 5-minute evaluation", "Math 5m"),
         "fifteen": ("Forward 15-minute evaluation", "Math 15m"),
@@ -936,6 +936,43 @@ class ResearchDashboard(discord.ui.View):
                         name="Model training actually used",
                         value="Cannot verify the source of recent model weights. "
                               "Do not assume six-month training was applied.",
+                        inline=False,
+                    )
+            if self.section == "lineage":
+                try:
+                    live_proof = await asyncio.to_thread(
+                        ForwardAccuracyMonitor(self.market).boosted_production_evidence,
+                        asset=self.asset,
+                    )
+                    recent = live_proof["scopes"][0] if live_proof["scopes"] else None
+                    scope_label = (
+                        f"{recent['venue']}/{recent['contract']} "
+                        f"{recent['horizon']}m"
+                        if recent else "None verified"
+                    )
+                    embed.add_field(
+                        name="Boosted model production proof",
+                        value=(
+                            f"**Imported:** {live_proof['portable_imported']} portable trees, "
+                            f"**{live_proof['portable_screened']}** screened. "
+                            f"**Last 30 days:** {live_proof['issued']} immutable "
+                            f"forecasts, {live_proof['settled']} future settlements, "
+                            f"{live_proof['quote_exits']} matched exit book quotes.\\n"
+                            f"**Most recent source:** {scope_label}. "
+                            f"**Paper-qualified:** "
+                            f"{len(live_proof['fresh_paper_promotions'])}.\\n"
+                            f"**Verdict:** {live_proof['status_reason']}.\\n"
+                            "Real fills, fees, funding and slippage: **NOT VERIFIED**. "
+                            "GitHub research artifacts are not imported live models."
+                        )[:1024].replace("\\\\n", "\\n"),
+                        inline=False,
+                    )
+                except Exception:  # noqa: BLE001 - source evidence fails closed
+                    _LOG.exception("RivaL boosted production ledger read unavailable")
+                    embed.add_field(
+                        name="Boosted model production proof",
+                        value="Live artifact and forward evidence unavailable. "
+                              "No imported model or profitability claim is justified.",
                         inline=False,
                     )
             if self.section == "ledger":

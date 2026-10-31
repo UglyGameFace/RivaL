@@ -263,3 +263,39 @@ async def test_one_click_owner_auth_blocks_all_provider_calls():
     assert not await verify_cdna_owner(interaction, 9)
     interaction.client.application_info.return_value.owner.id = 9
     assert await verify_cdna_owner(interaction, 9)
+
+
+@pytest.mark.asyncio
+async def test_single_click_research_uses_only_existing_exchange_ai(tmp_path):
+    from tests.test_guided_home import _interaction
+    import discord
+    bot = RivalDiscordClient(Settings(
+        _env_file=None, rival_storage_backend="sqlite",
+        rival_db_path=str(tmp_path / "single_click.sqlite"), discord_token=None,
+    ))
+    home = bot._build_guided_home(42)
+    home.navigate("crypto-desk")
+    home.live_source = "draftkings"
+    home.coin = "SOL"
+    bot.cdna_personal.discover_coin = AsyncMock()
+    panel = SimpleNamespace(
+        asset="BTC", screen="opportunities", section="overview",
+        market=object(), venues=("binance",),
+        ai=SimpleNamespace(available=True, ask=AsyncMock(return_value=object())),
+        _rebuild=lambda: None,
+        render=AsyncMock(return_value=discord.Embed(title="AI result")),
+    )
+    home.research_factory = lambda _: panel
+    try:
+        interaction = _interaction(owner=42)
+        await home.act(interaction, "dk-independent-ai")
+        panel.ai.ask.assert_awaited_once_with(asset="SOL", venues=("binance",))
+        bot.cdna_personal.discover_coin.assert_not_awaited()
+        assert interaction.followup.send.await_count == 1
+    finally:
+        home.stop()
+        await bot.cdna_personal.aclose()
+        await bot.kalshi_browser.aclose()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()

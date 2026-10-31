@@ -21,6 +21,7 @@ from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 from parlay_bot.perpetuals.readiness import explain_venue_readiness, forecast_readiness
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
+from parlay_bot.research.source_native import VENUES, source_month_readiness
 
 if TYPE_CHECKING:
     from parlay_bot.discord_app.targeting import DirectionTargetService
@@ -65,7 +66,7 @@ _SECTIONS = {
 _FIELD_GROUPS = {
     "math": {
         "pulse": ("Current market pulse",),
-        "history": ("Six-month history target", "Historical gap audit"),
+        "history": ("Source-native training readiness", "Historical gap audit"),
         "recovery": ("Historical recovery progress",),
         "learning": ("Mathematical model", "Automatic shadow evaluation",
                      "Automatic learning"),
@@ -442,7 +443,8 @@ class ResearchDashboard(discord.ui.View):
         self.add_item(_SectionSelect(self.screen, self.section))
         if self.screen == "opportunities" and self.target_service is not None:
             self.add_item(_QuickTargetButton())
-        if (self.screen == "accuracy" and self.section == "venue"
+        if (((self.screen == "accuracy" and self.section == "venue")
+             or (self.screen == "math" and self.section == "history"))
                 and self.venues):
             self.add_item(_VenueSelect(self.venues, self.selected_venue))
         if self.screen == "ai":
@@ -462,6 +464,19 @@ class ResearchDashboard(discord.ui.View):
         )
         self._history_cache[self.asset] = (now, value)
         return value
+
+    def _native_month_status(self) -> dict:
+        """The selected actual exchange, never combined Binance history."""
+        from parlay_bot.perpetuals.history_quality import _market
+
+        assert self.market is not None
+        if self.selected_venue not in VENUES:
+            raise ValueError("This venue has no eligible native research stream")
+        contract, quote = _market(self.selected_venue, self.asset)
+        return source_month_readiness(
+            self.market, venue=self.selected_venue,
+            contract=contract, quote=quote,
+        )
 
     def _history_quality_status(self) -> tuple[list[dict], dict | None]:
         """Read latest completed gap audit and separate recovery progress."""
@@ -642,6 +657,46 @@ class ResearchDashboard(discord.ui.View):
         embed.timestamp = datetime.now(UTC)
 
         if self.screen == "math":
+            if self.section == "history" and self.market is not None:
+                try:
+                    state = await asyncio.to_thread(self._native_month_status)
+                    monthly = state["months"]
+                    observations = " · ".join(
+                        f"{m['month'][5:]}: "
+                        + ("verified" if m["status"] == "published_receipt"
+                           else "count only" if m["status"] == "count_only_not_certified"
+                           else f"{m['bars']:,}/{m['expected_bars']:,}")
+                        for m in monthly
+                    )
+                    embed.add_field(
+                        name="Source-native training readiness",
+                        value=(
+                            f"**{state['venue']} / {state['contract']} ({state['quote']})**\n"
+                            f"Published source-month receipts: "
+                            f"**{state['months_with_receipts']}/6**.\n"
+                            f"{observations}\n"
+                            + ("Receipt table unavailable; status is unknown. "
+                               if not state["receipt_read_available"] else "")
+                            + "Count-only months are NOT certified. "
+                              "Training still requires private Drive SHA-256 "
+                              "restoration; publication and future model proof are separate."
+                        )[:1024], inline=False,
+                    )
+                except ValueError:
+                    embed.add_field(
+                        name="Source-native training readiness",
+                        value="Select a supported live exchange to inspect exact "
+                              "monthly source training evidence.",
+                        inline=False,
+                    )
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL monthly source research evidence unavailable")
+                    embed.add_field(
+                        name="Source-native training readiness",
+                        value="Host monthly coverage could not be verified. "
+                              "No source-native model training is proven.",
+                        inline=False,
+                    )
             if self.market is None:
                 embed.add_field(
                     name="Mathematical analysis",

@@ -835,6 +835,7 @@ class ForwardAccuracyMonitor:
 
         self.initialize()
         FamilyQuoteShadow(self.store).initialize()
+        FamilyPromotion(self.store).initialize()
         ResearchCandidateRegistry(self.store).initialize()
         with self.store.connect() as conn:
             imported = conn.execute(

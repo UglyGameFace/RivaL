@@ -195,3 +195,68 @@ class DKeXPublicReports:
             "official_source_independently_verified": False,
             "prediction_calls_enabled": False,
         }
+
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Opt-in exact-byte local import, not automated DraftKings app scraping."""
+    import argparse
+    import json
+    import os
+    from datetime import UTC
+    from pathlib import Path
+
+    from parlay_bot.storage.hot import PostgresHotStore, SQLiteHotStore
+
+    parser = argparse.ArgumentParser(description="Inspect official DKeX daily report CSV")
+    parser.add_argument("--file", type=Path, required=True)
+    parser.add_argument("--date", type=date.fromisoformat, required=True)
+    parser.add_argument("--kind", choices=sorted(OFFICIAL_REPORT_PAGES), required=True)
+    parser.add_argument("--sha256", required=True,
+                        help="SHA-256 obtained separately from the archived exact bytes")
+    parser.add_argument("--symbol-column", required=True)
+    parser.add_argument("--settlement-column")
+    parser.add_argument("--sqlite-path", type=Path)
+    parser.add_argument("--postgres-dsn-env",
+                        help="Environment variable containing a PostgreSQL DSN")
+    parser.add_argument("--write", action="store_true",
+                        help="Append immutable research-only rows to a database")
+    args = parser.parse_args(argv)
+    if args.write and bool(args.sqlite_path) == bool(args.postgres_dsn_env):
+        parser.error("choose exactly one database backend for --write")
+    try:
+        blob = args.file.read_bytes()
+        report = parse_daily_report(
+            blob, day=args.date, kind=args.kind,
+            sha256=args.sha256, symbol_column=args.symbol_column,
+            price_column=args.settlement_column,
+        )
+        inserted = 0
+        if args.write:
+            dsn = os.getenv(args.postgres_dsn_env) if args.postgres_dsn_env else None
+            if args.postgres_dsn_env and not dsn:
+                parser.error("configured PostgreSQL DSN variable is missing")
+            store = (
+                PostgresHotStore(dsn) if dsn is not None
+                else SQLiteHotStore(args.sqlite_path)
+            )
+            try:
+                inserted = DKeXPublicReports(store).ingest(
+                    report, imported_at=datetime.now(UTC),
+                )
+            finally:
+                store.close()
+    except (OSError, ValueError, TypeError) as exc:
+        parser.exit(1, f"DKeX research report rejected: {exc}\n")
+    print(json.dumps({
+        "report_day": report.day.isoformat(), "report_kind": report.kind,
+        "rows": len(report.rows), "sha256": report.sha256,
+        "source_page": report.source_page, "new_rows": inserted,
+        "independently_verified": False, "live_prices": False,
+        "research_only": True, "trading_enabled": False,
+    }, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

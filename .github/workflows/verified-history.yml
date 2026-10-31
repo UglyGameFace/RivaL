@@ -177,7 +177,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install
-        run: python -m pip install -e ".[dev]"
+        run: python -m pip install -e ".[dev,ml-research]"
       - name: Collect and privately archive verified supplemental crypto research
         # Supplemental data is additive. A blocked or rate-limited external
         # source must not disable the verified base-price training workflow.
@@ -256,6 +256,8 @@ jobs:
           print("Source months:", len(report.get("source_months", [])))
           print("Crypto streams complete:", report.get("crypto_sources_complete", False))
           print("Live-compatible candidates:", report.get("compatible_candidate_count", 0))
+          print("Boosted-family evaluations:", report.get("boosted_models_evaluated", 0))
+          print("Retrospectively passing boosted candidates:", report.get("boosted_candidates_retrospectively_passed", 0))
           print("Screened-in historical candidates:", report.get("compatible_candidate_passed", 0))
           print("Research evaluations:", len(report.get("research", {}).get("evaluations", [])))
           print("Live model promoted:", report.get("live_model_promoted", False))

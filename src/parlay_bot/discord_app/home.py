@@ -2482,17 +2482,14 @@ _STALE_NOTE = (
 # Button actions split across two views to stay under the 25-component limit.
 _STALE_BUTTONS_A = (
     "sports", "crypto", "hunt", "practice", "results", "help", "advanced",
-    "discover",
     "state", "zip", "refresh", "manual", "slip", "lower", "balanced",
     "aggressive", "forecast", "follow", "target", "home", "back",
-    "hunt-config",
+    "hunt-poly", "hunt-research", "hunt-qualified",
 )
 _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",
     "feeds", "research", "api-limits", "hunt-on",
     "hunt-off", "hunt-status", "explain",
-    "cdna-auto", "cdna-quote", "dk-independent-ai",
-    "hunt-poly", "hunt-research", "hunt-qualified",
 )
 
 
@@ -2501,6 +2498,8 @@ _STALE_BUTTONS_C = (
     "hunt-tools", "kalshi", "kalshi-refresh",
     "live-poly", "live-kalshi", "live-dk", "stop-all",
     "crypto-desk", "desk-call", "desk-track",
+    "discover", "hunt-config", "cdna-auto", "cdna-quote",
+    "dk-independent-ai",
 )
 
 
@@ -2607,7 +2606,7 @@ class _StaleGuidedMenuBase(discord.ui.View):
 
 
 class StaleGuidedMenuViewA(_StaleGuidedMenuBase):
-    """First slice of the stale-menu fallback (22 buttons plus selects)."""
+    """First slice of the stale-menu fallback (23 buttons; no selects)."""
 
     def __init__(self, home_factory: Callable[[int], GuidedHome]) -> None:
         super().__init__(home_factory)
@@ -2616,7 +2615,7 @@ class StaleGuidedMenuViewA(_StaleGuidedMenuBase):
 
 
 class StaleGuidedMenuViewB(_StaleGuidedMenuBase):
-    """Second slice (15 buttons + coin/horizon selects)."""
+    """Second slice (15 buttons + two full-row selects)."""
 
     def __init__(self, home_factory: Callable[[int], GuidedHome]) -> None:
         super().__init__(home_factory)

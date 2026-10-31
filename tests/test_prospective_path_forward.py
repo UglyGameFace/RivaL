@@ -83,6 +83,18 @@ def test_real_forward_settlement_rejects_backfill_and_duplicate_predictions(lear
         "settled":0,"ambiguous":0,
     }
     future=[]
+    # This partial bar opened BEFORE issuance. It may show both barriers
+    # touched, but is deliberately excluded from the scored future path.
+    partial_open=last.opened_at+timedelta(minutes=5)
+    partial=MarketCandle(
+        venue="hyperliquid",contract="BTC",quote="USDC",
+        interval_minutes=5,opened_at=partial_open,
+        closed_at=partial_open+timedelta(minutes=5,milliseconds=-1),
+        observed_at=partial_open+timedelta(minutes=5,seconds=2),
+        open_price=last.close_price,
+        high_price=last.close_price*1.5,low_price=last.close_price*.5,
+        close_price=last.close_price,volume_base=10.0,trades=8,
+    )
     for j in range(2,5):
         opened=last.opened_at+timedelta(minutes=5*j)
         future.append(MarketCandle(
@@ -95,7 +107,7 @@ def test_real_forward_settlement_rejects_backfill_and_duplicate_predictions(lear
             volume_base=10.0,trades=8,
         ))
     with hot.connect() as conn:
-        for candle in future:
+        for candle in [partial,*future]:
             conn.execute(
                 "INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 _row(candle),

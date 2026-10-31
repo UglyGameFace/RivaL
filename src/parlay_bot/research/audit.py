@@ -53,7 +53,7 @@ def audit_partition(path: Path) -> dict:
         raise HistoryImportError("history gap-count disagreement")
     return {
         "venue": meta["venue"], "contract": meta["contract"],
-        "interval_minutes": interval, "month": month,
+        "quote": meta["quote"], "interval_minutes": interval, "month": month,
         "source_sha256": meta["source_sha256"],
         "data_sha256": meta["data_sha256"],
         "rows": len(rows), "expected": expected,
@@ -64,14 +64,26 @@ def audit_partition(path: Path) -> dict:
     }
 
 
-def audit_catalog(root: Path, *, months: list[str]) -> dict:
+def audit_catalog(
+    root: Path, *, months: list[str],
+    sources: tuple[str, ...] = ("binance_um_klines",),
+) -> dict:
     if not months or len(months) != len(set(months)):
         raise ValueError("unique expected calendar months required")
     if any(_next_month(a) != b for a, b in itertools.pairwise(months)):
         raise ValueError("requested months are not contiguous")
+    if not sources or len(sources) != len(set(sources)) or any(
+        source not in {"binance_um_klines", "verified_venue_perp_klines"}
+        for source in sources
+    ):
+        raise ValueError("invalid requested research source directories")
     items = []
     failures = []
-    for path in sorted((root / "binance_um_klines").glob("*.manifest.json")):
+    paths = [
+        path for source in sources
+        for path in sorted((root / source).glob("*.manifest.json"))
+    ]
+    for path in paths:
         try:
             item = audit_partition(path)
             if item["month"] in months:
@@ -80,13 +92,14 @@ def audit_catalog(root: Path, *, months: list[str]) -> dict:
             failures.append({"file": path.name, "error": str(exc)})
     grouped: dict[tuple[str, int], dict[str, dict]] = {}
     for item in items:
-        key = (item["contract"], item["interval_minutes"])
+        key = (item["venue"], item["contract"], item["quote"],
+               item["interval_minutes"])
         slot = grouped.setdefault(key, {})
         if item["month"] in slot:
             failures.append({"file": str(key), "error": "duplicate monthly partition"})
         slot[item["month"]] = item
     streams = []
-    for (contract, interval), segments in sorted(grouped.items()):
+    for (venue, contract, quote, interval), segments in sorted(grouped.items()):
         missing_months = [m for m in months if m not in segments]
         expected = sum(segment["expected"] for segment in segments.values())
         saved = sum(segment["rows"] for segment in segments.values())
@@ -94,7 +107,8 @@ def audit_catalog(root: Path, *, months: list[str]) -> dict:
             item["research_grade"] for item in segments.values()
         )
         streams.append({
-            "contract": contract, "interval_minutes": interval,
+            "venue": venue, "contract": contract, "quote": quote,
+            "interval_minutes": interval,
             "months_present": len(segments), "months_requested": len(months),
             "missing_months": missing_months,
             "verified_rows": saved, "expected_for_present_months": expected,

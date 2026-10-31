@@ -159,6 +159,8 @@ jobs:
           fi
           python -m parlay_bot.research.production \
             --months "$months" --max-new 100 \
+            --assets BTC ETH SOL XRP --intervals 5m \
+            --seasons \
             --root data/research-history \
             --report-dir data/research-reports "${args[@]}"
       - name: Summarize research evidence without claiming live promotion
@@ -179,7 +181,9 @@ jobs:
           with open(sorted(glob.glob("data/research-reports/history-learning-report-*.json"))[-1], encoding="utf-8") as handle:
               report = json.load(handle)
           print("Source months:", len(report.get("source_months", [])))
-          print("Acquisition complete:", report.get("all_requested_data_complete"))
+          print("Crypto streams complete:", report.get("crypto_sources_complete", False))
+          print("Live-compatible candidates:", report.get("compatible_candidate_count", 0))
+          print("Screened-in historical candidates:", report.get("compatible_candidate_passed", 0))
           print("Research evaluations:", len(report.get("research", {}).get("evaluations", [])))
           print("Live model promoted:", report.get("live_model_promoted", False))
           print("Historical-only report, NOT real-money profitability.")

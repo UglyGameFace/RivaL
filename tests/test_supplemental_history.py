@@ -14,9 +14,16 @@ import pytest
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.publish import prepare
 from parlay_bot.research.supplemental_history import (
-    _funding_rows, _premium_rows, _report_status, _resume_verified,
-    binance_supplement_url, collect_supplemental, ingest_binance_supplement,
-    ingest_kalshi_contract, ingest_polymarket_token, supplemental_jobs,
+    _funding_rows,
+    _premium_rows,
+    _report_status,
+    _resume_verified,
+    binance_supplement_url,
+    collect_supplemental,
+    ingest_binance_supplement,
+    ingest_kalshi_contract,
+    ingest_polymarket_token,
+    supplemental_jobs,
 )
 
 MONTH = "2024-01"

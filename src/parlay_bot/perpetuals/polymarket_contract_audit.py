@@ -9,6 +9,7 @@ training and on-contract forward evidence remain distinct.
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -39,6 +40,10 @@ class ContractComparison:
     quote_observed_at: datetime | None = None
     up_ask: float | None = None
     down_ask: float | None = None
+    # Externally verified contract-specific terminal tie rule. A hash alone
+    # does not authenticate the text; audit callers must verify official rules.
+    tie_direction: str | None = None  # UP or DOWN
+    settlement_rules_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -81,6 +86,20 @@ def _valid(row: ContractComparison) -> bool:
             or oracle_at <= end
             or not row.oracle_provenance.startswith("chainlink-twap:")
             or len(row.oracle_provenance) < 22
+            or (
+                row.oracle_end_twap == row.oracle_start_twap
+                and (
+                    row.tie_direction not in ("UP", "DOWN")
+                    or not isinstance(row.settlement_rules_sha256, str)
+                    or re.fullmatch(
+                        r"[0-9a-f]{64}", row.settlement_rules_sha256,
+                    ) is None
+                )
+            )
+            or (
+                row.tie_direction is not None
+                and row.tie_direction not in ("UP", "DOWN")
+            )
         ):
             return False
         values = (
@@ -154,7 +173,15 @@ def audit_contract_predictions(
             "insufficient", "No source-aligned contract labels",
             0, 0, 0, 0, None, None, None, None, 0, None,
         )
-    labels = [int(row.oracle_end_twap >= row.oracle_start_twap) for row in rows]
+    # A tie is NOT universally UP. Exact published rules for this
+    # condition and market are required; otherwise _valid has already
+    # rejected the cohort. Never infer a tie outcome from another venue.
+    def resolves_up(row: ContractComparison) -> bool:
+        if row.oracle_end_twap == row.oracle_start_twap:
+            return row.tie_direction == "UP"
+        return row.oracle_end_twap > row.oracle_start_twap
+
+    labels = [int(resolves_up(row)) for row in rows]
     c_brier = sum(
         (row.candidate_probability_up - actual)**2
         for row, actual in zip(rows, labels, strict=True)
@@ -175,7 +202,7 @@ def audit_contract_predictions(
         probability = row.candidate_probability_up
         if not (probability >= 0.56 or probability <= 0.44):
             continue
-        outcome_up = row.oracle_end_twap >= row.oracle_start_twap
+        outcome_up = resolves_up(row)
         choosing_up = probability >= 0.56
         ask = row.up_ask if choosing_up else row.down_ask
         profits.append(float(choosing_up == outcome_up) - ask - cost_per_share)

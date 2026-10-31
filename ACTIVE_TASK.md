@@ -1,3 +1,12 @@
+## ACTIVE TASK: Polymarket exact tie-rule offline scoring (2026-10-31)
+
+- Independent defect: `polymarket_contract_audit.audit_contract_predictions` labeled a zero-change oracle window as UP for **every** event, borrowing a rule that is not universally proven for each listed contract. That could manufacture historical model wins and apparent after-cost gains.
+- Branch: `fix/oracle-tie-rule-proof-20261031`, based on `main@021f1a0a`. PR #148 merged, preserving private dashboard recovery and sports runtime diagnostics; keep code paths independent.
+- Fix: refuse unknown tie settlement. Require explicit per-record UP/DOWN policy and an external rule-source SHA256 for equal TWAP windows, and calculate Brier, accuracy, and hypothetical P&L using the same resolved direction. The hash is **not** an official authenticated receipt; operators still must verify published event/rules. Real on-chain terminal payout intake remains authoritative and unchanged. No promotion, orders, or live learning-policy relaxation.
+- Acceptance: run Ruff, full SQLite/PostgreSQL CI, merged-main CI, source-matched Discloud file upload. Real authenticated oracle rule provenance and statistically significant outcomes remain open under #138.
+
+---
+
 ## ACTIVE TASK: Hosted sports recovery evidence and stale dashboard lifecycle (2026-10-31)
 
 - Objective: prevent stale Research/Data dashboard taps from vanishing after Discord restart/timeout, and expose actual hosted sports settlement progress, not Discloud upload-only claims.

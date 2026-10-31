@@ -36,6 +36,8 @@ def observations(*, total_days=22, per_day=9):
                 oracle_provenance="chainlink-twap:btc-usd-twap-60s-streams",
                 quote_observed_at=opened - timedelta(seconds=30),
                 up_ask=0.45, down_ask=0.45,
+                tie_direction="UP" if is_up else None,
+                settlement_rules_sha256="a" * 64 if is_up else None,
             ))
     return results
 
@@ -55,7 +57,7 @@ def test_contract_evidence_requires_unique_21_day_verified_window_brier_and_cost
     assert report.status != "promoted"
 
 
-def test_chainlink_equal_price_resolves_up_not_down():
+def test_chainlink_equal_price_resolves_up_only_with_exact_rule_evidence():
     row = observations(total_days=1, per_day=2)[1]
     assert row.oracle_start_twap == row.oracle_end_twap
     report = audit_contract_predictions([row])
@@ -120,3 +122,46 @@ def test_never_approve_too_few_calendar_days_even_with_many_rows():
     assert report.status == "insufficient"
     assert report.unique_windows == 200
     assert report.days == 4
+
+
+def test_equal_price_without_explicit_market_rule_is_never_a_label():
+    row = observations(total_days=1, per_day=2)[1]
+    assert row.oracle_start_twap == row.oracle_end_twap
+    report = audit_contract_predictions([
+        replace(row, tie_direction=None, settlement_rules_sha256=None),
+    ])
+    assert report.status == "blocked"
+    assert report.candidate_brier is None
+
+
+def test_contract_specific_down_tie_rule_changes_both_score_and_profit():
+    row = observations(total_days=1, per_day=2)[1]
+    down = replace(
+        row, tie_direction="DOWN", settlement_rules_sha256="b" * 64,
+        candidate_probability_up=.20, baseline_probability_up=.5,
+    )
+    report = audit_contract_predictions([down])
+    assert report.status == "insufficient"
+    assert report.candidate_accuracy == 1.0
+    assert report.candidate_brier == pytest.approx(.04)
+    assert report.mean_after_cost_per_share == pytest.approx(.54)
+    # An unsupported "tie=UP" assumption would reverse this evidence.
+    assert audit_contract_predictions([
+        replace(down, settlement_rules_sha256=None),
+    ]).status == "blocked"
+
+
+@pytest.mark.parametrize("tie_direction,rule_hash", [
+    ("UP", None),
+    ("UP", "not-a-sha"),
+    ("UNKNOWN", "d" * 64),
+    ("DOWN", "g" * 64),
+])
+def test_rule_attestation_must_be_explicit_and_well_formed(
+    tie_direction, rule_hash,
+):
+    row = observations(total_days=1, per_day=2)[1]
+    report = audit_contract_predictions([
+        replace(row, tie_direction=tie_direction, settlement_rules_sha256=rule_hash),
+    ])
+    assert report.status == "blocked"

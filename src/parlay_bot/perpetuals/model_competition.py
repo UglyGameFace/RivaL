@@ -274,7 +274,6 @@ class ShadowModelCompetition:
                 # rows in a scope invalidate that scope's target.
                 scoped.setdefault(key, {}).setdefault(target.isoformat(), []).append(row)
             per_venue = {}
-            descriptive = {}
             regime_failures = {}
             for key, targets in sorted(scoped.items()):
                 evaluated = []
@@ -288,7 +287,6 @@ class ShadowModelCompetition:
                         float(row["baseline_brier"]),
                     )
                     evaluated.append((target,m,i,b))
-                    descriptive.setdefault(target, []).append((m,i,b,int(row["outcome_up"])))
                     regime = str(row["regime"] or "unknown")
                     point = regime_failures.setdefault(regime, {
                         "forecasts": 0, "wrong_direction": 0,
@@ -320,19 +318,18 @@ class ShadowModelCompetition:
                               else base.reason if base.status != "qualified_shadow"
                               else coin.reason,
                 }
-            # Purely descriptive across venues: correlated UTC targets are
-            # averaged only when their binary outcomes agree. This aggregate
-            # must NEVER be treated as a per-market promotion decision.
-            aggregate = [
-                (target,sum(r[0] for r in group)/len(group),
-                 sum(r[1] for r in group)/len(group))
-                for target, group in sorted(descriptive.items())
-                if len({r[3] for r in group}) == 1
-            ]
-            pooled = score_paired_forward(aggregate)
+            # Select a single independently proven source for the headline.
+            # Conflicting BTC outcomes across venues must never be averaged
+            # into a fake source-agnostic record.
             source_winners = [
                 key for key, proof in per_venue.items() if proof["qualified_research"]
             ]
+            best_source = (
+                source_winners[0] if source_winners
+                else max(per_venue, key=lambda key: per_venue[key]["targets"])
+                if per_venue else None
+            )
+            headline = per_venue.get(best_source, {})
             regimes = {
                 regime: {
                     "forecasts": d["forecasts"],
@@ -344,10 +341,12 @@ class ShadowModelCompetition:
                 for regime,d in sorted(regime_failures.items())
             }
             results[family] = {
-                "targets": pooled.targets, "days": pooled.days,
-                "brier": pooled.model_brier,
-                "incumbent_brier": pooled.baseline_brier,
-                "baseline_brier": None,
+                "targets": headline.get("targets", 0),
+                "days": headline.get("days", 0),
+                "brier": headline.get("model_brier"),
+                "incumbent_brier": headline.get("incumbent_brier"),
+                "baseline_brier": headline.get("base_rate_brier"),
+                "selected_source": best_source,
                 "qualified_research": bool(source_winners),
                 "qualified_sources": source_winners,
                 "by_venue": per_venue,

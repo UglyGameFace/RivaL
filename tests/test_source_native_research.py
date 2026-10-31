@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,7 +20,7 @@ from parlay_bot.research.source_native import (
     export_source_month,
 )
 from parlay_bot.research.source_native_offline import run_native_research
-from parlay_bot.storage.hot import SQLiteHotStore
+from parlay_bot.storage.hot import PostgresHotStore, SQLiteHotStore
 
 
 @pytest.fixture
@@ -220,3 +221,36 @@ def test_native_boosted_contract_is_accepted_only_for_its_exact_source(native_ma
     assert registry.compatible_boosters(
         venue="hyperliquid", contract="BTC", quote="USD", horizon=5, now=now,
     ) == []
+
+
+def test_native_month_export_real_postgresql16(tmp_path):
+    dsn = os.getenv("RIVAL_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("PostgreSQL CI service required")
+    hot = PostgresHotStore(dsn)
+    market = PerpetualMarketStore(hot)
+    market.initialize()
+    try:
+        count = _seed_month(
+            market, venue="hyperliquid", contract="XBT_NATIVE_TEST",
+            quote="USDC",
+        )
+        archive = export_source_month(
+            market, venue="hyperliquid", contract="XBT_NATIVE_TEST",
+            quote="USDC", month="2026-09", root=tmp_path,
+            now=datetime(2026, 10, 31, tzinfo=UTC),
+        )
+        assert archive.records == count
+        assert audit_partition(archive.manifest_path)["full_calendar_month_verified"]
+        rows = assemble([archive.manifest_path])
+        assert rows[0]["contract"] == "XBT_NATIVE_TEST"
+        assert rows[0]["venue"] == "hyperliquid"
+        assert rows[2]["months"] == ["2026-09"]
+    finally:
+        with hot.connect() as conn:
+            conn.execute(
+                """DELETE FROM perp_market_candles
+                   WHERE venue=? AND contract=? AND quote=?""",
+                ("hyperliquid", "XBT_NATIVE_TEST", "USDC"),
+            )
+        hot.close()

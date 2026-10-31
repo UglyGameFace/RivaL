@@ -79,20 +79,20 @@ async def test_live_desk_shows_actual_verified_market_and_switches_provider_in_p
         bot=SimpleNamespace(polymarket_board=service),
     )
     try:
+        home.live_source = "polymarket"
         home.navigate("live")
         home._buttons()
         poly = await home.render()
-        assert "Crypto Markets" in poly.title
-        assert "Polymarket Global" in poly.title
+        assert "Polymarket | BTC 5m" in poly.title
         summary = "\n".join(f.value for f in poly.fields)
         assert "76000" in summary or "76,000" in summary
-        assert "UP ask $0.61" in summary
-        assert "DOWN ask $0.41" in summary
-        assert "Next verified contract" in "\n".join(f.name for f in poly.fields)
-        assert "**UP**" in summary
+        assert "UP ask USD 0.61" in summary
+        assert "DOWN ask USD 0.41" in summary
+        assert "Verified market" in "\n".join(f.name for f in poly.fields)
+        assert "**RivaL AI call: UP**" in poly.description
         assert "exchange-candle lean" not in summary
         assert "Verified contract research" in summary
-        assert "Polymarket AI: UP" in poly.description
+        assert "experimental" in poly.description
         assert "Browse Kalshi" not in [
             x.label for x in home.children if hasattr(x, "label")
         ]
@@ -114,10 +114,10 @@ async def test_live_desk_shows_actual_verified_market_and_switches_provider_in_p
         assert "KXBTC-TEST" in "\n".join(x.value for x in other.fields)
         assert "Separate Kalshi rule" in "\n".join(x.value for x in other.fields)
         assert "Polymarket" not in other.title
-        assert "Live contract call: WAIT" in other.description
-        home.live_source = "draftkings"
-        dk = await home.render()
-        assert "Not connected" in "\n".join(x.value for x in dk.fields)
+        assert "NOT AVAILABLE" in other.description
+        home.live_source = None
+        unknown = await home.render()
+        assert "Choose Your Market" in unknown.title
         bot.kalshi_browser.browse.assert_awaited_once()
         assert service.preview.await_count == 1
     finally:

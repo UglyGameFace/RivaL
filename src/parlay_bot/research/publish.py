@@ -17,7 +17,12 @@ from parlay_bot.archive.models import ArchiveArtifact
 from parlay_bot.config import Settings
 from parlay_bot.research.free_history import SCHEMA, HistoryImportError
 
-SOURCES = {"binance_um_klines", "football_data"}
+SOURCES = {
+    "binance_um_klines", "football_data",
+    "binance_um_funding", "binance_um_mark_klines",
+    "binance_um_index_klines", "binance_um_premium_klines",
+    "polymarket_token_history", "kalshi_contract_candles",
+}
 
 
 @dataclass(frozen=True)

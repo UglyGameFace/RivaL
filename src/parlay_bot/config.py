@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     rival_gemini_cooldown_seconds: int = Field(default=900, ge=60, le=86400)
     rival_gemini_auto_enabled: bool = Field(default=True)
 
+    # Official licensed Polymarket PolyBolt Chainlink TWAP (NOT free CLOB book).
+    # Three CLOB credentials are used ONLY for the read-only live WS auth.
+    # Never use a private wallet key or create/place any trading orders.
+    rival_polybolt_enabled: bool = Field(default=True)
+    polymarket_clob_api_key: SecretStr | None = Field(default=None)
+    polymarket_clob_api_secret: SecretStr | None = Field(default=None)
+    polymarket_clob_api_passphrase: SecretStr | None = Field(default=None)
+
     rival_drive_root_folder_id: str | None = Field(default=None)
     rival_drive_history_folder_id: str | None = Field(default=None)
     rival_drive_manifests_folder_id: str | None = Field(default=None)

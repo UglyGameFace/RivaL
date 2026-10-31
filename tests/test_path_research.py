@@ -11,6 +11,9 @@ from parlay_bot.research.learning import assemble
 from parlay_bot.research.path_research import (
     HORIZONS,
     LOOKBACK,
+    PathSample,
+    _distribution_score,
+    _quantiles,
     _samples,
     evaluate_directory,
     evaluate_path,
@@ -137,6 +140,28 @@ def test_missing_candle_never_crosses_gap_or_creates_a_future_path():
     assert len(modified) < len(original)
 
 
+def test_training_only_terminal_quantiles_and_proper_score():
+    assert _quantiles([0., 1., 2., 3., 4.]) == {
+        "p10": pytest.approx(.4), "p25": 1., "p50": 2.,
+        "p75": 3., "p90": pytest.approx(3.6),
+    }
+    stamp = datetime(2026, 5, 1, tzinfo=UTC)
+    rows = [
+        PathSample(stamp, stamp + timedelta(minutes=i+1),
+                   aligned=(i % 2 == 0), tp1=1, tp2=0,
+                   terminal_signed_log_return=.02 if i % 2 == 0 else -.02)
+        for i in range(30)
+    ]
+    prediction = {
+        True: {f"p{n}": .02 for n in (10, 25, 50, 75, 90)},
+        False: {f"p{n}": -.02 for n in (10, 25, 50, 75, 90)},
+    }
+    prior = {f"p{n}": 0. for n in (10, 25, 50, 75, 90)}
+    scored = _distribution_score(rows, cohorts=prediction, baseline=prior)
+    assert scored["pinball_gain"] > 0
+    assert scored["p10_p90_coverage"] == 1.
+
+
 def test_only_past_sets_barriers_and_training_segments(tmp_path):
     rows = _history()
     original = evaluate_path([_manifest(tmp_path, rows)], horizon=15, side="long")
@@ -148,6 +173,9 @@ def test_only_past_sets_barriers_and_training_segments(tmp_path):
     root = tmp_path / "different"
     second = evaluate_path([_manifest(root, revised)], horizon=15, side="long")
     assert original["model_spec"]["baseline"] == second["model_spec"]["baseline"]
+    assert original["model_spec"]["terminal_signed_log_return_quantiles"] == (
+        second["model_spec"]["terminal_signed_log_return_quantiles"]
+    )
     assert original["model_spec"]["cohort"] == second["model_spec"]["cohort"]
     assert original["model_spec"]["training_outcomes_through"] == (
         second["model_spec"]["training_outcomes_through"]

@@ -631,8 +631,8 @@ class GuidedHome(discord.ui.View):
                 )
             elif market == "kalshi":
                 progress = (
-                    "Kalshi-specific model is gathering genuine settled "
-                    "YES/NO contracts. No approved Kalshi signal yet."
+                    "No validated Kalshi-specific RivaL model yet. "
+                    "Real market outcomes are being collected where supported."
                 )
                 if self.kalshi_status is not None:
                     try:

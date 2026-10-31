@@ -77,9 +77,9 @@ EXPLAIN = {
     "results": "Your personal practice results use only fictional trades and funds. They never count toward the bot's prediction record.",
     "performance": "Bot Performance reports source-specific prospective forecasts, settled results and learning evidence. Exchange forecasts do not score Polymarket contracts; counts of learned labels are not prediction wins.",
     "help": "Choose Crypto for separate event-contract platforms or leveraged crypto exchange forecasts. DraftKings Sportsbook futures are sports bets, not perpetual crypto futures. Sports is for sportsbook odds.",
-    "advanced": "Optional checks for whether data is fresh and whether RivaL is improving. You do not need any of this to request a prediction.",
-    "feeds": "Fresh means RivaL recently received a genuine completed market candle. That is different from a live streaming price or a prediction.",
-    "trust": "A successful prediction is not necessarily a profitable trade. The combined model must beat the old model on later matched results and after trading costs.",
+    "advanced": "Additional research, API limits and manual price targets. Performance and learning are on one page.",
+    "feeds": "This former separate screen now opens Bot Performance, which includes feed and forecast-cycle health.",
+    "trust": "This former separate screen now opens Bot Performance. Model activity and improving accuracy are different measures.",
 }
 
 
@@ -279,13 +279,14 @@ def _latest_forward_cycle(market: object) -> dict | None:
     row access keeps this valid for both the SQLite and Postgres stores.
     """
     try:
-        with market.connect() as conn:
+        with market.store.connect() as conn:
             row = conn.execute(
                 "SELECT checked_at, issued_forecasts, target_expired "
                 "FROM perp_forward_cycle_diagnostics "
                 "ORDER BY checked_at DESC LIMIT 1"
             ).fetchone()
     except Exception:  # noqa: BLE001 - health display must never break the menu
+        _LOG.exception("Forward-cycle diagnostics read failed")
         return None
     if row is None:
         return None
@@ -573,37 +574,27 @@ class GuidedHome(discord.ui.View):
         elif p == "results":
             self._add("Back to Practice", "practice", 0, "💵", True)
         elif p == "performance":
-            self.add_item(_Market(self.live_source))
-            self.add_item(_Coin(self.coin, row=1))
-            if self.live_source != "kalshi":
-                self.add_item(_PolymarketHorizon(
-                    self.horizon, row=2, market=self.live_source or "polymarket",
-                ))
-            self._add("Learning Details", "trust", 3, "🧠", True)
-            if self.live_source == "exchange":
-                self._add("Profit Proof", "proof", 3, "🔍")
-            self._add("Data Health", "feeds", 3, "📡")
-            self._add("Advanced", "advanced", 3, "⚙️")
+            self.add_item(_Coin(self.coin, row=0))
+            self.add_item(_Horizon(self.horizon, row=1))
+            self._add("Refresh", "performance", 2, "🔄", True)
+            if self.research_factory is not None:
+                self._add("Detailed Research", "research", 2, "🔬")
         elif p == "help":
             self._add("Start with Sports", "sports", 0, "🏆")
             self._add("Analyze Crypto", "crypto-desk", 0, "📈")
             self._add("Practice Safely", "practice", 1, "💵")
         elif p == "advanced":
-            self._add("Are My Prices Fresh?", "feeds", 0, "📡")
-            self._add("Is RivaL Improving?", "trust", 0, "📊")
+            self._add("Bot Performance", "performance", 0, "📊", True)
             self._add("Technical Research", "research", 1, "🧪")
             self._add("API Usage & Limits", "api-limits", 2, "🔒")
             self._add("Manual Price Target", "target", 2, "🎯")
-        elif p in ("feeds", "trust"):
-            self.add_item(_Coin(self.coin))
-            if p == "trust":
-                self.add_item(_Horizon(self.horizon))
-            self._add("Refresh", p, 2, "🔄", True)
         if p != "home":
             self._add("Home", "home", 4, "🏠")
             self._add("Back", "back", 4, "↩️")
 
     def navigate(self, page: str) -> None:
+        if page in ("feeds", "trust"):
+            page = "performance"  # Legacy buttons use the single scorecard.
         if page == self.page:
             return
         if page == "home":

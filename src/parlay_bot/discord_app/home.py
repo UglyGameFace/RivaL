@@ -13,7 +13,11 @@ import discord
 from parlay_bot.discord_app.alert_control import stop_all_notifications
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
 from parlay_bot.discord_app.cdna_public import CDNAPersonalReader
-from parlay_bot.discord_app.cdna_ui import CDNAPersonalModal
+from parlay_bot.discord_app.cdna_ui import (
+    CDNAPersonalModal,
+    cdna_coin_embed,
+    verify_cdna_owner,
+)
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
 from parlay_bot.discord_app.polymarket_live_board import matching_call
@@ -508,7 +512,7 @@ class GuidedHome(discord.ui.View):
             elif self.live_source == "kalshi":
                 self._add("Check Kalshi Contracts", "desk-call", 3, "🔎", True)
             elif self.live_source == "draftkings":
-                self._add("Find CDNA Contract", "cdna-search", 3, "🔎", True)
+                self._add("Find My Coin", "cdna-auto", 3, "🔎", True)
                 self._add("Check CDNA Quote", "cdna-quote", 3, "💱")
                 self._add("Independent AI", "dk-independent-ai", 3, "🧠")
                 self.add_item(discord.ui.Button(
@@ -697,7 +701,7 @@ class GuidedHome(discord.ui.View):
                     value=(
                         f"**Coin:** {self.coin} • **Independent forecast window:** "
                         f"{self.horizon}m\n"
-                        "**Find CDNA Contract:** Look up public trading symbols; "
+                        "**Find My Coin:** Automatically find public CDNA candidates; "
                         "CDNA and DraftKings contracts are NOT automatically the same.\n"
                         "**Check CDNA Quote:** One owner-only personal reference; "
                         "no automatic feed, saved provider data, or orders.\n"
@@ -1912,6 +1916,40 @@ class GuidedHome(discord.ui.View):
             return
         if action in ("zip", "state", "target", "funds"):
             await interaction.response.send_modal(_Entry(self, action))
+            return
+        if action == "cdna-auto":
+            if self.page != "crypto-desk" or self.live_source != "draftkings":
+                await interaction.response.send_message(
+                    "Choose DraftKings Assisted research first.", ephemeral=True,
+                )
+                return
+            if self.cdna_personal is None:
+                await interaction.response.send_message(
+                    "CDNA personal research isn't configured.", ephemeral=True,
+                )
+                return
+            if not await verify_cdna_owner(interaction, self.owner_id):
+                await interaction.response.send_message(
+                    "Only the verified application owner may use personal CDNA data.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                results = await asyncio.wait_for(
+                    self.cdna_personal.discover_coin(self.coin), timeout=11,
+                )
+                await interaction.edit_original_response(
+                    embed=cdna_coin_embed(self.coin, results),
+                )
+            except (TimeoutError, Exception):  # noqa: BLE001
+                _LOG.exception("CDNA owner-requested coin discovery unavailable")
+                await interaction.edit_original_response(
+                    content=(
+                        "CDNA lookup unavailable. NO BET. "
+                        "Independent exchange AI is still separate."
+                    ),
+                )
             return
         if action in ("cdna-search", "cdna-quote"):
             if self.page != "crypto-desk" or self.live_source != "draftkings":

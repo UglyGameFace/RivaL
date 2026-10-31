@@ -20,6 +20,7 @@ def _market(n: int, at: datetime) -> KalshiMarket:
         yes_ask=0.48, no_ask=0.55,
         rules="Official Kalshi source rule",
         series_ticker="KXBTC15M",
+        quote_source="orderbook", yes_ask_size=10.0, no_ask_size=10.0,
     )
 
 

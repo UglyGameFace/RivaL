@@ -17,6 +17,7 @@ def market(i: int, at: datetime, *, asset="BTC", series="KXBTC15M"):
         no_ask=.51 if i % 2 else .58,
         rules="BTC Crypto price settlement according to Kalshi's rule",
         series_ticker=series,
+        quote_source="orderbook", yes_ask_size=10.0, no_ask_size=10.0,
     )
 
 
@@ -127,6 +128,7 @@ def test_incomplete_kalshi_source_or_settlement_fails_closed(tmp_path):
         ledger.observe(asset="BTC", market=KalshiMarket(
             ticker=m.ticker,title=m.title,close_time=m.close_time,
             yes_ask=None,no_ask=.5,rules=m.rules,series_ticker=m.series_ticker,
+            quote_source="orderbook", yes_ask_size=10.0, no_ask_size=10.0,
         ),at=start)
     assert ledger.observe(asset="BTC", market=m, at=start)
     pending = ledger.pending(now=start+timedelta(minutes=16))
@@ -152,6 +154,11 @@ async def test_kalshi_browser_records_official_market_without_user_messages(tmp_
                 "ticker":"KXBTC15M","title":"Bitcoin 15m",
                 "category":"Crypto",
             }]})
+        if req.url.path.endswith("/orderbook"):
+            return httpx.Response(200,json={"orderbook_fp":{
+                "yes_dollars":[["0.4900","10.00"]],
+                "no_dollars":[["0.4800","10.00"]],
+            }})
         if req.url.path.endswith("/markets"):
             return httpx.Response(200,json={"markets":[{
                 "ticker":"KXBTC15M-ABC","title":"BTC above X",
@@ -229,6 +236,12 @@ def test_kalshi_validation_must_be_per_exact_series_not_pooled(tmp_path):
                  "a"*64, "b"*64, "[0,0,0]", .5,.5,.5,.95,
                  "yes", (at+timedelta(minutes=20)).isoformat()),
             )
+            db.execute(
+                """INSERT INTO rival_kalshi_book_evidence
+                   (ticker,observed_at,yes_ask_depth,no_ask_depth)
+                   VALUES (?,?,?,?)""",
+                (f"{series}-{i}", at.isoformat(), 10., 10.),
+            )
     proof = ledger.summary(asset="BTC")
     assert proof["candidate_forward_resolved"] == 160
     assert proof["candidate_brier"] < proof["kalshi_quote_baseline_brier"]
@@ -239,3 +252,29 @@ def test_kalshi_validation_must_be_per_exact_series_not_pooled(tmp_path):
         for series in proof["by_series"].values()
     )
     assert not proof["approved_model"]
+
+
+def test_legacy_summary_labels_never_count_as_verified_book_edge(tmp_path):
+    ledger = KalshiForwardResearch(SQLiteHotStore(tmp_path / "legacy-scores.sqlite"))
+    ledger.initialize()
+    at = datetime(2026, 8, 1, tzinfo=UTC)
+    with ledger.store.connect() as db:
+        db.execute(
+            """INSERT INTO rival_kalshi_forward
+               (ticker,asset,series_ticker,close_at,issued_at,
+                first_quote_sha256,market_rules_sha256,
+                features_json,baseline_yes,yes_ask,no_ask,candidate_yes,
+                result,settlement_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("KXBTC15M-LEGACY", "BTC", "KXBTC15M",
+             (at + timedelta(minutes=15)).isoformat(), at.isoformat(),
+             "a" * 64, "b" * 64, "[0,0,0]", .5, .47, .56, .90,
+             "yes", (at + timedelta(minutes=20)).isoformat()),
+        )
+    score = ledger.summary(asset="BTC")
+    assert score["observed"] == 1
+    assert score["legacy_unverified_settlements"] == 1
+    assert score["book_verified_observed"] == 0
+    assert score["candidate_forward_resolved"] == 0
+    assert score["candidate_research_evidence_qualified"] is False
+    assert score["approved_model"] is False

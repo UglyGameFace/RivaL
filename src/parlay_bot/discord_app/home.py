@@ -659,8 +659,11 @@ class GuidedHome(discord.ui.View):
                         progress = (
                             "No validated Kalshi-specific RivaL model yet.\n"
                             f"Recorded Kalshi markets: **{evidence['observed']}**\n"
+                            f"Book-verified market records: **{evidence['book_verified_observed']}**\n"
                             f"Verified settlements learned: **{evidence['trained_labels']}**\n"
-                            f"Forward challenger outcomes: **{count}**\n"
+                            f"Legacy summary-price settlements excluded: "
+                            f"**{evidence['legacy_unverified_settlements']}**\n"
+                            f"Book-backed forward outcomes: **{count}**\n"
                             f"{comparison}\n"
                             "Research only. Model approval requires prospective "
                             "evidence and verified after-fee advantage."
@@ -983,19 +986,28 @@ class GuidedHome(discord.ui.View):
                             yes = f"USD {item.yes_ask:.2f}" if item.yes_ask is not None else "unverified"
                             no = f"USD {item.no_ask:.2f}" if item.no_ask is not None else "unverified"
                             quote_context = (
-                                "Quoted asks are NOT calibrated winning probabilities."
+                                "Executable depth not verified. No entry-price "
+                                "or prediction evidence may be inferred."
                             )
-                            if item.yes_ask is not None and item.no_ask is not None:
+                            if (
+                                item.quote_source == "orderbook"
+                                and item.yes_ask is not None
+                                and item.no_ask is not None
+                            ):
                                 both = item.yes_ask + item.no_ask
                                 quote_context = (
                                     f"For a standard $1 payout, YES needs >{item.yes_ask:.0%} wins; "
                                     f"NO needs >{item.no_ask:.0%} wins to break "
                                     f"even before fees. Both asks total ${both:.2f}. "
-                                    "These are price thresholds, NOT forecasts."
+                                    "These are price thresholds, NOT forecasts. "
+                                    f"Top available contracts: YES {item.yes_ask_size:g}; "
+                                    f"NO {item.no_ask_size:g}. "
+                                    "Quotes can change before an actual fill."
                                 )
                             research_context = (
                                 "No independently validated Kalshi forecast for "
-                                "this contract."
+                                "this contract. Historical summary quotes are "
+                                "not accepted as executable book evidence."
                             )
                             try:
                                 shadow = await asyncio.wait_for(

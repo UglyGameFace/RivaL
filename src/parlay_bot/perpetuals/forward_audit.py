@@ -799,14 +799,23 @@ class ForwardAccuracyMonitor:
             ).fetchall()
         n = int(row["settled"] or 0)
         decided = int(row["decided"] or 0)
-        brier = float(row["model_sum"]) / n if n else None
-        baseline = float(row["baseline_sum"]) / n if n else None
+        brier = (float(row["model_sum"]) / n
+                 if n and row["model_sum"] is not None else None)
+        baseline = (float(row["baseline_sum"]) / n
+                    if n and row["baseline_sum"] is not None else None)
+        if brier is not None and not math.isfinite(brier):
+            brier = None
+        if baseline is not None and not math.isfinite(baseline):
+            baseline = None
         block_proof = day_block_watch_evidence(daily)
         return {
             "issued": int(row["issued"]), "settled": n,
             "hit_rate": int(row["correct"] or 0) / decided if decided else None,
             "brier": brier, "baseline_brier": baseline,
-            "model_beats_baseline": brier < baseline if n >= 50 else None,
+            "model_beats_baseline": (
+                brier < baseline if n >= 50 and brier is not None
+                and baseline is not None else None
+            ),
             "model_version": model_version,
             **block_proof,
         }

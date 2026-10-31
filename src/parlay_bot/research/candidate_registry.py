@@ -319,6 +319,8 @@ class ResearchCandidateRegistry:
                 found.setdefault(spec["family"], {
                     "model_sha256": sha, "family": spec["family"],
                     "portable_model": spec["portable_model"],
+                    "identity": spec["identity"],
+                    "horizon_minutes": spec["horizon_minutes"],
                     "imported_at": row["first_imported_at"],
                     "evaluation_completed_through": spec["evaluation_completed_through"],
                 })

@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
-from parlay_bot.perpetuals.history_inventory import six_months_prior
+from parlay_bot.perpetuals.history_inventory import six_complete_months_start
 from parlay_bot.perpetuals.history_recovery import (
     GateHistoryRecovery,
     contiguous_backward_next,
@@ -81,8 +81,7 @@ def _gate_response_factory(seed):
 async def test_gate_partial_page_advances_only_past_prefix(tmp_path):
     store = SQLiteHotStore(tmp_path / "gate.sqlite")
     market = PerpetualMarketStore(store)
-    seed = six_months_prior(NOW).replace(
-        minute=six_months_prior(NOW).minute // 5 * 5, second=0, microsecond=0)
+    seed = six_complete_months_start(NOW)
     raw = httpx.AsyncClient(
         transport=httpx.MockTransport(_gate_response_factory(seed)))
     worker = GateHistoryRecovery(market, assets=("BTC",), page_bars=12, client=raw)
@@ -151,8 +150,7 @@ def _gate_empty_response(req: httpx.Request) -> httpx.Response:
 async def test_gate_empty_page_does_not_advance_cursor(tmp_path):
     store = SQLiteHotStore(tmp_path / "gate-empty.sqlite")
     market = PerpetualMarketStore(store)
-    seed = six_months_prior(NOW).replace(
-        minute=six_months_prior(NOW).minute // 5 * 5, second=0, microsecond=0)
+    seed = six_complete_months_start(NOW)
     raw = httpx.AsyncClient(transport=httpx.MockTransport(_gate_empty_response))
     worker = GateHistoryRecovery(market, assets=("BTC",), page_bars=12, client=raw)
     try:
@@ -174,8 +172,7 @@ async def test_gate_empty_page_does_not_advance_cursor(tmp_path):
 async def test_gate_vacuous_caught_up_row_resets_to_seed(tmp_path):
     store = SQLiteHotStore(tmp_path / "gate-vacuous.sqlite")
     market = PerpetualMarketStore(store)
-    seed = six_months_prior(NOW).replace(
-        minute=six_months_prior(NOW).minute // 5 * 5, second=0, microsecond=0)
+    seed = six_complete_months_start(NOW)
     seeder = GateHistoryRecovery(
         market, assets=("BTC",), page_bars=12,
         client=httpx.AsyncClient(
@@ -205,8 +202,7 @@ async def test_gate_vacuous_caught_up_row_resets_to_seed(tmp_path):
 async def test_gate_legitimate_caught_up_row_is_not_reset(tmp_path):
     store = SQLiteHotStore(tmp_path / "gate-legit.sqlite")
     market = PerpetualMarketStore(store)
-    seed = six_months_prior(NOW).replace(
-        minute=six_months_prior(NOW).minute // 5 * 5, second=0, microsecond=0)
+    seed = six_complete_months_start(NOW)
     def _no_calls(req: httpx.Request) -> httpx.Response:
         raise AssertionError("legitimately caught-up row must not fetch")
 

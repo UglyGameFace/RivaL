@@ -62,3 +62,14 @@ def test_collection_budget_counts_failed_downloads_and_reports_them(tmp_path):
     assert len(calls) == 2
     assert len(results["failed"]) == 2
     assert not list(tmp_path.rglob("*.ndjson"))
+
+
+def test_verified_research_plan_can_include_xrp_live_contract():
+    jobs = targets(
+        months=["2026-08", "2026-09"],
+        assets=["BTC", "ETH", "SOL", "XRP"],
+        intervals=["5m"], seasons=[], leagues=[],
+    )
+    assert len(jobs) == 8
+    assert all(job[0] == "binance" for job in jobs)
+    assert ("binance", "XRP", "5m", "2026-09") in jobs

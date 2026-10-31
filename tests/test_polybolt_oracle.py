@@ -1,6 +1,4 @@
 """Official PolyBolt envelope and safe mathematical settlement research tests."""
-import hashlib
-import json
 import math
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -9,7 +7,6 @@ import pytest
 
 from parlay_bot.perpetuals.polybolt_twap import CHANNEL, PolyBoltTWAP
 from parlay_bot.perpetuals.polymarket_oracle import PolymarketOracleChallenger
-from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
 from parlay_bot.research.contract_probability import (
     candidate_edge_after_cost,
     threshold_up_probability,
@@ -64,11 +61,13 @@ def test_chainlink_twap_source_creates_real_threshold_features_and_math(tmp_path
     assert reference.price == pytest.approx(65033.)
     assert reference.horizon_volatility_pct > 0
     assert len(reference.source_receipt_sha256) == 64
-    state = PolymarketResearch(SQLiteHotStore(tmp_path / "polybolt.sqlite"))
+    state = PolymarketOracleChallenger(SQLiteHotStore(tmp_path / "polybolt.sqlite"))
     try:
+        from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
+        PolymarketResearch(state.store).initialize()
         state.initialize()
-        assert state.study(replace(market, oracle_reference=reference)) is None
-        data = state.oracle_challenger.summary()
+        assert state.observe(market, reference, now=now) is None
+        data = state.summary()
         assert data["observed_contracts"] == 1
         assert data["learned_contracts"] == 0
         with state.store.connect() as conn:

@@ -109,7 +109,7 @@ async def test_free_only_coding_reviewer_uses_verified_evidence_and_budget(monke
             '{"sources":[{"venue":"hyperliquid"},'
             '{"venue":"binance"},{"venue":"okx"}]}'
         )
-        return httpx.Response(200, json={"model": body["model"],
+        return httpx.Response(200, json={"model": body["models"][0],
             "choices": [{"message": {"content": __import__("json").dumps({
                 "direction": "uncertain", "confidence": "low",
                 "thesis": "No demonstrated edge.", "risk": "Loss possible.",

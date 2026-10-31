@@ -190,3 +190,76 @@ async def test_draftkings_assisted_menu_reuses_existing_ai_without_cdna_data(tmp
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_one_click_coin_discovery_returns_only_exact_asset_and_two_quotes():
+    uid = "123e4567-e89b-12d3-a456-426614174000"
+    calls = []
+    def responder(req: httpx.Request):
+        calls.append(req.url.path)
+        if req.url.path.endswith("/events/search"):
+            assert req.url.params["q"] == "BTC"
+            return httpx.Response(200, json={"data": [{
+                "id": uid, "title": "Bitcoin event",
+            }]})
+        if req.url.path.endswith("/contracts"):
+            return httpx.Response(200, json={"data": [
+                {"symbol": "ABTC9", "title": "Not BTC"},
+                {"symbol": "ETH-2026", "title": "Ethereum only"},
+                {"symbol": "BTC-2026", "title": "Bitcoin above threshold"},
+                {"symbol": "BTC-2027", "title": "BTC threshold next year"},
+                {"symbol": "BTC-2028", "title": "BTC third"},
+            ]})
+        if req.url.path.endswith("/BTC-2026/price"):
+            return httpx.Response(200, json=payload(symbol="BTC-2026"))
+        if req.url.path.endswith("/BTC-2027/price"):
+            return httpx.Response(200, json=payload(symbol="BTC-2027"))
+        raise AssertionError("unapproved/extra CDNA request: " + req.url.path)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(responder)) as client:
+        reader = CDNAPersonalReader(client=client)
+        found = await reader.discover_coin("BTC")
+        assert [x[0] for x in found] == ["BTC-2026", "BTC-2027"]
+        assert all(x[3].fresh for x in found)
+        assert len(calls) == 4
+        with pytest.raises(CDNAUnavailable, match="Choose BTC"):
+            await reader.discover_coin("DOGE")
+        assert len(calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_coin_search_results_dont_invent_cdna_price_for_missing_book():
+    uid = "123e4567-e89b-12d3-a456-426614174000"
+    def responder(req):
+        if req.url.path.endswith("/events/search"):
+            return httpx.Response(200, json={"data": [{
+                "id": uid, "title": "Ethereum event",
+            }]})
+        if req.url.path.endswith("/contracts"):
+            return httpx.Response(200, json={"data": [{
+                "symbol": "ETH-2026", "title": "Ethereum conditional",
+            }]})
+        return httpx.Response(503)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(responder)) as client:
+        reader = CDNAPersonalReader(client=client)
+        found = await reader.discover_coin("ETH")
+        assert len(found) == 1
+        assert found[0][3] is None
+
+
+@pytest.mark.asyncio
+async def test_one_click_owner_auth_blocks_all_provider_calls():
+    from parlay_bot.discord_app.cdna_ui import verify_cdna_owner
+    interaction = SimpleNamespace(
+        user=SimpleNamespace(id=7),
+        client=SimpleNamespace(application_info=AsyncMock()),
+    )
+    assert not await verify_cdna_owner(interaction, 9)
+    interaction.client.application_info.assert_not_awaited()
+    interaction.user.id = 9
+    interaction.client.application_info.return_value = SimpleNamespace(
+        owner=SimpleNamespace(id=99),
+    )
+    assert not await verify_cdna_owner(interaction, 9)
+    interaction.client.application_info.return_value.owner.id = 9
+    assert await verify_cdna_owner(interaction, 9)

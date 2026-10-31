@@ -12,8 +12,8 @@ import threading
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.markets import ASSETS, HORIZONS
-from parlay_bot.research.boosted_portable import validate_portable
 from parlay_bot.perpetuals.model_checkpoints import FEATURE_CONTRACT, TARGET_CONTRACT
+from parlay_bot.research.boosted_portable import validate_portable
 from parlay_bot.storage.hot import RelationalHotStore
 
 

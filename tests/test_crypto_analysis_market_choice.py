@@ -154,7 +154,11 @@ async def test_platform_choice_explains_perpetuals_and_draftkings_without_fake_c
         assert "View Contract Call" not in _labels(home)
         assert "Get Exchange Forecast" not in _labels(home)
         assert "Follow Forecast" not in _labels(home)
-        assert all(x.custom_id != "rival:guided:coin" for x in home.children)
+        assert any(x.custom_id == "rival:guided:coin" for x in home.children)
+        assert any(x.custom_id == "rival:guided:horizon" for x in home.children)
+        assert "Independent AI" in _labels(home)
+        assert "Find CDNA Contract" in _labels(home)
+        assert "Check CDNA Quote" in _labels(home)
         # Old Discord components can still be clicked after switching the
         # selected provider. They must never borrow a Polymarket signal.
         await home.act(_interaction(), "desk-call")
@@ -162,7 +166,7 @@ async def test_platform_choice_explains_perpetuals_and_draftkings_without_fake_c
         assert "not connected" in home.note
         draft = await home.render()
         draft_text = str(draft.to_dict())
-        assert "not connected" in draft_text.lower()
+        assert "not connected" in home.note
         assert "no verified DraftKings" in draft_text
         assert "Exchange forecast results" not in draft_text
 

@@ -265,3 +265,29 @@ async def test_contract_and_exchange_reviews_share_one_persisted_quota(tmp_path,
         assert len(rows) == 1 and rows[0]["used"] == 1
     finally:
         hot.close()
+
+
+@pytest.mark.asyncio
+async def test_contract_quota_warning_is_local_and_names_exact_hold(monkeypatch):
+    market = FakeMarket()
+    market.reserve_ai_request = lambda **_kw: False
+    market.ai_request_status = lambda **kw: {
+        "model": kw["model"], "ready": False,
+        "requests_today": 18, "rival_daily_limit": 18,
+        "reasons": ("daily_budget_exhausted",),
+        "retry_at": datetime(2026, 11, 1, tzinfo=UTC),
+    }
+    def respond(request):
+        assert request.url.path.endswith("/models")
+        return httpx.Response(200, json={"data": [model("recursive/flint-v1.0:free")]})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        reviewer = module.OpenRouterResearch(market, api_key="test", client=client)
+        with pytest.raises(ResearchUnavailable) as err:
+            await reviewer.review_contract({
+                "target":"polymarket", "slug":"selected-contract",
+            })
+    message = str(err.value)
+    assert "RivaL daily AI budget exhausted" in message
+    assert "18/18" in message
+    assert "not proof of OpenRouter account quota exhaustion" in message
+    assert "<t:" in message

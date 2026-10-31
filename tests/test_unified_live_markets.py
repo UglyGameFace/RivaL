@@ -113,8 +113,12 @@ async def test_live_desk_shows_actual_verified_market_and_switches_provider_in_p
         assert "Kalshi" in other.title
         assert "KXBTC-TEST" in "\n".join(x.value for x in other.fields)
         assert "Separate Kalshi rule" in "\n".join(x.value for x in other.fields)
+        assert "YES needs >40%" in "\n".join(x.value for x in other.fields)
+        assert "These are price thresholds, NOT forecasts." in "\n".join(
+            x.value for x in other.fields
+        )
         assert "Polymarket" not in other.title
-        assert "NOT AVAILABLE" in other.description
+        assert "No approved Kalshi model" in other.description
         home.live_source = None
         unknown = await home.render()
         assert "Choose Your Market" in unknown.title

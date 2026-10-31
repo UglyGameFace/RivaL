@@ -23,7 +23,7 @@ async def test_crypto_entry_starts_with_analysis_and_no_implicit_market(tmp_path
         assert "View Contract Call" not in _labels(home)
         assert "Track Market" not in _labels(home)
         assert "Get Exchange Forecast" not in _labels(home)
-        assert "Browse Kalshi" not in _labels(home)
+        assert "Check Kalshi Contracts" not in _labels(home)
         market = next(
             item for item in home.children
             if item.custom_id == "rival:guided:market"
@@ -52,7 +52,7 @@ async def test_source_choice_changes_calls_and_does_not_substitute_contracts(tmp
         home.navigate("crypto-desk")
         home.live_source = "kalshi"
         home._buttons()
-        assert "Browse Kalshi" in _labels(home)
+        assert "Check Kalshi Contracts" in _labels(home)
         assert "Track Market" not in _labels(home)
         assert "Follow Forecast" not in _labels(home)
         embed = await home.render()
@@ -147,6 +147,10 @@ async def test_platform_choice_explains_perpetuals_and_draftkings_without_fake_c
 
         home.live_source = "draftkings"
         home._buttons()
+        assert any(
+            getattr(x, "url", None) == "https://predictions.draftkings.com/en"
+            for x in home.children
+        )
         assert "View Contract Call" not in _labels(home)
         assert "Get Exchange Forecast" not in _labels(home)
         assert "Follow Forecast" not in _labels(home)

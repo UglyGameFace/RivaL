@@ -122,7 +122,7 @@ class _Market(discord.ui.Select["GuidedHome"]):
                     value="exchange", default=selected == "exchange",
                 ),
                 discord.SelectOption(
-                    label="Kalshi (browse only)", description="Event contracts; no validated RivaL model",
+                    label="Kalshi research", description="Contract prices and experimental model; no approved call",
                     value="kalshi", default=selected == "kalshi",
                 ),
                 discord.SelectOption(
@@ -503,7 +503,13 @@ class GuidedHome(discord.ui.View):
                 self._add("Get Exchange Forecast", "desk-call", 3, "🎯", True)
                 self._add("Follow Forecast", "desk-track", 3, "🔔")
             elif self.live_source == "kalshi":
-                self._add("Browse Kalshi", "desk-call", 3, "🔎", True)
+                self._add("Check Kalshi Contracts", "desk-call", 3, "🔎", True)
+            elif self.live_source == "draftkings":
+                self.add_item(discord.ui.Button(
+                    label="Open DraftKings Predictions",
+                    url="https://predictions.draftkings.com/en",
+                    row=3,
+                ))
         elif p == "sports":
             self._add("Choose State", "state", 0, "🗺️")
             self._add("Enter ZIP", "zip", 0, "📍")
@@ -671,7 +677,7 @@ class GuidedHome(discord.ui.View):
                 )
                 embed.add_field(
                     name="Next action",
-                    value="**Browse Kalshi** to see the platform's own open contracts "
+                    value="**Check Kalshi Contracts** to see matched live quotes, "
                           "and published settlement rules. Research only.",
                     inline=False,
                 )
@@ -696,13 +702,13 @@ class GuidedHome(discord.ui.View):
                         count = int(records.get("daily_reports") or 0)
                         observed = int(records.get("settled_contract_rows") or 0)
                         evidence = (
-                            f"**{count}** public daily files archived; "
+                            f"**{count}** locally imported DKeX daily files; "
                             f"**{observed}** settlement rows. "
-                            "These are delayed reports, not live contract odds "
+                            "Source identity still needs independent verification. These are delayed reports, not live contract odds "
                             "or verified forward model wins."
                             if count else
-                            "No official daily DKeX reports have been "
-                            "archived by RivaL yet. Public daily market and "
+                            "No DKeX daily files have been "
+                            "imported by RivaL yet. Public daily market and "
                             "settlement reports exist; real-time actionable "
                             "contract data is still not connected."
                         )
@@ -950,8 +956,11 @@ class GuidedHome(discord.ui.View):
             elif source == "kalshi":
                 embed = discord.Embed(
                     title=f"🔎 Kalshi | {self.coin}",
-                    description="**RivaL call: NOT AVAILABLE.** No approved Kalshi model. "
-                                "Read-only market browsing, no wagers.",
+                    description=(
+                        "**Live Kalshi contract analysis.** Only matched Kalshi "
+                        "prices and frozen research are shown. No approved "
+                        "Kalshi model or executable trade recommendation."
+                    ),
                     color=discord.Color.orange(),
                 )
                 if self.kalshi is None:
@@ -973,14 +982,53 @@ class GuidedHome(discord.ui.View):
                         for item in found.markets[:2]:
                             yes = f"USD {item.yes_ask:.2f}" if item.yes_ask is not None else "unverified"
                             no = f"USD {item.no_ask:.2f}" if item.no_ask is not None else "unverified"
+                            quote_context = (
+                                "Quoted asks are NOT calibrated winning probabilities."
+                            )
+                            if item.yes_ask is not None and item.no_ask is not None:
+                                both = item.yes_ask + item.no_ask
+                                quote_context = (
+                                    f"For a standard $1 payout, YES needs >{item.yes_ask:.0%} wins; "
+                                    f"NO needs >{item.no_ask:.0%} wins to break "
+                                    f"even before fees. Both asks total ${both:.2f}. "
+                                    "These are price thresholds, NOT forecasts."
+                                )
+                            research_context = (
+                                "No independently validated Kalshi forecast for "
+                                "this contract."
+                            )
+                            try:
+                                shadow = await asyncio.wait_for(
+                                    self.kalshi.contract_research(
+                                        asset=self.coin, market=item,
+                                        observed_at=found.checked_at,
+                                    ),
+                                    timeout=0.9,
+                                )
+                                if shadow and shadow["candidate_yes"] is not None:
+                                    research_context = (
+                                        "EXPERIMENTAL shadow P(YES): "
+                                        f"{shadow['candidate_yes']:.1%} "
+                                        f"(based on {shadow['candidate_training_labels']} "
+                                        "previous settled labels in this exact "
+                                        "series). NOT validated or approved; "
+                                        "not a trading call."
+                                    )
+                            except (TimeoutError, ValueError, TypeError, RuntimeError):
+                                research_context = (
+                                    "Kalshi research ledger unavailable; "
+                                    "no forecast was substituted."
+                                )
                             embed.add_field(
                                 name=item.title[:140],
                                 value=(
                                     f"{item.ticker} • closes "
                                     f"{discord.utils.format_dt(item.close_time, style='R')}\n"
                                     f"YES ask: {yes} • NO ask: {no}\n"
+                                    f"{quote_context}\n"
+                                    f"{research_context}\n"
                                     f"Rule: {item.rules[:140]}"
-                                ), inline=False,
+                                )[:1024], inline=False,
                             )
                     except (TimeoutError, ValueError, TypeError):
                         embed.add_field(

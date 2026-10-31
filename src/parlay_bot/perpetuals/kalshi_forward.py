@@ -392,8 +392,8 @@ class KalshiForwardResearch:
                    FROM rival_kalshi_forward WHERE asset=?""", (asset,),
             ).fetchone()
             rows = conn.execute(
-                """SELECT ticker,series_ticker,candidate_yes,baseline_yes,
-                          result,issued_at,settlement_at
+                """SELECT f.ticker,f.series_ticker,f.candidate_yes,f.baseline_yes,
+                          f.result,f.issued_at,f.settlement_at
                    FROM rival_kalshi_forward f
                    JOIN rival_kalshi_book_evidence b ON b.ticker=f.ticker
                    WHERE f.asset=? AND f.result IS NOT NULL

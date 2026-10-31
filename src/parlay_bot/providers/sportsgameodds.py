@@ -198,7 +198,7 @@ class SportsGameOddsClient:
         if not isinstance(raw, str):
             return None
         try:
-            stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            stamp = datetime.fromisoformat(raw)
             if stamp.utcoffset() is None:
                 return None
             return stamp.astimezone(UTC)
@@ -287,11 +287,13 @@ class SportsGameOddsClient:
         # reset. No calendar-month assumptions. Old/missing period metadata
         # remains conservative and uses the highest observed local counter.
         if usage.monthly_period_end is not None:
-            if (
-                self._projected_month_end is not None
-                and usage.monthly_period_end != self._projected_month_end
-            ):
-                self._projected_entities = None
+            if self._projected_month_end is not None:
+                if usage.monthly_period_end < self._projected_month_end:
+                    raise QuotaReserveReached(
+                        "SportsGameOdds returned an older billing period; event requests paused"
+                    )
+                if usage.monthly_period_end > self._projected_month_end:
+                    self._projected_entities = None
             self._projected_month_end = usage.monthly_period_end
 
         if usage.monthly_current_entities is None:

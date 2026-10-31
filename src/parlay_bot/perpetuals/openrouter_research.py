@@ -173,7 +173,8 @@ class OpenRouterResearch:
             cooldown_seconds=self.cooldown_seconds,
         )
 
-    async def ask(self, *, asset: str, venues: tuple[str, ...]) -> AiResearch:
+    async def ask(self, *, asset: str, venues: tuple[str, ...],
+                  requester_id: int | None = None) -> AiResearch:
         if not self.available:
             raise ResearchUnavailable("OpenRouter key unavailable to RivaL.")
         async with self._lock:
@@ -206,10 +207,11 @@ class OpenRouterResearch:
                 model=self.model, now=now,
                 daily_max=self.daily_max,
                 cooldown_seconds=self.cooldown_seconds,
+                **({"requester_id": requester_id} if requester_id is not None else {}),
             )
             if not permitted:
                 raise ResearchUnavailable(
-                    "OpenRouter free research budget/cooldown reached; "
+                    "OpenRouter free research budget/cooldown reached (per-user or shared); "
                     "live mathematical market monitoring continues."
                 )
             instruction = (

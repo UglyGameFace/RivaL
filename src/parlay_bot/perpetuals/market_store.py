@@ -1,6 +1,7 @@
 """Immutable, venue-specific perpetual observations in the existing RivaL store."""
 from __future__ import annotations
 
+import hashlib
 import logging
 import math
 import threading
@@ -36,6 +37,10 @@ class MarketWriteResult:
     unchanged_candles: int
     context_count: int
     conflicted_candles: int = 0
+
+
+class RequesterAIBudgetExhausted(Exception):
+    """Internal control-flow rollback: do not spend shared quota on denied users."""
 
 
 class PerpetualMarketStore:
@@ -113,6 +118,13 @@ class PerpetualMarketStore:
                         last_called_at TEXT NOT NULL,
                         blocked_until TEXT,
                         PRIMARY KEY (model,utc_day)
+                    );
+                    CREATE TABLE IF NOT EXISTS perp_ai_requester_quota (
+                        model TEXT NOT NULL,
+                        utc_day TEXT NOT NULL,
+                        requester_sha256 TEXT NOT NULL,
+                        used INTEGER NOT NULL,
+                        PRIMARY KEY (model,utc_day,requester_sha256)
                     );
                     CREATE TABLE IF NOT EXISTS perp_market_contexts (
                         venue TEXT NOT NULL,
@@ -457,7 +469,7 @@ class PerpetualMarketStore:
 
     def ai_request_status(
         self, *, model: str, now: datetime, daily_max: int,
-        cooldown_seconds: int,
+        cooldown_seconds: int, requester_id: int | None = None,
     ) -> dict:
         """Explain stored Gemini request controls without consuming quota.
 
@@ -466,6 +478,9 @@ class PerpetualMarketStore:
         """
         if not model or daily_max < 1 or cooldown_seconds < 60:
             raise ValueError("invalid AI budget policy")
+        if requester_id is not None and (type(requester_id) is not int
+                                       or requester_id <= 0):
+            raise ValueError("invalid AI requester")
         instant = utc(now)
         self.initialize()
         with self.store.connect() as conn:
@@ -480,6 +495,17 @@ class PerpetualMarketStore:
                    ORDER BY utc_day DESC LIMIT 1""",
                 (model, instant.date().isoformat()),
             ).fetchone()
+            requester_used = 0
+            if requester_id is not None:
+                digest = hashlib.sha256(
+                    f"discord:{requester_id}".encode(),
+                ).hexdigest()
+                personal = conn.execute(
+                    """SELECT used FROM perp_ai_requester_quota
+                       WHERE model=? AND utc_day=? AND requester_sha256=?""",
+                    (model, instant.date().isoformat(), digest),
+                ).fetchone()
+                requester_used = int(personal["used"]) if personal else 0
         used = int(row["used"]) if row is not None else 0
         checks: list[tuple[str, datetime]] = []
         day_reset = (instant + timedelta(days=1)).replace(
@@ -501,6 +527,9 @@ class PerpetualMarketStore:
                     checks.append(("minimum_spacing", next_call))
         if used >= daily_max:
             checks.append(("daily_budget_exhausted", day_reset))
+        requester_limit = min(3, daily_max)
+        if requester_id is not None and requester_used >= requester_limit:
+            checks.append(("requester_budget_exhausted", day_reset))
         # The earliest safe retry is after *all* active restrictions expire.
         retry_at = max((when for _, when in checks), default=None)
         return {
@@ -510,21 +539,27 @@ class PerpetualMarketStore:
             "reasons": tuple(reason for reason, _ in checks),
             "retry_at": retry_at,
             "ready": not checks,
+            "requester_used_today": requester_used if requester_id is not None else None,
+            "requester_daily_limit": requester_limit if requester_id is not None else None,
         }
 
     def reserve_ai_request(
         self, *, model: str, now: datetime, daily_max: int,
-        cooldown_seconds: int,
+        cooldown_seconds: int, requester_id: int | None = None,
     ) -> bool:
-        """One atomic quota reservation across processes and bot restarts."""
+        """Atomic shared and per-requester budget, cross-process and restart-safe."""
         if daily_max < 1 or cooldown_seconds < 60:
             raise ValueError("invalid AI budget policy")
+        if requester_id is not None and (type(requester_id) is not int
+                                       or requester_id <= 0):
+            raise ValueError("invalid AI requester")
         instant = utc(now)
         stamp = instant.isoformat()
         cutoff = (instant - timedelta(seconds=cooldown_seconds)).isoformat()
         self.initialize()
-        with self.store.connect() as conn:
-            row = conn.execute(
+        try:
+            with self.store.connect() as conn:
+                row = conn.execute(
                 """INSERT INTO perp_ai_quota
                    (model,utc_day,used,last_called_at,blocked_until)
                    SELECT ?,?,1,?,NULL
@@ -552,8 +587,30 @@ class PerpetualMarketStore:
                     daily_max, cutoff, stamp,
                     model, instant.date().isoformat(), cutoff, stamp,
                 ),
-            ).fetchone()
-        return row is not None
+                ).fetchone()
+                if row is None:
+                    return False
+                if requester_id is not None:
+                    digest = hashlib.sha256(
+                        f"discord:{requester_id}".encode(),
+                    ).hexdigest()
+                    personal = conn.execute(
+                        """INSERT INTO perp_ai_requester_quota
+                           (model,utc_day,requester_sha256,used)
+                           VALUES (?,?,?,1)
+                           ON CONFLICT(model,utc_day,requester_sha256)
+                           DO UPDATE SET used=perp_ai_requester_quota.used+1
+                           WHERE perp_ai_requester_quota.used<?
+                           RETURNING used""",
+                        (model, instant.date().isoformat(),
+                         digest, min(3, daily_max)),
+                    ).fetchone()
+                    if personal is None:
+                        # Context manager rolls back the shared reservation too.
+                        raise RequesterAIBudgetExhausted
+        except RequesterAIBudgetExhausted:
+            return False
+        return True
 
     def pause_ai_requests(
         self, *, model: str, now: datetime, seconds: int = 3600,

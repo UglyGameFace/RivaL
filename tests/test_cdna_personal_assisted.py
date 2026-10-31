@@ -289,7 +289,9 @@ async def test_single_click_research_uses_only_existing_exchange_ai(tmp_path):
     try:
         interaction = _interaction(owner=42)
         await home.act(interaction, "dk-independent-ai")
-        panel.ai.ask.assert_awaited_once_with(asset="SOL", venues=("binance",))
+        panel.ai.ask.assert_awaited_once_with(
+            asset="SOL", venues=("binance",), requester_id=42,
+        )
         bot.cdna_personal.discover_coin.assert_not_awaited()
         assert interaction.followup.send.await_count == 1
     finally:

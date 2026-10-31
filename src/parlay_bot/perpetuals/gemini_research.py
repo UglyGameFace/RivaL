@@ -187,7 +187,8 @@ class GeminiResearch:
             cooldown_seconds=self.cooldown_seconds,
         )
 
-    async def ask(self, *, asset: str, venues: tuple[str, ...]) -> AiResearch:
+    async def ask(self, *, asset: str, venues: tuple[str, ...],
+                  requester_id: int | None = None) -> AiResearch:
         """Only called by an explicit Discord button; zero background LLM calls."""
         if not self._key:
             raise ResearchUnavailable(
@@ -217,11 +218,12 @@ class GeminiResearch:
                 model=self.model, now=now,
                 daily_max=self.daily_max,
                 cooldown_seconds=self.cooldown_seconds,
+                **({"requester_id": requester_id} if requester_id is not None else {}),
             )
             if not permitted:
                 raise ResearchUnavailable(
                     f"RivaL temporarily paused {self.model} analysis. "
-                    "See the exact reason and retry time below. "
+                    "The personal/shared budget or provider cooldown was reached. "
                     "Market collection continues."
                 )
             prompt = (

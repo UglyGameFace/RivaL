@@ -129,7 +129,7 @@ class ShadowModelCompetition:
         predictions = shadow_predictions(samples, features, as_of=now)
         # Exact-source historical boosters enter the SAME immutable future
         # comparison as existing live families, never the incumbent weights.
-        boosters = {}
+        eligible_boosters = {}
         for item in boosters:
             identity = item.get("identity", {})
             if (tuple(identity.get(key) for key in ("venue", "contract", "quote"))
@@ -140,7 +140,7 @@ class ShadowModelCompetition:
                        >= utc(issued_at)):
                 continue
             family = f"boosted_{item['family']}_{item['model_sha256'][:12]}"
-            boosters[family] = item
+            eligible_boosters[family] = item
             predictions[family] = predict_portable(
                 item["portable_model"], features, trusted=True,
             )
@@ -172,9 +172,9 @@ class ShadowModelCompetition:
                  utc(reference_opened_at).isoformat(),utc(issued_at).isoformat(),
                  utc(target_opened_at).isoformat(),probability,
                  incumbent_up,baseline_up,
-                  (len(eligible) if family not in boosters else 0),
-                  (fingerprint if family not in boosters
-                   else boosters[family]["model_sha256"])),
+                  (len(eligible) if family not in eligible_boosters else 0),
+                  (fingerprint if family not in eligible_boosters
+                   else eligible_boosters[family]["model_sha256"])),
             )
             saved += int(row.rowcount == 1)
         return saved

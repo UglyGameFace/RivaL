@@ -1431,9 +1431,7 @@ class GuidedHome(discord.ui.View):
         if self.note:
             embed.add_field(name="What Happened", value=self.note[:1000],
                             inline=False)
-        embed.set_footer(
-            text="Private RivaL menu | Home • Back • Explain | No real bets",
-        )
+        embed.set_footer(text="Private research • No orders or guaranteed accuracy")
         return embed
 
     def _display_generation(self) -> GuidedHome:
@@ -2121,6 +2119,24 @@ class _StaleButton(discord.ui.Button["_StaleGuidedMenuBase"]):
         await self.view.recover(interaction, action=self.action)
 
 
+class _StaleMarket(discord.ui.Select["_StaleGuidedMenuBase"]):
+    """Recover an explicit market selection after a bot restart."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            placeholder="Choose a market",
+            custom_id="rival:guided:market",
+            options=[
+                discord.SelectOption(label=MARKET_NAMES[value], value=value)
+                for value in MARKET_NAMES
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        await self.view.recover(interaction, market=self.values[0])
+
+
 class _StaleCoin(discord.ui.Select["_StaleGuidedMenuBase"]):
     def __init__(self) -> None:
         super().__init__(
@@ -2166,6 +2182,7 @@ class _StaleGuidedMenuBase(discord.ui.View):
     async def recover(
         self, interaction: discord.Interaction, *, action: str | None = None,
         coin: str | None = None, horizon: int | None = None,
+        market: str | None = None,
     ) -> None:
         await interaction.response.defer()
         home = self.home_factory(interaction.user.id)
@@ -2173,10 +2190,13 @@ class _StaleGuidedMenuBase(discord.ui.View):
             home.coin = coin
         if horizon is not None and horizon in RESEARCH_HORIZONS:
             home.horizon = horizon
-        if action in _STALE_SAFE_PAGES:
+        if market in MARKET_NAMES:
+            home.live_source = market
+            home.navigate("crypto-desk")
+        elif action in _STALE_SAFE_PAGES:
             home.navigate(_STALE_SAFE_PAGES[action])
         elif coin is not None or horizon is not None:
-            home.navigate("crypto")
+            home.navigate("crypto-desk")
         home.note = _STALE_NOTE
         _LOG.info(
             "Stale guided menu recovered action=%s user_id=%s",
@@ -2213,6 +2233,7 @@ class StaleGuidedMenuViewC(_StaleGuidedMenuBase):
         super().__init__(home_factory)
         for action in _STALE_BUTTONS_C:
             self.add_item(_StaleButton(action))
+        self.add_item(_StaleMarket())
 
 
 def build_stale_guided_menu_views(

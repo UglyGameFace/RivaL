@@ -2480,6 +2480,7 @@ class RivalDiscordClient(discord.Client):
                  "rival-silent-polymarket-learning"),
                 ("_poly_board_task", self._poly_board_loop,
                  "rival-auto-polymarket-board"),
+                ("_polybolt_task", self.polybolt.run, "rival-read-only-chainlink-twap"),
                 ("_target_task", self._target_loop, "rival-personal-direction-updates"),
             )
             for attr, method, name in workers:
@@ -2571,14 +2572,15 @@ class RivalDiscordClient(discord.Client):
                     # Dedicated optional owner alert route; no user DMs or
                     # market data secrets. Transition-only messages.
                     async with httpx.AsyncClient(timeout=5) as client:
-                        for state, key, detail in events[:8]:
+                        for offset in range(0, len(events), 8):
+                            batch = events[offset:offset+8]
+                            message = "RivaL host health transitions:\n" + "\n".join(
+                                f"{state}: {key} • {detail}"
+                                for state, key, detail in batch
+                            )
                             try:
                                 response = await client.post(
-                                    webhook,
-                                    json={"content": (
-                                        f"RivaL host health {state}: "
-                                        f"{key} • {detail}"
-                                    )[:1900]},
+                                    webhook, json={"content": message[:1900]},
                                 )
                                 response.raise_for_status()
                             except (httpx.HTTPError, TimeoutError):

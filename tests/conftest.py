@@ -1,7 +1,7 @@
 """Isolated backend coverage for learned-policy evidence and challenger gates."""
 import os
 import uuid
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 import pytest
 
@@ -29,7 +29,9 @@ def learning_store(request, tmp_path):
         parts = urlsplit(dsn)
         query = dict(parse_qsl(parts.query))
         query['options'] = (query.get('options', '') + f' -c search_path={schema}').strip()
-        scoped_url = urlunsplit(parts._replace(query=urlencode(query)))
+        # libpq URI query parameters require %20 for spaces. urlencode()
+        # defaults to '+', which libpq treats literally in 'options'.
+        scoped_url = urlunsplit(parts._replace(query=urlencode(query, quote_via=quote)))
         store = None
         try:
             store = PostgresHotStore(scoped_url)

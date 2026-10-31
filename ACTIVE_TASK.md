@@ -1,3 +1,16 @@
+## ACTIVE TASK: Audit P1-6 sports settlement recovery (2026-10-31)
+
+- Objective: retain valid final results and prevent poison forecasts from starving bounded settlement repair. Auto-Hunt is intentionally retired per the owner's explicit clarification; do not restore it.
+- Baseline: main `2923c2dd17b8513ea5dcdc8d7891c345daf7dbf9` / merged #144; no open PR at start. Existing #6/#66/#138 remain live acceptance or model-evidence work, not blockers or fixed issues.
+- Root cause: forecast integrity exceptions rolled back valid final results; reconciliation repeatedly selected the same oldest failures; basketball ties stayed pending indefinitely.
+- Changes: additive terminal exclusion ledger with explicit reasons, immutable result retention, probability/clock validation, exclusion-aware bounded reconciliation and backlog counters, separate runtime exclusion counts. No fake settlements or promotion credit; contradictory scores still fail closed and infrastructure faults remain retryable.
+- Branch: `fix/sports-settlement-poison-rows-20261031`. Validation and release status are recorded in the matching PR; PostgreSQL CI and hosted acceptance must be checked independently.
+- Production validation: inspect six-hour `RivaL sports DB integrity` backlog AND exclusion counts, verify source-matched outcomes and restart DDL. Previously rolled-back results still need quota-compliant provider redelivery. Live Discord/provider canary remains unverified.
+- Rollback and cleanup: code revert preserves additive table and original evidence. Retire branch only after validated merge. See `docs/RIVAL_SPORTS_SETTLEMENT_RECOVERY.md`.
+- Next audit scope: WATCH evidence margin, stale research/data menus, historical recovery, AI-budget fairness, and verified oracle/tie rules remain unresolved by this release.
+
+---
+
 ## ACTIVE TASK: Crypto analysis landing and explicit provider selection (2026-10-30)
 
 - Objective: Replace assumed Polymarket default and oversized contract board with verified model-accuracy landing and explicit Polymarket, Exchange Futures, Kalshi selection.

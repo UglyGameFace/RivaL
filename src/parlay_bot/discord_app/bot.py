@@ -86,6 +86,7 @@ from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
 from parlay_bot.research.database_integrity import (
     perpetual_evidence_backlog,
     sports_settlement_backlog,
+    sports_settlement_exclusions,
 )
 from parlay_bot.research.dkex_reports import DKeXPublicReports
 from parlay_bot.research.sports_results import (
@@ -1839,8 +1840,9 @@ class RivalDiscordClient(discord.Client):
                     sports_settlement_backlog, self.store,
                 )
                 _LOG.info(
-                    "RivaL sports DB integrity unsettled_finalized=%d",
+                    "RivaL sports DB integrity unsettled_finalized=%d exclusions=%s",
                     remaining,
+                    await asyncio.to_thread(sports_settlement_exclusions, self.store),
                 )
             except asyncio.CancelledError:
                 raise

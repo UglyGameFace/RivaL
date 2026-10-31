@@ -546,8 +546,9 @@ class GoogleDriveArchiveClient:
 
 
     async def read_verified_research_candidates(
-        self, *, limit: int = 20,
-    ) -> list[tuple[str, bytes]]:
+        self, *, limit: int = 20, page_token: str | None = None,
+        return_next_page: bool = False,
+    ) -> list[tuple[str, bytes]] | tuple[list[tuple[str, bytes]], str | None]:
         """Bounded immutable Google Drive candidate import, NEVER live promotion.
 
         Read-only (no trash, uploads or arbitrary IDs). File ID, model folder,
@@ -558,6 +559,12 @@ class GoogleDriveArchiveClient:
             raise DriveArchiveError("research models folder not configured")
         if not 1 <= limit <= 20:
             raise ValueError("candidate import limit must be 1..20")
+        if page_token is not None and (
+            not 1 <= len(page_token) <= 1000
+            or any(not (ch.isascii() and (ch.isalnum() or ch in "-_="))
+                   for ch in page_token)
+        ):
+            raise ValueError("invalid Drive listing cursor")
         await self._verify_folder_boundary()
         folder = self.folders.models
         query = (
@@ -568,6 +575,7 @@ class GoogleDriveArchiveClient:
             f"{self.DRIVE_URL}/files",
             params={
                 "q": query, "spaces": "drive", "pageSize": limit,
+                **({"pageToken": page_token} if page_token else {}),
                 "orderBy": "createdTime desc",
                 "fields": "nextPageToken,files(id,name,size,md5Checksum,parents,"
                           "appProperties,trashed)",
@@ -580,6 +588,13 @@ class GoogleDriveArchiveClient:
         files = data.get("files") if isinstance(data, dict) else None
         if not isinstance(files, list) or len(files) > limit:
             raise DriveArchiveError("invalid or unbounded candidate listing")
+        next_page = data.get("nextPageToken")
+        if next_page is not None and (
+            not isinstance(next_page, str) or not 1 <= len(next_page) <= 1000
+            or any(not (ch.isascii() and (ch.isalnum() or ch in "-_="))
+                   for ch in next_page)
+        ):
+            raise DriveArchiveError("invalid research pagination cursor")
         candidates = []
         for raw in files:
             if not isinstance(raw, dict) or raw.get("trashed"):
@@ -592,7 +607,7 @@ class GoogleDriveArchiveClient:
                 or not isinstance(expected, str) or len(expected) != 64
                 or any(ch not in "0123456789abcdef" for ch in expected)
                 or not isinstance(item.size_bytes, int)
-                or not 0 < item.size_bytes <= 131072
+                or not 0 < item.size_bytes <= 2_200_000
                 or props.get("rival_kind") != "model"
                 or any(ch not in
                        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
@@ -613,7 +628,7 @@ class GoogleDriveArchiveClient:
             ):
                 raise DriveArchiveError("research candidate byte identity mismatch")
             candidates.append((item.file_id, payload))
-        return candidates
+        return (candidates, next_page) if return_next_page else candidates
 
     async def ensure_research_output(
         self,

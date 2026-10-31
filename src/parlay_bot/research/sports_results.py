@@ -323,6 +323,11 @@ class SportsResultStore:
                    );
                    CREATE INDEX IF NOT EXISTS idx_rival_sport_forward_model
                    ON rival_sport_forecasts (sport,league,model_version,settled_at);
+                   CREATE TABLE IF NOT EXISTS rival_sport_settlement_exclusions (
+                     event_id TEXT PRIMARY KEY,
+                     reason TEXT NOT NULL,
+                     excluded_at TEXT NOT NULL
+                   );
                    CREATE TABLE IF NOT EXISTS rival_sport_champions (
                      sport TEXT NOT NULL,
                      league TEXT NOT NULL,
@@ -363,11 +368,21 @@ class SportsResultStore:
                     result.observed_at.isoformat(), result.digest,
                 ),
             )
+            # A competing writer may have won ON CONFLICT after our first
+            # read. Only the persisted immutable result can settle a forecast.
+            persisted = conn.execute(
+                "SELECT digest FROM rival_sport_results WHERE event_id=?",
+                (result.event_id,),
+            ).fetchone()
+            if persisted["digest"] != result.digest:
+                raise ResultIntegrityError("Final scores contradict immutable record")
             # The external finalized result alone may settle a previously
             # issued prospectively recorded research forecast. Final scores
             # never manufacture a prediction after kickoff. Insert and
             # settlement commit together, so a crash cannot leave the
-            # result stored with its forecast unsettled.
+            # result stored with its forecast pending. A forecast integrity
+            # failure stores a terminal exclusion in the same transaction,
+            # preserving the valid result without inventing a scored outcome.
             self.settle_forecast(result, conn=conn)
             return "inserted"
 
@@ -376,9 +391,9 @@ class SportsResultStore:
 
         Covers results the provider never redelivers after a crash, and
         any historical finalized result with a still-pending forecast.
-        Integrity failures are logged and skipped so one bad record
-        never blocks the rest. Returns the leagues with newly settled
-        forecasts, for governance review.
+        Integrity failures are durably excluded so a full batch of bad
+        records cannot starve later forecasts across repeated cycles. Returns
+        the leagues with newly settled forecasts, for governance review.
         """
         if not 1 <= limit <= 1000:
             raise ValueError("Reconciliation budget exceeded")
@@ -391,28 +406,28 @@ class SportsResultStore:
                    FROM rival_sport_results AS r
                    JOIN rival_sport_forecasts AS f ON f.event_id=r.event_id
                    WHERE f.settled_at IS NULL
-                   ORDER BY r.first_observed_at ASC LIMIT ?""",
+                     AND NOT EXISTS (
+                       SELECT 1 FROM rival_sport_settlement_exclusions AS e
+                       WHERE e.event_id=f.event_id
+                     )
+                   ORDER BY r.first_observed_at ASC,r.event_id ASC LIMIT ?""",
                 (limit,),
             ).fetchall()
         affected: list[tuple[str, str]] = []
         for row in rows:
-            result = FinalScore(
-                str(row["event_id"]), str(row["sport"]), str(row["league"]),
-                str(row["home_id"]), str(row["away_id"]),
-                int(row["home_score"]), int(row["away_score"]),
-                _instant(str(row["started_at"])),
-                _instant(str(row["first_observed_at"])), str(row["digest"]),
-            )
             try:
-                settled = self.settle_forecast(result)
-            except ResultIntegrityError:
-                _LOG.warning(
-                    "RivaL sports reconciliation withheld event=%s: "
-                    "conflicting or incomplete provider evidence",
-                    result.event_id,
+                result = FinalScore(
+                    str(row["event_id"]), str(row["sport"]), str(row["league"]),
+                    str(row["home_id"]), str(row["away_id"]),
+                    int(row["home_score"]), int(row["away_score"]),
+                    _instant(str(row["started_at"])),
+                    _instant(str(row["first_observed_at"])), str(row["digest"]),
                 )
+            except (ValueError, TypeError, OverflowError):
+                with self.store.connect() as conn:
+                    self._exclude_forecast(conn, str(row["event_id"]), "invalid_result_record")
                 continue
-            if settled:
+            if self.settle_forecast(result):
                 affected.append((result.sport, result.league))
         return affected
 
@@ -426,9 +441,25 @@ class SportsResultStore:
                 return self._settle_forecast(owned, result)
         return self._settle_forecast(conn, result)
 
+    def _exclude_forecast(self, conn, event_id: str, reason: str) -> bool:
+        """Keep evidence immutable; exclusion is terminal, never a scored result."""
+        changed = conn.execute(
+            """INSERT INTO rival_sport_settlement_exclusions
+               (event_id,reason,excluded_at) VALUES (?,?,?)
+               ON CONFLICT DO NOTHING""",
+            (event_id, reason, datetime.now(UTC).isoformat()),
+        )
+        if changed.rowcount == 1:
+            _LOG.warning("RivaL sports forecast excluded event=%s reason=%s", event_id, reason)
+        return False
+
     def _settle_forecast(self, conn, result: FinalScore) -> bool:
         record = conn.execute(
-            "SELECT * FROM rival_sport_forecasts WHERE event_id=?",
+            """SELECT f.* FROM rival_sport_forecasts AS f
+               WHERE f.event_id=? AND NOT EXISTS (
+                 SELECT 1 FROM rival_sport_settlement_exclusions AS e
+                 WHERE e.event_id=f.event_id
+               )""",
             (result.event_id,),
         ).fetchone()
         if record is None or record["settled_at"] is not None:
@@ -438,22 +469,32 @@ class SportsResultStore:
             or record["home_id"] != result.home_id
             or record["away_id"] != result.away_id
         ):
-            raise ResultIntegrityError("Result identity disagrees with prospective model")
-        if _instant(record["issued_at"]) >= result.started_at:
-            raise ResultIntegrityError("Forecast was not issued before kickoff")
-        prediction = json.loads(record["probability_json"])
-        baseline = json.loads(record["baseline_json"])
+            return self._exclude_forecast(conn, result.event_id, "identity_mismatch")
+        try:
+            if _instant(record["issued_at"]) >= result.started_at:
+                return self._exclude_forecast(conn, result.event_id, "not_pregame")
+            if _instant(record["starts_at"]) != result.started_at:
+                return self._exclude_forecast(conn, result.event_id, "kickoff_mismatch")
+        except ResultIntegrityError:
+            return self._exclude_forecast(conn, result.event_id, "invalid_forecast_clock")
+        if result.sport == "BASKETBALL" and result.outcome == 0:
+            return self._exclude_forecast(conn, result.event_id, "unsupported_basketball_tie")
+        try:
+            prediction = json.loads(record["probability_json"])
+            baseline = json.loads(record["baseline_json"])
+            size = 3 if result.sport == "SOCCER" else 2
+            for vector in (prediction, baseline):
+                if (not isinstance(vector, list) or len(vector) != size
+                    or any(type(p) not in (int, float) or not math.isfinite(p)
+                           or not 0 <= p <= 1 for p in vector)
+                    or not math.isclose(sum(vector), 1.0, abs_tol=1e-6)):
+                    raise ValueError("Invalid probability vector")
+        except (ValueError, TypeError, OverflowError):
+            return self._exclude_forecast(conn, result.event_id, "invalid_probability_vector")
         label = 0 if result.outcome == 1 else (
             1 if result.outcome == 0 and result.sport == "SOCCER"
             else 2 if result.sport == "SOCCER" else 1
         )
-        if result.sport == "BASKETBALL" and result.outcome == 0:
-            return False
-        if (
-            len(prediction) != len(baseline)
-            or len(prediction) != (3 if result.sport == "SOCCER" else 2)
-        ):
-            raise ResultIntegrityError("Incompatible immutable forecast")
         model_loss = sum((float(p) - int(i == label)) ** 2
                          for i, p in enumerate(prediction))
         base_loss = sum((float(p) - int(i == label)) ** 2

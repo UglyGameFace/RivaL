@@ -18,9 +18,23 @@ def sports_settlement_backlog(store: RelationalHotStore) -> int:
             """SELECT COUNT(*) AS n
                FROM rival_sport_forecasts AS f
                JOIN rival_sport_results AS r ON r.event_id=f.event_id
-               WHERE f.settled_at IS NULL"""
+               WHERE f.settled_at IS NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM rival_sport_settlement_exclusions AS e
+                   WHERE e.event_id=f.event_id
+                 )"""
         ).fetchone()
     return int(row["n"])
+
+
+def sports_settlement_exclusions(store: RelationalHotStore) -> dict[str, int]:
+    """Report terminal exclusions separately from actionable settlement backlog."""
+    with store.connect() as conn:
+        rows = conn.execute(
+            """SELECT reason,COUNT(*) AS n FROM rival_sport_settlement_exclusions
+               GROUP BY reason"""
+        ).fetchall()
+    return {str(row["reason"]): int(row["n"]) for row in rows}
 
 
 def perpetual_evidence_backlog(

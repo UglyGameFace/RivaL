@@ -142,7 +142,7 @@ def test_active_transaction_settlement_does_not_reinitialize(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_background_reconciliation_runs_with_no_due_fixtures(tmp_path, monkeypatch):
+async def test_background_reconciliation_runs_with_no_due_fixtures(tmp_path, monkeypatch, caplog):
     """An old result must settle even if no external result poll is due."""
     store = SQLiteHotStore(tmp_path / "recovery-loop.sqlite")
     store.initialize()
@@ -177,8 +177,11 @@ async def test_background_reconciliation_runs_with_no_due_fixtures(tmp_path, mon
         assert research.due_fixtures(
             now=KICKOFF + timedelta(days=3),
         ) == []
-        await RivalDiscordClient._sports_results_loop(bot)
+        with caplog.at_level("INFO", logger="parlay_bot.discord_app.bot"):
+            await RivalDiscordClient._sports_results_loop(bot)
         assert forecast_row(store)["settled_at"] is not None
         assert int(forecast_row(store)["label"]) == 0
+        assert "unsettled_finalized=0 exclusions={}" in caplog.text
+        assert "DB integrity check unavailable" not in caplog.text
     finally:
         store.close()

@@ -83,7 +83,7 @@ def test_real_forward_settlement_rejects_backfill_and_duplicate_predictions(lear
         "settled":0,"ambiguous":0,
     }
     future=[]
-    for j in range(1,4):
+    for j in range(2,5):
         opened=last.opened_at+timedelta(minutes=5*j)
         future.append(MarketCandle(
             venue="hyperliquid",contract="BTC",quote="USDC",
@@ -147,7 +147,7 @@ def test_same_bar_tp_and_stop_are_ambiguous_not_model_wins(learning_store):
     with hot.connect() as conn:
         assert ledger.issue(conn,candles=candles,asset="BTC",horizon=15,
                             now=issued,issued_at=issued)==2
-        for j in range(1,4):
+        for j in range(2,5):
             opened=last.opened_at+timedelta(minutes=5*j)
             c=MarketCandle(
                 venue=last.venue,contract=last.contract,quote=last.quote,
@@ -160,7 +160,7 @@ def test_same_bar_tp_and_stop_are_ambiguous_not_model_wins(learning_store):
             )
             conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                          _row(c))
-    now=last.opened_at+timedelta(minutes=21)
+    now=last.opened_at+timedelta(minutes=26)
     assert ledger.settle(now=now)=={"settled":0,"ambiguous":2}
     assert ledger.report(asset="BTC",horizon=15,now=now)=={}
     with hot.connect() as conn:

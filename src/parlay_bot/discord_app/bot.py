@@ -2446,6 +2446,21 @@ class RivalDiscordClient(discord.Client):
                         "RivaL cold archive completed %d batch(es)",
                         len(completed),
                     )
+                # Reuse the existing private archive only. A completed
+                # source/month file is retrospective data, never a forecast.
+                if self.perp_collector is not None:
+                    from parlay_bot.research.source_native import NativeMonthlyPublisher
+
+                    published = await NativeMonthlyPublisher(
+                        self.perp_collector.market, self.archive_runtime.drive,
+                        self.settings.rival_archive_local_dir,
+                    ).run_once(now=datetime.now(UTC), max_batches=2)
+                    if published:
+                        _LOG.info(
+                            "RivaL source-exact research archived=%d complete "
+                            "venue/month snapshots; live calls unchanged",
+                            len(published),
+                        )
                 if self.archive_runtime.perpetual_service is not None:
                     copied = await self.archive_runtime.perpetual_service.archive_ready(
                         now=datetime.now(UTC),

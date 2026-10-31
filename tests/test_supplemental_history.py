@@ -11,13 +11,13 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 
+from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.publish import prepare
 from parlay_bot.research.supplemental_history import (
     _funding_rows, _premium_rows, _report_status, _resume_verified,
     binance_supplement_url, collect_supplemental, ingest_binance_supplement,
     ingest_kalshi_contract, ingest_polymarket_token, supplemental_jobs,
 )
-from parlay_bot.research.free_history import HistoryImportError
-from parlay_bot.research.publish import prepare
 
 MONTH = "2024-01"
 T0 = int(datetime(2024, 1, 1, tzinfo=UTC).timestamp() * 1000)
@@ -85,11 +85,13 @@ def test_official_binance_supplements_are_verified_and_isolated(tmp_path, kind):
 @pytest.mark.parametrize("kind", ["funding", "mark", "index", "premium"])
 def test_binance_source_checksum_tamper_rejected(tmp_path, kind):
     url = binance_supplement_url(asset="BTC", kind=kind, month=MONTH)
-    with mock_archive(url, funding_csv() if kind == "funding" else kline(), tamper=True) as client:
-        with pytest.raises(HistoryImportError):
-            ingest_binance_supplement(
-                client, asset="BTC", kind=kind, month=MONTH, out_dir=tmp_path,
-            )
+    with (
+        mock_archive(url, funding_csv() if kind == "funding" else kline(), tamper=True) as client,
+        pytest.raises(HistoryImportError),
+    ):
+        ingest_binance_supplement(
+            client, asset="BTC", kind=kind, month=MONTH, out_dir=tmp_path,
+        )
     assert not list(tmp_path.rglob("*.ndjson"))
 
 
@@ -131,13 +133,15 @@ def test_polymarket_history_is_retrospective_token_not_condition_price(tmp_path)
     assert meta["token_id"] == token and meta["condition_id"] == condition
     assert meta["no_historical_orderbook_or_fill_evidence"] is True
     assert prepare(result.manifest_path).source == "polymarket_token_history"
-    with _market_client({"history": [{"t": start + 100, "p": 0.2},
-                                     {"t": start + 10, "p": 0.3}]}) as client:
-        with pytest.raises(HistoryImportError):
-            ingest_polymarket_token(
-                client, condition_id=condition, token_id=token,
-                start_ts=start, end_ts=start + 400, fidelity=5, out_dir=tmp_path,
-            )
+    with (
+        _market_client({"history": [{"t": start + 100, "p": 0.2},
+                                    {"t": start + 10, "p": 0.3}]}) as client,
+        pytest.raises(HistoryImportError),
+    ):
+        ingest_polymarket_token(
+            client, condition_id=condition, token_id=token,
+            start_ts=start, end_ts=start + 400, fidelity=5, out_dir=tmp_path,
+        )
 
 
 def test_kalshi_quotes_have_ohlc_and_no_made_up_book_fills(tmp_path):

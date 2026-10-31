@@ -1,0 +1,121 @@
+"""No default betting market; accuracy evidence and actions stay source-matched."""
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from tests.test_guided_home import _client, _home, _interaction, _labels
+
+
+@pytest.mark.asyncio
+async def test_crypto_entry_starts_with_analysis_and_no_implicit_market(tmp_path):
+    bot = _client(tmp_path)
+    home = _home(bot)
+    try:
+        assert home.live_source is None
+        event = _interaction()
+        await home.act(event, "crypto-desk")
+        assert home.page == "crypto-desk"
+        assert home.live_source is None
+        assert "View Contract Call" not in _labels(home)
+        assert "Track Market" not in _labels(home)
+        assert "Get Exchange Forecast" not in _labels(home)
+        assert "Browse Kalshi" not in _labels(home)
+        market = next(
+            item for item in home.children
+            if item.custom_id == "rival:guided:market"
+        )
+        assert all(not option.default for option in market.options)
+        embed = await home.render()
+        assert "Analysis" in embed.title
+        assert "Not selected" in embed.description
+        assert "Start here" in [field.name for field in embed.fields]
+        # No tracking or AI call can start while the market is unselected.
+        await home.act(event, "desk-call")
+        assert "Choose a market first" in home.note
+        assert home.page == "crypto-desk"
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_source_choice_changes_calls_and_does_not_substitute_contracts(tmp_path):
+    bot = _client(tmp_path)
+    home = _home(bot)
+    try:
+        home.navigate("crypto-desk")
+        home.live_source = "kalshi"
+        home._buttons()
+        assert "Browse Kalshi" in _labels(home)
+        assert "Track Market" not in _labels(home)
+        assert "Follow Forecast" not in _labels(home)
+        embed = await home.render()
+        assert "No validated Kalshi-specific RivaL model" in str(embed.to_dict())
+        await home.act(_interaction(), "desk-call")
+        assert home.page == "live"
+        assert "Kalshi" in (await home.render()).title
+
+        home.navigate("crypto-desk")
+        home.live_source = "exchange"
+        home._buttons()
+        assert "Get Exchange Forecast" in _labels(home)
+        assert "Follow Forecast" in _labels(home)
+        assert "View Contract Call" not in _labels(home)
+        home.targets.follow = AsyncMock(return_value=(True, "Watching exchange forecast"))
+        await home.act(_interaction(), "desk-track")
+        home.targets.follow.assert_awaited_once()
+        assert "Watching exchange forecast" in home.note
+        assert home.page == "crypto-desk"
+    finally:
+        home.stop()
+        await bot.kalshi_browser.aclose()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_selected_polymarket_tracks_only_explicit_contract(tmp_path):
+    bot = _client(tmp_path)
+    home = _home(bot)
+    tracker = SimpleNamespace(start=AsyncMock(return_value=(True, "Tracking only this market")))
+    home.auto_hunt = SimpleNamespace(bot=SimpleNamespace(polymarket_board=tracker))
+    try:
+        home.navigate("crypto-desk")
+        home.live_source = "polymarket"
+        home.coin = "ETH"
+        home.horizon = 15
+        home._buttons()
+        assert "View Contract Call" in _labels(home)
+        assert "Track Market" in _labels(home)
+        assert "Get Exchange Forecast" not in _labels(home)
+        await home.act(_interaction(), "desk-track")
+        tracker.start.assert_awaited_once()
+        call = tracker.start.await_args
+        assert call.kwargs == {"asset": "ETH", "horizon": 15}
+        assert "Tracking only this market" in home.note
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_live_button_cannot_auto_pick_polymarket(tmp_path):
+    bot = _client(tmp_path)
+    home = _home(bot)
+    try:
+        await home.act(_interaction(), "live")
+        assert home.page == "crypto-desk"
+        assert home.live_source is None
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()

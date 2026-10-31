@@ -557,13 +557,13 @@ async def signal_embed(
         return _no_signal(asset, horizon_minutes, "Screening completed.")
 
     if venue_beats is False:
-        verdict = "⛔ NO CALL • MODEL UNDERPERFORMING"
+        verdict = "⛔ NO CALL • PASS • MODEL UNDERPERFORMING"
         message = (
             f"Recent {chosen['venue']} forward scores do not beat a simple "
             "baseline."
         )
     elif book is None:
-        verdict = "⏳ NO CALL • PRICE UNVERIFIED"
+        verdict = "⏳ NO CALL • WAIT • MARKET PRICE UNAVAILABLE"
         message = (
             "A forecast exists, but no matching current exchange order book "
             "could be verified. No other exchange price was substituted."
@@ -596,7 +596,7 @@ async def signal_embed(
             "as an evidence-qualified watch."
         )
     else:
-        verdict = "⏳ NO CALL • WEAK MODEL" if direction != "FLAT" else (
+        verdict = f"⏳ NO CALL • {direction} LEAN • NO SIGNAL" if direction != "FLAT" else (
             "⏳ NO CALL • NO DIRECTION"
         )
         message = (

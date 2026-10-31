@@ -181,8 +181,9 @@ class PolymarketOutcomeLearner:
             rows = conn.execute(
                 "SELECT f.probability_up,f.market_baseline,o.direction "
                 "FROM rival_polymarket_model_forward f "
-                "JOIN rival_polymarket_ai_outcomes o ON o.slug=f.slug "
                 "JOIN rival_polymarket_observations v ON v.slug=f.slug "
+                "JOIN rival_polymarket_ai_outcomes o "
+                "ON o.slug=f.slug AND o.condition_id=v.condition_id "
                 "WHERE f.model_version=? AND f.issued_at>=? AND f.issued_at<=? "
                 "AND f.issued_at<v.expires_at AND f.issued_at<o.resolved_at "
                 "AND o.resolved_at>=v.expires_at "

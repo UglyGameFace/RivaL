@@ -143,7 +143,13 @@ def target_snapshot(
         if not math.isfinite(p) or not 0 < p < 1:
             continue
         direction = "UP" if p > 0.5 else "DOWN" if p < 0.5 else "WAIT"
-        if direction == "WAIT" or model_strength(p) != "directional watch":
+        if direction == "WAIT":
+            return TargetSnapshot(
+                asset, horizon_minutes, "WAIT",
+                "NO CALL: the latest model is tied.",
+                status="tied",
+            )
+        if model_strength(p) != "directional watch":
             return TargetSnapshot(
                 asset, horizon_minutes, "WAIT",
                 "NO CALL: the latest prediction is too close to a coin flip.",
@@ -202,7 +208,7 @@ def target_embed(snapshot: TargetSnapshot) -> discord.Embed:
     labels = {
         "UP": "📈 UP WATCH" if qualified_watch else "🟠 UP LEAN • NO SIGNAL",
         "DOWN": "📉 DOWN WATCH" if qualified_watch else "🟠 DOWN LEAN • NO SIGNAL",
-        "WAIT": "⏳ NO CALL • NO VERIFIED EDGE",
+        "WAIT": "⏳ WAIT • NO CALL • NO VERIFIED EDGE",
     }
     colors = {
         "UP": discord.Color.green() if qualified_watch else discord.Color.orange(),

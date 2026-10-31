@@ -199,9 +199,11 @@ class CDNAPersonalReader:
         aliases = tokens[asset]
         unique: list[tuple[str, str, str]] = []
         for symbol, title, event in results:
-            source = f"{symbol} {title} {event}".upper()
+            # Match the provider's machine-readable symbol, NOT the event
+            # headline. Every contract in a Bitcoin event may have a symbol
+            # for a different asset or a negated/unrelated proposition.
             if not any(re.search(
-                rf"(?<![A-Z0-9]){word}(?![A-Z0-9])", source,
+                rf"(?<![A-Z0-9]){word}(?![A-Z0-9])", symbol.upper(),
             ) for word in aliases):
                 continue
             if not any(row[0] == symbol for row in unique):

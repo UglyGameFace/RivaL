@@ -12,6 +12,7 @@ import math
 import statistics
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals.calibration_validation import unique_window_calibration
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.model_competition import FAMILIES
@@ -103,6 +104,9 @@ class FamilyPromotion:
             # aligned target windows can contribute independent evidence.
             seen=set()
             scored_pairs=[]
+            scored_base=[]
+            scored_coin=[]
+            calibration_rows=[]
             quote_pairs={label:[] for label,_ in COST_SCENARIOS}
             covered=eligible=trades=0
             invalid=0
@@ -123,9 +127,12 @@ class FamilyPromotion:
                         "probability_up","incumbent_up","baseline_up",
                         "model_brier","incumbent_brier","baseline_brier",
                     )]
+                    if int(target.timestamp())%(horizon*60):
+                        # Other valid 15m/60m forecasts are overlapping
+                        # windows, not corrupt training examples.
+                        continue
                     if (not issued<target+timedelta(minutes=5)<settle<=stamp
                             or y not in (0,1)
-                            or int(target.timestamp())%(horizon*60)
                             or not all(math.isfinite(v) and 0<=v<=1 for v in values)
                             or row["reference_opened_at"] in seen):
                         invalid+=1
@@ -139,6 +146,16 @@ class FamilyPromotion:
                     continue
                 seen.add(row["reference_opened_at"])
                 scored_pairs.append((target.isoformat(),values[3],values[4]))
+                scored_base.append((target.isoformat(),values[3],values[5]))
+                scored_coin.append((target.isoformat(),values[3],.25))
+                calibration_rows.append({
+                    "target_opened_at":target.isoformat(),
+                    "issued_at":issued.isoformat(),
+                    "settled_at":settle.isoformat(),
+                    "probability_up":values[0],
+                    "reference_probability_up":values[1],
+                    "outcome_up":y,
+                })
                 cs=("LONG" if values[0]>=.56 else "SHORT" if values[0]<=.44 else "CASH")
                 ins=("LONG" if values[1]>=.56 else "SHORT" if values[1]<=.44 else "CASH")
                 if cs=="CASH" and ins=="CASH":
@@ -173,8 +190,12 @@ class FamilyPromotion:
                     quote_pairs[label].append((target.date().isoformat(),c_net,i_net))
             try:
                 proof=score_paired_forward(scored_pairs)
+                base_proof=score_paired_forward(scored_base)
+                coin_proof=score_paired_forward(scored_coin)
+                calibration=unique_window_calibration(calibration_rows)
             except (ValueError,TypeError,OverflowError):
-                proof=None
+                proof=base_proof=coin_proof=None
+                calibration={"status":"invalid","ece":None}
             coverage=covered/eligible if eligible else 0.
             cost_proofs={}
             for label,rows in quote_pairs.items():
@@ -197,6 +218,9 @@ class FamilyPromotion:
                 }
             qualified=bool(
                 proof is not None and proof.status=="qualified_shadow"
+                and base_proof is not None and base_proof.status=="qualified_shadow"
+                and coin_proof is not None and coin_proof.status=="qualified_shadow"
+                and calibration["status"]=="research_screen_passed"
                 and proof.days>=MIN_DAYS and proof.targets>=MIN_WINDOWS
                 and eligible>=MIN_WINDOWS and covered>=MIN_WINDOWS
                 and trades>=MIN_TRADES and coverage>=MIN_COVERAGE
@@ -208,6 +232,10 @@ class FamilyPromotion:
                 "targets":proof.targets if proof else 0,
                 "days":proof.days if proof else 0,
                 "forward_gain":proof.paired_gain if proof else None,
+                "baseline_gain":base_proof.paired_gain if base_proof else None,
+                "coin_gain":coin_proof.paired_gain if coin_proof else None,
+                "ece":calibration["ece"],
+                "calibration_status":calibration["status"],
                 "eligible_quotes":eligible,"closed_quotes":covered,
                 "quote_coverage":coverage,"challenger_trades":trades,
                 "invalid_rows":invalid,"cost_proof":cost_proofs,

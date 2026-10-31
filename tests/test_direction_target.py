@@ -244,7 +244,11 @@ async def test_targeting_never_creates_automatic_dm_without_opt_in(tmp_path):
         store.close()
 
 
-def test_fifteen_minute_target_does_not_expire_after_only_five(tmp_path):
+def test_fifteen_minute_target_does_not_expire_after_only_five(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        ForwardAccuracyMonitor, 'venue_summary',
+        lambda *_a, **_kw: {'model_beats_baseline': True, 'watch_evidence_passes': True},
+    )
     now = datetime.now(UTC).replace(microsecond=0)
     store, market = market_with_prediction(tmp_path, now)
     try:

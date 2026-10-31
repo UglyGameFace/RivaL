@@ -142,7 +142,7 @@ class StreamShadowLedger:
             for row in forecasts:
                 horizon = int(row["horizon_minutes"])
                 prob = float(row["probability_up"])
-                if (horizon not in (5, 15) or not math.isfinite(prob)
+                if (horizon not in (5, 15, 60) or not math.isfinite(prob)
                     or max(prob, 1 - prob) < MIN_SIGNAL_SCORE):
                     continue
                 issued = _stamp(row["issued_at"])
@@ -175,7 +175,7 @@ class StreamShadowLedger:
     def report(
         self, *, asset: str, horizon_minutes: int, now: datetime | None = None,
     ) -> dict:
-        if asset not in ("BTC", "ETH", "SOL") or horizon_minutes not in (5, 15):
+        if asset not in ("BTC", "ETH", "SOL", "XRP") or horizon_minutes not in (5, 15, 60):
             raise ValueError("Invalid shadow proof market")
         instant = now or datetime.now(UTC)
         if instant.utcoffset() is None:

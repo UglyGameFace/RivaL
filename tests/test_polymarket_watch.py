@@ -8,6 +8,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
+import pytest
 
 from parlay_bot.discord_app import auto_hunt, polymarket_watch
 from parlay_bot.storage.hot import SQLiteHotStore
@@ -286,3 +287,46 @@ def test_next_polymarket_listing_never_invented_when_gamma_disagrees(monkeypatch
     assert run(reader.listed(
         "BTC", 5, start + timedelta(minutes=5), now=now,
     )) is None
+
+
+def test_hourly_listings_use_published_rules_not_fixed_exchange_assumption():
+    """Both exact market-specific sources are screened; arbitrary venues fail."""
+    now = datetime(2026, 10, 30, 12, 10, tzinfo=UTC)
+    start = datetime(2026, 10, 30, 12, 0, tzinfo=UTC)
+    event = {
+        "slug": polymarket_watch.market_slug("BTC", 60, start),
+        "active": True, "closed": False, "archived": False,
+        "eventStartTime": start.isoformat(),
+        "endDate": (start + timedelta(hours=1)).isoformat(),
+        "markets": [{
+            "closed": False, "active": True, "acceptingOrders": True,
+            "enableOrderBook": True, "outcomes": '["Up","Down"]',
+            "resolutionSource": (
+                "https://data.chain.link/streams/btc-usd-twap-60s-streams"
+            ),
+            "description": (
+                "BTC/USD Chainlink 60-second TWAP determines UP or DOWN."
+            ),
+        }],
+    }
+    reader = polymarket_watch.PolymarketReader()
+    accepted = reader._window(event, asset="BTC", horizon=60, start=start, now=now)
+    assert accepted.accepting_orders
+    event["markets"][0]["resolutionSource"] = "https://www.bitget.com"
+    with pytest.raises(polymarket_watch.MarketUnavailable):
+        reader._window(event, asset="BTC", horizon=60, start=start, now=now)
+    event["markets"][0]["resolutionSource"] = (
+        "https://data.chain.link/streams/eth-usd-twap-60s-streams"
+    )
+    with pytest.raises(polymarket_watch.MarketUnavailable):
+        reader._window(event, asset="BTC", horizon=60, start=start, now=now)
+    event["markets"][0]["resolutionSource"] = (
+        "https://data.chain.link/streams/btc-usd-twap-60s-streams"
+    )
+    event["markets"][0]["description"] = "Unspecified oracle source"
+    with pytest.raises(polymarket_watch.MarketUnavailable):
+        reader._window(event, asset="BTC", horizon=60, start=start, now=now)
+    event["markets"][0]["resolutionSource"] = (
+        "https://www.binance.com/en/trade/BTC_USDT"
+    )
+    assert reader._window(event, asset="BTC", horizon=60, start=start, now=now)

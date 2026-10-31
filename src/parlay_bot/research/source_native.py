@@ -240,3 +240,116 @@ class NativeMonthlyPublisher:
                 "sha256": history_artifact.sha256,
             })
         return copied
+
+
+async def restore_verified_source_months(
+    drive, *, venue: str, months: list[str], root: Path,
+) -> list[Path]:
+    """Restore only actual source/month files from our private Drive archive.
+
+    The importer verifies BOTH the signed-in account's folder boundary and
+    SHA-256 for the manifest and the exact corresponding history bytes.
+    Unknown, duplicate, malformed, oversized and cross-source files fail
+    closed. Source archives are not historical live-trading forecasts.
+    """
+    if venue not in VENUES or not 1 <= len(months) <= 6:
+        raise HistoryImportError("invalid or oversized native research request")
+    if len(months) != len(set(months)):
+        raise HistoryImportError("duplicate source research month")
+    await drive._verify_folder_boundary()
+    folder = drive.folders.manifests
+    query = (
+        f"'{drive._escape_query(folder)}' in parents and trashed = false "
+        f"and name contains '{drive._escape_query(venue + '-')}' "
+        "and appProperties has { key='rival_kind' and value='manifest' }"
+    )
+    response = await drive._client.get(
+        f"{drive.DRIVE_URL}/files",
+        params={
+            "q": query, "spaces": "drive", "pageSize": 100,
+            "fields": "nextPageToken,files(id,name,size,md5Checksum,parents,"
+                      "appProperties,trashed)",
+        },
+        headers=await drive._headers(),
+    )
+    if response.status_code != 200:
+        raise HistoryImportError("private native manifest listing unavailable")
+    result = response.json()
+    found = result.get("files") if isinstance(result, dict) else None
+    if (not isinstance(found, list) or len(found) > 100
+        or result.get("nextPageToken")):
+        raise HistoryImportError("unbounded or paginated native model source listing")
+    target = Path(root) / SOURCE
+    target.mkdir(parents=True, exist_ok=True)
+    imported = []
+    unique = set()
+    for entry in found:
+        if (not isinstance(entry, dict)
+            or not str(entry.get("name", "")).startswith(venue + "-")):
+            raise HistoryImportError("unexpected native manifest listing record")
+        item = drive._object(entry)
+        props = entry.get("appProperties") or {}
+        expected_sha = props.get("rival_sha256")
+        if (folder not in item.parents or props.get("rival_kind") != "manifest"
+            or not isinstance(expected_sha, str) or len(expected_sha) != 64
+            or any(c not in "0123456789abcdef" for c in expected_sha)
+            or not isinstance(item.size_bytes, int)
+            or not 0 < item.size_bytes <= 8192):
+            raise HistoryImportError("native manifest metadata invalid")
+        blob = await drive._client.get(
+            f"{drive.DRIVE_URL}/files/{item.file_id}",
+            params={"alt": "media"}, headers=await drive._headers(),
+            follow_redirects=False,
+        )
+        if (blob.status_code != 200 or len(blob.content) != item.size_bytes
+            or hashlib.sha256(blob.content).hexdigest() != expected_sha):
+            raise HistoryImportError("native research manifest byte identity mismatch")
+        try:
+            info = json.loads(blob.content)
+            if (info.get("source") != SOURCE or info.get("venue") != venue
+                or info.get("source_integrity") != "postgres-first-observed-at-v1"
+                or info.get("prospective_forecast") is not False
+                or info.get("live_trading_authorized") is not False
+                or info.get("interval_minutes") != 5):
+                raise HistoryImportError("unverified native month provenance")
+            month = info["file"].split("-5m-")[1][:7]
+            identity = (info["venue"], info["contract"], info["quote"], month)
+            if month not in months:
+                continue
+            if identity in unique:
+                raise HistoryImportError("conflicting native month snapshots")
+            unique.add(identity)
+            name = info["file"]
+            if (not isinstance(name, str) or Path(name).name != name
+                or not name.endswith(".ndjson")
+                or item.name != name.removesuffix(".ndjson") + ".manifest.json"):
+                raise HistoryImportError("native source filename mismatch")
+            history = await drive._find_batch_object(
+                parent_id=drive.folders.history,
+                batch_id="native-" + info["data_sha256"][:24],
+                kind="history",
+            )
+            if (history is None or history.name != name
+                or not isinstance(history.size_bytes, int)
+                or not 0 < history.size_bytes <= 12_000_000):
+                raise HistoryImportError("native source history missing or oversized")
+            response = await drive._client.get(
+                f"{drive.DRIVE_URL}/files/{history.file_id}",
+                params={"alt": "media"}, headers=await drive._headers(),
+                follow_redirects=False,
+            )
+            if (response.status_code != 200
+                or len(response.content) != history.size_bytes
+                or hashlib.sha256(response.content).hexdigest() != info["data_sha256"]):
+                raise HistoryImportError("source-native history failed byte restore")
+        except (KeyError, ValueError, TypeError, IndexError) as exc:
+            raise HistoryImportError("invalid source-native archive metadata") from exc
+        path = target / item.name
+        datapath = target / name
+        for output, payload in ((path, blob.content), (datapath, response.content)):
+            if output.exists() and output.read_bytes() != payload:
+                raise HistoryImportError("existing native research dataset changed")
+            if not output.exists():
+                output.write_bytes(payload)
+        imported.append(path)
+    return imported

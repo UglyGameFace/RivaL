@@ -133,10 +133,10 @@ def assemble(manifests: list[Path]) -> tuple[dict, list[dict], dict]:
         if identity is not None and key != identity:
             raise HistoryImportError("do not mix instruments, venues or timeframes")
         identity = key
-        if meta["source"] == "verified_venue_perp_klines":
-            if (meta.get("venue"), meta.get("contract"),
-                meta.get("quote"), meta.get("interval_minutes")) != key:
-                raise HistoryImportError("source-native manifest identity mismatch")
+        if (meta["source"] == "verified_venue_perp_klines"
+            and (meta.get("venue"), meta.get("contract"),
+                 meta.get("quote"), meta.get("interval_minutes")) != key):
+            raise HistoryImportError("source-native manifest identity mismatch")
         first_month = records[0]["opened_at"][:7]
         if first_month in months:
             raise HistoryImportError("duplicate monthly dataset")

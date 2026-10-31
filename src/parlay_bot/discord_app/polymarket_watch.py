@@ -69,6 +69,9 @@ class PolymarketNotice:
     research: object | None = None
     research_note: str | None = None
     rules: str | None = None
+    # Set exclusively by an authenticated, source-matched oracle adapter.
+    # The public Gamma/CLOB reader has no such reference and leaves this None.
+    oracle_reference: object | None = None
 
     @property
     def venue(self) -> str:

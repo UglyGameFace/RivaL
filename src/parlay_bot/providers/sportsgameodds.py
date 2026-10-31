@@ -15,6 +15,11 @@ from parlay_bot.providers.errors import (
     QuotaReserveReached,
 )
 from parlay_bot.providers.owner_limits import OwnerLimitStore
+from parlay_bot.providers.shared_budget import (
+    UNKNOWN_PERIOD,
+    QuotaClaim,
+    SharedProviderBudget,
+)
 
 
 @dataclass(frozen=True)
@@ -26,6 +31,7 @@ class SportsGameOddsUsage:
     minute_current_requests: int
     monthly_unlimited_entities: bool = False
     monthly_period_end: datetime | None = None
+    minute_period_end: datetime | None = None
 
     @property
     def monthly_remaining_entities(self) -> int | None:
@@ -83,6 +89,11 @@ class SportsGameOddsClient:
             raise ValueError("monthly_entity_reserve cannot be negative")
 
         self._owner_limits = owner_limits
+        self._shared_budget = (
+            SharedProviderBudget(owner_limits.store, provider="sportsgameodds", api_key=api_key)
+            if owner_limits is not None else None
+        )
+        self._reservation_usage: SportsGameOddsUsage | None = None
         self._api_key = api_key
         self._monthly_entity_reserve = monthly_entity_reserve
         self._owns_client = client is None
@@ -278,6 +289,7 @@ class SportsGameOddsClient:
             minute_current_requests=minute_current or 0,
             monthly_unlimited_entities=self._unlimited_monthly(month),
             monthly_period_end=self._provider_month_end(month),
+            minute_period_end=self._provider_month_end(minute),
         )
 
     async def _safe_event_limit(self, requested: int) -> int:
@@ -290,6 +302,7 @@ class SportsGameOddsClient:
         if requested < 1:
             raise ValueError("requested event limit must be positive")
         usage = await self.get_usage()
+        self._reservation_usage = usage
         unlimited = usage.monthly_unlimited_entities
         if (
             (usage.monthly_max_entities is None and not unlimited)
@@ -347,6 +360,42 @@ class SportsGameOddsClient:
             raise QuotaReserveReached("SportsGameOdds monthly entity reserve reached")
         return min(requested, remaining) if remaining is not None else requested
 
+    async def _reserve_shared_event_entities(self, requested: int, *, partial: bool) -> int:
+        if self._shared_budget is None:
+            return requested
+        usage = self._reservation_usage
+        if usage is None:
+            raise QuotaReserveReached("Provider usage must be verified before booking entities")
+        month_period = (
+            usage.monthly_period_end.isoformat()
+            if usage.monthly_period_end is not None else UNKNOWN_PERIOD
+        )
+        claims = [QuotaClaim(
+            metric="monthly_entities", period=month_period,
+            observed=usage.monthly_current_entities or 0,
+            maximum=None if usage.monthly_unlimited_entities else usage.monthly_max_entities,
+            reserve=self._monthly_entity_reserve,
+            requested=requested, partial=partial, owner_cap=True,
+        )]
+        if (
+            usage.minute_max_requests is not None
+            and usage.minute_period_end is not None
+        ):
+            claims.append(QuotaClaim(
+                metric="minute_requests", period=usage.minute_period_end.isoformat(),
+                observed=usage.minute_current_requests,
+                maximum=usage.minute_max_requests, reserve=0, requested=1,
+            ))
+        elif (
+            usage.minute_max_requests is not None
+            and usage.minute_current_requests >= usage.minute_max_requests
+        ):
+            raise QuotaReserveReached("SportsGameOdds provider minute quota exhausted")
+        # DB operations may contend with another process: never hold up the
+        # Discord event loop while waiting for a PostgreSQL/SQLite lock.
+        granted = await asyncio.to_thread(self._shared_budget.reserve, *claims)
+        return granted[0]
+
     def _reserve_event_entities(self, count: int) -> None:
         """Reserve pessimistically before network dispatch; failures may bill."""
         if self._projected_entities is None or count < 1:
@@ -369,6 +418,7 @@ class SportsGameOddsClient:
             budget = await self._safe_event_limit(len(event_ids))
             if budget < len(event_ids):
                 raise QuotaReserveReached("Results lookup blocked by provider quota reserve")
+            await self._reserve_shared_event_entities(len(event_ids), partial=False)
             self._reserve_event_entities(len(event_ids))
             response = self._payload(await self._request(
                 "/events", params={
@@ -417,6 +467,7 @@ class SportsGameOddsClient:
 
         async with self._event_lock:
             safe_limit = await self._safe_event_limit(limit)
+            safe_limit = await self._reserve_shared_event_entities(safe_limit, partial=True)
             params["limit"] = safe_limit
             self._reserve_event_entities(safe_limit)
             payload = self._payload(await self._request("/events", params=params))

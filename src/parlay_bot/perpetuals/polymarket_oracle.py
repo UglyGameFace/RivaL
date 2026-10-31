@@ -198,7 +198,7 @@ class PolymarketOracleChallenger:
                    (slug,model_version,condition_id,issued_at,probability_up,
                     market_baseline,oracle_receipt_sha256,input_evidence_sha256)
                    VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                (notice.slug, "kalshi-polymarket-threshold-normal-shadow-v1",
+                (notice.slug, "polymarket-oracle-threshold-normal-shadow-v1",
                  notice.condition_id, stamp.isoformat(), normal_probability,
                  notice.up_ask/(notice.up_ask+notice.down_ask),
                  reference.source_receipt_sha256, digest),

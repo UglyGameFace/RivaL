@@ -122,7 +122,7 @@ def _indexed_news(payload: bytes, now: datetime) -> list[dict]:
                 "indexed_crypto_incident" if CRYPTO_INCIDENT.search(title)
                 and RELEVANT_REGULATION.search(title) else
                 "indexed_global_geopolitics" if GEO_EVENT.search(title) else
-                "indexed_crypto_policy" if RELEVANT_REGULATION.search(title) else
+                "indexed_crypto_news" if RELEVANT_REGULATION.search(title) else
                 "indexed_global_macro" if RELEVANT_MACRO.search(title) else None
             )
             if category is None:

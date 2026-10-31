@@ -9,8 +9,8 @@ from __future__ import annotations
 import argparse
 import asyncio
 import csv
-import itertools
 import io
+import itertools
 import json
 import math
 from datetime import UTC, date, datetime, timedelta

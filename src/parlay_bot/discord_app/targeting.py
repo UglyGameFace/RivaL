@@ -32,8 +32,8 @@ from parlay_bot.discord_app.price_targets import (
     price_result,
 )
 from parlay_bot.discord_app.signals import model_strength
-from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
+from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.model_competition import FAMILIES
 from parlay_bot.perpetuals.promotion import promoted_engine
 from parlay_bot.storage.hot import RelationalHotStore

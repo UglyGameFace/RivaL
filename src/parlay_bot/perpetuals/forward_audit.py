@@ -651,6 +651,11 @@ class ForwardAccuracyMonitor:
                             # New models issue alongside, not in place of,
                             # the existing live model. Same transaction and
                             # immutable target/venue identity as the incumbent.
+                            # Isolate optional model failures from the
+                            # authoritative incumbent insert on both backends.
+                            # PostgreSQL transactions must clear a failed
+                            # statement before they can commit incumbent work.
+                            conn.execute("SAVEPOINT rival_shadow_prediction")
                             try:
                                 ShadowModelCompetition(self.store).issue(
                                     conn, samples=samples, features=features,
@@ -660,8 +665,11 @@ class ForwardAccuracyMonitor:
                                     target_opened_at=target_open, issued_at=issued_at,
                                     incumbent_up=probability, baseline_up=baseline,
                                 )
-                            except (ValueError, ArithmeticError):
-                                _LOG.warning("RivaL optional shadow prediction invalid source=%s", venue)
+                            except Exception:  # noqa: BLE001 - optional challenger
+                                conn.execute("ROLLBACK TO SAVEPOINT rival_shadow_prediction")
+                                _LOG.exception("RivaL shadow model failed; incumbent preserved")
+                            finally:
+                                conn.execute("RELEASE SAVEPOINT rival_shadow_prediction")
                         issued += int(record.rowcount == 1)
                         metrics["duplicate_forecasts"] += int(record.rowcount == 0)
             except (ValueError, TypeError, ArithmeticError) as exc:

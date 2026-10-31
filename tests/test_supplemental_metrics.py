@@ -88,6 +88,25 @@ def test_checksum_verified_metrics_remain_offline_and_publishable(tmp_path, day)
     assert prepare(one.manifest_path).source == SOURCE
 
 
+def test_checksum_verified_metrics_unsorted_source_keeps_original_row_order():
+    original = metrics_csv(DAY_NEW)
+    lines = original.splitlines(keepends=True)
+    assert len(lines) == 3
+    shuffled = b"".join([lines[0], lines[2], lines[1]])
+    ordered = parse_daily_metrics(shuffled, asset="BTC", day=DAY_NEW)
+    assert len(ordered) == 2
+    assert [r["source_row_index"] for r in ordered] == [2, 1]
+    assert ordered[0]["source_labeled_at"] < ordered[1]["source_labeled_at"]
+
+
+def test_duplicate_historical_positioning_labels_rejected_even_if_unsorted():
+    original = metrics_csv(DAY_NEW)
+    lines = original.splitlines(keepends=True)
+    duplicated = b"".join([lines[0], lines[2], lines[1], lines[2]])
+    with pytest.raises(HistoryImportError, match="duplicate"):
+        parse_daily_metrics(duplicated, asset="BTC", day=DAY_NEW)
+
+
 def test_bad_symbol_or_negative_metrics_are_rejected():
     with pytest.raises(HistoryImportError):
         parse_daily_metrics(metrics_csv(DAY_NEW, wrong_symbol=True),

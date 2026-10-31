@@ -12,6 +12,7 @@ import threading
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.markets import ASSETS, HORIZONS
+from parlay_bot.research.boosted_portable import validate_portable
 from parlay_bot.perpetuals.model_checkpoints import FEATURE_CONTRACT, TARGET_CONTRACT
 from parlay_bot.storage.hot import RelationalHotStore
 
@@ -21,7 +22,7 @@ class CandidateValidationError(ValueError):
 
 
 def verified_candidate(payload: bytes) -> dict:
-    if len(payload) > 131072 or not payload:
+    if len(payload) > 2_200_000 or not payload:
         raise CandidateValidationError("oversized or missing candidate")
     try:
         source = json.loads(payload)
@@ -36,7 +37,8 @@ def verified_candidate(payload: bytes) -> dict:
         contract = str(identity["contract"])
         asset = contract.removesuffix("USDT")
         horizon = int(spec["horizon_minutes"])
-        weights = spec["weights"]
+        boosted = spec.get("model") == "portable-boosted-binary-v1"
+        weights = spec.get("weights")
         months = spec["source_sha256_by_month"]
         declared = str(source["model_sha256"])
         canonical = json.dumps(
@@ -46,6 +48,21 @@ def verified_candidate(payload: bytes) -> dict:
         validation = source["validation"]
         holdout = source["out_of_sample_test"]
         compatible = spec["model"] == "offline-live-contract-logistic-v3"
+        if boosted:
+            model = validate_portable(spec["portable_model"])
+            if (spec.get("family") != model["family"]
+                or spec.get("feature_contract") != FEATURE_CONTRACT
+                or spec.get("target_contract") != TARGET_CONTRACT
+                or identity.get("interval_minutes") != 5
+                or type(spec.get("training_count")) is not int
+                or spec["training_count"] < 300
+                or type(spec.get("native_parity_max_error")) not in (int, float)
+                or not 0 <= spec["native_parity_max_error"] <= 1e-6
+                or datetime.fromisoformat(spec["train_cutoff"]).utcoffset() is None
+                or not (datetime.fromisoformat(spec["train_cutoff"])
+                        < datetime.fromisoformat(spec["validation_cutoff"])
+                        < datetime.fromisoformat(spec["evaluation_completed_through"]))):
+                raise CandidateValidationError("incompatible native-parity tree artifact")
         if compatible and (
             spec.get("feature_contract") != FEATURE_CONTRACT
             or spec.get("target_contract") != TARGET_CONTRACT
@@ -58,13 +75,18 @@ def verified_candidate(payload: bytes) -> dict:
         ):
             raise CandidateValidationError("incompatible live research contract")
         if (
-            spec["model"] not in ("offline-logistic-multi-horizon-v1", "offline-live-contract-logistic-v3")
+            spec["model"] not in ("offline-logistic-multi-horizon-v1",
+                                  "offline-live-contract-logistic-v3",
+                                  "portable-boosted-binary-v1")
             or identity["venue"] != "binance"
             or identity["quote"] != "USDT"
             or asset not in ASSETS
-            or horizon not in (HORIZONS if compatible else (5, 15, 60, 240, 1440, 10080))
-            or not isinstance(weights, list) or len(weights) != (11 if compatible else 6)
-            or not all(type(w) in (float, int) and math.isfinite(w) for w in weights)
+            or horizon not in (HORIZONS if (compatible or boosted)
+                               else (5, 15, 60, 240, 1440, 10080))
+            or (not boosted and (
+                not isinstance(weights, list) or len(weights) != (11 if compatible else 6)
+                or not all(type(w) in (float, int) and math.isfinite(w) for w in weights)
+            ))
             or not isinstance(months, dict) or not months
             or any(
                 not isinstance(m, str) or len(m) != 7
@@ -97,7 +119,7 @@ def verified_candidate(payload: bytes) -> dict:
             and holdout["count"] >= 100
             and (validation.get("brier_gain") or 0) > 0.005
             and (holdout.get("brier_gain") or 0) > 0.005
-            and (not compatible or (
+            and (not (compatible or boosted) or (
                 type(validation.get("ece_10")) in (float, int)
                 and type(holdout.get("ece_10")) in (float, int)
                 and 0 <= validation["ece_10"] <= .10
@@ -116,7 +138,7 @@ def verified_candidate(payload: bytes) -> dict:
             "holdout_accuracy": holdout.get("accuracy"),
             "holdout_brier": holdout.get("brier"),
             "retrospective_screen": "passed" if passed else "insufficient",
-            "compatible": compatible,
+            "compatible": compatible or boosted,
             "model_spec": spec,
         }
     except (KeyError, TypeError, ValueError, OverflowError, AttributeError) as exc:
@@ -206,7 +228,7 @@ class ResearchCandidateRegistry:
 
     def import_document(self, file_id: str, payload: bytes, *, now=None) -> int:
         """Accept the original checksummed 42-model bundle or individual files."""
-        if len(payload) > 131072:
+        if len(payload) > 2_200_000:
             raise CandidateValidationError("oversized candidate document")
         try:
             source = json.loads(payload)
@@ -253,13 +275,56 @@ class ResearchCandidateRegistry:
             spec = json.loads(row["model_spec_json"])
             sha = hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             identity = spec["identity"]
-            if (sha == row["model_sha256"] and
+            if (spec.get("model") == "offline-live-contract-logistic-v3"
+                and sha == row["model_sha256"] and
                 (identity["venue"], identity["contract"], identity["quote"]) == (venue, contract, quote)
                 and datetime.fromisoformat(spec["evaluation_completed_through"]) < now
                 and datetime.fromisoformat(row["first_imported_at"]) <= now):
                 found.append({**spec, "model_sha256": sha, "retrospective_screen": "passed",
                               "imported_at": row["first_imported_at"]})
         return found[:2]
+
+    def compatible_boosters(self, *, venue, contract, quote, horizon, now):
+        """Source-exact native-parity tree research, never auto-approved.
+
+        An offline model for Binance futures cannot be reused for any other
+        exchange or prediction contract. No model is read from unverified bytes.
+        """
+        self.initialize()
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                "SELECT c.model_sha256,a.model_spec_json,c.first_imported_at FROM "
+                "rival_offline_candidates c JOIN rival_offline_model_artifacts a "
+                "ON a.model_sha256=c.model_sha256 WHERE a.compatible=1 "
+                "AND c.retrospective_screen='passed' AND c.horizon_minutes=? AND c.asset=? "
+                "ORDER BY c.first_imported_at DESC,c.model_sha256 LIMIT 60",
+                (horizon, contract.removesuffix("USDT")),
+            ).fetchall()
+        found = {}
+        for row in rows:
+            try:
+                spec = json.loads(row["model_spec_json"])
+                if spec.get("model") != "portable-boosted-binary-v1":
+                    continue
+                sha = hashlib.sha256(json.dumps(
+                    spec, sort_keys=True, separators=(",", ":"),
+                ).encode()).hexdigest()
+                if (sha != row["model_sha256"]
+                    or (spec["identity"]["venue"], spec["identity"]["contract"],
+                        spec["identity"]["quote"]) != (venue, contract, quote)
+                    or datetime.fromisoformat(spec["evaluation_completed_through"]) >= now
+                    or datetime.fromisoformat(row["first_imported_at"]) > now):
+                    continue
+                validate_portable(spec["portable_model"])
+                found.setdefault(spec["family"], {
+                    "model_sha256": sha, "family": spec["family"],
+                    "portable_model": spec["portable_model"],
+                    "imported_at": row["first_imported_at"],
+                    "evaluation_completed_through": spec["evaluation_completed_through"],
+                })
+            except (ValueError, TypeError, KeyError, OverflowError):
+                continue
+        return list(found.values())
 
     def compatible_seed(self, **scope):
         found = self.compatible_candidates(**scope)

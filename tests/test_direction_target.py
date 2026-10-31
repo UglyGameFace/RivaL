@@ -110,11 +110,12 @@ def test_targets_are_simple_and_truthful_without_fabricated_forecasts(tmp_path):
     store, market = market_with_prediction(tmp_path, now)
     try:
         ready = target_snapshot(market, asset="BTC", horizon_minutes=5, now=now)
-        assert ready.direction == "UP"
-        assert ready.price == 106
-        assert ready.probability == pytest.approx(.68)
-        assert "UP" in target_embed(ready).title
-        assert "not an approved trade" in ready.detail.lower()
+        assert ready.direction == "WAIT"
+        assert ready.status == "unqualified_model"
+        assert ready.price is None
+        assert ready.probability is None
+        assert "NO CALL" in ready.detail
+        assert "NO CALL" in target_embed(ready).title
         assert target_snapshot(
             market, asset="BTC", horizon_minutes=15, now=now,
         ).direction == "WAIT"
@@ -363,6 +364,7 @@ def test_automatic_dm_does_not_show_weak_51_percent_as_a_green_buy_signal():
         "BTC", 5, "DOWN", "Directional research. Not an approved trade.",
         venue="hyperliquid", probability=.62, price=81001,
         issued_at=now, ends_at=now + timedelta(minutes=4),
+        evidence_qualified=True,
     )
     confident = target_embed(strong)
     assert "DOWN WATCH" in confident.title

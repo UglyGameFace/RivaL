@@ -149,3 +149,30 @@ admission, independently calibrated contract-price path models, prospective
 first-hit accounting, and venue-specific after-cost governance.
 
 No extra model or user-facing alert system is introduced by this intake.
+
+## First-passage model research built on the existing verified archive
+
+The standard six-month `research.production` pipeline now also evaluates a
+**separate** `rival-path-research-v1` offline candidate family on qualified
+five-minute Binance futures bars. It reconstructs long and short hypothetical
+setups with fixed volatility-normalized TP1 (1σ), TP2 (2σ), and stop (1σ) for
+15- and 60-minute horizons. These are *not* venue-native contract payouts.
+
+Every outcome uses only future high/low bars *after* its reference close.
+A five-minute bar hitting an unresolved profit barrier and stop simultaneously
+has no provable hit order and is **excluded**. Future windows do not overlap;
+gaps are rejected. Momentum cohorts, baselines and smoothing are fitted only on
+chronological training history. The validation period and purged final test
+are scored separately with Brier, calibration and minimum-day gates; research
+candidate admission also requires six verified source months. Exclusion counts
+and original source digests remain in the production research report and
+verified Drive report when publishing is authorized.
+
+This is a measurable step toward Issue #151, not a new competing bot/model or a
+backdoor into its prediction menus. Neither an impressive backtest nor a
+passed offline candidate proves actual fills, real after-fee profits, live
+issuance-time prices, Polymarket/Kalshi settlement outcomes, or true
+prospective accuracy. The current live models, alert behavior and forward
+ledgers are left unchanged. A separately proven market-specific forward
+path/price model and live governance are still needed before user-facing
+entry/TP/stop recommendations may use these results.

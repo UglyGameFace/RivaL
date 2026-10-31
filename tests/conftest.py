@@ -1,6 +1,7 @@
 """Isolated backend coverage for learned-policy evidence and challenger gates."""
 import os
 import uuid
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import pytest
 
@@ -21,14 +22,19 @@ def learning_store(request, tmp_path):
         pytest.skip('PostgreSQL CI service required')
     import psycopg
     from psycopg import sql
-    from psycopg.conninfo import make_conninfo
 
     schema = 'learning_test_' + uuid.uuid4().hex
     with psycopg.connect(dsn, autocommit=True) as connection:
         connection.execute(sql.SQL('CREATE SCHEMA {}').format(sql.Identifier(schema)))
-        store = PostgresHotStore(make_conninfo(dsn, options=f'-c search_path={schema}'))
+        parts = urlsplit(dsn)
+        query = dict(parse_qsl(parts.query))
+        query['options'] = (query.get('options', '') + f' -c search_path={schema}').strip()
+        scoped_url = urlunsplit(parts._replace(query=urlencode(query)))
+        store = None
         try:
+            store = PostgresHotStore(scoped_url)
             yield store
         finally:
-            store.close()
+            if store is not None:
+                store.close()
             connection.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(schema)))

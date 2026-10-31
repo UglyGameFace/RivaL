@@ -55,7 +55,7 @@ BLS_HIGH_IMPACT = (
 )
 RELEVANT_REGULATION = re.compile(
     r"\b(crypto|cryptocurrency|digital asset|bitcoin|ethereum|ether|"
-    r"stablecoin|tokeniz\\w*|exchange.traded fund|etf)\b", re.IGNORECASE,
+    r"stablecoin|tokeniz\w*|exchange.traded fund|etf)\b", re.IGNORECASE,
 )
 RELEVANT_MACRO = re.compile(
     r"\b(fomc|federal open market|interest rate|monetary policy|"

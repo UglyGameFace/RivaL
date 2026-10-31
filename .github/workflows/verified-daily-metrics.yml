@@ -1,0 +1,65 @@
+name: Verified daily futures positioning history
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/verified-daily-metrics.yml"
+      - "src/parlay_bot/research/supplemental_metrics.py"
+  schedule:
+    # Independent, low-priority recovery of 5m positioning snapshots; never
+    # run on Discord's event loop or trigger paid market-data requests.
+    - cron: "35 9 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-verified-positioning-history
+  cancel-in-progress: false
+
+jobs:
+  positioning-history:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install verified research pipeline
+        run: python -m pip install -e ".[dev]"
+      - name: Bounded immutable historical positioning backfill
+        shell: bash
+        run: |
+          set -euo pipefail
+          args=()
+          if [[ -n "$RIVAL_DRIVE_ROOT_FOLDER_ID" && -n "$RIVAL_DRIVE_HISTORY_FOLDER_ID" && -n "$RIVAL_DRIVE_MANIFESTS_FOLDER_ID" && -n "$RIVAL_DRIVE_STAGING_FOLDER_ID" && -n "$RIVAL_DRIVE_MODELS_FOLDER_ID" && -n "$RIVAL_DRIVE_REPORTS_FOLDER_ID" && -n "$RIVAL_DRIVE_OAUTH_CLIENT_ID" && -n "$RIVAL_DRIVE_OAUTH_CLIENT_SECRET" && -n "$RIVAL_DRIVE_OAUTH_REFRESH_TOKEN" ]]; then
+            args+=(--publish)
+          else
+            echo "::warning::Private Drive authorization absent; positioning artifacts retained only by Actions."
+          fi
+          python -m parlay_bot.research.supplemental_metrics \
+            --days 215 --assets BTC ETH SOL XRP --max-new 100 \
+            --root data/research-history --report-dir data/research-reports "${args[@]}"
+      - name: Preserve incomplete or failed source evidence without false promotion
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: positioning-research-metrics
+          path: |
+            data/research-history/binance_um_daily_metrics/
+            data/research-reports/metrics-*.json
+          if-no-files-found: ignore
+          retention-days: 5

@@ -182,8 +182,13 @@ class LiveModelCheckpoints:
             labels = state["updates"] + state["historical_training_labels"]
             # Training labels are not unseen forward scores. Those are
             # recorded exclusively in perp_forward_audit before resolution.
-            return WalkForwardResult(max(0, labels-20), state["updates"], None, None,
-                                     None, False, tuple(state["weights"]))
+            return WalkForwardResult(
+                max(0, labels-20), state["updates"], None, None,
+                None, False, tuple(state["weights"]),
+                training_labels=labels,
+                historical_training_labels=state["historical_training_labels"],
+                historical_seed_sha256=state["historical_seed"],
+            )
 
     def summary(self):
         self.initialize()

@@ -1,6 +1,6 @@
-import pytest
-
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from parlay_bot.parlays.manual import quote_is_fresh, selected_slip
 

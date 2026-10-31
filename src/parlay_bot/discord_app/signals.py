@@ -23,8 +23,6 @@ from parlay_bot.discord_app.opportunities import (
 )
 from parlay_bot.perpetuals.event_intelligence import EventIntelligence
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
-from parlay_bot.perpetuals.model_competition import FAMILIES
-from parlay_bot.perpetuals.readiness import _source_identity
 from parlay_bot.perpetuals.forward_audit import (
     MODEL as FORWARD_MODEL,
 )
@@ -40,7 +38,9 @@ from parlay_bot.perpetuals.live_quotes import (
 )
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
+from parlay_bot.perpetuals.model_competition import FAMILIES
 from parlay_bot.perpetuals.promotion import multi_summary, promoted_engine
+from parlay_bot.perpetuals.readiness import _source_identity
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 
 _LOG = logging.getLogger(__name__)

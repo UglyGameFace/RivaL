@@ -18,6 +18,7 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.perpetuals.learning import _sigmoid
 from parlay_bot.perpetuals.model_checkpoints import canonical
 from parlay_bot.perpetuals.polymarket_learning import book_features
+from parlay_bot.research.contract_probability import threshold_up_probability
 
 MODEL = "polymarket-oracle-context-shadow-v2"
 FEATURE_CONTRACT = "book10-oracle-distance-volatility3-v2"
@@ -127,6 +128,17 @@ class PolymarketOracleChallenger:
                         updates INTEGER NOT NULL, trained_at TEXT NOT NULL,
                         PRIMARY KEY(asset,horizon,resolution_source,model_version)
                     );
+                    CREATE TABLE IF NOT EXISTS rival_poly_oracle_math_forward (
+                        slug TEXT NOT NULL,
+                        model_version TEXT NOT NULL,
+                        condition_id TEXT NOT NULL,
+                        issued_at TEXT NOT NULL,
+                        probability_up DOUBLE PRECISION NOT NULL,
+                        market_baseline DOUBLE PRECISION NOT NULL,
+                        oracle_receipt_sha256 TEXT NOT NULL,
+                        input_evidence_sha256 TEXT NOT NULL,
+                        PRIMARY KEY (slug,model_version)
+                    );
                     CREATE TABLE IF NOT EXISTS rival_poly_oracle_forward (
                         slug TEXT NOT NULL, model_version TEXT NOT NULL,
                         issued_at TEXT NOT NULL, weights_sha256 TEXT NOT NULL,
@@ -171,6 +183,25 @@ class PolymarketOracleChallenger:
                 (notice.slug, notice.condition_id, notice.asset, notice.horizon,
                  notice.resolution_source, notice.expires.isoformat(),
                  stamp.isoformat(), canonical(features), digest, evidence),
+            )
+            # Freeze an independent, source-anchored Gaussian threshold
+            # benchmark even before the v2 logistic model has enough labels.
+            # This hypothesis must be assessed against real terminal receipts,
+            # not presented as a validated or tradeable UP/DOWN call.
+            normal_probability = threshold_up_probability(
+                current_oracle_price=reference.price,
+                price_to_beat=notice.price_to_beat,
+                remaining_volatility_pct=reference.horizon_volatility_pct,
+            )
+            conn.execute(
+                """INSERT INTO rival_poly_oracle_math_forward
+                   (slug,model_version,condition_id,issued_at,probability_up,
+                    market_baseline,oracle_receipt_sha256,input_evidence_sha256)
+                   VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                (notice.slug, "kalshi-polymarket-threshold-normal-shadow-v1",
+                 notice.condition_id, stamp.isoformat(), normal_probability,
+                 notice.up_ask/(notice.up_ask+notice.down_ask),
+                 reference.source_receipt_sha256, digest),
             )
             zeros = canonical([0.] * (len(features) + 1))
             conn.execute(
@@ -253,6 +284,13 @@ class PolymarketOracleChallenger:
                    SUM(CASE WHEN learned_at IS NOT NULL THEN 1 ELSE 0 END) AS learned
                    FROM rival_poly_oracle_observations"""
             ).fetchone()
+            baseline = conn.execute(
+                """SELECT m.probability_up,m.market_baseline,o.direction
+                   FROM rival_poly_oracle_math_forward m
+                   JOIN rival_polymarket_ai_outcomes o
+                     ON o.slug=m.slug AND o.condition_id=m.condition_id
+                   WHERE m.issued_at<o.resolved_at"""
+            ).fetchall()
             forward = conn.execute(
                 """SELECT f.probability_up,f.market_baseline,o.direction
                    FROM rival_poly_oracle_forward f
@@ -263,6 +301,15 @@ class PolymarketOracleChallenger:
             ).fetchall()
         return {
             "model": MODEL, "observed_contracts": int(counts["observed"]),
+            "threshold_math_forward_resolved": len(baseline),
+            "threshold_math_brier": (
+                sum((r["probability_up"] - int(r["direction"] == "UP"))**2
+                    for r in baseline)/len(baseline) if baseline else None
+            ),
+            "threshold_market_brier": (
+                sum((r["market_baseline"] - int(r["direction"] == "UP"))**2
+                    for r in baseline)/len(baseline) if baseline else None
+            ),
             "learned_contracts": int(counts["learned"] or 0),
             "forward_resolved": len(forward),
             "model_brier": (

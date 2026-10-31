@@ -167,6 +167,29 @@ class ForwardAccuracyMonitor:
                         reference_opened_at
                     )
                 );
+                -- Per-issuance evidence, separate from old forecast rows.
+                -- Only new predictions can claim a known training lineage.
+                CREATE TABLE IF NOT EXISTS rival_forward_model_lineage (
+                    venue TEXT NOT NULL,
+                    contract TEXT NOT NULL,
+                    quote TEXT NOT NULL,
+                    horizon_minutes INTEGER NOT NULL,
+                    model_version TEXT NOT NULL,
+                    reference_opened_at TEXT NOT NULL,
+                    issued_at TEXT NOT NULL,
+                    weights_sha256 TEXT NOT NULL,
+                    feature_sha256 TEXT NOT NULL,
+                    training_labels INTEGER NOT NULL,
+                    historical_training_labels INTEGER NOT NULL,
+                    online_training_updates INTEGER NOT NULL,
+                    historical_seed_sha256 TEXT,
+                    PRIMARY KEY (
+                        venue,contract,quote,horizon_minutes,
+                        model_version,reference_opened_at
+                    )
+                );
+                CREATE INDEX IF NOT EXISTS idx_rival_forward_lineage_issued
+                    ON rival_forward_model_lineage (issued_at);
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_regime_method
                     ON perp_forward_regimes (method_version,regime);
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_pending
@@ -229,6 +252,55 @@ class ForwardAccuracyMonitor:
                          <= excluded.checked_at""",
                 (slot, stamp.isoformat(), *(metrics[x] for x in columns)),
             )
+
+    def learning_lineage_summary(
+        self, *, asset: str, horizon_minutes: int,
+        now: datetime | None = None,
+    ) -> dict:
+        """Show whether recent REAL forecasts used a verified historical seed.
+
+        Legacy forecasts have no lineage proof. Never interpret missing rows as
+        zero historical training, or training counts as unseen forward wins.
+        """
+        if horizon_minutes not in HORIZONS or asset not in ASSETS:
+            raise ValueError("unsupported asset or horizon")
+        self.initialize()
+        stamp = utc(now or datetime.now(UTC))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """SELECT f.issued_at, l.weights_sha256, l.feature_sha256,
+                          l.training_labels, l.historical_training_labels,
+                          l.online_training_updates, l.historical_seed_sha256
+                   FROM perp_forward_audit AS f
+                   LEFT JOIN rival_forward_model_lineage AS l
+                     ON l.venue=f.venue AND l.contract=f.contract
+                    AND l.quote=f.quote AND l.horizon_minutes=f.horizon_minutes
+                    AND l.model_version=f.model_version
+                    AND l.reference_opened_at=f.reference_opened_at
+                   WHERE f.asset=? AND f.horizon_minutes=?
+                     AND f.model_version=? AND f.issued_at>=?
+                     AND f.issued_at<=?
+                   ORDER BY f.issued_at DESC LIMIT 100""",
+                (asset, horizon_minutes, MODEL,
+                 (stamp - timedelta(days=7)).isoformat(), stamp.isoformat()),
+            ).fetchall()
+        proven = [r for r in rows if r["weights_sha256"] is not None]
+        latest = rows[0] if rows else None
+        latest_proven = latest is not None and latest["weights_sha256"] is not None
+        return {
+            "asset": asset, "horizon_minutes": horizon_minutes,
+            "window": "latest 100 forecasts within 7 days",
+            "forecasts": len(rows), "lineage_proven": len(proven),
+            "lineage_unknown": len(rows) - len(proven),
+            "historically_seeded": sum(bool(r["historical_seed_sha256"]) for r in proven),
+            "latest_historical_seed_sha256": latest["historical_seed_sha256"] if latest_proven else None,
+            "latest_historical_training_labels": latest["historical_training_labels"] if latest_proven else None,
+            "latest_online_training_updates": latest["online_training_updates"] if latest_proven else None,
+            "latest_training_labels": latest["training_labels"] if latest_proven else None,
+            "latest_weights_sha256": latest["weights_sha256"] if latest_proven else None,
+            "latest_lineage_verified": latest_proven,
+            "forward_accuracy_verified_by_lineage": False,
+        }
 
     def _settle_rows(self, now: datetime, pending) -> int:
         resolved = 0
@@ -487,6 +559,25 @@ class ForwardAccuracyMonitor:
                                  utc(last.opened_at).isoformat(), issued_at.isoformat(),
                                  REGIME_VERSION, regime, features[2],
                                  feature_hash, weight_hash),
+                            )
+                            # Immutable, source-matched audit of what the actual
+                            # forecast weights had learned at issuance. A six-month
+                            # archive does not qualify as a seed by mere existence.
+                            conn.execute(
+                                """INSERT INTO rival_forward_model_lineage (
+                                     venue,contract,quote,horizon_minutes,
+                                     model_version,reference_opened_at,issued_at,
+                                     weights_sha256,feature_sha256,training_labels,
+                                     historical_training_labels,online_training_updates,
+                                     historical_seed_sha256
+                                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                                (venue, contract, quote, horizon, MODEL,
+                                 utc(last.opened_at).isoformat(), issued_at.isoformat(),
+                                 weight_hash, feature_hash,
+                                 tested.training_labels,
+                                 tested.historical_training_labels,
+                                 tested.updates,
+                                 tested.historical_seed_sha256),
                             )
                         issued += int(record.rowcount == 1)
                         metrics["duplicate_forecasts"] += int(record.rowcount == 0)

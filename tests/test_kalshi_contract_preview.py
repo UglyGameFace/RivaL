@@ -4,7 +4,11 @@ from dataclasses import replace
 
 import pytest
 
-from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser, KalshiMarket
+from parlay_bot.discord_app.kalshi_public import (
+    KalshiCryptoBrowser,
+    KalshiMarket,
+    parse_markets,
+)
 from parlay_bot.perpetuals.kalshi_forward import KalshiForwardResearch
 from parlay_bot.storage.hot import SQLiteHotStore
 
@@ -96,3 +100,22 @@ async def test_browser_reads_own_kalshi_candidate_without_network(tmp_path):
     finally:
         await browser.aclose()
         store.close()
+
+def test_long_settlement_rules_are_not_truncated_before_hashing():
+    now = datetime(2026, 10, 30, tzinfo=UTC)
+    original = "Kalshi settlement clause " + "x" * 350 + " YES"
+    changed = "Kalshi settlement clause " + "x" * 350 + " NO"
+
+    def fetch(rules):
+        return parse_markets({"markets": [{
+            "ticker": "KXBTC15M-FUTURE", "title": "Bitcoin",
+            "status": "open",
+            "close_time": (now + timedelta(minutes=15)).isoformat(),
+            "yes_ask_dollars": "0.40",
+            "no_ask_dollars": "0.61",
+            "rules_primary": rules,
+        }]}, now=now, series_ticker="KXBTC15M")[0]
+
+    assert fetch(original).rules == original
+    assert fetch(changed).rules == changed
+    assert fetch(original).rules != fetch(changed).rules

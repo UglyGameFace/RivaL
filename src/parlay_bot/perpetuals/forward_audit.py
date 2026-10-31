@@ -12,13 +12,13 @@ import logging
 import math
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals.family_governance import FamilyPromotion
 from parlay_bot.perpetuals.features import (
     feature_vector,
     live_examples,
     persisted_candles,
 )
 from parlay_bot.perpetuals.fusion import utc
-from parlay_bot.perpetuals.family_governance import FamilyPromotion
 from parlay_bot.perpetuals.historical_challengers import HistoricalChallengers
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS, asset_for_contract

@@ -126,7 +126,7 @@ def test_unsupported_twap_payload_never_substitutes_unrelated_asset():
 
 
 def test_digital_math_is_monotonic_and_unverified_costs_are_unknown():
-    base = dict(price_to_beat=65000., remaining_volatility_pct=.8)
+    base = {"price_to_beat": 65000., "remaining_volatility_pct": .8}
     above = threshold_up_probability(current_oracle_price=65100., **base)
     at = threshold_up_probability(current_oracle_price=65000., **base)
     below = threshold_up_probability(current_oracle_price=64900., **base)

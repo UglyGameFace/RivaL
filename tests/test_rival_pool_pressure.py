@@ -70,6 +70,7 @@ async def test_background_signal_uses_matching_watch_gate_without_full_reports(
         signals, "_venue_proof",
         lambda *_a, **_kw: {
             "settled": 70, "hit_rate": 0.60, "model_beats_baseline": True,
+            "watch_evidence_passes": True, "watch_days": 6,
         },
     )
 

@@ -15,6 +15,57 @@ from parlay_bot.discord_app.cdna_public import CDNAPersonalReader, CDNAUnavailab
 _LOG = logging.getLogger(__name__)
 
 
+async def verify_cdna_owner(interaction: discord.Interaction, owner_id: int) -> bool:
+    """Both the private menu owner and the real application owner must match."""
+    if interaction.user.id != owner_id:
+        return False
+    try:
+        app = await asyncio.wait_for(interaction.client.application_info(), timeout=3)
+    except (TimeoutError, discord.HTTPException):
+        return False
+    return getattr(getattr(app, "owner", None), "id", None) == owner_id
+
+
+def cdna_coin_embed(
+    asset: str, results: tuple[tuple[str, str, str, object], ...],
+) -> discord.Embed:
+    """Present provider observations only, with no trading recommendation."""
+    embed = discord.Embed(
+        title=f"CDNA | {asset} candidate contracts",
+        description=(
+            "**Independent public CDNA market references only.** "
+            "No contract has been matched to a specific DraftKings listing, "
+            "strike, expiry, settlement rule, or actual entry price. "
+            "No UP/DOWN bet is approved."
+        ),
+        color=discord.Color.orange(),
+    )
+    for symbol, title, event, price in results[:2]:
+        quote = (
+            f"Bid {price.bid:.4f} • Ask {price.ask:.4f}\n"
+            f"Source updated: {discord.utils.format_dt(price.updated_at, style='R')}\n"
+            f"{'Recent source update' if price.fresh else 'STALE / NOT TRADING'}"
+            if price is not None else "No usable verified quote; do not infer a price."
+        )
+        embed.add_field(
+            name=symbol[:100],
+            value=f"{title[:110]}\nEvent: {event[:120]}\n{quote}",
+            inline=False,
+        )
+    if not results:
+        embed.add_field(
+            name="NO BET • No matching CDNA candidates",
+            value=(
+                "The public event search did not produce an exact coin match. "
+                "Other exchange forecasts remain separate research."
+            ), inline=False,
+        )
+    embed.set_footer(
+        text="Owner-only · on-demand · no AI/CDNA data sharing, orders, or verified DK price"
+    )
+    return embed
+
+
 class CDNAPersonalModal(discord.ui.Modal):
     def __init__(self, *, owner_id: int, reader: CDNAPersonalReader, search: bool) -> None:
         super().__init__(

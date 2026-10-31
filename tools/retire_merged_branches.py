@@ -42,7 +42,7 @@ class GitHubAPI:
             separator = "&" if "?" in path else "?"
             chunk = self.request("GET", f"{path}{separator}per_page=100&page={page}")
             if not isinstance(chunk, list):
-                raise ValueError(f"Expected a list from GitHub: {path}")
+                raise TypeError(f"Expected a list from GitHub: {path}")
             records.extend(chunk)
             if len(chunk) < 100:
                 return records

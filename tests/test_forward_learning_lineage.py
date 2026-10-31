@@ -65,7 +65,8 @@ def test_forward_learning_lineage_tracks_real_seed_and_unknown_legacy(tmp_path):
 @pytest.mark.asyncio
 async def test_results_page_shows_actual_training_provenance_without_claiming_accuracy(tmp_path):
     from parlay_bot.discord_app.research_dashboard import (
-        ResearchDashboard, _compact_embed,
+        ResearchDashboard,
+        _compact_embed,
     )
 
     store = SQLiteHotStore(tmp_path / "results-lineage.sqlite")

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import itertools
 import json
 import logging
 import math
@@ -42,7 +43,7 @@ class TWAPTick:
 
 def _ms(value: object) -> datetime:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        raise ValueError("missing source timestamp")
+        raise TypeError("missing source timestamp")
     if not math.isfinite(value) or value <= 0:
         raise ValueError("invalid PolyBolt source timestamp")
     return datetime.fromtimestamp(value/1000, UTC)
@@ -97,7 +98,7 @@ class PolyBoltTWAP:
             raise ValueError("receipt clock must be aware")
         received = received.astimezone(UTC)
         if not isinstance(message, dict):
-            raise ValueError("invalid PolyBolt frame")
+            raise TypeError("invalid PolyBolt frame")
         operation = message.get("op")
         if operation == "authed":
             self._authenticated = True
@@ -214,7 +215,7 @@ class PolyBoltTWAP:
             return None
         squared = [
             math.log(b.price/a.price)**2
-            for a, b in zip(sampled, sampled[1:])
+            for a, b in itertools.pairwise(sampled)
         ]
         mean_step = sum(
             (b.observed_at-a.observed_at).total_seconds()

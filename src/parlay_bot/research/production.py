@@ -21,6 +21,7 @@ from parlay_bot.research.batch import _already_present, collect, complete_months
 from parlay_bot.research.free_history import ASSETS, INTERVALS, LEAGUES, HistoryImportError
 from parlay_bot.research.learning import evaluate_directory
 from parlay_bot.research.live_training import evaluate_directory as evaluate_live_contracts
+from parlay_bot.research.path_research import evaluate_directory as evaluate_first_passage
 from parlay_bot.research.publish import _artifact, _drive, prepare, publish
 
 DEFAULT_INTERVALS = ("1m", "5m", "15m", "1h", "4h", "1d")
@@ -161,6 +162,13 @@ async def run_pipeline(
     research["compatible_evaluations"] = evaluate_live_contracts(
         root, qualified_streams=valid & expected_streams,
     )
+    # Evaluate target-before-stop path distributions on the SAME audited
+    # five-minute futures manifests. These are separate research-only
+    # scenario models, never interchangeable with live binary labels or
+    # Polymarket/Kalshi contracts.
+    research["path_research"] = evaluate_first_passage(
+        root, qualified_streams=valid & expected_streams,
+    )
     # Report crypto completeness independently. Optional football history
     # must never make verified six-month crypto learning look unavailable.
     crypto_complete = (
@@ -181,6 +189,11 @@ async def run_pipeline(
         "acquisition": acquisition, "quality": quality, "research": research,
         "crypto_sources_complete": crypto_complete,
         "compatible_candidate_count": len(research["compatible_evaluations"]),
+        "path_research_evaluated": len(research["path_research"]["evaluations"]),
+        "path_research_candidates_passed": sum(
+            bool(item["research_candidate_passed"])
+            for item in research["path_research"]["evaluations"]
+        ),
         "compatible_candidate_passed": sum(
             bool(item["research_candidate_passed"])
             for item in research["compatible_evaluations"]
@@ -263,6 +276,8 @@ def main(argv: list[str] | None = None) -> int:
         "qualified": report["all_requested_data_complete"],
         "evaluation_count": len(report["research"]["evaluations"]),
         "compatible_candidate_count": report["compatible_candidate_count"],
+        "path_research_evaluated": report["path_research_evaluated"],
+        "path_research_candidates_passed": report["path_research_candidates_passed"],
         "compatible_candidate_passed": report["compatible_candidate_passed"],
         "crypto_sources_complete": report["crypto_sources_complete"],
         "warehouse": report["warehouse_status"],

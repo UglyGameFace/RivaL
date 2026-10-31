@@ -170,6 +170,21 @@ def test_exact_source_boosted_artifact_issues_immutable_future_paper_forecast(
     assert not governance["real_fills_verified"]
 
 
+def test_xgboost_native_float32_split_boundary():
+    # XGBoost converts 1/3 to float32 before comparing split conditions.
+    # Float64 comparison would silently choose the other branch.
+    model = {
+        "family": "xgboost", "kind": "branch", "base_margin": 0.0,
+        "sigmoid_scale": 1.0,
+        "trees": [{
+            "feature": 0, "threshold": 0.333333343, "op": "lt",
+            "missing_left": False,
+            "left": {"value": 1.0}, "right": {"value": -1.0},
+        }],
+    }
+    assert predict_portable(model, (1/3,) + (0.,)*9) < .5
+
+
 def test_catboost_oblivious_leaves_have_explicit_direction():
     model = {
         "family": "catboost", "kind": "oblivious",

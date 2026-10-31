@@ -106,7 +106,6 @@ class ForwardAccuracyMonitor:
             self.market.historical_challengers.initialize()
             self._initialize_schema()
             ShadowModelCompetition(self.store).initialize()
-            ProspectivePathLedger(self.store).initialize()
             self.market._forward_schema_ready = True
 
     def _initialize_schema(self) -> None:
@@ -501,6 +500,16 @@ class ForwardAccuracyMonitor:
         if stamp > datetime.now(UTC) + timedelta(seconds=5):
             raise ValueError("prospective forecast time cannot be in the future")
         self.initialize()
+        # Optional research migrations must never prevent incumbent forecasts
+        # from running. Retry at the next background cycle after DB recovery.
+        path_ready = bool(getattr(self.market, "_path_schema_ready", False))
+        if not path_ready:
+            try:
+                ProspectivePathLedger(self.store).initialize()
+                self.market._path_schema_ready = True
+                path_ready = True
+            except Exception:  # noqa: BLE001 - optional schema must fail open for incumbent
+                _LOG.exception("RivaL optional path research schema unavailable")
         settled = self._settle(stamp)
         # Causal shadow forecasts settle only against already-verified matching
         # incumbent outcomes. No new provider calls, Discord messages or fills.
@@ -508,12 +517,13 @@ class ForwardAccuracyMonitor:
             ShadowModelCompetition(self.store).settle(now=stamp)
         except Exception:  # noqa: BLE001 - shadow research never blocks the live learner
             _LOG.exception("RivaL multi-model shadow settlement unavailable")
-        try:
-            path_results = ProspectivePathLedger(self.store).settle(now=stamp)
-            if any(path_results.values()):
-                _LOG.info("RivaL path outcomes verified %s", path_results)
-        except Exception:  # noqa: BLE001 - research cannot block forecasts
-            _LOG.exception("RivaL source-matched path settlement unavailable")
+        if path_ready:
+            try:
+                path_results = ProspectivePathLedger(self.store).settle(now=stamp)
+                if any(path_results.values()):
+                    _LOG.info("RivaL path outcomes verified %s", path_results)
+            except Exception:  # noqa: BLE001 - research cannot block forecasts
+                _LOG.exception("RivaL source-matched path settlement unavailable")
         if stamp.minute < 5:
             try:
                 reconciled = self.reconcile_stale_settlements(stamp)
@@ -678,7 +688,7 @@ class ForwardAccuracyMonitor:
                                 _LOG.exception("RivaL shadow model failed; incumbent preserved")
                             finally:
                                 conn.execute("RELEASE SAVEPOINT rival_shadow_prediction")
-                            if horizon in (15, 60):
+                            if path_ready and horizon in (15, 60):
                                 # These are independent paper outcomes, not
                                 # trading signals; a malformed research model
                                 # cannot roll back the incumbent transaction.

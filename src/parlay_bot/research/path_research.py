@@ -177,7 +177,13 @@ def evaluate_path(manifests: list[Path], *, horizon: int, side: str,
     }
     validation_scores = _holdout_scores(validation, cohort=cohort, baseline=base)
     test_scores = _holdout_scores(test, cohort=cohort, baseline=base)
+    # Removing unknown first-hit orders is a form of outcome-dependent
+    # selection. Report its frequency and refuse offline qualification when
+    # the omitted fraction is material, rather than claiming universal skill.
+    ambiguous = discarded["ambiguous_same_bar"]
+    ambiguity_fraction = ambiguous / (ambiguous + len(samples))
     passed = (
+        ambiguity_fraction <= 0.05
         len(provenance["months"]) >= 6
         and all(
             item["brier_gain"] > MIN_GAIN
@@ -210,6 +216,8 @@ def evaluate_path(manifests: list[Path], *, horizon: int, side: str,
         "sample_counts": {"train": len(train), "validation": len(validation),
                           "test": len(test)},
         "rejections": discarded,
+        "ambiguous_path_fraction": round(ambiguity_fraction, 6),
+        "probabilities_conditioned_on_unambiguous_paths": True,
         "all_unresolved_same_bar_paths_excluded": True,
         "research_candidate_passed": passed,
         "retrospective_only": True,

@@ -99,6 +99,13 @@ def test_selected_horizon_not_starved_by_40_newer_other_horizon_rows(
         targeting, "promoted_engine",
         lambda *_a, **_kw: engine,
     )
+    # Test the horizon selection, not the separate prospective skill gate.
+    monkeypatch.setattr(
+        ForwardAccuracyMonitor, "venue_summary",
+        lambda *_a, **_kw: {
+            "model_beats_baseline": True, "watch_evidence_passes": True,
+        },
+    )
     try:
         reader = (
             opportunities.recent_multi_watches

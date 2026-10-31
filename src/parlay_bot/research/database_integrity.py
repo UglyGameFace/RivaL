@@ -6,6 +6,8 @@ private database connection string and individual user records stay private.
 """
 from __future__ import annotations
 
+import json
+
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.storage.hot import RelationalHotStore
@@ -36,6 +38,73 @@ def sports_settlement_exclusions(store: RelationalHotStore) -> dict[str, int]:
         ).fetchall()
     return {str(row["reason"]): int(row["n"]) for row in rows}
 
+
+
+def sports_runtime_snapshot(
+    store: RelationalHotStore, *, now: datetime | None = None,
+) -> dict:
+    """Read actual hosted final/result/forecast progress, never infer a win.
+
+    The persisted last-cycle record is diagnostic, NOT settlement proof.
+    Count finalized events and scored forecasts from immutable SQL ledgers.
+    """
+    stamp = now or datetime.now(UTC)
+    if stamp.utcoffset() is None:
+        raise ValueError("Runtime evidence needs a timezone-aware clock")
+    with store.connect() as conn:
+        finals = conn.execute(
+            """SELECT COUNT(*) AS n,MAX(first_observed_at) AS latest
+               FROM rival_sport_results"""
+        ).fetchone()
+        scored = conn.execute(
+            """SELECT COUNT(*) AS n,MAX(settled_at) AS latest
+               FROM rival_sport_forecasts WHERE settled_at IS NOT NULL"""
+        ).fetchone()
+        pending = conn.execute(
+            """SELECT COUNT(*) AS n FROM fixtures AS f
+               LEFT JOIN rival_sport_results AS r
+                 ON r.event_id=f.fixture_id
+               WHERE f.provider='sportsgameodds'
+                 AND f.sport_id IN ('SOCCER','BASKETBALL')
+                 AND f.start_time IS NOT NULL AND f.start_time<?
+                 AND r.event_id IS NULL""",
+            (stamp.astimezone(UTC).isoformat(),),
+        ).fetchone()
+        unresolved = conn.execute(
+            """SELECT COUNT(*) AS n FROM rival_sport_forecasts AS f
+               JOIN rival_sport_results AS r ON r.event_id=f.event_id
+               WHERE f.settled_at IS NULL
+                 AND NOT EXISTS (
+                   SELECT 1 FROM rival_sport_settlement_exclusions AS e
+                   WHERE e.event_id=f.event_id
+                 )"""
+        ).fetchone()
+        excluded = conn.execute(
+            """SELECT reason,COUNT(*) AS n FROM rival_sport_settlement_exclusions
+               GROUP BY reason"""
+        ).fetchall()
+        cycle = conn.execute(
+            """SELECT state_value FROM runtime_state
+               WHERE state_key='rival:sports-results:last-cycle'"""
+        ).fetchone()
+    last_cycle = None
+    if cycle is not None:
+        try:
+            loaded = json.loads(cycle["state_value"])
+            if isinstance(loaded, dict) and isinstance(loaded.get("at"), str):
+                last_cycle = loaded
+        except (TypeError, ValueError):
+            pass
+    return {
+        "final_events": int(finals["n"]),
+        "last_final_at": finals["latest"],
+        "scored_forecasts": int(scored["n"]),
+        "last_scored_at": scored["latest"],
+        "unsettled_finalized": int(unresolved["n"]),
+        "exclusions": {str(r["reason"]): int(r["n"]) for r in excluded},
+        "started_missing_results": int(pending["n"]),
+        "last_cycle": last_cycle,
+    }
 
 def perpetual_evidence_backlog(
     store: RelationalHotStore, *, now: datetime | None = None,

@@ -68,6 +68,17 @@ jobs:
       - name: Report missing supplemental provider proof
         if: steps.supplemental_provider.outcome != 'success'
         run: echo "::warning::Supplementary Binance source access/integrity not verified in this PR."
+      - name: Probe official positioning archive and June time-label normalization
+        id: positioning_provider
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          python -m parlay_bot.research.supplemental_metrics \
+            --days 45 --assets BTC --max-new 1 \
+            --root public-evidence --report-dir public-evidence/reports
+      - name: Report missing positioning archive proof
+        if: steps.positioning_provider.outcome != 'success'
+        run: echo "::warning::Positioning history source access/integrity is not verified in this PR."
       - name: Mark external access as unverified if unavailable
         if: steps.provider.outcome != 'success'
         run: echo "::warning::Official provider access or full-month validation failed; do not claim real-source proof."
@@ -87,7 +98,9 @@ jobs:
             public-evidence/binance_um_mark_klines/
             public-evidence/binance_um_index_klines/
             public-evidence/binance_um_premium_klines/
+            public-evidence/binance_um_daily_metrics/
             public-evidence/reports/supplemental-*.json
+            public-evidence/reports/metrics-*.json
           if-no-files-found: ignore
           retention-days: 7
       - uses: actions/upload-artifact@v4

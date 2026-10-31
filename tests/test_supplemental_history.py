@@ -89,6 +89,32 @@ def test_official_binance_supplements_are_verified_and_isolated(tmp_path, kind):
     assert _resume_verified(tmp_path, result.source, result.data_path.name.split("--")[0])
 
 
+def test_additive_one_minute_history_uses_original_checked_source(tmp_path):
+    url = "https://data.binance.vision/data/futures/um/monthly/klines/BTCUSDT/1m/BTCUSDT-1m-2024-01.zip"
+    output = io.StringIO()
+    writer = csv.writer(output)
+    for i in range(2):
+        opened = T0 + i * 60_000
+        writer.writerow([opened, 100, 110, 90, 101, 5, opened + 59_999,
+                         800, 2, 1, 100, 0])
+    with mock_archive(url, output.getvalue().encode()) as client:
+        result = collect_supplemental(
+            client, root=tmp_path,
+            jobs=[("binance_1m", "BTC", "2024-01")], max_new=1,
+        )
+        again = collect_supplemental(
+            client, root=tmp_path,
+            jobs=[("binance_1m", "BTC", "2024-01")], max_new=1,
+        )
+    assert result["downloaded"] == 1 and result["rejected"] == 0
+    assert again["already_verified"] == 1 and again["downloaded"] == 0
+    manifest = next((tmp_path / "binance_um_klines").glob("*.manifest.json"))
+    meta = json.loads(manifest.read_text())
+    assert meta["interval_minutes"] == 1
+    assert meta["checksum_verified"] and not meta["prospective_forecast"]
+    assert prepare(manifest).source == "binance_um_klines"
+
+
 @pytest.mark.parametrize("kind", ["funding", "mark", "index", "premium"])
 def test_binance_source_checksum_tamper_rejected(tmp_path, kind):
     url = binance_supplement_url(asset="BTC", kind=kind, month=MONTH)

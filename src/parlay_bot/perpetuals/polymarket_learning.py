@@ -159,23 +159,54 @@ class PolymarketOutcomeLearner:
                 "training_labels": updates, "weights_sha256": weight_sha}
 
     def summary(self, *, asset=None, horizon=None):
+        """Recent *issued* model calls; lifetime training is a separate count.
+
+        A contract resolved this week is not a seven-day prediction if the
+        forecast was issued months ago. Invalid or incomplete receipts must
+        never be counted as correct predictions or zero Brier error.
+        """
         self.initialize()
-        where, params = (" WHERE asset=? AND horizon=?", (asset,horizon)) if asset is not None else ("", ())
+        clock = datetime.now(UTC)
+        since = (clock - timedelta(days=7)).isoformat()
+        where, params = (
+            (" WHERE asset=? AND horizon=?", (asset, horizon))
+            if asset is not None else ("", ())
+        )
         with self.store.connect() as conn:
             counts = conn.execute(
-                "SELECT COUNT(*) AS observed,SUM(CASE WHEN learned_at IS NOT NULL THEN 1 ELSE 0 END) AS learned "
-                "FROM rival_polymarket_observations"+where, params,
+                "SELECT COUNT(*) AS observed, "
+                "SUM(CASE WHEN learned_at IS NOT NULL THEN 1 ELSE 0 END) AS learned "
+                "FROM rival_polymarket_observations" + where, params,
             ).fetchone()
             rows = conn.execute(
-                "SELECT f.probability_up,f.market_baseline,o.direction FROM rival_polymarket_model_forward f "
+                "SELECT f.probability_up,f.market_baseline,o.direction "
+                "FROM rival_polymarket_model_forward f "
                 "JOIN rival_polymarket_ai_outcomes o ON o.slug=f.slug "
                 "JOIN rival_polymarket_observations v ON v.slug=f.slug "
-                "WHERE f.issued_at<o.resolved_at AND o.observed_at>=?" +
-                (" AND v.asset=? AND v.horizon=?" if asset is not None else ""),
-                ((datetime.now(UTC)-timedelta(days=30)).isoformat(), *params),
+                "WHERE f.model_version=? AND f.issued_at>=? AND f.issued_at<=? "
+                "AND f.issued_at<v.expires_at AND f.issued_at<o.resolved_at "
+                "AND o.resolved_at>=v.expires_at "
+                "AND o.observed_at>=v.expires_at AND o.observed_at<=? "
+                "AND o.direction IN ('UP','DOWN') "
+                "AND f.probability_up BETWEEN 0 AND 1 "
+                "AND f.market_baseline BETWEEN 0 AND 1 "
+                + ("AND v.asset=? AND v.horizon=?" if asset is not None else ""),
+                (MODEL, since, clock.isoformat(), clock.isoformat(), *params),
             ).fetchall()
-        return {"observed_contracts": int(counts["observed"]), "learned_contracts": int(counts["learned"] or 0),
-                "settled_forward_contracts": len(rows), "model": MODEL,
-                "forward_brier": sum((r["probability_up"]-int(r["direction"] == 'UP'))**2 for r in rows)/len(rows) if rows else None,
-                "market_baseline_brier": sum((r["market_baseline"]-int(r["direction"] == 'UP'))**2 for r in rows)/len(rows) if rows else None,
-                "verified_trading_edge": False}
+        count = len(rows)
+        return {
+            "observed_contracts": int(counts["observed"]),
+            "learned_contracts": int(counts["learned"] or 0),
+            "settled_forward_contracts": count,
+            "score_window_days": 7,
+            "model": MODEL,
+            "forward_brier": (
+                sum((r["probability_up"]-int(r["direction"] == "UP"))**2
+                    for r in rows)/count if count else None
+            ),
+            "market_baseline_brier": (
+                sum((r["market_baseline"]-int(r["direction"] == "UP"))**2
+                    for r in rows)/count if count else None
+            ),
+            "verified_trading_edge": False,
+        }

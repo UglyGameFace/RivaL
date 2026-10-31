@@ -92,9 +92,17 @@ def test_model_competition_scores_only_verified_incumbent_future_outcomes(
                model_brier=?,baseline_brier=? WHERE venue=?""",
             (1,(now+timedelta(minutes=6)).isoformat(),.16,.3025,"hyperliquid"),
         )
-    assert comp.settle(now=now+timedelta(minutes=8)) == 2
+    # Even a broken legacy incumbent marked settled before the target
+    # candle closes must never validate a challenger.
     assert comp.settle(now=now+timedelta(minutes=8)) == 0
-    result = comp.report(asset="BTC",horizon=5,now=now+timedelta(minutes=9))
+    with hot.connect() as conn:
+        conn.execute(
+            "UPDATE perp_forward_audit SET settled_at=? WHERE venue=?",
+            ((now+timedelta(minutes=11)).isoformat(), "hyperliquid"),
+        )
+    assert comp.settle(now=now+timedelta(minutes=12)) == 2
+    assert comp.settle(now=now+timedelta(minutes=12)) == 0
+    result = comp.report(asset="BTC",horizon=5,now=now+timedelta(minutes=13))
     assert all(x["targets"] == 1 and not x["qualified_research"]
                and not x["live_approved"] for x in result.values())
     with hot.connect() as conn:
@@ -105,3 +113,49 @@ def test_model_competition_scores_only_verified_incumbent_future_outcomes(
         assert len(rows) == 2
         assert all(x["settled_at"] and x["model_brier"] is not None
                    and len(x["training_sha256"]) == 64 for x in rows)
+
+
+def test_opposite_exchange_outcomes_cannot_subsidize_bad_model(learning_store):
+    """100+ targets on a good venue never prove skill on a bad one."""
+    hot = learning_store
+    market = PerpetualMarketStore(hot)
+    ForwardAccuracyMonitor(market).initialize()
+    comp = ShadowModelCompetition(hot)
+    now = datetime(2026, 10, 30, 12, tzinfo=UTC)
+    with hot.connect() as conn:
+        for day in range(7):
+            for index in range(16):
+                target = now - timedelta(days=7-day) + timedelta(minutes=5*index)
+                issued = target-timedelta(minutes=1)
+                settled = target+timedelta(minutes=6)
+                for venue,contract,quote,y in (
+                    ("hyperliquid","BTC","USDC",1),
+                    ("okx","BTC-USDT-SWAP","USDT",0),
+                ):
+                    p = 0.95
+                    for family in FAMILIES:
+                        conn.execute(
+                            """INSERT INTO rival_model_shadow_forecasts (
+                                venue,contract,quote,asset,horizon_minutes,family,
+                                reference_opened_at,issued_at,target_opened_at,
+                                probability_up,incumbent_up,baseline_up,
+                                training_count,training_sha256,
+                                settled_at,outcome_up,model_brier,
+                                incumbent_brier,baseline_brier)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                            (venue,contract,quote,"BTC",5,family,
+                             (issued-timedelta(minutes=4)).isoformat(),
+                             issued.isoformat(),target.isoformat(),p,.5,.5,
+                             250,"a"*64,settled.isoformat(),y,
+                             (p-y)**2,.25,.25),
+                        )
+    report = comp.report(asset="BTC",horizon=5,now=now)
+    for item in report.values():
+        assert item["selected_source"] == "hyperliquid/BTC/USDC"
+        assert item["targets"] == 112
+        assert item["days"] == 7
+        assert item["qualified_research"] is True
+        assert item["live_approved"] is False
+        assert item["qualified_sources"] == ["hyperliquid/BTC/USDC"]
+        assert not item["by_venue"]["okx/BTC-USDT-SWAP/USDT"]["qualified_research"]
+        assert item["by_regime"]["unknown"]["high_confidence_misses"] == 112

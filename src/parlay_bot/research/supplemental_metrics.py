@@ -204,15 +204,42 @@ async def _publish_metrics(root: Path, report_path: Path) -> dict:
 
     drive = _drive(Settings())
     try:
-        transferred = []
-        for path in sorted((root / SOURCE).glob("*.manifest.json")):
-            transferred.append(await publish(drive, prepare(path)))
+        # Durable checked-upload journal is restored with the validated cache.
+        # Record each entry ONLY after the existing publisher verifies the
+        # actual Drive download, otherwise the retry remains pending.
+        folder = root / SOURCE
+        journal = folder / "_published_restore_journal.json"
+        try:
+            old_entries = json.loads(journal.read_text(encoding="utf-8"))
+            if not isinstance(old_entries, dict):
+                old_entries = {}
+        except (OSError, ValueError):
+            old_entries = {}
+        completed = 0
+        for path in sorted(folder.glob("*.manifest.json")):
+            digest = _sha(path.read_bytes())
+            # Journal entries are just retry optimization, NOT current-time
+            # proof of Drive access or a substitute for a checksum validation.
+            if isinstance(old_entries.get(digest), dict):
+                continue
+            receipt = await publish(drive, prepare(path))
+            old_entries[digest] = {
+                "batch_id": receipt["batch_id"],
+                "history_id": receipt["history_id"],
+                "manifest_id": receipt["manifest_id"],
+                "verified_at": datetime.now(UTC).isoformat(),
+            }
+            temp = journal.with_suffix(".tmp")
+            temp.write_text(json.dumps(old_entries, sort_keys=True) + "\n", encoding="utf-8")
+            temp.replace(journal)
+            completed += 1
         art = _artifact(report_path, 1)
         result = await drive.ensure_research_output(
             artifact=art, batch_id="metrics-" + art.sha256[:24], kind="report",
         )
-        return {"restored_partitions": len(transferred), "report_id": result.file_id,
-                "downloaded_bytes_verified": True}
+        return {"new_partitions_restored": completed, "previously_verified_partitions": len(old_entries) - completed,
+                "report_id": result.file_id, "new_download_bytes_verified": True,
+                "historical_journal_not_live_drive_recheck": True}
     finally:
         await drive.aclose()
 

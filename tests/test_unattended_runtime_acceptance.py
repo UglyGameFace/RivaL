@@ -123,7 +123,8 @@ def _run_acceptance(store, now):
 
 def test_causal_issue_quote_settlement_comparison_and_restart_is_idempotent(tmp_path):
     path = tmp_path/"restart.sqlite"
-    now = datetime.now(UTC).replace(second=0,microsecond=0)-timedelta(minutes=20)
+    wall = datetime.now(UTC).replace(second=0,microsecond=0)
+    now = wall.replace(minute=wall.minute//5*5)-timedelta(minutes=20)
     first = SQLiteHotStore(path)
     try:
         reference, issued, resolved = _run_acceptance(first,now)

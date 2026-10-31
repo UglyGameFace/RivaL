@@ -20,6 +20,9 @@ async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) ->
     home = _home(bot)
     market = PerpetualMarketStore(bot.store)
     market.initialize()
+    from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+
+    ForwardAccuracyMonitor(market).initialize()
     home.market = market
     home.collector = CurrentBoardCollector(client=None, store=bot.store)
     home.venues = ("hyperliquid",)
@@ -31,7 +34,7 @@ async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) ->
         assert len(fields) == 4
         health = fields["📡 System status"]
         assert "Feeds: **0/1** fresh" in health
-        assert "Forecast cycle: **no readable cycle record**" in health
+        assert "Forecast cycle: **no cycle recorded**" in health
 
         from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 
@@ -40,7 +43,7 @@ async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) ->
         after = _fields(recorded)["📡 System status"]
         assert "Forecast check:" in after
         assert "**0** issued" in after
-        assert "no readable cycle record" not in after
+        assert "no cycle recorded" not in after
     finally:
         home.stop()
         await bot.zip_resolver.aclose()

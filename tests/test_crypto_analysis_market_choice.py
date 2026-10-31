@@ -313,7 +313,8 @@ async def test_exchange_performance_one_page_shows_sample_and_learning(
         assert "99" in body and "not measured" in body
         assert "14" in body and "Historical seed used" in body
         assert "Issued **4**" in body and "settled **7**" in body
-        assert "Offline challenger serving: **no**" in body
+        assert "Historical model eligibility unavailable" in body
+        assert "Current learning benefit: unavailable" in body
         assert "practice usdt" not in body.lower()
     finally:
         home.stop()

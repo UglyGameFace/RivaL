@@ -303,6 +303,66 @@ class ForwardAccuracyMonitor:
             "forward_accuracy_verified_by_lineage": False,
         }
 
+    def active_learning_evidence(self, *, asset, horizon_minutes, now=None):
+        """Score current adaptive policies, not training counts or older seeds.
+
+        Each venue's latest issued seed identifies its current policy. Weights
+        evolve online, so this does not claim a single frozen weight snapshot
+        improved. Multiple exchanges on one aligned target count as one event.
+        """
+        from parlay_bot.perpetuals.governance import score_paired_forward
+
+        if asset not in ASSETS or horizon_minutes not in HORIZONS:
+            raise ValueError("unsupported asset or horizon")
+        self.initialize()
+        stamp = utc(now or datetime.now(UTC))
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """WITH current_policy AS (
+                    SELECT venue,contract,quote,historical_seed_sha256,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY venue,contract,quote ORDER BY issued_at DESC
+                           ) AS position
+                    FROM rival_forward_model_lineage
+                    WHERE model_version=? AND horizon_minutes=? AND issued_at<=? AND issued_at>=?
+                )
+                SELECT f.target_opened_at, AVG(f.model_brier) AS model_brier,
+                       AVG(f.baseline_brier) AS baseline_brier, COUNT(*) AS forecasts
+                FROM perp_forward_audit f
+                JOIN rival_forward_model_lineage l ON l.venue=f.venue
+                  AND l.contract=f.contract AND l.quote=f.quote
+                  AND l.horizon_minutes=f.horizon_minutes AND l.model_version=f.model_version
+                  AND l.reference_opened_at=f.reference_opened_at AND l.issued_at=f.issued_at
+                JOIN current_policy c ON c.venue=f.venue AND c.contract=f.contract
+                  AND c.quote=f.quote AND c.position=1
+                  AND COALESCE(c.historical_seed_sha256,'')=COALESCE(l.historical_seed_sha256,'')
+                WHERE f.asset=? AND f.horizon_minutes=? AND f.model_version=?
+                  AND f.issued_at>=? AND f.issued_at<=? AND f.settled_at<=?
+                  AND f.settled_at>f.issued_at AND f.outcome_up IN (0,1)
+                  AND f.model_brier BETWEEN 0 AND 1 AND f.baseline_brier BETWEEN 0 AND 1
+                GROUP BY f.target_opened_at HAVING MIN(f.outcome_up)=MAX(f.outcome_up)
+                ORDER BY f.target_opened_at""",
+                (MODEL, horizon_minutes, stamp.isoformat(), (stamp-timedelta(days=14)).isoformat(),
+                 asset, horizon_minutes, MODEL,
+                 (stamp-timedelta(days=14)).isoformat(), stamp.isoformat(), stamp.isoformat()),
+            ).fetchall()
+        aligned = [r for r in rows if
+                   int(datetime.fromisoformat(r["target_opened_at"]).timestamp()) %
+                   (60*horizon_minutes) == 0]
+        base = score_paired_forward([(r["target_opened_at"], r["model_brier"],
+                                      r["baseline_brier"]) for r in aligned])
+        coin = score_paired_forward([(r["target_opened_at"], r["model_brier"], .25)
+                                     for r in aligned])
+        qualified = base.status == coin.status == "qualified_shadow"
+        return {"status": "supported" if qualified else
+                "insufficient" if "insufficient" in (base.status, coin.status) else "not_improving",
+                "targets": base.targets, "days": base.days, "brier": base.model_brier,
+                "baseline_brier": base.baseline_brier, "coin_flip_brier": .25,
+                "base_rate_gain": base.paired_gain, "coin_flip_gain": coin.paired_gain,
+                "reason": base.reason if base.status != "qualified_shadow" else coin.reason,
+                "scope": "current adaptive policies; 14 days; aligned target groups",
+                "frozen_weights_improvement_proven": False}
+
     def _settle_rows(self, now: datetime, pending) -> int:
         resolved = 0
         for pred in pending:
@@ -314,7 +374,7 @@ class ForwardAccuracyMonitor:
                 close = utc(datetime.fromisoformat(
                     str(pred["outcome_closed_at"])
                 ))
-                if observed <= issued or observed > now or close >= now:
+                if observed <= issued or observed > now or close >= now or issued >= close:
                     continue
                 value = float(pred["outcome_close"])
                 previous = float(pred["reference_close"])

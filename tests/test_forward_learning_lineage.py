@@ -89,3 +89,43 @@ async def test_results_page_shows_actual_training_provenance_without_claiming_ac
     finally:
         view.stop()
         store.close()
+
+
+@pytest.mark.parametrize('probability,status', [(0.9, 'supported'), (0.4, 'not_improving')])
+def test_active_policy_benefit_pairs_future_results_and_excludes_old_seeds(learning_store, probability, status):
+    hot = learning_store
+    monitor = ForwardAccuracyMonitor(PerpetualMarketStore(hot))
+    monitor.initialize()
+    now = datetime(2026, 10, 31, 12, tzinfo=UTC)
+    with hot.connect() as conn:
+        for day in range(1, 9):
+            for i in range(20):
+                stamp = (now-timedelta(days=day)).replace(hour=0, minute=0)+timedelta(minutes=i*5)
+                for venue in ('hyperliquid', 'bitget'):
+                    ref = (stamp-timedelta(minutes=5)).isoformat()
+                    # Different seeds must not lend old successes to the current policy.
+                    seed = 'old-seed' if day == 8 else None
+                    p = 1. if seed else probability
+                    conn.execute('''INSERT INTO perp_forward_audit
+                        (venue,contract,quote,asset,horizon_minutes,model_version,
+                         reference_opened_at,reference_close,issued_at,target_opened_at,
+                         probability_up,baseline_up,training_evaluated,
+                         settled_at,outcome_up,model_brier,baseline_brier)
+                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        (venue,'BTC','USDC','BTC',5,MODEL,ref,100.,stamp.isoformat(),
+                         stamp.isoformat(),p,.5,100,(stamp+timedelta(minutes=6)).isoformat(),
+                         1,(1-p)**2,.25))
+                    conn.execute('''INSERT INTO rival_forward_model_lineage VALUES
+                        (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        (venue,'BTC','USDC',5,MODEL,ref,stamp.isoformat(),'a'*64,'b'*64,
+                         100,0,100,seed))
+    result = monitor.active_learning_evidence(asset='BTC', horizon_minutes=5, now=now)
+    assert result['targets'] == 140  # Two exchanges count once, old seed excluded.
+    assert result['days'] == 7
+    assert result['status'] == status
+    assert result['brier'] == pytest.approx((1-probability)**2)
+    assert result['frozen_weights_improvement_proven'] is False
+    with hot.connect() as conn:
+        conn.execute('UPDATE perp_forward_audit SET baseline_brier=NULL')
+    assert monitor.active_learning_evidence(asset='BTC', horizon_minutes=5, now=now)['targets'] == 0
+    hot.close()

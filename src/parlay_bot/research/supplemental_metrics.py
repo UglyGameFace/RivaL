@@ -88,7 +88,12 @@ def parse_daily_metrics(payload: bytes, *, asset: str, day: date) -> list[dict]:
             or (previous is not None and labeled <= previous)
             or labeled.date() not in (day, day + timedelta(days=1))
             or (labeled.date() != day and labeled.time() != datetime.min.time())):
-            raise HistoryImportError("untrustworthy metrics chronology or source day")
+            raise HistoryImportError(
+                "untrustworthy metrics chronology or source day "
+                f"source_date={day.isoformat()} "
+                f"label={labeled.isoformat()} "
+                f"previous={previous.isoformat() if previous else 'none'}"
+            )
         # Old source files were end-labeled, new files start-labeled; the
         # transition has two colliding labels across adjacent daily archives.
         # A full source publication delay is NOT known. These are strict

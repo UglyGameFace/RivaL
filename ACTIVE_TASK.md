@@ -1,3 +1,13 @@
+## ACTIVE TASK: Simplify user-facing RivaL and retire duplicate non-prediction DMs (2026-10-30)
+
+- Owner requirement: simplify all beginner menus, remove overlapping Auto-Hunt and notification spam, and retain genuine prediction/learning. **Unlimited is only a legacy delivery cap, not unlimited AI or proof of a trade signal.**
+- Implementation: [PR #124](https://github.com/UglyGameFace/RivaL/pull/124), branch `refactor/rival-simple-menus-alert-center-20261030`, based on merged #123 `96a4077`. One beginner menu (Crypto, Sports, Notifications, My Results, Practice, Help), one notification status, one fully covered Stop All, old menu recovery, and no automatic duplicate Polymarket/Auto-Hunt/live-shift DMs. Existing historic preferences, audit data and source qualification remain intact.
+- Retired producers: two Auto-Hunt notification workers and one live momentum DM scanner/delivery worker. Kept current Polymarket DM edits, source readers, quote/forward research, local exchange learner, and original accuracy gates. A separate bounded ~90s silent Polymarket reader records verified market books for exact terminal outcome learning with zero Discord sends and zero AI calls.
+- Validation: iterative exact-branch GitHub CI revealed three time-of-day-flaky synthetic promotion tests when test data spanned midnight UTC; their controlled fixture clock is now fixed to UTC midday **without relaxing live admission gates**. Final exact-head CI pending. No verified hosted Discord behavior until main release accepted and tested.
+- Production requirement: verify no new unsolicited Auto-Hunt/price-shift DMs after Discloud release, true Stop All for every tracker and source-specific contract calls, and actual resolved Polymarket learning counts. Claim neither profitable betting edge nor automatically improved accuracy. Issue #6 remains open.
+
+---
+
 ## ACTIVE TASK: Contract-specific continuous calls and persistent learning (2026-10-30)
 
 - Owner scope: missing Polymarket calls, foreign Bitget fallback, live 5m/15m/1h tracking, retained learned weights, six-month/live training, model comparison and controlled replacement. Contract calls/tracking were externally merged as [PR #122](https://github.com/UglyGameFace/RivaL/pull/122) while this work was in progress. The completed learning continuation is on `fix/rival-persistent-contract-learning-20261030`.

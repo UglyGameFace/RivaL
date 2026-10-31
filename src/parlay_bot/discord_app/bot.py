@@ -80,6 +80,7 @@ from parlay_bot.providers.oddspapi import OddsPapiClient
 from parlay_bot.providers.owner_limits import OwnerLimitStore
 from parlay_bot.providers.sportsgameodds import SportsGameOddsClient
 from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
+from parlay_bot.research.dkex_reports import DKeXPublicReports
 from parlay_bot.research.database_integrity import (
     perpetual_evidence_backlog,
     sports_settlement_backlog,
@@ -494,6 +495,7 @@ class RivalDiscordClient(discord.Client):
             venues=tuple(collector.providers) if collector is not None else (),
             training_status=self.training_status,
             polymarket_status=self.polymarket_learning_status,
+            dkex_status=DKeXPublicReports(self.store).summary,
             kalshi=self.kalshi_browser,
         )
 

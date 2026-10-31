@@ -448,6 +448,7 @@ class RivalDiscordClient(discord.Client):
         self.auto_hunt.contract_research = self.polymarket_research
         self.kalshi_forward = KalshiForwardResearch(self.store)
         self.kalshi_browser = KalshiCryptoBrowser(forward=self.kalshi_forward)
+        self._kalshi_research_task: asyncio.Task[None] | None = None
         self.polymarket_board = LivePolymarketBoardService(
             bot=self,
             store=LivePolymarketBoardStore(self.store),
@@ -1530,6 +1531,7 @@ class RivalDiscordClient(discord.Client):
         await asyncio.to_thread(self.auto_hunt.store.initialize)
         await asyncio.to_thread(self.polymarket_board.store.initialize)
         await asyncio.to_thread(self.polymarket_research.initialize)
+        await asyncio.to_thread(self.kalshi_forward.initialize)
         _LOG.info(
             "RivaL Polymarket contract AI wired free_key_configured=%s; "
             "exact 5m/15m/1h contracts, experimental calls only",
@@ -1553,6 +1555,10 @@ class RivalDiscordClient(discord.Client):
         if self._poly_research_task is None:
             self._poly_research_task = asyncio.create_task(
                 self._poly_research_loop(), name="rival-silent-polymarket-learning",
+            )
+        if self._kalshi_research_task is None:
+            self._kalshi_research_task = asyncio.create_task(
+                self._kalshi_research_loop(), name="rival-silent-kalshi-research",
             )
         if (self.current_collector is not None or self.oddspapi_collector is not None or self.the_odds_api_collector is not None) and self._sports_task is None:
             self._sports_task = asyncio.create_task(
@@ -1770,6 +1776,39 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001 - monitoring is best effort
                 _LOG.exception("RivaL sports DB integrity check unavailable")
             await asyncio.sleep(21600)
+
+    async def _kalshi_research_loop(self) -> None:
+        """Quietly collect real public Kalshi quotes and settled receipts.
+
+        Rotate assets to cap REST load. Provider errors never interrupt
+        Discord interaction handling and never create a notification.
+        """
+        await self.wait_until_ready()
+        assets = ("BTC", "ETH", "SOL", "XRP")
+        index = 0
+        while not self.is_closed():
+            started = time.monotonic()
+            asset = assets[index % len(assets)]
+            index += 1
+            try:
+                # _study is separate and asynchronous so it can't hold up UI.
+                snapshot = await asyncio.wait_for(
+                    self.kalshi_browser.browse(asset, refresh=True),
+                    timeout=20,
+                )
+                _LOG.info(
+                    "RivaL silent Kalshi research asset=%s series=%d "
+                    "markets=%d notifications=0 ai_requests=0",
+                    asset, snapshot.matched_series, len(snapshot.markets),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001
+                _LOG.warning(
+                    "RivaL silent Kalshi data unavailable asset=%s", asset,
+                    exc_info=True,
+                )
+            await asyncio.sleep(max(1, 120 - (time.monotonic() - started)))
 
     async def _poly_research_loop(self) -> None:
         """Study genuine listed contracts silently, without consuming AI quota.
@@ -2251,6 +2290,11 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
     async def close(self) -> None:
+        if self._kalshi_research_task is not None:
+            self._kalshi_research_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._kalshi_research_task
+            self._kalshi_research_task = None
         await self.kalshi_browser.aclose()
         if self._poly_board_task is not None:
             self._poly_board_task.cancel()

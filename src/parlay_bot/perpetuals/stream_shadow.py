@@ -6,9 +6,11 @@ inside a short exit window, and count every missed exit as missing evidence.
 """
 from __future__ import annotations
 
+import logging
 import math
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
 from parlay_bot.perpetuals.forward_audit import MODEL
 from parlay_bot.perpetuals.live_quotes import BookQuote, PerpReferenceBook
 from parlay_bot.perpetuals.profit_proof import (
@@ -43,6 +45,7 @@ class StreamShadowLedger:
     def __init__(self, store: RelationalHotStore) -> None:
         self.store = store
         self._initialized = False
+        self._family_quote_shadow = FamilyQuoteShadow(store)
 
     def initialize(self) -> None:
         if self._initialized:
@@ -170,6 +173,13 @@ class StreamShadowLedger:
                      issued.isoformat(), prob, side, qty,
                      quote.exchange_at.isoformat(), quote.bid, quote.ask, "OPEN"),
                 ).rowcount
+        # Same source-timestamped book as the incumbent, but the family
+        # comparison ledger is isolated: optional research cannot fail the
+        # already committed live quote observation.
+        try:
+            self._family_quote_shadow.observe(quote, now=stamp)
+        except Exception:  # independent research ledger
+            logging.getLogger(__name__).exception("Family quote proof unavailable")
         return result
 
     def report(

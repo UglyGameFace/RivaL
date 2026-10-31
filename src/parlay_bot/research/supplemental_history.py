@@ -25,8 +25,8 @@ from parlay_bot.research.free_history import (
     _fetch,
     _month_key,
     _persist,
-    ingest_binance,
     _sha,
+    ingest_binance,
 )
 
 BASE = "https://data.binance.vision/data/futures/um/monthly"

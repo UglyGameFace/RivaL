@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import json
 from datetime import UTC, datetime
+from itertools import pairwise
 from pathlib import Path
 
 from parlay_bot.config import Settings
@@ -21,9 +22,7 @@ from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.live_training import evaluate_directory as evaluate_logistic
 from parlay_bot.research.production import _report
 from parlay_bot.research.publish import _artifact, _drive
-from parlay_bot.research.source_native import (
-    SOURCE, VENUES, restore_verified_source_months,
-)
+from parlay_bot.research.source_native import SOURCE, VENUES, restore_verified_source_months
 
 
 async def run_native_research(
@@ -37,7 +36,7 @@ async def run_native_research(
     # periods into a fake six-month learning window.
     from parlay_bot.research.audit import _next_month
     if sorted(months) != months or any(
-        _next_month(a) != b for a, b in zip(months, months[1:])
+        _next_month(a) != b for a, b in pairwise(months)
     ):
         raise HistoryImportError("nonconsecutive source-native research months")
     artifacts = await restore_verified_source_months(

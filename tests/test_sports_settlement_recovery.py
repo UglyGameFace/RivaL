@@ -169,7 +169,7 @@ async def test_background_reconciliation_runs_with_no_due_fixtures(tmp_path, mon
         original_sleep = asyncio.sleep
 
         async def finish_cycle(delay):
-            if delay == 21600:
+            if delay == 1800:
                 bot.closed = True
             await original_sleep(0)
 

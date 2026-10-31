@@ -2698,19 +2698,19 @@ def install_view_dispatch_logging(client: object) -> None:
                 # discord.py looks up the message-specific item BEFORE the
                 # registered persistent view. A rebuild/timeout can leave a
                 # detached item in that slot and shadow the healthy fallback.
-                # Drop ONLY that unusable message-specific guided entry; then
+                # Drop ONLY that unusable message-specific recoverable entry; then
                 # let the original dispatcher find the normal safe fallback.
                 fallback = views.get(None, {}).get(key)
                 if (
                     found_under == "message"
-                    and custom_id.startswith("rival:guided:")
+                    and custom_id.startswith(("rival:guided:", "rival:research:", "rival:data:"))
                     and fallback is not None
                     and fallback.view is not None
                     and views.get(message_id, {}).get(key) is item
                 ):
                     del views[message_id][key]
                     _LOG.warning(
-                        "RivaL repaired detached guided component "
+                        "RivaL repaired detached recoverable component "
                         "message_id=%s custom_id=%s; persistent fallback ready",
                         message_id, custom_id,
                     )

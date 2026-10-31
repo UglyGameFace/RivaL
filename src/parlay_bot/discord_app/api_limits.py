@@ -266,6 +266,16 @@ class OwnerLimitsView(discord.ui.View):
                                 f"{report.monthly_max_entities:,}\n"
                                 f"Provider remaining: {remaining:,}"
                             )
+                    shared = getattr(provider, "_shared_budget", None)
+                    if shared is not None:
+                        metric = "requests" if kind == "oddspapi" else "monthly_entities"
+                        projection = await asyncio.to_thread(shared.snapshot, metric)
+                        if projection is not None:
+                            value += (
+                                "\\n**RivaL shared reserved high-water:** "
+                                f"{projection['projected_units']:,} units"
+                                "\\nThis is a conservative local counter, not provider billing."
+                            )
                 except Exception:  # noqa: BLE001
                     value = "Provider usage unavailable; no additional entitlement assumed."
             details.add_field(name=title, value=value, inline=False)

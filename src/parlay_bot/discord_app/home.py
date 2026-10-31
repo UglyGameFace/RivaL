@@ -2682,6 +2682,7 @@ _STALE_SAFE_PAGES = {
     "crypto-desk": "crypto-desk",
     "practice": "practice",
     "results": "results",
+    "performance": "performance",
     "help": "help",
     "advanced": "advanced",
     "feeds": "feeds",
@@ -2698,7 +2699,7 @@ _STALE_NOTE = (
 
 # Button actions split across two views to stay under the 25-component limit.
 _STALE_BUTTONS_A = (
-    "sports", "crypto", "hunt", "practice", "results", "help", "advanced",
+    "sports", "crypto", "hunt", "practice", "results", "performance", "help", "advanced",
     "state", "zip", "refresh", "manual", "slip", "lower", "balanced",
     "aggressive", "forecast", "follow", "target", "home", "back",
     "hunt-poly", "hunt-research", "hunt-qualified",
@@ -2823,7 +2824,7 @@ class _StaleGuidedMenuBase(discord.ui.View):
 
 
 class StaleGuidedMenuViewA(_StaleGuidedMenuBase):
-    """First slice of the stale-menu fallback (23 buttons; no selects)."""
+    """First slice of the stale-menu fallback (24 buttons; no selects)."""
 
     def __init__(self, home_factory: Callable[[int], GuidedHome]) -> None:
         super().__init__(home_factory)

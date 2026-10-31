@@ -96,6 +96,7 @@ class SportsGameOddsClient:
         self._event_lock = asyncio.Lock()
         self._projected_entities: int | None = None
         self._projected_month_end: datetime | None = None
+        self._rate_limited_until = 0.0
 
     async def __aenter__(self) -> Self:
         return self
@@ -114,15 +115,37 @@ class SportsGameOddsClient:
         params: Mapping[str, object] | None = None,
         throttled: bool = True,
     ) -> httpx.Response:
+        if time.monotonic() < self._rate_limited_until:
+            raise ProviderRateLimited(
+                "SportsGameOdds provider throttled; no request attempted"
+            )
         if throttled:
             await self._gate.wait()
+        # Another coroutine may have reached a 429 while we waited.
+        if time.monotonic() < self._rate_limited_until:
+            raise ProviderRateLimited(
+                "SportsGameOdds provider throttled; no request attempted"
+            )
         headers = {"x-api-key": self._api_key}
         response = await self._client.get(path, params=params, headers=headers)
 
         if response.status_code == 429:
             retry_after = response.headers.get("Retry-After")
-            suffix = f" retry_after={retry_after}" if retry_after else ""
-            raise ProviderRateLimited(f"SportsGameOdds rate limited {path}.{suffix}")
+            # Retry-After is often a delay in seconds. Never trust an
+            # unbounded or malformed value; default to one minute instead of
+            # repeatedly probing a depleted provider account.
+            try:
+                delay = float(retry_after) if retry_after is not None else 60.0
+                if not 1 <= delay <= 3600:
+                    delay = 60.0
+            except ValueError:
+                delay = 60.0
+            self._rate_limited_until = max(
+                self._rate_limited_until, time.monotonic() + delay,
+            )
+            raise ProviderRateLimited(
+                f"SportsGameOdds rate limited {path}; retry paused"
+            )
         if response.status_code >= 400:
             raise httpx.HTTPStatusError(
                 f"SportsGameOdds request failed with {response.status_code}",

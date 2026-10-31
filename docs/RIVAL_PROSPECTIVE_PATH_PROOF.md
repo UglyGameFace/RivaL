@@ -18,6 +18,14 @@ momentum cohort are fixed at issuance. Six-month Binance archive rows may
 inform offline research, but may not be used to invent forward records for
 other exchanges.
 
+The issuance timestamp normally falls a few seconds into the candle opening
+just after the reference closed. That **partially elapsed candle is always
+excluded**, even if later observed, so its earlier highs/lows cannot pose as
+post-issuance touches. Both offline and live empirical path training skip the
+same first interval. The paper horizon begins at the **next full 5m candle**
+and lasts 15m or 60m after that point; the fixed reference close is not a
+verified executable entry price. This research is not a real market fill.
+
 Each future outcome is separately settled from the **same exact venue,
 contract and quote** using a complete chronological 5m path, after the
 horizon's last candle is closed and first observed **after** the model issued

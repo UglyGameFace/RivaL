@@ -123,6 +123,18 @@ class KalshiForwardResearch:
             raise ValueError("unverified Kalshi market/series identity")
         if not market.rules or market.rules == "Rules not verified":
             return False
+        # Market-summary prices and one-sided/empty books do not prove a
+        # counterparty could actually supply either contract at that ask.
+        if (
+            getattr(market, "quote_source", None) != "orderbook"
+            or any(
+                not isinstance(size, (float, int)) or isinstance(size, bool)
+                or not math.isfinite(size) or size <= 0
+                for size in (getattr(market, "yes_ask_size", None),
+                             getattr(market, "no_ask_size", None))
+            )
+        ):
+            return False
         stamp = _iso(at)
         _iso(market.close_time)
         baseline, features = _market_features(market, at)
@@ -301,7 +313,17 @@ class KalshiForwardResearch:
         if asset not in ("BTC", "ETH", "SOL", "XRP"):
             raise ValueError("unrecognized Kalshi asset")
         series = getattr(market, "series_ticker", None)
-        if not isinstance(series, str) or not market.ticker.startswith(series + "-"):
+        if (
+            not isinstance(series, str)
+            or not market.ticker.startswith(series + "-")
+            or getattr(market, "quote_source", None) != "orderbook"
+            or not all(
+                isinstance(size, (int, float)) and not isinstance(size, bool)
+                and math.isfinite(size) and size > 0
+                for size in (getattr(market, "yes_ask_size", None),
+                             getattr(market, "no_ask_size", None))
+            )
+        ):
             return None
         if not isinstance(market.rules, str) or not market.rules.strip():
             return None

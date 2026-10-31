@@ -365,3 +365,25 @@ def test_multi_summary_needs_fifty_settled(tmp_path):
         )
     finally:
         store.close()
+
+
+def test_unsettled_quote_windows_are_not_used_for_promotion(tmp_path):
+    # Historical quote rows without verified finalized outcomes must never
+    # inflate the short-horizon trade sample used for automatic promotion.
+    now = datetime(2026, 10, 30, 14, tzinfo=UTC)
+    store = SQLiteHotStore(tmp_path / "unsettled-quote.sqlite")
+    try:
+        seed_strict_21_day_paired_proof(store, now)
+        with store.connect() as conn:
+            target = conn.execute(
+                "SELECT target_opened_at FROM perp_multi_forward ORDER BY target_opened_at LIMIT 1"
+            ).fetchone()["target_opened_at"]
+            conn.execute(
+                "UPDATE perp_multi_forward SET settled_at=NULL WHERE target_opened_at=?",
+                (target,),
+            )
+        row = evaluate_promotion(store, asset="BTC", horizon=5, now=now)
+        assert row["quote_windows"] == 335
+        assert row["challenger_trades"] == 335
+    finally:
+        store.close()

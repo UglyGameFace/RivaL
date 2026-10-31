@@ -1291,9 +1291,10 @@ class GuidedHome(discord.ui.View):
                         _performance_exchange, self.market, self.coin, self.horizon,
                     ), timeout=3.5,
                 )
-                readers["feeds"] = asyncio.wait_for(
-                    asyncio.to_thread(self.market.feed_health), timeout=3.5,
-                )
+                if callable(getattr(self.market, "feed_health", None)):
+                    readers["feeds"] = asyncio.wait_for(
+                        asyncio.to_thread(self.market.feed_health), timeout=3.5,
+                    )
                 readers["cycle"] = asyncio.wait_for(
                     asyncio.to_thread(_latest_forward_cycle, self.market),
                     timeout=3.5,

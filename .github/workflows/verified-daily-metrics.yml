@@ -22,8 +22,16 @@ concurrency:
 jobs:
   positioning-history:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      # Four independently cached, disjoint asset partitions. Restrict
+      # concurrency to avoid overwhelming Binance or the private Drive API.
+      max-parallel: 3
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]
+    timeout-minutes: 150
     env:
+      ASSET: ${{ matrix.asset }}
       RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
       RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
       RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
@@ -44,8 +52,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: data/research-history/binance_um_daily_metrics/
-          key: rival-positioning-${{ github.run_id }}
-          restore-keys: rival-positioning-
+          key: rival-positioning-${{ matrix.asset }}-${{ github.run_id }}
+          restore-keys: rival-positioning-${{ matrix.asset }}-
       - name: Bounded immutable historical positioning backfill
         shell: bash
         run: |
@@ -57,19 +65,19 @@ jobs:
             echo "::warning::Private Drive authorization absent; positioning artifacts retained only by Actions."
           fi
           python -m parlay_bot.research.supplemental_metrics \
-            --days 215 --assets BTC ETH SOL XRP --max-new 100 \
+            --days 215 --assets "$ASSET" --max-new 215 \
             --root data/research-history --report-dir data/research-reports "${args[@]}"
       - name: Save checkpointed research partitions for the next catch-up
         if: always()
         uses: actions/cache/save@v4
         with:
           path: data/research-history/binance_um_daily_metrics/
-          key: rival-positioning-${{ github.run_id }}
+          key: rival-positioning-${{ matrix.asset }}-${{ github.run_id }}
       - name: Preserve incomplete or failed source evidence without false promotion
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: positioning-research-metrics
+          name: positioning-research-metrics-${{ matrix.asset }}
           path: |
             data/research-history/binance_um_daily_metrics/
             data/research-reports/metrics-*.json

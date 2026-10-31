@@ -157,7 +157,7 @@ async def test_platform_choice_explains_perpetuals_and_draftkings_without_fake_c
         assert any(x.custom_id == "rival:guided:coin" for x in home.children)
         assert any(x.custom_id == "rival:guided:horizon" for x in home.children)
         assert "Independent AI" in _labels(home)
-        assert "Find CDNA Contract" in _labels(home)
+        assert "Find My Coin" in _labels(home)
         assert "Check CDNA Quote" in _labels(home)
         # Old Discord components can still be clicked after switching the
         # selected provider. They must never borrow a Polymarket signal.

@@ -211,7 +211,7 @@ class OpenRouterResearch:
             )
             if not permitted:
                 raise ResearchUnavailable(
-                    "OpenRouter free research per-user/shared budget or cooldown reached; "
+                    "OpenRouter free research budget/cooldown reached (per-user or shared); "
                     "live mathematical market monitoring continues."
                 )
             instruction = (

@@ -184,10 +184,14 @@ def test_unsettled_kalshi_market_does_not_starve_later_results(tmp_path):
         assert ledger.mark_settlement_check(ticker=ticker, at=due)
     # Must rotate across a restart; do not spin on one never-settled ticker.
     reopened = KalshiForwardResearch(ledger.store)
-    assert reopened.pending(now=due, limit=2) == (
-        "KXBTC15M-2", "KXBTC15M-3",
+    second = reopened.pending(now=due, limit=2)
+    assert second == ("KXBTC15M-2", "KXBTC15M-3")
+    for ticker in second:
+        assert reopened.mark_settlement_check(ticker=ticker, at=due)
+    assert reopened.pending(now=due, limit=2) == ("KXBTC15M-4",)
+    assert reopened.pending(now=due+timedelta(minutes=4), limit=2) == (
+        "KXBTC15M-4", "KXBTC15M-0",
     )
-    assert reopened.pending(now=due+timedelta(minutes=4), limit=2) == first
     assert not reopened.mark_settlement_check(ticker="UNKNOWN", at=due)
 
 

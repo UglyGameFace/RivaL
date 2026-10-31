@@ -24,6 +24,7 @@ from parlay_bot.perpetuals.markets import ASSETS, asset_for_contract
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.perpetuals.model_checkpoints import LiveModelCheckpoints
 from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
+from parlay_bot.perpetuals.path_forward import ProspectivePathLedger
 from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
@@ -105,6 +106,7 @@ class ForwardAccuracyMonitor:
             self.market.historical_challengers.initialize()
             self._initialize_schema()
             ShadowModelCompetition(self.store).initialize()
+            ProspectivePathLedger(self.store).initialize()
             self.market._forward_schema_ready = True
 
     def _initialize_schema(self) -> None:
@@ -506,6 +508,12 @@ class ForwardAccuracyMonitor:
             ShadowModelCompetition(self.store).settle(now=stamp)
         except Exception:  # noqa: BLE001 - shadow research never blocks the live learner
             _LOG.exception("RivaL multi-model shadow settlement unavailable")
+        try:
+            path_results = ProspectivePathLedger(self.store).settle(now=stamp)
+            if any(path_results.values()):
+                _LOG.info("RivaL path outcomes verified %s", path_results)
+        except Exception:  # noqa: BLE001 - research cannot block forecasts
+            _LOG.exception("RivaL source-matched path settlement unavailable")
         if stamp.minute < 5:
             try:
                 reconciled = self.reconcile_stale_settlements(stamp)
@@ -670,6 +678,21 @@ class ForwardAccuracyMonitor:
                                 _LOG.exception("RivaL shadow model failed; incumbent preserved")
                             finally:
                                 conn.execute("RELEASE SAVEPOINT rival_shadow_prediction")
+                            if horizon in (15, 60):
+                                # These are independent paper outcomes, not
+                                # trading signals; a malformed research model
+                                # cannot roll back the incumbent transaction.
+                                conn.execute("SAVEPOINT rival_path_shadow")
+                                try:
+                                    ProspectivePathLedger(self.store).issue(
+                                        conn, candles=candles, asset=asset,
+                                        horizon=horizon, now=stamp, issued_at=issued_at,
+                                    )
+                                except Exception:  # noqa: BLE001 - optional path learner
+                                    conn.execute("ROLLBACK TO SAVEPOINT rival_path_shadow")
+                                    _LOG.exception("RivaL path research issue unavailable")
+                                finally:
+                                    conn.execute("RELEASE SAVEPOINT rival_path_shadow")
                         issued += int(record.rowcount == 1)
                         metrics["duplicate_forecasts"] += int(record.rowcount == 0)
             except (ValueError, TypeError, ArithmeticError) as exc:

@@ -12,9 +12,9 @@ import discord
 
 from parlay_bot.discord_app.alert_control import stop_all_notifications
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
-from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.cdna_public import CDNAPersonalReader
 from parlay_bot.discord_app.cdna_ui import CDNAPersonalModal
+from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
 from parlay_bot.discord_app.polymarket_live_board import matching_call
 from parlay_bot.discord_app.polymarket_watch import unavailable_text

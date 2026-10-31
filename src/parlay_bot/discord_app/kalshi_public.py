@@ -86,6 +86,7 @@ class KalshiMarket:
     yes_ask: float | None
     no_ask: float | None
     rules: str
+    series_ticker: str | None = None
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,9 @@ class KalshiSnapshot:
     markets: tuple[KalshiMarket, ...]
 
 
-def parse_markets(payload: object, *, now: datetime) -> tuple[KalshiMarket, ...]:
+def parse_markets(
+    payload: object, *, now: datetime, series_ticker: str | None = None,
+) -> tuple[KalshiMarket, ...]:
     if not isinstance(payload, dict) or not isinstance(payload.get("markets"), list):
         raise TypeError("Unverified Kalshi markets response")
     entries = []
@@ -119,6 +122,7 @@ def parse_markets(payload: object, *, now: datetime) -> tuple[KalshiMarket, ...]
             yes_ask=_ask(row.get("yes_ask_dollars")),
             no_ask=_ask(row.get("no_ask_dollars")),
             rules=(rules[:220] if isinstance(rules, str) else "Rules not verified"),
+            series_ticker=series_ticker,
         ))
     return tuple(entries)
 
@@ -190,7 +194,7 @@ class KalshiCryptoBrowser:
                         params={"series_ticker": ticker, "status": "open", "limit": 50},
                     )
                     response.raise_for_status()
-                    return parse_markets(response.json(), now=now)
+                    return parse_markets(response.json(), now=now, series_ticker=ticker)
                 responses = await asyncio.gather(*(get_markets(ticker) for ticker in series))
             except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
                 _LOG.warning("Kalshi crypto discovery unavailable asset=%s error=%s",
@@ -198,11 +202,12 @@ class KalshiCryptoBrowser:
                 raise ValueError("Kalshi public market data unavailable") from exc
             unique = {m.ticker: m for group in responses for m in group}
             markets = tuple(sorted(unique.values(), key=lambda m: m.close_time))[:4]
+            observed_at = datetime.now(UTC)
             snapshot = KalshiSnapshot(
-                asset=asset, checked_at=now,
+                asset=asset, checked_at=observed_at,
                 matched_series=len(series), markets=markets,
             )
-            self._cache[asset] = (now + _CACHE_TTL, snapshot)
+            self._cache[asset] = (observed_at + _CACHE_TTL, snapshot)
             if self._forward is not None:
                 task = asyncio.create_task(self._study(snapshot))
                 self._study_tasks.add(task)

@@ -198,7 +198,7 @@ def empty_response(request: httpx.Request) -> httpx.Response:
 
 @pytest.mark.asyncio
 async def test_bitget_empty_page_does_not_advance_cursor(tmp_path):
-    from parlay_bot.perpetuals.history_inventory import six_months_prior
+    from parlay_bot.perpetuals.history_inventory import six_complete_months_start
 
     store = SQLiteHotStore(tmp_path / "bitget-empty.sqlite")
     market = PerpetualMarketStore(store)
@@ -209,8 +209,8 @@ async def test_bitget_empty_page_does_not_advance_cursor(tmp_path):
     try:
         assert await worker.run_once(now=NOW) == 0
         row = worker.progress()[0]
-        seed = six_months_prior(NOW).replace(
-            minute=six_months_prior(NOW).minute // 5 * 5,
+        seed = six_complete_months_start(NOW).replace(
+            minute=six_complete_months_start(NOW).minute // 5 * 5,
             second=0, microsecond=0)
         assert row["next_opened_at"] == seed.isoformat()
         assert row["status"] == "upstream_empty"

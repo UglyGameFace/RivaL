@@ -283,7 +283,7 @@ class ResearchCandidateRegistry:
                 "SELECT COUNT(*) AS n FROM rival_offline_candidates",
             ).fetchone()["n"]
             inventory = conn.execute(
-                "SELECT c.retrospective_screen,a.compatible,a.model_spec_json "
+                "SELECT c.model_sha256,c.retrospective_screen,a.compatible,a.model_spec_json "
                 "FROM rival_offline_candidates c LEFT JOIN rival_offline_model_artifacts a "
                 "ON a.model_sha256=c.model_sha256 WHERE c.asset=? AND c.horizon_minutes=?",
                 (asset, horizon),
@@ -292,13 +292,26 @@ class ResearchCandidateRegistry:
                 "SELECT * FROM rival_history_selection WHERE contract=? AND horizon_minutes=? "
                 "ORDER BY evaluated_at DESC LIMIT 1", (asset+'USDT', horizon),
             ).fetchone()
-        active = bool(selected and selected["selected_sha256"] and
-                      timedelta(0) <= datetime.now(UTC)-datetime.fromisoformat(selected["evaluated_at"]) <
-                      timedelta(hours=48))
         compatible = [r for r in inventory if r["compatible"] == 1]
         passed = [r for r in compatible if r["retrospective_screen"] == "passed"]
         matched = [r for r in passed if live_venues is None or
                    json.loads(r["model_spec_json"])["identity"]["venue"] in live_venues]
+        # A selection for a disabled or different source is not an active
+        # historical seed, even if its previous result remains in the ledger.
+        active = bool(
+            selected and selected["selected_sha256"]
+            and timedelta(0) <= datetime.now(UTC)-datetime.fromisoformat(selected["evaluated_at"])
+            < timedelta(hours=48)
+            and any(
+                r["model_sha256"] == selected["selected_sha256"]
+                and (lambda identity: (
+                    identity["venue"], identity["contract"], identity["quote"]
+                ) == (
+                    selected["venue"], selected["contract"], selected["quote"]
+                ))(json.loads(r["model_spec_json"])["identity"])
+                for r in matched
+            )
+        )
         if not inventory:
             seed_reason = "No historical models imported for this coin/window"
         elif not compatible:

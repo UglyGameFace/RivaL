@@ -188,11 +188,16 @@ class _Horizon(discord.ui.Select["GuidedHome"]):
 
 
 class _PolymarketHorizon(discord.ui.Select["GuidedHome"]):
-    """Only show timeframes that the verified Polymarket reader supports."""
+    """Three research horizons; do not imply another venue lists them."""
 
-    def __init__(self, selected: int, *, row: int = 1) -> None:
+    def __init__(
+        self, selected: int, *, row: int = 1, market: str = "polymarket",
+    ) -> None:
         super().__init__(
-            placeholder="Choose a listed market window", row=row,
+            placeholder=(
+                "Choose an independent research horizon"
+                if market != "polymarket" else "Choose a listed market window"
+            ), row=row,
             custom_id="rival:guided:horizon",
             options=[
                 discord.SelectOption(
@@ -502,7 +507,9 @@ class GuidedHome(discord.ui.View):
             self.add_item(_Market(self.live_source))
             self.add_item(_Coin(self.coin, row=1))
             if self.live_source != "kalshi":
-                self.add_item(_PolymarketHorizon(self.horizon, row=2))
+                self.add_item(_PolymarketHorizon(
+                    self.horizon, row=2, market=self.live_source or "polymarket",
+                ))
             if self.live_source == "polymarket":
                 self._add("View Contract Call", "desk-call", 3, "🎯", True)
                 self._add("Track Market", "desk-track", 3, "🔔")

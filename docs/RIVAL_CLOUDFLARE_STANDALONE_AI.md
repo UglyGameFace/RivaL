@@ -8,6 +8,7 @@
 - No SniperPlug routes, Pages projects, bindings, credentials, or website files are involved.
 - The model is Cloudflare-hosted `@cf/meta/llama-3.2-3b-instruct`. The previously discussed Qwen3.5 2B is **not** available in the connected Workers AI catalog.
 - Workers AI is account-wide, not an exclusive RivaL allowance. The Worker limits itself to **24 attempted calls per UTC day** with a maximum 24,000-character evidence payload and 320 output tokens. D1 transactionally reserves the attempted call *before* inference. D1 database failure denies requests.
+- For any future redeploy using Wrangler, preserve the dedicated secret with `wrangler secret put RIVAL_AI_SHARED_TOKEN` in the `infra/cloudflare-rival-ai` directory before allowing traffic. An omitted or blank secret intentionally denies all inference requests.
 - Requests are authenticated with a dedicated bearer secret in the Worker environment. Never commit, print, or log it. Only `GET /health` is public; `GET /v1/status` and `POST /v1/research` require authorization. No browser CORS policy grants third-party access.
 - Cloudflare's Workers AI free allowance is 10,000 neurons per day *shared across the account*, reset 00:00 UTC. **The 24-call cap is an additional guard, not a guarantee of $0 if this account uses Workers Paid or other AI traffic consumes the free allowance first.** Check the account's billing plan and daily usage before enabling calls.
 

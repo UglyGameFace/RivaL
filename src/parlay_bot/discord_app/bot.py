@@ -52,12 +52,12 @@ from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
+from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
 from parlay_bot.perpetuals.deribit_history_recovery import DeribitHistoryRecovery
 from parlay_bot.perpetuals.dydx_history_recovery import DydxHistoryRecovery
 from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
-from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
 from parlay_bot.perpetuals.gemini_research import GeminiResearch
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery

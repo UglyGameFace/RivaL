@@ -1,4 +1,4 @@
-name: RivaL normal AI research PostgreSQL acceptance
+name: One-time RivaL autonomous-operations state inspection
 on:
   push:
     branches: ["diagnostics/read-only-discloud-vlan-20261101"]
@@ -6,32 +6,26 @@ on:
 permissions:
   contents: read
 jobs:
-  acceptance:
+  state:
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
-      - name: Perform at most one quota-permitted normal LFM3 research and inspect DB receipt
+      - name: Read actual hosted collector shadow learning and quota state
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
-        shell: bash
         run: |
           python - <<'PY'
           import base64,json,os,urllib.request,urllib.parse
-          token=os.getenv("DISCLOUD_TOKEN","");appid=os.getenv("DISCLOUD_APP_ID","")
-          if not token or not appid:raise SystemExit("Discloud auth unavailable")
-          source="import asyncio,json,os,sys,time\nfrom datetime import UTC,datetime\nsys.path.insert(0,os.path.abspath(\"src\"))\nfrom parlay_bot.config import Settings\nfrom parlay_bot.storage.hot import PostgresHotStore\nfrom parlay_bot.perpetuals.market_store import PerpetualMarketStore\nfrom parlay_bot.perpetuals.local_first_research import LocalFirstResearch\nfrom parlay_bot.discord_app.data_dashboard import MARKET_SYMBOLS\nsettings=Settings()\nreport={\"provider\":settings.rival_ai_provider,\"backend\":settings.rival_storage_backend}\nstore=PostgresHotStore(settings.rival_database_url.get_secret_value())\nmarket=PerpetualMarketStore(store)\nmodel=\"rival-local-cloudflare-shared-budget\"\ndef count():\n with store.connect() as con:\n  row=con.execute(\"SELECT COUNT(*) AS n FROM perp_ai_research \"\n     \"WHERE model=?\",(\"LiquidAI/LFM3-1.7B-GGUF:Q4_K_M\",)).fetchone()\n return int(row[\"n\"])\ntry:\n report[\"saved_before\"]=count()\n status=market.ai_request_status(model=model,now=datetime.now(UTC),\n     daily_max=settings.rival_openrouter_daily_max,\n     cooldown_seconds=settings.rival_openrouter_cooldown_seconds)\n report[\"request_status\"]={\"ready\":status[\"ready\"],\n  \"reasons\":list(status[\"reasons\"]),\n  \"retry_at\":str(status[\"retry_at\"]) if status[\"retry_at\"] else None,\n  \"requests_today\":status[\"requests_today\"],\n  \"daily_limit\":status[\"rival_daily_limit\"]}\n if status[\"ready\"] and settings.rival_ai_provider==\"local\" and settings.rival_local_ai_token:\n  async def run():\n   ai=LocalFirstResearch(market,local_key=settings.rival_local_ai_token.get_secret_value(),\n     daily_max=settings.rival_openrouter_daily_max,\n     cooldown_seconds=settings.rival_openrouter_cooldown_seconds)\n   try:\n    start=time.monotonic()\n    reply=await ai.ask(asset=\"BTC\",venues=tuple(MARKET_SYMBOLS))\n    return {\"completed\":True,\"model\":reply.model,\n      \"direction\":reply.direction,\"confidence\":reply.confidence,\n      \"sources\":reply.source_count,\"from_cache\":reply.from_cache,\n      \"evidence_hash_present\":len(reply.evidence_sha256)==64,\n      \"seconds\":round(time.monotonic()-start,2)}\n   finally: await ai.aclose()\n  try:report[\"normal_research\"]=asyncio.run(run())\n  except Exception as e:\n   report[\"normal_research\"]={\"completed\":False,\"error_class\":type(e).__name__,\n     \"safe_reason\":str(e)[:200] if type(e).__name__==\"ResearchUnavailable\" else None}\n report[\"saved_after\"]=count()\n report[\"normal_path_persisted\"]=bool(report.get(\"normal_research\",{}).get(\"completed\")\n      and report[\"saved_after\"]>report[\"saved_before\"])\nexcept Exception as e:\n report[\"diagnostic_error\"]=type(e).__name__\nfinally:store.close()\nprint(\"RIVAL_NORMAL_POSTGRES_ACCEPT=\"+json.dumps(report,sort_keys=True,default=str))\n"
+          t=os.environ["DISCLOUD_TOKEN"];app=os.environ["DISCLOUD_APP_ID"]
+          source="import json,os,sys\nfrom datetime import UTC,datetime\nsys.path.insert(0,os.path.abspath(\"src\"))\nfrom parlay_bot.config import Settings\nfrom parlay_bot.storage.hot import PostgresHotStore\nfrom parlay_bot.perpetuals.market_store import PerpetualMarketStore\nsettings=Settings()\nreport={\"backend\":settings.rival_storage_backend,\n\"collection_enabled\":settings.rival_perp_collection_enabled,\n\"shadow_learning_enabled\":settings.rival_shadow_learning_enabled,\n\"stream_enabled\":settings.rival_stream_enabled,\n\"local_provider\":settings.rival_ai_provider,\n\"background_ai_opt_in\":settings.rival_ai_background_opt_in,\n\"gemini_auto\":settings.rival_gemini_auto_enabled}\nif settings.rival_storage_backend!=\"postgres\" or not settings.rival_database_url:\n print(\"RIVAL_SET_FORGET=\"+json.dumps({**report,\"db_error\":\"not_postgres\"}))\n raise SystemExit(0)\ns=PostgresHotStore(settings.rival_database_url.get_secret_value())\ntry:\n m=PerpetualMarketStore(s)\n with s.connect() as con:\n  for label,query in [\n    (\"feed\", \"SELECT venue,asset,status,last_success_at,failure_count FROM perp_feed_health WHERE asset IN ('BTC','ETH','SOL','XRP') ORDER BY asset,venue\"),\n    (\"ai\", \"SELECT model,COUNT(*) AS n,MAX(issued_at) AS latest FROM perp_ai_research GROUP BY model\"),\n    (\"shadow\", \"SELECT asset,COUNT(*) AS n,MAX(evaluated_at) AS latest,SUM(CASE WHEN candidate_beats_baseline=1 THEN 1 ELSE 0 END) AS wins FROM perp_shadow_evaluations GROUP BY asset\"),\n    (\"stream\", \"SELECT asset,COUNT(*) AS n,MAX(issued_at) AS latest,SUM(CASE WHEN state='EXIT_QUOTED' THEN 1 ELSE 0 END) AS settled FROM rival_stream_shadow GROUP BY asset\"),\n    (\"family_shadow\", \"SELECT COUNT(*) AS n,MAX(issued_at) AS latest FROM rival_model_shadow_forecasts\"),\n   ]:\n   try:\n    rows=[dict(r) for r in con.execute(query).fetchall()]\n    if label==\"feed\":\n     by={}\n     for r in rows:\n      a=by.setdefault(r[\"asset\"],{\"total\":0,\"ok\":0,\"success_stamp\":0,\"error_venues\":[]})\n      a[\"total\"]+=1\n      a[\"ok\"]+=int(r[\"status\"]==\"ok\")\n      a[\"success_stamp\"]+=int(bool(r[\"last_success_at\"]))\n      if r[\"status\"]!=\"ok\":a[\"error_venues\"].append(r[\"venue\"])\n     report[label]=by\n    else:report[label]=rows[:10]\n   except Exception as e:report[label+\"_unavailable\"]=type(e).__name__\n status=m.ai_request_status(model=\"rival-local-cloudflare-shared-budget\",\n  now=datetime.now(UTC),daily_max=settings.rival_openrouter_daily_max,\n  cooldown_seconds=settings.rival_openrouter_cooldown_seconds)\n report[\"llm_quota\"]={\"ready\":status.get(\"ready\"),\"reasons\":status.get(\"reasons\"),\n  \"retry_at\":str(status.get(\"retry_at\")) if status.get(\"retry_at\") else None,\n  \"used_today\":status.get(\"requests_today\"),\"daily_max\":status.get(\"rival_daily_limit\")}\nexcept Exception as e:report[\"db_failure_class\"]=type(e).__name__\nfinally:s.close()\nprint(\"RIVAL_SET_FORGET=\"+json.dumps(report,sort_keys=True,default=str))\n"
           cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(source.encode()).decode()+"\"))'"
-          req=urllib.request.Request("https://api.discloud.app/v2/app/"+urllib.parse.quote(appid,safe="")+"/console",
-           method="PUT",data=json.dumps({"command":cmd}).encode(),
-           headers={"api-token":token,"Content-Type":"application/json"})
-          with urllib.request.urlopen(req,timeout=125) as response:payload=json.load(response)
-          stdout=str(payload.get("apps",{}).get("shell",{}).get("stdout",""))
-          marker="RIVAL_NORMAL_POSTGRES_ACCEPT="
-          if marker not in stdout:
-           print("No structured normal path result; stderr present",bool(payload.get("apps",{}).get("shell",{}).get("stderr")))
-           raise SystemExit(1)
-          result=json.loads(stdout.split(marker,1)[1].splitlines()[0])
-          print("Quota-respecting normal production research and PostgreSQL receipt",json.dumps(result,sort_keys=True))
-          if result.get("diagnostic_error"):raise SystemExit(1)
+          req=urllib.request.Request("https://api.discloud.app/v2/app/"+urllib.parse.quote(app,safe="")+"/console",
+           data=json.dumps({"command":cmd}).encode(),method="PUT",
+           headers={"api-token":t,"Content-Type":"application/json"})
+          with urllib.request.urlopen(req,timeout=65) as r:d=json.load(r)
+          out=str(d.get("apps",{}).get("shell",{}).get("stdout",""))
+          if "RIVAL_SET_FORGET=" not in out:
+           print("No read-only state; stderr_present",bool(d.get("apps",{}).get("shell",{}).get("stderr")));raise SystemExit(1)
+          print("Live set-and-forget snapshot",out.split("RIVAL_SET_FORGET=",1)[1].splitlines()[0])
           PY

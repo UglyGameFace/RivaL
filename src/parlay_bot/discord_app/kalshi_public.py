@@ -271,12 +271,32 @@ class KalshiCryptoBrowser:
                     )
                     response.raise_for_status()
                     return parse_markets(response.json(), now=now, series_ticker=ticker)
-                responses = await asyncio.gather(*(get_markets(ticker) for ticker in series))
+                # A transient timeout for one official Kalshi series must
+                # not discard independently verified books from other
+                # series. Never claim the missing series was successfully
+                # inspected, and never cache an incomplete discovery.
+                responses = await asyncio.gather(
+                    *(get_markets(ticker) for ticker in series),
+                    return_exceptions=True,
+                )
             except (httpx.HTTPError, ValueError, TypeError, KeyError) as exc:
                 _LOG.warning("Kalshi crypto discovery unavailable asset=%s error=%s",
                              asset, type(exc).__name__)
                 raise ValueError("Kalshi public market data unavailable") from exc
-            unique = {m.ticker: m for group in responses for m in group}
+            successful = []
+            failed = 0
+            for ticker, response in zip(series, responses, strict=True):
+                if isinstance(response, Exception):
+                    failed += 1
+                    _LOG.warning(
+                        "Kalshi market series unavailable asset=%s ticker=%s error=%s",
+                        asset, ticker, type(response).__name__,
+                    )
+                else:
+                    successful.append(response)
+            if failed and not successful:
+                raise ValueError("Kalshi public market series unavailable")
+            unique = {m.ticker: m for group in successful for m in group}
             listed = tuple(sorted(unique.values(), key=lambda m: m.close_time))[:4]
 
             async def verify_book(market: KalshiMarket) -> KalshiMarket:
@@ -310,9 +330,10 @@ class KalshiCryptoBrowser:
             observed_at = datetime.now(UTC)
             snapshot = KalshiSnapshot(
                 asset=asset, checked_at=observed_at,
-                matched_series=len(series), markets=markets,
+                matched_series=len(successful), markets=markets,
             )
-            self._cache[asset] = (observed_at + _CACHE_TTL, snapshot)
+            if not failed:
+                self._cache[asset] = (observed_at + _CACHE_TTL, snapshot)
             if self._forward is not None:
                 task = asyncio.create_task(self._study(snapshot))
                 self._study_tasks.add(task)

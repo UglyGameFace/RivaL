@@ -8,6 +8,8 @@ on:
       - "src/parlay_bot/research/free_history.py"
       - "src/parlay_bot/research/publish.py"
       - "tests/test_binance_deep_backfill.py"
+      - "src/parlay_bot/research/source_family_coverage.py"
+      - "tests/test_source_family_coverage.py"
   push:
     branches: [main]
     paths:
@@ -78,11 +80,21 @@ jobs:
       - name: Publish up to 24 provider-checksum monthly 5m sources from 2021
         run: |
           python -m parlay_bot.research.binance_deep_backfill --max-new 24
+      - name: Inventory all 2021+ source-family evidence without claiming missing data is complete
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p data/binance-deep data/native-reports
+          python -m parlay_bot.research.source_family_coverage \
+            --root data/binance-deep --out-dir data/native-reports
       - name: Preserve source evidence, incomplete month and provider-unavailable details
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: binance-2021-official-archive-receipts
-          path: data/native-reports/binance-2021-bulk-progress.json
+          path: |
+            data/native-reports/binance-2021-bulk-progress.json
+            data/native-reports/source-family-summary.json
+            data/native-reports/source-family-coverage.jsonl.gz
           retention-days: 14
           if-no-files-found: ignore

@@ -104,6 +104,55 @@ jobs:
           python -m parlay_bot.research.gate_bulk_archive \
             --asset SOL --kind candlesticks_1m \
             --month 2023-03 --out-dir data/gate-minute-smoke
+      - name: Audit actual same-Gate 5m versus 1m March 2023 SOL gaps
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m parlay_bot.research.gate_bulk_archive \
+            --asset SOL --kind candlesticks_5m \
+            --month 2023-03 --out-dir data/gate-minute-smoke
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          from parlay_bot.research.gate_minute_repair import (
+              minute_rows, reconstruct_gaps,
+          )
+          from parlay_bot.research.gate_native import (
+              original_candles, gaps,
+          )
+          from parlay_bot.research.free_history import HistoryImportError
+          root = Path("data/gate-minute-smoke")
+          one = root / "candlesticks_1m/2023-03/SOL_USDT-2023-03.csv.gz"
+          five = root / "candlesticks_5m/2023-03/SOL_USDT-2023-03.csv.gz"
+          digest_1m = hashlib.sha256(one.read_bytes()).hexdigest()
+          digest_5m = hashlib.sha256(five.read_bytes()).hexdigest()
+          raw, _ = original_candles(
+              five, asset="SOL", month="2023-03", expected_sha=digest_5m,
+          )
+          minute, _ = minute_rows(
+              one, asset="SOL", month="2023-03", expected_sha=digest_1m,
+          )
+          try:
+              found, evidence = reconstruct_gaps(
+                  original_5m=raw, one_minute=minute,
+                  asset="SOL", month="2023-03",
+                  original_sha=digest_5m, minute_sha=digest_1m,
+              )
+              print(json.dumps({
+                  "real_gate_original_5m_missing": evidence["missing_source_5m_before"],
+                  "real_gate_1m_derived": len(found),
+                  "still_unresolved": len(evidence["unresolved_open_unix_seconds"]),
+                  "crosschecked_source_5m": evidence["crosschecked_5m_source_bars"],
+                  "native_model_approved": False,
+              }))
+          except HistoryImportError as exc:
+              print(json.dumps({
+                  "real_gate_minute_repair": "source_unqualified",
+                  "reason": str(exc),
+                  "native_model_approved": False,
+              }))
+          PY
       - name: Preserve independently downloaded public source proof
         if: always()
         uses: actions/upload-artifact@v4

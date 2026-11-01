@@ -348,3 +348,54 @@ async def test_market_picker_and_live_board_do_not_spend_free_ai_quota(tmp_path)
     finally:
         await service.aclose()
         hot.close()
+
+
+@pytest.mark.asyncio
+async def test_live_boards_bound_quote_reads_but_do_not_hold_dm_edits(tmp_path, monkeypatch):
+    """A full 12-contract tracker fanout does not hammer Gamma/CLOB."""
+    from parlay_bot.discord_app.polymarket_watch import ASSETS, HORIZONS
+
+    hot, store, service, _channel, _user, edited = _setup(tmp_path)
+    ongoing = 0
+    maximum = 0
+    started = asyncio.Event()
+    release = asyncio.Event()
+    observed = []
+
+    for n, (asset, horizon) in enumerate(
+        (pair for asset in ASSETS for pair in ((asset, h) for h in HORIZONS)),
+        start=1001,
+    ):
+        store.save(LivePolymarketTracker(
+            str(n), asset, horizon, "555", str(n+5000), "old",
+        ))
+
+    async def quote_observation(asset, horizon):
+        nonlocal ongoing, maximum
+        ongoing += 1
+        maximum = max(maximum, ongoing)
+        if ongoing == 4:
+            started.set()
+        try:
+            await release.wait()
+            observed.append((asset, horizon))
+            return discord.Embed(title=f"{asset}/{horizon}"), "new"
+        finally:
+            ongoing -= 1
+
+    monkeypatch.setattr(service, "_observation", quote_observation)
+    cycle = asyncio.create_task(service.cycle())
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert ongoing == 4
+        assert maximum == 4
+    finally:
+        release.set()
+    try:
+        assert await asyncio.wait_for(cycle, timeout=3) == 12
+        assert maximum == 4
+        assert len(observed) == len(ASSETS) * len(HORIZONS)
+        assert edited.await_count == 12
+        assert all(tracker.fingerprint == "new" for tracker in store.active())
+    finally:
+        hot.close()

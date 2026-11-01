@@ -11,7 +11,7 @@ from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.database import PostgresDatabase, _Connection, _postgres_sql
-from parlay_bot.storage.hot import SQLiteHotStore
+from parlay_bot.storage.hot import PostgresHotStore, SQLiteHotStore
 
 
 class RecordingPostgres:
@@ -255,3 +255,55 @@ def test_lighter_price_revisions_remain_warnings_and_never_change_history(
         assert conn.execute(
             "SELECT COUNT(*) AS n FROM perp_lighter_volume_revisions"
         ).fetchone()["n"] == 0
+
+
+def test_postgres_lighter_volume_revision_bulk_upsert_preserves_original() -> None:
+    dsn = os.environ.get("RIVAL_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("Disposable PostgreSQL integration database unavailable")
+    store = PostgresHotStore(dsn)
+    market = PerpetualMarketStore(store)
+    contract = "BTC-LIGHTER-VOLUME-CI"
+    original = _batch(length=2)
+    original = MarketBatch(
+        (), tuple(replace(c, venue="lighter", contract=contract)
+                  for c in original.candles),
+        5, original.observed_at,
+    )
+    try:
+        assert market.ingest(original).inserted_candles == 2
+        later = original.observed_at + timedelta(minutes=5)
+        incoming = MarketBatch(
+            (), tuple(replace(c, volume_base=9.0, observed_at=later)
+                      for c in original.candles),
+            5, later,
+        )
+        assert market.ingest(incoming).conflicted_candles == 2
+        with store.connect() as conn:
+            revised = conn.execute(
+                "SELECT original_volume_base,last_volume_base,"
+                "observation_count FROM perp_lighter_volume_revisions "
+                "WHERE venue='lighter' AND contract=?",
+                (contract,),
+            ).fetchall()
+            saved = conn.execute(
+                "SELECT volume_base FROM perp_market_candles "
+                "WHERE venue='lighter' AND contract=?",
+                (contract,),
+            ).fetchall()
+        assert len(revised) == len(saved) == 2
+        assert all(row["original_volume_base"] == 1.0
+                   and row["last_volume_base"] == 9.0
+                   and row["observation_count"] == 1 for row in revised)
+        assert all(row["volume_base"] == 1.0 for row in saved)
+    finally:
+        with store.connect() as conn:
+            conn.execute(
+                "DELETE FROM perp_lighter_volume_revisions "
+                "WHERE venue='lighter' AND contract=?", (contract,),
+            )
+            conn.execute(
+                "DELETE FROM perp_market_candles "
+                "WHERE venue='lighter' AND contract=?", (contract,),
+            )
+        store.close()

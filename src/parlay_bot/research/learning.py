@@ -74,7 +74,17 @@ def _rows(manifest_path: Path) -> tuple[dict, list[dict]]:
             or manifest.get("prospective_forecast") is not False
             or manifest.get("time_reference") != "exchange_candle_open_not_first_observed_at"
             or (manifest.get("source") == "verified_venue_perp_klines"
-                and manifest.get("source_integrity") != "postgres-first-observed-at-v1")
+                and not (
+                    manifest.get("source_integrity") == "postgres-first-observed-at-v1"
+                    or (
+                        manifest.get("venue") == "bitget"
+                        and manifest.get("source_integrity") == "bitget-v3-public-history-v1"
+                        and manifest.get("source_url") ==
+                            "https://api.bitget.com/api/v3/market/history-candles"
+                        and manifest.get("source_transport") == "official_public_https"
+                        and manifest.get("provider_signed_checksum") is False
+                    )
+                ))
         ):
             raise HistoryImportError("ineligible historical source")
         name = manifest.get("file")

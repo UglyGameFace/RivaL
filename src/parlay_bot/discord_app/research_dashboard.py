@@ -18,6 +18,7 @@ from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, Re
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
+from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 from parlay_bot.perpetuals.readiness import explain_venue_readiness, forecast_readiness
@@ -1604,7 +1605,11 @@ class ResearchDashboard(discord.ui.View):
                         )
                 embed.add_field(
                     name=(
-                        "Cloudflare AI model & request limits"
+                        "Private local AI & Cloudflare backup"
+                        if isinstance(self.ai, LocalFirstResearch)
+                        else "Private local AI & Cloudflare backup"
+                        if isinstance(self.ai, LocalFirstResearch)
+                        else "Cloudflare AI model & request limits"
                         if isinstance(self.ai, CloudflareResearch)
                         else "OpenRouter free model & request limits"
                         if isinstance(self.ai, OpenRouterResearch)
@@ -1615,7 +1620,9 @@ class ResearchDashboard(discord.ui.View):
                         f"RivaL usage: **{quota['requests_today']}/"
                         f"{quota['rival_daily_limit']}** requests today "
                         + (
-                            "(separate from the Cloudflare Worker daily cap)\n"
+                            "(local 18/day; Cloudflare has a separate emergency cap)\n"
+                            if isinstance(self.ai, LocalFirstResearch)
+                            else "(separate from the Cloudflare Worker daily cap)\n"
                             if isinstance(self.ai, CloudflareResearch)
                             else "(not OpenRouter's account-wide limit)\n"
                             if isinstance(self.ai, OpenRouterResearch)

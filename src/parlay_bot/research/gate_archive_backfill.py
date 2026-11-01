@@ -448,7 +448,8 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
 
                     try:
                         trained = await run_native_research(
-                            drive=drive, venue="gate", months=recent, root=root,
+                            drive=drive, venue="gate", months=recent,
+                            root=root / "gate-model-window",
                             report_dir=report_dir, publish=True,
                         )
                         result["model_research"] = {

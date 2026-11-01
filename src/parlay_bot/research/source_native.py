@@ -93,6 +93,10 @@ def native_manifest_provenance(manifest: dict) -> bool:
                     or item["to"] >= int(end.timestamp())
                     or item["from"] > item["to"]):
                     return False
+                if item.get("raw_json_file") != (
+                    "gate-api-" + item["response_sha256"][:16] + ".json"
+                ):
+                    return False
                 for stamp in item["recovered"]:
                     if (type(stamp) is not int or stamp % 300
                         or not item["from"] <= stamp <= item["to"]):
@@ -107,6 +111,8 @@ def native_manifest_provenance(manifest: dict) -> bool:
                 or not isinstance(config.get("contract_metadata_sha256"), str)
                 or len(config["contract_metadata_sha256"]) != 64
                 or any(ch not in "0123456789abcdef" for ch in config["contract_metadata_sha256"])
+                or config.get("contract_metadata_raw_file") !=
+                    "gate-api-" + config["contract_metadata_sha256"][:16] + ".json"
                 or type(config.get("contract_created_at_unix")) is not int
                 or type(config.get("contract_config_last_changed_unix")) is not int
                 or not 0 < config["contract_created_at_unix"] <=
@@ -536,6 +542,35 @@ async def restore_verified_source_months(
                     or len(original.content) != raw.size_bytes
                     or hashlib.sha256(original.content).hexdigest() != digest):
                     raise HistoryImportError("Gate original raw archive SHA mismatch")
+                # Re-fetch the exact public JSON responses used to fill gaps
+                # and verify the historic base-volume multiplier. Their
+                # hashes are not enough if the original bytes were lost.
+                proof = info["contract_multiplier_evidence"]
+                witnesses = [{
+                    "response_sha256": proof["contract_metadata_sha256"],
+                    "raw_json_file": proof["contract_metadata_raw_file"],
+                }] + info["source_api_recovery"]
+                for witness in witnesses:
+                    digest = witness["response_sha256"]
+                    witness_file = witness["raw_json_file"]
+                    stored = await drive._find_batch_object(
+                        parent_id=drive.folders.history,
+                        batch_id="gateapi-" + digest[:24],
+                        kind="history",
+                    )
+                    if (stored is None or stored.name != witness_file
+                        or not isinstance(stored.size_bytes, int)
+                        or not 0 < stored.size_bytes <= 512 * 1024):
+                        raise HistoryImportError("Gate API evidence bytes missing")
+                    response_bytes = await drive._client.get(
+                        f"{drive.DRIVE_URL}/files/{stored.file_id}",
+                        params={"alt": "media"}, headers=await drive._headers(),
+                        follow_redirects=False,
+                    )
+                    if (response_bytes.status_code != 200
+                        or len(response_bytes.content) != stored.size_bytes
+                        or hashlib.sha256(response_bytes.content).hexdigest() != digest):
+                        raise HistoryImportError("Gate API evidence SHA readback failed")
             response = await drive._client.get(
                 f"{drive.DRIVE_URL}/files/{history.file_id}",
                 params={"alt": "media"}, headers=await drive._headers(),

@@ -130,15 +130,18 @@ class SixMonthQualityAudit:
         contract, quote = _market(venue, asset)
         valid = invalid = off_grid = segments = longest = 0
         cursor = start
-        # Bounded repair candidates, generated during the already-scheduled
-        # six-month integrity scan. Never start another large SQL scan just
-        # to locate a handful of KuCoin missing candles.
+        # Small, audited exact-slot gaps are repairable from their ORIGINAL
+        # provider. Do not queue a six-month missing prefix for repeated API
+        # requests: providers handle bulk history with durable forward cursors.
+        # Bitget's scattered one-bar gaps were previously detected but not
+        # queued. Capture at most 512 candidates, with no extra SQL scan.
+        gap_limit = {"kucoin": 32, "bitget": 512}.get(venue, 0)
         missing_slots: list[datetime] = []
 
         def note_missing(first: datetime, bars: int) -> None:
-            if venue != "kucoin" or bars <= 0:
+            if not gap_limit or bars <= 0:
                 return
-            remaining = 32 - len(missing_slots)
+            remaining = gap_limit - len(missing_slots)
             for offset in range(min(remaining, bars)):
                 missing_slots.append(first + offset * _STEP)
         self.initialize()
@@ -202,17 +205,17 @@ class SixMonthQualityAudit:
             "invalid_observations": invalid, "status": status,
         }
         with self.store.connect() as conn:
-            # Only queue genuinely small, exactly identified gaps. Do not
-            # queue tens of thousands of missing bars on young/blocked venues,
-            # misclassify invalid observations, or grant history approval.
-            if venue == "kucoin" and 0 < missing <= 32 and len(missing_slots) == missing:
+            # Only enqueue a small, fully enumerated and independently
+            # provider-identifiable set. Larger gaps stay with the existing
+            # long-range cursors and remain visibly incomplete.
+            if 0 < missing <= gap_limit and len(missing_slots) == missing:
                 for slot in missing_slots:
                     conn.execute(
                         """INSERT INTO perp_history_gap_repair
                            (venue,asset,opened_at,retry_after)
-                           VALUES ('kucoin',?,?,?)
+                           VALUES (?,?,?,?)
                            ON CONFLICT(venue,asset,opened_at) DO NOTHING""",
-                        (asset, slot.isoformat(), clock.isoformat()),
+                        (venue, asset, slot.isoformat(), clock.isoformat()),
                     )
             conn.execute(
                 """INSERT INTO perp_history_quality

@@ -163,3 +163,95 @@ def test_lighter_revision_is_aggregated_and_reports_real_changed_fields(
     )
     assert len(stored) == 6
     assert all(float(c["volume_base"]) == 1.0 for c in stored)
+
+
+def test_lighter_volume_revisions_are_separate_and_cannot_rewrite_causal_history(
+    tmp_path, caplog,
+) -> None:
+    store = SQLiteHotStore(tmp_path / "lighter_revisions.sqlite")
+    market = PerpetualMarketStore(store)
+    original = _batch(length=3)
+    original = MarketBatch(
+        (),
+        tuple(replace(c, venue="lighter", contract="BTC", quote="USD")
+              for c in original.candles),
+        5, original.observed_at,
+    )
+    assert market.ingest(original).inserted_candles == 3
+
+    newer_observed = original.observed_at + timedelta(minutes=5)
+    revised = MarketBatch(
+        (),
+        tuple(replace(c, volume_base=2.25, observed_at=newer_observed)
+              for c in original.candles),
+        5, newer_observed,
+    )
+    with caplog.at_level(logging.WARNING):
+        result = market.ingest(revised)
+    assert result.conflicted_candles == 3
+    assert not any("immutable candle conflicts skipped" in x.message
+                   for x in caplog.records)
+    rows = market.recent_candles(
+        venue="lighter", contract="BTC", quote="USD",
+        interval_minutes=5, count=3,
+    )
+    assert all(row["volume_base"] == 1.0 for row in rows)
+    with store.connect() as conn:
+        evidence = conn.execute(
+            "SELECT original_volume_base,last_volume_base,observation_count,"
+            "last_observed_at FROM perp_lighter_volume_revisions "
+            "ORDER BY opened_at"
+        ).fetchall()
+    assert len(evidence) == 3
+    assert all(row["original_volume_base"] == 1.0 for row in evidence)
+    assert all(row["last_volume_base"] == 2.25 for row in evidence)
+    assert all(row["observation_count"] == 1 for row in evidence)
+
+    later_observed = newer_observed + timedelta(minutes=5)
+    revised_again = MarketBatch(
+        (),
+        tuple(replace(c, volume_base=2.75, observed_at=later_observed)
+              for c in original.candles),
+        5, later_observed,
+    )
+    assert market.ingest(revised_again).conflicted_candles == 3
+    with store.connect() as conn:
+        evidence = conn.execute(
+            "SELECT last_volume_base,observation_count,last_observed_at "
+            "FROM perp_lighter_volume_revisions"
+        ).fetchall()
+    assert all(row["last_volume_base"] == 2.75 for row in evidence)
+    assert all(row["observation_count"] == 2 for row in evidence)
+    assert all(row["last_observed_at"] == later_observed.isoformat()
+               for row in evidence)
+    assert all(row["volume_base"] == 1.0 for row in market.recent_candles(
+        venue="lighter", contract="BTC", quote="USD", interval_minutes=5, count=3,
+    ))
+
+
+def test_lighter_price_revisions_remain_warnings_and_never_change_history(
+    tmp_path, caplog,
+) -> None:
+    store = SQLiteHotStore(tmp_path / "lighter_price.sqlite")
+    market = PerpetualMarketStore(store)
+    original = _batch(length=2)
+    original = MarketBatch(
+        (),
+        tuple(replace(c, venue="lighter", contract="BTC")
+              for c in original.candles),
+        5, original.observed_at,
+    )
+    market.ingest(original)
+    first = original.candles[0]
+    revised = MarketBatch(
+        (), (replace(first, close_price=first.close_price + 0.25),),
+        5, original.observed_at,
+    )
+    with caplog.at_level(logging.WARNING):
+        result = market.ingest(revised)
+    assert result.conflicted_candles == 1
+    assert any("close_price:1" in x.message for x in caplog.records)
+    with store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM perp_lighter_volume_revisions"
+        ).fetchone()["n"] == 0

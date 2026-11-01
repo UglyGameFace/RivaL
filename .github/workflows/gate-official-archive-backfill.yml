@@ -9,6 +9,7 @@ on:
       - "src/parlay_bot/research/gate_native.py"
       - "src/parlay_bot/research/gate_api_fallback.py"
       - "src/parlay_bot/research/gate_coverage.py"
+      - "src/parlay_bot/research/gate_minute_repair.py"
       - "src/parlay_bot/research/source_native.py"
       - "src/parlay_bot/archive/drive.py"
       - "tests/test_gate_bulk_archive.py"
@@ -16,6 +17,7 @@ on:
       - "tests/test_gate_native.py"
       - "tests/test_gate_api_fallback.py"
       - "tests/test_gate_coverage.py"
+      - "tests/test_gate_minute_repair.py"
   push:
     branches: [main]
     paths:
@@ -24,6 +26,7 @@ on:
       - "src/parlay_bot/research/gate_archive_backfill.py"
       - "src/parlay_bot/research/gate_api_fallback.py"
       - "src/parlay_bot/research/gate_coverage.py"
+      - "src/parlay_bot/research/gate_minute_repair.py"
   schedule:
     - cron: "27 4,10,16,22 * * *"
   workflow_dispatch:
@@ -54,7 +57,7 @@ jobs:
       - name: Test source format, source budgets and actual Drive readback wiring
         run: |
           python -m pip install -e ".[dev,archive]"
-          ruff check src/parlay_bot/archive/drive.py src/parlay_bot/research/gate_bulk_archive.py src/parlay_bot/research/gate_archive_backfill.py src/parlay_bot/research/gate_api_fallback.py src/parlay_bot/research/gate_coverage.py src/parlay_bot/research/gate_native.py src/parlay_bot/research/source_native.py tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_api_fallback.py tests/test_gate_coverage.py tests/test_gate_native.py
+          ruff check src/parlay_bot/archive/drive.py src/parlay_bot/research/gate_bulk_archive.py src/parlay_bot/research/gate_archive_backfill.py src/parlay_bot/research/gate_api_fallback.py src/parlay_bot/research/gate_coverage.py src/parlay_bot/research/gate_minute_repair.py src/parlay_bot/research/gate_native.py src/parlay_bot/research/source_native.py tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_api_fallback.py tests/test_gate_coverage.py tests/test_gate_minute_repair.py tests/test_gate_native.py
           pytest -q tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_api_fallback.py tests/test_gate_coverage.py tests/test_gate_native.py tests/test_polymarket_contract_research.py -k 'not postgres'
 
   gate-real-archive-smoke:
@@ -94,12 +97,69 @@ jobs:
                                     "configured_unix": info["contract_config_last_changed_unix"],
                                     "provider_metadata_sha256": info["contract_metadata_sha256"]}))
           PY
+      - name: Fetch actual original Gate one-minute SOL source for March 2023
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m parlay_bot.research.gate_bulk_archive \
+            --asset SOL --kind candlesticks_1m \
+            --month 2023-03 --out-dir data/gate-minute-smoke
+      - name: Audit actual same-Gate 5m versus 1m March 2023 SOL gaps
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m parlay_bot.research.gate_bulk_archive \
+            --asset SOL --kind candlesticks_5m \
+            --month 2023-03 --out-dir data/gate-minute-smoke
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          from parlay_bot.research.gate_minute_repair import (
+              minute_rows, reconstruct_gaps,
+          )
+          from parlay_bot.research.gate_native import (
+              original_candles, gaps,
+          )
+          from parlay_bot.research.free_history import HistoryImportError
+          root = Path("data/gate-minute-smoke")
+          one = root / "candlesticks_1m/2023-03/SOL_USDT-2023-03.csv.gz"
+          five = root / "candlesticks_5m/2023-03/SOL_USDT-2023-03.csv.gz"
+          digest_1m = hashlib.sha256(one.read_bytes()).hexdigest()
+          digest_5m = hashlib.sha256(five.read_bytes()).hexdigest()
+          raw, _ = original_candles(
+              five, asset="SOL", month="2023-03", expected_sha=digest_5m,
+          )
+          minute, _ = minute_rows(
+              one, asset="SOL", month="2023-03", expected_sha=digest_1m,
+          )
+          try:
+              found, evidence = reconstruct_gaps(
+                  original_5m=raw, one_minute=minute,
+                  asset="SOL", month="2023-03",
+                  original_sha=digest_5m, minute_sha=digest_1m,
+              )
+              print(json.dumps({
+                  "real_gate_original_5m_missing": evidence["missing_source_5m_before"],
+                  "real_gate_1m_derived": len(found),
+                  "still_unresolved": len(evidence["unresolved_open_unix_seconds"]),
+                  "crosschecked_source_5m": evidence["crosschecked_5m_source_bars"],
+                  "native_model_approved": False,
+              }))
+          except HistoryImportError as exc:
+              print(json.dumps({
+                  "real_gate_minute_repair": "source_unqualified",
+                  "reason": str(exc),
+                  "native_model_approved": False,
+              }))
+          PY
       - name: Preserve independently downloaded public source proof
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gate-public-2023-source-smoke
           path: data/gate-smoke/**/*.manifest.json
+            data/gate-minute-smoke/**/*.manifest.json
           if-no-files-found: ignore
           retention-days: 14
 

@@ -332,6 +332,7 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
         "unavailable_or_rejected": [],
         "native_qualified": [], "native_blockers": [],
         "same_venue_api_fallback": [],
+        "one_minute_gap_repairs": [], "one_minute_gap_blockers": [],
         "five_minute_source_gap_inventory": [],
         "native_months_already_listed_without_readback": len(native_months),
         "model_research": {"status": "not_run_no_six_verified_months",
@@ -350,6 +351,7 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
             with httpx.Client(timeout=65, follow_redirects=False) as client:
                 api_fallback_attempts = 0
                 api_fallback_months = None
+                one_minute_gap_attempts = 0
                 for asset, kind, month in selected:
                     if len(result["published"]) >= max_new:
                         break
@@ -404,6 +406,47 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                                 "model_training_eligible": False,
                                 "source_provider_checksum_signed": False,
                             })
+                        if (kind == "candlesticks_5m" and missing_stamps
+                            and one_minute_gap_attempts < 2):
+                            # The original 5m gzip is never modified. A
+                            # distinct original Gate 1m archive may prove
+                            # the missing windows exactly, even when old
+                            # contract-size specs prevent model qualification.
+                            minute_key = (asset, "candlesticks_1m", month)
+                            if minute_key in existing:
+                                result["one_minute_gap_repairs"].append({
+                                    "asset": asset, "month": month,
+                                    "status": "one_minute_raw_listed_not_reverified",
+                                    "model_training_eligible": False,
+                                })
+                            else:
+                                from parlay_bot.research.gate_minute_repair import (
+                                    publish_minute_gap_evidence,
+                                )
+
+                                one_minute_gap_attempts += 1
+                                try:
+                                    minute_proof = await publish_minute_gap_evidence(
+                                        drive, client=client,
+                                        original_5m=native_rows,
+                                        original_5m_sha=receipt["compressed_sha256"],
+                                        asset=asset, month=month, root=root,
+                                    )
+                                    result["one_minute_gap_repairs"].append(minute_proof)
+                                    existing[minute_key] = minute_proof["raw_1m_sha256"][:16]
+                                except (HistoryImportError, DriveArchiveError,
+                                        httpx.HTTPError, OSError, RuntimeError,
+                                        ValueError) as minute_exc:
+                                    reason = str(minute_exc)[:240]
+                                    result["one_minute_gap_blockers"].append({
+                                        "asset": asset, "month": month,
+                                        "reason": reason,
+                                    })
+                                    if any(code in reason for code in (
+                                        "HTTP 429", "HTTP 503", "HTTP 502", "HTTP 504",
+                                    )):
+                                        result["provider_throttled"] = True
+                                        break
                         if kind == "candlesticks_5m" and (asset, month) not in native_months:
                             from parlay_bot.research.gate_native import qualify_and_publish
 
@@ -586,6 +629,8 @@ def main(argv: list[str] | None = None) -> int:
         "provider_throttled": data["provider_throttled"],
         "native_qualified": len(data["native_qualified"]),
         "native_blocked": len(data["native_blockers"]),
+        "minute_repair_evidence": len(data["one_minute_gap_repairs"]),
+        "minute_repair_blockers": len(data["one_minute_gap_blockers"]),
         "five_minute_gap_inventory_files": len(data["five_minute_source_gap_inventory"]),
         "model_research": data["model_research"]["status"],
         "ledger_drive_verified": data["coverage_ledger_private_drive_verified"],

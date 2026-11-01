@@ -146,3 +146,43 @@ async def test_stream_archive_429_blocks_and_preserves_fallback_signal():
             await files._download_archive(
                 client, url="https://static.okx.com/cdn/okex/sample.zip",
             )
+
+
+@pytest.mark.asyncio
+async def test_adjacent_monthly_zip_cache_does_not_redownload(tmp_path, monkeypatch):
+    monkeypatch.setattr(files, "month_bounds", lambda month: (START, END))
+    monkeypatch.setattr(files, "_next_month", lambda month: "2026-06")
+    archive_downloads = []
+
+    def record(request):
+        if str(request.url).startswith("https://static.okx.com"):
+            archive_downloads.append(str(request.url))
+        return _handler(request)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(record)) as client:
+        for _ in range(2):
+            await files.download_file_month(
+                client, asset="BTC", month="2026-05", root=tmp_path, now=NOW,
+            )
+    assert len(archive_downloads) == 2
+    cache = list(tmp_path.rglob("*.zip"))
+    assert len(cache) == 2
+
+
+@pytest.mark.asyncio
+async def test_tampered_archive_cache_is_not_reused(tmp_path, monkeypatch):
+    monkeypatch.setattr(files, "month_bounds", lambda month: (START, END))
+    monkeypatch.setattr(files, "_next_month", lambda month: "2026-06")
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(_handler),
+    ) as client:
+        await files.download_file_month(
+            client, asset="BTC", month="2026-05", root=tmp_path, now=NOW,
+        )
+        cache = list(tmp_path.rglob("*.zip"))
+        assert len(cache) == 2
+        cache[0].write_bytes(b"modified archive")
+        with pytest.raises(HistoryImportError, match="cached OKX archive content changed"):
+            await files.download_file_month(
+                client, asset="BTC", month="2026-05", root=tmp_path, now=NOW,
+            )

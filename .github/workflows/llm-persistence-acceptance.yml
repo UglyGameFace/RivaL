@@ -1,0 +1,62 @@
+name: RivaL LFM3 persisted-research acceptance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/llm-persistence-acceptance.yml"
+      - "src/parlay_bot/perpetuals/llm_persistence_acceptance.py"
+      - "tools/discloud_llm_persistence.py"
+  schedule:
+    # Uses GitHub, not a sixth ChatGPT scheduled task. Best-effort timing.
+    - cron: "51 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: rival-llm-persisted-research-acceptance
+  cancel-in-progress: false
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Skip completed one-time proof
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          state="$(gh api "repos/$GITHUB_REPOSITORY/issues/216" --jq .state)"
+          if [[ "$state" == "open" ]]; then
+            echo "pending=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Issue #216 is closed; no Discloud or AI request."
+            echo "pending=false" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.pending == 'true'
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.pending == 'true'
+        with:
+          python-version: "3.11"
+      - name: Verify normal research request and exact PostgreSQL receipt
+        id: receipt
+        if: steps.gate.outputs.pending == 'true'
+        env:
+          DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+          DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+        run: python tools/discloud_llm_persistence.py
+      - name: Close only on actual persisted production proof
+        if: steps.receipt.outputs.outcome == 'verified'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh issue close 216 --repo "$GITHUB_REPOSITORY" --reason completed \
+            --comment "Verified normal quota-controlled LocalFirstResearch.ask and its exact persisted PostgreSQL perp_ai_research receipt in $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. No changes to trading, quota rules, LFM3 inference or background AI settings."

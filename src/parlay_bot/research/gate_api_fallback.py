@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -26,6 +27,72 @@ from parlay_bot.research.publish import _artifact
 # 31 days contains at most 8,928 5-minute slots; ten bounded calls suffice.
 POINTS_PER_REQUEST = 900
 MAX_WINDOWS = 10
+
+
+async def listed_api_fallback_months(drive) -> set[tuple[str, str]]:
+    """Resume hints from previously archived Gate API-only evidence receipts.
+
+    This metadata listing does not certify historical source-native training
+    or prove the previous witness bytes were rehashed today. It only prevents
+    spending 9-10 Gate requests again for the same existing research receipt.
+    """
+    await drive._verify_folder_boundary()
+    folder = drive.folders.history
+    query = (
+        f"'{drive._escape_query(folder)}' in parents and trashed = false "
+        "and name contains 'gate-api-fallback-' "
+        "and appProperties has { key='rival_kind' and value='history' }"
+    )
+    exact = re.compile(
+        r"gate-api-fallback-(BTC|ETH|SOL|XRP)-"
+        r"(20\d{2}-(?:0[1-9]|1[0-2]))-([0-9a-f]{16})\.json"
+    )
+    seen: dict[tuple[str, str], str] = {}
+    page = None
+    for _ in range(10):
+        params = {
+            "q": query, "spaces": "drive", "pageSize": 1000,
+            "fields": "nextPageToken,files(name,parents,trashed,appProperties)",
+        }
+        if page:
+            params["pageToken"] = page
+        response = await drive._client.get(
+            f"{drive.DRIVE_URL}/files", params=params,
+            headers=await drive._headers(),
+        )
+        if response.status_code != 200:
+            raise HistoryImportError("Gate API-only Drive inventory unavailable")
+        data = response.json()
+        files = data.get("files") if isinstance(data, dict) else None
+        if not isinstance(files, list) or len(files) > 1000:
+            raise HistoryImportError("invalid Gate API-only Drive inventory")
+        for item in files:
+            if (not isinstance(item, dict) or item.get("trashed")
+                or folder not in (item.get("parents") or [])):
+                raise HistoryImportError("Gate API-only receipt outside Drive boundary")
+            props = item.get("appProperties") or {}
+            if not isinstance(props, dict) or props.get("rival_kind") != "history":
+                raise HistoryImportError("invalid Gate API-only receipt ownership")
+            filename = item.get("name")
+            match = exact.fullmatch(filename) if isinstance(filename, str) else None
+            if match is None:
+                continue
+            asset, month, short = match.groups()
+            sha = props.get("rival_sha256")
+            if (not isinstance(sha, str) or len(sha) != 64
+                or any(ch not in "0123456789abcdef" for ch in sha)
+                or sha[:16] != short):
+                raise HistoryImportError("Gate API receipt metadata digest mismatch")
+            key = (asset, month)
+            if key in seen and seen[key] != sha:
+                raise HistoryImportError("conflicting immutable Gate API-only receipts")
+            seen[key] = sha
+        page = data.get("nextPageToken")
+        if page is None:
+            return set(seen)
+        if not isinstance(page, str) or not 1 <= len(page) <= 1000:
+            raise HistoryImportError("invalid Gate API-only inventory cursor")
+    raise HistoryImportError("Gate API-only receipt inventory exceeds page budget")
 
 
 async def recover_unavailable_archive(

@@ -106,7 +106,9 @@ async def test_backfill_observes_real_fetch_time_and_persists_cursor(tmp_path):
     raw = httpx.AsyncClient(transport=httpx.MockTransport(_gate_response))
     system = GateHistoryRecovery(market, assets=("BTC",), page_bars=12, client=raw)
     try:
+        fetched_after = datetime.now(UTC)
         assert await system.run_once(now=AT) == 12
+        fetched_before = datetime.now(UTC)
         state = system.progress()[0]
         assert state["inserted_bars"] == 12
         assert state["status"] == "progress"
@@ -116,8 +118,9 @@ async def test_backfill_observes_real_fetch_time_and_persists_cursor(tmp_path):
         )
         assert len(saved) == 12
         assert saved[-1]["volume_base"] == 2
-        # The historical opening is April; first-observed is October.
-        assert datetime.fromisoformat(saved[0]["first_observed_at"]).month == 10
+        # Historical openings remain historical; observations use real fetch time.
+        observed = datetime.fromisoformat(saved[0]["first_observed_at"])
+        assert fetched_after <= observed <= fetched_before
         assert market.recent_candles(
             venue="gate", contract="BTC_USDT", quote="USDT", interval_minutes=5,
             count=100, as_of=datetime(2026, 4, 29, tzinfo=UTC),

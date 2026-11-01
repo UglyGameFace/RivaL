@@ -77,6 +77,37 @@ per model/source, sufficient real quotes (80% or better), calibrated
 superiority to meaningful baselines and positive after-cost stress
 results. NO CALL remains authoritative until those independent gates pass.
 
+## All checks from the existing Discloud console
+
+No separate PostgreSQL editor is needed.
+
+Run the ordinary command to see the causal receipt plus a new host_health
+section (last watchdog timestamp, process boot identity, and open incidents):
+
+    python tools/unattended_acceptance.py
+
+For rigorous restart verification, mark a fixed sample of finalized production
+records BEFORE pressing Discloud Restart:
+
+    python tools/unattended_acceptance.py --mark-restart
+
+The result must be BASELINE_SAVED. This saves exact immutable row fingerprints
+inside the persistent production database. Restart RivaL only, leave the workers
+to issue new forecasts, and then run:
+
+    python tools/unattended_acceptance.py --verify-restart
+
+PASS requires a distinct bot boot after marking, an advanced fresh watchdog,
+the previously saved finalized forecast and quote rows unchanged and present,
+no reported open incidents, and at least one new forecast after the mark.
+UNVERIFIED explains missing evidence. Rerunning verification is safe.
+Do not mark a new baseline after the restart until the old one is verified.
+
+Earlier rolling 200-record summaries cannot prove individual row identity,
+so the already performed restart alone cannot pass this stricter new gate.
+This host-side check does not replace independent external uptime monitoring:
+a completely stopped process cannot update its own heartbeat.
+
 ## When to declare operational acceptance
 
 Record the exact running deployed commit, then check the following *against

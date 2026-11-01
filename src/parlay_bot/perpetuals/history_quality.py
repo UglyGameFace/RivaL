@@ -14,6 +14,7 @@ from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS as _ASSETS
 
 _STEP = timedelta(minutes=5)
+_AUDIT_PAGE_SIZE = 2048
 
 
 def _utc(value: datetime) -> datetime:
@@ -75,6 +76,42 @@ class SixMonthQualityAudit:
                 """
             )
 
+    @staticmethod
+    def _scan_rows(store, *, venue: str, contract: str, quote: str,
+                   start: str, end: str):
+        """Keyset-scan all candidate candles without holding a connection
+        while validating timestamps. Use the existing stream PK index.
+        """
+        last_opened: str | None = None
+        while True:
+            with store.connect() as conn:
+                if last_opened is None:
+                    rows = conn.execute(
+                        """SELECT opened_at,closed_at,first_observed_at
+                           FROM perp_market_candles
+                           WHERE venue=? AND contract=? AND quote=?
+                             AND interval_minutes=5 AND opened_at>=?
+                             AND opened_at<? ORDER BY opened_at ASC LIMIT ?""",
+                        (venue, contract, quote, start, end, _AUDIT_PAGE_SIZE),
+                    ).fetchall()
+                else:
+                    rows = conn.execute(
+                        """SELECT opened_at,closed_at,first_observed_at
+                           FROM perp_market_candles
+                           WHERE venue=? AND contract=? AND quote=?
+                             AND interval_minutes=5 AND opened_at>=?
+                             AND opened_at<? AND opened_at>?
+                           ORDER BY opened_at ASC LIMIT ?""",
+                        (venue, contract, quote, start, end,
+                         last_opened, _AUDIT_PAGE_SIZE),
+                    ).fetchall()
+            if not rows:
+                return
+            last_opened = str(rows[-1]["opened_at"])
+            yield from rows
+            if len(rows) < _AUDIT_PAGE_SIZE:
+                return
+
     def audit_stream(
         self, *, venue: str, asset: str, now: datetime | None = None,
     ) -> dict:
@@ -105,51 +142,45 @@ class SixMonthQualityAudit:
             for offset in range(min(remaining, bars)):
                 missing_slots.append(first + offset * _STEP)
         self.initialize()
-        with self.store.connect() as conn:
-            rows = conn.execute(
-                """SELECT opened_at,closed_at,first_observed_at
-                   FROM perp_market_candles
-                   WHERE venue=? AND contract=? AND quote=?
-                     AND interval_minutes=5 AND opened_at>=?
-                     AND opened_at<? ORDER BY opened_at ASC""",
-                (venue, contract, quote, start.isoformat(), end.isoformat()),
-            )
-            # Process in chunks to avoid loading six months of candles at once.
-            while batch := rows.fetchmany(512):
-                for row in batch:
-                    try:
-                        opened = _utc(datetime.fromisoformat(str(row["opened_at"])))
-                        closed = _utc(datetime.fromisoformat(str(row["closed_at"])))
-                        observed = _utc(datetime.fromisoformat(
-                            str(row["first_observed_at"])
-                        ))
-                    except (ValueError, TypeError, OverflowError):
-                        invalid += 1
-                        continue
-                    offset = (opened - start).total_seconds()
-                    if (
-                        offset < 0 or offset % 300 != 0
-                        or opened != opened.replace(second=0, microsecond=0)
-                    ):
-                        off_grid += 1
-                        continue
-                    if opened < cursor:
-                        off_grid += 1
-                        continue
-                    if opened > cursor:
-                        gap = int((opened - cursor).total_seconds() // 300)
-                        segments += 1
-                        longest = max(longest, gap)
-                        note_missing(cursor, gap)
-                    valid += 1
-                    if (
-                        closed != opened + _STEP - timedelta(milliseconds=1)
-                        or observed <= closed or observed > clock
-                    ):
-                        # These are genuine stored bars but cannot be certified
-                        # as valid point-in-time historical observations.
-                        invalid += 1
-                    cursor = opened + _STEP
+        # Each bounded read returns the connection before Python processes
+        # timestamps. A six-month scan must never monopolize the shared pool.
+        for row in self._scan_rows(
+            self.store, venue=venue, contract=contract, quote=quote,
+            start=start.isoformat(), end=end.isoformat(),
+        ):
+            try:
+                opened = _utc(datetime.fromisoformat(str(row["opened_at"])))
+                closed = _utc(datetime.fromisoformat(str(row["closed_at"])))
+                observed = _utc(datetime.fromisoformat(
+                    str(row["first_observed_at"])
+                ))
+            except (ValueError, TypeError, OverflowError):
+                invalid += 1
+                continue
+            offset = (opened - start).total_seconds()
+            if (
+                offset < 0 or offset % 300 != 0
+                or opened != opened.replace(second=0, microsecond=0)
+            ):
+                off_grid += 1
+                continue
+            if opened < cursor:
+                off_grid += 1
+                continue
+            if opened > cursor:
+                gap = int((opened - cursor).total_seconds() // 300)
+                segments += 1
+                longest = max(longest, gap)
+                note_missing(cursor, gap)
+            valid += 1
+            if (
+                closed != opened + _STEP - timedelta(milliseconds=1)
+                or observed <= closed or observed > clock
+            ):
+                # These are genuine stored bars but cannot be certified
+                # as valid point-in-time historical observations.
+                invalid += 1
+            cursor = opened + _STEP
         if cursor < end:
             gap = int((end - cursor).total_seconds() // 300)
             segments += 1

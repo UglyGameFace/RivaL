@@ -318,10 +318,10 @@ async def restore_verified_source_months(
                 or not (
                     info.get("source_integrity") == "postgres-first-observed-at-v1"
                     or (
-                        venue == "bitget"
-                        and info.get("source_integrity") == "bitget-v3-public-history-v1"
+                        venue == "okx"
+                        and info.get("source_integrity") == "okx-v5-public-history-5m-v1"
                         and info.get("source_url") ==
-                            "https://api.bitget.com/api/v3/market/history-candles"
+                            "https://www.okx.com/api/v5/market/history-candles"
                         and info.get("source_transport") == "official_public_https"
                         and info.get("provider_signed_checksum") is False
                     )

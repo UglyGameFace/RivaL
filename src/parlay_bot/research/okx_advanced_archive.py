@@ -24,6 +24,7 @@ from urllib.parse import unquote, urlparse
 import httpx
 
 from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.okx_l2_replay import ArchivedBook
 from parlay_bot.research.official_okx_bootstrap import ASSETS, month_bounds
 
 MODULES = frozenset({"trades", "funding_rates", "orderbook_l2_400", "orderbook_l2_5000"})
@@ -133,6 +134,9 @@ def _parse_member(name: str, stream, *, asset: str, module: str, start: datetime
         finally:
             text.detach()
     elif name.endswith((".jsonl", ".ndjson")) and module.startswith("orderbook_l2_"):
+        # Different source members may have different snapshot checkpoints.
+        # Never join separate files into an invented continuous book.
+        book = ArchivedBook(5000 if module.endswith("5000") else 400)
         text = io.TextIOWrapper(stream, encoding="utf-8")
         try:
             for line in text:
@@ -145,26 +149,19 @@ def _parse_member(name: str, stream, *, asset: str, module: str, start: datetime
                     raise HistoryImportError("invalid L2 JSON") from exc
                 if not isinstance(event, dict):
                     raise HistoryImportError("invalid L2 event")
+                if event.get("instId") not in (None, f"{asset}-USDT-SWAP"):
+                    raise HistoryImportError("wrong swap identity inside L2")
                 ts = _event_time(event.get("ts"), start, end)
-                action = event.get("action")
-                if action not in {"snapshot", "update"}:
-                    raise HistoryImportError("L2 action unsupported")
-                # Incremental updates cannot be priced as full books.
-                if action != "snapshot":
+                metrics = book.apply(event, ts)
+                if metrics is None:
                     continue
-                asks, bids = event.get("asks"), event.get("bids")
-                if not isinstance(asks, list) or not isinstance(bids, list) or not asks or not bids:
-                    raise HistoryImportError("incomplete L2 snapshot")
-                ask = min(_positive(level[0]) for level in asks if isinstance(level, list) and len(level) >= 2)
-                bid = max(_positive(level[0]) for level in bids if isinstance(level, list) and len(level) >= 2)
-                if bid >= ask:
-                    raise HistoryImportError("crossed L2 snapshot")
                 slot = ts // 300_000 * 300_000
                 bucket = buckets[slot]
-                bucket["l2_snapshot_count"] += 1
+                bucket["l2_snapshot_count" if metrics["snapshot"] else "l2_linked_update_count"] += 1
                 if ts >= bucket.get("last_snapshot_ts_ms", -1):
                     bucket["last_snapshot_ts_ms"] = ts
-                    bucket["last_snapshot_spread_bps"] = 20_000 * (ask - bid) / (ask + bid)
+                    bucket["last_snapshot_spread_bps"] = metrics["last_snapshot_spread_bps"]
+                    bucket["l2_top5_imbalance"] = metrics["l2_top5_imbalance"]
         finally:
             text.detach()
     else:

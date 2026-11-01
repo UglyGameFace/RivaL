@@ -377,6 +377,8 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                         if kind == "candlesticks_5m":
                             from parlay_bot.research.gate_native import (
                                 gaps as gate_missing,
+                            )
+                            from parlay_bot.research.gate_native import (
                                 original_candles,
                             )
 

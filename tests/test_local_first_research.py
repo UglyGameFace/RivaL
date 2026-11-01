@@ -218,3 +218,23 @@ async def test_discovery_failure_retains_existing_free_fallback(monkeypatch):
         outcome = await ai.ask(asset="SOL", venues=("okx",))
     assert outcome.model == module.CLOUD_MODEL
     assert len(market.quota) == 1
+
+@pytest.mark.asyncio
+async def test_client_rechecks_direction_if_gateway_returns_unsupported_up(monkeypatch):
+    market = Market()
+    monkeypatch.setattr(openrouter_research, "build_evidence", market_evidence)
+
+    def handler(request):
+        response = success(module.LOCAL_MODEL)
+        response.update(direction="up", confidence="high",
+                        thesis="Guaranteed next BTC candle up", risk="No risk")
+        return httpx.Response(200, json=response)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        reviewer = module.LocalFirstResearch(
+            market, local_key="x" * 48, client=http)
+        report = await reviewer.ask(asset="BTC", venues=("okx",))
+        assert report.direction == "uncertain"
+        assert report.confidence == "low"
+        assert "Guaranteed" not in report.thesis
+    assert market.saved[0]["direction"] == "uncertain"

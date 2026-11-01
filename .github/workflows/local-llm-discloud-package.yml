@@ -64,6 +64,7 @@ jobs:
              services/rival-llm/requirements.txt \
              services/rival-llm/service.py \
              services/rival-llm/discovery.py \
+             src/parlay_bot/perpetuals/evidence_policy.py \
              services/rival-llm/model_download.py \
              services/rival-llm/benchmark.py \
              services/rival-llm/benchmark_cases.json \
@@ -92,6 +93,9 @@ jobs:
     needs: package
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
       - name: Re-download the actual GitHub artifact and check root structure
         uses: actions/download-artifact@v4
         with:
@@ -107,7 +111,7 @@ jobs:
           test -f discloud.config
           test -f main.py
           test -f requirements.txt
-          python -m py_compile main.py service.py discovery.py model_download.py
+          python -m py_compile main.py service.py discovery.py evidence_policy.py model_download.py
           python -c "import main; assert callable(main.main)"
           test -x runtime/bin/llama-server
           test ! -e rival-llm-discloud.zip

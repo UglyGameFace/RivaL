@@ -18,6 +18,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from discovery import serve as serve_peer_discovery
+
+try:
+    # Inside the standalone Discloud ZIP the policy is shipped at app root.
+    from evidence_policy import enforce as enforce_grounding
+except ModuleNotFoundError:
+    # Editable repository test/developer environment imports source package.
+    from parlay_bot.perpetuals.evidence_policy import enforce as enforce_grounding
 from model_download import ensure_model
 
 LOG = logging.getLogger("rival_llm")
@@ -167,7 +174,7 @@ class Gateway(ThreadingHTTPServer):
         result = json.loads(content)
         if not validated_research(result):
             raise ValueError("invalid model fields")
-        return {
+        return enforce_grounding({
             "model": self.identity,
             "direction": result["direction"],
             "confidence": result["confidence"],
@@ -175,7 +182,7 @@ class Gateway(ThreadingHTTPServer):
             "risk": result["risk"].strip(),
             "informational_only": True,
             "uncalibrated": True,
-        }
+        }, evidence, asset=asset)
 
 
 class GatewayHandler(BaseHTTPRequestHandler):

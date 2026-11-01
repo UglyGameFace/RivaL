@@ -13,6 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1] / "services" / "rival-llm"
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT.parents[1] / "src" / "parlay_bot" / "perpetuals"))
 SERVICE = runpy.run_path(str(ROOT / "service.py"))
 Gateway = SERVICE["Gateway"]
 
@@ -250,5 +251,50 @@ def test_reasoning_only_or_truncated_output_is_never_accepted(monkeypatch):
         choice["finish_reason"] = "stop"
         with pytest.raises(ValueError, match="produced no answer text"):
             server.infer("BTC", {"sources": [{"venue": "okx"}]})
+    finally:
+        server.server_close()
+
+def test_gateway_replaces_unsupported_future_direction_even_with_valid_json(monkeypatch):
+    server = Gateway("127.0.0.1", 0, token="t" * 48, model="lfm3")
+
+    class Response:
+        status = 200
+
+        def __init__(self, value):
+            self.payload = json.dumps(value).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _max):
+            return self.payload
+
+    def backend(request, timeout):
+        if request.full_url.endswith("/apply-template"):
+            return Response({"prompt": "valid template"})
+        if request.full_url.endswith("/tokenize"):
+            return Response({"tokens": [7] * 100})
+        return Response({"choices": [{"finish_reason": "stop", "message": {
+            "content": json.dumps({
+                "direction": "up", "confidence": "high",
+                "thesis": "Guaranteed profit with BTC rally", "risk": "None",
+            })}}]})
+
+    try:
+        monkeypatch.setattr(SERVICE["urllib"].request, "urlopen", backend)
+        result = server.infer("BTC", {
+            "asset": "BTC", "analysis": "synthetic_connectivity_test_only",
+            "sources": [{"venue": "okx", "status": "quotes_missing"}],
+        })
+        assert result["direction"] == "uncertain"
+        assert result["confidence"] == "low"
+        assert result["grounding_status"] == "insufficient_evidence"
+        assert result["observed_trend"] is None
+        assert result["model_direction_overridden"]
+        assert "Guaranteed" not in result["thesis"]
+        assert result["informational_only"] and result["uncalibrated"]
     finally:
         server.server_close()

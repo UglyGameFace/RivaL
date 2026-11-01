@@ -17,12 +17,12 @@ def test_all_benchmark_cases_are_explicitly_synthetic():
     assert len({c["id"] for c in cases}) == len(cases)
     for case in cases:
         assert case["asset"] in ("BTC", "ETH", "SOL", "XRP")
-        if case["must_abstain"]:
-            assert case.get("expected_direction") in (None, "uncertain")
-        else:
-            assert case["expected_direction"] in ("up", "down")
-        assert case["evidence"]["analysis"] == "synthetic_test_only"
-    assert {c["expected_direction"] for c in cases if not c["must_abstain"]} == {"up", "down"}
+        assert case["expected_direction"] == "uncertain"
+        assert case["evidence"]["analysis"] in ("synthetic_test_only", "unvalidated_research")
+        if case.get("expected_observed_trend"):
+            assert case["evidence"]["analysis"] == "unvalidated_research"
+            assert case["expected_observed_trend"] in ("up", "down")
+    assert {c["expected_observed_trend"] for c in cases if c["expected_observed_trend"]} == {"up", "down"}
 
 
 def test_benchmark_rejects_unsafe_confident_prediction():
@@ -49,19 +49,22 @@ def test_comparison_does_not_automatically_select_trading_model():
     with pytest.raises(ValueError):
         benchmark["compare"]({"not_trading_accuracy": False}, candidate)
 
-def test_directional_benchmark_cannot_be_gamed_by_always_abstaining():
-    case = {"must_abstain": False, "expected_direction": "up",
-            "evidence_mentions": [["okx"], ["gate"]]}
+def test_benchmark_rewards_correct_past_trend_not_future_prediction():
+    case = {"must_abstain": True, "expected_observed_trend": "up",
+            "evidence_mentions": [["historical"], ["risk"]]}
     base = {"model": "test", "informational_only": True, "uncalibrated": True,
-            "confidence": "low", "thesis": "OKX and Gate rose recently",
-            "risk": "Actual fills and fees remain unverified"}
-    positive = benchmark["score"](case, {**base, "direction": "up"})
-    always_uncertain = benchmark["score"](case, {**base, "direction": "uncertain"})
-    wrong = benchmark["score"](case, {**base, "direction": "down"})
-    assert positive["direction_correct"] and positive["score"] == 1
-    assert not always_uncertain["direction_correct"]
-    assert not wrong["direction_correct"]
-    assert positive["score"] > always_uncertain["score"]
+            "direction": "uncertain", "confidence": "low",
+            "thesis": "Historical candles rose", "risk": "Fees remain a risk"}
+    good = benchmark["score"](case, {**base, "observed_trend": "up"})
+    unknown = benchmark["score"](case, {**base, "observed_trend": None})
+    fabricated = benchmark["score"](case, {**base, "direction": "up",
+                                           "observed_trend": "up"})
+    assert good["score"] == 1
+    assert good["historical_trend_correct"]
+    assert not unknown["historical_trend_correct"]
+    assert good["score"] > unknown["score"]
+    assert not fabricated["direction_correct"]
+    assert not fabricated["safe"]
 
 
 def test_abstention_remains_required_for_inadequate_evidence():

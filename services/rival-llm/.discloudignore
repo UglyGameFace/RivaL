@@ -1,0 +1,9 @@
+.git/
+__pycache__/
+*.pyc
+runtime/llama.cpp/
+*.gguf
+*.part
+*.tmp
+.env
+*.log

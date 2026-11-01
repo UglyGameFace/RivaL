@@ -140,6 +140,43 @@ async def _download_archive(client: httpx.AsyncClient, *, url: str) -> bytes:
         return tmp.read()
 
 
+async def _cached_archive(client: httpx.AsyncClient, *, root: Path,
+                          asset: str, month: str, url: str) -> bytes:
+    """Reuse adjacent-month official bytes only after checking their saved hash."""
+    key = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+    cache = root / ".okx-one-minute-zip-cache"
+    path = cache / f"{asset}-{month}-{key}.zip"
+    checksum_path = cache / f"{asset}-{month}-{key}.sha256"
+    if path.exists():
+        try:
+            payload = path.read_bytes()
+            expected = checksum_path.read_text(encoding="ascii").strip()
+        except (OSError, UnicodeError) as exc:
+            raise HistoryImportError("cached OKX archive checksum missing") from exc
+        if (not 0 < len(payload) <= MAX_DOWNLOAD or len(expected) != 64
+            or hashlib.sha256(payload).hexdigest() != expected):
+            raise HistoryImportError("cached OKX archive content changed")
+        return payload
+    if checksum_path.exists():
+        raise HistoryImportError("orphaned OKX archive checksum")
+    payload = await _download_archive(client, url=url)
+    _unzip(payload)  # Never cache a corrupt/unsafe ZIP.
+    cache.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(payload).hexdigest()
+    with tempfile.NamedTemporaryFile(dir=cache, delete=False) as f:
+        temp = Path(f.name)
+        f.write(payload)
+    try:
+        # Never rewrite an existing source archive silently.
+        if path.exists():
+            raise HistoryImportError("concurrent OKX archive cache conflict")
+        checksum_path.write_text(digest + "\n", encoding="ascii")
+        temp.replace(path)
+    finally:
+        temp.unlink(missing_ok=True)
+    return payload
+
+
 def _unzip(payload: bytes) -> bytes:
     try:
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
@@ -195,7 +232,9 @@ async def download_file_month(
         url = archive_url(asset=asset, month=archive_month, record=files[0])
         if not url.endswith(".zip"):
             raise HistoryImportError("OKX minute catalog is not a supported ZIP")
-        payload = await _download_archive(client, url=url)
+        payload = await _cached_archive(
+            client, root=root, asset=asset, month=archive_month, url=url,
+        )
         raw_hash = hashlib.sha256(payload).hexdigest()
         part = _read_csv(_unzip(payload), target_start_ms=begin_ms,
                          target_end_ms=end_ms, asset=asset)

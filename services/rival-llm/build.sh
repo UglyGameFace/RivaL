@@ -40,7 +40,7 @@ cp runtime/llama.cpp/build/bin/llama-server runtime/bin/llama-server
 # Ship the actual library bytes at every SONAME, including .so.0 aliases.
 # ZIP/artifact transports can strip symlinks; never rely on them surviving upload.
 find runtime/llama.cpp/build/bin -maxdepth 1 \( -type f -o -type l \) \
-  \( -name 'libggml*.so*' -o -name 'libllama*.so*' \) \
+  \( -name 'libggml*.so*' -o -name 'libllama*.so*' -o -name 'libmtmd*.so*' \) \
   -exec cp -L '{}' runtime/bin/ \;
 chmod u+x runtime/bin/llama-server
 export LD_LIBRARY_PATH="$(pwd)/runtime/bin:${LD_LIBRARY_PATH:-}"

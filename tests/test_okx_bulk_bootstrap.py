@@ -147,7 +147,7 @@ async def test_drive_native_manifest_listing_handles_multiple_pages(tmp_path):
                 {"name": f"okx-BTC-USDT-SWAP-USDT-5m-2023-{i % 12 + 1:02d}--archive.manifest.json"}
                 for i in range(100)
             ] if len(pages) == 1 else [
-                {"name": "okx-BTC-USDT-SWAP-USDT-5m-2024-03--archive.manifest.json"}
+                {"name": "okx-ETH-USDT-SWAP-USDT-5m-2026-05--archive.manifest.json"}
             ]
             return httpx.Response(200, json={
                 "files": files,
@@ -171,6 +171,7 @@ async def test_drive_native_manifest_listing_handles_multiple_pages(tmp_path):
 
     rows = await restore_verified_source_months(
         Drive(), venue="okx", months=["2026-05"], root=tmp_path,
+        contract="BTC-USDT-SWAP",
     )
     assert rows == []
     assert len(pages) == 2

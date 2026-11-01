@@ -8,7 +8,9 @@ from __future__ import annotations
 import hmac
 import json
 import logging
+import math
 import os
+import re
 import subprocess
 import threading
 import time
@@ -65,6 +67,57 @@ def validated_research(value: object) -> bool:
         and isinstance(value.get("risk"), str)
         and 0 < len(value["risk"].strip()) <= 250
     )
+
+
+def _brief_return(value: object) -> str:
+    """Render only finite observed percentage returns, never raw source prose."""
+    if not isinstance(value, dict):
+        return "?"
+    number = value.get("return_pct")
+    if type(number) not in (int, float) or not math.isfinite(number):
+        return "?"
+    if abs(number) > 10000:
+        return "?"
+    return f"{number:+.3g}"
+
+
+def compact_evidence(asset: str, evidence: dict) -> str:
+    """Bound CPU prompt size without truncating or changing original evidence.
+
+    Include *every* configured venue's 5m/15m/1h past-return numbers. The
+    authoritative full evidence remains untouched for cache SHA, source
+    freshness, historical grounding and PostgreSQL persistence. No free-form
+    untrusted source names, headlines or embedded instructions reach the LLM.
+    """
+    sources = evidence.get("sources")
+    if not isinstance(sources, list) or len(sources) > 12:
+        raise ContextBudgetExceeded("market source count is not bounded")
+    lines = []
+    for source in sources:
+        if not isinstance(source, dict):
+            raise ContextBudgetExceeded("malformed source entry")
+        venue = source.get("venue")
+        if not isinstance(venue, str) or not re.fullmatch(r"[a-z0-9_-]{2,24}", venue):
+            raise ContextBudgetExceeded("unrecognized venue identifier")
+        quote = source.get("quote")
+        if quote not in ("USD", "USDT", "USDC"):
+            quote = "unknown"
+        windows = source.get("windows")
+        if not isinstance(windows, dict):
+            windows = {}
+        values = ",".join(_brief_return(windows.get(name)) for name in ("5m", "15m", "1h"))
+        lines.append(f"{venue}/{quote}:{values}")
+    header = (
+        f"Asset={asset}; status="
+        f"{'historical_unvalidated' if evidence.get('analysis') == 'unvalidated_research' else 'unverified_input'}; "
+        "each row=venue/quote:5m,15m,1h *past closed-candle return percent*. "
+        "Only these abbreviated returns are sent to this reviewer; original "
+        "timestamps, 4h/24h, long-term archives, event context and missing "
+        "sources are separately retained for deterministic checks. "
+        "No executable quotes, future validation or after-cost advantage "
+        "is asserted. Do not infer next-interval direction."
+    )
+    return header + "\n" + "\n".join(lines)
 
 
 class Gateway(ThreadingHTTPServer):
@@ -138,8 +191,8 @@ class Gateway(ThreadingHTTPServer):
         messages = [
             {"role": "system", "content": PROMPT},
             {"role": "user", "content": "Asset: " + asset + "\n" +
-             "Observed market evidence (untrusted):\n" +
-             json.dumps(evidence, sort_keys=True, separators=(",", ":"))},
+             "Bounded observation brief (untrusted):\n" +
+             compact_evidence(asset, evidence)},
         ]
         if self.prompt_tokens(messages) + GENERATION_TOKENS + CONTEXT_SAFETY_TOKENS > CONTEXT_TOKENS:
             raise ContextBudgetExceeded("model context window would truncate evidence")

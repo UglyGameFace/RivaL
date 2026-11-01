@@ -1,4 +1,4 @@
-name: RivaL one-time PostgreSQL LFM3 end-to-end acceptance
+name: RivaL real AI request failure inspection
 on:
   push:
     branches: ["diagnostics/read-only-discloud-vlan-20261101"]
@@ -6,11 +6,11 @@ on:
 permissions:
   contents: read
 jobs:
-  acceptance:
+  inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 4
     steps:
-      - name: Inspect production DB and exercise at most one authorized research request
+      - name: Diagnose real LFM3 request error class and unsummarized prompt size
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
@@ -18,30 +18,61 @@ jobs:
         run: |
           python - <<'PY'
           import base64,json,os,urllib.request,urllib.error,urllib.parse
-          token=os.environ.get("DISCLOUD_TOKEN","")
-          appid=os.environ.get("DISCLOUD_APP_ID","")
-          if not token or not appid:raise SystemExit("Deployment auth unavailable")
-          source="import asyncio, json, os, sys, time\nfrom datetime import UTC, datetime\nfrom pathlib import Path\nfrom parlay_bot.config import Settings\nfrom parlay_bot.storage.hot import PostgresHotStore, SQLiteHotStore\nfrom parlay_bot.perpetuals.market_store import PerpetualMarketStore\nfrom parlay_bot.perpetuals.local_first_research import LocalFirstResearch\nfrom parlay_bot.perpetuals.analysis_evidence import build_evidence, InsufficientEvidence\nfrom parlay_bot.discord_app.data_dashboard import MARKET_SYMBOLS\n\nsettings = Settings()\ndef snapshot(store):\n    with store.connect() as db:\n        models=[dict(r) for r in db.execute(\n          \"SELECT model,COUNT(*) AS rows,MAX(issued_at) AS newest \"\n          \"FROM perp_ai_research GROUP BY model ORDER BY rows DESC\").fetchall()]\n        quotas=[dict(r) for r in db.execute(\n          \"SELECT model,utc_day,used,blocked_until FROM perp_ai_quota \"\n          \"WHERE utc_day>=? ORDER BY utc_day DESC,model LIMIT 20\",\n          ((datetime.now(UTC).date()).isoformat(),)).fetchall()]\n        feeds=[dict(r) for r in db.execute(\n          \"SELECT venue,asset,status,last_success_at FROM perp_feed_health \"\n          \"WHERE asset='BTC' ORDER BY venue\").fetchall()]\n    return {\"saved_model_counts\":models, \"today_request_quota\":quotas,\n            \"btc_feed_rows\":len(feeds),\n            \"btc_feed_ok\":sum(x[\"status\"]==\"ok\" for x in feeds),\n            \"btc_feed_success_timestamps_present\":sum(bool(x[\"last_success_at\"]) for x in feeds)}\nreport={\"provider\":settings.rival_ai_provider,\n    \"background_ai_enabled\":settings.rival_ai_background_opt_in,\n    \"automatic_gemini_enabled\":settings.rival_gemini_auto_enabled,\n    \"local_token_configured\":settings.rival_local_ai_token is not None,\n    \"storage_backend\":settings.rival_storage_backend}\nif settings.rival_storage_backend==\"postgres\" and settings.rival_database_url is not None:\n    store=PostgresHotStore(settings.rival_database_url.get_secret_value())\nelif settings.rival_storage_backend==\"sqlite\":\n    store=SQLiteHotStore(settings.rival_db_path)\nelse:\n    report[\"failure\"]=\"database not configured\"\n    print(\"RIVAL_FULL_PIPELINE=\"+json.dumps(report,default=str));raise SystemExit(0)\ntry:\n    market=PerpetualMarketStore(store)\n    report[\"before\"]=snapshot(store)\n    report[\"expected_ai_model\"]=\"LiquidAI/LFM3-1.7B-GGUF:Q4_K_M\"\n    report[\"model_prior_rows\"]=next((m[\"rows\"] for m in report[\"before\"][\"saved_model_counts\"]\n             if m[\"model\"]==report[\"expected_ai_model\"]),0)\n    if (settings.rival_ai_provider==\"local\" and settings.rival_local_ai_token is not None):\n        try:\n            evidence,digest=build_evidence(market,asset=\"BTC\",\n                  venues=tuple(MARKET_SYMBOLS),horizon_minutes=5)\n            report[\"preflight\"]={\"usable_independent_venues\":len(evidence[\"sources\"]),\n                    \"digest_present\":len(digest)==64}\n            if len(evidence[\"sources\"])>=3:\n                ai=LocalFirstResearch(market,\n                    local_key=settings.rival_local_ai_token.get_secret_value(),\n                    cloudflare_key=None,\n                    daily_max=settings.rival_openrouter_daily_max,\n                    cooldown_seconds=settings.rival_openrouter_cooldown_seconds)\n                try:\n                    start=time.monotonic()\n                    result=asyncio.run(ai.ask(asset=\"BTC\",venues=tuple(MARKET_SYMBOLS)))\n                    report[\"ordinary_research\"]={\n                      \"completed\":True,\"elapsed_seconds\":round(time.monotonic()-start,2),\n                      \"model\":result.model,\"direction\":result.direction,\n                      \"confidence\":result.confidence,\"from_cache\":result.from_cache,\n                      \"source_count\":result.source_count,\n                      \"evidence_sha256_matches\":result.evidence_sha256==digest}\n                finally:\n                    asyncio.run(ai.aclose())\n        except InsufficientEvidence:\n            report[\"preflight\"]={\"insufficient_evidence\":True}\n        except Exception as exc:\n            report[\"ordinary_research\"]={\"completed\":False,\n                  \"exception_type\":type(exc).__name__,\n                  \"exception_message\":str(exc)[:240] if type(exc).__name__ in\n                  (\"ResearchUnavailable\",\"InsufficientEvidence\") else None}\n    report[\"after\"]=snapshot(store)\n    report[\"new_saved_rows\"]=sum(x[\"rows\"] for x in report[\"after\"][\"saved_model_counts\"])-sum(x[\"rows\"] for x in report[\"before\"][\"saved_model_counts\"])\nexcept Exception as exc:\n    report[\"diagnostic_error\"]=type(exc).__name__\nfinally:\n    store.close()\nprint(\"RIVAL_FULL_PIPELINE=\"+json.dumps(report,default=str,sort_keys=True))\n"
-          # main module requires src on path, as in normal production entrypoint.
-          source="import os,sys;sys.path.insert(0,os.path.abspath('src'))\n"+source
-          command="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(source.encode()).decode()+"\"))'"
-          request=urllib.request.Request("https://api.discloud.app/v2/app/"+urllib.parse.quote(appid,safe="")+"/console",
-            data=json.dumps({"command":command}).encode(),method="PUT",
-            headers={"api-token":token,"Content-Type":"application/json"})
+          T=os.getenv("DISCLOUD_TOKEN","");M=os.getenv("DISCLOUD_APP_ID","")
+          if not T or not M:raise SystemExit("No authenticated Discloud API")
+          def api(path,method="GET",body=None):
+           req=urllib.request.Request("https://api.discloud.app/v2"+path,
+             data=json.dumps(body).encode() if body is not None else None,
+             method=method,headers={"api-token":T,"Content-Type":"application/json"})
+           try:
+            with urllib.request.urlopen(req,timeout=75) as r:return json.load(r)
+           except Exception as e:
+            print("Discloud error class",type(e).__name__);return {}
+          lst=api("/app/all").get("apps",[])
+          llm=[a for a in lst if isinstance(a,dict) and a.get("name","").casefold()=="rival-intelligence"]
+          if len(llm)!=1:raise SystemExit("Cannot locate LLM")
+          for label,app in (("main",M),("llm",llm[0]["id"])):
+           reply=api("/app/"+urllib.parse.quote(str(app),safe="")+"/logs")
+           terminal=reply.get("apps",{}).get("terminal",{})
+           raw=str(terminal.get("big") or terminal.get("small") or "")
+           interesting=[line for line in raw.splitlines() if
+               ("inference rejected class=" in line
+                or "Local inference unavailable HTTP" in line
+                or "Local AI rejected request HTTP" in line
+                or "Private local AI network unavailable" in line
+                or "prompt eval time" in line or "total time =" in line
+                or "http_status=503" in line or "http_status=422" in line)]
+           print("Recent redacted",label,"log patterns",[
+               line[-170:] for line in interesting[-12:]])
+          script="""import json,os,sys
+          sys.path.insert(0,os.path.abspath("src"))
+          from parlay_bot.config import Settings
+          from parlay_bot.storage.hot import PostgresHotStore
+          from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+          from parlay_bot.perpetuals.analysis_evidence import build_evidence
+          from parlay_bot.discord_app.data_dashboard import MARKET_SYMBOLS
+          settings=Settings()
+          store=PostgresHotStore(settings.rival_database_url.get_secret_value())
           try:
-            with urllib.request.urlopen(request,timeout=130) as response:res=json.load(response)
-          except urllib.error.HTTPError as e:
-            print("Discloud API HTTP",e.code)
-            raise SystemExit(1)
-          except Exception as e:
-            print("Discloud API transport error",type(e).__name__)
-            raise SystemExit(1)
-          shell=res.get("apps",{}).get("shell",{})
-          stdout=str(shell.get("stdout",""))
-          if "RIVAL_FULL_PIPELINE=" not in stdout:
-            print("No full pipeline result. Console stderr present:",bool(shell.get("stderr")))
-            print("Console shell online:",shell.get("online"))
-            raise SystemExit(1)
-          result=json.loads(stdout.split("RIVAL_FULL_PIPELINE=",1)[1].splitlines()[0])
-          print("Production full pipeline diagnostic",json.dumps(result,sort_keys=True))
+           evidence,digest=build_evidence(PerpetualMarketStore(store),asset="BTC",
+               venues=tuple(MARKET_SYMBOLS))
+           serialized=json.dumps(evidence,sort_keys=True,separators=(",",":"))
+           sizes={name:len(json.dumps(value)) for name,value in evidence.items()}
+           source_sizes=[{"venue":x.get("venue"),"chars":len(json.dumps(x)),
+           "window_labels":list(x.get("windows",{})),
+           "historical_count":len(x.get("historical_windows",{}))}
+           for x in evidence.get("sources",[])]
+           print("RIVAL_EVIDENCE_SIZES="+json.dumps({"full_chars":len(serialized),
+               "source_count":len(source_sizes),"field_sizes":sizes,
+               "source_lengths":source_sizes},sort_keys=True))
+          finally:store.close()
+          """
+          cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(script.encode()).decode()+"\"))'"
+          res=api("/app/"+urllib.parse.quote(M,safe="")+"/console","PUT",{"command":cmd})
+          stdout=str(res.get("apps",{}).get("shell",{}).get("stdout",""))
+          marker="RIVAL_EVIDENCE_SIZES="
+          if marker in stdout:
+           print("Production evidence payload",stdout.split(marker,1)[1].splitlines()[0])
+          else:
+           print("No structured evidence-size result; stderr present",bool(res.get("apps",{}).get("shell",{}).get("stderr")))
           PY

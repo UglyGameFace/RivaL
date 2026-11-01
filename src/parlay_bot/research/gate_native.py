@@ -111,7 +111,7 @@ def gaps(records: dict[int, dict], *, month: str) -> list[int]:
 
 
 def _request_json(client: httpx.Client, *, path: str,
-                  params: dict | None = None) -> tuple[object, str]:
+                  params: dict | None = None) -> tuple[object, str, bytes]:
     if path not in {"candlesticks"} and not path.startswith("contracts/"):
         raise HistoryImportError("unapproved Gate market data endpoint")
     try:
@@ -125,7 +125,8 @@ def _request_json(client: httpx.Client, *, path: str,
     if not 0 < len(response.content) <= MAX_API_BYTES:
         raise HistoryImportError("Gate public API response exceeds budget")
     try:
-        return response.json(), hashlib.sha256(response.content).hexdigest()
+        return (response.json(), hashlib.sha256(response.content).hexdigest(),
+                response.content)
     except ValueError as exc:
         raise HistoryImportError("invalid Gate API source JSON") from exc
 
@@ -134,7 +135,9 @@ def source_multiplier(client: httpx.Client, *, asset: str,
                       month: str) -> dict:
     if asset not in ASSETS:
         raise HistoryImportError("unapproved Gate contract multiplier asset")
-    info, digest = _request_json(client, path=f"contracts/{asset}_USDT")
+    info, digest, response_bytes = _request_json(
+        client, path=f"contracts/{asset}_USDT",
+    )
     first, _ = month_bounds(month)
     if not isinstance(info, dict) or info.get("name") != f"{asset}_USDT":
         raise HistoryImportError("Gate contract multiplier identity unverified")
@@ -157,6 +160,7 @@ def source_multiplier(client: httpx.Client, *, asset: str,
         "contract_created_at_unix": created,
         "contract_config_last_changed_unix": configured,
         "contract_metadata_sha256": digest,
+        "_raw_response_bytes": response_bytes,
         "contract_metadata_url": f"{API}/contracts/{asset}_USDT",
     }
 
@@ -182,7 +186,8 @@ def investigate_missing(client: httpx.Client, *, asset: str,
         selection = [stamp for stamp in pending
                      if stamp <= start + 300 * (MAX_GAP_POINTS_PER_REQUEST - 1)]
         end = selection[-1]
-        response, digest = _request_json(client, path="candlesticks", params={
+        response, digest, response_bytes = _request_json(
+            client, path="candlesticks", params={
             "contract": f"{asset}_USDT", "from": start, "to": end + 299,
             "interval": "5m", "timezone": "utc0",
         })
@@ -205,10 +210,39 @@ def investigate_missing(client: httpx.Client, *, asset: str,
         witnesses.append({
             "from": start, "to": end + 299,
             "response_sha256": digest, "recovered": sorted(captured),
+            "_raw_response_bytes": response_bytes,
             "source_url": f"{API}/candlesticks",
         })
         pending = [stamp for stamp in pending if stamp not in selection]
     return recovered, witnesses
+
+
+async def preserve_gate_api_response(
+    drive, *, root: Path, payload: bytes, sha256: str,
+) -> str:
+    """Retain actual Gate API JSON bytes, not merely their asserted checksum."""
+    if (not isinstance(sha256, str) or len(sha256) != 64
+        or not 0 < len(payload) <= MAX_API_BYTES
+        or hashlib.sha256(payload).hexdigest() != sha256):
+        raise HistoryImportError("Gate API witness SHA-256 unavailable")
+    folder = root / "gate-api-evidence"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"gate-api-{sha256[:16]}.json"
+    if path.exists():
+        if path.read_bytes() != payload:
+            raise HistoryImportError("immutable Gate API witness changed")
+    else:
+        path.write_bytes(payload)
+    artifact = _artifact(path, 1)
+    stored = await drive.ensure_history_file(
+        artifact=artifact,
+        batch_id="gateapi-" + sha256[:24], mime_type="application/json",
+    )
+    await drive.verify_downloaded_artifact(
+        file_id=stored.file_id, parent_id=drive.folders.history,
+        artifact=artifact,
+    )
+    return path.name
 
 
 async def qualify_and_publish(
@@ -244,6 +278,17 @@ async def qualify_and_publish(
         raise HistoryImportError("Gate API did not recover every missing source candle")
     evidence = source_multiplier(client, asset=asset, month=month)
     volume_factor = evidence["multiplier"]
+    # Every API recovery and multiplier witness is independently retained
+    # and read back from the private warehouse BEFORE training rows exist.
+    evidence["contract_metadata_raw_file"] = await preserve_gate_api_response(
+        drive, root=root, payload=evidence.pop("_raw_response_bytes"),
+        sha256=evidence["contract_metadata_sha256"],
+    )
+    for witness in witnesses:
+        witness["raw_json_file"] = await preserve_gate_api_response(
+            drive, root=root, payload=witness.pop("_raw_response_bytes"),
+            sha256=witness["response_sha256"],
+        )
     stamp = now.astimezone(UTC)
     records = []
     for t in sorted(complete):

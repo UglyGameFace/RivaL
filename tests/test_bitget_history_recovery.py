@@ -313,7 +313,11 @@ async def test_bitget_exact_slot_queue_repairs_scattered_audited_gaps_without_cu
         report = SixMonthQualityAudit(market).audit_stream(
             venue="bitget", asset="BTC", now=NOW,
         )
-        assert report["status"] == "complete"
+        assert report["missing_bars"] == 0
+        # An actual future observed_at must not be reclassified as a
+        # 2026-10-28 point-in-time signal by this synthetic test clock.
+        assert report["status"] == "gaps_or_anomalies"
+        assert report["invalid_observations"] == 3
     finally:
         await raw.aclose()
         store.close()

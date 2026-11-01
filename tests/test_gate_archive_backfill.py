@@ -272,7 +272,9 @@ async def test_existing_gate_source_reverification_is_not_counted_as_new(tmp_pat
         proof["source_url"] = url_for(asset=asset, kind=kind, month=month)
         return proof
     async def saved(*args, **kwargs):
-        return {"source_native_model_eligible": False}
+        return {"source_native_model_eligible": False,
+                "asset": kwargs["asset"], "kind": kwargs["kind"],
+                "month": kwargs["month"]}
     async def blocked(*args, **kwargs):
         raise gate.HistoryImportError("dated contract multiplier unavailable")
     monkeypatch.setattr(gate, "download", download)

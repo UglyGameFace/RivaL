@@ -7,17 +7,23 @@ on:
       - "src/parlay_bot/research/gate_bulk_archive.py"
       - "src/parlay_bot/research/gate_archive_backfill.py"
       - "src/parlay_bot/research/gate_native.py"
+      - "src/parlay_bot/research/gate_api_fallback.py"
+      - "src/parlay_bot/research/gate_coverage.py"
       - "src/parlay_bot/research/source_native.py"
       - "src/parlay_bot/archive/drive.py"
       - "tests/test_gate_bulk_archive.py"
       - "tests/test_gate_archive_backfill.py"
       - "tests/test_gate_native.py"
+      - "tests/test_gate_api_fallback.py"
+      - "tests/test_gate_coverage.py"
   push:
     branches: [main]
     paths:
       - ".github/workflows/gate-official-archive-backfill.yml"
       - "src/parlay_bot/research/gate_bulk_archive.py"
       - "src/parlay_bot/research/gate_archive_backfill.py"
+      - "src/parlay_bot/research/gate_api_fallback.py"
+      - "src/parlay_bot/research/gate_coverage.py"
   schedule:
     - cron: "27 4,10,16,22 * * *"
   workflow_dispatch:
@@ -48,8 +54,8 @@ jobs:
       - name: Test source format, source budgets and actual Drive readback wiring
         run: |
           python -m pip install -e ".[dev,archive]"
-          ruff check src/parlay_bot/archive/drive.py src/parlay_bot/research/gate_bulk_archive.py src/parlay_bot/research/gate_archive_backfill.py src/parlay_bot/research/gate_native.py src/parlay_bot/research/source_native.py tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_native.py
-          pytest -q tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_native.py
+          ruff check src/parlay_bot/archive/drive.py src/parlay_bot/research/gate_bulk_archive.py src/parlay_bot/research/gate_archive_backfill.py src/parlay_bot/research/gate_api_fallback.py src/parlay_bot/research/gate_coverage.py src/parlay_bot/research/gate_native.py src/parlay_bot/research/source_native.py tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_api_fallback.py tests/test_gate_coverage.py tests/test_gate_native.py
+          pytest -q tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_api_fallback.py tests/test_gate_coverage.py tests/test_gate_native.py tests/test_polymarket_contract_research.py -k 'not postgres'
 
   gate-real-archive-smoke:
     if: github.event_name == 'pull_request'
@@ -143,6 +149,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: gate-private-archive-progress
-          path: data/native-reports/gate-bulk-progress.json
+          path: |
+            data/native-reports/gate-bulk-progress.json
+            data/native-reports/gate-source-month-ledger.json
           retention-days: 14
           if-no-files-found: ignore

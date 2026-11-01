@@ -165,8 +165,9 @@ async def test_one_cancelled_menu_does_not_cancel_shared_quote(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_hourly_market_requires_current_year_time_and_real_binance_rule(monkeypatch):
-    now = datetime.now(UTC)
-    start = datetime.fromtimestamp(int(now.timestamp()) // 3600 * 3600, UTC)
+    # Pin the market window so CI cannot cross an hour while this test runs.
+    start = datetime(2026, 10, 30, 12, tzinfo=UTC)
+    now = start + timedelta(minutes=10)
     slug = poly.market_slug("BTC", 60, start)
     assert f"-{start.year}-" in slug
     controls = {"year": 0, "source": "https://www.binance.com/en/trade/BTC_USDT"}
@@ -185,7 +186,7 @@ async def test_hourly_market_requires_current_year_time_and_real_binance_rule(mo
             })
         return httpx.Response(200, json={
             "asset_id": req.url.params["token_id"], "market": CONDITION,
-            "timestamp": str(int(datetime.now(UTC).timestamp()*1000)),
+            "timestamp": str(int(now.timestamp()*1000)),
             "asks": [{"price": ".55", "size": "20"}],
         })
 
@@ -194,10 +195,13 @@ async def test_hourly_market_requires_current_year_time_and_real_binance_rule(mo
         transport=httpx.MockTransport(handle), timeout=3.5,
     ))
     reader = poly.PolymarketReader()
+    # The window deliberately belongs to a past year, but book receipt time
+    # must be the same simulated clock, not the CI runner's current date.
+    monkeypatch.setattr(reader, "_receipt_clock", lambda: now)
     try:
-        assert await reader.market("BTC", 60) is not None
+        assert await reader.market("BTC", 60, now=now) is not None
         controls["year"] = -1
-        assert await reader.market("BTC", 60, refresh=True) is None
+        assert await reader.market("BTC", 60, now=now, refresh=True) is None
         controls.update(year=0, source="https://bitget.example/candle")
         assert await reader.market("BTC", 60, refresh=True) is None
     finally:

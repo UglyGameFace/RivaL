@@ -331,6 +331,7 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
         "published": [], "reverified_existing": [],
         "unavailable_or_rejected": [],
         "native_qualified": [], "native_blockers": [],
+        "same_venue_api_fallback": [],
         "five_minute_source_gap_inventory": [],
         "native_months_already_listed_without_readback": len(native_months),
         "model_research": {"status": "not_run_no_six_verified_months",
@@ -347,6 +348,8 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
     try:
         async with asyncio.timeout(9900):
             with httpx.Client(timeout=65, follow_redirects=False) as client:
+                api_fallback_attempts = 0
+                api_fallback_months = None
                 for asset, kind, month in selected:
                     if len(result["published"]) >= max_new:
                         break
@@ -435,6 +438,52 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                             "asset": asset, "kind": kind, "month": month,
                             "reason": reason,
                         })
+                        # A missing gzip may still have genuine same-Gate API
+                        # history. Keep it separate from the official bulk
+                        # archive and never count it toward native model proof.
+                        if (kind == "candlesticks_5m" and "HTTP 404" in reason
+                            and api_fallback_attempts < 1):
+                            from parlay_bot.research.gate_api_fallback import (
+                                listed_api_fallback_months,
+                                recover_unavailable_archive,
+                            )
+                            if api_fallback_months is None:
+                                api_fallback_months = await listed_api_fallback_months(
+                                    drive,
+                                )
+                            if (asset, month) in api_fallback_months:
+                                # Remote file name and digest property are
+                                # only a restart hint, not a fresh byte proof.
+                                fallback = {
+                                    "asset": asset, "month": month,
+                                    "status": "api_evidence_receipt_listed_not_reverified",
+                                    "source_api_response_readback_verified": False,
+                                    "model_training_eligible": False,
+                                }
+                            else:
+                                api_fallback_attempts += 1
+                                try:
+                                    fallback = await recover_unavailable_archive(
+                                        drive, client=client, asset=asset,
+                                        month=month, root=root, now=clock,
+                                    )
+                                    api_fallback_months.add((asset, month))
+                                except (HistoryImportError, DriveArchiveError,
+                                        httpx.HTTPError, OSError, ValueError) as api_exc:
+                                    api_reason = str(api_exc)[:240]
+                                    fallback = {
+                                        "asset": asset, "month": month,
+                                        "status": "api_unavailable_or_unqualified",
+                                        "reason": api_reason,
+                                        "model_training_eligible": False,
+                                    }
+                                    if any(code in api_reason for code in (
+                                        "HTTP 429", "HTTP 503", "HTTP 502", "HTTP 504",
+                                    )):
+                                        result["provider_throttled"] = True
+                            result["same_venue_api_fallback"].append(fallback)
+                            if result["provider_throttled"]:
+                                break
                         if any(status in reason for status in
                                ("HTTP 429", "HTTP 503", "HTTP 502", "HTTP 504")):
                             result["provider_throttled"] = True
@@ -464,6 +513,21 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                             "reason": str(exc)[:240],
                         }
     finally:
+        from parlay_bot.research.gate_coverage import build_gate_coverage
+
+        coverage = build_gate_coverage(
+            months=months, assets=assets, kinds=kinds, existing=existing,
+            native_months=native_months, result=result,
+        )
+        ledger = report_dir / "gate-source-month-ledger.json"
+        ledger.write_text(
+            json.dumps(coverage, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        result["coverage_ledger_local_path"] = str(ledger)
+        result["coverage_status_counts"] = coverage["source_month_status_counts"]
+        result["native_status_counts"] = coverage["native_5m_status_counts"]
+        result["coverage_ledger_private_drive_verified"] = False
         destination = report_dir / "gate-bulk-progress.json"
         destination.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n",
                                encoding="utf-8")
@@ -484,11 +548,31 @@ def main(argv: list[str] | None = None) -> int:
         drive = _drive(Settings())
         async def worker():
             try:
-                return await collect_gate(
+                report = await collect_gate(
                     drive=drive, root=args.root, report_dir=args.report_dir,
                     max_new=args.max_new, max_attempts=args.max_attempts,
                     assets=tuple(args.assets), kinds=tuple(args.kinds),
                 )
+                # Persist the source-month ledger beyond ephemeral Actions
+                # artifacts, with actual Drive byte readback. A failed upload
+                # must never be displayed as a completed archival job.
+                ledger_path = Path(report["coverage_ledger_local_path"])
+                proof = _artifact(ledger_path, 1)
+                stored = await drive.ensure_research_output(
+                    artifact=proof, batch_id="gate-ledger-" + proof.sha256[:24],
+                    kind="report",
+                )
+                await drive.verify_downloaded_artifact(
+                    file_id=stored.file_id, parent_id=drive.folders.reports,
+                    artifact=proof,
+                )
+                report["coverage_ledger_private_drive_verified"] = True
+                report["coverage_ledger_sha256"] = proof.sha256
+                (args.report_dir / "gate-bulk-progress.json").write_text(
+                    json.dumps(report, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                return report
             finally:
                 await drive.aclose()
         data = asyncio.run(worker())
@@ -504,6 +588,8 @@ def main(argv: list[str] | None = None) -> int:
         "native_blocked": len(data["native_blockers"]),
         "five_minute_gap_inventory_files": len(data["five_minute_source_gap_inventory"]),
         "model_research": data["model_research"]["status"],
+        "ledger_drive_verified": data["coverage_ledger_private_drive_verified"],
+        "source_states": data["coverage_status_counts"],
         "pending_jobs": data["pending_jobs"],
     }, sort_keys=True))
     # Never print an empty run as a successful production ingestion when
@@ -511,6 +597,11 @@ def main(argv: list[str] | None = None) -> int:
     return 2 if data["provider_throttled"] or (
         data["selected_jobs"] and not data["published"]
         and not data["reverified_existing"]
+        and not any(
+            f.get("status") == "api_complete_research_only"
+            and f.get("source_api_response_readback_verified") is True
+            for f in data["same_venue_api_fallback"]
+        )
     ) else 0
 
 

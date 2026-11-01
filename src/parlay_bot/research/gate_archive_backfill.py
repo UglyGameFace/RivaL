@@ -496,6 +496,21 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                             "reason": str(exc)[:240],
                         }
     finally:
+        from parlay_bot.research.gate_coverage import build_gate_coverage
+
+        coverage = build_gate_coverage(
+            months=months, assets=assets, kinds=kinds, existing=existing,
+            native_months=native_months, result=result,
+        )
+        ledger = report_dir / "gate-source-month-ledger.json"
+        ledger.write_text(
+            json.dumps(coverage, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        result["coverage_ledger_local_path"] = str(ledger)
+        result["coverage_status_counts"] = coverage["source_month_status_counts"]
+        result["native_status_counts"] = coverage["native_5m_status_counts"]
+        result["coverage_ledger_private_drive_verified"] = False
         destination = report_dir / "gate-bulk-progress.json"
         destination.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n",
                                encoding="utf-8")
@@ -516,11 +531,31 @@ def main(argv: list[str] | None = None) -> int:
         drive = _drive(Settings())
         async def worker():
             try:
-                return await collect_gate(
+                report = await collect_gate(
                     drive=drive, root=args.root, report_dir=args.report_dir,
                     max_new=args.max_new, max_attempts=args.max_attempts,
                     assets=tuple(args.assets), kinds=tuple(args.kinds),
                 )
+                # Persist the source-month ledger beyond ephemeral Actions
+                # artifacts, with actual Drive byte readback. A failed upload
+                # must never be displayed as a completed archival job.
+                ledger_path = Path(report["coverage_ledger_local_path"])
+                proof = _artifact(ledger_path, 1)
+                stored = await drive.ensure_research_output(
+                    artifact=proof, batch_id="gate-ledger-" + proof.sha256[:24],
+                    kind="report",
+                )
+                await drive.verify_downloaded_artifact(
+                    file_id=stored.file_id, parent_id=drive.folders.reports,
+                    artifact=proof,
+                )
+                report["coverage_ledger_private_drive_verified"] = True
+                report["coverage_ledger_sha256"] = proof.sha256
+                (args.report_dir / "gate-bulk-progress.json").write_text(
+                    json.dumps(report, indent=2, sort_keys=True) + "\n",
+                    encoding="utf-8",
+                )
+                return report
             finally:
                 await drive.aclose()
         data = asyncio.run(worker())
@@ -536,6 +571,8 @@ def main(argv: list[str] | None = None) -> int:
         "native_blocked": len(data["native_blockers"]),
         "five_minute_gap_inventory_files": len(data["five_minute_source_gap_inventory"]),
         "model_research": data["model_research"]["status"],
+        "ledger_drive_verified": data["coverage_ledger_private_drive_verified"],
+        "source_states": data["coverage_status_counts"],
         "pending_jobs": data["pending_jobs"],
     }, sort_keys=True))
     # Never print an empty run as a successful production ingestion when
@@ -543,6 +580,11 @@ def main(argv: list[str] | None = None) -> int:
     return 2 if data["provider_throttled"] or (
         data["selected_jobs"] and not data["published"]
         and not data["reverified_existing"]
+        and not any(
+            f.get("status") == "api_complete_research_only"
+            and f.get("source_api_response_readback_verified") is True
+            for f in data["same_venue_api_fallback"]
+        )
     ) else 0
 
 

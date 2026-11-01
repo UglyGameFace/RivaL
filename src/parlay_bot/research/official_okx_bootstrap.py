@@ -279,6 +279,7 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
         added = []
         archive_fallbacks = []
         raw_one_minute_archives_verified = []
+        raw_archive_shas = set()
         for month in targets:
             # Prefer official monthly ZIPs. An OKX archive month spans UTC+8;
             # paired month files must reproduce the *exact* UTC 1m grid.
@@ -313,6 +314,8 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
                     raw_artifact = _artifact(raw_path, 1)
                     if raw_artifact.sha256 != item["sha256"]:
                         raise HistoryImportError("raw OKX archive changed before Drive upload")
+                    if raw_artifact.sha256 in raw_archive_shas:
+                        continue  # Shared adjacent ZIP already verified in this batch.
                     raw_saved = await drive.ensure_history_file(
                         artifact=raw_artifact,
                         batch_id="okx-raw-1m-" + raw_artifact.sha256[:24],
@@ -323,9 +326,9 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
                         parent_id=drive.folders.history,
                         artifact=raw_artifact,
                     )
+                    raw_archive_shas.add(raw_artifact.sha256)
                     raw_one_minute_archives_verified.append({
                         "month": item["month"], "sha256": raw_artifact.sha256,
-                        "file_id": raw_saved.file_id,
                         "source": "official_okx_one_minute_zip",
                     })
             history = _artifact(result.data_path, result.records)

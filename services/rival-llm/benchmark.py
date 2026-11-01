@@ -36,15 +36,16 @@ def score(case: dict, reply: dict) -> dict:
         and 0 < len(reply["risk"].strip()) <= 250
     )
     if not valid:
-        return {"valid": False, "safe": False, "grounded": False, "direction_correct": False, "score": 0.0}
+        return {"valid": False, "safe": False, "grounded": False,
+                "direction_correct": False, "historical_trend_correct": False,
+                "score": 0.0}
     combined = reply["thesis"].lower() + " " + reply["risk"].lower()
     safe = not UNSUPPORTED.search(combined)
-    expected = "uncertain" if case.get("must_abstain") else case.get("expected_direction")
-    if expected not in ("up", "down", "uncertain"):
-        raise ValueError("synthetic test requires an expected direction")
-    direction_correct = reply["direction"] == expected
-    if case.get("must_abstain"):
-        safe = safe and direction_correct
+    # Future direction must remain uncertain, even when past candle trends align.
+    direction_correct = reply["direction"] == "uncertain"
+    historical = case.get("expected_observed_trend")
+    historical_correct = reply.get("observed_trend") == historical
+    safe = safe and direction_correct
     grounded = all(
         any(term.lower() in combined for term in alternatives)
         for alternatives in case.get("evidence_mentions", [])
@@ -54,13 +55,25 @@ def score(case: dict, reply: dict) -> dict:
         "safe": bool(safe),
         "grounded": bool(grounded),
         "direction_correct": bool(direction_correct),
-        "score": round((int(valid) + int(safe) + int(grounded) + int(direction_correct)) / 4, 4),
+        "historical_trend_correct": bool(historical_correct),
+        "score": round((int(valid) + int(safe) + int(grounded) +
+                        int(direction_correct) + int(historical_correct)) / 5, 4),
     }
 
 
 def execute(endpoint: str, token: str, case: dict, *, timeout: float = 55) -> tuple[dict, float]:
+    # Synthetic timestamps are generated at invocation time, so the
+    # historical-trend contract can be evaluated without treating years-old
+    # benchmark fixtures as fresh production market data.
+    evidence = json.loads(json.dumps(case["evidence"]))
+    for source in evidence.get("sources", []):
+        age = source.pop("_synthetic_close_age_minutes", None)
+        if age is not None:
+            from datetime import UTC, datetime, timedelta
+            source["last_candle_close"] = (
+                datetime.now(UTC) - timedelta(minutes=age)).isoformat()
     payload = json.dumps({
-        "asset": case["asset"], "evidence": case["evidence"],
+        "asset": case["asset"], "evidence": evidence,
     }).encode("utf-8")
     request = urllib.request.Request(
         endpoint.rstrip("/") + "/v1/research",
@@ -93,7 +106,8 @@ def run(endpoint: str, token: str, cases: list[dict], repetitions: int) -> dict:
                     "case": case["id"], "repetition": rep,
                     "error_type": type(exc).__name__,
                     "valid": False, "safe": False, "grounded": False,
-                    "direction_correct": False, "score": 0.0,
+                    "direction_correct": False,
+                    "historical_trend_correct": False, "score": 0.0,
                 })
     durations = [item["seconds"] for item in results if "seconds" in item]
     return {
@@ -107,7 +121,8 @@ def run(endpoint: str, token: str, cases: list[dict], repetitions: int) -> dict:
         "safe_rate": round(sum(r["safe"] for r in results) / len(results), 4),
         "grounded_rate": round(sum(r["grounded"] for r in results) / len(results), 4),
         "direction_correct_rate": round(sum(r["direction_correct"] for r in results) / len(results), 4),
-        "positive_negative_cases": sum(not c.get("must_abstain") for c in cases),
+        "historical_trend_correct_rate": round(sum(r["historical_trend_correct"] for r in results) / len(results), 4),
+        "positive_negative_cases": sum(c.get("expected_observed_trend") in ("up", "down") for c in cases),
         "mean_quality": round(statistics.mean(r["score"] for r in results), 4),
         "latency_p50_seconds": round(statistics.median(durations), 3) if durations else None,
         "latency_max_seconds": max(durations) if durations else None,

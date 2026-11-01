@@ -254,6 +254,7 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
     for block in blocks:
         await restore_verified_source_months(
             drive, venue="okx", months=block, root=root,
+            contract=f"{asset}-USDT-SWAP",
         )
         inventory = audit_catalog(root, months=block, sources=(SOURCE,))
         verified = {

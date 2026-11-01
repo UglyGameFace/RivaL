@@ -89,7 +89,7 @@ class PerpetualMarketStore:
                            (interval_minutes,first_observed_at);
                     -- Lighter revises the base-volume value on settled
                     -- candles. Keep the original point-in-time source row
-                    -- immutable; retain a separate, bounded per-bar latest
+                    -- immutable. Retain a separate, bounded per-bar latest
                     -- revision for diagnosis, never backdate it to issuance.
                     CREATE TABLE IF NOT EXISTS perp_lighter_volume_revisions (
                         venue TEXT NOT NULL,

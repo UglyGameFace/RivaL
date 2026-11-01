@@ -12,6 +12,8 @@ from pathlib import Path, PurePosixPath
 
 APP_FILES = {
     "discloud.config",
+    "main.py",
+    "requirements.txt",
     "service.py",
     "model_download.py",
     "build.sh",
@@ -31,16 +33,14 @@ CONFIG_KEYS = {
     "AUTORESTART", "VLAN", "HOSTNAME",
 }
 EXPECTED = {
-    "NAME": "RivaL LLM",
+    "NAME": "RivaL-Intelligence",
     "TYPE": "bot",
-    "MAIN": "service.py",
+    "MAIN": "main.py",
     "RAM": "2450",
     "VERSION": "3.11",
-    "BUILD": "bash build.sh",
-    "START": "python -u service.py",
-    "AUTORESTART": "true",
     "VLAN": "true",
     "HOSTNAME": "rival-llm",
+    "AUTORESTART": "true",
 }
 FORBIDDEN_SUFFIXES = (".gguf", ".part", ".zip", ".env", ".pem", ".key")
 
@@ -100,6 +100,10 @@ def check_directory(root: Path) -> None:
             files.add(path.relative_to(root).as_posix())
     check_names(files)
     parse_config((root / "discloud.config").read_bytes())
+    if not (root / "main.py").read_text().strip():
+        raise ValueError("Python main.py launcher is empty")
+    if not (root / "requirements.txt").is_file():
+        raise ValueError("Python requirements.txt manifest is absent")
     if (root / "runtime/bin/llama-server").stat().st_size < 15_000:
         raise ValueError("Missing or invalid prebuilt CPU binary")
 

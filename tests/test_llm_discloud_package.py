@@ -36,7 +36,10 @@ def test_known_discloud_config_and_complete_root_are_valid(staged):
     assert config["RAM"] == "2450"
     assert config["VLAN"] == "true"
     assert config["HOSTNAME"] == "rival-llm"
-    assert config["MAIN"] == "service.py"
+    assert config["MAIN"] == "main.py"
+    assert "BUILD" not in config
+    assert "START" not in config
+    assert (staged / "requirements.txt").is_file()
     VALIDATOR["check_directory"](staged)
 
 
@@ -56,6 +59,12 @@ def test_exact_upload_zip_valid_and_nested_wrapper_zip_rejected(staged, tmp_path
 
 def test_missing_config_is_fatal_even_when_binaries_exist(staged):
     (staged / "discloud.config").unlink()
+    with pytest.raises(ValueError, match="root files missing"):
+        VALIDATOR["check_directory"](staged)
+
+
+def test_python_launcher_and_requirements_are_mandatory(staged):
+    (staged / "requirements.txt").unlink()
     with pytest.raises(ValueError, match="root files missing"):
         VALIDATOR["check_directory"](staged)
 

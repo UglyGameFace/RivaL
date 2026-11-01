@@ -97,3 +97,23 @@ VLAN=true
 HOSTNAME=rival-llm
 
 If the dashboard requests manual commands, set Build to `bash build.sh`, Start to `python -u service.py`, Main to `service.py`, Python 3.11 and RAM 2450 MB. Add a private RIVAL_LLM_SHARED_TOKEN in the separate Discloud environment before starting the service. Missing authentication deliberately prevents boot.
+
+
+## 2026-11-01 Discloud Python detection correction
+
+Discloud's Dashboard deployment guide expects a Python dependency manifest. The previous standalone artifact used a custom `service.py` entrypoint with `BUILD`/`START` directives and **omitted `requirements.txt`**. Although the ZIP layout and native binary were valid, those tests did not prove the Dashboard had recognized a Python application. The corrective release now uses:
+
+```ini
+NAME=RivaL-Intelligence
+TYPE=bot
+MAIN=main.py
+RAM=2450
+VERSION=3.11
+VLAN=true
+HOSTNAME=rival-llm
+AUTORESTART=true
+```
+
+Both `main.py` and `requirements.txt` are present at the ZIP root, and the standard-library-only launcher restores executable permissions if needed. The Discloud runtime can use its default Python command, without dashboard command configuration. The `build.sh` file is for CI and local diagnostics only, **not** a Discloud `BUILD` operation. Private VLAN is still required for the RivaL bot to reach this service.
+
+If the deployment form still says `discloud.config incorrect`, capture the **literal server error** (red banner, validation text, or response code), and check whether Discloud has an app-name or resource restriction. A ZIP structural test cannot simulate a live Dashboard parser response. Do not alter RivaL's original 512 MB app while troubleshooting the separate service.

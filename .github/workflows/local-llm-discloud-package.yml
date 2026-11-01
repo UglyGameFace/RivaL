@@ -59,6 +59,8 @@ jobs:
           set -euo pipefail
           mkdir -p discloud-upload/runtime/bin
           cp services/rival-llm/discloud.config \
+             services/rival-llm/main.py \
+             services/rival-llm/requirements.txt \
              services/rival-llm/service.py \
              services/rival-llm/model_download.py \
              services/rival-llm/benchmark.py \
@@ -101,5 +103,9 @@ jobs:
           cd discloud-download
           bash build.sh
           test -f discloud.config
+          test -f main.py
+          test -f requirements.txt
+          python -m py_compile main.py service.py model_download.py
+          python -c "import main; assert callable(main.main)"
           test -x runtime/bin/llama-server
           test ! -e rival-llm-discloud.zip

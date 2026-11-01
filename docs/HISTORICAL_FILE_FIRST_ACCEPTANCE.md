@@ -44,6 +44,11 @@ Further source-native backfill, feature-model parity, historical gap inventory a
   uploads. A failed individual month stays `source_month_blocked` and must
   be retried. Errors publishing research-only models are separately recorded
   as `blocked_native_research`; no live model is activated.
+- Duplicate immutable research model/report objects can be reused only when
+  **every** candidate in the exact Drive folder independently passes size,
+  MD5, and a full streamed SHA-256 byte readback. Divergent copies, excess
+  pagination, and duplicate history objects remain hard blockers. No remote
+  files are trashed or relabeled during reconciliation.
 - The OKX bulk receipt now counts actually completed month uploads even if a
   later month or model publication fails. Blocking errors still produce a
   failing workflow, and unverified advanced catalogs are never converted into

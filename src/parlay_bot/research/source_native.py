@@ -252,6 +252,7 @@ class NativeMonthlyPublisher:
 
 async def restore_verified_source_months(
     drive, *, venue: str, months: list[str], root: Path,
+    contract: str | None = None,
 ) -> list[Path]:
     """Restore only actual source/month files from our private Drive archive.
 
@@ -264,6 +265,12 @@ async def restore_verified_source_months(
         raise HistoryImportError("invalid or oversized native research request")
     if len(months) != len(set(months)):
         raise HistoryImportError("duplicate source research month")
+    if contract is not None and (
+        venue != "okx"
+        or contract not in {"BTC-USDT-SWAP", "ETH-USDT-SWAP",
+                            "SOL-USDT-SWAP", "XRP-USDT-SWAP"}
+    ):
+        raise HistoryImportError("invalid OKX source-native contract filter")
     await drive._verify_folder_boundary()
     folder = drive.folders.manifests
     query = (
@@ -313,6 +320,10 @@ async def restore_verified_source_months(
         # Filter the Drive metadata *before* downloading each manifest.
         if venue == "okx" and not any(
             f"-5m-{month}--" in entry["name"] for month in months
+        ):
+            continue
+        if contract is not None and not entry["name"].startswith(
+            f"okx-{contract}-"
         ):
             continue
         item = drive._object(entry)

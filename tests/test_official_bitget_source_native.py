@@ -11,7 +11,6 @@ from parlay_bot.research.audit import audit_partition
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.learning import _rows
 
-
 AT = datetime(2026, 11, 1, tzinfo=UTC)
 
 

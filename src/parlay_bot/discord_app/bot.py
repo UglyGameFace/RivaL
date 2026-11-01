@@ -57,6 +57,7 @@ from parlay_bot.perpetuals.deribit_history_recovery import DeribitHistoryRecover
 from parlay_bot.perpetuals.dydx_history_recovery import DydxHistoryRecovery
 from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
 from parlay_bot.perpetuals.gemini_research import GeminiResearch
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
@@ -395,7 +396,17 @@ class RivalDiscordClient(discord.Client):
         free_secret = settings.open_router_api_key or settings.openrouter_api_key
         google_secret = settings.gemini_api_key or settings.google_api_key
         if settings.rival_ai_provider == "disabled":
-            self.gemini_research: GeminiResearch | OpenRouterResearch | None = None
+            self.gemini_research: GeminiResearch | OpenRouterResearch | CloudflareResearch | None = None
+        elif settings.rival_ai_provider == "cloudflare":
+            self.gemini_research = CloudflareResearch(
+                self.perp_collector.market if self.perp_collector is not None
+                else PerpetualMarketStore(self.store),
+                api_key=(settings.rival_cloudflare_ai_token.get_secret_value()
+                         if settings.rival_cloudflare_ai_token is not None else None),
+                daily_max=settings.rival_openrouter_daily_max,
+                cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
+            )
+            _LOG.info("RivaL optional AI reviewer: isolated Cloudflare Worker")
         elif settings.rival_ai_provider == "openrouter":
             # No Gemini/paid fallback when a free coding model or the key
             # is unavailable. Only explicit legacy Gemini mode can use it.
@@ -472,7 +483,8 @@ class RivalDiscordClient(discord.Client):
         )
         self.polymarket_research = PolymarketResearch(
             self.store, ai=self.gemini_research
-            if isinstance(self.gemini_research, OpenRouterResearch) else None,
+            if isinstance(self.gemini_research, OpenRouterResearch)
+            and not isinstance(self.gemini_research, CloudflareResearch) else None,
         )
         self.auto_hunt.contract_research = self.polymarket_research
         def secret_value(value):

@@ -1,0 +1,64 @@
+name: Build isolated RivaL local LLM Discloud package
+
+on:
+  pull_request:
+    paths:
+      - "services/rival-llm/**"
+      - ".github/workflows/local-llm-discloud-package.yml"
+      - "tests/test_private_llm_service.py"
+      - "tests/test_private_model_download.py"
+      - "tests/test_local_llm_benchmark.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-local-llm-\${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: \${{ github.event_name == 'pull_request' }}
+
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify source, model downloader, and service contract
+        run: |
+          python -m pip install pytest ruff
+          ruff check services/rival-llm/ tests/test_local_llm_benchmark.py tests/test_private_llm_service.py tests/test_private_model_download.py
+          pytest -q tests/test_private_llm_service.py tests/test_private_model_download.py tests/test_local_llm_benchmark.py
+          bash -n services/rival-llm/build.sh
+      - name: Build portable CPU llama.cpp server outside Discloud
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd services/rival-llm
+          bash build.sh
+          runtime/bin/llama-server --help >/dev/null
+          ldd runtime/bin/llama-server
+          test -x runtime/bin/llama-server
+          test ! -e runtime/models
+      - name: Produce application-only zip, never bundle model weights or secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          cd services/rival-llm
+          zip -q -r ../../dist/rival-llm-discloud.zip \
+            discloud.config service.py model_download.py benchmark.py \
+            benchmark_cases.json .discloudignore .env.example build.sh runtime/bin
+          unzip -l ../../dist/rival-llm-discloud.zip | tee ../../dist/contents.txt
+          if unzip -Z1 ../../dist/rival-llm-discloud.zip | grep -E '(\.gguf|\.env$|\.part|runtime/llama.cpp/)'; then
+            echo 'Unexpected model weights, secrets or build tree in deployment archive' >&2
+            exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rival-llm-discloud-package
+          path: |
+            dist/rival-llm-discloud.zip
+            dist/contents.txt

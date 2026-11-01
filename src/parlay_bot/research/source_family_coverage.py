@@ -133,6 +133,56 @@ def _local_evidence(path: Path) -> tuple[tuple[str, str, str, str], str, str] | 
     )
 
 
+GATE_KINDS = {
+    "candlesticks_1m": "candles_1m",
+    "candlesticks_5m": "candles_5m",
+    "candlesticks_1h": "candles_1h",
+    "mark_prices": "mark",
+    "funding_applies": "funding",
+    "funding_updates": "funding",
+    "trades": "trades",
+}
+
+
+def reported_gate_states(path: Path) -> dict:
+    """Carry actual Gate job receipts forward without certifying remote bytes.
+
+    The Gate ledger already knows downloaded/remote-only/failed. Only rows
+    explicitly reverified in the supplying job carry positive evidence here;
+    this runner has NOT fetched original Gate files or Drive objects.
+    """
+    if path.stat().st_size > 12 * 1024 * 1024:
+        raise HistoryImportError("oversized Gate source ledger")
+    value = json.loads(path.read_text(encoding="utf-8"))
+    rows = value.get("rows") if isinstance(value, dict) else None
+    if (value.get("schema_version") != "rival-gate-source-month-ledger-v1"
+        or not isinstance(rows, list) or len(rows) > 5000):
+        raise HistoryImportError("unrecognized Gate source ledger")
+    reported = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            raise HistoryImportError("invalid Gate evidence row")
+        kind = row.get("data_family")
+        family = GATE_KINDS.get(kind)
+        asset, month = row.get("asset"), row.get("utc_month")
+        if (row.get("venue") != "gate" or family is None
+            or asset not in ASSETS or not isinstance(month, str)):
+            raise HistoryImportError("mismatched Gate source family or asset")
+        _month(month)
+        if row.get("original_gate_gzip_verified_this_run") is True:
+            status = "gate_report_claims_sha_readback_not_reverified_here"
+        elif row.get("raw_status") == "remote_manifest_name_only_not_reverified_this_run":
+            status = "gate_remote_name_only"
+        else:
+            continue
+        key = ("gate", asset, family, month)
+        prior = reported.get(key)
+        if prior is None or (status == "gate_report_claims_sha_readback_not_reverified_here"
+                             and prior == "gate_remote_name_only"):
+            reported[key] = status
+    return reported
+
+
 def scan_local(roots: list[Path]) -> tuple[dict, list[dict], int]:
     found: dict[tuple[str, str, str, str], list[tuple[str, str]]] = defaultdict(list)
     invalid = []
@@ -187,13 +237,17 @@ def _requirements():
 
 def write_ledger(
     *, roots: list[Path], first: str, through: str, out_dir: Path,
-    now: datetime | None = None,
+    now: datetime | None = None, gate_report: Path | None = None,
 ) -> dict:
     clock = (now or datetime.now(UTC)).astimezone(UTC)
     if _month(through) > _month(last_completed_month(clock)):
         raise ValueError("current or future partial months cannot be certified")
     calendar = months(first, through)
     states, invalid, checked = scan_local(roots)
+    gate_receipts = reported_gate_states(gate_report) if gate_report else {}
+    for key, status in gate_receipts.items():
+        # Directly audited local bytes take precedence over a reported receipt.
+        states.setdefault(key, status)
     out_dir.mkdir(parents=True, exist_ok=True)
     rows_path = out_dir / "source-family-coverage.jsonl.gz"
     summary_path = out_dir / "source-family-summary.json"
@@ -231,6 +285,7 @@ def write_ledger(
         "current_partial_month_excluded": clock.strftime("%Y-%m"),
         "local_evidence_roots": [str(p) for p in roots],
         "local_manifests_inspected": checked,
+        "gate_receipt_source_months_reported_not_independently_verified": len(gate_receipts),
         "invalid_local_manifests_count_including_truncated": len(invalid),
         "invalid_local_examples": invalid,
         "source_month_slots": sum(count.values()),
@@ -259,6 +314,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Evidence-only historical source-family matrix")
     parser.add_argument("--root", type=Path, action="append", default=[])
     parser.add_argument("--from-month", default="2021-01")
+    parser.add_argument("--gate-report", type=Path, default=None)
     parser.add_argument("--through-month", default=None)
     parser.add_argument("--out-dir", type=Path, default=Path("data/native-reports"))
     args = parser.parse_args(argv)
@@ -267,7 +323,7 @@ def main(argv: list[str] | None = None) -> int:
         result = write_ledger(
             roots=args.root, first=args.from_month,
             through=args.through_month or last_completed_month(clock),
-            out_dir=args.out_dir, now=clock,
+            out_dir=args.out_dir, now=clock, gate_report=args.gate_report,
         )
     except (OSError, ValueError, HistoryImportError) as exc:
         parser.exit(2, f"RivaL source-family ledger BLOCKED: {exc}\n")

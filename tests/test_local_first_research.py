@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from parlay_bot.perpetuals import local_first_research as module
+from parlay_bot.perpetuals import openrouter_research
 from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
 
 
@@ -45,7 +46,7 @@ def success(model):
 @pytest.mark.asyncio
 async def test_local_only_one_request_one_quota(monkeypatch):
     market = Market()
-    monkeypatch.setattr(module, "build_evidence", market_evidence)
+    monkeypatch.setattr(openrouter_research, "build_evidence", market_evidence)
     seen = []
 
     def handler(request):
@@ -70,7 +71,7 @@ async def test_local_only_one_request_one_quota(monkeypatch):
 @pytest.mark.asyncio
 async def test_cloudflare_is_backup_only_on_local_503(monkeypatch):
     market = Market()
-    monkeypatch.setattr(module, "build_evidence", market_evidence)
+    monkeypatch.setattr(openrouter_research, "build_evidence", market_evidence)
     requested = []
 
     def handler(request):
@@ -100,7 +101,7 @@ async def test_cloudflare_is_backup_only_on_local_503(monkeypatch):
 @pytest.mark.parametrize("status", [400, 401, 403, 429])
 async def test_local_client_or_busy_failure_never_spends_backup(monkeypatch, status):
     market = Market()
-    monkeypatch.setattr(module, "build_evidence", market_evidence)
+    monkeypatch.setattr(openrouter_research, "build_evidence", market_evidence)
     seen = []
 
     def handler(request):
@@ -120,7 +121,7 @@ async def test_local_client_or_busy_failure_never_spends_backup(monkeypatch, sta
 @pytest.mark.asyncio
 async def test_untrusted_invalid_local_response_does_not_fallback(monkeypatch):
     market = Market()
-    monkeypatch.setattr(module, "build_evidence", market_evidence)
+    monkeypatch.setattr(openrouter_research, "build_evidence", market_evidence)
     seen = []
 
     def handler(request):
@@ -142,7 +143,7 @@ async def test_untrusted_invalid_local_response_does_not_fallback(monkeypatch):
 @pytest.mark.asyncio
 async def test_local_failure_without_backup_circuit_breaks(monkeypatch):
     market = Market()
-    monkeypatch.setattr(module, "build_evidence", market_evidence)
+    monkeypatch.setattr(openrouter_research, "build_evidence", market_evidence)
 
     def handler(request):
         return httpx.Response(503, json={"error": "local_down"})

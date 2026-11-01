@@ -177,3 +177,80 @@ async def test_staged_history_mismatch_still_fails_without_trash(tmp_path):
     finally:
         await http_client.aclose()
     assert calls["trashed"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("divergent", [False, True])
+async def test_identical_drive_model_duplicates_are_readback_verified(
+    tmp_path, divergent,
+):
+    """Never delete or accept an ambiguous duplicate without SHA byte readback."""
+    payload = b'{"research_only":true,"model":"candidate"}'
+    artifact = _artifact(tmp_path, payload)
+    media_reads = []
+    writes = []
+    folders = DriveArchiveFolders(
+        root="root-id", history="history-id", manifests="manifests-id",
+        staging="staging-id", models="models-id", reports="reports-id",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={
+                "access_token": "access-1", "expires_in": 3600,
+            }, request=request)
+        if request.method in {"PATCH", "POST", "DELETE", "PUT"}:
+            writes.append(str(request.url))
+            raise AssertionError("duplicate reconciliation must be read-only")
+        if request.url.path == "/drive/v3/files":
+            return httpx.Response(200, json={"files": [
+                {
+                    "id": "model-b", "name": artifact.file_name,
+                    "size": str(artifact.size_bytes),
+                    "md5Checksum": artifact.md5, "parents": ["models-id"],
+                },
+                {
+                    "id": "model-a", "name": artifact.file_name,
+                    "size": str(artifact.size_bytes),
+                    "md5Checksum": artifact.md5, "parents": ["models-id"],
+                },
+            ]}, request=request)
+        if request.url.path.startswith("/drive/v3/files/"):
+            key = request.url.path.rsplit("/", 1)[-1]
+            if key not in ("model-a", "model-b"):
+                return _folder_meta(request)
+            if request.url.params.get("alt") == "media":
+                media_reads.append(key)
+                result = payload if not (divergent and key == "model-b") else (
+                    b"not-the-same-bytes"
+                )
+                return httpx.Response(200, content=result, request=request)
+            return httpx.Response(200, json={
+                "id": key, "name": artifact.file_name,
+                "size": str(artifact.size_bytes),
+                "md5Checksum": artifact.md5,
+                "parents": ["models-id"], "trashed": False,
+            }, request=request)
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    transport = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    client = GoogleDriveArchiveClient(
+        client_id="client", client_secret="<redacted>",
+        refresh_token="<redacted>", folders=folders, client=transport,
+        chunk_size_bytes=256 * 1024,
+    )
+    try:
+        if divergent:
+            with pytest.raises(DriveArchiveError, match="restore|SHA256|exceeds"):
+                await client.ensure_research_output(
+                    artifact=artifact, batch_id="candidate-abc", kind="model",
+                )
+        else:
+            obj = await client.ensure_research_output(
+                artifact=artifact, batch_id="candidate-abc", kind="model",
+            )
+            assert obj.file_id == "model-a"
+            assert set(media_reads) == {"model-a", "model-b"}
+    finally:
+        await transport.aclose()
+    assert not writes

@@ -1,79 +1,93 @@
-name: One-time validated private LLM Discloud deployment
+name: RivaL verified private LLM discovery acceptance
 on:
   push:
     branches: ["diagnostics/read-only-discloud-vlan-20261101"]
     paths: [".github/workflows/discloud-vlan-readonly-diagnostic.yml"]
 permissions:
   contents: read
-  actions: read
 jobs:
-  deploy-isolated-llm:
+  acceptance:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 9
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-      - name: Require merged reviewed changes and verified original package
-        shell: bash
-        run: |
-          set -euo pipefail
-          git merge-base --is-ancestor c3ef333da81adc919ee193cdc59342507f27efe3 HEAD
-          test -f services/rival-llm/discovery.py
-          grep -q 'private_peer_discovery_ready' services/rival-llm/discovery.py
-      - uses: actions/download-artifact@v4
-        with:
-          name: RIVAL-LLM-UPLOAD-THIS-ZIP
-          run-id: 41352922522
-          github-token: ${{ github.token }}
-          path: discloud-upload
-      - name: Validate exact packaged files before upload
-        shell: bash
-        run: |
-          set -euo pipefail
-          python services/rival-llm/validate_package.py discloud-upload
-          test -f discloud-upload/discovery.py
-          test -f discloud-upload/runtime/bin/llama-server
-          ( cd discloud-upload && zip -q -r ../llm-validated.zip . )
-          python services/rival-llm/validate_package.py llm-validated.zip
-      - name: Commit only to existing RivaL-Intelligence, preserving main bot
-        shell: bash
+      - name: Verify deployed main bot discovers LLM without DNS or hardcoded IP
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+        shell: bash
         run: |
-          set -euo pipefail
-          if [ -z "$DISCLOUD_TOKEN" ] || [ -z "$DISCLOUD_APP_ID" ]; then
-            echo "::error::Discloud credentials missing"
-            exit 1
-          fi
-          curl -fsS --max-time 30 -H "api-token: $DISCLOUD_TOKEN" https://api.discloud.app/v2/app/all -o "$RUNNER_TEMP/apps.json"
-          APP_ID=$(python - "$RUNNER_TEMP/apps.json" "$DISCLOUD_APP_ID" <<'PY'
-          import json,sys
-          data=json.load(open(sys.argv[1]))
-          candidates=[app for app in data.get("apps",[]) if
-              app.get("name","").casefold()=="rival-intelligence"
-              and app.get("id") != sys.argv[2]]
-          if len(candidates)!=1 or not candidates[0].get("id"):
-              raise SystemExit("Refusing update: isolated LLM app not uniquely identified")
-          print(candidates[0]["id"])
-          PY
-          )
-          test -n "$APP_ID"
-          RESULT=$(curl -sS --max-time 180 --retry 0 -o "$RUNNER_TEMP/commit.json" -w '%{http_code}' \
-            -H "api-token: $DISCLOUD_TOKEN" -X PUT \
-            -F "file.zip=@llm-validated.zip;type=application/zip" \
-            "https://api.discloud.app/v2/app/$APP_ID/commit")
-          echo "RivaL-Intelligence update HTTP $RESULT"
-          if [ "$RESULT" != 200 ]; then
-            echo "::error::Isolated LLM update API returned non-200 status"
-            exit 1
-          fi
-          python - "$RUNNER_TEMP/commit.json" <<'PY'
-          import json,sys
-          with open(sys.argv[1]) as f:result=json.load(f)
-          if result.get("statusCode",200) >= 400:
-              raise SystemExit("Discloud application update was rejected")
-          print("Existing isolated LLM package update acknowledged")
+          python - <<'PY'
+          import base64, json, os, time, urllib.error, urllib.parse, urllib.request
+          TOKEN=os.getenv("DISCLOUD_TOKEN","")
+          MAIN=os.getenv("DISCLOUD_APP_ID","")
+          if not TOKEN or not MAIN:
+              raise SystemExit("Missing existing Discloud credentials")
+          
+          def console(source):
+              command="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(source.encode()).decode()+"\"))'"
+              req=urllib.request.Request(
+                  "https://api.discloud.app/v2/app/"+urllib.parse.quote(MAIN,safe="")+"/console",
+                  data=json.dumps({"command":command}).encode(),method="PUT",
+                  headers={"api-token":TOKEN,"Content-Type":"application/json"})
+              try:
+                  with urllib.request.urlopen(req,timeout=85) as response:
+                      result=json.load(response)
+              except (urllib.error.HTTPError,urllib.error.URLError,TimeoutError,ValueError) as exc:
+                  print("Discloud console transport",type(exc).__name__)
+                  return {}
+              out=str(result.get("apps",{}).get("shell",{}).get("stdout",""))
+              if "RIVAL_DISCOVERY_ACCEPTANCE=" not in out:
+                  return {"console_result":"unavailable"}
+              try:return json.loads(out.split("RIVAL_DISCOVERY_ACCEPTANCE=",1)[1].splitlines()[0])
+              except (ValueError,IndexError):return {"console_result":"malformed"}
+          
+          source="""import json,os,pathlib,sys,time,urllib.request,urllib.error
+          src=pathlib.Path.cwd()/"src"
+          sys.path.insert(0,str(src))
+          out={"client_installed":(src/"parlay_bot/perpetuals/local_llm_discovery.py").is_file(),
+          "provider":os.getenv("RIVAL_AI_PROVIDER","disabled"),"token_present":bool(os.getenv("RIVAL_LOCAL_AI_TOKEN"))}
+          if out["client_installed"] and out["token_present"]:
+           try:
+            from parlay_bot.perpetuals.local_llm_discovery import discover_private_llm
+            ip=discover_private_llm(os.environ["RIVAL_LOCAL_AI_TOKEN"])
+            out["authenticated_discovery"]=bool(ip)
+            if ip:
+             def call(path,body=None,timeout=10):
+              req=urllib.request.Request("http://"+ip+":8765"+path,
+               data=json.dumps(body).encode() if body is not None else None,
+               headers={"Authorization":"Bearer "+os.environ["RIVAL_LOCAL_AI_TOKEN"],
+                        "Content-Type":"application/json"},method="POST" if body is not None else "GET")
+              begin=time.monotonic()
+              try:
+               with urllib.request.urlopen(req,timeout=timeout) as response:
+                data=json.loads(response.read(10000))
+                return {"http":response.status,"elapsed":round(time.monotonic()-begin,2),
+                        "ready":data.get("ready"),"direction":data.get("direction"),
+                        "model_present":bool(data.get("model")),
+                        "thesis_present":bool(str(data.get("thesis") or "").strip()),
+                        "risk_present":bool(str(data.get("risk") or "").strip()),
+                        "informational_only":data.get("informational_only"),
+                        "uncalibrated":data.get("uncalibrated")}
+              except urllib.error.HTTPError as e:return {"http":e.code}
+              except Exception as e:return {"error_class":type(e).__name__}
+             out["status"]=call("/v1/status",timeout=5)
+             if out["status"].get("http")==200 and out["status"].get("ready"):
+              out["research"]=call("/v1/research",{"asset":"BTC","evidence":{"analysis":"synthetic_discovery_acceptance_only","sources":[{"venue":"okx","status":"quotes_missing"}]}},timeout=55)
+           except Exception as e:out["diagnostic_error_class"]=type(e).__name__
+          print("RIVAL_DISCOVERY_ACCEPTANCE="+json.dumps(out,sort_keys=True))
+          """
+          last={}
+          for attempt in range(26):
+              last=console(source)
+              if last.get("client_installed") and last.get("authenticated_discovery") and last.get("status",{}).get("ready"):
+                  break
+              time.sleep(10)
+          print("Authenticated production main-to-LLM result:",json.dumps(last,sort_keys=True))
+          research=last.get("research") or {}
+          if not (last.get("provider")=="local" and last.get("authenticated_discovery") and
+                  research.get("http")==200 and research.get("model_present") and
+                  research.get("informational_only") is True and research.get("uncalibrated") is True and
+                  research.get("thesis_present") and research.get("risk_present")):
+              raise SystemExit("End-to-end authenticated discovery acceptance FAILED")
+          print("PASS: production main RivaL autonomously discovered and used private LFM3")
           PY

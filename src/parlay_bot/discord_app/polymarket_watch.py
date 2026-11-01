@@ -533,9 +533,22 @@ class PolymarketReader:
         )
 
     async def active(self, *, now: datetime | None = None) -> list[PolymarketNotice]:
-        # Eight markets, at most 24 shared HTTP reads, never per subscriber.
+        """Scan every exact market without a 36-request public REST burst.
+
+        The board, contract research and passive scan share this reader.
+        All asset/timeframe lookups previously started simultaneously; each
+        can request one Gamma event and two CLOB books. Constrain only this
+        bulk scan, never on-demand UI reads, without relaxing verification.
+        Each admitted lookup retains its normal end-to-end deadline.
+        """
+        limit = asyncio.Semaphore(4)
+
+        async def inspect(asset: str, horizon: int) -> PolymarketNotice | None:
+            async with limit:
+                return await self.market(asset, horizon, now=now)
+
         outcomes = await asyncio.gather(
-            *(self.market(asset, horizon, now=now)
-              for asset in ASSETS for horizon in HORIZONS), return_exceptions=True,
+            *(inspect(asset, horizon) for asset in ASSETS for horizon in HORIZONS),
+            return_exceptions=True,
         )
         return [x for x in outcomes if isinstance(x, PolymarketNotice)]

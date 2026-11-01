@@ -27,7 +27,7 @@ def _fetch_manifest(repo: str, filename: str, revision: str) -> tuple[str, int]:
     with urllib.request.urlopen(request, timeout=25) as response:
         rows = json.loads(response.read(300_000))
     if not isinstance(rows, list):
-        raise ValueError("Hugging Face metadata is invalid")
+        raise TypeError("Hugging Face metadata is invalid")
     matches = [x for x in rows if isinstance(x, dict)
                and x.get("type") == "file" and x.get("path") == filename]
     if len(matches) != 1:
@@ -35,7 +35,7 @@ def _fetch_manifest(repo: str, filename: str, revision: str) -> tuple[str, int]:
     file = matches[0]
     lfs = file.get("lfs")
     if not isinstance(lfs, dict):
-        raise ValueError("GGUF must have a documented LFS digest")
+        raise TypeError("GGUF must have a documented LFS digest")
     digest = lfs.get("oid", "")
     size = lfs.get("size", file.get("size", 0))
     if not isinstance(digest, str) or not SHA256.fullmatch(digest):

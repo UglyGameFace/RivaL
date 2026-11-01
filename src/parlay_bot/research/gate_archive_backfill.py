@@ -395,10 +395,8 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                                     for stamp in missing_stamps[:128]
                                 ],
                                 "gap_timestamp_list_truncated": len(missing_stamps) > 128,
-                                "model_training_eligible": (
-                                    len(missing_stamps) == 0 and
-                                    (asset, month) in native_months
-                                ),
+                                "raw_calendar_complete": not missing_stamps,
+                                "model_training_eligible": False,
                                 "source_provider_checksum_signed": False,
                             })
                         if kind == "candlesticks_5m" and (asset, month) not in native_months:

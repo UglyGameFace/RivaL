@@ -28,8 +28,8 @@ DEFAULT_KINDS = (
     "funding_updates", "trades",
 )
 MAX_PAGES = 20
-MAX_ATTEMPTS = 24
-MAX_NEW = 16
+MAX_ATTEMPTS = 48
+MAX_NEW = 32
 EXACT_NAME = re.compile(
     r"gatebulk-futures_usdt-(BTC|ETH|SOL|XRP)_USDT-"
     r"(candlesticks_1m|candlesticks_5m|candlesticks_1h|mark_prices|"
@@ -117,6 +117,95 @@ async def listed_archives(drive) -> dict[tuple[str, str, str], str]:
             raise HistoryImportError("malformed Gate Drive pagination cursor")
         page_token = token
     raise HistoryImportError("Gate private manifest listing exceeds bounded page budget")
+
+
+async def listed_native_months(drive) -> set[tuple[str, str]]:
+    """Resume hint: normalized Gate native manifests, never a proof of quality."""
+    await drive._verify_folder_boundary()
+    folder = drive.folders.manifests
+    query = (
+        f"'{drive._escape_query(folder)}' in parents and trashed = false "
+        "and name contains 'gate-' "
+        "and appProperties has { key='rival_kind' and value='manifest' }"
+    )
+    found: set[tuple[str, str]] = set()
+    page_token = None
+    matcher = re.compile(
+        r"gate-(BTC|ETH|SOL|XRP)_USDT-USDT-5m-"
+        r"(20\\d{2}-(?:0[1-9]|1[0-2]))--[0-9a-f]{16}\\.manifest\\.json"
+    )
+    for _ in range(MAX_PAGES):
+        params = {"q": query, "spaces": "drive", "pageSize": 1000,
+                  "fields": "nextPageToken,files(name,parents,appProperties,trashed)"}
+        if page_token:
+            params["pageToken"] = page_token
+        response = await drive._client.get(
+            f"{drive.DRIVE_URL}/files", params=params,
+            headers=await drive._headers(),
+        )
+        if response.status_code != 200:
+            raise HistoryImportError("Gate native month inventory unavailable")
+        data = response.json()
+        files = data.get("files") if isinstance(data, dict) else None
+        if not isinstance(files, list) or len(files) > 1000:
+            raise HistoryImportError("invalid Gate native month inventory")
+        for item in files:
+            if (not isinstance(item, dict) or item.get("trashed")
+                or folder not in (item.get("parents") or [])
+                or (item.get("appProperties") or {}).get("rival_kind") != "manifest"):
+                raise HistoryImportError("untrusted Gate native research listing")
+            match = matcher.fullmatch(item.get("name", ""))
+            if match:
+                key = (match[1], match[2])
+                if key in found:
+                    raise HistoryImportError("duplicate Gate normalized native month")
+                found.add(key)
+        page_token = data.get("nextPageToken")
+        if page_token is None:
+            return found
+        if not isinstance(page_token, str) or not page_token:
+            raise HistoryImportError("malformed Gate native month page token")
+    raise HistoryImportError("Gate native month inventory exceeds bounded pages")
+
+
+def prioritize_backfill(
+    jobs: list[tuple[str, str, str]], *,
+    existing: dict[tuple[str, str, str], str],
+    native: set[tuple[str, str]], months: list[str],
+    now: datetime, max_attempts: int,
+) -> list[tuple[str, str, str]]:
+    """Complete recent source-month 5m first, then deep history and enrichment.
+
+    Keep a small rotating share for existing archived-but-unqualified months
+    so gaps are investigated without starving fresh multi-year acquisitions.
+    """
+    recent = set(months[-6:])
+    recertify = [
+        key for key in jobs if key[1] == "candlesticks_5m"
+        and key in existing and (key[0], key[2]) not in native
+    ]
+    recent_candles = [
+        key for key in jobs if key[1] == "candlesticks_5m"
+        and key[2] in recent and key not in existing
+    ]
+    old_candles = [
+        key for key in jobs if key[1] == "candlesticks_5m"
+        and key[2] not in recent and key not in existing
+    ]
+    extra = [
+        key for key in jobs if key[1] != "candlesticks_5m"
+        and key not in existing
+    ]
+    recheck_count = min(len(recertify), max(1, max_attempts // 8))
+    chosen = rotate_attempts(recertify, now=now, count=recheck_count)
+    remaining = max_attempts - len(chosen)
+    for group in (recent_candles, old_candles, extra):
+        if remaining <= 0:
+            break
+        selected = rotate_attempts(group, now=now, count=remaining)
+        chosen.extend(selected)
+        remaining -= len(selected)
+    return chosen
 
 
 async def publish_raw(drive, *, archive: Path, source: dict,
@@ -210,7 +299,7 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                        now: datetime | None = None,
                        assets: tuple[str, ...] = ASSETS,
                        kinds: tuple[str, ...] = DEFAULT_KINDS,
-                       max_new: int = 12, max_attempts: int = 20) -> dict:
+                       max_new: int = 24, max_attempts: int = 40) -> dict:
     clock = now or datetime.now(UTC)
     if (clock.utcoffset() is None or not assets or not kinds
         or len(assets) != len(set(assets)) or len(kinds) != len(set(kinds))
@@ -221,10 +310,14 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
         raise ValueError("unapproved Gate historical batch scope")
     months = complete_months(clock)
     existing = await listed_archives(drive)
+    native_months = await listed_native_months(drive)
     all_jobs = [(asset, kind, month)
                 for month in months for kind in kinds for asset in assets]
     pending = [job for job in all_jobs if job not in existing]
-    selected = rotate_attempts(pending, now=clock, count=max_attempts)
+    selected = prioritize_backfill(
+        all_jobs, existing=existing, native=native_months,
+        months=months, now=clock, max_attempts=max_attempts,
+    )
     result: dict = {
         "schema_version": "rival-gate-public-bulk-progress-v1",
         "created_at": datetime.now(UTC).isoformat(),
@@ -236,6 +329,10 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
         "pending_jobs": len(pending),
         "selected_jobs": len(selected),
         "published": [], "unavailable_or_rejected": [],
+        "native_qualified": [], "native_blockers": [],
+        "native_months_already_listed_without_readback": len(native_months),
+        "model_research": {"status": "not_run_no_six_verified_months",
+                           "published_models": 0},
         "provider_throttled": False,
         "full_source_coverage_proven": False,
         "live_predictions_modified": False,
@@ -266,6 +363,33 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                         )
                         result["published"].append(saved)
                         existing[key] = receipt["compressed_sha256"][:16]
+                        if kind == "candlesticks_5m" and (asset, month) not in native_months:
+                            from parlay_bot.research.gate_native import qualify_and_publish
+
+                            try:
+                                # This reads real Gate API gaps and contract
+                                # metadata, never invents trading history.
+                                qualification = await qualify_and_publish(
+                                    drive, client=client, archive=output,
+                                    source=receipt, asset=asset, month=month,
+                                    root=root, now=clock,
+                                )
+                                result["native_qualified"].append(qualification)
+                                native_months.add((asset, month))
+                            except (HistoryImportError, DriveArchiveError,
+                                    OSError, httpx.HTTPError, RuntimeError,
+                                    ValueError) as native_exc:
+                                reason = str(native_exc)[:240]
+                                result["native_blockers"].append({
+                                    "asset": asset, "month": month,
+                                    "status": "research_training_not_qualified",
+                                    "reason": reason,
+                                })
+                                if any(code in reason for code in (
+                                    "HTTP 429", "HTTP 503", "HTTP 502", "HTTP 504",
+                                )):
+                                    result["provider_throttled"] = True
+                                    break
                     except (HistoryImportError, DriveArchiveError, httpx.HTTPError,
                             OSError, RuntimeError, ValueError) as exc:
                         reason = str(exc)[:240]
@@ -277,6 +401,29 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                                ("HTTP 429", "HTTP 503", "HTTP 502", "HTTP 504")):
                             result["provider_throttled"] = True
                             break  # Stop respecting the provider, not cycle proxies.
+                recent = months[-6:]
+                if len(recent) == 6 and any(
+                    all((asset, month) in native_months for month in recent)
+                    for asset in assets
+                ):
+                    from parlay_bot.research.source_native_offline import run_native_research
+
+                    try:
+                        trained = await run_native_research(
+                            drive=drive, venue="gate", months=recent, root=root,
+                            report_dir=report_dir, publish=True,
+                        )
+                        result["model_research"] = {
+                            "status": trained.get("status"),
+                            "published_models": trained.get("published_models", 0),
+                            "live_approved": False,
+                        }
+                    except (HistoryImportError, DriveArchiveError,
+                            RuntimeError, OSError, ValueError) as exc:
+                        result["model_research"] = {
+                            "status": "blocked", "published_models": 0,
+                            "reason": str(exc)[:240],
+                        }
     finally:
         destination = report_dir / "gate-bulk-progress.json"
         destination.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n",
@@ -288,8 +435,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Gate official file-first Drive archival")
     parser.add_argument("--root", type=Path, default=Path("data/gate-bulk"))
     parser.add_argument("--report-dir", type=Path, default=Path("data/native-reports"))
-    parser.add_argument("--max-new", type=int, default=12)
-    parser.add_argument("--max-attempts", type=int, default=20)
+    parser.add_argument("--max-new", type=int, default=24)
+    parser.add_argument("--max-attempts", type=int, default=40)
     parser.add_argument("--assets", nargs="+", choices=ASSETS, default=list(ASSETS))
     parser.add_argument("--kinds", nargs="+", choices=TYPES,
                         default=list(DEFAULT_KINDS))
@@ -313,6 +460,9 @@ def main(argv: list[str] | None = None) -> int:
         "published": len(data["published"]),
         "unavailable_or_rejected": len(data["unavailable_or_rejected"]),
         "provider_throttled": data["provider_throttled"],
+        "native_qualified": len(data["native_qualified"]),
+        "native_blocked": len(data["native_blockers"]),
+        "model_research": data["model_research"]["status"],
         "pending_jobs": data["pending_jobs"],
     }, sort_keys=True))
     # Never print an empty run as a successful production ingestion when

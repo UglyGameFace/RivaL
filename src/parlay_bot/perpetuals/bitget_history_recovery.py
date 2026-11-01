@@ -31,6 +31,9 @@ from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
 _LOG = logging.getLogger(__name__)
 _BASE = "https://api.bitget.com/api/v3/market/"
+# Four small source-native repairs per asset per scheduled cycle, only after
+# the forward cursor has caught up. Maximum 16 HTTP gap reads per cycle.
+_GAP_REPAIR_BURST = 4
 
 
 class BitgetHistoryRecovery(GateHistoryRecovery):
@@ -360,6 +363,31 @@ class BitgetHistoryRecovery(GateHistoryRecovery):
                 asset, "blocked" if blocked else "retry",
             )
             return 0
+
+    async def run_once(self, *, now: datetime | None = None) -> int:
+        """Use a small sequential repair burst without speeding bulk imports.
+
+        The parent's scheduler rotates only two venues per five-minute cycle.
+        One gap per Bitget turn would take days to refill 339 isolated gaps.
+        Four successful exact-slot repairs per asset are still far below the
+        provider's public API budget, and any failure/backoff stops the burst.
+        """
+        async with self._lock:
+            clock = _utc(now or datetime.now(UTC))
+            total = 0
+            for asset in self.assets:
+                for _ in range(_GAP_REPAIR_BURST):
+                    added = await self.fetch_asset(asset, now=clock)
+                    total += added
+                    # Never multiply long-range page acquisition; only a
+                    # successfully accepted exact-slot repair earns another
+                    # bounded request in this cycle.
+                    if not added:
+                        break
+                    position = await asyncio.to_thread(self._position, asset, clock)
+                    if position["status"] != "gap_repair":
+                        break
+            return total
 
     def progress(self) -> list[dict]:
         self.initialize()

@@ -207,7 +207,8 @@ def test_backfill_prioritizes_last_six_months_and_bounded_recertification():
     ] + [("BTC", "mark_prices", "2023-01")]
     selected = backfill.prioritize_backfill(
         jobs, existing={jobs[1]: "a" * 16},
-        native=set(), months=["2023-01", "2023-03", "2026-05",
+        native=set(), months=["2023-01", "2023-03", "2023-04",
+                               "2024-01", "2025-01", "2026-05",
                                "2026-06", "2026-07"],
         now=CLOCK, max_attempts=4,
     )

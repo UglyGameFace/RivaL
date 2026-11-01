@@ -24,6 +24,7 @@ NATIVE_FILES = {
     "runtime/bin/libggml.so.0",
     "runtime/bin/libggml-base.so.0",
     "runtime/bin/libggml-cpu.so.0",
+    "runtime/bin/libmtmd.so.0",
 }
 CONFIG_KEYS = {
     "NAME", "TYPE", "MAIN", "RAM", "VERSION", "BUILD", "START",

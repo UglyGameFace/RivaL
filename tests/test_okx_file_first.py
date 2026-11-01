@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import csv
-import hashlib
 import io
 import zipfile
 from datetime import UTC, datetime, timedelta
@@ -37,11 +36,11 @@ def _zip_minute_csv(*, first: int = 0, end: int = 8, missing: int = -1,
 
 
 def _handler(request, *, missing: int = -1, bad_member: bool = False,
-             duplicate: bool = False):
+):
     if request.url.path.endswith("/market-data-history"):
-        month = datetime.fromtimestamp(
+        month = (datetime.fromtimestamp(
             int(request.url.params["begin"]) / 1000, UTC,
-        ).strftime("%Y-%m")
+        ) + timedelta(hours=8)).strftime("%Y-%m")
         # This fixture uses a UTC calendar; production uses UTC+8 catalog
         # boundaries and receives a one-month shifted timestamp.
         url = (
@@ -56,7 +55,6 @@ def _handler(request, *, missing: int = -1, bad_member: bool = False,
                                            "filename": url.rsplit("/", 1)[-1]}]}],
         }]})
     if str(request.url).startswith("https://static.okx.com"):
-        month = str(request.url).rsplit("-", 2)[-2:]
         # The second downloaded archive supplies the final 2 UTC minutes.
         second = "-06.zip" in str(request.url)
         return httpx.Response(200, content=_zip_minute_csv(

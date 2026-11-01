@@ -11,11 +11,11 @@ from __future__ import annotations
 import csv
 import hashlib
 import io
-import json
 import math
 import tempfile
 import zipfile
 from datetime import UTC, datetime, timedelta
+from itertools import chain
 from pathlib import Path
 
 import httpx
@@ -77,7 +77,7 @@ def _read_csv(data: bytes, *, target_start_ms: int,
         if len(first) not in (8, 9):
             raise HistoryImportError("unsupported OKX minute CSV schema")
         columns = tuple(range(8))
-        rows = iter((first, *reader))
+        rows = chain((first,), reader)
     else:
         rows = reader
     collected = {}

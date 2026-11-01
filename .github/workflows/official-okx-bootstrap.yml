@@ -1,0 +1,97 @@
+name: Official OKX source-native historical bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      asset:
+        description: "One real OKX USDT perpetual"
+        type: choice
+        options: [BTC, ETH, SOL, XRP]
+        required: true
+      from_month:
+        description: "Optional historical 6-month block (YYYY-MM, July 2023 onward)"
+        required: false
+        type: string
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/official-okx-bootstrap.yml"
+      - "src/parlay_bot/research/official_okx.py"
+  schedule:
+    # Daily off-host backfill. Rotate instruments and six-month blocks;
+    # existing verified Drive archives are reused instead of re-downloaded.
+    - cron: "19 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-source-native-research
+  cancel-in-progress: false
+
+jobs:
+  official-okx:
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install source-native model training dependencies
+        run: python -m pip install -e ".[dev,ml-research]"
+      - name: Fetch exact-venue, full-calendar OHLCV history and train research
+        shell: bash
+        env:
+          INPUT_ASSET: ${{ inputs.asset }}
+          INPUT_FROM_MONTH: ${{ inputs.from_month }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          for name in RIVAL_DRIVE_ROOT_FOLDER_ID RIVAL_DRIVE_HISTORY_FOLDER_ID \
+            RIVAL_DRIVE_MANIFESTS_FOLDER_ID RIVAL_DRIVE_STAGING_FOLDER_ID \
+            RIVAL_DRIVE_MODELS_FOLDER_ID RIVAL_DRIVE_REPORTS_FOLDER_ID \
+            RIVAL_DRIVE_OAUTH_CLIENT_ID RIVAL_DRIVE_OAUTH_CLIENT_SECRET \
+            RIVAL_DRIVE_OAUTH_REFRESH_TOKEN; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Missing required private Drive configuration: $name"
+              exit 1
+            fi
+          done
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            ASSET="$INPUT_ASSET"
+          else
+            ASSETS=(BTC ETH SOL XRP)
+            ASSET="${ASSETS[$((10#$(date -u +%d) % 4))]}"
+          fi
+          echo "OKX source-native research: $ASSET; no live model promotion"
+          if [[ -n "$INPUT_FROM_MONTH" ]]; then
+            python -m parlay_bot.research.official_okx --asset "$ASSET" \
+              --from-month "$INPUT_FROM_MONTH"
+          else
+            python -m parlay_bot.research.official_okx --asset "$ASSET"
+            if [[ "$EVENT_NAME" == "schedule" ]]; then
+              BLOCKS=(2023-07 2024-01 2024-07 2025-01 2025-07 2026-01 2026-07)
+              OLDEST="${BLOCKS[$((10#$(date -u +%j) % 7))]}"
+              python -m parlay_bot.research.official_okx --asset "$ASSET" \
+                --from-month "$OLDEST"
+            fi
+          fi
+      - name: Publish immutable evidence receipts for review
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-okx-research-receipts
+          path: data/okx-bootstrap/reports/source-*.json
+          retention-days: 14
+          if-no-files-found: ignore

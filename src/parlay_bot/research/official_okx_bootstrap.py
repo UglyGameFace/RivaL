@@ -231,67 +231,104 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
     clock = now or datetime.now(UTC)
     if asset not in ASSETS or not 1 <= max_new_months <= 6:
         raise HistoryImportError("invalid bounded OKX research batch")
-    months = complete_months(now=clock, count=6)
+    recent = complete_months(now=clock, count=6)
     if any(month_bounds(a)[1] != month_bounds(b)[0]
-           for a, b in pairwise(months)):
-        raise HistoryImportError("native OKX months not contiguous")
+           for a, b in pairwise(recent)):
+        raise HistoryImportError("native OKX training months not contiguous")
     await verify_contract(client, asset)
-    # The native restore verifies manifest and history identity, SHA and folder.
-    await restore_verified_source_months(
-        drive, venue="okx", months=months, root=root,
-    )
+
+    # The first two runs target the latest six complete months so native
+    # challengers can be trained promptly. Then work systematically from
+    # July 2023. No existing monthly snapshots are replaced or renamed.
+    older = []
+    current = month_bounds(FIRST)[0]
+    newest_old = month_bounds(recent[0])[0]
+    while current < newest_old:
+        older.append(current.strftime("%Y-%m"))
+        current = month_bounds(current.strftime("%Y-%m"))[1]
+    blocks = [recent] + [older[i:i + 6] for i in range(0, len(older), 6)]
     from parlay_bot.research.audit import audit_catalog
 
-    inventory = audit_catalog(root, months=months, sources=(SOURCE,))
-    verified = {
-        row["month"] for row in inventory["partitions"]
-        if row["venue"] == "okx" and row["contract"] == f"{asset}-USDT-SWAP"
-        and row["quote"] == "USDT" and row["full_calendar_month_verified"]
-    }
-    added = []
-    for month in [m for m in months if m not in verified][-max_new_months:]:
-        result = await download_month(
-            client, asset=asset, month=month, root=root, now=clock,
+    for block in blocks:
+        await restore_verified_source_months(
+            drive, venue="okx", months=block, root=root,
         )
-        history, manifest = (_artifact(result.data_path, result.records),
-                             _artifact(result.manifest_path, 1))
-        key = "native-" + history.sha256[:24]
-        hist = await drive.ensure_history_file(
-            artifact=history, batch_id=key, mime_type="application/x-ndjson",
-        )
-        await drive.verify_downloaded_artifact(
-            file_id=hist.file_id, parent_id=drive.folders.history,
-            artifact=history,
-        )
-        meta = await drive.ensure_manifest_file(
-            artifact=manifest, batch_id=key,
-        )
-        await drive.verify_downloaded_artifact(
-            file_id=meta.file_id, parent_id=drive.folders.manifests,
-            artifact=manifest,
-        )
-        added.append(month)
-    # Full native training is called only for six exact, restored complete
-    # months. Missing source candles never become a fake successful model.
-    receipt = await run_native_research(
-        drive=drive, venue="okx", months=months, root=root,
-        report_dir=report_dir, publish=True,
-    )
-    # Auxiliary catalogs are observed separately. A monthly catalog response
-    # does not mean each underlying ZIP was downloaded or feature-joined.
-    report_dir.mkdir(parents=True, exist_ok=True)
-    for month in months[-1:]:
-        catalog = await inventory_extra_modules(client, asset=asset, month=month)
-        (report_dir / f"okx-extra-inventory-{asset}-{month}.json").write_text(
-            json.dumps(catalog, sort_keys=True, indent=2) + "\n", encoding="utf-8",
-        )
-    return {"venue": "okx", "asset": asset, "months": months,
+        inventory = audit_catalog(root, months=block, sources=(SOURCE,))
+        verified = {
+            row["month"] for row in inventory["partitions"]
+            if row["venue"] == "okx"
+            and row["contract"] == f"{asset}-USDT-SWAP"
+            and row["quote"] == "USDT" and row["full_calendar_month_verified"]
+        }
+        missing = [month for month in block if month not in verified]
+        if not missing:
+            continue
+        # Verify latest coverage first, then proceed forward from July 2023.
+        targets = missing[-max_new_months:] if block == recent else missing[:max_new_months]
+        added = []
+        for month in targets:
+            result = await download_month(
+                client, asset=asset, month=month, root=root, now=clock,
+            )
+            history = _artifact(result.data_path, result.records)
+            manifest = _artifact(result.manifest_path, 1)
+            key = "native-" + history.sha256[:24]
+            saved = await drive.ensure_history_file(
+                artifact=history, batch_id=key, mime_type="application/x-ndjson",
+            )
+            await drive.verify_downloaded_artifact(
+                file_id=saved.file_id, parent_id=drive.folders.history,
+                artifact=history,
+            )
+            meta = await drive.ensure_manifest_file(
+                artifact=manifest, batch_id=key,
+            )
+            await drive.verify_downloaded_artifact(
+                file_id=meta.file_id, parent_id=drive.folders.manifests,
+                artifact=manifest,
+            )
+            added.append(month)
+
+        # A six-month segment can only produce models after all its source
+        # months pass the exact zero-gap check. A shorter transition segment
+        # is archived but is NEVER falsely treated as six complete months.
+        if len(block) == 6:
+            receipt = await run_native_research(
+                drive=drive, venue="okx", months=block, root=root,
+                report_dir=report_dir, publish=True,
+            )
+        else:
+            receipt = {"status": "under_six_months",
+                       "published_models": 0}
+        report_dir.mkdir(parents=True, exist_ok=True)
+        # The advanced modules are cataloged, not silently marked imported.
+        for month in targets:
+            catalog = await inventory_extra_modules(
+                client, asset=asset, month=month,
+            )
+            (report_dir / f"okx-extra-inventory-{asset}-{month}.json").write_text(
+                json.dumps(catalog, sort_keys=True, indent=2) + "\\n",
+                encoding="utf-8",
+            )
+        return {
+            "venue": "okx", "asset": asset,
             "newly_published_months": added,
+            "target_scope_months": block,
             "native_status": receipt["status"],
             "native_models_published": receipt["published_models"],
+            "full_2023_to_present_verified": False,
             "historical_auxiliary_modules_qualified": False,
-            "live_approved": False, "trades_placed": False}
-
+            "live_approved": False, "trades_placed": False,
+        }
+    return {
+        "venue": "okx", "asset": asset,
+        "newly_published_months": [],
+        "native_status": "all_candle_months_already_verified",
+        "native_models_published": 0,
+        "full_2023_to_present_verified": True,
+        "historical_auxiliary_modules_qualified": False,
+        "live_approved": False, "trades_placed": False,
+    }
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="OKX source-native research only")

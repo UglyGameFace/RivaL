@@ -1,0 +1,175 @@
+name: Official OKX advanced archive research
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/official-okx-advanced-archive.yml"
+      - "src/parlay_bot/research/okx_advanced_archive.py"
+      - "src/parlay_bot/research/official_okx_bootstrap.py"
+      - "tests/test_okx_advanced_archive.py"
+  workflow_dispatch:
+    inputs:
+      asset:
+        description: Exact OKX USDT-settled swap
+        required: true
+        type: choice
+        options: [BTC, ETH, SOL, XRP]
+      month:
+        description: Completed monthly archive YYYY-MM
+        required: true
+        type: string
+      module:
+        description: One auxiliary archive module
+        required: true
+        type: choice
+        options: [funding_rates, trades, orderbook_l2_400, orderbook_l2_5000]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-okx-advanced-${{ github.event.inputs.asset || github.event.pull_request.number }}-${{ github.event.inputs.month || 'ci' }}
+  cancel-in-progress: false
+
+jobs:
+  archive-contract-tests:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate archive guards and evidence in offline fixtures
+        run: |
+          python -m pip install -e ".[dev]"
+          ruff check src/parlay_bot/research/okx_advanced_archive.py tests/test_okx_advanced_archive.py
+          pytest -q tests/test_okx_advanced_archive.py tests/test_official_okx_bootstrap.py
+
+  archive-research:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      ASSET: ${{ inputs.asset }}
+      MONTH: ${{ inputs.month }}
+      MODULE: ${{ inputs.module }}
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install public data and existing Drive archival code
+        run: python -m pip install -e ".[dev]"
+      - name: Download, schema-check and SHA-verify one source-native archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import asyncio
+          import json
+          import os
+          from pathlib import Path
+
+          import httpx
+
+          from parlay_bot.config import Settings
+          from parlay_bot.research.free_history import HistoryImportError
+          from parlay_bot.research.official_okx_bootstrap import inventory_extra_modules
+          from parlay_bot.research.okx_advanced_archive import ingest_one
+          from parlay_bot.research.publish import _artifact, _drive
+
+          async def run():
+              asset = os.environ["ASSET"]
+              month = os.environ["MONTH"]
+              module = os.environ["MODULE"]
+              root = Path("data/okx-advanced")
+              root.mkdir(parents=True, exist_ok=True)
+              drive = _drive(Settings())
+              try:
+                  async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
+                      catalog = await inventory_extra_modules(client, asset=asset, month=month)
+                      (root / "inventory.json").write_text(
+                          json.dumps(catalog, sort_keys=True, indent=2) + "\n"
+                      )
+                      slot = catalog["modules"][module]
+                      if slot["status"] != "cataloged_not_downloaded" or len(slot["files"]) != 1:
+                          raise HistoryImportError(
+                              "One explicitly listed archive required; no URL invented"
+                          )
+                      result = await ingest_one(
+                          client=client, asset=asset, month=month, module=module,
+                          record=slot["files"][0], root=root,
+                      )
+                  name = slot["files"][0]["filename"]
+                  archive = _artifact(root / name, result["parsed_rows"])
+                  batch = "okx-aux-" + result["archive_sha256"][:24]
+                  stored = await drive.ensure_history_file(
+                      artifact=archive, batch_id=batch,
+                      mime_type="application/zip" if name.endswith(".zip")
+                      else "application/gzip",
+                  )
+                  await drive.verify_downloaded_artifact(
+                      file_id=stored.file_id, parent_id=drive.folders.history,
+                      artifact=archive,
+                  )
+                  feature = _artifact(root / (name + ".research.ndjson"),
+                                      result["feature_buckets"])
+                  feature_batch = "okx-feature-" + feature.sha256[:24]
+                  saved_features = await drive.ensure_history_file(
+                      artifact=feature, batch_id=feature_batch,
+                      mime_type="application/x-ndjson",
+                  )
+                  await drive.verify_downloaded_artifact(
+                      file_id=saved_features.file_id,
+                      parent_id=drive.folders.history, artifact=feature,
+                  )
+                  result["private_archive_readback_verified"] = True
+                  result["private_feature_readback_verified"] = True
+                  result["archive_file_id"] = stored.file_id
+                  result["feature_file_id"] = saved_features.file_id
+                  result["live_model_import_allowed"] = False
+                  receipt_path = root / (name + ".receipt.json")
+                  receipt_path.write_text(
+                      json.dumps(result, sort_keys=True, indent=2) + "\n",
+                  )
+                  receipt = _artifact(receipt_path, 1)
+                  saved = await drive.ensure_manifest_file(
+                      artifact=receipt, batch_id="okx-receipt-" + receipt.sha256[:24],
+                  )
+                  await drive.verify_downloaded_artifact(
+                      file_id=saved.file_id,
+                      parent_id=drive.folders.manifests, artifact=receipt,
+                  )
+                  print(json.dumps({
+                      "module": module, "month": month, "asset": asset,
+                      "status": "archived_with_private_sha256_readback_research_only",
+                      "parsed_rows": result["parsed_rows"],
+                      "feature_buckets": result["feature_buckets"],
+                      "live_model_import_allowed": False,
+                  }))
+              finally:
+                  await drive.aclose()
+
+          asyncio.run(run())
+          PY
+      - name: Publish non-private verification receipts only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: okx-advanced-research-receipts
+          path: |
+            data/okx-advanced/inventory.json
+            data/okx-advanced/*.receipt.json
+          if-no-files-found: ignore
+          retention-days: 14

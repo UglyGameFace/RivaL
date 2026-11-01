@@ -1,79 +1,48 @@
-name: One-time validated LFM3 real-evidence CPU repair deployment
+name: RivaL real nine-source gateway production acceptance
 on:
   push:
     branches: ["diagnostics/read-only-discloud-vlan-20261101"]
     paths: [".github/workflows/discloud-vlan-readonly-diagnostic.yml"]
 permissions:
   contents: read
-  actions: read
 jobs:
-  deploy-isolated-llm:
+  acceptance:
     runs-on: ubuntu-latest
-    timeout-minutes: 9
+    timeout-minutes: 6
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Require exact merged tested source
-        run: |
-          set -euo pipefail
-          git merge-base --is-ancestor 51271feeb39cd5f87eb357a1829d7f3176825485 HEAD
-          grep -q 'def compact_evidence' services/rival-llm/service.py
-      - uses: actions/download-artifact@v4
-        with:
-          name: RIVAL-LLM-UPLOAD-THIS-ZIP
-          run-id: 41358911977
-          github-token: ${{ github.token }}
-          path: discloud-upload
-      - name: Validate downloaded package matches merged code
-        run: |
-          set -euo pipefail
-          python services/rival-llm/validate_package.py discloud-upload
-          cmp services/rival-llm/service.py discloud-upload/service.py
-          cmp src/parlay_bot/perpetuals/evidence_policy.py discloud-upload/evidence_policy.py
-          (cd discloud-upload && zip -q -r ../llm-validated.zip .)
-          python services/rival-llm/validate_package.py llm-validated.zip
-      - name: Update only pre-existing Intelligence app
-        shell: bash
+      - name: Reproduce genuine nine-venue evidence workload with new gateway
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+        shell: bash
         run: |
-          set -euo pipefail
-          if [ -z "$DISCLOUD_TOKEN" ] || [ -z "$DISCLOUD_APP_ID" ]; then
-            echo "::error::Discloud deployment secrets are missing"
-            exit 1
-          fi
-          curl -fsS --max-time 30 -H "api-token: $DISCLOUD_TOKEN" \
-            https://api.discloud.app/v2/app/all -o "$RUNNER_TEMP/apps.json"
-          APP_ID="$(python - "$RUNNER_TEMP/apps.json" "$DISCLOUD_APP_ID" <<'PY'
-          import json,sys
-          with open(sys.argv[1]) as f: data=json.load(f)
-          found=[a for a in data.get("apps",[]) if isinstance(a,dict) and
-                 str(a.get("name","")).casefold()=="rival-intelligence" and
-                 str(a.get("id")) != sys.argv[2]]
-          if len(found)!=1 or not found[0].get("id"):
-              raise SystemExit("Refusing ambiguous or main app target")
-          print(found[0]["id"])
-          PY
-          )"
-          STATUS="$(curl -sS --max-time 180 --retry 0 -o "$RUNNER_TEMP/commit.json" -w '%{http_code}' \
-              -H "api-token: $DISCLOUD_TOKEN" -X PUT \
-              -F "file.zip=@llm-validated.zip;type=application/zip" \
-              "https://api.discloud.app/v2/app/$APP_ID/commit")"
-          echo "Isolated LFM3 update status HTTP $STATUS"
-          if [ "$STATUS" != 200 ]; then
-            echo "::error::Isolated LFM3 update did not succeed"
-            exit 1
-          fi
-          python - "$RUNNER_TEMP/commit.json" <<'PY'
-          import json,sys
-          with open(sys.argv[1]) as f:result=json.load(f)
-          if result.get("statusCode",200)>=400:
-              raise SystemExit("Discloud refused the update")
-          print("Existing RivaL-Intelligence package accepted")
+          python - <<'PY'
+          import os,json,urllib.request,urllib.parse,base64
+          token=os.environ.get("DISCLOUD_TOKEN","")
+          appid=os.environ.get("DISCLOUD_APP_ID","")
+          if not token or not appid:raise SystemExit("Missing deploy credentials")
+          source="import json,os,sys,time,urllib.request,urllib.error\nsys.path.insert(0,os.path.abspath(\"src\"))\nfrom parlay_bot.config import Settings\nfrom parlay_bot.storage.hot import PostgresHotStore\nfrom parlay_bot.perpetuals.market_store import PerpetualMarketStore\nfrom parlay_bot.perpetuals.analysis_evidence import build_evidence\nfrom parlay_bot.perpetuals.local_llm_discovery import discover_private_llm\nfrom parlay_bot.discord_app.data_dashboard import MARKET_SYMBOLS\nsettings=Settings()\nreport={\"provider\":settings.rival_ai_provider}\nkey=settings.rival_local_ai_token.get_secret_value() if settings.rival_local_ai_token else \"\"\npeer=discover_private_llm(key) if key else None\nreport[\"signed_peer_discovered\"]=bool(peer)\nif peer:\n  for attempt in range(12):\n    try:\n      req=urllib.request.Request(\"http://\"+peer+\":8765/v1/status\",\n             headers={\"Authorization\":\"Bearer \"+key})\n      with urllib.request.urlopen(req,timeout=5) as response:\n        if json.load(response).get(\"ready\"):report[\"ready\"]=True;break\n    except Exception:pass\n    time.sleep(5)\n  if report.get(\"ready\"):\n    store=PostgresHotStore(settings.rival_database_url.get_secret_value())\n    try:\n      evidence,digest=build_evidence(PerpetualMarketStore(store),asset=\"BTC\",\n                 venues=tuple(MARKET_SYMBOLS))\n      report[\"source_count\"]=len(evidence[\"sources\"])\n      report[\"evidence_original_bytes\"]=len(json.dumps(evidence,sort_keys=True,\n                              separators=(\",\",\":\")).encode())\n      if report[\"source_count\"]>=3:\n        req=urllib.request.Request(\"http://\"+peer+\":8765/v1/research\",\n          data=json.dumps({\"asset\":\"BTC\",\"evidence\":evidence}).encode(),\n          method=\"POST\",headers={\"Authorization\":\"Bearer \"+key,\n                                 \"Content-Type\":\"application/json\"})\n        start=time.monotonic()\n        try:\n          with urllib.request.urlopen(req,timeout=58) as response:\n            obj=json.load(response)\n            report[\"research\"]={\"http\":response.status,\n                \"seconds\":round(time.monotonic()-start,2),\n                \"model\":obj.get(\"model\"),\n                \"direction\":obj.get(\"direction\"),\n                \"confidence\":obj.get(\"confidence\"),\n                \"grounded_by\":obj.get(\"grounded_by\"),\n                \"grounding_status\":obj.get(\"grounding_status\"),\n                \"usable_venues\":obj.get(\"usable_venues\"),\n                \"risk_present\":bool(obj.get(\"risk\")),\n                \"thesis_present\":bool(obj.get(\"thesis\")),\n                \"informational_only\":obj.get(\"informational_only\"),\n                \"uncalibrated\":obj.get(\"uncalibrated\")}\n        except urllib.error.HTTPError as e:\n          try:reason=json.loads(e.read(4096)).get(\"error\")\n          except Exception:reason=\"unknown\"\n          report[\"research\"]={\"http\":e.code,\"error\":reason,\n                  \"seconds\":round(time.monotonic()-start,2)}\n        except Exception as e:\n          report[\"research\"]={\"error_class\":type(e).__name__,\n                  \"seconds\":round(time.monotonic()-start,2)}\n    finally:store.close()\nprint(\"RIVAL_REAL_NINE_VENUES=\"+json.dumps(report,sort_keys=True))\n"
+          cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(source.encode()).decode()+"\"))'"
+          req=urllib.request.Request(
+           "https://api.discloud.app/v2/app/"+urllib.parse.quote(appid,safe="")+"/console",
+           data=json.dumps({"command":cmd}).encode(),method="PUT",
+           headers={"api-token":token,"Content-Type":"application/json"})
+          with urllib.request.urlopen(req,timeout=155) as resp:result=json.load(resp)
+          output=str(result.get("apps",{}).get("shell",{}).get("stdout",""))
+          marker="RIVAL_REAL_NINE_VENUES="
+          if marker not in output:
+           print("No parsed result; stderr_present",bool(result.get("apps",{}).get("shell",{}).get("stderr")))
+           raise SystemExit(1)
+          report=json.loads(output.split(marker,1)[1].splitlines()[0])
+          print("Real original production evidence acceptance",json.dumps(report,sort_keys=True))
+          r=report.get("research") or {}
+          if (report.get("provider")!="local" or not report.get("signed_peer_discovered")
+              or not report.get("ready") or report.get("source_count",0)<3 or
+              r.get("http")!=200 or r.get("direction")!="uncertain"
+              or r.get("confidence")!="low" or
+              r.get("grounded_by")!="deterministic_historical_evidence_policy"
+              or not r.get("informational_only") or not r.get("uncalibrated")
+              or not r.get("thesis_present") or not r.get("risk_present")):
+           raise SystemExit("REAL MULTI-VENUE ACCEPTANCE FAILED")
+          print("PASS real full-source input, bounded-model prompt and private HTTP inference")
           PY

@@ -231,13 +231,14 @@ class BitgetHistoryRecovery(GateHistoryRecovery):
                     "interval": "5m", "type": "market",
                     "startTime": str(int(cursor.timestamp() * 1000) - 1),
                     "endTime": str(int(until.timestamp() * 1000) - 1),
-                    "limit": str(self.page_bars),
+                    "limit": str(2 if repairing else self.page_bars),
                 },
             )
             rows = result.get("data") if isinstance(result, dict) else None
             if (
                 not isinstance(result, dict) or result.get("code") != "00000"
-                or not isinstance(rows, list) or len(rows) > self.page_bars + 1
+                or not isinstance(rows, list)
+                or len(rows) > (2 if repairing else self.page_bars + 1)
             ):
                 raise MarketDataError("invalid Bitget historical page")
             candles = []

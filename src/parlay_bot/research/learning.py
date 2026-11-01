@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from parlay_bot.research.free_history import INTERVALS, SCHEMA, HistoryImportError
+from parlay_bot.research.source_native import native_manifest_provenance
 
 LOOKBACK = 12
 HORIZON_MINUTES = (5, 15, 60, 240, 1440, 10080)
@@ -74,17 +75,7 @@ def _rows(manifest_path: Path) -> tuple[dict, list[dict]]:
             or manifest.get("prospective_forecast") is not False
             or manifest.get("time_reference") != "exchange_candle_open_not_first_observed_at"
             or (manifest.get("source") == "verified_venue_perp_klines"
-                and not (
-                    manifest.get("source_integrity") == "postgres-first-observed-at-v1"
-                    or (
-                        manifest.get("venue") == "okx"
-                        and manifest.get("source_integrity") == "okx-v5-public-history-5m-v1"
-                        and manifest.get("source_url") ==
-                            "https://www.okx.com/api/v5/market/history-candles"
-                        and manifest.get("source_transport") == "official_public_https"
-                        and manifest.get("provider_signed_checksum") is False
-                    )
-                ))
+                and not native_manifest_provenance(manifest))
         ):
             raise HistoryImportError("ineligible historical source")
         name = manifest.get("file")

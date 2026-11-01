@@ -157,7 +157,7 @@ def test_prompt_preflight_uses_rendered_chat_template_and_real_tokenizer(monkeyp
         if request.full_url.endswith("/apply-template"):
             return FakeResponse({"prompt": "Rendered chat with special tokens"})
         if request.full_url.endswith("/tokenize"):
-            return FakeResponse({"tokens": [7] * 3800})
+            return FakeResponse({"tokens": [7] * 3900})
         raise AssertionError("oversized prompt must never start generation")
 
     try:

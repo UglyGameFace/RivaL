@@ -210,37 +210,38 @@ must retain NO CALL when evidence is insufficient. A GitHub successful
 deployment and a Discloud `Online` status do not waive any of these gates.
 
 
-## Direct official-source native bootstrap (Bitget V3)
 
-Use the GitHub Actions **Official Bitget six-month native bootstrap** job.
-It can be manually dispatched for BTC, ETH, SOL or XRP and normally runs
-one rotating asset per day. On its first merged code release it tries BTC.
-It requires the existing private Drive OAuth/folder secrets, never API trade
-credentials, and reads only Bitget's public
-`https://api.bitget.com/api/v3/market/history-candles` endpoint.
-It validates the **USDT-FUTURES perpetual instrument identity**, requests
-one 100-candle 5m page at a time, enforces exact order, boundaries, OHLCV,
-timestamps and uninterrupted six *completed* calendar months, and refuses
-publication if even one source candle is missing. It does not use Binance
-prices to fill unavailable Bitget bars.
+## Source-native OKX 2023 historical research
 
-After a complete month it uploads the Bitget-labeled research bytes and
-manifest to the existing private Drive using the same checksum readback as
-the on-host exporter. Already published, restored and independently audited
-full months are reused on the next run. When all six months exist for one
-matching instrument, the **existing** source-native offline research workflow
-evaluates historical models and publishes research-only model candidates.
-Discloud's existing candidate importer scans that same Drive; only models
-which pass its independent retrospective eligibility can enter autonomous
-shadow research. None is auto-approved for signals or trading. Models still
-need genuine future-only comparisons, matched bid/ask quotes, and after-cost
-promotion evidence.
+The **Official OKX native history and advanced archive inventory** workflow
+uses OKX's authenticated-by-TLS but *public, read-only* data source without
+trading keys or order privileges. It first verifies the last six **completed**
+calendar months for a specific BTC/ETH/SOL/XRP USDT-settled perpetual. The
+next runs proceed from **July 2023** in monthly chronological order. A maximum
+of three missing monthly 5-minute partitions are requested in any workflow
+run. Each page is bounded to 100 OKX history candles. No row is replaced
+with Binance values, and no month is published with a missing 5-minute slot,
+invalid OHLC envelope, unfinished source candle, or wrong contract.
 
-The bootstrap records each page's actual archive retrieval time as
-`first_observed_at`, so backfilled bars cannot become past-time live
-predictions. The source integrity label
-`bitget-v3-public-history-v1` identifies verified official HTTPS source
-responses and locally hashed research bytes; Bitget does **not** supply a
-provider-signed checksum for these responses. This provenance is not
-interchangeable with `postgres-first-observed-at-v1`. A provider timeout,
-short page, gap or failed Drive readback fails the job as unverified. 
+Each published month is cryptographically hashed and read back from the
+existing private Drive before being accepted. Archive `first_observed_at`
+is the **retrieval time**, not a fictional 2023 live observation. Native
+research runs on a full six-month source-exact block; candidates are
+research-only and imported later by RivaL's existing Drive importer if
+independently qualified. Historical data cannot replace genuinely future
+predictions or evidence of after-cost trading advantage.
+
+The same job calls OKX's official historical-market-data catalog for
+trade-level history, one-minute candles, funding and 400/5000-level L2 book
+modules. Its inventory reports `cataloged_not_downloaded` until actual
+source ZIP bytes have been obtained, checked and integrated. OKX warns archive
+availability varies by product/date, and 5000-level books begin in November
+2025. This **is not yet a completed multi-layer 2023 dataset**. Historical
+mark/index, options, liquidation and macroeconomic data require independent
+acquisition, timestamp-alignment and validation; nothing is marked verified
+merely because an API advertises the field.
+
+The automated job runs on one rotating asset per day; manual dispatch can
+select the asset. It uses the existing Google Drive secrets. The first merged
+run is BTC. Source errors and incomplete months fail closed as UNVERIFIED,
+without a fake publication or loosening any promotion gates.

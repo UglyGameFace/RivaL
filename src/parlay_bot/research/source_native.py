@@ -271,22 +271,36 @@ async def restore_verified_source_months(
         f"and name contains '{drive._escape_query(venue + '-')}' "
         "and appProperties has { key='rival_kind' and value='manifest' }"
     )
-    response = await drive._client.get(
-        f"{drive.DRIVE_URL}/files",
-        params={
+    # A long backfill produces >100 native manifests. Exhaust bounded Drive
+    # pagination instead of treating the 101st verified month as an error.
+    found = []
+    page_token = None
+    for _ in range(20):
+        params = {
             "q": query, "spaces": "drive", "pageSize": 100,
             "fields": "nextPageToken,files(id,name,size,md5Checksum,parents,"
                       "appProperties,trashed)",
-        },
-        headers=await drive._headers(),
-    )
-    if response.status_code != 200:
-        raise HistoryImportError("private native manifest listing unavailable")
-    result = response.json()
-    found = result.get("files") if isinstance(result, dict) else None
-    if (not isinstance(found, list) or len(found) > 100
-        or result.get("nextPageToken")):
-        raise HistoryImportError("unbounded or paginated native model source listing")
+        }
+        if page_token is not None:
+            params["pageToken"] = page_token
+        response = await drive._client.get(
+            f"{drive.DRIVE_URL}/files",
+            params=params, headers=await drive._headers(),
+        )
+        if response.status_code != 200:
+            raise HistoryImportError("private native manifest listing unavailable")
+        result = response.json()
+        page = result.get("files") if isinstance(result, dict) else None
+        if not isinstance(page, list) or len(page) > 100:
+            raise HistoryImportError("invalid native manifest Drive page")
+        found.extend(page)
+        page_token = result.get("nextPageToken")
+        if page_token is None:
+            break
+        if not isinstance(page_token, str) or not page_token:
+            raise HistoryImportError("invalid native Drive pagination token")
+    else:
+        raise HistoryImportError("native research manifest listing exceeds bounded pages")
     target = Path(root) / SOURCE
     target.mkdir(parents=True, exist_ok=True)
     imported = []

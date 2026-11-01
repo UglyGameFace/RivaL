@@ -331,6 +331,7 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
         "published": [], "reverified_existing": [],
         "unavailable_or_rejected": [],
         "native_qualified": [], "native_blockers": [],
+        "five_minute_source_gap_inventory": [],
         "native_months_already_listed_without_readback": len(native_months),
         "model_research": {"status": "not_run_no_six_verified_months",
                            "published_models": 0},
@@ -373,6 +374,33 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                         else:
                             result["published"].append(saved)
                         existing[key] = receipt["compressed_sha256"][:16]
+                        if kind == "candlesticks_5m":
+                            from parlay_bot.research.gate_native import (
+                                gaps as gate_missing,
+                                original_candles,
+                            )
+
+                            native_rows, _ = await asyncio.to_thread(
+                                original_candles, output, asset=asset, month=month,
+                                expected_sha=receipt["compressed_sha256"],
+                            )
+                            missing_stamps = gate_missing(native_rows, month=month)
+                            result["five_minute_source_gap_inventory"].append({
+                                "asset": asset, "month": month,
+                                "raw_sha256": receipt["compressed_sha256"],
+                                "candles_original": len(native_rows),
+                                "missing_five_minute_slots": len(missing_stamps),
+                                "missing_utc_timestamps": [
+                                    datetime.fromtimestamp(stamp, UTC).isoformat()
+                                    for stamp in missing_stamps[:128]
+                                ],
+                                "gap_timestamp_list_truncated": len(missing_stamps) > 128,
+                                "model_training_eligible": (
+                                    len(missing_stamps) == 0 and
+                                    (asset, month) in native_months
+                                ),
+                                "source_provider_checksum_signed": False,
+                            })
                         if kind == "candlesticks_5m" and (asset, month) not in native_months:
                             from parlay_bot.research.gate_native import qualify_and_publish
 
@@ -473,6 +501,7 @@ def main(argv: list[str] | None = None) -> int:
         "provider_throttled": data["provider_throttled"],
         "native_qualified": len(data["native_qualified"]),
         "native_blocked": len(data["native_blockers"]),
+        "five_minute_gap_inventory_files": len(data["five_minute_source_gap_inventory"]),
         "model_research": data["model_research"]["status"],
         "pending_jobs": data["pending_jobs"],
     }, sort_keys=True))

@@ -1,0 +1,89 @@
+name: One-time private Discloud VLAN diagnosis
+
+on:
+  push:
+    branches: ["diagnostics/read-only-discloud-vlan-20261101"]
+    paths: [".github/workflows/discloud-vlan-readonly-diagnostic.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Inspect existing Discloud containers (read-only, sanitized)
+        env:
+          DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+          DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          import base64, json, os, urllib.error, urllib.parse, urllib.request
+          TOKEN = os.environ.get("DISCLOUD_TOKEN", "")
+          MAIN = os.environ.get("DISCLOUD_APP_ID", "")
+          BASE = "https://api.discloud.app/v2"
+          def api(path, method="GET", body=None):
+              data = None if body is None else json.dumps(body).encode()
+              req = urllib.request.Request(BASE+path, data=data, method=method,
+                  headers={"api-token": TOKEN, "Content-Type": "application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=40) as r:
+                      return json.loads(r.read(100000))
+              except urllib.error.HTTPError as exc:
+                  print("Discloud API HTTP status:", exc.code)
+                  return None
+              except Exception as exc:
+                  print("Discloud API transport class:", type(exc).__name__)
+                  return None
+          if not TOKEN or not MAIN:
+              print("Missing GitHub Discloud secrets, cannot inspect runtime.")
+              raise SystemExit(0)
+          catalog = api("/app/all")
+          if not isinstance(catalog, dict) or not isinstance(catalog.get("apps"), list):
+              print("Discloud app listing unavailable; no application changed.")
+              raise SystemExit(0)
+          candidates = [x for x in catalog["apps"] if isinstance(x, dict) and
+              str(x.get("name","")).lower() == "rival-intelligence"]
+          print("Matching intelligence app count:",len(candidates))
+          if len(candidates) != 1:
+              raise SystemExit(0)
+          remote = """import json,socket,pathlib,urllib.request
+          def lookup(h):
+           try:return socket.getaddrinfo(h,8765,type=socket.SOCK_STREAM)[0][4][0]
+           except socket.gaierror as e:return "dns_failure:"+str(e.errno)
+           except Exception as e:return type(e).__name__
+          def health():
+           try:
+            with urllib.request.urlopen("http://127.0.0.1:8765/health",timeout=3) as r:
+             return str(r.status)+":"+str(json.load(r).get("status","unknown"))
+           except Exception as e:return type(e).__name__
+          p=pathlib.Path("/etc/resolv.conf")
+          s=p.read_text(errors="replace") if p.is_file() else ""
+          f=pathlib.Path("/etc/hosts")
+          hosts=f.read_text(errors="replace") if f.is_file() else ""
+          print("RIVAL_VLAN_DIAG="+json.dumps({"resolver":[x.strip() for x in s.splitlines() if x.startswith(("nameserver ","search "))],"self":socket.gethostname(),"interfaces":sorted(p.name for p in pathlib.Path("/sys/class/net").iterdir()),"hosts_aliases":[h for h in ("rival-bot","rival-llm") if h in hosts],"dns":{"rival-bot":lookup("rival-bot"),"rival-llm":lookup("rival-llm"),"example.com":lookup("example.com")},"gateway_loopback":health()},sort_keys=True))
+          """
+          command = "python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(remote.encode()).decode()+"\"))'"
+          for label, appid in (("RivaL", MAIN), ("RivaL-Intelligence",str(candidates[0].get("id","")))):
+              if not appid:
+                  print(label,"missing application ID")
+                  continue
+              reply = api("/app/"+urllib.parse.quote(appid,safe="")+"/console","PUT",{"command":command})
+              shell = (reply or {}).get("apps",{}).get("shell",{})
+              if not isinstance(shell,dict):
+                  print(label,"console response unavailable")
+                  continue
+              output = str(shell.get("stdout",""))
+              marker = "RIVAL_VLAN_DIAG="
+              if marker not in output:
+                  print(label,"console executed but no structured diagnostic; online:",shell.get("online"),
+                        "stderr_present:",bool(shell.get("stderr")))
+                  continue
+              try:
+                  details = json.loads(output.split(marker,1)[1].splitlines()[0])
+                  print(label,json.dumps(details,sort_keys=True))
+              except (ValueError, IndexError):
+                  print(label,"diagnostic parsing error, stdout redacted")
+          PY

@@ -5,6 +5,7 @@ No model weights run locally; this does not control quantitative predictions.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -17,7 +18,7 @@ from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 _LOG = logging.getLogger(__name__)
 _MODEL = "@cf/meta/llama-3.2-3b-instruct"
 _WORKER_URL = "https://rival-ai-research.staytrippynlw.workers.dev/v1/research"
-_MAX_EVIDENCE_BYTES = 5200
+_MAX_EVIDENCE_BYTES = 24000
 
 
 class CloudflareResearch(OpenRouterResearch):
@@ -89,7 +90,7 @@ class CloudflareResearch(OpenRouterResearch):
         except httpx.HTTPStatusError as exc:
             code = exc.response.status_code
             if code in (401, 403, 404, 429, 500, 502, 503, 504):
-                await __import__("asyncio").to_thread(
+                await asyncio.to_thread(
                     self.market.pause_ai_requests, model=self.model, now=now,
                     seconds=3600 if code in (401, 403, 404, 429) else 1800,
                 )

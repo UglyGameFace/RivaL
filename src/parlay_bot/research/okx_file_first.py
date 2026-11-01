@@ -77,8 +77,11 @@ def _read_csv(data: bytes, *, target_start_ms: int,
         if len(first) not in (8, 9):
             raise HistoryImportError("unsupported OKX minute CSV schema")
         columns = tuple(range(8))
+        confirm_index = 8 if len(first) == 9 else None
         rows = chain((first,), reader)
     else:
+        names = [name.strip().lower() for name in first]
+        confirm_index = names.index("confirm") if "confirm" in names else None
         rows = reader
     collected = {}
     try:
@@ -87,6 +90,10 @@ def _read_csv(data: bytes, *, target_start_ms: int,
                 raise HistoryImportError("oversized OKX minute archive row count")
             if len(row) <= max(columns):
                 raise HistoryImportError("incomplete OKX minute CSV row")
+            if confirm_index is not None and (
+                len(row) <= confirm_index or row[confirm_index].strip() != "1"
+            ):
+                raise HistoryImportError("unfinished OKX archived minute")
             values = [row[i].strip() for i in columns]
             ts = values[0]
             if len(ts) != 13 or not ts.isascii() or not ts.isdecimal():

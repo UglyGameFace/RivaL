@@ -262,3 +262,62 @@ def test_cli_fails_on_actual_unverified_source_after_cooldowns(
     output = capsys.readouterr().out
     assert "source_month" in output
     assert "3 transient cooldowns" in output
+
+
+@pytest.mark.asyncio
+async def test_okx_archive_stream_retries_429_before_using_candle_api(monkeypatch):
+    responses = [429, 503, 200]
+    seen = []
+
+    def respond(request):
+        status = responses[len(seen)]
+        seen.append(status)
+        return httpx.Response(status, content=b"source" if status == 200 else b"",
+                              headers={"retry-after": "1"})
+
+    pacer = bulk.SharedOkxPacer()
+    delays = []
+
+    async def cooldown(delay):
+        delays.append(delay)
+        pacer.throttles += 1
+
+    monkeypatch.setattr(pacer, "cooldown", cooldown)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as raw:
+        async with bulk.PacedOkxClient(raw, pacer).stream("GET", BASE) as response:
+            assert response.status_code == 200
+            assert await response.aread() == b"source"
+    assert seen == [429, 503, 200]
+    assert pacer.requests == 3
+    assert delays == [4, 8]
+
+
+@pytest.mark.asyncio
+async def test_okx_archive_stream_exhaustion_remains_unverified(monkeypatch):
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        return httpx.Response(429)
+
+    pacer = bulk.SharedOkxPacer()
+
+    async def cooldown(delay):
+        pacer.throttles += 1
+
+    monkeypatch.setattr(pacer, "cooldown", cooldown)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as raw:
+        async with bulk.PacedOkxClient(raw, pacer).stream("GET", BASE) as response:
+            assert response.status_code == 429
+    assert len(seen) == bulk.MAX_RETRIES
+    assert pacer.requests == bulk.MAX_RETRIES
+
+
+@pytest.mark.asyncio
+async def test_okx_pacer_slows_shared_traffic_on_throttle():
+    pacer = bulk.SharedOkxPacer()
+    assert pacer.spacing == bulk.MIN_SPACING
+    for _ in range(30):
+        await pacer.cooldown(0)
+    assert pacer.throttles == 30
+    assert pacer.spacing == 0.5

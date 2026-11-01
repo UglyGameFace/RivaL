@@ -356,6 +356,25 @@ async def restore_verified_source_months(
                         and info.get("source_transport") == "official_public_https"
                         and info.get("provider_signed_checksum") is False
                     )
+                    or (
+                        venue == "okx"
+                        and info.get("source_integrity") ==
+                            "okx-v5-official-1m-zip-derived-5m-v1"
+                        and isinstance(info.get("source_url"), str)
+                        and info["source_url"].startswith(
+                            "https://static.okx.com/cdn/okex/"
+                        )
+                        and info.get("source_transport") == "official_public_https"
+                        and info.get("provider_signed_checksum") is False
+                        and info.get("source_archive_type") ==
+                            "one_minute_monthly_zip"
+                        and isinstance(info.get("source_archive_files"), list)
+                        and len(info["source_archive_files"]) == 2
+                        and info["source_archive_files"][0].get("url") ==
+                            info["source_url"]
+                        and info.get("source_minutes_verified") ==
+                            info.get("records", -1) * 5
+                    )
                 )
                 or info.get("prospective_forecast") is not False
                 or info.get("live_trading_authorized") is not False

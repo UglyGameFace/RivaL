@@ -474,6 +474,11 @@ class PolymarketReader:
             self._reasons[key] = (slug, reason)
         return None
 
+    @staticmethod
+    def _receipt_clock() -> datetime:
+        """Real local receipt time, injectable in historical contract tests only."""
+        return datetime.now(UTC)
+
     async def _lookup(
         self, *, slug: str, asset: str, horizon: int, now: datetime,
         opened: datetime | None = None,
@@ -515,7 +520,7 @@ class PolymarketReader:
                 if not task.done():
                     task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-        received = datetime.now(UTC)
+        received = self._receipt_clock()
         # Use the OLDER source book clock. A local HTTP receipt must not reset
         # source age to zero and permit 25 more seconds of stale delivery.
         quoted = min(_book_time(up_book, now=received), _book_time(down_book, now=received))

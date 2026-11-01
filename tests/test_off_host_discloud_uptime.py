@@ -88,3 +88,60 @@ def test_github_incident_fails_closed_when_history_is_ambiguous(monkeypatch):
     ])
     with pytest.raises(m.StatusUnverified, match="duplicate"):
         m.synchronize_incident("OFFLINE", repository="UglyGameFace/RivaL", token="gh")
+
+
+def test_github_incident_http_failure_exposes_only_safe_numeric_code(monkeypatch):
+    from urllib import error
+
+    def denied(req, timeout):
+        raise error.HTTPError(req.full_url, 403, "private details", {}, None)
+
+    monkeypatch.setattr(m.request, "urlopen", denied)
+    with pytest.raises(m.StatusUnverified, match="GitHub incident API returned HTTP 403"):
+        m.api_json("https://api.github.com/repos/UglyGameFace/RivaL/issues",
+                   token="private-token")
+
+
+def test_transient_github_incident_get_retries_without_duplicate_writes(monkeypatch):
+    from urllib import error
+
+    attempts = []
+    delays = []
+
+    class Response:
+        status = 200
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return None
+        def read(self, limit):
+            return b'[]'
+
+    def flaky(req, timeout):
+        attempts.append(req.get_method())
+        if len(attempts) < 3:
+            raise error.HTTPError(req.full_url, 503, "transient", {}, None)
+        return Response()
+
+    monkeypatch.setattr(m.request, "urlopen", flaky)
+    monkeypatch.setattr(m.time, "sleep", delays.append)
+    result = m.api_json("https://api.github.com/repos/UglyGameFace/RivaL/issues",
+                        token="secret-token")
+    assert result == []
+    assert attempts == ["GET", "GET", "GET"]
+    assert delays == [1, 2]
+
+
+def test_incident_mutation_never_retries_after_ambiguous_network_failure(monkeypatch):
+    from urllib import error
+
+    calls = []
+    def unavailable(req, timeout):
+        calls.append(req.get_method())
+        raise error.URLError("secret network address")
+
+    monkeypatch.setattr(m.request, "urlopen", unavailable)
+    with pytest.raises(m.StatusUnverified, match="GitHub incident API connection unverified"):
+        m.api_json("https://api.github.com/repos/UglyGameFace/RivaL/issues",
+                   token="secret-token", method="POST", payload={"title": "incident"})
+    assert calls == ["POST"]

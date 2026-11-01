@@ -48,6 +48,10 @@ class SharedOkxPacer:
     async def cooldown(self, delay: float) -> None:
         async with self._lock:
             self.throttles += 1
+            # Rate limits may differ by OKX endpoint. A recovered throttle
+            # lowers the entire runner's shared request rate, not just the
+            # asset that encountered the limit. Bounded at 2 requests/s.
+            self.spacing = min(0.5, self.spacing * 1.2)
             self._next = max(self._next, asyncio.get_running_loop().time() + delay)
 
 
@@ -60,11 +64,21 @@ class PacedOkxClient:
 
     @asynccontextmanager
     async def stream(self, method: str, url: str, **kwargs):
-        # ZIP downloads consume one request budget token too; a separate
-        # unpaced HTTP client would defeat the exchange-wide IP budget.
-        await self.pacer.wait()
-        async with self.raw.stream(method, url, **kwargs) as response:
-            yield response
+        # Official archive reads share the same IP budget as REST. Retry a
+        # provider 429/503 before falling back to thousands of API candles;
+        # each attempt consumes its own pacing slot and closes its response.
+        for attempt in range(MAX_RETRIES):
+            await self.pacer.wait()
+            async with self.raw.stream(method, url, **kwargs) as response:
+                if response.status_code in (429, 503) and attempt < MAX_RETRIES - 1:
+                    retry_after = response.headers.get("retry-after", "")
+                    delay = (float(retry_after) if retry_after.isascii()
+                             and retry_after.isdecimal() else 0)
+                    await self.pacer.cooldown(min(60, max(delay, 2 ** (attempt + 2))))
+                    continue
+                yield response
+                return
+        raise AssertionError("unreachable")
 
     async def get(self, url: str, **kwargs) -> httpx.Response:
         for attempt in range(MAX_RETRIES):
@@ -174,6 +188,7 @@ async def run_bulk(
         "passes_budget": passes, "new_months_by_asset": counts,
         "new_months_total": sum(counts.values()),
         "requests": pacer.requests, "throttles": pacer.throttles,
+        "final_shared_pace_seconds": round(pacer.spacing, 4),
         "failures": failures, "results": results,
         "advanced_catalog_unverified": advanced_catalog_unverified,
         "completion_scope": "okx_2023_to_present_5m_source_native_candles_only",
@@ -217,7 +232,16 @@ def main(argv: list[str] | None = None) -> int:
         "completion_scope": report["completion_scope"],
         "live_model_promoted": False,
     }, sort_keys=True))
-    return 2 if report["failures"] or report["throttles"] else 0
+    # Successfully recovered provider throttles are an operational warning,
+    # not proof the immutable, SHA-readback source-month uploads failed.
+    # An exhausted retry / unverified month remains in failures and exits 2.
+    if report["throttles"]:
+        print(
+            f"::warning::OKX historical requests needed "
+            f"{report['throttles']} transient cooldowns; "
+            "verified candle history is preserved and retries continue."
+        )
+    return 2 if report["failures"] else 0
 
 
 if __name__ == "__main__":

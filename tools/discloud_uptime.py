@@ -52,15 +52,31 @@ def api_json(url: str, *, token: str, method: str = "GET",
     if data is not None:
         headers["Content-Type"] = "application/json"
     req = request.Request(url, headers=headers, data=data, method=method)
-    try:
-        with request.urlopen(req, timeout=12) as response:
-            if response.status not in (200, 201):
-                raise StatusUnverified("unexpected status API HTTP code")
-            return json.loads(response.read(64_000).decode("utf-8"))
-    except (error.URLError, TimeoutError, ValueError, UnicodeError, OSError) as exc:
-        # Do not echo URL or raw provider response: both may contain sensitive
-        # infrastructure values and provider-injected content.
-        raise StatusUnverified("provider API request could not be verified") from exc
+    provider = "GitHub incident" if url.startswith("https://api.github.com/") else "Discloud status"
+    # Only GET is safe to retry: a timed-out POST might already have opened
+    # the incident, and retries must not create duplicate alerts.
+    attempts = 3 if method == "GET" else 1
+    for attempt in range(attempts):
+        try:
+            with request.urlopen(req, timeout=12) as response:
+                if response.status not in (200, 201):
+                    raise StatusUnverified(f"{provider} API returned HTTP {response.status}")
+                return json.loads(response.read(64_000).decode("utf-8"))
+        except error.HTTPError as exc:
+            if method == "GET" and exc.code in (429, 500, 502, 503, 504) and attempt < attempts - 1:
+                time.sleep(attempt + 1)
+                continue
+            # Only expose provider class and numeric code. Never leak URLs,
+            # credentials, private response bodies, or network addresses.
+            raise StatusUnverified(f"{provider} API returned HTTP {exc.code}") from None
+        except (error.URLError, TimeoutError, OSError) as exc:
+            if method == "GET" and attempt < attempts - 1:
+                time.sleep(attempt + 1)
+                continue
+            raise StatusUnverified(f"{provider} API connection unverified") from exc
+        except (ValueError, UnicodeError) as exc:
+            raise StatusUnverified(f"{provider} API response malformed") from exc
+    raise AssertionError("unreachable")
 
 
 def sample_twice(app_id: str, api_token: str, *, pause: float = 5.0) -> str:

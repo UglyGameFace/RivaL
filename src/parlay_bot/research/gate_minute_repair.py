@@ -8,6 +8,7 @@ units without a dated historic Gate multiplier. This pipeline does not train.
 """
 from __future__ import annotations
 
+import asyncio
 import csv
 import gzip
 import hashlib
@@ -169,8 +170,10 @@ async def publish_minute_gap_evidence(
     output = root / "incoming" / "candlesticks_1m" / month / (
         f"{asset}_USDT-{month}.csv.gz"
     )
-    source = download(client=client, asset=asset, kind="candlesticks_1m",
-                      month=month, output=output)
+    source = await asyncio.to_thread(
+        download, client=client, asset=asset, kind="candlesticks_1m",
+        month=month, output=output,
+    )
     one_minute, _ = minute_rows(
         output, asset=asset, month=month,
         expected_sha=source["compressed_sha256"],

@@ -114,6 +114,20 @@ async def test_unknown_trade_columns_fail_closed(tmp_path):
     assert not (tmp_path / FILENAME).exists()
 
 
+
+@pytest.mark.asyncio
+async def test_wrong_in_file_instrument_never_enters_training(tmp_path):
+    archive = _zip(
+        "trades.csv",
+        f"instId,ts,side,px,sz\nETH-USDT-SWAP,{TS},buy,100,1\n",
+    )
+    async with _client(archive) as client:
+        with pytest.raises(HistoryImportError, match="wrong swap identity"):
+            await ingest_one(client=client, asset=ASSET, month=MONTH,
+                             module="trades", record=ENTRY, root=tmp_path)
+    assert not (tmp_path / FILENAME).exists()
+
+
 def test_funding_settlement_and_l2_snapshot_are_separate_research(tmp_path):
     funding = tmp_path / "funding.zip"
     funding.write_bytes(_zip(

@@ -65,6 +65,33 @@ def align_forward_month_cursor(conn, *, venue: str, asset: str,
     return dict(fresh)
 
 
+def _gate_recent_candle_limit(exc: Exception) -> bool:
+    """Recognize Gate's 10,000-recent-bar wall, not arbitrary HTTP 400s.
+
+    Gate's recent Kline endpoint can reject older timestamps even for
+    individual valid candles. Its official monthly archives are a separate
+    collection path. Preserve the unfilled source cursor for those receipts.
+    """
+    cause = exc.__cause__
+    if not (isinstance(exc, MarketDataError)
+            and isinstance(cause, httpx.HTTPStatusError)
+            and cause.response.status_code == 400):
+        return False
+    try:
+        detail = cause.response.json()
+    except ValueError:
+        return False
+    if not isinstance(detail, dict):
+        return False
+    label, message = detail.get("label"), detail.get("message")
+    return (
+        label == "INVALID_PARAM_VALUE"
+        and isinstance(message, str)
+        and "candlestick too long ago" in message.lower()
+        and "10000" in message
+    )
+
+
 def _num(value: Any, *, positive: bool = False) -> float:
     if isinstance(value, bool) or not isinstance(value, (str, float, int)):
         raise MarketDataError("bad historical numeric value")
@@ -477,20 +504,34 @@ class GateHistoryRecovery:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001
-            reason = (
-                "blocked" if isinstance(exc, MarketDataError)
+            http_error = (
+                exc.__cause__
+                if isinstance(exc, MarketDataError)
                 and isinstance(exc.__cause__, httpx.HTTPStatusError)
-                and exc.__cause__.response.status_code in (401, 403, 451)
-                else "retry"
+                else None
             )
-            pause = timedelta(hours=6) if reason == "blocked" else timedelta(minutes=20)
+            status_code = http_error.response.status_code if http_error else None
+            if _gate_recent_candle_limit(exc):
+                # Old source-native Gate bars may exist in the separate
+                # official bulk-archive pipeline, but not this API window.
+                # Daily rechecks avoid noisy 20-minute futile retries.
+                reason, pause = "source_recent_limit", timedelta(days=1)
+            elif status_code in (401, 403, 451):
+                reason, pause = "blocked", timedelta(hours=6)
+            else:
+                reason, pause = "retry", timedelta(minutes=20)
             await asyncio.to_thread(
                 self._advance, asset, now=clock, next_open=None,
                 status=reason, retry_after=clock + pause,
             )
-            _LOG.warning("RivaL Gate historical recovery failed asset=%s reason=%s "
-                         "error=%s",
-                         asset, reason, type(exc).__name__)
+            _LOG.warning(
+                "RivaL Gate historical recovery failed asset=%s reason=%s "
+                "error=%s http_status=%s fallback=%s",
+                asset, reason, type(exc).__name__,
+                status_code,
+                "official_source_native_archive" if reason == "source_recent_limit"
+                else "none",
+            )
             return 0
 
     async def run_once(self, *, now: datetime | None = None) -> int:

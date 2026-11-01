@@ -331,6 +331,7 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
         "published": [], "reverified_existing": [],
         "unavailable_or_rejected": [],
         "native_qualified": [], "native_blockers": [],
+        "same_venue_api_fallback": [],
         "five_minute_source_gap_inventory": [],
         "native_months_already_listed_without_readback": len(native_months),
         "model_research": {"status": "not_run_no_six_verified_months",
@@ -347,6 +348,7 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
     try:
         async with asyncio.timeout(9900):
             with httpx.Client(timeout=65, follow_redirects=False) as client:
+                api_fallback_attempts = 0
                 for asset, kind, month in selected:
                     if len(result["published"]) >= max_new:
                         break
@@ -435,6 +437,36 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                             "asset": asset, "kind": kind, "month": month,
                             "reason": reason,
                         })
+                        # A missing gzip may still have genuine same-Gate API
+                        # history. Keep it separate from the official bulk
+                        # archive and never count it toward native model proof.
+                        if (kind == "candlesticks_5m" and "HTTP 404" in reason
+                            and api_fallback_attempts < 1):
+                            api_fallback_attempts += 1
+                            from parlay_bot.research.gate_api_fallback import (
+                                recover_unavailable_archive,
+                            )
+                            try:
+                                fallback = await recover_unavailable_archive(
+                                    drive, client=client, asset=asset,
+                                    month=month, root=root, now=clock,
+                                )
+                            except (HistoryImportError, DriveArchiveError,
+                                    httpx.HTTPError, OSError, ValueError) as api_exc:
+                                api_reason = str(api_exc)[:240]
+                                fallback = {
+                                    "asset": asset, "month": month,
+                                    "status": "api_unavailable_or_unqualified",
+                                    "reason": api_reason,
+                                    "model_training_eligible": False,
+                                }
+                                if any(code in api_reason for code in (
+                                    "HTTP 429", "HTTP 503", "HTTP 502", "HTTP 504",
+                                )):
+                                    result["provider_throttled"] = True
+                            result["same_venue_api_fallback"].append(fallback)
+                            if result["provider_throttled"]:
+                                break
                         if any(status in reason for status in
                                ("HTTP 429", "HTTP 503", "HTTP 502", "HTTP 504")):
                             result["provider_throttled"] = True

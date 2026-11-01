@@ -23,8 +23,8 @@ on:
         options: [all, BTC, ETH, SOL, XRP]
         default: all
   schedule:
-    # Two bounded batches/day until source-native OHLCV is complete.
-    - cron: "13 2,14 * * *"
+    # Four serialized batches/day while source-native OHLCV remains incomplete.
+    - cron: "13 2,8,14,20 * * *"
 
 permissions:
   contents: read

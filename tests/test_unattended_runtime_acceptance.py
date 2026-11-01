@@ -266,6 +266,28 @@ def test_host_console_checks_genuine_boot_and_preserved_finalized_records(learni
     assert not premature["distinct_host_boot"]
     assert premature["original_records_changed"] == []
 
+    # A forecast issued after the mark but before the reboot does not prove
+    # the replacement process has resumed. The verifier must exclude it.
+    before_boot = mark+timedelta(minutes=1)
+    with store.connect() as conn:
+        draft = dict(conn.execute(
+            "SELECT * FROM rival_model_shadow_forecasts ORDER BY family LIMIT 1"
+        ).fetchone())
+        draft.update({
+            "reference_opened_at": before_boot.isoformat(),
+            "issued_at": before_boot.isoformat(),
+            "target_opened_at": before_boot.isoformat(),
+            "settled_at": None, "outcome_up": None,
+            "model_brier": None, "incumbent_brier": None,
+            "baseline_brier": None,
+        })
+        fields = tuple(draft)
+        conn.execute(
+            f"INSERT INTO rival_model_shadow_forecasts ({','.join(fields)}) "
+            f"VALUES ({','.join('?' for _ in fields)})",
+            tuple(draft[k] for k in fields),
+        )
+
     # The new process writes a distinct boot identity on its actual watchdog
     # cycle, not when a separate command-line verifier connects to the DB.
     boot2 = RuntimeHealthMonitor(store)

@@ -75,7 +75,7 @@ jobs:
               exit 1
             fi
           done
-      - name: Publish up to 24 signed-checksum monthly 5m sources from 2021
+      - name: Publish up to 24 provider-checksum monthly 5m sources from 2021
         run: |
           python -m parlay_bot.research.binance_deep_backfill --max-new 24
       - name: Preserve source evidence, incomplete month and provider-unavailable details

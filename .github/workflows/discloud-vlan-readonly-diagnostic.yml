@@ -1,80 +1,81 @@
-name: RivaL live LLM post-deploy prompt tokens and timeout diagnosis
+name: One-time source-only LFM3 CPU budget deployment
 on:
   push:
     branches: ["diagnostics/read-only-discloud-vlan-20261101"]
     paths: [".github/workflows/discloud-vlan-readonly-diagnostic.yml"]
 permissions:
   contents: read
+  actions: read
 jobs:
-  inspect:
+  deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 8
     steps:
-      - name: Check effective post-deploy gateway code and real backend token budget
-        env:
-          DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify only LLM Python service changed since validated binary
         shell: bash
         run: |
-          python - <<'PY'
-          import base64,json,os,urllib.request,urllib.parse
-          T=os.getenv("DISCLOUD_TOKEN","")
-          if not T:raise SystemExit("No Discloud credential")
-          def api(path,method="GET",body=None):
-           req=urllib.request.Request("https://api.discloud.app/v2"+path,method=method,
-             data=json.dumps(body).encode() if body else None,
-             headers={"api-token":T,"Content-Type":"application/json"})
-           with urllib.request.urlopen(req,timeout=75) as r:return json.load(r)
-          apps=api("/app/all").get("apps",[])
-          llm=[a for a in apps if isinstance(a,dict) and a.get("name","").casefold()=="rival-intelligence"]
-          if len(llm)!=1:raise SystemExit("Missing isolated LLM")
-          path="/app/"+urllib.parse.quote(str(llm[0]["id"]),safe="")
-          r=api(path+"/logs")
-          terminal=r.get("apps",{}).get("terminal",{})
-          logs=str(terminal.get("big") or terminal.get("small") or "")
-          lines=logs.splitlines()
-          selected=[s for s in lines if any(term in s for term in
-           ("inference rejected class=", "http_status=503","http_status=422",
-            "prompt eval time", "eval time =", "total time =", "llama_server"))]
-          print("LLM error/timing lines", [s[-220:] for s in selected[-22:]])
-          source="""import json,os,urllib.request
-          from service import compact_evidence,PROMPT,GENERATION_TOKENS
-          sources=[]
-          for v in ("hyperliquid","dydx","bitget","gate","okx","kucoin",
-                    "deribit","lighter","phemex"):
-           sources.append({"venue":v,"quote":"USDT",
-            "windows":{"5m":{"return_pct":0.15},
-                       "15m":{"return_pct":-0.08},
-                       "1h":{"return_pct":0.20}},
-            "historical_windows":{"7d":{"return_pct":0.5}},
-            "available_bars":289})
-          evidence={"asset":"BTC","analysis":"unvalidated_research","sources":sources}
-          brief=compact_evidence("BTC",evidence)
-          messages=[{"role":"system","content":PROMPT},{"role":"user",
-           "content":"Asset: BTC\\nBounded observation brief (untrusted):\\n"+brief}]
-          out={"code_has_compactor":True,"brief_chars":len(brief),
-           "original_fake_evidence_chars":len(json.dumps(evidence)),
-           "generation_token_cap":GENERATION_TOKENS}
-          try:
-           req=urllib.request.Request("http://127.0.0.1:8766/apply-template",
-           data=json.dumps({"messages":messages,
-             "chat_template_kwargs":{"enable_thinking":False}}).encode(),
-           headers={"Content-Type":"application/json"},method="POST")
-           with urllib.request.urlopen(req,timeout=6) as response:
-            obj=json.load(response)
-           req=urllib.request.Request("http://127.0.0.1:8766/tokenize",
-           data=json.dumps({"content":obj["prompt"],"add_special":True}).encode(),
-           headers={"Content-Type":"application/json"},method="POST")
-           with urllib.request.urlopen(req,timeout=6) as response:
-            tokens=json.load(response)["tokens"]
-           out["rendered_prompt_tokens"]=len(tokens)
-          except Exception as ex:out["token_check_error"]=type(ex).__name__
-          print("RIVAL_LLM_COMPACTOR="+json.dumps(out,sort_keys=True))
-          """
-          command="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(source.encode()).decode()+"\"))'"
-          v=api(path+"/console","PUT",{"command":command})
-          out=str(v.get("apps",{}).get("shell",{}).get("stdout",""))
-          if "RIVAL_LLM_COMPACTOR=" in out:
-           print("Actual installed LLM compactor",out.split("RIVAL_LLM_COMPACTOR=",1)[1].splitlines()[0])
-          else:
-           print("Compactor console unavailable; stderr_present",bool(v.get("apps",{}).get("shell",{}).get("stderr")))
+          set -euo pipefail
+          git merge-base --is-ancestor 3076e59c7cd8fe7955faa2f0152843557a90a86a HEAD
+          CHANGED="$(git diff --name-only 1e809fed1c64f91f5f83f19c7504c059f1fda742 HEAD -- services/rival-llm)"
+          test "$CHANGED" = "services/rival-llm/service.py"
+          grep -q 'GENERATION_TOKENS = 140' services/rival-llm/service.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: RIVAL-LLM-UPLOAD-THIS-ZIP
+          run-id: 41358911977
+          github-token: ${{ github.token }}
+          path: discloud-upload
+      - name: Assemble and verify only updated Python service with identical pinned binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          python services/rival-llm/validate_package.py discloud-upload
+          cmp src/parlay_bot/perpetuals/evidence_policy.py discloud-upload/evidence_policy.py
+          cmp services/rival-llm/discovery.py discloud-upload/discovery.py
+          cmp services/rival-llm/main.py discloud-upload/main.py
+          cp services/rival-llm/service.py discloud-upload/service.py
+          python -m py_compile discloud-upload/service.py
+          python services/rival-llm/validate_package.py discloud-upload
+          (cd discloud-upload && zip -q -r ../llm-validated.zip .)
+          python services/rival-llm/validate_package.py llm-validated.zip
+          echo 'Validated source-only LLM update with retained pinned llama.cpp CPU binary'
+      - name: Update only existing RivaL-Intelligence app
+        shell: bash
+        env:
+          DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+          DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DISCLOUD_TOKEN" ] || [ -z "$DISCLOUD_APP_ID" ]; then exit 1; fi
+          curl -fsS --max-time 30 -H "api-token: $DISCLOUD_TOKEN" \
+            https://api.discloud.app/v2/app/all -o "$RUNNER_TEMP/apps.json"
+          APP_ID="$(python - "$RUNNER_TEMP/apps.json" "$DISCLOUD_APP_ID" <<'PY'
+          import json,sys
+          with open(sys.argv[1]) as f:data=json.load(f)
+          found=[a for a in data.get("apps",[]) if isinstance(a,dict) and
+                 str(a.get("name","")).casefold()=="rival-intelligence" and
+                 str(a.get("id")) != sys.argv[2]]
+          if len(found)!=1 or not found[0].get("id"):
+              raise SystemExit("Refusing ambiguous/main app")
+          print(found[0]["id"])
+          PY
+          )"
+          STATUS="$(curl -sS --max-time 180 --retry 0 -o "$RUNNER_TEMP/commit.json" -w '%{http_code}' \
+              -H "api-token: $DISCLOUD_TOKEN" -X PUT \
+              -F "file.zip=@llm-validated.zip;type=application/zip" \
+              "https://api.discloud.app/v2/app/$APP_ID/commit")"
+          echo "RivaL-Intelligence source-only update HTTP $STATUS"
+          test "$STATUS" = 200
+          python - "$RUNNER_TEMP/commit.json" <<'PY'
+          import json,sys
+          with open(sys.argv[1]) as f:d=json.load(f)
+          if d.get("statusCode",200)>=400:raise SystemExit("Discloud commit rejected")
+          print("Exact existing isolated LLM app accepted update")
           PY

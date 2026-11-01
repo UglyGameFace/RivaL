@@ -302,6 +302,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not 1 <= args.max_new <= 100:
         parser.error("max-new must be within 1..100")
+    if not 0 <= args.archive_grace_days <= 14:
+        parser.error("archive-grace-days must be within 0..14")
     months = publication_ready_months(
         now=datetime.now(UTC), count=args.months,
         grace_days=args.archive_grace_days,

@@ -97,7 +97,7 @@ def test_incompatible_gate_minute_archive_never_used_for_repair(tmp_path):
         write_minute(tmp_path, raw), asset="SOL", month=MONTH,
         expected_sha=hashlib.sha256(raw).hexdigest(),
     )
-    stamps[START]["close"] = 150
+    stamps[START + 240]["close"] = 150  # Final minute determines 5m close
     with pytest.raises(HistoryImportError, match="disagrees"):
         minutes.reconstruct_gaps(
             original_5m=five_bars(), one_minute=stamps,

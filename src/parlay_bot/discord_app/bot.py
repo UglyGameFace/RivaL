@@ -1857,22 +1857,13 @@ class RivalDiscordClient(discord.Client):
                 name="rival-cold-archive",
             )
         if self.offline_registry is not None and self._candidate_task is None:
-            try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(self.offline_registry.initialize),
-                    timeout=3,
-                )
-            except Exception:  # noqa: BLE001 - archive proof is optional
-                self.candidate_sync_status = "candidate_registry_unavailable"
-                _LOG.exception(
-                    "RivaL optional historical registry could not initialize; "
-                    "Discord and primary archives continue",
-                )
-            else:
-                self._candidate_task = asyncio.create_task(
-                    self._candidate_import_loop(),
-                    name="rival-verified-offline-candidate-import",
-                )
+            # Do not strand imports for the whole host lifetime when the
+            # PostgreSQL pool is temporarily busy during startup. The worker
+            # owns retryable initialization, independent of the cold archive.
+            self._candidate_task = asyncio.create_task(
+                self._candidate_import_loop(),
+                name="rival-verified-offline-candidate-import",
+            )
         # Independent of Discord commands and data collection. A dead worker
         # cannot rely on its own finally block to report a failure.
         try:
@@ -2439,6 +2430,22 @@ class RivalDiscordClient(discord.Client):
         assert self.research_drive is not None
         assert self.offline_registry is not None
         while not self.is_closed():
+            try:
+                # A startup lock/connection failure is retried here, not
+                # abandoned after one three-second readiness check. Keep
+                # one worker and await the DB operation to avoid duplicates.
+                await asyncio.to_thread(self.offline_registry.initialize)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - optional research isolation
+                self.candidate_sync_status = "candidate_registry_unavailable_retrying"
+                self.candidate_sync_checked_at = datetime.now(UTC)
+                _LOG.exception(
+                    "RivaL offline candidate registry initialization failed; "
+                    "will retry while live collection continues",
+                )
+                await asyncio.sleep(60)
+                continue
             if host_memory.snapshot().pressure:
                 self.candidate_sync_status = "deferred_memory_pressure"
                 _LOG.warning("RivaL optional model import deferred: high host RSS")
@@ -2488,9 +2495,23 @@ class RivalDiscordClient(discord.Client):
                     )
                 else:
                     self._candidate_inventory_cursor = None
-                self.candidate_sync_status = f"verified_read_{saved}_candidates"
+                inventory = await asyncio.to_thread(
+                    self.offline_registry.inventory_receipt,
+                )
+                # Read-count includes idempotent re-reads. PostgreSQL counts
+                # are the actual immutable imports, never a count of approvals.
+                self.candidate_sync_status = (
+                    f"verified_drive_read_{saved}_db_{inventory['total']}"
+                    f"_screened_{inventory['passed']}"
+                )
                 self.candidate_sync_checked_at = datetime.now(UTC)
-                _LOG.info("RivaL verified historical candidate reads=%d", saved)
+                _LOG.info(
+                    "RivaL offline candidate import receipt "
+                    "verified_reads=%d db_imported=%d compatible=%d "
+                    "retrospective_passed=%d (no live promotion)",
+                    saved, inventory["total"], inventory["compatible"],
+                    inventory["passed"],
+                )
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001

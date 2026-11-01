@@ -245,3 +245,45 @@ The automated job runs on one rotating asset per day; manual dispatch can
 select the asset. It uses the existing Google Drive secrets. The first merged
 run is BTC. Source errors and incomplete months fail closed as UNVERIFIED,
 without a fake publication or loosening any promotion gates.
+
+
+### Auxiliary OKX archives: controlled source validation, not model approval
+
+The separate **Official OKX advanced archive research** workflow is initially
+manual and intentionally limited to one source-exact BTC/ETH/SOL/XRP monthly
+SWAP archive at a time. It checks the official catalog again, restricts
+downloads to the authorized static OKX host, applies a 32 MiB compressed
+transfer budget and 160 MiB bounded decompression budget, checks ZIP/tar
+members and timestamps, and requires a recognized module-specific schema.
+
+Accepted raw archive, event-time 5-minute research sidecar and receipt are
+uploaded to the **existing private Drive** and independently downloaded for
+SHA-256 readback verification before a successful run is reported. A workflow
+failure is **UNVERIFIED**, not a silent discovery success. In-file instrument
+identity must agree with the exact SWAP when the vendor supplies that field.
+
+Trade-side sizes retain **source units**, not fictitious USDT notional: OKX
+SWAP contract sizes must not be equated with base-asset size without the
+historically applicable contract specification. Funding is event/settlement
+based. L2 produces snapshot-only spread samples, **not** a validated replay of
+incremental book updates. The importer rejects unknown old/bilingual CSV
+schemas rather than guessing what the fields mean. Monthly archive release
+periods may be anchored in UTC+8, while research feature buckets are UTC.
+
+Every receipt is explicitly
+`downloaded_schema_checked_research_only` with
+`full_month_coverage_qualified=false`,
+`l2_full_book_reconstructed=false` and
+`live_model_import_allowed=false`. Event time controls the retrospective
+feature window; the original first observation of downloaded history is the
+actual retrieval time, never rewritten as 2023. These sidecars do not join
+the production model trainer, live quote ledger, or promotion registry until
+schema validation against real production archives, contiguous month
+coverage, historical instrument-unit audit, and proper causal joins are
+demonstrated. No historical sidecar can satisfy prospective 21-day validation.
+
+Run Actions → **Official OKX advanced archive research** → **Run workflow**,
+selecting an asset, completed month (YYYY-MM), and one module. Start with
+a small funding-rate archive before tick trades or L2. Larger archives
+are intentionally blocked by the resource cap and require a separate,
+tested streaming storage design rather than relaxing the cap blindly.

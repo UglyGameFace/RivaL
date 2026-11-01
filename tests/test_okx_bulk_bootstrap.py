@@ -220,3 +220,45 @@ async def test_bulk_reports_independent_blocks_without_erasing_acquired_months(
     )
     assert saved["new_months_total"] == 1
     assert saved["live_model_promoted"] is False
+
+
+def test_cli_recovered_throttles_do_not_invalidate_verified_history(
+    monkeypatch, capsys,
+):
+    async def completed(**kwargs):
+        return {
+            "new_months_by_asset": {"BTC": 10},
+            "requests": 2095, "throttles": 32, "failures": [],
+            "complete": True, "advanced_catalog_unverified": [
+                {"asset": "BTC", "month": "2026-01", "module": "trades"},
+            ],
+            "completion_scope": "okx_2023_to_present_5m_source_native_candles_only",
+        }
+
+    monkeypatch.setattr(bulk, "run_bulk", completed)
+    assert bulk.main(["--asset", "BTC"]) == 0
+    output = capsys.readouterr().out
+    assert '"complete": true' in output
+    assert '"advanced_catalog_unverified": 1' in output
+    assert "::warning::" in output
+    assert "32 transient cooldowns" in output
+
+
+def test_cli_fails_on_actual_unverified_source_after_cooldowns(
+    monkeypatch, capsys,
+):
+    async def blocked(**kwargs):
+        return {
+            "new_months_by_asset": {"BTC": 2},
+            "requests": 99, "throttles": 3,
+            "failures": [{"asset": "BTC", "month": "2025-10",
+                          "stage": "source_month", "error": "archive failed"}],
+            "complete": False, "advanced_catalog_unverified": [],
+            "completion_scope": "okx_2023_to_present_5m_source_native_candles_only",
+        }
+
+    monkeypatch.setattr(bulk, "run_bulk", blocked)
+    assert bulk.main(["--asset", "BTC"]) == 2
+    output = capsys.readouterr().out
+    assert "source_month" in output
+    assert "3 transient cooldowns" in output

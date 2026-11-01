@@ -1,4 +1,4 @@
-name: RivaL verified private LLM discovery acceptance
+name: RivaL isolated LLM restart recovery acceptance
 on:
   push:
     branches: ["diagnostics/read-only-discloud-vlan-20261101"]
@@ -8,9 +8,9 @@ permissions:
 jobs:
   acceptance:
     runs-on: ubuntu-latest
-    timeout-minutes: 9
+    timeout-minutes: 10
     steps:
-      - name: Verify deployed main bot discovers LLM without DNS or hardcoded IP
+      - name: Verify real LocalFirstResearch client survives standalone service restart
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
@@ -20,74 +20,71 @@ jobs:
           import base64, json, os, time, urllib.error, urllib.parse, urllib.request
           TOKEN=os.getenv("DISCLOUD_TOKEN","")
           MAIN=os.getenv("DISCLOUD_APP_ID","")
-          if not TOKEN or not MAIN:
-              raise SystemExit("Missing existing Discloud credentials")
-          
-          def console(source):
-              command="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(source.encode()).decode()+"\"))'"
-              req=urllib.request.Request(
-                  "https://api.discloud.app/v2/app/"+urllib.parse.quote(MAIN,safe="")+"/console",
-                  data=json.dumps({"command":command}).encode(),method="PUT",
-                  headers={"api-token":TOKEN,"Content-Type":"application/json"})
-              try:
-                  with urllib.request.urlopen(req,timeout=85) as response:
-                      result=json.load(response)
-              except (urllib.error.HTTPError,urllib.error.URLError,TimeoutError,ValueError) as exc:
-                  print("Discloud console transport",type(exc).__name__)
-                  return {}
-              out=str(result.get("apps",{}).get("shell",{}).get("stdout",""))
-              if "RIVAL_DISCOVERY_ACCEPTANCE=" not in out:
-                  return {"console_result":"unavailable"}
-              try:return json.loads(out.split("RIVAL_DISCOVERY_ACCEPTANCE=",1)[1].splitlines()[0])
-              except (ValueError,IndexError):return {"console_result":"malformed"}
-          
-          source="""import json,os,pathlib,sys,time,urllib.request,urllib.error
-          src=pathlib.Path.cwd()/"src"
-          sys.path.insert(0,str(src))
-          out={"client_installed":(src/"parlay_bot/perpetuals/local_llm_discovery.py").is_file(),
-          "provider":os.getenv("RIVAL_AI_PROVIDER","disabled"),"token_present":bool(os.getenv("RIVAL_LOCAL_AI_TOKEN"))}
-          if out["client_installed"] and out["token_present"]:
+          if not TOKEN or not MAIN:raise SystemExit("Discloud credentials absent")
+          def api(path,method="GET",body=None):
+           req=urllib.request.Request("https://api.discloud.app/v2"+path,
+              data=json.dumps(body).encode() if body is not None else None,
+              method=method,headers={"api-token":TOKEN,"Content-Type":"application/json"})
+           with urllib.request.urlopen(req,timeout=70) as r:return json.load(r)
+          apps=api("/app/all").get("apps",[])
+          found=[a for a in apps if isinstance(a,dict) and a.get("name","").lower()=="rival-intelligence" and a.get("id") != MAIN]
+          if len(found)!=1:raise SystemExit("LLM service identity ambiguous; no restart")
+          llm=str(found[0]["id"])
+          api("/app/"+urllib.parse.quote(llm,safe="")+"/restart","PUT")
+          print("Restarted only the isolated intelligence application")
+          source="""import os,json,sys,asyncio,time,urllib.request,urllib.error,pathlib
+          sys.path.insert(0,str(pathlib.Path.cwd()/"src"))
+          from parlay_bot.perpetuals.local_llm_discovery import discover_private_llm
+          from parlay_bot.perpetuals.local_first_research import LocalFirstResearch,LOCAL_MODEL
+          from datetime import UTC,datetime
+          out={"provider":os.getenv("RIVAL_AI_PROVIDER"),"signed_peer_discovered":False,"status_ready":False,"research_complete":False}
+          key=os.environ.get("RIVAL_LOCAL_AI_TOKEN","")
+          ip=discover_private_llm(key)
+          out["signed_peer_discovered"]=bool(ip)
+          if ip:
            try:
-            from parlay_bot.perpetuals.local_llm_discovery import discover_private_llm
-            ip=discover_private_llm(os.environ["RIVAL_LOCAL_AI_TOKEN"])
-            out["authenticated_discovery"]=bool(ip)
-            if ip:
-             def call(path,body=None,timeout=10):
-              req=urllib.request.Request("http://"+ip+":8765"+path,
-               data=json.dumps(body).encode() if body is not None else None,
-               headers={"Authorization":"Bearer "+os.environ["RIVAL_LOCAL_AI_TOKEN"],
-                        "Content-Type":"application/json"},method="POST" if body is not None else "GET")
-              begin=time.monotonic()
-              try:
-               with urllib.request.urlopen(req,timeout=timeout) as response:
-                data=json.loads(response.read(10000))
-                return {"http":response.status,"elapsed":round(time.monotonic()-begin,2),
-                        "ready":data.get("ready"),"direction":data.get("direction"),
-                        "model_present":bool(data.get("model")),
-                        "thesis_present":bool(str(data.get("thesis") or "").strip()),
-                        "risk_present":bool(str(data.get("risk") or "").strip()),
-                        "informational_only":data.get("informational_only"),
-                        "uncalibrated":data.get("uncalibrated")}
-              except urllib.error.HTTPError as e:return {"http":e.code}
-              except Exception as e:return {"error_class":type(e).__name__}
-             out["status"]=call("/v1/status",timeout=5)
-             if out["status"].get("http")==200 and out["status"].get("ready"):
-              out["research"]=call("/v1/research",{"asset":"BTC","evidence":{"analysis":"synthetic_discovery_acceptance_only","sources":[{"venue":"okx","status":"quotes_missing"}]}},timeout=55)
-           except Exception as e:out["diagnostic_error_class"]=type(e).__name__
-          print("RIVAL_DISCOVERY_ACCEPTANCE="+json.dumps(out,sort_keys=True))
+            request=urllib.request.Request("http://"+ip+":8765/v1/status",headers={"Authorization":"Bearer "+key})
+            with urllib.request.urlopen(request,timeout=7) as response:
+             out["status_ready"]=json.load(response).get("ready") is True
+           except Exception as e:out["status_error_class"]=type(e).__name__
+          if out["status_ready"]:
+           async def research():
+            ai=LocalFirstResearch(object(),local_key=key)
+            try:
+             start=time.monotonic()
+             result=await ai._complete(selected=LOCAL_MODEL,
+                 evidence={"asset":"BTC","analysis":"synthetic_reboot_acceptance_only","sources":[{"venue":"okx","status":"quotes_missing"}]},
+                 instruction="Read-only synthetic connection test.",now=datetime.now(UTC),fallbacks=())
+             return {"served_model_ok":result.get("served_model")==LOCAL_MODEL,
+                     "direction_valid":result.get("direction") in ("up","down","uncertain"),
+                     "risk_nonempty":bool(str(result.get("risk") or "").strip()),
+                     "thesis_nonempty":bool(str(result.get("thesis") or "").strip()),
+                     "seconds":round(time.monotonic()-start,2)}
+            finally:await ai.aclose()
+           try:
+            out["result"]=asyncio.run(research())
+            out["research_complete"]=all(out["result"].get(field) for field in ("served_model_ok","direction_valid","risk_nonempty","thesis_nonempty"))
+           except Exception as e:out["research_error_class"]=type(e).__name__
+          print("RIVAL_REBOOT="+json.dumps(out,sort_keys=True))
           """
-          last={}
-          for attempt in range(26):
-              last=console(source)
-              if last.get("client_installed") and last.get("authenticated_discovery") and last.get("status",{}).get("ready"):
-                  break
-              time.sleep(10)
-          print("Authenticated production main-to-LLM result:",json.dumps(last,sort_keys=True))
-          research=last.get("research") or {}
-          if not (last.get("provider")=="local" and last.get("authenticated_discovery") and
-                  research.get("http")==200 and research.get("model_present") and
-                  research.get("informational_only") is True and research.get("uncalibrated") is True and
-                  research.get("thesis_present") and research.get("risk_present")):
-              raise SystemExit("End-to-end authenticated discovery acceptance FAILED")
-          print("PASS: production main RivaL autonomously discovered and used private LFM3")
+          def console():
+           payload=base64.b64encode(source.encode()).decode()
+           cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+payload+"\"))'"
+           reply=api("/app/"+urllib.parse.quote(MAIN,safe="")+"/console","PUT",{"command":cmd})
+           stdout=str(reply.get("apps",{}).get("shell",{}).get("stdout",""))
+           if "RIVAL_REBOOT=" not in stdout:return {"error":"no_result"}
+           try:return json.loads(stdout.split("RIVAL_REBOOT=",1)[1].splitlines()[0])
+           except (ValueError,IndexError):return {"error":"unparseable"}
+          final={}
+          for attempt in range(22):
+           try: final=console()
+           except Exception as e:final={"error_class":type(e).__name__}
+           if final.get("research_complete"):break
+           if final.get("status_ready") and final.get("research_error_class"):
+            break
+           time.sleep(8)
+          print("Post-restart real local-first client result:",json.dumps(final,sort_keys=True))
+          if final.get("provider")!="local" or not final.get("signed_peer_discovered") or not final.get("research_complete"):
+           raise SystemExit("FAIL: post-restart local-first discovery/inference still unproven")
+          print("PASS: authenticated local-first research survives isolated LLM restart")
           PY

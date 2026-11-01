@@ -22,7 +22,7 @@ HOSTNAME=rival-llm
 AUTORESTART=true
 ```
 
-No custom build or start command is needed: Discloud detects Python 3.11 using the root `main.py` and `requirements.txt`. The package includes a llama.cpp v0.8.0 CPU binary with required native libraries and no model weights. Do not mix this ZIP into the existing RivaL bot or any SniperPlug or Dank Shield project.
+No custom build or start command is needed: Discloud detects Python 3.11 using the root `main.py` and `requirements.txt`. The updated package builds the pinned llama.cpp b12024 CPU binary with required native libraries and no model weights. Do not mix this ZIP into the existing RivaL bot or any SniperPlug or Dank Shield project.
 
 ### Resolve missing `RIVAL_LLM_SHARED_TOKEN` (one-time)
 

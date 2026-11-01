@@ -223,7 +223,7 @@ def launch_server():
     command = [
         str(binary), "--model", str(model_path),
         "--host", "127.0.0.1", "--port", "8766",
-        "--ctx-size", "2048", "--threads", "2", "--parallel", "1",
+        "--ctx-size", "4096", "--threads", "2", "--parallel", "1",
         "--batch-size", "128", "--n-gpu-layers", "0",
     ]
     env = os.environ.copy()

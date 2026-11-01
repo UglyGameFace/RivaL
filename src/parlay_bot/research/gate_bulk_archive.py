@@ -11,8 +11,8 @@ import gzip
 import hashlib
 import io
 import json
-import re
 import math
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -84,7 +84,7 @@ def _validate_row(row: list[str], *, kind: str, month: str) -> float:
         if name in {"dealid", "update_count"} and (val < 0 or not val.is_integer()):
             raise ValueError("Gate CSV contains invalid source counter")
     if kind.startswith("candlesticks_"):
-        _, size, close, high, low, opened = (
+        _, _size, close, high, low, opened = (
             _finite(row[i], allow_negative=(i == 1)) for i in range(6)
         )
         if not low <= min(opened, close) <= max(opened, close) <= high:

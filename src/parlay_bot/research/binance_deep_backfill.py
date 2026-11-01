@@ -18,7 +18,7 @@ import httpx
 from parlay_bot.config import Settings
 from parlay_bot.research.audit import audit_partition
 from parlay_bot.research.free_history import ASSETS, HistoryImportError, ingest_binance
-from parlay_bot.research.publish import _artifact, _drive, prepare, publish
+from parlay_bot.research.publish import _drive, prepare, publish
 
 FIRST = "2021-01"
 MAX_MONTHS_PER_RUN = 32

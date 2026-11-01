@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from parlay_bot.perpetuals import cloudflare_research as module
+from parlay_bot.perpetuals import openrouter_research
 from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
 
 
@@ -38,7 +39,7 @@ class Market:
 @pytest.mark.asyncio
 async def test_cloudflare_pinned_worker_and_no_provider_fallback(monkeypatch):
     market = Market()
-    monkeypatch.setattr(module, "build_evidence",
+    monkeypatch.setattr(openrouter_research, "build_evidence",
                         lambda *_args, **_kw: (
                             {"asset": "BTC", "sources": [{"venue": "gate"}]}, "c" * 64))
     seen = []
@@ -75,7 +76,7 @@ async def test_cloudflare_pinned_worker_and_no_provider_fallback(monkeypatch):
 @pytest.mark.asyncio
 async def test_cloudflare_daily_cap_error_pauses_without_fallback(monkeypatch):
     market = Market()
-    monkeypatch.setattr(module, "build_evidence",
+    monkeypatch.setattr(openrouter_research, "build_evidence",
                         lambda *_args, **_kw: (
                             {"asset": "SOL", "sources": [{"venue": "okx"}]}, "d" * 64))
     calls = []
@@ -98,7 +99,7 @@ async def test_cloudflare_daily_cap_error_pauses_without_fallback(monkeypatch):
 @pytest.mark.asyncio
 async def test_cloudflare_rejects_untrusted_model_output(monkeypatch):
     market = Market()
-    monkeypatch.setattr(module, "build_evidence",
+    monkeypatch.setattr(openrouter_research, "build_evidence",
                         lambda *_args, **_kw: (
                             {"asset": "ETH", "sources": [{"venue": "bitget"}]}, "e" * 64))
 

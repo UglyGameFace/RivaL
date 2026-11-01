@@ -217,6 +217,8 @@ class PolymarketReader:
         self._quote_pending: dict[str, asyncio.Task] = {}
         self._event_cache: dict[str, tuple[datetime, dict | None]] = {}
         self._event_pending: dict[str, asyncio.Task] = {}
+        # Shared across overlapping research/notice scans, not per caller.
+        self._bulk_limit = asyncio.Semaphore(4)
         self._reasons: dict[tuple[str, int], tuple[str, str]] = {}
         self._client: httpx.AsyncClient | None = None
 
@@ -541,10 +543,8 @@ class PolymarketReader:
         bulk scan, never on-demand UI reads, without relaxing verification.
         Each admitted lookup retains its normal end-to-end deadline.
         """
-        limit = asyncio.Semaphore(4)
-
         async def inspect(asset: str, horizon: int) -> PolymarketNotice | None:
-            async with limit:
+            async with self._bulk_limit:
                 return await self.market(asset, horizon, now=now)
 
         outcomes = await asyncio.gather(

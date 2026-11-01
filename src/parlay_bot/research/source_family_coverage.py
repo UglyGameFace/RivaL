@@ -155,7 +155,8 @@ def reported_gate_states(path: Path) -> dict:
         raise HistoryImportError("oversized Gate source ledger")
     value = json.loads(path.read_text(encoding="utf-8"))
     rows = value.get("rows") if isinstance(value, dict) else None
-    if (value.get("schema_version") != "rival-gate-source-month-ledger-v1"
+    if (not isinstance(value, dict)
+        or value.get("schema_version") != "rival-gate-source-month-ledger-v1"
         or not isinstance(rows, list) or len(rows) > 5000):
         raise HistoryImportError("unrecognized Gate source ledger")
     reported = {}

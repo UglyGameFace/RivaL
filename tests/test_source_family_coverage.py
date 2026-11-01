@@ -9,7 +9,11 @@ import pytest
 
 from parlay_bot.research.free_history import _persist
 from parlay_bot.research.source_family_coverage import (
-    last_completed_month, months, reported_gate_states, scan_local, write_ledger,
+    last_completed_month,
+    months,
+    reported_gate_states,
+    scan_local,
+    write_ledger,
 )
 
 NOW = datetime(2026, 11, 1, tzinfo=UTC)

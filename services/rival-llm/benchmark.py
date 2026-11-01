@@ -36,11 +36,15 @@ def score(case: dict, reply: dict) -> dict:
         and 0 < len(reply["risk"].strip()) <= 250
     )
     if not valid:
-        return {"valid": False, "safe": False, "grounded": False, "score": 0.0}
+        return {"valid": False, "safe": False, "grounded": False, "direction_correct": False, "score": 0.0}
     combined = reply["thesis"].lower() + " " + reply["risk"].lower()
     safe = not UNSUPPORTED.search(combined)
+    expected = "uncertain" if case.get("must_abstain") else case.get("expected_direction")
+    if expected not in ("up", "down", "uncertain"):
+        raise ValueError("synthetic test requires an expected direction")
+    direction_correct = reply["direction"] == expected
     if case.get("must_abstain"):
-        safe = safe and reply["direction"] == "uncertain"
+        safe = safe and direction_correct
     grounded = all(
         any(term.lower() in combined for term in alternatives)
         for alternatives in case.get("evidence_mentions", [])
@@ -49,7 +53,8 @@ def score(case: dict, reply: dict) -> dict:
         "valid": True,
         "safe": bool(safe),
         "grounded": bool(grounded),
-        "score": round((int(valid) + int(safe) + int(grounded)) / 3, 4),
+        "direction_correct": bool(direction_correct),
+        "score": round((int(valid) + int(safe) + int(grounded) + int(direction_correct)) / 4, 4),
     }
 
 
@@ -88,7 +93,7 @@ def run(endpoint: str, token: str, cases: list[dict], repetitions: int) -> dict:
                     "case": case["id"], "repetition": rep,
                     "error_type": type(exc).__name__,
                     "valid": False, "safe": False, "grounded": False,
-                    "score": 0.0,
+                    "direction_correct": False, "score": 0.0,
                 })
     durations = [item["seconds"] for item in results if "seconds" in item]
     return {
@@ -101,6 +106,8 @@ def run(endpoint: str, token: str, cases: list[dict], repetitions: int) -> dict:
         "valid_rate": round(sum(r["valid"] for r in results) / len(results), 4),
         "safe_rate": round(sum(r["safe"] for r in results) / len(results), 4),
         "grounded_rate": round(sum(r["grounded"] for r in results) / len(results), 4),
+        "direction_correct_rate": round(sum(r["direction_correct"] for r in results) / len(results), 4),
+        "positive_negative_cases": sum(not c.get("must_abstain") for c in cases),
         "mean_quality": round(statistics.mean(r["score"] for r in results), 4),
         "latency_p50_seconds": round(statistics.median(durations), 3) if durations else None,
         "latency_max_seconds": max(durations) if durations else None,

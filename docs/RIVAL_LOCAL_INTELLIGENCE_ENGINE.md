@@ -65,6 +65,8 @@ A valid token is required even for local access because private VLAN access is n
 ## Resource, performance and security rules
 
 - The configured memory allocation is 2,450 MB, *not* a verified measured RSS. One CPU model at a time, two threads, one concurrent generation, 4096 context, max 300 output tokens.
+- The gateway now renders the active model chat template and checks actual token count before inference; it reserves 300 generation tokens plus a 96-token safety margin. Oversized evidence returns HTTP 422 `context_budget_exceeded` without model generation or Cloudflare fallback. No partial data is silently discarded. Source-specific compact retrieval is a separate improvement; an HTTP 422 means the current evidence cannot safely fit, not that its market conclusion is negative.
+- The benchmark includes positive and negative historical trend examples in addition to abstention scenarios, and reports direction-correct rate separately from policy safety. These are *synthetic explanation checks*, never evidence of future trading accuracy. The local model must be tested on host before claiming benchmark improvements.
 - Allowed research assets are BTC/ETH/SOL/XRP. Unsupported assets, missing evidence and unauthenticated requests are rejected without inference.
 - Model-produced directional notes and low/medium/high confidence are **uncalibrated** and informational only. Never treat this as independently proved forecast accuracy or trading edge.
 - Cloudflare's existing `rival-ai-research` Worker is a separate optional backup with its own D1 daily limit. Its inference allowance is shared across the Cloudflare account and paid settings require separate confirmation.

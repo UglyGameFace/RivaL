@@ -251,3 +251,71 @@ async def test_rate_limit_stops_requests_with_visible_failure(tmp_path, monkeypa
     assert calls == ["BTC"]
     assert result["provider_throttled"] is True
     assert len(result["unavailable_or_rejected"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_existing_gate_source_reverification_is_not_counted_as_new(tmp_path, monkeypatch):
+    from parlay_bot.research import gate_native
+    monkeypatch.setattr(gate, "complete_months", lambda now: ["2023-04"])
+    async def existing(drive):
+        return {("BTC", "candlesticks_5m", "2023-04"): SHA[:16]}
+    async def native(drive):
+        return set()
+    monkeypatch.setattr(gate, "listed_archives", existing)
+    monkeypatch.setattr(gate, "listed_native_months", native)
+    monkeypatch.setattr(gate, "rotate_attempts",
+                        lambda jobs, *, now, count: jobs[:count])
+    def download(client, *, asset, kind, month, output):
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(BTC_DATA)
+        proof = inspect(BTC_DATA, asset=asset, kind=kind, month=month)
+        proof["source_url"] = url_for(asset=asset, kind=kind, month=month)
+        return proof
+    async def saved(*args, **kwargs):
+        return {"source_native_model_eligible": False}
+    async def blocked(*args, **kwargs):
+        raise gate.HistoryImportError("dated contract multiplier unavailable")
+    monkeypatch.setattr(gate, "download", download)
+    monkeypatch.setattr(gate, "publish_raw", saved)
+    monkeypatch.setattr(gate_native, "qualify_and_publish", blocked)
+    outcome = await gate.collect_gate(
+        drive=object(), root=tmp_path / "source", report_dir=tmp_path / "reports",
+        assets=("BTC",), kinds=("candlesticks_5m",),
+        now=datetime(2023, 5, 1, tzinfo=UTC),
+        max_new=1, max_attempts=2,
+    )
+    assert outcome["published"] == []
+    assert len(outcome["reverified_existing"]) == 1
+    assert outcome["native_qualified"] == []
+    assert len(outcome["native_blockers"]) == 1
+    assert outcome["full_source_coverage_proven"] is False
+
+
+@pytest.mark.asyncio
+async def test_gate_source_archive_changed_upstream_cannot_replace_existing(tmp_path, monkeypatch):
+    monkeypatch.setattr(gate, "complete_months", lambda now: ["2023-04"])
+    async def existing(drive):
+        return {("BTC", "candlesticks_5m", "2023-04"): "0" * 16}
+    async def native(drive):
+        return set()
+    monkeypatch.setattr(gate, "listed_archives", existing)
+    monkeypatch.setattr(gate, "listed_native_months", native)
+    monkeypatch.setattr(gate, "rotate_attempts",
+                        lambda jobs, *, now, count: jobs[:count])
+    def download(client, *, asset, kind, month, output):
+        proof = inspect(BTC_DATA, asset=asset, kind=kind, month=month)
+        proof["source_url"] = url_for(asset=asset, kind=kind, month=month)
+        return proof
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("immutable source was overwritten")
+    monkeypatch.setattr(gate, "download", download)
+    monkeypatch.setattr(gate, "publish_raw", forbidden)
+    outcome = await gate.collect_gate(
+        drive=object(), root=tmp_path / "source", report_dir=tmp_path / "reports",
+        assets=("BTC",), kinds=("candlesticks_5m",),
+        now=datetime(2023, 5, 1, tzinfo=UTC),
+        max_new=1, max_attempts=2,
+    )
+    assert len(outcome["unavailable_or_rejected"]) == 1
+    assert "changed" in outcome["unavailable_or_rejected"][0]["reason"]
+    assert not outcome["published"]

@@ -14,9 +14,10 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from model_download import ensure_model
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+
+from model_download import ensure_model
 
 LOG = logging.getLogger("rival_llm")
 MODEL_CATALOG = {

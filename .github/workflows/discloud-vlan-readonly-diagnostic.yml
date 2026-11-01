@@ -1,78 +1,79 @@
-name: RivaL real AI request failure inspection
+name: One-time validated LFM3 real-evidence CPU repair deployment
 on:
   push:
     branches: ["diagnostics/read-only-discloud-vlan-20261101"]
     paths: [".github/workflows/discloud-vlan-readonly-diagnostic.yml"]
 permissions:
   contents: read
+  actions: read
 jobs:
-  inspect:
+  deploy-isolated-llm:
     runs-on: ubuntu-latest
-    timeout-minutes: 4
+    timeout-minutes: 9
     steps:
-      - name: Diagnose real LFM3 request error class and unsummarized prompt size
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Require exact merged tested source
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 51271feeb39cd5f87eb357a1829d7f3176825485 HEAD
+          grep -q 'def compact_evidence' services/rival-llm/service.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: RIVAL-LLM-UPLOAD-THIS-ZIP
+          run-id: 41358911977
+          github-token: ${{ github.token }}
+          path: discloud-upload
+      - name: Validate downloaded package matches merged code
+        run: |
+          set -euo pipefail
+          python services/rival-llm/validate_package.py discloud-upload
+          cmp services/rival-llm/service.py discloud-upload/service.py
+          cmp src/parlay_bot/perpetuals/evidence_policy.py discloud-upload/evidence_policy.py
+          (cd discloud-upload && zip -q -r ../llm-validated.zip .)
+          python services/rival-llm/validate_package.py llm-validated.zip
+      - name: Update only pre-existing Intelligence app
+        shell: bash
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
-        shell: bash
         run: |
-          python - <<'PY'
-          import base64,json,os,urllib.request,urllib.error,urllib.parse
-          T=os.getenv("DISCLOUD_TOKEN","");M=os.getenv("DISCLOUD_APP_ID","")
-          if not T or not M:raise SystemExit("No authenticated Discloud API")
-          def api(path,method="GET",body=None):
-           req=urllib.request.Request("https://api.discloud.app/v2"+path,
-             data=json.dumps(body).encode() if body is not None else None,
-             method=method,headers={"api-token":T,"Content-Type":"application/json"})
-           try:
-            with urllib.request.urlopen(req,timeout=75) as r:return json.load(r)
-           except Exception as e:
-            print("Discloud error class",type(e).__name__);return {}
-          lst=api("/app/all").get("apps",[])
-          llm=[a for a in lst if isinstance(a,dict) and a.get("name","").casefold()=="rival-intelligence"]
-          if len(llm)!=1:raise SystemExit("Cannot locate LLM")
-          for label,app in (("main",M),("llm",llm[0]["id"])):
-           reply=api("/app/"+urllib.parse.quote(str(app),safe="")+"/logs")
-           terminal=reply.get("apps",{}).get("terminal",{})
-           raw=str(terminal.get("big") or terminal.get("small") or "")
-           interesting=[line for line in raw.splitlines() if
-               ("inference rejected class=" in line
-                or "Local inference unavailable HTTP" in line
-                or "Local AI rejected request HTTP" in line
-                or "Private local AI network unavailable" in line
-                or "prompt eval time" in line or "total time =" in line
-                or "http_status=503" in line or "http_status=422" in line)]
-           print("Recent redacted",label,"log patterns",[
-               line[-170:] for line in interesting[-12:]])
-          script="""import json,os,sys
-          sys.path.insert(0,os.path.abspath("src"))
-          from parlay_bot.config import Settings
-          from parlay_bot.storage.hot import PostgresHotStore
-          from parlay_bot.perpetuals.market_store import PerpetualMarketStore
-          from parlay_bot.perpetuals.analysis_evidence import build_evidence
-          from parlay_bot.discord_app.data_dashboard import MARKET_SYMBOLS
-          settings=Settings()
-          store=PostgresHotStore(settings.rival_database_url.get_secret_value())
-          try:
-           evidence,digest=build_evidence(PerpetualMarketStore(store),asset="BTC",
-               venues=tuple(MARKET_SYMBOLS))
-           serialized=json.dumps(evidence,sort_keys=True,separators=(",",":"))
-           sizes={name:len(json.dumps(value)) for name,value in evidence.items()}
-           source_sizes=[{"venue":x.get("venue"),"chars":len(json.dumps(x)),
-           "window_labels":list(x.get("windows",{})),
-           "historical_count":len(x.get("historical_windows",{}))}
-           for x in evidence.get("sources",[])]
-           print("RIVAL_EVIDENCE_SIZES="+json.dumps({"full_chars":len(serialized),
-               "source_count":len(source_sizes),"field_sizes":sizes,
-               "source_lengths":source_sizes},sort_keys=True))
-          finally:store.close()
-          """
-          cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(script.encode()).decode()+"\"))'"
-          res=api("/app/"+urllib.parse.quote(M,safe="")+"/console","PUT",{"command":cmd})
-          stdout=str(res.get("apps",{}).get("shell",{}).get("stdout",""))
-          marker="RIVAL_EVIDENCE_SIZES="
-          if marker in stdout:
-           print("Production evidence payload",stdout.split(marker,1)[1].splitlines()[0])
-          else:
-           print("No structured evidence-size result; stderr present",bool(res.get("apps",{}).get("shell",{}).get("stderr")))
+          set -euo pipefail
+          if [ -z "$DISCLOUD_TOKEN" ] || [ -z "$DISCLOUD_APP_ID" ]; then
+            echo "::error::Discloud deployment secrets are missing"
+            exit 1
+          fi
+          curl -fsS --max-time 30 -H "api-token: $DISCLOUD_TOKEN" \
+            https://api.discloud.app/v2/app/all -o "$RUNNER_TEMP/apps.json"
+          APP_ID="$(python - "$RUNNER_TEMP/apps.json" "$DISCLOUD_APP_ID" <<'PY'
+          import json,sys
+          with open(sys.argv[1]) as f: data=json.load(f)
+          found=[a for a in data.get("apps",[]) if isinstance(a,dict) and
+                 str(a.get("name","")).casefold()=="rival-intelligence" and
+                 str(a.get("id")) != sys.argv[2]]
+          if len(found)!=1 or not found[0].get("id"):
+              raise SystemExit("Refusing ambiguous or main app target")
+          print(found[0]["id"])
+          PY
+          )"
+          STATUS="$(curl -sS --max-time 180 --retry 0 -o "$RUNNER_TEMP/commit.json" -w '%{http_code}' \
+              -H "api-token: $DISCLOUD_TOKEN" -X PUT \
+              -F "file.zip=@llm-validated.zip;type=application/zip" \
+              "https://api.discloud.app/v2/app/$APP_ID/commit")"
+          echo "Isolated LFM3 update status HTTP $STATUS"
+          if [ "$STATUS" != 200 ]; then
+            echo "::error::Isolated LFM3 update did not succeed"
+            exit 1
+          fi
+          python - "$RUNNER_TEMP/commit.json" <<'PY'
+          import json,sys
+          with open(sys.argv[1]) as f:result=json.load(f)
+          if result.get("statusCode",200)>=400:
+              raise SystemExit("Discloud refused the update")
+          print("Existing RivaL-Intelligence package accepted")
           PY

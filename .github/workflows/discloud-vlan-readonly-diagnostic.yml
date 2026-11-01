@@ -1,83 +1,107 @@
-name: RivaL validated evidence-grounding LLM package deployment
+name: RivaL production LFM3 grounding acceptance
 on:
   push:
     branches: ["diagnostics/read-only-discloud-vlan-20261101"]
     paths: [".github/workflows/discloud-vlan-readonly-diagnostic.yml"]
 permissions:
   contents: read
-  actions: read
 jobs:
-  deploy-isolated-llm:
+  acceptance:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 7
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-      - name: Require merged tested changes
-        shell: bash
-        run: |
-          set -euo pipefail
-          git merge-base --is-ancestor 0b8c46a4202437398776629c4e1f39c14c539106 HEAD
-          test -f src/parlay_bot/perpetuals/evidence_policy.py
-      - uses: actions/download-artifact@v4
-        with:
-          name: RIVAL-LLM-UPLOAD-THIS-ZIP
-          run-id: 41356392560
-          github-token: ${{ github.token }}
-          path: discloud-upload
-      - name: Validate downloaded Python 3.11 package
-        shell: bash
-        run: |
-          set -euo pipefail
-          python services/rival-llm/validate_package.py discloud-upload
-          cmp src/parlay_bot/perpetuals/evidence_policy.py discloud-upload/evidence_policy.py
-          (cd discloud-upload && zip -q -r ../llm-validated.zip .)
-          python services/rival-llm/validate_package.py llm-validated.zip
-          python -m py_compile discloud-upload/evidence_policy.py
-      - name: Update only existing RivaL-Intelligence
-        shell: bash
+      - name: Verify authenticated missing-evidence and aligned-past-direction contracts
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+        shell: bash
         run: |
-          set -euo pipefail
-          if [ -z "$DISCLOUD_TOKEN" ] || [ -z "$DISCLOUD_APP_ID" ]; then
-            echo "::error::Missing existing Discloud credentials"
-            exit 1
-          fi
-          curl -fsS --max-time 30 -H "api-token: $DISCLOUD_TOKEN" \
-            https://api.discloud.app/v2/app/all -o "$RUNNER_TEMP/apps.json"
-          APP_ID="$(python - "$RUNNER_TEMP/apps.json" "$DISCLOUD_APP_ID" <<'PY'
-          import json,sys
-          with open(sys.argv[1]) as f: data=json.load(f)
-          matches=[a for a in data.get("apps",[]) if
-                   isinstance(a,dict) and
-                   str(a.get("name","")).casefold()=="rival-intelligence" and
-                   str(a.get("id")) != sys.argv[2]]
-          if len(matches)!=1 or not matches[0].get("id"):
-              raise SystemExit("Refusing upload: isolated app not uniquely identified")
-          print(matches[0]["id"])
-          PY
-          )"
-          test -n "$APP_ID"
-          STATUS="$(curl -sS --max-time 180 --retry 0 -o "$RUNNER_TEMP/commit.json" -w '%{http_code}' \
-            -H "api-token: $DISCLOUD_TOKEN" -X PUT \
-            -F "file.zip=@llm-validated.zip;type=application/zip" \
-            "https://api.discloud.app/v2/app/$APP_ID/commit")"
-          echo "Isolated LLM update HTTP $STATUS"
-          if [ "$STATUS" != 200 ]; then
-            echo "::error::Isolated LLM package update did not return HTTP 200"
-            exit 1
-          fi
-          python - "$RUNNER_TEMP/commit.json" <<'PY'
-          import json,sys
-          with open(sys.argv[1]) as f: value=json.load(f)
-          if value.get("statusCode",200)>=400:
-              raise SystemExit("Discloud rejected isolated app commit")
-          print("Isolated evidence-grounding package update acknowledged")
+          python - <<'PY'
+          import base64, json, os, urllib.request, urllib.error, urllib.parse
+          TOKEN=os.getenv("DISCLOUD_TOKEN","")
+          MAIN=os.getenv("DISCLOUD_APP_ID","")
+          if not TOKEN or not MAIN:raise SystemExit("Existing Discloud credentials missing")
+          def console(scenario):
+           source="""import json,os,sys,pathlib,time,urllib.request,urllib.error
+          from datetime import UTC,datetime,timedelta
+          sys.path.insert(0,str(pathlib.Path.cwd()/"src"))
+          from parlay_bot.perpetuals.evidence_policy import enforce
+          from parlay_bot.perpetuals.local_llm_discovery import discover_private_llm
+          scenario=sys.argv[1]
+          key=os.getenv("RIVAL_LOCAL_AI_TOKEN","")
+          out={"scenario":scenario,"provider":os.getenv("RIVAL_AI_PROVIDER","disabled"),
+               "client_policy_present":True,"token_configured":bool(key)}
+          peer=discover_private_llm(key) if key else None
+          out["authenticated_discovery"]=bool(peer)
+          if peer:
+           if scenario=="missing":
+            evidence={"asset":"BTC","analysis":"synthetic_acceptance_only",
+             "sources":[{"venue":"okx","status":"quotes_missing"}]}
+           else:
+            stamp=(datetime.now(UTC)-timedelta(minutes=2)).isoformat()
+            evidence={"asset":"BTC","analysis":"unvalidated_research",
+             "synthetic_acceptance_only":True,"horizon_minutes":5,
+             "sources":[{"venue":v,"contract":"BTC-USDT-SWAP","quote":"USDT",
+               "last_candle_close":stamp,"available_bars":289,
+               "windows":{"5m":{"return_pct":n,"sample_bars":1}}}
+              for v,n in (("okx",.2),("gate",.3),("bitget",.15))]}
+           expected=enforce({"direction":"up","confidence":"high",
+                             "thesis":"buy everything","risk":"risk-free"},
+                            evidence,asset="BTC")
+           out["local_client_expected_direction"]=expected["direction"]
+           out["local_client_expected_trend"]=expected["observed_trend"]
+           req=urllib.request.Request("http://"+peer+":8765/v1/research",
+             data=json.dumps({"asset":"BTC","evidence":evidence}).encode(),
+             method="POST",headers={"Authorization":"Bearer "+key,
+              "Content-Type":"application/json"})
+           started=time.monotonic()
+           try:
+            with urllib.request.urlopen(req,timeout=55) as response:
+             data=json.loads(response.read(16000))
+             out.update({"http":response.status,"seconds":round(time.monotonic()-started,2),
+              "direction":data.get("direction"),"confidence":data.get("confidence"),
+              "observed_trend":data.get("observed_trend"),
+              "grounding_status":data.get("grounding_status"),
+              "grounded_by":data.get("grounded_by"),
+              "model_present":bool(data.get("model")),
+              "thesis":data.get("thesis"),"risk":data.get("risk"),
+              "informational_only":data.get("informational_only"),
+              "uncalibrated":data.get("uncalibrated")})
+           except urllib.error.HTTPError as e:
+            out["http"]=e.code
+           except Exception as e:out["error_class"]=type(e).__name__
+          print("RIVAL_GROUNDING_ACCEPTANCE="+json.dumps(out,sort_keys=True))
+          """
+           command="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(source.encode()).decode()+"\"))' "+scenario
+           req=urllib.request.Request("https://api.discloud.app/v2/app/"+urllib.parse.quote(MAIN,safe="")+"/console",
+           data=json.dumps({"command":command}).encode(),method="PUT",
+           headers={"api-token":TOKEN,"Content-Type":"application/json"})
+           with urllib.request.urlopen(req,timeout=100) as response:
+            result=json.load(response)
+           stdout=str(result.get("apps",{}).get("shell",{}).get("stdout",""))
+           marker="RIVAL_GROUNDING_ACCEPTANCE="
+           if marker not in stdout:
+            raise SystemExit("No structured acceptance response from main app")
+           return json.loads(stdout.split(marker,1)[1].splitlines()[0])
+          for scenario in ("missing","aligned"):
+           result=console(scenario)
+           print("Production evidence contract",json.dumps(result,sort_keys=True))
+           if (result.get("provider")!="local" or not result.get("authenticated_discovery")
+               or not result.get("client_policy_present") or result.get("http")!=200
+               or not result.get("model_present") or
+               result.get("grounded_by")!="deterministic_historical_evidence_policy"
+               or result.get("direction")!="uncertain"
+               or result.get("confidence")!="low"
+               or result.get("local_client_expected_direction")!="uncertain"
+               or result.get("observed_trend")!=result.get("local_client_expected_trend")
+               or not result.get("thesis") or not result.get("risk")
+               or result.get("informational_only") is not True
+               or result.get("uncalibrated") is not True):
+            raise SystemExit("FAIL: grounded local LFM3 acceptance")
+           if scenario=="missing" and result.get("grounding_status")!="insufficient_evidence":
+            raise SystemExit("Missing evidence accepted incorrectly")
+           if scenario=="aligned" and (result.get("observed_trend")!="up" or
+               result.get("grounding_status")!="historical_observations_only"):
+            raise SystemExit("Validated historical trend failed")
+          print("PASS: live gateway and main-bot grounding agree; no future direction invented")
           PY

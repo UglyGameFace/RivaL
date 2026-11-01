@@ -12,6 +12,7 @@ import logging
 import httpx
 
 from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
+from parlay_bot.perpetuals.evidence_policy import enforce as enforce_grounding
 from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
 from parlay_bot.perpetuals.local_llm_discovery import discover_private_llm
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
@@ -118,9 +119,12 @@ class LocalFirstResearch(OpenRouterResearch):
             data = response.json()
             if not validated(data, LOCAL_MODEL):
                 raise ValueError("invalid local model output")
+            # Repeat the guard in RivaL: valid JSON from an outdated gateway
+            # still cannot assert a future direction without actual proof.
+            grounded = enforce_grounding(data, evidence, asset=evidence.get("asset"))
             return {
-                "direction": data["direction"], "confidence": data["confidence"],
-                "thesis": data["thesis"].strip(), "risk": data["risk"].strip(),
+                "direction": grounded["direction"], "confidence": grounded["confidence"],
+                "thesis": grounded["thesis"], "risk": grounded["risk"],
                 "served_model": LOCAL_MODEL,
             }
         except httpx.HTTPStatusError as exc:

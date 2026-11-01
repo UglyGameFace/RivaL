@@ -16,6 +16,7 @@ APP_FILES = {
     "requirements.txt",
     "service.py",
     "discovery.py",
+    "evidence_policy.py",
     "model_download.py",
     "build.sh",
     "runtime/bin/llama-server",

@@ -13,6 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1] / "services" / "rival-llm"
 sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT.parents[1] / "src" / "parlay_bot" / "perpetuals"))
 SERVICE = runpy.run_path(str(ROOT / "service.py"))
 Gateway = SERVICE["Gateway"]
 

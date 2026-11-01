@@ -177,11 +177,19 @@ async def download_month(client: httpx.AsyncClient, *, asset: str, month: str,
 
 
 async def inventory_extra_modules(client: httpx.AsyncClient, *,
-                                   asset: str, month: str) -> dict:
+                                   asset: str, month: str,
+                                   module_ids: tuple[int, ...] | None = None) -> dict:
     """Discover official 2023+ archives without claiming they were downloaded."""
     start, _ = month_bounds(month)
+    if module_ids is not None and (
+        not module_ids or len(module_ids) != len(set(module_ids))
+        or any(value not in MODULES for value in module_ids)
+    ):
+        raise HistoryImportError("unsupported OKX bulk catalog module selection")
     evidence = {}
     for number_id, label in MODULES.items():
+        if module_ids is not None and number_id not in module_ids:
+            continue
         # 5000-level L2 began in November 2025, so older months are absent.
         if number_id == 5 and month < "2025-11":
             evidence[label] = {"files": [], "status": "not_available_for_period"}
@@ -269,11 +277,60 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
         # Verify latest coverage first, then proceed forward from July 2023.
         targets = missing[-max_new_months:] if block == recent else missing[:max_new_months]
         added = []
+        archive_fallbacks = []
+        raw_one_minute_archives_verified = []
+        raw_archive_shas = set()
         for month in targets:
-            result = await download_month(
-                client, asset=asset, month=month, root=root, now=clock,
-                delay=download_delay,
-            )
+            # Prefer official monthly ZIPs. An OKX archive month spans UTC+8;
+            # paired month files must reproduce the *exact* UTC 1m grid.
+            # When the archive is absent/malformed, the old source-native
+            # 5m REST collector remains a separately verified fallback.
+            from parlay_bot.research.okx_file_first import download_file_month
+
+            try:
+                result = await download_file_month(
+                    client, asset=asset, month=month, root=root, now=clock,
+                )
+            except HistoryImportError as exc:
+                archive_fallbacks.append({
+                    "month": month, "status": "archive_blocked_api_fallback",
+                    "reason": str(exc)[:240],
+                })
+                result = await download_month(
+                    client, asset=asset, month=month, root=root, now=clock,
+                    delay=download_delay,
+                )
+            # Preserve each original one-minute ZIP as its own immutable,
+            # remote-SHA-readback historical object, in addition to derived 5m.
+            # No raw source can be silently discarded after aggregation.
+            record = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            if record.get("source_integrity") == "okx-v5-official-1m-zip-derived-5m-v1":
+                from parlay_bot.research.okx_file_first import archive_cache_path
+
+                for item in record["source_archive_files"]:
+                    raw_path = archive_cache_path(
+                        root=root, asset=asset, month=item["month"], url=item["url"],
+                    )
+                    raw_artifact = _artifact(raw_path, 1)
+                    if raw_artifact.sha256 != item["sha256"]:
+                        raise HistoryImportError("raw OKX archive changed before Drive upload")
+                    if raw_artifact.sha256 in raw_archive_shas:
+                        continue  # Shared adjacent ZIP already verified in this batch.
+                    raw_saved = await drive.ensure_history_file(
+                        artifact=raw_artifact,
+                        batch_id="okx-raw-1m-" + raw_artifact.sha256[:24],
+                        mime_type="application/zip",
+                    )
+                    await drive.verify_downloaded_artifact(
+                        file_id=raw_saved.file_id,
+                        parent_id=drive.folders.history,
+                        artifact=raw_artifact,
+                    )
+                    raw_archive_shas.add(raw_artifact.sha256)
+                    raw_one_minute_archives_verified.append({
+                        "month": item["month"], "sha256": raw_artifact.sha256,
+                        "source": "official_okx_one_minute_zip",
+                    })
             history = _artifact(result.data_path, result.records)
             manifest = _artifact(result.manifest_path, 1)
             key = "native-" + history.sha256[:24]
@@ -317,6 +374,8 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
         return {
             "venue": "okx", "asset": asset,
             "newly_published_months": added,
+            "archive_fallbacks": archive_fallbacks,
+            "raw_one_minute_archives_verified": raw_one_minute_archives_verified,
             "target_scope_months": block,
             "native_status": receipt["status"],
             "native_models_published": receipt["published_models"],

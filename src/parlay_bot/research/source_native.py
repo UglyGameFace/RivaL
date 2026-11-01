@@ -23,6 +23,61 @@ SOURCE = "verified_venue_perp_klines"
 STEP = timedelta(minutes=5)
 
 
+def native_manifest_provenance(manifest: dict) -> bool:
+    """One authoritative check shared by research/model readers and Drive restore."""
+    if not isinstance(manifest, dict):
+        return False
+    integrity = manifest.get("source_integrity")
+    if integrity == "postgres-first-observed-at-v1":
+        return True
+    if manifest.get("venue") != "okx" or manifest.get("provider_signed_checksum") is not False:
+        return False
+    if (integrity == "okx-v5-public-history-5m-v1"
+        and manifest.get("source_url") ==
+            "https://www.okx.com/api/v5/market/history-candles"
+        and manifest.get("source_transport") == "official_public_https"):
+        return True
+    if (integrity != "okx-v5-official-1m-zip-derived-5m-v1"
+        or manifest.get("source_transport") != "official_public_https"
+        or manifest.get("source_archive_type") != "one_minute_monthly_zip"
+        or manifest.get("interval_minutes") != 5
+        or not isinstance(manifest.get("records"), int)
+        or manifest["records"] <= 0
+        or manifest.get("source_minutes_verified") !=
+            manifest["records"] * 5):
+        return False
+    parts = manifest.get("source_archive_files")
+    if not isinstance(parts, list) or len(parts) != 2:
+        return False
+    try:
+        month = manifest["file"].split("-5m-", 1)[1][:7]
+        year, mm = map(int, month.split("-"))
+        first = datetime(year, mm, 1, tzinfo=UTC)
+        following = (first.replace(year=year + 1, month=1)
+                     if mm == 12 else first.replace(month=mm + 1))
+        months = [month, following.strftime("%Y-%m")]
+    except (KeyError, ValueError, IndexError, TypeError):
+        return False
+    if not isinstance(manifest.get("source_url"), str):
+        return False
+    for index, entry in enumerate(parts):
+        if not isinstance(entry, dict):
+            return False
+        url, sha = entry.get("url"), entry.get("sha256")
+        if (entry.get("month") != months[index]
+            or not isinstance(url, str)
+            or not url.startswith("https://static.okx.com/cdn/okex/")
+            or not url.endswith(".zip")
+            or (months[index] not in url
+                and months[index].replace("-", "") not in url)
+            or not isinstance(sha, str) or len(sha) != 64
+            or any(character not in "0123456789abcdef" for character in sha)):
+            return False
+        if index == 0 and manifest["source_url"] != url:
+            return False
+    return True
+
+
 def export_source_month(market, *, venue: str, contract: str, quote: str,
                         month: str, root: Path, now: datetime | None = None):
     """Export only complete, continuous, original-source calendar partitions.
@@ -346,17 +401,7 @@ async def restore_verified_source_months(
         try:
             info = json.loads(blob.content)
             if (info.get("source") != SOURCE or info.get("venue") != venue
-                or not (
-                    info.get("source_integrity") == "postgres-first-observed-at-v1"
-                    or (
-                        venue == "okx"
-                        and info.get("source_integrity") == "okx-v5-public-history-5m-v1"
-                        and info.get("source_url") ==
-                            "https://www.okx.com/api/v5/market/history-candles"
-                        and info.get("source_transport") == "official_public_https"
-                        and info.get("provider_signed_checksum") is False
-                    )
-                )
+                or not native_manifest_provenance(info)
                 or info.get("prospective_forecast") is not False
                 or info.get("live_trading_authorized") is not False
                 or info.get("interval_minutes") != 5):

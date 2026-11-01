@@ -61,8 +61,8 @@ async def test_trade_archive_is_downloaded_hashed_and_research_only(tmp_path):
         json.loads(line) for line in
         (tmp_path / (FILENAME + ".research.ndjson")).read_text().splitlines()
     ]
-    assert rows[0]["features"] == {"trades": 2.0, "buy_notional": 200.0,
-                                   "sell_notional": 102.0}
+    assert rows[0]["features"] == {"trades": 2.0, "buy_size_source_units": 2.0,
+                                   "sell_size_source_units": 1.0}
     assert rows[0]["available_after"] == "2026-05-03T00:05:00+00:00"
     assert (tmp_path / FILENAME).read_bytes() == data
     with pytest.raises(HistoryImportError, match="already exists"):

@@ -9,7 +9,7 @@ import argparse
 import asyncio
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
@@ -26,6 +26,14 @@ from parlay_bot.research.path_research import evaluate_directory as evaluate_fir
 from parlay_bot.research.publish import _artifact, _drive, prepare, publish
 
 DEFAULT_INTERVALS = ("1m", "5m", "15m", "1h", "4h", "1d")
+
+def publication_ready_months(*, now: datetime, count: int,
+                             grace_days: int = 7) -> list[str]:
+    """Don't demand a just-closed monthly ZIP before its publication window."""
+    if not 0 <= grace_days <= 14:
+        raise ValueError("invalid publication grace window")
+    return complete_months(now=now - timedelta(days=grace_days), count=count)
+
 
 
 def _report(path: Path, data: dict) -> Path:
@@ -275,6 +283,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=Path("data/research-history"))
     parser.add_argument("--report-dir", type=Path, default=Path("data/research-reports"))
     parser.add_argument("--months", type=int, default=6)
+    parser.add_argument("--archive-grace-days", type=int, default=0,
+                        help="Defer newly closed monthly archives for 0..14 days")
     parser.add_argument("--assets", nargs="+", choices=sorted(ASSETS),
                         default=["BTC", "ETH", "SOL"])
     parser.add_argument("--intervals", nargs="+", choices=sorted(INTERVALS),
@@ -292,7 +302,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if not 1 <= args.max_new <= 100:
         parser.error("max-new must be within 1..100")
-    months = complete_months(now=datetime.now(UTC), count=args.months)
+    months = publication_ready_months(
+        now=datetime.now(UTC), count=args.months,
+        grace_days=args.archive_grace_days,
+    )
     if args.plan:
         print(json.dumps({"months": months, "jobs": targets(
             months=months, assets=args.assets, intervals=args.intervals,

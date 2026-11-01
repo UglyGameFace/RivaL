@@ -31,7 +31,7 @@ class Market:
         self.pauses.append(kwargs)
 
 
-def market_evidence(_market, *, asset, venues):
+def market_evidence(_market, *, asset, venues, horizon_minutes=5):
     return ({"asset": asset, "sources": [{"venue": v} for v in venues]}, "a" * 64)
 
 

@@ -6,10 +6,10 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
+from parlay_bot.research import official_bitget as bitget
 from parlay_bot.research.audit import audit_partition
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.learning import _rows
-from parlay_bot.research import official_bitget as bitget
 
 
 AT = datetime(2026, 11, 1, tzinfo=UTC)

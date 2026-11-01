@@ -65,8 +65,9 @@ class Settings(BaseSettings):
 
     # Independent, user-triggered Gemini research (never called by candle worker).
     # Reads existing GEMINI_API_KEY in Discloud if configured there.
-    rival_ai_provider: Literal["openrouter", "gemini", "cloudflare", "disabled"] = Field(default="openrouter")
+    rival_ai_provider: Literal["openrouter", "gemini", "cloudflare", "local", "disabled"] = Field(default="openrouter")
     rival_cloudflare_ai_token: SecretStr | None = Field(default=None)
+    rival_local_ai_token: SecretStr | None = Field(default=None)
     open_router_api_key: SecretStr | None = Field(default=None)
     openrouter_api_key: SecretStr | None = Field(default=None)
     rival_openrouter_daily_max: int = Field(default=18, ge=1, le=18)

@@ -24,8 +24,8 @@ from urllib.parse import unquote, urlparse
 import httpx
 
 from parlay_bot.research.free_history import HistoryImportError
-from parlay_bot.research.okx_l2_replay import ArchivedBook
 from parlay_bot.research.official_okx_bootstrap import ASSETS, month_bounds
+from parlay_bot.research.okx_l2_replay import ArchivedBook
 
 MODULES = frozenset({"trades", "funding_rates", "orderbook_l2_400", "orderbook_l2_5000"})
 MAX_ARCHIVE_BYTES = 32 * 1024 * 1024

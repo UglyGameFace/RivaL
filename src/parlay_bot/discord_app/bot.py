@@ -138,7 +138,12 @@ def next_collection_delay(
 
 class RivalDiscordClient(discord.Client):
     def __init__(self, settings: Settings) -> None:
-        super().__init__(intents=discord.Intents.none())
+        # Guilds is a non-privileged gateway intent needed for guild state,
+        # command sync, and channel context. Members and message content
+        # remain disabled: RivaL does not need those permissions.
+        intents = discord.Intents.none()
+        intents.guilds = True
+        super().__init__(intents=intents)
         self.settings = settings
         self.tree = app_commands.CommandTree(self)
 

@@ -28,7 +28,7 @@ jobs:
           python-version: "3.11"
       - name: Verify source, model downloader, and service contract
         run: |
-          python -m pip install pytest ruff
+          python -m pip install -e ".[dev,archive]"
           ruff check services/rival-llm/ tests/test_local_llm_benchmark.py tests/test_private_llm_service.py tests/test_private_model_download.py
           pytest -q tests/test_private_llm_service.py tests/test_private_model_download.py tests/test_local_llm_benchmark.py
           bash -n services/rival-llm/build.sh

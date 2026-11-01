@@ -68,7 +68,9 @@ async def test_kucoin_history_cursor_continues_and_never_fakes_live_observation(
         market, assets=("BTC",), page_bars=12, client=raw,
     )
     try:
+        fetch_started = datetime.now(UTC)
         assert await recovery.run_once(now=NOW) == 12
+        fetch_finished = datetime.now(UTC)
         first = recovery.progress()[0]
         assert first["venue"] == "kucoin"
         assert first["inserted_bars"] == 12
@@ -79,7 +81,8 @@ async def test_kucoin_history_cursor_continues_and_never_fakes_live_observation(
         )
         assert len(candles) == 12
         assert candles[0]["volume_base"] == pytest.approx(0.2)
-        assert datetime.fromisoformat(candles[0]["first_observed_at"]).month == 10
+        observed = datetime.fromisoformat(candles[0]["first_observed_at"])
+        assert fetch_started <= observed <= fetch_finished
         assert market.recent_candles(
             venue="kucoin", contract="XBTUSDTM", quote="USDT",
             interval_minutes=5, as_of=datetime(2026, 5, 1, tzinfo=UTC),

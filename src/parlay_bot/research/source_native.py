@@ -309,6 +309,12 @@ async def restore_verified_source_months(
         if (not isinstance(entry, dict)
             or not str(entry.get("name", "")).startswith(venue + "-")):
             raise HistoryImportError("unexpected native manifest listing record")
+        # OKX month snapshots have exact, immutable -5m-YYYY-MM names.
+        # Filter the Drive metadata *before* downloading each manifest.
+        if venue == "okx" and not any(
+            f"-5m-{month}--" in entry["name"] for month in months
+        ):
+            continue
         item = drive._object(entry)
         props = entry.get("appProperties") or {}
         expected_sha = props.get("rival_sha256")

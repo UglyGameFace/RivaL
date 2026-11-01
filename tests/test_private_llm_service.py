@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import runpy
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -10,9 +11,9 @@ from pathlib import Path
 
 import pytest
 
-SERVICE = runpy.run_path(str(
-    Path(__file__).resolve().parents[1] / "services" / "rival-llm" / "service.py"
-))
+ROOT = Path(__file__).resolve().parents[1] / "services" / "rival-llm"
+sys.path.insert(0, str(ROOT))
+SERVICE = runpy.run_path(str(ROOT / "service.py"))
 Gateway = SERVICE["Gateway"]
 
 

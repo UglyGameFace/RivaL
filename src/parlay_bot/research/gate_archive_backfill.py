@@ -349,6 +349,7 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
         async with asyncio.timeout(9900):
             with httpx.Client(timeout=65, follow_redirects=False) as client:
                 api_fallback_attempts = 0
+                api_fallback_months = None
                 for asset, kind, month in selected:
                     if len(result["published"]) >= max_new:
                         break
@@ -442,28 +443,44 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                         # archive and never count it toward native model proof.
                         if (kind == "candlesticks_5m" and "HTTP 404" in reason
                             and api_fallback_attempts < 1):
-                            api_fallback_attempts += 1
                             from parlay_bot.research.gate_api_fallback import (
+                                listed_api_fallback_months,
                                 recover_unavailable_archive,
                             )
-                            try:
-                                fallback = await recover_unavailable_archive(
-                                    drive, client=client, asset=asset,
-                                    month=month, root=root, now=clock,
+                            if api_fallback_months is None:
+                                api_fallback_months = await listed_api_fallback_months(
+                                    drive,
                                 )
-                            except (HistoryImportError, DriveArchiveError,
-                                    httpx.HTTPError, OSError, ValueError) as api_exc:
-                                api_reason = str(api_exc)[:240]
+                            if (asset, month) in api_fallback_months:
+                                # Remote file name and digest property are
+                                # only a restart hint, not a fresh byte proof.
                                 fallback = {
                                     "asset": asset, "month": month,
-                                    "status": "api_unavailable_or_unqualified",
-                                    "reason": api_reason,
+                                    "status": "api_evidence_receipt_listed_not_reverified",
+                                    "source_api_response_readback_verified": False,
                                     "model_training_eligible": False,
                                 }
-                                if any(code in api_reason for code in (
-                                    "HTTP 429", "HTTP 503", "HTTP 502", "HTTP 504",
-                                )):
-                                    result["provider_throttled"] = True
+                            else:
+                                api_fallback_attempts += 1
+                                try:
+                                    fallback = await recover_unavailable_archive(
+                                        drive, client=client, asset=asset,
+                                        month=month, root=root, now=clock,
+                                    )
+                                    api_fallback_months.add((asset, month))
+                                except (HistoryImportError, DriveArchiveError,
+                                        httpx.HTTPError, OSError, ValueError) as api_exc:
+                                    api_reason = str(api_exc)[:240]
+                                    fallback = {
+                                        "asset": asset, "month": month,
+                                        "status": "api_unavailable_or_unqualified",
+                                        "reason": api_reason,
+                                        "model_training_eligible": False,
+                                    }
+                                    if any(code in api_reason for code in (
+                                        "HTTP 429", "HTTP 503", "HTTP 502", "HTTP 504",
+                                    )):
+                                        result["provider_throttled"] = True
                             result["same_venue_api_fallback"].append(fallback)
                             if result["provider_throttled"]:
                                 break

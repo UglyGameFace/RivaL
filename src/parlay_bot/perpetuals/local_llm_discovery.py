@@ -80,7 +80,7 @@ def discover_private_llm(token: str) -> str | None:
                 sock.settimeout(max(0.01, deadline - time.monotonic()))
                 try:
                     message, peer = sock.recvfrom(180)
-                except socket.timeout:
+                except TimeoutError:
                     break
                 except OSError:
                     return None

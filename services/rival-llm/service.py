@@ -17,8 +17,8 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from model_download import ensure_model
 from discovery import serve as serve_peer_discovery
+from model_download import ensure_model
 
 LOG = logging.getLogger("rival_llm")
 MODEL_CATALOG = {

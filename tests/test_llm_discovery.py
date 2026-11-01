@@ -1,10 +1,8 @@
 """Authenticated Discloud VLAN service discovery security and integration."""
 from __future__ import annotations
 
-import importlib.util
 import runpy
 import socket
-import sys
 import threading
 from pathlib import Path
 
@@ -49,7 +47,7 @@ def test_udp_responder_requires_valid_mac_and_stops():
                     sock.sendto(request, ("127.0.0.1", port))
                     response, _ = sock.recvfrom(180)
                     break
-                except socket.timeout:
+                except TimeoutError:
                     continue
             else:
                 pytest.fail("loopback responder did not acknowledge signed probe")

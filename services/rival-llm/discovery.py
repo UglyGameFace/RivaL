@@ -49,7 +49,7 @@ def serve(token: str, stopped: threading.Event, port: int = PORT) -> None:
         while not stopped.is_set():
             try:
                 packet, address = sock.recvfrom(161)
-            except socket.timeout:
+            except TimeoutError:
                 continue
             except OSError:
                 if not stopped.is_set():

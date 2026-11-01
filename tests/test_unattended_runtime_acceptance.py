@@ -293,7 +293,9 @@ def test_host_console_checks_genuine_boot_and_preserved_finalized_records(learni
     boot2 = RuntimeHealthMonitor(store)
     boot2.started_at = mark+timedelta(minutes=2)
     after = mark+timedelta(minutes=3)
-    boot2.publish({}, now=after)
+    regression = {"regression:hyperliquid:BTC:knn21_v1":
+                  "paired Brier 0.26 vs incumbent 0.20; promotion must stay gated"}
+    boot2.publish(regression, now=after)
     stalled = verify_restart_baseline(store, now=after+timedelta(seconds=2))
     assert stalled["distinct_host_boot"]
     assert stalled["watchdog_advanced"]
@@ -325,7 +327,10 @@ def test_host_console_checks_genuine_boot_and_preserved_finalized_records(learni
     assert passed["status"] == "PASS"
     assert passed["original_records_changed"] == []
     assert passed["new_forecasts_since_mark"] == 1
-    assert passed["host_health"] == "HEALTHY"
+    assert passed["host_health"] == "DEGRADED"
+    assert passed["host_operational_status"] == "HEALTHY"
+    assert passed["research_status"] == "UNDERPERFORMING"
+    assert len(passed["research_regressions"]) == 1
 
     # Mutating a settled model invalidates the exact before/after proof.
     with store.connect() as conn:
@@ -337,3 +342,39 @@ def test_host_console_checks_genuine_boot_and_preserved_finalized_records(learni
     invalid = verify_restart_baseline(store, now=after+timedelta(seconds=6))
     assert invalid["status"] == "UNVERIFIED"
     assert invalid["original_records_changed"]
+
+
+def test_host_health_separates_experimental_regression_from_real_host_fault(tmp_path):
+    store = SQLiteHotStore(tmp_path/"separate-health.sqlite")
+    monitor = RuntimeHealthMonitor(store)
+    at = datetime.now(UTC)
+    regression = {"regression:bitget:ETHUSDT:knn21_v1":
+                  "paired Brier 0.2482 vs incumbent 0.2228, n=293"}
+    try:
+        monitor.publish(regression, now=at)
+        report = host_health(store, now=at+timedelta(seconds=8))
+        assert report["status"] == "DEGRADED"  # Existing aggregate is preserved
+        assert report["operational_status"] == "HEALTHY"
+        assert report["research_status"] == "UNDERPERFORMING"
+        assert len(report["research_regressions"]) == 1
+        assert not report["operational_incidents"]
+        assert len(report["open_incidents"]) == 1  # Never hide poor model outcomes
+
+        monitor.publish({
+            **regression, "feed:hyperliquid:BTC": "no fresh candles",
+        }, now=at+timedelta(seconds=30))
+        broken = host_health(store, now=at+timedelta(seconds=31))
+        assert broken["operational_status"] == "DEGRADED"
+        assert len(broken["operational_incidents"]) == 1
+        assert broken["research_status"] == "UNDERPERFORMING"
+
+        monitor.publish(regression, now=at+timedelta(seconds=40))
+        recovered = host_health(store, now=at+timedelta(seconds=41))
+        assert recovered["operational_status"] == "HEALTHY"
+        assert recovered["research_status"] == "UNDERPERFORMING"
+
+        missing = host_health(store, now=at+timedelta(minutes=7))
+        assert missing["operational_status"] == "UNVERIFIED"
+        assert missing["research_status"] == "UNDERPERFORMING"
+    finally:
+        store.close()

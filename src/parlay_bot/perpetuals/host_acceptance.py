@@ -53,14 +53,33 @@ def host_health(store: RelationalHotStore, *, now: datetime | None = None) -> di
     age = (stamp - checked).total_seconds() if checked is not None else None
     heartbeat_ok = age is not None and 0 <= age <= 360
     issues = snap["issues"]
+    # Research challengers MUST be allowed to lose to the incumbent. Those
+    # persisted regressions are important model-quality warnings, not proof
+    # that host collection, workers or settlement stopped.
+    model_issues = [
+        issue for issue in issues
+        if str(issue["issue_key"]).startswith("regression:")
+    ]
+    operational_issues = [
+        issue for issue in issues
+        if not str(issue["issue_key"]).startswith("regression:")
+    ]
     if not heartbeat_ok:
-        status = "UNVERIFIED"
-    elif issues:
-        status = "DEGRADED"
+        operational_status = "UNVERIFIED"
+    elif operational_issues:
+        operational_status = "DEGRADED"
     else:
-        status = "HEALTHY"
+        operational_status = "HEALTHY"
+    research_status = "UNDERPERFORMING" if model_issues else "NO_REGRESSION_ALERTS"
+    # Preserve the historical aggregate for callers already reading status.
+    status = ("UNVERIFIED" if not heartbeat_ok else
+              "DEGRADED" if issues else "HEALTHY")
     return {
         "status": status,
+        "operational_status": operational_status,
+        "research_status": research_status,
+        "operational_incidents": operational_issues,
+        "research_regressions": model_issues,
         "watchdog_checked_at": snap["checked_at"],
         "watchdog_age_seconds": int(age) if age is not None else None,
         "boot_id": snap["boot_id"],
@@ -187,7 +206,8 @@ def verify_restart_baseline(
     )
     new_forecasts = int(fresh["n"])
     passed = (
-        different_boot and advanced_watchdog and health["status"] == "HEALTHY"
+        different_boot and advanced_watchdog
+        and health["operational_status"] == "HEALTHY"
         and not changed and new_forecasts > 0
     )
     return {
@@ -197,6 +217,9 @@ def verify_restart_baseline(
         "distinct_host_boot": different_boot,
         "watchdog_advanced": advanced_watchdog,
         "host_health": health["status"],
+        "host_operational_status": health["operational_status"],
+        "research_status": health["research_status"],
+        "research_regressions": health["research_regressions"],
         "new_forecasts_since_mark": new_forecasts,
         "baseline_at": snapshot["captured_at"],
         "note": (

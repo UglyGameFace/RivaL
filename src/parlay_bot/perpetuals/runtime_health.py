@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 from parlay_bot.storage.hot import RelationalHotStore
 
@@ -31,6 +32,7 @@ class RuntimeHealthMonitor:
     def __init__(self, store: RelationalHotStore) -> None:
         self.store = store
         self.started_at = datetime.now(UTC)
+        self.boot_id = uuid4().hex
         self._initialized = False
 
     def initialize(self) -> None:
@@ -51,8 +53,20 @@ class RuntimeHealthMonitor:
                     component TEXT PRIMARY KEY,
                     checked_at TEXT NOT NULL
                 );
+                CREATE TABLE IF NOT EXISTS rival_runtime_health_boots (
+                    boot_id TEXT PRIMARY KEY,
+                    started_at TEXT NOT NULL
+                );
             """)
         self._initialized = True
+
+    def record_boot(self) -> None:
+        self.initialize()
+        with self.store.connect() as conn:
+            conn.execute(
+                "INSERT INTO rival_runtime_health_boots(boot_id,started_at) VALUES (?,?)",
+                (self.boot_id, self.started_at.isoformat()),
+            )
 
     def inspect(
         self, *, now: datetime | None = None,
@@ -281,5 +295,12 @@ class RuntimeHealthMonitor:
                 """SELECT checked_at FROM rival_runtime_health_checkpoints
                    WHERE component='host_watchdog'"""
             ).fetchone()
-        return {"checked_at": pulse["checked_at"] if pulse else None,
-                "issues": [dict(r) for r in rows]}
+            boot = conn.execute(
+                "SELECT boot_id,started_at FROM rival_runtime_health_boots ORDER BY started_at DESC LIMIT 1"
+            ).fetchone()
+        return {
+            "checked_at": pulse["checked_at"] if pulse else None,
+            "boot_id": boot["boot_id"] if boot else None,
+            "boot_started_at": boot["started_at"] if boot else None,
+            "issues": [dict(r) for r in rows],
+        }

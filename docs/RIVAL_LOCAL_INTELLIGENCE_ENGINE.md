@@ -22,7 +22,7 @@ HOSTNAME=rival-llm
 AUTORESTART=true
 ```
 
-No custom build or start command is needed: Discloud detects Python 3.11 using the root `main.py` and `requirements.txt`. The package includes a llama.cpp v0.8.0 CPU binary with required native libraries and no model weights. Do not mix this ZIP into the existing RivaL bot or any SniperPlug or Dank Shield project.
+No custom build or start command is needed: Discloud detects Python 3.11 using the root `main.py` and `requirements.txt`. The updated package builds the pinned llama.cpp b12024 CPU binary with required native libraries and no model weights. Do not mix this ZIP into the existing RivaL bot or any SniperPlug or Dank Shield project.
 
 ### Resolve missing `RIVAL_LLM_SHARED_TOKEN` (one-time)
 
@@ -80,3 +80,9 @@ A valid token is required even for local access because private VLAN access is n
 - [LFM3 official GGUF](https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF)
 - [Qwen3.5-2B GGUF](https://huggingface.co/gguf/Qwen3.5-2B-GGUF/tree/main)
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)
+
+## Production inference incident, November 1, 2026
+
+Discloud independent diagnostics confirmed the standalone LFM3 gateway reaches readiness and the main RivaL process authenticates to it over the current eth0 container address. The documented VLAN aliases still do not resolve even after restarting **only** RivaL-Intelligence. The eth1 route timed out; do **not** hardcode the observed eth0 IP as a permanent endpoint, as container addresses can change. Production model choice remains unchanged until stable discovery is established.
+
+The earlier 503 on actual research was a verified `TimeoutError`: 185 prompt tokens required about 9.95 seconds, followed by 300 completion tokens in 30.23 seconds, which exceeded the 40-second upstream deadline. A 180-token direct probe took 28.49 seconds but returned an empty assistant `content` and `finish_reason=length`. This is not successful research. The LFM3 model defaults to thinking, and upstream llama.cpp fixed JSON-grammar interactions with thinking suppression in #31374/#31380. The standalone package therefore pins b12024, sets the server reasoning budget to zero, passes `enable_thinking=false` to requests, uses a 220-token completion budget and rejects truncated or empty answers. These are implementation changes, **not validated production recovery** until the updated artifact is deployed and an authenticated real reply succeeds.

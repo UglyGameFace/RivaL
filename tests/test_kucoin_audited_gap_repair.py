@@ -107,8 +107,7 @@ async def test_audited_gap_repairs_one_exact_provider_candle_without_rewind(
 async def test_empty_gap_retry_remains_queued_and_does_not_fake_repair(
     tmp_path, monkeypatch,
 ):
-    store, market, worker, auditor = _seed(tmp_path, monkeypatch)
-    worker._multiplier = lambda *args: None  # overwritten with async below
+    store, _market, worker, auditor = _seed(tmp_path, monkeypatch)
 
     async def multiplier(*_args):
         return 1.0
@@ -143,7 +142,7 @@ async def test_empty_gap_retry_remains_queued_and_does_not_fake_repair(
 
 
 def test_large_incomplete_kucoin_history_is_never_mass_queued(tmp_path, monkeypatch):
-    store, market, worker, auditor = _seed(tmp_path, monkeypatch)
+    store, _market, worker, auditor = _seed(tmp_path, monkeypatch)
     import parlay_bot.perpetuals.history_quality as quality
     monkeypatch.setattr(quality, "six_months_prior",
                         lambda end: end - timedelta(hours=12))

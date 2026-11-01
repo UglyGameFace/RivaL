@@ -170,6 +170,9 @@ def native_manifest_provenance(manifest: dict) -> bool:
     return True
 
 
+_EXPORT_PAGE_SIZE = 2048
+
+
 def export_source_month(market, *, venue: str, contract: str, quote: str,
                         month: str, root: Path, now: datetime | None = None):
     """Export only complete, continuous, original-source calendar partitions.
@@ -197,21 +200,64 @@ def export_source_month(market, *, venue: str, contract: str, quote: str,
         raise HistoryImportError("source-native research needs a completed month")
     expected = int((last - first) / STEP)
     market.initialize()
+    scope = (venue, contract, quote, first.isoformat(), last.isoformat())
+    # An indexed count rejects incomplete months before transferring thousands
+    # of OHLCV rows. It never qualifies a month: the exact continuity and
+    # first-observed checks below remain authoritative.
     with market.store.connect() as conn:
-        rows = conn.execute(
-            """SELECT venue,contract,quote,interval_minutes,opened_at,
-                      closed_at,first_observed_at,open_price,high_price,
-                      low_price,close_price,volume_base,trades
-               FROM perp_market_candles
-               WHERE venue=? AND contract=? AND quote=? AND interval_minutes=5
-                 AND opened_at>=? AND opened_at<?
-               ORDER BY opened_at LIMIT ?""",
-            (venue, contract, quote, first.isoformat(), last.isoformat(),
-             expected + 1),
-        ).fetchall()
+        count = conn.execute(
+            """SELECT COUNT(*) AS n FROM perp_market_candles
+               WHERE venue=? AND contract=? AND quote=?
+                 AND interval_minutes=5 AND opened_at>=?
+                 AND opened_at<?""",
+            scope,
+        ).fetchone()
+    if int(count["n"]) != expected:
+        raise HistoryImportError(
+            "native candle month incomplete; source-specific research is blocked"
+        )
+    rows = []
+    after: str | None = None
+    columns = """SELECT venue,contract,quote,interval_minutes,opened_at,
+                        closed_at,first_observed_at,open_price,high_price,
+                        low_price,close_price,volume_base,trades
+                 FROM perp_market_candles
+                 WHERE venue=? AND contract=? AND quote=?
+                   AND interval_minutes=5 AND opened_at>=? AND opened_at<?"""
+    # Fetch bounded keyset pages and give the production PostgreSQL connection
+    # back between pages. The extra row catches concurrent unexpected inserts.
+    while len(rows) <= expected:
+        limit = min(_EXPORT_PAGE_SIZE, expected + 1 - len(rows))
+        continuation = " AND opened_at>?" if after is not None else ""
+        params = (*scope, *((after,) if after is not None else ()), limit)
+        with market.store.connect() as conn:
+            page = conn.execute(
+                columns + continuation + " ORDER BY opened_at LIMIT ?",
+                params,
+            ).fetchall()
+        if not page:
+            break
+        rows.extend(page)
+        after = str(page[-1]["opened_at"])
+        if len(page) < limit:
+            break
     if len(rows) != expected:
         raise HistoryImportError(
             "native candle month incomplete; source-specific research is blocked"
+        )
+    # Recheck count: a concurrent historical backfill must never turn a
+    # previously partial source partition into an unchecked published artifact.
+    with market.store.connect() as conn:
+        final = conn.execute(
+            """SELECT COUNT(*) AS n FROM perp_market_candles
+               WHERE venue=? AND contract=? AND quote=?
+                 AND interval_minutes=5 AND opened_at>=?
+                 AND opened_at<?""",
+            scope,
+        ).fetchone()
+    if int(final["n"]) != expected:
+        raise HistoryImportError(
+            "native source month changed during export; retry next cycle"
         )
     normalized = []
     for idx, raw in enumerate(rows):

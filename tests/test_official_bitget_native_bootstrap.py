@@ -1,7 +1,6 @@
 """Official venue bootstrap is exact-source, bounded and fail-closed."""
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 
 import httpx

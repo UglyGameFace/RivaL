@@ -1,4 +1,4 @@
-name: Build isolated RivaL local LLM Discloud package
+name: Build directly uploadable RivaL Discloud LLM ZIP
 
 on:
   pull_request:
@@ -8,13 +8,20 @@ on:
       - "tests/test_private_llm_service.py"
       - "tests/test_private_model_download.py"
       - "tests/test_local_llm_benchmark.py"
+      - "tests/test_llm_discloud_package.py"
+  push:
+    branches: [main]
+    paths:
+      - "services/rival-llm/**"
+      - ".github/workflows/local-llm-discloud-package.yml"
+      - "tests/test_llm_discloud_package.py"
   workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: rival-local-llm-${{ github.head_ref || github.ref_name }}
+  group: rival-llm-discloud-package-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -26,39 +33,73 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Verify source, model downloader, and service contract
+      - name: Verify source and deployment contracts
         run: |
           python -m pip install -e ".[dev,archive]"
-          ruff check services/rival-llm/ tests/test_local_llm_benchmark.py tests/test_private_llm_service.py tests/test_private_model_download.py
-          pytest -q tests/test_private_llm_service.py tests/test_private_model_download.py tests/test_local_llm_benchmark.py
+          ruff check services/rival-llm/ tests/test_local_llm_benchmark.py tests/test_private_llm_service.py tests/test_private_model_download.py tests/test_llm_discloud_package.py
+          pytest -q tests/test_private_llm_service.py tests/test_private_model_download.py tests/test_local_llm_benchmark.py tests/test_llm_discloud_package.py
           bash -n services/rival-llm/build.sh
-      - name: Build portable CPU llama.cpp server outside Discloud
+      - name: Build CPU llama.cpp binary in CI only
         shell: bash
+        env:
+          RIVAL_BUILD_FROM_SOURCE: "1"
         run: |
           set -euo pipefail
           cd services/rival-llm
           bash build.sh
-          runtime/bin/llama-server --help >/dev/null
-          ldd runtime/bin/llama-server
-          test -x runtime/bin/llama-server
+          LD_LIBRARY_PATH="$PWD/runtime/bin" ldd runtime/bin/llama-server | tee "$RUNNER_TEMP/llama-ldd.txt"
+          if grep -q "not found" "$RUNNER_TEMP/llama-ldd.txt"; then
+            echo "::error::CPU runtime has an unresolved shared library dependency"
+            exit 1
+          fi
           test ! -e runtime/models
-      - name: Produce application-only zip, never bundle model weights or secrets
+      - name: Stage root files, dereference shared libraries, and validate exact Discloud ZIP
         shell: bash
         run: |
           set -euo pipefail
-          mkdir -p dist
-          cd services/rival-llm
-          zip -q -r ../../dist/rival-llm-discloud.zip \
-            discloud.config service.py model_download.py benchmark.py \
-            benchmark_cases.json .discloudignore .env.example build.sh runtime/bin
-          unzip -l ../../dist/rival-llm-discloud.zip | tee ../../dist/contents.txt
-          if unzip -Z1 ../../dist/rival-llm-discloud.zip | grep -E '(\.gguf|\.env$|\.part|runtime/llama.cpp/)'; then
-            echo 'Unexpected model weights, secrets or build tree in deployment archive' >&2
-            exit 1
-          fi
-      - uses: actions/upload-artifact@v4
+          mkdir -p discloud-upload/runtime/bin
+          cp services/rival-llm/discloud.config \
+             services/rival-llm/service.py \
+             services/rival-llm/model_download.py \
+             services/rival-llm/benchmark.py \
+             services/rival-llm/benchmark_cases.json \
+             services/rival-llm/build.sh discloud-upload/
+          # GitHub Actions artifacts do not retain executable bits or symlinks.
+          # Ship real files at every SONAME alias, never dangling symlinks.
+          for file in services/rival-llm/runtime/bin/*; do
+            if [ -f "$file" ]; then
+              cp -L "$file" "discloud-upload/runtime/bin/$(basename "$file")"
+            fi
+          done
+          python services/rival-llm/validate_package.py discloud-upload
+          (cd discloud-upload && zip -q -r ../validated-root-layout.zip .)
+          python services/rival-llm/validate_package.py validated-root-layout.zip
+          unzip -Z1 validated-root-layout.zip | tee "$RUNNER_TEMP/discloud-manifest.txt"
+      - name: Publish ONE ZIP that can be uploaded straight into Discloud
+        uses: actions/upload-artifact@v4
         with:
-          name: rival-llm-discloud-package
-          path: |
-            dist/rival-llm-discloud.zip
-            dist/contents.txt
+          name: RIVAL-LLM-UPLOAD-THIS-ZIP
+          path: discloud-upload/
+          include-hidden-files: false
+          retention-days: 14
+
+  validate-download:
+    runs-on: ubuntu-22.04
+    needs: package
+    steps:
+      - uses: actions/checkout@v4
+      - name: Re-download the actual GitHub artifact and check root structure
+        uses: actions/download-artifact@v4
+        with:
+          name: RIVAL-LLM-UPLOAD-THIS-ZIP
+          path: discloud-download
+      - name: Verify extracted artifact can run Discloud build command
+        shell: bash
+        run: |
+          set -euo pipefail
+          python services/rival-llm/validate_package.py discloud-download
+          cd discloud-download
+          bash build.sh
+          test -f discloud.config
+          test -x runtime/bin/llama-server
+          test ! -e rival-llm-discloud.zip

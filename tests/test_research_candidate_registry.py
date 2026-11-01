@@ -66,6 +66,10 @@ def test_candidate_sha_coverage_and_live_isolation(tmp_path):
     assert report["total"] == 1
     assert report["candidate"]["holdout_accuracy"] == pytest.approx(.57)
     assert report["active_offline_model"] is False
+    # A passed legacy logistic does not meet the live feature contract.
+    assert registry.inventory_receipt() == {
+        "total": 1, "passed": 0, "compatible": 0, "missing_artifacts": 0,
+    }
     with hot.connect() as conn:
         row = conn.execute(
             "SELECT active_live FROM rival_offline_candidates"
@@ -135,7 +139,7 @@ def test_import_receipts_show_real_db_counts_and_screen_reasons(tmp_path, caplog
         registry.import_verified("driveReceipt_1", payload)
         registry.import_verified("driveReceipt_1", payload)
     assert registry.inventory_receipt() == {
-        "total": 1, "passed": 0, "compatible": 0,
+        "total": 1, "passed": 0, "compatible": 0, "missing_artifacts": 0,
     }
     messages = [r.message for r in caplog.records if "verified model imported" in r.message]
     assert len(messages) == 1

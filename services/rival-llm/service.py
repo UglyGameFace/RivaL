@@ -14,6 +14,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from model_download import ensure_model
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -217,15 +218,16 @@ def launch_server():
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise FileNotFoundError("llama-server binary missing. Run build.sh before deployment.")
     repo, filename = MODEL_CATALOG[profile]
+    model_path = ensure_model(repo=repo, filename=filename, profile=profile)
     command = [
-        str(binary), "--hf-repo", repo, "--hf-file", filename,
+        str(binary), "--model", str(model_path),
         "--host", "127.0.0.1", "--port", "8766",
         "--ctx-size", "2048", "--threads", "2", "--parallel", "1",
         "--batch-size", "128", "--n-gpu-layers", "0",
     ]
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = str(binary.parent) + ":" + env.get("LD_LIBRARY_PATH", "")
-    process = subprocess.Popen(command, env=env)  # noqa: S603 - fixed command + exact model allowlist
+    process = subprocess.Popen(command, env=env)
     gateway = Gateway(
         "0.0.0.0", int(os.getenv("RIVAL_LLM_PORT", "8765")),
         token=token, model=profile, process=process,

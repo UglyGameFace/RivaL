@@ -242,7 +242,8 @@ async def test_polymarket_stats_do_not_require_exchange_or_drive(tmp_path):
         assert "5 settled calls" in body
         assert "0.2100" in body
         assert "0.2400" in body
-        assert "Learning heartbeat: read unavailable" in body
+        # A healthy empty heartbeat table means no cycle, not a failed read.
+        assert "Learning heartbeat: no recorded cycle" in body
         home.navigate("trust")
         assert home.page == "performance"
         detail = await home.render()

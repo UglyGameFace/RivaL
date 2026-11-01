@@ -1,13 +1,49 @@
 """Retrospective rejection provenance and exact source-native selection."""
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 
-from test_research_candidate_registry import artifact
-
 from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
 from parlay_bot.storage.hot import SQLiteHotStore
+
+
+def artifact():
+    months = {
+        f"2026-{month:02d}": hashlib.sha256(str(month).encode()).hexdigest()
+        for month in range(1, 7)
+    }
+    spec = {
+        "model": "offline-logistic-multi-horizon-v1",
+        "identity": {
+            "venue": "binance", "contract": "BTCUSDT", "quote": "USDT",
+            "interval_minutes": 5,
+        },
+        "horizon_minutes": 5,
+        "train_cutoff": "2026-05-01T00:00:00+00:00",
+        "validation_cutoff": "2026-06-01T00:00:00+00:00",
+        "weights": [0.01, 0.02, -0.02, 0.003, 0.05, 0.01],
+        "train_base_rate": 0.5,
+        "source_sha256_by_month": months,
+    }
+    sha = hashlib.sha256(json.dumps(
+        spec, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    return json.dumps({
+        "research_only": True,
+        "live_model_promoted": False,
+        "model_sha256": sha,
+        "model_spec": spec,
+        "validation": {
+            "count": 200, "brier_gain": 0.01, "accuracy": 0.57,
+            "brier": 0.24, "baseline_brier": 0.25, "ece_10": 0.05,
+        },
+        "out_of_sample_test": {
+            "count": 200, "brier_gain": 0.012, "accuracy": 0.57,
+            "brier": 0.238, "baseline_brier": 0.25, "ece_10": 0.05,
+        },
+    }, sort_keys=True).encode()
 
 
 def test_rejected_reason_is_durable_across_restart(tmp_path):

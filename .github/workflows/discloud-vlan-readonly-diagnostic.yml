@@ -10,31 +10,132 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check isolated service token persistence without reading values
+      - name: Verify updated private LLM inference and service discovery
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+          DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         shell: bash
         run: |
           python - <<'PY'
-          import base64,json,os,urllib.error,urllib.parse,urllib.request
-          T=os.getenv("DISCLOUD_TOKEN","")
-          def api(path,method="GET",body=None):
-           req=urllib.request.Request("https://api.discloud.app/v2"+path,method=method,
-             data=json.dumps(body).encode() if body else None,
-             headers={"api-token":T,"Content-Type":"application/json"})
+          import base64, json, os, urllib.error, urllib.parse, urllib.request
+          TOKEN = os.environ.get("DISCLOUD_TOKEN", "")
+          MAIN = os.environ.get("DISCLOUD_APP_ID", "")
+          BASE = "https://api.discloud.app/v2"
+          
+          def api(path, method="GET", body=None):
+              req = urllib.request.Request(BASE+path, method=method,
+                  data=json.dumps(body).encode() if body is not None else None,
+                  headers={"api-token":TOKEN,"Content-Type":"application/json"})
+              try:
+                  with urllib.request.urlopen(req, timeout=85) as r:
+                      return json.loads(r.read(150000))
+              except urllib.error.HTTPError as e:
+                  print("Discloud API HTTP",e.code)
+                  return None
+              except Exception as e:
+                  print("Discloud API failure",type(e).__name__)
+                  return None
+          
+          if not TOKEN or not MAIN:
+              raise SystemExit("Missing existing Discloud deployment credentials")
+          catalog = api("/app/all")
+          apps = catalog.get("apps",[]) if isinstance(catalog,dict) else []
+          matches = [a for a in apps if isinstance(a,dict) and
+                     str(a.get("name","")).lower() == "rival-intelligence"]
+          if len(matches)!=1:
+              raise SystemExit("Intelligence app not uniquely identified")
+          llm_id=str(matches[0]["id"])
+          
+          def remote(appid, code, args=""):
+              payload=base64.b64encode(code.encode()).decode()
+              cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+payload+"\"))'"+(" "+args if args else "")
+              response=api("/app/"+urllib.parse.quote(str(appid),safe="")+"/console","PUT",{"command":cmd})
+              shell=response.get("apps",{}).get("shell",{}) if isinstance(response,dict) else {}
+              stdout=str(shell.get("stdout","")) if isinstance(shell,dict) else ""
+              marker="RIVAL_ACCEPTANCE="
+              if marker not in stdout:
+                  print("Console result missing for", "main" if appid==MAIN else "intelligence",
+                        "stderr_present", bool(shell.get("stderr")) if isinstance(shell,dict) else "unknown")
+                  return None
+              try:
+                  return json.loads(stdout.split(marker,1)[1].splitlines()[0])
+              except (ValueError,IndexError):
+                  print("Acceptance result parse error")
+                  return None
+          
+          llm_script = """import fcntl,struct,socket,json,os,time,pathlib,urllib.request,urllib.error
+          from service import GENERATION_TOKENS
+          ip_sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+          ip=socket.inet_ntoa(fcntl.ioctl(ip_sock.fileno(),0x8915,struct.pack("256s",b"eth0"))[20:24])
+          mask=socket.inet_ntoa(fcntl.ioctl(ip_sock.fileno(),0x891b,struct.pack("256s",b"eth0"))[20:24])
+          ip_sock.close()
+          out={"ip":ip,"mask":mask,"generation_budget":GENERATION_TOKENS,"environment_secret":bool(os.getenv("RIVAL_LLM_SHARED_TOKEN"))}
+          out["runtime_has_reasoning_budget"]=False
+          for p in pathlib.Path("/proc").iterdir():
+           if not p.name.isdigit():continue
+           try:cmdline=(p/"cmdline").read_bytes().replace(b"\\x00",b" ").decode(errors="replace")
+           except (OSError,PermissionError):continue
+           if "llama-server" in cmdline and "--reasoning-budget 0" in cmdline:
+            out["runtime_has_reasoning_budget"]=True
+            break
+          def call(method,path,body=None,timeout=55):
+           req=urllib.request.Request("http://127.0.0.1:8765"+path,
+            data=json.dumps(body).encode() if body is not None else None,
+            method=method,headers={"Authorization":"Bearer "+os.getenv("RIVAL_LLM_SHARED_TOKEN",""),"Content-Type":"application/json"})
+           start=time.monotonic()
            try:
-            with urllib.request.urlopen(req,timeout=40) as r:return json.loads(r.read(100000))
-           except Exception as e:print("API error",type(e).__name__);return {}
-          apps=api("/app/all").get("apps",[]) if T else []
-          llm=[x for x in apps if isinstance(x,dict) and x.get("name","").lower()=="rival-intelligence"]
-          if len(llm)!=1:raise SystemExit("LLM app not uniquely found")
-          code="""import os,pathlib,json
-          print("RIVAL_DIAG_RESULT="+json.dumps({"runtime_secret_in_host_environment":bool(os.environ.get("RIVAL_LLM_SHARED_TOKEN")),"private_env_file_present":pathlib.Path(".env").is_file(),"model_file_cached":any(pathlib.Path("runtime/models").glob("*.gguf"))}))
+            with urllib.request.urlopen(req,timeout=timeout) as response:
+             obj=json.loads(response.read(12000))
+             return {"http":response.status,"seconds":round(time.monotonic()-start,2),
+                     "status":obj.get("status"),"ready":obj.get("ready"),
+                     "model_ok":bool(obj.get("model")),
+                     "direction":obj.get("direction"),
+                     "thesis_nonempty":bool(str(obj.get("thesis") or "").strip()),
+                     "risk_nonempty":bool(str(obj.get("risk") or "").strip()),
+                     "info_only":obj.get("informational_only"),
+                     "uncalibrated":obj.get("uncalibrated")}
+           except urllib.error.HTTPError as e:
+            try:code=json.loads(e.read(4096)).get("error")
+            except Exception:code="unparsed"
+            return {"http":e.code,"seconds":round(time.monotonic()-start,2),"error":code}
+           except Exception as e:
+            return {"error_class":type(e).__name__,"seconds":round(time.monotonic()-start,2)}
+          out["status"]=call("GET","/v1/status",timeout=5)
+          out["research"]=call("POST","/v1/research",{"asset":"BTC","evidence":{"analysis":"synthetic_connectivity_test_only","sources":[{"venue":"okx","status":"quotes_missing"}]}},timeout=55)
+          print("RIVAL_ACCEPTANCE="+json.dumps(out,sort_keys=True))
           """
-          cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(code.encode()).decode()+"\"))'"
-          a=api("/app/"+urllib.parse.quote(llm[0]["id"],safe="")+"/console","PUT",{"command":cmd})
-          stdout=str(a.get("apps",{}).get("shell",{}).get("stdout",""))
-          if "RIVAL_DIAG_RESULT=" in stdout:
-           print("Secret provenance without disclosure",json.loads(stdout.split("RIVAL_DIAG_RESULT=",1)[1].splitlines()[0]))
-          else:print("Secret provenance unavailable")
+          result=remote(llm_id,llm_script)
+          if not isinstance(result,dict):
+              raise SystemExit("No Intelligence acceptance result")
+          ip=result.pop("ip",None)
+          mask=result.pop("mask",None)
+          print("Intelligence acceptance:",json.dumps(result,sort_keys=True))
+          if not ip or not mask:
+              raise SystemExit("Missing current service network address")
+          import ipaddress
+          main_script = """import socket,sys,json,urllib.request,urllib.error,ipaddress,fcntl,struct
+          ip=sys.argv[1];mask=sys.argv[2]
+          s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+          own=socket.inet_ntoa(fcntl.ioctl(s.fileno(),0x8915,struct.pack("256s",b"eth0"))[20:24])
+          s.close()
+          same=ipaddress.ip_address(ip) in ipaddress.ip_network(own+"/"+mask,strict=False)
+          out={"same_eth0_subnet":same}
+          for host in ("rival-llm","rival-bot"):
+           try:socket.getaddrinfo(host,8765,type=socket.SOCK_STREAM);out[host+"_dns"]=True
+           except socket.gaierror:out[host+"_dns"]=False
+          import os
+          key=os.getenv("RIVAL_LOCAL_AI_TOKEN")
+          out["token_configured"]=bool(key)
+          if same and key:
+           req=urllib.request.Request("http://"+ip+":8765/v1/status",headers={"Authorization":"Bearer "+key})
+           try:
+            with urllib.request.urlopen(req,timeout=10) as resp:
+             obj=json.loads(resp.read(4096))
+             out["private_ip_auth"]={"http":resp.status,"ready":obj.get("ready"),"model_present":bool(obj.get("model"))}
+           except urllib.error.HTTPError as e:out["private_ip_auth"]={"http":e.code}
+           except Exception as e:out["private_ip_auth"]={"error_class":type(e).__name__}
+          print("RIVAL_ACCEPTANCE="+json.dumps(out,sort_keys=True))
+          """
+          main_result=remote(MAIN,main_script,ip+" "+mask)
+          print("Main bot private connection:",json.dumps(main_result,sort_keys=True))
           PY

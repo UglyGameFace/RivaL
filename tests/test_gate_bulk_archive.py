@@ -70,7 +70,7 @@ def test_gate_monthly_url_and_restricted_scope():
     ("trades", "1627776000,5427,NaN,2"),
     ("trades", "1627776000,-1,41.31,2"),
     ("trades", "1627776000,5427,-41.31,2"),
-    ("trades", "1630454400,5427,41.31,2"),  # outside archive month
+    ("trades", "1630540800,5427,41.31,2"),  # >8h outside August
     ("trades", "timestamp,dealid,price,size"),  # empty header-only archive
     ("candlesticks_5m", "1627776000,10,100,99,95,96"),  # invalid high
     ("candlesticks_5m", "1627776000,10,100,102,101,96"),  # invalid low

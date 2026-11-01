@@ -65,7 +65,7 @@ def test_no_unauthorized_or_malformed_inference(gateway):
     assert send(server, token="wrong")[0] == 401
     assert send(server, token="wrong", route="/v1/status", method="GET")[0] == 401
     assert send(server, body={"asset": "BTC", "evidence": []})[0] == 400
-    assert send(server, body={"asset": "XRP", "evidence": {}})[0] == 400
+    assert send(server, body={"asset": "DOGE", "evidence": {}})[0] == 400
     assert send(server, body={"asset": "BTC", "evidence": {}},
                 content_type="text/plain")[0] == 415
     assert send(server, body={"asset": "BTC", "evidence": {"data": "x" * 30_000}})[0] == 413
@@ -80,6 +80,16 @@ def test_one_authenticated_private_research_request(gateway):
     assert result["informational_only"] and result["uncalibrated"]
     assert calls == [("BTC", {"sources": [{"venue": "okx"}]})]
     assert send(server, route="/health", method="GET")[1]["status"] == "ready"
+
+
+def test_xrp_supported_without_weakening_authentication(gateway):
+    server, calls = gateway
+    status, result = send(
+        server, body={"asset": "XRP", "evidence": {"sources": [{"venue": "gate"}]}},
+    )
+    assert status == 200
+    assert result["informational_only"] is True
+    assert calls == [("XRP", {"sources": [{"venue": "gate"}]})]
 
 
 def test_busy_and_backend_missing_fail_closed(gateway):

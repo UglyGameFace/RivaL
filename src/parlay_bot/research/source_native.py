@@ -41,8 +41,10 @@ def native_manifest_provenance(manifest: dict) -> bool:
         or manifest.get("source_transport") != "official_public_https"
         or manifest.get("source_archive_type") != "one_minute_monthly_zip"
         or manifest.get("interval_minutes") != 5
+        or not isinstance(manifest.get("records"), int)
+        or manifest["records"] <= 0
         or manifest.get("source_minutes_verified") !=
-            manifest.get("records", -1) * 5):
+            manifest["records"] * 5):
         return False
     parts = manifest.get("source_archive_files")
     if not isinstance(parts, list) or len(parts) != 2:

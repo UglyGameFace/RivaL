@@ -10,76 +10,82 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Confirm end-to-end authenticated LFM3 inference from main RivaL
+      - name: Verify private VLAN UDP broadcast viability without credentials or code changes
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         shell: bash
         run: |
           python - <<'PY'
-          import base64,json,os,urllib.error,urllib.parse,urllib.request
-          TOKEN=os.getenv("DISCLOUD_TOKEN",""); MAIN=os.getenv("DISCLOUD_APP_ID","")
+          import base64, concurrent.futures, json, os, urllib.request, urllib.error, urllib.parse
+          T=os.getenv("DISCLOUD_TOKEN",""); M=os.getenv("DISCLOUD_APP_ID","")
           def api(path,method="GET",body=None):
            req=urllib.request.Request("https://api.discloud.app/v2"+path,method=method,
-           data=json.dumps(body).encode() if body is not None else None,
-           headers={"api-token":TOKEN,"Content-Type":"application/json"})
+            data=json.dumps(body).encode() if body else None,
+            headers={"api-token":T,"Content-Type":"application/json"})
            try:
-            with urllib.request.urlopen(req,timeout=75) as r:return json.loads(r.read(140000))
-           except Exception as e:print("Discloud API",type(e).__name__);return {}
-          apps=api("/app/all").get("apps",[]) if TOKEN else []
-          llm=[a for a in apps if isinstance(a,dict) and a.get("name","").lower()=="rival-intelligence"]
-          if not MAIN or len(llm)!=1:raise SystemExit("Application lookup unavailable")
-          def console(app,code,extra=""):
-           cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(code.encode()).decode()+"\"))'"+(" "+extra if extra else "")
-           response=api("/app/"+urllib.parse.quote(str(app),safe="")+"/console","PUT",{"command":cmd})
-           stdout=str(response.get("apps",{}).get("shell",{}).get("stdout",""))
-           if "RIVAL_ACCEPTANCE=" not in stdout:return None
-           try:return json.loads(stdout.split("RIVAL_ACCEPTANCE=",1)[1].splitlines()[0])
-           except Exception:return None
-          llm_script="""import json,socket,fcntl,struct
-          s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-          ip=socket.inet_ntoa(fcntl.ioctl(s.fileno(),0x8915,struct.pack("256s",b"eth1"))[20:24])
-          mask=socket.inet_ntoa(fcntl.ioctl(s.fileno(),0x891b,struct.pack("256s",b"eth1"))[20:24])
-          s.close()
-          print("RIVAL_ACCEPTANCE="+json.dumps({"ip":ip,"mask":mask}))
+            with urllib.request.urlopen(req,timeout=55) as r:return json.loads(r.read(120000))
+           except Exception as exc:
+            print("discloud_api_error_class",type(exc).__name__);return {}
+          if not T or not M:raise SystemExit("Discloud secrets unavailable")
+          apps=api("/app/all").get("apps",[])
+          llms=[a for a in apps if isinstance(a,dict) and a.get("name","").lower()=="rival-intelligence"]
+          if len(llms)!=1:raise SystemExit("Cannot identify LLM app")
+          def console(app,source):
+           command="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(source.encode()).decode()+"\"))'"
+           reply=api("/app/"+urllib.parse.quote(str(app),safe="")+"/console","PUT",{"command":command})
+           shell=reply.get("apps",{}).get("shell",{}) if isinstance(reply,dict) else {}
+           out=str(shell.get("stdout",""))
+           if "RIVAL_UDP_PROBE=" not in out:
+            return {"error":"console_probe_unavailable","stderr_present":bool(shell.get("stderr"))}
+           try:return json.loads(out.split("RIVAL_UDP_PROBE=",1)[1].splitlines()[0])
+           except Exception:return {"error":"unparseable"}
+          listener="""import json,socket,time
+          sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+          sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+          sock.bind(("0.0.0.0",29785))
+          sock.settimeout(1)
+          count=0
+          deadline=time.monotonic()+17
+          while time.monotonic()<deadline:
+           try:data,addr=sock.recvfrom(160)
+           except socket.timeout:continue
+           if data==b"RIVAL_PROBE_20261101":
+            sock.sendto(b"RIVAL_PROBE_REPLY_20261101",addr);count+=1
+          sock.close()
+          print("RIVAL_UDP_PROBE="+json.dumps({"received_broadcast_count":count>0}))
           """
-          address=console(llm[0]["id"],llm_script)
-          if not address or not address.get("ip"):raise SystemExit("Current LLM network address unavailable")
-          main_script="""import sys,os,json,socket,fcntl,struct,ipaddress,urllib.request,urllib.error,time
-          ip,mask=sys.argv[1:]
-          s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-          own=socket.inet_ntoa(fcntl.ioctl(s.fileno(),0x8915,struct.pack("256s",b"eth0"))[20:24])
-          s.close()
-          same=ipaddress.ip_address(ip) in ipaddress.ip_network(own+"/"+mask,strict=False)
-          out={"same_direct_network":same,"token_configured":bool(os.getenv("RIVAL_LOCAL_AI_TOKEN"))}
-          def lookup(name):
-           try:socket.getaddrinfo(name,8765);return True
-           except socket.gaierror:return False
-          out["hostname_resolves"]=lookup("rival-llm")
-          key=os.getenv("RIVAL_LOCAL_AI_TOKEN")
-          if same and key:
-           for label,method,path,data in [
-            ("status","GET","/v1/status",None),
-            ("research","POST","/v1/research",{"asset":"BTC","evidence":{"analysis":"synthetic_connectivity_test_only","sources":[{"venue":"okx","status":"quotes_missing"}]}})]:
-            req=urllib.request.Request("http://"+ip+":8765"+path,method=method,
-             data=json.dumps(data).encode() if data is not None else None,
-             headers={"Authorization":"Bearer "+key,"Content-Type":"application/json"})
-            start=time.monotonic()
-            try:
-             with urllib.request.urlopen(req,timeout=55) as resp:
-              value=json.loads(resp.read(12000))
-              out[label]={"http":resp.status,"seconds":round(time.monotonic()-start,2),
-                "ready":value.get("ready"),"model_present":bool(value.get("model")),
-                "direction":value.get("direction"),"thesis_ok":bool(str(value.get("thesis") or "").strip()),
-                "risk_ok":bool(str(value.get("risk") or "").strip()),
-                "informational_only":value.get("informational_only")}
-            except urllib.error.HTTPError as e:
-             try:reason=json.loads(e.read(4000)).get("error")
-             except Exception:reason="unknown"
-             out[label]={"http":e.code,"reason":reason}
-            except Exception as e:out[label]={"error_class":type(e).__name__}
-          print("RIVAL_ACCEPTANCE="+json.dumps(out,sort_keys=True))
+          client="""import socket,fcntl,struct,ipaddress,json,time
+          results={}
+          sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+          sock.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1)
+          sock.bind(("0.0.0.0",0))
+          sock.settimeout(0.5)
+          time.sleep(1.5)
+          for iface in ("eth0","eth1"):
+           try:
+            ctl=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+            ip=socket.inet_ntoa(fcntl.ioctl(ctl.fileno(),0x8915,struct.pack("256s",iface.encode()))[20:24])
+            mask=socket.inet_ntoa(fcntl.ioctl(ctl.fileno(),0x891b,struct.pack("256s",iface.encode()))[20:24])
+            ctl.close()
+            network=ipaddress.ip_network(ip+"/"+mask,strict=False)
+            target=str(network.broadcast_address)
+            ok=False
+            for _ in range(3):
+             sock.sendto(b"RIVAL_PROBE_20261101",(target,29785))
+             try:
+              reply,addr=sock.recvfrom(200)
+              if reply==b"RIVAL_PROBE_REPLY_20261101":ok=True
+             except socket.timeout:pass
+             if ok:break
+            results[iface]={"broadcast_reply":ok}
+           except Exception as e:results[iface]={"error_class":type(e).__name__}
+          sock.close()
+          print("RIVAL_UDP_PROBE="+json.dumps(results))
           """
-          result=console(MAIN,main_script,address["ip"]+" "+address["mask"])
-          print("RivaL-to-LLM authenticated private interface acceptance:",json.dumps(result,sort_keys=True))
+          with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+           a=pool.submit(console,llms[0]["id"],listener)
+           b=pool.submit(console,M,client)
+           print("LLM UDP listener result:",a.result(timeout=60))
+           print("RivaL UDP broadcast result:",b.result(timeout=60))
           PY

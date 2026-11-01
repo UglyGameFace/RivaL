@@ -114,7 +114,7 @@ def test_auxiliary_receipts_require_exact_byte_checksums_and_venue(tmp_path):
     module, items = _load_one(path, venue="okx", contract="BTC-USDT-SWAP")
     assert module == "funding_rates" and len(items) == 1
     assert load_sidecars([path], venue="okx", contract="BTC-USDT-SWAP")[0] == module
-    with pytest.raises(HistoryImportError, match="source-native"):
+    with pytest.raises(HistoryImportError, match="original OKX venue"):
         _load_one(path, venue="bitget", contract="BTC-USDT-SWAP")
     raw = tmp_path / path.name.removesuffix(".receipt.json")
     raw.write_bytes(b"modified")

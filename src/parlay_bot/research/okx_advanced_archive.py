@@ -108,12 +108,12 @@ def _parse_member(name: str, stream, *, module: str, start: datetime,
                     side = str(_col(row, ("side",))).lower()
                     if side not in {"buy", "sell"}:
                         raise HistoryImportError("unknown OKX aggressor side")
-                    price = _positive(_col(row, ("px", "price")))
+                    _positive(_col(row, ("px", "price")))
                     size = _positive(_col(row, ("sz", "size")), zero_allowed=True)
                     slot = ts // 300_000 * 300_000
                     bucket = buckets[slot]
                     bucket["trades"] += 1
-                    bucket["buy_notional" if side == "buy" else "sell_notional"] += price * size
+                    bucket["buy_size_source_units" if side == "buy" else "sell_size_source_units"] += size
                 elif module == "funding_rates":
                     ts = _event_time(_col(row, ("fundingTime", "funding_time", "ts")), start, end)
                     rate = float(_col(row, ("fundingRate", "funding_rate", "realizedRate")))
@@ -159,7 +159,9 @@ def _parse_member(name: str, stream, *, module: str, start: datetime,
                 slot = ts // 300_000 * 300_000
                 bucket = buckets[slot]
                 bucket["l2_snapshot_count"] += 1
-                bucket["last_snapshot_spread_bps"] = 20_000 * (ask - bid) / (ask + bid)
+                if ts >= bucket.get("last_snapshot_ts_ms", -1):
+                    bucket["last_snapshot_ts_ms"] = ts
+                    bucket["last_snapshot_spread_bps"] = 20_000 * (ask - bid) / (ask + bid)
         finally:
             text.detach()
     else:

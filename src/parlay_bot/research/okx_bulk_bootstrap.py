@@ -144,6 +144,25 @@ async def run_bulk(
         for item in results for result in item["passes"]
         if result.get("status") == "blocked"
     ]
+    # These independent blockers must not hide months already published
+    # and byte-reverified by a previous target in the same scheduled run.
+    for item in results:
+        for result in item["passes"]:
+            failures.extend({
+                "asset": item["asset"], "month": row["month"],
+                "error": row["reason"], "stage": "source_month",
+            } for row in result.get("source_month_failures", ()))
+            if result.get("native_research_error"):
+                failures.append({
+                    "asset": item["asset"],
+                    "error": result["native_research_error"],
+                    "stage": "offline_model_publication",
+                })
+    advanced_catalog_unverified = [
+        {"asset": item["asset"], **row}
+        for item in results for result in item["passes"]
+        for row in result.get("advanced_catalog_failures", ())
+    ]
     counts = {item["asset"]: sum(
         len(result.get("newly_published_months", ()))
         for result in item["passes"]
@@ -156,6 +175,8 @@ async def run_bulk(
         "new_months_total": sum(counts.values()),
         "requests": pacer.requests, "throttles": pacer.throttles,
         "failures": failures, "results": results,
+        "advanced_catalog_unverified": advanced_catalog_unverified,
+        "completion_scope": "okx_2023_to_present_5m_source_native_candles_only",
         "complete": not failures and all(
             item["passes"][-1].get("full_2023_to_present_verified") is True
             for item in results
@@ -192,6 +213,8 @@ def main(argv: list[str] | None = None) -> int:
         "new_months_by_asset": report["new_months_by_asset"],
         "requests": report["requests"], "throttles": report["throttles"],
         "failures": report["failures"], "complete": report["complete"],
+        "advanced_catalog_unverified": len(report["advanced_catalog_unverified"]),
+        "completion_scope": report["completion_scope"],
         "live_model_promoted": False,
     }, sort_keys=True))
     return 2 if report["failures"] or report["throttles"] else 0

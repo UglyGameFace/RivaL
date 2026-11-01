@@ -46,7 +46,6 @@ def test_verified_model_atomic_download_and_reuse(tmp_path, monkeypatch):
     raw = b"all-good-test-bytes"
     digest = hashlib.sha256(raw).hexdigest()
     ensure = MODULE["ensure_model"]
-    lookup = ensure.__globals__["_fetch_manifest"]
     monkeypatch.setitem(ensure.__globals__, "_fetch_manifest",
                         lambda *_args: (digest, len(raw)))
     monkeypatch.setenv("RIVAL_LLM_MODEL_DIR", str(tmp_path))

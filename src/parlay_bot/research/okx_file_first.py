@@ -162,7 +162,7 @@ async def _cached_archive(client: httpx.AsyncClient, *, root: Path,
     """Reuse adjacent-month official bytes only after checking their saved hash."""
     path = archive_cache_path(root=root, asset=asset, month=month, url=url)
     cache = path.parent
-    checksum_path = cache / f"{asset}-{month}-{key}.sha256"
+    checksum_path = path.with_suffix(".sha256")
     if path.exists():
         try:
             payload = path.read_bytes()

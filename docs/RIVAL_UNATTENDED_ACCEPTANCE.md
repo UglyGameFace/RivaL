@@ -41,13 +41,15 @@ This is distinct from GitHub workflow success.
 With the host's actual `RIVAL_DATABASE_URL` set, run:
 
 ```sh
-python tools/unattended_acceptance.py
+python main.py --acceptance
 ```
 
 Run this in the Discloud application's console or via its authenticated
 application-console API, **not** in an unrelated GitHub runner without the
-production database connection. The production upload includes this CLI
-under `tools/` and its imports work in Discloud's uninstalled `src/` layout.
+production database connection. The supported entry point is the shipped root `main.py`, and the
+acceptance implementation is in `src/parlay_bot/perpetuals/acceptance_cli.py`.
+Do not depend on a separately deployed `tools/` directory. The source-tree
+`tools/unattended_acceptance.py` path remains a local compatibility wrapper.
 
 No Discord command, login or UI interaction occurs. Exit code **0** means
 at least one actual persisted source-exact model and incumbent pair meets:
@@ -81,25 +83,28 @@ results. NO CALL remains authoritative until those independent gates pass.
 
 No separate PostgreSQL editor is needed.
 
+For a quick watchdog-only result, run `python main.py --health`. This
+checks persisted host evidence without opening Discord or sending orders.
+
 Run the ordinary command to see the causal receipt plus a new host_health
 section (last watchdog timestamp, process boot identity, and open incidents):
 
-    python tools/unattended_acceptance.py
+    python main.py --acceptance
 
 For rigorous restart verification, mark a fixed sample of finalized production
 records BEFORE pressing Discloud Restart:
 
-    python tools/unattended_acceptance.py --mark-restart
+    python main.py --mark-restart
 
 The result must be BASELINE_SAVED. This saves exact immutable row fingerprints
 inside the persistent production database. Restart RivaL only, leave the workers
 to issue new forecasts, and then run:
 
-    python tools/unattended_acceptance.py --verify-restart
+    python main.py --verify-restart
 
 PASS requires a distinct bot boot after marking, an advanced fresh watchdog,
 the previously saved finalized forecast and quote rows unchanged and present,
-no reported open incidents, and at least one new forecast after the mark.
+no reported open incidents, and at least one new forecast issued by the restarted bot (after its new boot).
 UNVERIFIED explains missing evidence. Rerunning verification is safe.
 Do not mark a new baseline after the restart until the old one is verified.
 

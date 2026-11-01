@@ -78,6 +78,94 @@ def test_gap_audit_flags_off_grid_candles_and_fake_observation_timing(tmp_path):
         store.close()
 
 
+
+
+def test_six_month_keyset_audit_detects_gap_across_pages(tmp_path, monkeypatch):
+    """Every source row is counted exactly once across page boundaries."""
+    import parlay_bot.perpetuals.history_quality as quality_module
+
+    monkeypatch.setattr(quality_module, "_AUDIT_PAGE_SIZE", 11)
+    store = SQLiteHotStore(tmp_path / "paged-six.sqlite")
+    market = PerpetualMarketStore(store)
+    quality = SixMonthQualityAudit(market)
+    begin = datetime(2026, 4, 28, 12, tzinfo=UTC)
+    # Skip a slot exactly at the first page boundary. The following 5m row
+    # must still create one genuine missing-bar segment.
+    candles = tuple(
+        _candle(begin + timedelta(minutes=5 * i), AT)
+        for i in range(75) if i != 11
+    )
+    try:
+        market.ingest(MarketBatch((), candles, 5, AT))
+        report = quality.audit_stream(venue="gate", asset="BTC", now=AT)
+        assert report["valid_bars"] == 74
+        assert report["missing_bars"] == report["expected_bars"] - 74
+        assert report["gap_segments"] == 2
+        assert report["longest_gap_bars"] > 0
+        assert report["status"] == "gaps_or_anomalies"
+        # Repeated scans remain deterministic and never count a page twice.
+        again = quality.audit_stream(venue="gate", asset="BTC", now=AT)
+        assert again == report
+    finally:
+        store.close()
+
+
+def test_keyset_audit_releases_connection_before_processing_page(tmp_path, monkeypatch):
+    """The long Python validation loop must not hold a pool connection."""
+    import parlay_bot.perpetuals.history_quality as quality_module
+
+    monkeypatch.setattr(quality_module, "_AUDIT_PAGE_SIZE", 3)
+    store = SQLiteHotStore(tmp_path / "paged-release.sqlite")
+    market = PerpetualMarketStore(store)
+    market.initialize()
+    begin = datetime(2026, 4, 28, 12, tzinfo=UTC)
+    market.ingest(MarketBatch((), tuple(
+        _candle(begin + timedelta(minutes=5 * i), AT)
+        for i in range(7)
+    ), 5, AT))
+
+    class ObservedStore:
+        def __init__(self, delegate):
+            self.delegate = delegate
+            self.active = 0
+            self.checkouts = 0
+
+        def connect(self):
+            delegate = self.delegate
+            owner = self
+
+            class Context:
+                def __enter__(self):
+                    self.ctx = delegate.connect()
+                    conn = self.ctx.__enter__()
+                    owner.active += 1
+                    owner.checkouts += 1
+                    return conn
+
+                def __exit__(self, exc_type, exc, tb):
+                    try:
+                        return self.ctx.__exit__(exc_type, exc, tb)
+                    finally:
+                        owner.active -= 1
+
+            return Context()
+
+    observed = ObservedStore(store)
+    try:
+        rows = SixMonthQualityAudit._scan_rows(
+            observed, venue="gate", contract="BTC_USDT", quote="USDT",
+            start=begin.isoformat(), end=(begin + timedelta(hours=2)).isoformat(),
+        )
+        seen = []
+        for row in rows:
+            assert observed.active == 0
+            seen.append(str(row["opened_at"]))
+        assert len(seen) == 7
+        assert len(set(seen)) == 7
+        assert observed.checkouts >= 3
+    finally:
+        store.close()
+
 def _gate_response(request: httpx.Request) -> httpx.Response:
     assert "authorization" not in request.headers
     if "contracts/" in request.url.path:

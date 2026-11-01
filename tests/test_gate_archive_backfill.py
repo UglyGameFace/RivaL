@@ -204,6 +204,11 @@ async def test_scheduled_batch_skips_existing_and_publishes_new(tmp_path, monkey
         return {"source_training_eligible": True, "asset": kwargs["asset"],
                 "month": kwargs["month"]}
     monkeypatch.setattr(gate_native, "qualify_and_publish", qualify_and_publish)
+    from parlay_bot.research import gate_minute_repair
+    async def minute_unavailable(*args, **kwargs):
+        raise gate.HistoryImportError("fixture contains only one 5m candle")
+    monkeypatch.setattr(gate_minute_repair, "publish_minute_gap_evidence",
+                        minute_unavailable)
     published = []
     async def publish_raw(drive, *, archive, source, asset, kind, month, root):
         published.append(archive.read_bytes())
@@ -280,6 +285,11 @@ async def test_existing_gate_source_reverification_is_not_counted_as_new(tmp_pat
     monkeypatch.setattr(gate, "download", download)
     monkeypatch.setattr(gate, "publish_raw", saved)
     monkeypatch.setattr(gate_native, "qualify_and_publish", blocked)
+    from parlay_bot.research import gate_minute_repair
+    async def minute_unavailable(*args, **kwargs):
+        raise gate.HistoryImportError("fixture source incomplete")
+    monkeypatch.setattr(gate_minute_repair, "publish_minute_gap_evidence",
+                        minute_unavailable)
     outcome = await gate.collect_gate(
         drive=object(), root=tmp_path / "source", report_dir=tmp_path / "reports",
         assets=("BTC",), kinds=("candlesticks_5m",),

@@ -34,7 +34,6 @@ class EvidenceDrive:
 @pytest.mark.asyncio
 async def test_full_same_gate_api_month_is_preserved_but_not_trained(tmp_path):
     month = "2023-02"
-    start = int(datetime(2023, 2, 1, tzinfo=UTC).timestamp())
     calls = []
 
     def handler(request):
@@ -78,8 +77,8 @@ async def test_incomplete_api_month_fails_before_any_evidence_is_published(tmp_p
         calls += 1
         return httpx.Response(200, json=[])
     drive = EvidenceDrive()
-    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
-        with pytest.raises(HistoryImportError, match="coverage unavailable"):
+    with (httpx.Client(transport=httpx.MockTransport(handler)) as client,
+          pytest.raises(HistoryImportError, match="coverage unavailable")):
             await gate_api_fallback.recover_unavailable_archive(
                 drive, client=client, asset="BTC", month="2023-02",
                 root=tmp_path, now=datetime(2026, 11, 1, tzinfo=UTC),

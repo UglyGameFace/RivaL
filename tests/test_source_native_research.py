@@ -66,7 +66,12 @@ def _seed_month(market, *, venue="hyperliquid", contract="BTC",
     return total
 
 
-def test_native_exact_month_audit_never_mislabels_backfill(native_market, tmp_path):
+def test_native_exact_month_audit_never_mislabels_backfill(native_market, tmp_path, monkeypatch):
+    import parlay_bot.research.source_native as native_module
+
+    # Force >20 pages, including a month boundary, while keeping the exact
+    # source-chain digest and a full-calendar-month qualification unchanged.
+    monkeypatch.setattr(native_module, "_EXPORT_PAGE_SIZE", 401)
     count = _seed_month(native_market)
     root = tmp_path / "research"
     export = export_source_month(
@@ -105,7 +110,10 @@ def test_native_exact_month_audit_never_mislabels_backfill(native_market, tmp_pa
         )
 
 
-def test_native_missing_bar_fails_before_archive_promotion(native_market, tmp_path):
+def test_native_missing_bar_fails_before_archive_promotion(native_market, tmp_path, monkeypatch):
+    import parlay_bot.research.source_native as native_module
+
+    monkeypatch.setattr(native_module, "_EXPORT_PAGE_SIZE", 17)
     _seed_month(native_market, remove=123)
     with pytest.raises(HistoryImportError, match="incomplete"):
         export_source_month(

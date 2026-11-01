@@ -67,6 +67,7 @@ from parlay_bot.perpetuals.hyperliquid_history_recovery import (
 from parlay_bot.perpetuals.kalshi_forward import KalshiForwardResearch
 from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
 from parlay_bot.perpetuals.lighter_history_recovery import LighterHistoryRecovery
+from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
 from parlay_bot.perpetuals.live_quotes import (
     PublicBestQuoteClient,
     QuoteUnavailable,
@@ -397,6 +398,18 @@ class RivalDiscordClient(discord.Client):
         google_secret = settings.gemini_api_key or settings.google_api_key
         if settings.rival_ai_provider == "disabled":
             self.gemini_research: GeminiResearch | OpenRouterResearch | CloudflareResearch | None = None
+        elif settings.rival_ai_provider == "local":
+            self.gemini_research = LocalFirstResearch(
+                self.perp_collector.market if self.perp_collector is not None
+                else PerpetualMarketStore(self.store),
+                local_key=(settings.rival_local_ai_token.get_secret_value()
+                           if settings.rival_local_ai_token is not None else None),
+                cloudflare_key=(settings.rival_cloudflare_ai_token.get_secret_value()
+                                if settings.rival_cloudflare_ai_token is not None else None),
+                daily_max=settings.rival_openrouter_daily_max,
+                cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
+            )
+            _LOG.info("RivaL optional AI reviewer: private Discloud local first")
         elif settings.rival_ai_provider == "cloudflare":
             self.gemini_research = CloudflareResearch(
                 self.perp_collector.market if self.perp_collector is not None
@@ -484,7 +497,7 @@ class RivalDiscordClient(discord.Client):
         self.polymarket_research = PolymarketResearch(
             self.store, ai=self.gemini_research
             if isinstance(self.gemini_research, OpenRouterResearch)
-            and not isinstance(self.gemini_research, CloudflareResearch) else None,
+            and not isinstance(self.gemini_research, (CloudflareResearch, LocalFirstResearch)) else None,
         )
         self.auto_hunt.contract_research = self.polymarket_research
         def secret_value(value):

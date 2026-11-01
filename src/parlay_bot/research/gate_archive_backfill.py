@@ -1,0 +1,324 @@
+"""Scheduled official Gate USDT-perp bulk-file research into RivaL's existing Drive.
+
+Source-exact, bounded, idempotent, public monthly gzip archives. The raw
+provider files are the evidence. Neither collecting them nor uploading them
+retroactively approves native ML, future performance or real executions.
+"""
+from __future__ import annotations
+
+import argparse
+import asyncio
+import hashlib
+import json
+import re
+from datetime import UTC, datetime
+from pathlib import Path
+
+import httpx
+
+from parlay_bot.archive.drive import DriveArchiveError
+from parlay_bot.config import Settings
+from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.gate_bulk_archive import ASSETS, TYPES, download
+from parlay_bot.research.publish import _artifact, _drive
+
+FIRST = "2023-01"  # Gate explicitly advertises candle/trade downloads since Jan 2023.
+DEFAULT_KINDS = (
+    "candlesticks_5m", "mark_prices", "funding_applies",
+    "funding_updates", "trades",
+)
+MAX_PAGES = 20
+MAX_ATTEMPTS = 24
+MAX_NEW = 16
+EXACT_NAME = re.compile(
+    r"gatebulk-futures_usdt-(BTC|ETH|SOL|XRP)_USDT-"
+    r"(candlesticks_1m|candlesticks_5m|candlesticks_1h|mark_prices|"
+    r"funding_applies|funding_updates|trades)-"
+    r"(20\d{2}-(?:0[1-9]|1[0-2]))--([0-9a-f]{16})\.manifest\.json"
+)
+
+
+def complete_months(now: datetime) -> list[str]:
+    if now.utcoffset() is None:
+        raise ValueError("Gate history requires a timezone-aware UTC clock")
+    clock = now.astimezone(UTC)
+    stop = clock.year * 12 + clock.month - 1
+    start = 2023 * 12
+    return [
+        f"{year:04d}-{month_zero + 1:02d}"
+        for year, month_zero in (divmod(idx, 12) for idx in range(start, stop))
+    ]
+
+
+def stem(*, asset: str, kind: str, month: str, sha: str) -> str:
+    if (asset not in ASSETS or kind not in TYPES or len(sha) != 64
+        or not re.fullmatch("[0-9a-f]{64}", sha)
+        or not re.fullmatch(r"20\d{2}-(?:0[1-9]|1[0-2])", month)):
+        raise HistoryImportError("untrusted Gate file identity")
+    return f"gatebulk-futures_usdt-{asset}_USDT-{kind}-{month}--{sha[:16]}"
+
+
+async def listed_archives(drive) -> dict[tuple[str, str, str], str]:
+    """Bounded restart hint from source-specific remote manifest filenames.
+
+    This does not pretend skipped manifests have been re-downloaded or
+    re-verified by today's run. New files always use full SHA readback.
+    """
+    await drive._verify_folder_boundary()
+    folder = drive.folders.manifests
+    query = (
+        f"'{drive._escape_query(folder)}' in parents and trashed = false "
+        "and name contains 'gatebulk-futures_usdt-' "
+        "and appProperties has { key='rival_kind' and value='manifest' }"
+    )
+    page_token = None
+    found: dict[tuple[str, str, str], str] = {}
+    for _ in range(MAX_PAGES):
+        params = {
+            "q": query, "spaces": "drive", "pageSize": 1000,
+            "fields": "nextPageToken,files(id,name,parents,appProperties,trashed)",
+        }
+        if page_token:
+            params["pageToken"] = page_token
+        response = await drive._client.get(
+            f"{drive.DRIVE_URL}/files", params=params,
+            headers=await drive._headers(),
+        )
+        if response.status_code != 200:
+            raise HistoryImportError(
+                f"Gate private Drive manifest inventory failed HTTP {response.status_code}"
+            )
+        result = response.json()
+        files = result.get("files") if isinstance(result, dict) else None
+        if not isinstance(files, list) or len(files) > 1000:
+            raise HistoryImportError("invalid Gate manifest listing")
+        for entry in files:
+            if (not isinstance(entry, dict) or entry.get("trashed")
+                or folder not in (entry.get("parents") or [])):
+                raise HistoryImportError("Gate Drive manifest outside trusted boundary")
+            props = entry.get("appProperties") or {}
+            if not isinstance(props, dict) or props.get("rival_kind") != "manifest":
+                raise HistoryImportError("Gate Drive manifest missing source ownership")
+            name = entry.get("name")
+            match = EXACT_NAME.fullmatch(name) if isinstance(name, str) else None
+            if not match:
+                # Non-matching metadata is not proof of an eligible archive.
+                continue
+            asset, kind, month, short_sha = match.groups()
+            key = (asset, kind, month)
+            if key in found and found[key] != short_sha:
+                raise HistoryImportError("conflicting Gate monthly source manifests")
+            found[key] = short_sha
+        token = result.get("nextPageToken")
+        if token is None:
+            return found
+        if (not isinstance(token, str) or not 1 <= len(token) <= 1000
+            or not token.isprintable()):
+            raise HistoryImportError("malformed Gate Drive pagination cursor")
+        page_token = token
+    raise HistoryImportError("Gate private manifest listing exceeds bounded page budget")
+
+
+async def publish_raw(drive, *, archive: Path, source: dict,
+                      asset: str, kind: str, month: str, root: Path) -> dict:
+    """Preserve original provider bytes plus deterministic immutable receipt.
+
+    Provider checksum is unavailable: our SHA proves byte identity and
+    faithful Drive restoration, not a provider-signed data authenticity claim.
+    """
+    sha = source["compressed_sha256"]
+    key = stem(asset=asset, kind=kind, month=month, sha=sha)
+    target_dir = root / "gate-raw-verified"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    raw = target_dir / (key + ".csv.gz")
+    payload = archive.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != sha:
+        raise HistoryImportError("Gate raw bytes diverged after source inspection")
+    if raw.exists() and raw.read_bytes() != payload:
+        raise HistoryImportError("immutable Gate raw archive conflict")
+    if not raw.exists():
+        raw.write_bytes(payload)
+    manifest = target_dir / (key + ".manifest.json")
+    proof = {
+        "schema_version": "rival-gate-raw-futures-usdt-v1",
+        "source": "gate_official_futures_usdt_monthly_gzip",
+        "venue": "gate", "asset": asset,
+        "contract": f"{asset}_USDT", "quote": "USDT",
+        "market_type": "usdt_linear_perpetual",
+        "kind": kind, "month": month,
+        "source_url": source["source_url"],
+        "raw_file": raw.name,
+        "raw_sha256": sha,
+        "rows": source["rows"],
+        "first_source_timestamp": source["first_source_timestamp"],
+        "last_source_timestamp": source["last_source_timestamp"],
+        "header_present": source["has_header"],
+        "provider_signed_checksum": False,
+        "timestamp_calendar_verified": False,
+        "full_utc_candle_month_verified": False,
+        "retrospective": True,
+        "prospective_forecast": False,
+        "live_trading_authorized": False,
+        "model_training_eligible": False,
+        "no_exact_bid_ask_or_fills_verified": True,
+    }
+    encoded = (json.dumps(proof, sort_keys=True, indent=2) + "\n").encode()
+    if manifest.exists() and manifest.read_bytes() != encoded:
+        raise HistoryImportError("immutable Gate source receipt conflict")
+    if not manifest.exists():
+        manifest.write_bytes(encoded)
+    history = _artifact(raw, int(source["rows"]))
+    manifest_artifact = _artifact(manifest, 1)
+    if history.sha256 != sha:
+        raise HistoryImportError("Gate source artifact digest mismatch")
+    batch_id = "gatebulk-" + sha[:24]
+    saved = await drive.ensure_history_file(
+        artifact=history, batch_id=batch_id, mime_type="application/gzip",
+    )
+    await drive.verify_downloaded_artifact(
+        file_id=saved.file_id, parent_id=drive.folders.history, artifact=history,
+    )
+    stored_manifest = await drive.ensure_manifest_file(
+        artifact=manifest_artifact, batch_id=batch_id,
+    )
+    await drive.verify_downloaded_artifact(
+        file_id=stored_manifest.file_id,
+        parent_id=drive.folders.manifests, artifact=manifest_artifact,
+    )
+    return {
+        "asset": asset, "kind": kind, "month": month,
+        "raw_sha256": sha, "rows": history.row_count,
+        "source_url": source["source_url"],
+        "warehouse_readback_sha256_verified": True,
+        "source_native_model_eligible": False,
+    }
+
+
+def rotate_attempts(work: list[tuple[str, str, str]], *,
+                    now: datetime, count: int) -> list[tuple[str, str, str]]:
+    """Rotate failures rather than repeatedly retrying the oldest 404 forever."""
+    if not work:
+        return []
+    cycle = int(now.astimezone(UTC).timestamp() // (6 * 3600))
+    offset = (cycle * count) % len(work)
+    return (work[offset:] + work[:offset])[:count]
+
+
+async def collect_gate(*, drive, root: Path, report_dir: Path,
+                       now: datetime | None = None,
+                       assets: tuple[str, ...] = ASSETS,
+                       kinds: tuple[str, ...] = DEFAULT_KINDS,
+                       max_new: int = 12, max_attempts: int = 20) -> dict:
+    clock = now or datetime.now(UTC)
+    if (clock.utcoffset() is None or not assets or not kinds
+        or len(assets) != len(set(assets)) or len(kinds) != len(set(kinds))
+        or any(a not in ASSETS for a in assets)
+        or any(k not in TYPES for k in kinds)
+        or not 1 <= max_new <= MAX_NEW
+        or not max_new <= max_attempts <= MAX_ATTEMPTS):
+        raise ValueError("unapproved Gate historical batch scope")
+    months = complete_months(clock)
+    existing = await listed_archives(drive)
+    all_jobs = [(asset, kind, month)
+                for month in months for kind in kinds for asset in assets]
+    pending = [job for job in all_jobs if job not in existing]
+    selected = rotate_attempts(pending, now=clock, count=max_attempts)
+    result: dict = {
+        "schema_version": "rival-gate-public-bulk-progress-v1",
+        "created_at": datetime.now(UTC).isoformat(),
+        "scope": {"assets": list(assets), "kinds": list(kinds),
+                  "first_month": FIRST,
+                  "last_complete_month": months[-1] if months else None},
+        "planned_jobs": len(all_jobs), "remote_manifest_names_skipped_without_readback":
+            len(all_jobs) - len(pending),
+        "pending_jobs": len(pending),
+        "selected_jobs": len(selected),
+        "published": [], "unavailable_or_rejected": [],
+        "provider_throttled": False,
+        "full_source_coverage_proven": False,
+        "live_predictions_modified": False,
+        "model_approved": False,
+    }
+    root.mkdir(parents=True, exist_ok=True)
+    report_dir.mkdir(parents=True, exist_ok=True)
+    # One host client, sequential bounded requests, independent from Discord
+    # and from existing OKX/Binance budgets.
+    try:
+        async with asyncio.timeout(9900):
+            with httpx.Client(timeout=65, follow_redirects=False) as client:
+                for asset, kind, month in selected:
+                    if len(result["published"]) >= max_new:
+                        break
+                    key = (asset, kind, month)
+                    try:
+                        output = root / "incoming" / kind / month / (
+                            f"{asset}_USDT-{month}.csv.gz"
+                        )
+                        receipt = await asyncio.to_thread(
+                            download, client=client, asset=asset, kind=kind,
+                            month=month, output=output,
+                        )
+                        saved = await publish_raw(
+                            drive, archive=output, source=receipt,
+                            asset=asset, kind=kind, month=month, root=root,
+                        )
+                        result["published"].append(saved)
+                        existing[key] = receipt["compressed_sha256"][:16]
+                    except (HistoryImportError, DriveArchiveError, httpx.HTTPError,
+                            OSError, RuntimeError, ValueError) as exc:
+                        reason = str(exc)[:240]
+                        result["unavailable_or_rejected"].append({
+                            "asset": asset, "kind": kind, "month": month,
+                            "reason": reason,
+                        })
+                        if any(status in reason for status in
+                               ("HTTP 429", "HTTP 503", "HTTP 502", "HTTP 504")):
+                            result["provider_throttled"] = True
+                            break  # Stop respecting the provider, not cycle proxies.
+    finally:
+        destination = report_dir / "gate-bulk-progress.json"
+        destination.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n",
+                               encoding="utf-8")
+    return result
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Gate official file-first Drive archival")
+    parser.add_argument("--root", type=Path, default=Path("data/gate-bulk"))
+    parser.add_argument("--report-dir", type=Path, default=Path("data/native-reports"))
+    parser.add_argument("--max-new", type=int, default=12)
+    parser.add_argument("--max-attempts", type=int, default=20)
+    parser.add_argument("--assets", nargs="+", choices=ASSETS, default=list(ASSETS))
+    parser.add_argument("--kinds", nargs="+", choices=TYPES,
+                        default=list(DEFAULT_KINDS))
+    args = parser.parse_args(argv)
+    try:
+        drive = _drive(Settings())
+        async def worker():
+            try:
+                return await collect_gate(
+                    drive=drive, root=args.root, report_dir=args.report_dir,
+                    max_new=args.max_new, max_attempts=args.max_attempts,
+                    assets=tuple(args.assets), kinds=tuple(args.kinds),
+                )
+            finally:
+                await drive.aclose()
+        data = asyncio.run(worker())
+    except (HistoryImportError, DriveArchiveError, httpx.HTTPError,
+            RuntimeError, ValueError, OSError) as exc:
+        parser.exit(2, f"Gate archival blocked: {exc}\n")
+    print(json.dumps({
+        "published": len(data["published"]),
+        "unavailable_or_rejected": len(data["unavailable_or_rejected"]),
+        "provider_throttled": data["provider_throttled"],
+        "pending_jobs": data["pending_jobs"],
+    }, sort_keys=True))
+    # Never print an empty run as a successful production ingestion when
+    # every selected archive is blocked or the provider asks to slow down.
+    return 2 if data["provider_throttled"] or (
+        data["selected_jobs"] and not data["published"]
+    ) else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

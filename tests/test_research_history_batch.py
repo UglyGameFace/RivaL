@@ -77,6 +77,7 @@ def test_verified_research_plan_can_include_xrp_live_contract():
 
 def test_research_publication_grace_excludes_just_closed_unpublished_month():
     from datetime import UTC, datetime
+
     from parlay_bot.research.production import publication_ready_months
 
     assert publication_ready_months(

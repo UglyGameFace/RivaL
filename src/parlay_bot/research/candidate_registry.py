@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import threading
 from datetime import UTC, datetime, timedelta
@@ -134,7 +135,21 @@ def verified_candidate(payload: bytes) -> dict:
                 and validation.get("days", 0) >= 7 and holdout.get("days", 0) >= 7
             ))
         )
+        # Explain screening without silently relaxing any retrospective gate.
+        if passed:
+            screen_reason = "retrospective_pass"
+        elif len(months) < 6:
+            screen_reason = "fewer_than_six_source_months"
+        elif validation["count"] < 100 or holdout["count"] < 100:
+            screen_reason = "insufficient_purged_validation_or_holdout"
+        elif (validation.get("brier_gain") or 0) <= .005:
+            screen_reason = "validation_brier_gain_below_0.005"
+        elif (holdout.get("brier_gain") or 0) <= .005:
+            screen_reason = "holdout_brier_gain_below_0.005"
+        else:
+            screen_reason = "calibration_or_evaluation_days_below_gate"
         return {
+            "admission_reason": screen_reason,
             "model_sha256": actual,
             "asset": asset,
             "horizon": horizon,
@@ -210,7 +225,7 @@ class ResearchCandidateRegistry:
             raise CandidateValidationError("invalid Drive model identity")
         timestamp = (now or datetime.now(UTC)).astimezone(UTC).isoformat()
         with self.store.connect() as conn:
-            conn.execute(
+            inserted = conn.execute(
                 """INSERT INTO rival_offline_candidates (
                     model_sha256,drive_file_id,asset,horizon_minutes,
                     source_months,data_version,holdout_accuracy,holdout_brier,
@@ -230,6 +245,18 @@ class ResearchCandidateRegistry:
                 (candidate["model_sha256"], json.dumps(candidate["model_spec"],
                  sort_keys=True, separators=(",", ":"), allow_nan=False),
                  int(candidate["compatible"]), timestamp),
+            )
+        if inserted.rowcount == 1:
+            identity = candidate["model_spec"]["identity"]
+            logging.getLogger(__name__).info(
+                "RivaL verified model imported sha256=%s venue=%s "
+                "contract=%s quote=%s horizon=%d model=%s "
+                "feature_contract=%s retrospective_screen=%s reason=%s",
+                candidate["model_sha256"], identity["venue"],
+                identity["contract"], identity["quote"], candidate["horizon"],
+                candidate["model_spec"]["model"],
+                candidate["model_spec"].get("feature_contract", "legacy"),
+                candidate["retrospective_screen"], candidate["admission_reason"],
             )
         return candidate
 
@@ -259,6 +286,25 @@ class ResearchCandidateRegistry:
             return len(documents)
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise CandidateValidationError("invalid historical model document") from exc
+
+    def inventory_receipt(self) -> dict:
+        """Actual persisted totals, not the count of Drive re-downloads."""
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT COUNT(*) AS total,
+                          COUNT(*) FILTER (WHERE c.retrospective_screen='passed')
+                              AS passed,
+                          COUNT(*) FILTER (WHERE a.compatible=1) AS compatible
+                   FROM rival_offline_candidates c
+                   JOIN rival_offline_model_artifacts a
+                     ON a.model_sha256=c.model_sha256"""
+            ).fetchone()
+        return {
+            "total": int(row["total"]),
+            "passed": int(row["passed"]),
+            "compatible": int(row["compatible"]),
+        }
 
     def compatible_candidates(self, *, venue, contract, quote, horizon, now):
         """Load a matching training-only artifact once, outside the hot path.

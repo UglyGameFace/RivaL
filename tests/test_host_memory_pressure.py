@@ -7,8 +7,8 @@ from parlay_bot.perpetuals import host_memory
 def test_cgroup_v2_limit_and_proc_rss(monkeypatch):
     fixtures = {
         "/sys/fs/cgroup/memory.max": str(512 * host_memory.MIB),
-        "/proc/self/status": "Name:\\tpython\\nVmRSS:\\t440000 kB\\n",
-        "/sys/fs/cgroup/memory.events": "low 0\\nhigh 4\\noom 2\\noom_kill 1\\n",
+        "/proc/self/status": "Name:\tpython\nVmRSS:\t440000 kB\n",
+        "/sys/fs/cgroup/memory.events": "low 0\nhigh 4\noom 2\noom_kill 1\n",
     }
     monkeypatch.setattr(host_memory, "_read_bytes", fixtures.get)
     state = host_memory.snapshot()
@@ -23,7 +23,7 @@ def test_cgroup_v1_fallback_and_unknown_rss(monkeypatch):
     fixtures = {
         "/sys/fs/cgroup/memory.max": "max",
         "/sys/fs/cgroup/memory/memory.limit_in_bytes": str(768 * host_memory.MIB),
-        "/proc/self/status": "Name:\\tpython\\n",
+        "/proc/self/status": "Name:\tpython\n",
     }
     monkeypatch.setattr(host_memory, "_read_bytes", fixtures.get)
     assert host_memory.snapshot() == host_memory.HostMemory(

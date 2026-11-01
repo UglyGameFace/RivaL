@@ -3,8 +3,8 @@
 ## Current production handoff
 
 - **GitHub:** The RivaL Intelligence Python entrypoint, separate Discloud ZIP, private gateway, and Cloudflare backup are implemented. The published standalone ZIP passed local packaging and GitHub clean-download checks.
-- **Discloud:** The user's November 1 production logs proved Python `main.py` runs correctly, then stops with `ValueError: Missing RIVAL_LLM_SHARED_TOKEN`. That is a **missing private runtime credential**, not a remaining `discloud.config` parsing error.
-- **Unverified:** LFM3 GGUF download, actual live model load, CPU speed, peak RAM, the private RivaL-to-LLM HTTP connection, and Cloudflare fallback in Discloud production. Do not mark these complete without observed evidence.
+- **Discloud:** Earlier November 1 logs stopped on `ValueError: Missing RIVAL_LLM_SHARED_TOKEN`. **Later logs at 11:16 showed `local_gateway_start model=lfm3` and `llama_server: initializing`, which means that run got past credential validation, GGUF verification and subprocess startup.** The CPU/GPU notice is expected for CPU-only hosting. Startup does not prove the model reached ready state or completed an authenticated research request.
+- **Unverified:** Complete backend readiness, authenticated model response, CPU speed, peak RAM, the private RivaL-to-LLM HTTP connection, and Cloudflare fallback in Discloud production. The latest logs establish startup and a verified model file path, not end-to-end acceptance. Do not mark these complete without observed evidence.
 - **Isolation:** The original RivaL app remains at 512 MB with independent market scanning, predictive models, training, NO CALL and model-promotion controls. Do not connect the local LLM until it passes live tests.
 
 ## Private app settings

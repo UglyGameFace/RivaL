@@ -98,7 +98,7 @@ async def test_cloudflare_is_backup_only_on_local_503(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("status", [400, 401, 403, 429])
+@pytest.mark.parametrize("status", [400, 401, 403, 422, 429])
 async def test_local_client_or_busy_failure_never_spends_backup(monkeypatch, status):
     market = Market()
     monkeypatch.setattr(openrouter_research, "build_evidence", market_evidence)

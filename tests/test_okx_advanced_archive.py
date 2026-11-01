@@ -148,6 +148,6 @@ def test_incremental_l2_without_snapshot_not_treated_as_full_book(tmp_path):
         json.dumps({"ts": int(TS), "action": "update",
                     "asks": [["101", "4"]], "bids": [["100", "6"]]}) + "\n",
     ))
-    with pytest.raises(HistoryImportError, match="no OKX events"):
+    with pytest.raises(HistoryImportError, match="no recognizable research features"):
         inspect_archive(bad, asset=ASSET, month=MONTH,
                         module="orderbook_l2_400")

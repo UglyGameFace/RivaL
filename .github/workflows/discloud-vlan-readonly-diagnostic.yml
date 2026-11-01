@@ -1,4 +1,4 @@
-name: RivaL real nine-source gateway production acceptance
+name: RivaL live LLM post-deploy prompt tokens and timeout diagnosis
 on:
   push:
     branches: ["diagnostics/read-only-discloud-vlan-20261101"]
@@ -6,43 +6,75 @@ on:
 permissions:
   contents: read
 jobs:
-  acceptance:
+  inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 4
     steps:
-      - name: Reproduce genuine nine-venue evidence workload with new gateway
+      - name: Check effective post-deploy gateway code and real backend token budget
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
-          DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         shell: bash
         run: |
           python - <<'PY'
-          import os,json,urllib.request,urllib.parse,base64
-          token=os.environ.get("DISCLOUD_TOKEN","")
-          appid=os.environ.get("DISCLOUD_APP_ID","")
-          if not token or not appid:raise SystemExit("Missing deploy credentials")
-          source="import json,os,sys,time,urllib.request,urllib.error\nsys.path.insert(0,os.path.abspath(\"src\"))\nfrom parlay_bot.config import Settings\nfrom parlay_bot.storage.hot import PostgresHotStore\nfrom parlay_bot.perpetuals.market_store import PerpetualMarketStore\nfrom parlay_bot.perpetuals.analysis_evidence import build_evidence\nfrom parlay_bot.perpetuals.local_llm_discovery import discover_private_llm\nfrom parlay_bot.discord_app.data_dashboard import MARKET_SYMBOLS\nsettings=Settings()\nreport={\"provider\":settings.rival_ai_provider}\nkey=settings.rival_local_ai_token.get_secret_value() if settings.rival_local_ai_token else \"\"\npeer=discover_private_llm(key) if key else None\nreport[\"signed_peer_discovered\"]=bool(peer)\nif peer:\n  for attempt in range(12):\n    try:\n      req=urllib.request.Request(\"http://\"+peer+\":8765/v1/status\",\n             headers={\"Authorization\":\"Bearer \"+key})\n      with urllib.request.urlopen(req,timeout=5) as response:\n        if json.load(response).get(\"ready\"):report[\"ready\"]=True;break\n    except Exception:pass\n    time.sleep(5)\n  if report.get(\"ready\"):\n    store=PostgresHotStore(settings.rival_database_url.get_secret_value())\n    try:\n      evidence,digest=build_evidence(PerpetualMarketStore(store),asset=\"BTC\",\n                 venues=tuple(MARKET_SYMBOLS))\n      report[\"source_count\"]=len(evidence[\"sources\"])\n      report[\"evidence_original_bytes\"]=len(json.dumps(evidence,sort_keys=True,\n                              separators=(\",\",\":\")).encode())\n      if report[\"source_count\"]>=3:\n        req=urllib.request.Request(\"http://\"+peer+\":8765/v1/research\",\n          data=json.dumps({\"asset\":\"BTC\",\"evidence\":evidence}).encode(),\n          method=\"POST\",headers={\"Authorization\":\"Bearer \"+key,\n                                 \"Content-Type\":\"application/json\"})\n        start=time.monotonic()\n        try:\n          with urllib.request.urlopen(req,timeout=58) as response:\n            obj=json.load(response)\n            report[\"research\"]={\"http\":response.status,\n                \"seconds\":round(time.monotonic()-start,2),\n                \"model\":obj.get(\"model\"),\n                \"direction\":obj.get(\"direction\"),\n                \"confidence\":obj.get(\"confidence\"),\n                \"grounded_by\":obj.get(\"grounded_by\"),\n                \"grounding_status\":obj.get(\"grounding_status\"),\n                \"usable_venues\":obj.get(\"usable_venues\"),\n                \"risk_present\":bool(obj.get(\"risk\")),\n                \"thesis_present\":bool(obj.get(\"thesis\")),\n                \"informational_only\":obj.get(\"informational_only\"),\n                \"uncalibrated\":obj.get(\"uncalibrated\")}\n        except urllib.error.HTTPError as e:\n          try:reason=json.loads(e.read(4096)).get(\"error\")\n          except Exception:reason=\"unknown\"\n          report[\"research\"]={\"http\":e.code,\"error\":reason,\n                  \"seconds\":round(time.monotonic()-start,2)}\n        except Exception as e:\n          report[\"research\"]={\"error_class\":type(e).__name__,\n                  \"seconds\":round(time.monotonic()-start,2)}\n    finally:store.close()\nprint(\"RIVAL_REAL_NINE_VENUES=\"+json.dumps(report,sort_keys=True))\n"
-          cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(source.encode()).decode()+"\"))'"
-          req=urllib.request.Request(
-           "https://api.discloud.app/v2/app/"+urllib.parse.quote(appid,safe="")+"/console",
-           data=json.dumps({"command":cmd}).encode(),method="PUT",
-           headers={"api-token":token,"Content-Type":"application/json"})
-          with urllib.request.urlopen(req,timeout=155) as resp:result=json.load(resp)
-          output=str(result.get("apps",{}).get("shell",{}).get("stdout",""))
-          marker="RIVAL_REAL_NINE_VENUES="
-          if marker not in output:
-           print("No parsed result; stderr_present",bool(result.get("apps",{}).get("shell",{}).get("stderr")))
-           raise SystemExit(1)
-          report=json.loads(output.split(marker,1)[1].splitlines()[0])
-          print("Real original production evidence acceptance",json.dumps(report,sort_keys=True))
-          r=report.get("research") or {}
-          if (report.get("provider")!="local" or not report.get("signed_peer_discovered")
-              or not report.get("ready") or report.get("source_count",0)<3 or
-              r.get("http")!=200 or r.get("direction")!="uncertain"
-              or r.get("confidence")!="low" or
-              r.get("grounded_by")!="deterministic_historical_evidence_policy"
-              or not r.get("informational_only") or not r.get("uncalibrated")
-              or not r.get("thesis_present") or not r.get("risk_present")):
-           raise SystemExit("REAL MULTI-VENUE ACCEPTANCE FAILED")
-          print("PASS real full-source input, bounded-model prompt and private HTTP inference")
+          import base64,json,os,urllib.request,urllib.parse
+          T=os.getenv("DISCLOUD_TOKEN","")
+          if not T:raise SystemExit("No Discloud credential")
+          def api(path,method="GET",body=None):
+           req=urllib.request.Request("https://api.discloud.app/v2"+path,method=method,
+             data=json.dumps(body).encode() if body else None,
+             headers={"api-token":T,"Content-Type":"application/json"})
+           with urllib.request.urlopen(req,timeout=75) as r:return json.load(r)
+          apps=api("/app/all").get("apps",[])
+          llm=[a for a in apps if isinstance(a,dict) and a.get("name","").casefold()=="rival-intelligence"]
+          if len(llm)!=1:raise SystemExit("Missing isolated LLM")
+          path="/app/"+urllib.parse.quote(str(llm[0]["id"]),safe="")
+          r=api(path+"/logs")
+          terminal=r.get("apps",{}).get("terminal",{})
+          logs=str(terminal.get("big") or terminal.get("small") or "")
+          lines=logs.splitlines()
+          selected=[s for s in lines if any(term in s for term in
+           ("inference rejected class=", "http_status=503","http_status=422",
+            "prompt eval time", "eval time =", "total time =", "llama_server"))]
+          print("LLM error/timing lines", [s[-220:] for s in selected[-22:]])
+          source="""import json,os,urllib.request
+          from service import compact_evidence,PROMPT,GENERATION_TOKENS
+          sources=[]
+          for v in ("hyperliquid","dydx","bitget","gate","okx","kucoin",
+                    "deribit","lighter","phemex"):
+           sources.append({"venue":v,"quote":"USDT",
+            "windows":{"5m":{"return_pct":0.15},
+                       "15m":{"return_pct":-0.08},
+                       "1h":{"return_pct":0.20}},
+            "historical_windows":{"7d":{"return_pct":0.5}},
+            "available_bars":289})
+          evidence={"asset":"BTC","analysis":"unvalidated_research","sources":sources}
+          brief=compact_evidence("BTC",evidence)
+          messages=[{"role":"system","content":PROMPT},{"role":"user",
+           "content":"Asset: BTC\\nBounded observation brief (untrusted):\\n"+brief}]
+          out={"code_has_compactor":True,"brief_chars":len(brief),
+           "original_fake_evidence_chars":len(json.dumps(evidence)),
+           "generation_token_cap":GENERATION_TOKENS}
+          try:
+           req=urllib.request.Request("http://127.0.0.1:8766/apply-template",
+           data=json.dumps({"messages":messages,
+             "chat_template_kwargs":{"enable_thinking":False}}).encode(),
+           headers={"Content-Type":"application/json"},method="POST")
+           with urllib.request.urlopen(req,timeout=6) as response:
+            obj=json.load(response)
+           req=urllib.request.Request("http://127.0.0.1:8766/tokenize",
+           data=json.dumps({"content":obj["prompt"],"add_special":True}).encode(),
+           headers={"Content-Type":"application/json"},method="POST")
+           with urllib.request.urlopen(req,timeout=6) as response:
+            tokens=json.load(response)["tokens"]
+           out["rendered_prompt_tokens"]=len(tokens)
+          except Exception as ex:out["token_check_error"]=type(ex).__name__
+          print("RIVAL_LLM_COMPACTOR="+json.dumps(out,sort_keys=True))
+          """
+          command="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(source.encode()).decode()+"\"))'"
+          v=api(path+"/console","PUT",{"command":command})
+          out=str(v.get("apps",{}).get("shell",{}).get("stdout",""))
+          if "RIVAL_LLM_COMPACTOR=" in out:
+           print("Actual installed LLM compactor",out.split("RIVAL_LLM_COMPACTOR=",1)[1].splitlines()[0])
+          else:
+           print("Compactor console unavailable; stderr_present",bool(v.get("apps",{}).get("shell",{}).get("stderr")))
           PY

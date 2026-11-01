@@ -162,10 +162,19 @@ def verify_restart_baseline(
             ).fetchone()
             if actual is None or _digest(dict(actual)) != item["fingerprint"]:
                 changed.append({"table": table, "key": keys})
+        boot_started = _parse(health["boot_started_at"])
+        baseline_started = _parse(snapshot["captured_at"])
+        # An ordinary in-process forecast before the operator pressed Restart
+        # is not evidence that a *new* bot process resumed production.
+        new_since = (
+            max(boot_started, baseline_started).isoformat()
+            if boot_started is not None and baseline_started is not None
+            else stamp.isoformat()
+        )
         fresh = conn.execute(
             """SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts
                WHERE issued_at>?""",
-            (snapshot["captured_at"],),
+            (new_since,),
         ).fetchone()
     different_boot = bool(
         health["boot_id"] and health["boot_id"] != snapshot["boot_id"]

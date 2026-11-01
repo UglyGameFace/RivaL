@@ -116,11 +116,17 @@ def inspect(payload: bytes, *, asset: str, kind: str, month: str) -> dict:
         count = 0
         minimum = None
         maximum = None
+        exact_stamps: set[int] = set()
+        candle_grid_valid = True
         from itertools import chain
         for row in (rows if has_header else chain((first,), rows)):
             ts = _validate_row(row, kind=kind, month=month)
             minimum = ts if minimum is None else min(minimum, ts)
             maximum = ts if maximum is None else max(maximum, ts)
+            if kind == "candlesticks_5m":
+                if not ts.is_integer() or int(ts) % 300 or int(ts) in exact_stamps:
+                    candle_grid_valid = False
+                exact_stamps.add(int(ts))
             count += 1
             if count > MAX_ROWS:
                 raise ValueError("Gate row budget exceeded")
@@ -128,7 +134,20 @@ def inspect(payload: bytes, *, asset: str, kind: str, month: str) -> dict:
         raise ValueError("invalid Gate CSV encoding") from exc
     if count == 0:
         raise ValueError("empty Gate data archive")
+    year, mm = map(int, month.split("-"))
+    first_utc = datetime(year, mm, 1, tzinfo=UTC)
+    last_utc = (first_utc.replace(year=year + 1, month=1)
+                if mm == 12 else first_utc.replace(month=mm + 1))
+    expected = int((last_utc - first_utc).total_seconds() // 300)
+    full_month = (
+        kind == "candlesticks_5m" and candle_grid_valid
+        and len(exact_stamps) == expected
+        and min(exact_stamps) == int(first_utc.timestamp())
+        and max(exact_stamps) == int(last_utc.timestamp()) - 300
+    )
     return {"asset": asset, "kind": kind, "month": month, "rows": count,
+            "full_utc_candle_month_verified": full_month,
+            "expected_5m_candles": expected if kind == "candlesticks_5m" else None,
             "has_header": has_header,
             "first_source_timestamp": minimum,
             "last_source_timestamp": maximum,

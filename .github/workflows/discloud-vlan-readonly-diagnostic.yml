@@ -77,8 +77,8 @@ jobs:
               try:
                   left=ipaddress.ip_network(data["main"][iface]["ip"]+"/"+data["main"][iface]["netmask"],strict=False)
                   right=ipaddress.ip_network(data["llm"][iface]["ip"]+"/"+data["llm"][iface]["netmask"],strict=False)
-                  print(iface,"same_subnet",left==right,"main_private",ipaddress.ip_address(data["main"][iface]["ip"]).is_private,
-                        "llm_private",ipaddress.ip_address(data["llm"][iface]["ip"]).is_private)
+                  print(iface,"same_subnet",left==right,"network_prefix",str(left.network_address).rsplit(".",1)[0],
+                        "netmask",str(left.netmask),"llm_global",ipaddress.ip_address(data["llm"][iface]["ip"]).is_global)
               except (ValueError,KeyError):
                   print(iface,"network_unknown")
           remote_probe="""import json,socket,sys
@@ -94,8 +94,8 @@ jobs:
           """
           for iface in ("eth0","eth1"):
               address=data["llm"][iface]["ip"]
-              if not ipaddress.ip_address(address).is_private:
-                  print(iface,"refusing nonprivate IP probe")
+              if ipaddress.ip_address(address).is_global:
+                  print(iface,"refusing globally routable IP probe")
                   continue
               # Only request the documented unauthenticated /health endpoint, without secrets.
               probe="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(remote_probe.encode()).decode()+"\"))' "+address

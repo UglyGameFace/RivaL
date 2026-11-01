@@ -185,6 +185,9 @@ async def test_scheduled_batch_skips_existing_and_publishes_new(tmp_path, monkey
     async def listed(drive):
         return {("BTC", "candlesticks_5m", "2023-03"): SHA[:16]}
     monkeypatch.setattr(gate, "listed_archives", listed)
+    async def native(drive):
+        return {("BTC", "2023-03")}
+    monkeypatch.setattr(gate, "listed_native_months", native)
     monkeypatch.setattr(gate, "rotate_attempts",
                         lambda work, *, now, count: work[:count])
     calls = []
@@ -196,6 +199,11 @@ async def test_scheduled_batch_skips_existing_and_publishes_new(tmp_path, monkey
         source["source_url"] = url_for(asset=asset, kind=kind, month=month)
         return source
     monkeypatch.setattr(gate, "download", download)
+    from parlay_bot.research import gate_native
+    async def qualify_and_publish(*args, **kwargs):
+        return {"source_training_eligible": True, "asset": kwargs["asset"],
+                "month": kwargs["month"]}
+    monkeypatch.setattr(gate_native, "qualify_and_publish", qualify_and_publish)
     published = []
     async def publish_raw(drive, *, archive, source, asset, kind, month, root):
         published.append(archive.read_bytes())
@@ -224,6 +232,9 @@ async def test_rate_limit_stops_requests_with_visible_failure(tmp_path, monkeypa
     async def listed(drive):
         return {}
     monkeypatch.setattr(gate, "listed_archives", listed)
+    async def native(drive):
+        return set()
+    monkeypatch.setattr(gate, "listed_native_months", native)
     monkeypatch.setattr(gate, "rotate_attempts",
                         lambda work, *, now, count: work[:count])
     calls = []

@@ -274,41 +274,68 @@ def _parlay_diagnostics_text(diagnostics: dict[str, int]) -> str:
 
 
 
-def _performance_exchange(market: object, asset: str, horizon: int) -> dict:
-    """Read authoritative scores and issuance-time lineage in one worker."""
+def _performance_exchange(market: object, asset: str) -> dict:
+    """Fast seven-day forecast score, independent of deeper research reads."""
+    return ForwardAccuracyMonitor(market).summary(asset=asset)
+
+
+def _performance_learning(market: object, asset: str, horizon: int) -> dict:
+    """Separate 14-day improvement check; failure cannot hide the scorecard."""
     monitor = ForwardAccuracyMonitor(market)
-    score = monitor.summary(asset=asset)
+    result: dict = {}
     try:
-        lineage = monitor.learning_lineage_summary(
+        result["benefit"] = monitor.active_learning_evidence(
             asset=asset, horizon_minutes=horizon,
         )
-    except Exception:  # noqa: BLE001 - scores must survive lineage failures
-        _LOG.exception("Performance historical lineage read failed")
-        lineage = None
+    except Exception:  # noqa: BLE001 - independent forward comparison
+        _LOG.exception("Performance forward learning comparison unavailable")
     try:
-        benefit = monitor.active_learning_evidence(asset=asset, horizon_minutes=horizon)
-    except Exception:  # noqa: BLE001 - independent score read
-        _LOG.exception("Active learning evidence unavailable")
-        benefit = None
-    # Deep challenger and TP/stop reports belong in Detailed Research. Pulling
-    # them into this 3.5s mobile overview previously timed out the entire
-    # exchange score, then silently overflowed Discord's 1024-char field cap.
-    return {"score": score, "lineage": lineage, "benefit": benefit}
+        result["lineage"] = monitor.learning_lineage_summary(
+            asset=asset, horizon_minutes=horizon,
+        )
+    except Exception:  # noqa: BLE001 - provenance failure cannot hide comparisons
+        _LOG.exception("Performance issuance lineage unavailable")
+    return result
 
 
-def _performance_health(market: object) -> dict:
-    """Same market store, independent feeder and forecast-cycle diagnostics."""
+def _latest_learning_cycle(market: object) -> dict | None:
+    """Tiny persisted heartbeat query; no offline registry or Drive work in Discord."""
+    try:
+        with market.store.connect() as conn:
+            row = conn.execute(
+                "SELECT completed_at, math_ok, model_review_ok, math_issued, math_settled "
+                "FROM perp_learning_cycle_health ORDER BY completed_at DESC LIMIT 1"
+            ).fetchone()
+    except Exception:  # noqa: BLE001 - a missing/busy table is not a healthy cycle
+        _LOG.exception("Performance learning heartbeat read unavailable")
+        return {"status": "unavailable"}
+    if row is None:
+        return None
+    try:
+        when = datetime.fromisoformat(str(row[0]))
+        if when.tzinfo is None:
+            raise ValueError("heartbeat timestamp has no timezone")
+        return {
+            "status": "recorded", "checked_at": when,
+            "math_ok": bool(int(row[1])),
+            "model_review_ok": bool(int(row[2])),
+            "issued": int(row[3]), "settled": int(row[4]),
+        }
+    except (TypeError, ValueError, OverflowError):
+        _LOG.warning("Performance learning heartbeat contains invalid data")
+        return {"status": "unavailable"}
+
+
+def _performance_cycles(market: object) -> dict:
+    """Read independent persisted worker heartbeats without expensive training."""
     return {
-        "feeds": market.feed_health(),
-        "cycle": _latest_forward_cycle(market),
+        "forecast": _latest_forward_cycle(market),
+        "learning": _latest_learning_cycle(market),
     }
 
-def _latest_forward_cycle(market: object) -> dict | None:
-    """Latest cycle; None means absent, unavailable means the read failed.
 
-    Runs in a worker thread: the store connection is synchronous. Positional
-    row access keeps this valid for both the SQLite and Postgres stores.
-    """
+def _latest_forward_cycle(market: object) -> dict | None:
+    """Most recent forecast issuance cycle; never infer health from fresh feeds."""
     try:
         with market.store.connect() as conn:
             row = conn.execute(
@@ -316,23 +343,20 @@ def _latest_forward_cycle(market: object) -> dict | None:
                 "FROM perp_forward_cycle_diagnostics "
                 "ORDER BY checked_at DESC LIMIT 1"
             ).fetchone()
-    except Exception:  # noqa: BLE001 - health display must never break the menu
+    except Exception:  # noqa: BLE001 - operational failure is not zero activity
         _LOG.exception("Forward-cycle diagnostics read failed")
         return {"status": "unavailable"}
     if row is None:
         return None
-    checked = row[0]
-    if isinstance(checked, str):
-        try:
-            checked = datetime.fromisoformat(checked)
-        except ValueError:
-            return {"status": "unavailable"}
-    if not isinstance(checked, datetime) or checked.tzinfo is None:
-        return {"status": "unavailable"}
     try:
-        issued = int(row[1] or 0)
-        expired = int(row[2] or 0)
-    except (TypeError, ValueError):
+        checked = datetime.fromisoformat(str(row[0]))
+        if checked.tzinfo is None:
+            raise ValueError("forecast heartbeat timestamp has no timezone")
+        issued, expired = int(row[1] or 0), int(row[2] or 0)
+        if issued < 0 or expired < 0:
+            raise ValueError("negative forecast diagnostics")
+    except (ValueError, TypeError, OverflowError):
+        _LOG.warning("Invalid forecast-cycle diagnostics row")
         return {"status": "unavailable"}
     return {"status": "recorded", "checked_at": checked, "issued": issued, "expired": expired}
 
@@ -1279,218 +1303,203 @@ class GuidedHome(discord.ui.View):
         elif p == "performance":
             embed = discord.Embed(
                 title=f"📊 RivaL Performance | {self.coin} {self.horizon}m",
-                description="Forecast scores: last 7 days. Learning comparisons: 14 days. Practice results are separate.",
+                description=(
+                    "**NO VERIFIED TRADING EDGE** · Real forward forecasts, last 7 days. "
+                    "Lower Brier error is better. Practice is separate."
+                ),
                 color=discord.Color.blurple(),
             )
-            # Independent database reads: a stalled feed must not suppress the
-            # separately persisted forecast-cycle heartbeat or venue scores.
+            # The on-demand model registry / Drive / promotion report is expensive:
+            # it belongs in Detailed Research, not in the interactive scorecard.
+            # A slow improvement query must never suppress baseline accuracy or health.
             readers = {}
             if self.market is not None:
                 readers["exchange"] = asyncio.wait_for(
+                    asyncio.to_thread(_performance_exchange, self.market, self.coin),
+                    timeout=4.0,
+                )
+                readers["comparison"] = asyncio.wait_for(
                     asyncio.to_thread(
-                        _performance_exchange, self.market, self.coin, self.horizon,
-                    ), timeout=3.5,
+                        _performance_learning, self.market, self.coin, self.horizon,
+                    ), timeout=4.0,
+                )
+                readers["cycles"] = asyncio.wait_for(
+                    asyncio.to_thread(_performance_cycles, self.market), timeout=4.0,
                 )
                 if callable(getattr(self.market, "feed_health", None)):
                     readers["feeds"] = asyncio.wait_for(
-                        asyncio.to_thread(self.market.feed_health), timeout=3.5,
+                        asyncio.to_thread(self.market.feed_health), timeout=4.0,
                     )
-                readers["cycle"] = asyncio.wait_for(
-                    asyncio.to_thread(_latest_forward_cycle, self.market),
-                    timeout=3.5,
-                )
             if self.polymarket_status is not None:
                 readers["polymarket"] = asyncio.wait_for(
                     asyncio.to_thread(
                         self.polymarket_status, self.coin, self.horizon,
-                    ), timeout=3.5,
+                    ), timeout=4.0,
                 )
-            if self.training_status is not None:
-                readers["learning"] = asyncio.wait_for(
-                    asyncio.to_thread(
-                        self.training_status, self.coin, self.horizon,
-                    ), timeout=3.5,
-                )
-            answers = await asyncio.gather(*readers.values(), return_exceptions=True)
-            reports = dict(zip(readers, answers))
+            reports = dict(zip(
+                readers, await asyncio.gather(*readers.values(), return_exceptions=True),
+            ))
+            for name, result in reports.items():
+                if isinstance(result, Exception):
+                    _LOG.warning("Performance %s read failed: %s", name, type(result).__name__)
+            now = datetime.now(UTC)
 
+            # 1. Actual seven-day exchange scores, independent from trend queries.
             exchange = reports.get("exchange")
-            if isinstance(exchange, Exception):
-                _LOG.warning("Performance exchange read failed: %s", type(exchange).__name__)
-            if not isinstance(exchange, dict):
-                embed.add_field(name="📈 Exchange accuracy", value="Not verified right now.", inline=False)
+            part = (
+                exchange.get("last_7d", {}).get(self.horizon)
+                if isinstance(exchange, dict) else None
+            )
+            if not isinstance(part, dict):
+                exchange_text = "Score read unavailable. This is not a zero-win result."
             else:
-                part = exchange["score"]["last_7d"][self.horizon]
                 decided = int(part.get("decided") or 0)
                 correct = int(part.get("correct") or 0)
+                settled = int(part.get("settled") or 0)
+                issued = int(part.get("issued") or 0)
+                scored = int(part.get("scored", settled) or 0)
                 hit = part.get("hit_rate")
                 accuracy = (
-                    f"**{hit:.1%}** ({correct:,}/{decided:,} decided forecasts)"
-                    if hit is not None and decided else
-                    "**Unavailable** (no settled directional forecasts)"
+                    f"{hit:.1%} directional ({correct:,}/{decided:,})"
+                    if isinstance(hit, (int, float)) and decided else
+                    "Direction accuracy not measured"
                 )
                 brier, baseline = part.get("brier"), part.get("baseline_brier")
-                if brier is not None and baseline is not None:
-                    comparison = (
-                        f"Mean error: **{'lower' if brier < baseline else 'not lower'}** than baseline "
-                        f"(Brier {brier:.4f} vs {baseline:.4f})"
+                if isinstance(brier, (int, float)) and isinstance(baseline, (int, float)):
+                    verdict = "Better in this window; not approved" if brier < baseline else (
+                        "Not better than baseline"
                     )
+                    scoring = f"Brier {brier:.4f} vs baseline {baseline:.4f} · **{verdict}**"
                 else:
-                    comparison = "Baseline comparison: unavailable"
-                scored = int(part.get("scored", part["settled"]) or 0)
-                coverage = (
-                    f"\nOnly {scored:,}/{part['settled']:,} settlements have "
-                    "valid paired scores; unscored records excluded"
-                    if scored != part["settled"] else ""
+                    scoring = "Paired baseline score not available"
+                paired = (
+                    f" · {scored:,}/{settled:,} paired scores"
+                    if scored != settled else ""
                 )
-                embed.add_field(
-                    name="📈 Exchange accuracy",
-                    value=(
-                        f"{accuracy}\n"
-                        f"{part['settled']:,} settled / {part['issued']:,} issued"
-                        f"{coverage}\n{comparison}"
-                    ), inline=False,
+                exchange_text = (
+                    f"{accuracy}\n{scoring}\n"
+                    f"{settled:,}/{issued:,} settled{paired} · 7d"
                 )
+            embed.add_field(name="📈 Exchange accuracy", value=exchange_text, inline=False)
 
+            # 2. Contract-native comparisons; historical labels are NOT model wins.
             poly = reports.get("polymarket")
-            if isinstance(poly, Exception):
-                _LOG.warning("Performance contract read failed: %s", type(poly).__name__)
             if not isinstance(poly, dict):
-                value = "Polymarket results unavailable."
+                poly_text = "Contract score read unavailable, not zero accuracy."
             else:
-                learned = int(poly.get("learned_contracts") or 0)
                 resolved = int(poly.get("settled_forward_contracts") or 0)
-                model_error = poly.get("forward_brier")
-                quote_error = poly.get("market_baseline_brier")
-                scored = (
-                    f"Brier error **{model_error:.4f}** vs market **{quote_error:.4f}**"
-                    if resolved and model_error is not None and quote_error is not None
-                    else "Accuracy: **not measured** (no comparable settled calls)"
+                learned = int(poly.get("learned_contracts") or 0)
+                window = int(poly.get("score_window_days") or 7)
+                model_error, market_error = (
+                    poly.get("forward_brier"), poly.get("market_baseline_brier"),
                 )
-                window = int(poly.get("score_window_days", 7))
-                value = (
-                    f"Last {window} days: **{resolved:,}** model calls settled · "
-                    f"**{learned:,}** past outcomes learned (all time)\n{scored}"
-                )
-            embed.add_field(name="🎯 Polymarket", value=value, inline=False)
-
-            training = reports.get("learning")
-            if isinstance(training, Exception):
-                _LOG.warning("Performance learning read failed: %s", type(training).__name__)
-            if not isinstance(training, dict):
-                learning_text = "No verified live learning status."
-            else:
-                cycle = training.get("live_learning")
-                if isinstance(cycle, dict):
-                    completed = cycle.get("completed_at")
-                    stamp = str(completed)[:16].replace("T", " ") + " UTC" if completed else "unknown"
-                    try:
-                        age = datetime.now(UTC)-datetime.fromisoformat(str(completed)).astimezone(UTC)
-                        state = ("fresh" if timedelta(0) <= age <= timedelta(minutes=10)
-                                 else "stale/invalid time")
-                    except (ValueError, TypeError):
-                        state = "time unverified"
-                    cycle_text = (
-                        f"Last math cycle: **{stamp}** "
-                        f"({state if cycle.get('math_ok') else 'failed/unverified'})\n"
-                        f"Issued **{cycle.get('math_issued', '?')}** · "
-                        f"settled **{cycle.get('math_settled', '?')}** in that cycle"
+                if (resolved and isinstance(model_error, (int, float))
+                        and isinstance(market_error, (int, float))):
+                    outcome = (
+                        "Better in this window; not approved"
+                        if model_error < market_error else "Not better than market"
+                    )
+                    poly_text = (
+                        f"{resolved:,} settled calls · last {window}d\n"
+                        f"Brier {model_error:.4f} vs market {market_error:.4f} · "
+                        f"**{outcome}**"
                     )
                 else:
-                    cycle_text = "No confirmed completed learning cycle"
-                lineage = exchange.get("lineage") if isinstance(exchange, dict) else None
-                history = (
-                    f"Historical seed used: **{lineage['historically_seeded']}**/"
-                    f"**{lineage['lineage_proven']}** verified recent forecasts"
-                    if isinstance(lineage, dict) and lineage.get("lineage_proven") else
-                    "Historical seed usage: not verified"
-                )
-                checkpoint = training.get("model_checkpoints")
-                saved = (
-                    f"\nSaved model checkpoints: **{checkpoint['persisted_checkpoints']}**"
-                    if isinstance(checkpoint, dict)
-                    and checkpoint.get("persisted_checkpoints") is not None else ""
-                )
-                learning_text = (
-                    f"{cycle_text}\n{history}{saved}\n"
-                    f"{training.get('seed_reason', 'Historical model eligibility unavailable')}\n"
-                    f"Import check: {str(training.get('drive_status') or 'unavailable').replace('_', ' ')}"
-                )
-                if training.get("slot_imported") is not None:
-                    learning_text += (
-                        f"\nThis {self.coin} {self.horizon}m slot: "
-                        f"{training['slot_imported']} imported, "
-                        f"{training.get('slot_compatible', 0)} input-compatible, "
-                        f"{training.get('slot_live_source_matched', 0)} "
-                        "offline-screened and matched to a live source. "
-                        f"Active historical challenger: "
-                        f"{'yes' if training.get('active_offline_model') else 'no'}."
-                    )
-            benefit = exchange.get("benefit") if isinstance(exchange, dict) else None
-            if isinstance(benefit, dict):
-                verdict = {"supported": "supported against both baselines",
-                           "not_improving": "not demonstrated",
-                           "insufficient": "not enough future outcomes"}[benefit["status"]]
-                learning_text += (f"\nCurrent learning benefit (14d): **{verdict}** "
-                                  f"({benefit['targets']} target groups / {benefit['days']} days)")
-                if benefit.get("brier") is not None:
-                    learning_text += (f"\nError: {benefit['brier']:.4f} vs "
-                                      f"{benefit['baseline_brier']:.4f} past-rate / 0.2500 coin-flip")
-            else:
-                learning_text += "\nCurrent learning benefit: unavailable; NOT proven"
-            # Full family/regime and TP-before-stop evidence is available in
-            # Detailed Research, where each section can be read independently.
-            # Never silently slice the main learning field at 1024 chars.
-            if len(learning_text) > 1024:
-                learning_text = (
-                    "Learning summary exceeds Discord's display limit. "
-                    "Use Detailed Research → Accuracy → Training actually used "
-                    "for the complete source-matched evidence."
-                )
-            embed.add_field(name="🧠 Learning", value=learning_text, inline=False)
+                    poly_text = f"{resolved:,} settled calls · no paired score available"
+                poly_text += f"\n{learned:,} historical outcomes (not forward calls)"
+            embed.add_field(name="🎯 Polymarket", value=poly_text, inline=False)
 
-            # Keep the two health reports independent: a slow feed query
-            # cannot turn a healthy forecast worker into "unavailable".
-            now = datetime.now(UTC)
+            # 3. Live worker state is distinct from statistical learning benefit.
+            cycles = reports.get("cycles")
+            heart = cycles.get("learning") if isinstance(cycles, dict) else None
+            if heart is None:
+                engine_text = "Learning heartbeat: no recorded cycle"
+            elif heart.get("status") != "recorded":
+                engine_text = "Learning heartbeat: read unavailable"
+            else:
+                age = int((now - heart["checked_at"].astimezone(UTC)).total_seconds() // 60)
+                if not heart["math_ok"] or not heart["model_review_ok"]:
+                    state = "FAILED stage"
+                elif not 0 <= age <= 16:
+                    state = "STALE or invalid clock"
+                else:
+                    state = "Running"
+                engine_text = (
+                    f"Engine: **{state}** · cycle {age}m ago "
+                    f"({heart['issued']} issued / {heart['settled']} settled)"
+                )
+            comparison = reports.get("comparison")
+            benefit = comparison.get("benefit") if isinstance(comparison, dict) else None
+            lineage = comparison.get("lineage") if isinstance(comparison, dict) else None
+            if isinstance(benefit, dict):
+                reason = {
+                    "supported": "Promising; not approved",
+                    "not_improving": "Not beating both baselines",
+                    "insufficient": "Too few future outcomes",
+                }.get(benefit.get("status"), "Not verified")
+                trend_text = (
+                    f"14d comparison: **{reason}** "
+                    f"({int(benefit.get('targets') or 0)} targets / "
+                    f"{int(benefit.get('days') or 0)} days)"
+                )
+            else:
+                trend_text = "14d comparison: read unavailable; improvement not verified"
+            if isinstance(lineage, dict) and lineage.get("lineage_proven"):
+                lineage_text = (
+                    f"Historical seeds in recent verified lineage: "
+                    f"{lineage['historically_seeded']}/{lineage['lineage_proven']}"
+                )
+            else:
+                lineage_text = "Historical seed use: unverified in recent forecasts"
+            embed.add_field(
+                name="🧠 Learning",
+                value=f"{engine_text}\n{trend_text}\n{lineage_text}",
+                inline=False,
+            )
+
+            # 4. Independent operations health. A green feed is never a
+            # substitute for an actual forecast-worker heartbeat.
             feeds = reports.get("feeds")
             if not isinstance(feeds, (list, tuple)):
-                feeds_text = "Feeds: **read failed or timed out; status unknown**"
+                feeds_text = "Feeds: **read unavailable**"
             else:
                 fresh = set()
                 for row in feeds:
                     if row.get("asset") != self.coin or row.get("venue") not in self.venues:
                         continue
                     try:
-                        last_success = datetime.fromisoformat(str(row["last_success_at"])).astimezone(UTC)
-                        last_candle = datetime.fromisoformat(str(row["last_candle_close"])).astimezone(UTC)
-                        if (row.get("status") == "ok"
-                            and timedelta(0) <= now - last_success <= timedelta(minutes=15)
-                            and timedelta(0) <= now - last_candle <= timedelta(minutes=15)):
+                        last_success = datetime.fromisoformat(str(row["last_success_at"]))
+                        last_candle = datetime.fromisoformat(str(row["last_candle_close"]))
+                        if (last_success.tzinfo is not None
+                            and last_candle.tzinfo is not None
+                            and row.get("status") == "ok"
+                            and timedelta(0) <= now-last_success.astimezone(UTC) <= timedelta(minutes=15)
+                            and timedelta(0) <= now-last_candle.astimezone(UTC) <= timedelta(minutes=15)):
                             fresh.add(row["venue"])
-                    except (ValueError, TypeError):
+                    except (ValueError, TypeError, OverflowError):
                         continue
                 feeds_text = (
                     f"Feeds: **{len(fresh)}/{len(self.venues)}** fresh"
-                    if self.venues else "Feed coverage: not configured"
+                    if self.venues else "Feeds: not configured"
                 )
-            diag = reports.get("cycle")
-            if isinstance(diag, Exception) or (diag is not None and not isinstance(diag, dict)):
-                cycle_text = "Forecast cycle: **read failed or timed out; status unknown**"
-            elif diag is None:
-                cycle_text = "Forecast cycle: **no cycle recorded**"
-            elif diag.get("status") == "unavailable":
-                cycle_text = "Forecast cycle: **read failed; status unknown**"
+            cycle = cycles.get("forecast") if isinstance(cycles, dict) else None
+            if cycle is None:
+                cycle_text = "Forecast cycle: **no cycle recorded**" if isinstance(
+                    cycles, dict,
+                ) else "Forecast cycle: **read unavailable**"
+            elif cycle.get("status") != "recorded":
+                cycle_text = "Forecast cycle: **read unavailable**"
             else:
-                age = int((now - diag["checked_at"].astimezone(UTC)).total_seconds() // 60)
-                cycle_text = (
-                    f"Forecast check: **{age}m ago** "
-                    f"({'fresh' if 0 <= age <= 10 else 'stale/invalid time'}), "
-                    f"**{diag['issued']}** issued"
-                )
-            health_text = f"{feeds_text}\n{cycle_text}"
-            embed.add_field(name="📡 System status", value=health_text, inline=False)
-            embed.timestamp = datetime.now(UTC)
-            embed.set_footer(text="Live database read • Exchange and contract scores differ • No proven trading edge")
+                age = int((now - cycle["checked_at"].astimezone(UTC)).total_seconds() // 60)
+                status = "fresh" if 0 <= age <= 10 else "stale/invalid time"
+                cycle_text = f"Forecast check: **{age}m ago** ({status}), **{cycle['issued']}** issued"
+            embed.add_field(
+                name="📡 System status", value=f"{feeds_text}\n{cycle_text}", inline=False,
+            )
+            embed.timestamp = now
+            embed.set_footer(
+                text="Live PostgreSQL reads · Detailed Research has training/import proof · NO CALL"
+            )
         elif p == "help":
             embed = discord.Embed(
                 title="❓ Getting Started",

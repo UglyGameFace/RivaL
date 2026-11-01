@@ -123,7 +123,7 @@ async def test_feed_read_failure_does_not_hide_recorded_cycle(tmp_path, monkeypa
     try:
         embed = await home.render()
         status = _fields(embed)["📡 System status"]
-        assert "Feeds: **read failed or timed out; status unknown**" in status
+        assert "Feeds: **read unavailable**" in status
         assert "Forecast check:" in status
         assert "**0** issued" in status
         assert len(embed.fields) == 4

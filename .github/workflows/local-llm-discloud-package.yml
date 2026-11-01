@@ -9,6 +9,7 @@ on:
       - "tests/test_private_model_download.py"
       - "tests/test_local_llm_benchmark.py"
       - "tests/test_llm_discloud_package.py"
+      - "tests/test_private_llm_env.py"
   push:
     branches: [main]
     paths:
@@ -36,7 +37,7 @@ jobs:
       - name: Verify source and deployment contracts
         run: |
           python -m pip install -e ".[dev,archive]"
-          ruff check services/rival-llm/ tests/test_local_llm_benchmark.py tests/test_private_llm_service.py tests/test_private_model_download.py tests/test_llm_discloud_package.py
+          ruff check services/rival-llm/ tests/test_local_llm_benchmark.py tests/test_private_llm_service.py tests/test_private_model_download.py tests/test_llm_discloud_package.py tests/test_private_llm_env.py
           pytest -q tests/test_private_llm_service.py tests/test_private_model_download.py tests/test_local_llm_benchmark.py tests/test_llm_discloud_package.py
           bash -n services/rival-llm/build.sh
       - name: Build CPU llama.cpp binary in CI only

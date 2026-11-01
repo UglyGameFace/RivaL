@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from discovery import serve as serve_peer_discovery
+
 try:
     # Inside the standalone Discloud ZIP the policy is shipped at app root.
     from evidence_policy import enforce as enforce_grounding

@@ -74,7 +74,22 @@ def _rows(manifest_path: Path) -> tuple[dict, list[dict]]:
             or manifest.get("prospective_forecast") is not False
             or manifest.get("time_reference") != "exchange_candle_open_not_first_observed_at"
             or (manifest.get("source") == "verified_venue_perp_klines"
-                and manifest.get("source_integrity") != "postgres-first-observed-at-v1")
+                and not (
+                    manifest.get("source_integrity") == "postgres-first-observed-at-v1"
+                    or (
+                        manifest.get("source_integrity")
+                            == "official-okx-rest-observed-at-v1"
+                        and manifest.get("venue") == "okx"
+                        and manifest.get("quote") == "USDT"
+                        and manifest.get("contract", "").endswith("-USDT-SWAP")
+                        and manifest.get("source_url")
+                            == "https://www.okx.com/api/v5/market/history-candles"
+                        and manifest.get("source_api_bar") == "5m"
+                        and manifest.get("source_api_market_type") == "SWAP"
+                        and manifest.get("provider_signed_checksum") is False
+                        and manifest.get("historical_first_observed_at_is_fetch_time") is True
+                    )
+                ))
         ):
             raise HistoryImportError("ineligible historical source")
         name = manifest.get("file")

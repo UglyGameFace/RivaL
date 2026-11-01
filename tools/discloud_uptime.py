@@ -84,12 +84,25 @@ def synchronize_incident(status: str, *, repository: str, token: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise StatusUnverified("repository identity unavailable")
     endpoint = "https://api.github.com/repos/" + repository + "/issues"
-    existing = api_json(endpoint + "?state=all&per_page=100", token=token)
-    if not isinstance(existing, list):
-        raise StatusUnverified("GitHub issue status unverified")
-    candidates = [item for item in existing if isinstance(item, dict)
-                  and item.get("title") == DISCORD_APP_STATE_ISSUE
-                  and "pull_request" not in item]
+    # The repository has long-lived research issues. Search every issue page
+    # instead of just the newest hundred, or an old closed uptime incident
+    # could be missed and duplicated.
+    candidates = []
+    for page in range(1, 11):
+        existing = api_json(
+            endpoint + f"?state=all&per_page=100&page={page}", token=token,
+        )
+        if not isinstance(existing, list):
+            raise StatusUnverified("GitHub issue status unverified")
+        candidates.extend(
+            item for item in existing if isinstance(item, dict)
+            and item.get("title") == DISCORD_APP_STATE_ISSUE
+            and "pull_request" not in item
+        )
+        if len(existing) < 100:
+            break
+    else:
+        raise StatusUnverified("uptime issue search exceeded safe page limit")
     if len(candidates) > 1:
         raise StatusUnverified("duplicate uptime issues require reconciliation")
     issue = candidates[0] if candidates else None

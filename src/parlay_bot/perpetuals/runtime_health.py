@@ -33,6 +33,7 @@ class RuntimeHealthMonitor:
         self.store = store
         self.started_at = datetime.now(UTC)
         self.boot_id = uuid4().hex
+        self._boot_written = False
         self._initialized = False
 
     def initialize(self) -> None:
@@ -67,6 +68,7 @@ class RuntimeHealthMonitor:
                 "INSERT INTO rival_runtime_health_boots(boot_id,started_at) VALUES (?,?)",
                 (self.boot_id, self.started_at.isoformat()),
             )
+        self._boot_written = True
 
     def inspect(
         self, *, now: datetime | None = None,
@@ -237,6 +239,8 @@ class RuntimeHealthMonitor:
         clock = stamp.astimezone(UTC).isoformat()
         events = []
         self.initialize()
+        if not self._boot_written:
+            self.record_boot()
         with self.store.connect() as conn:
             previous = {
                 row["issue_key"]: row for row in conn.execute(

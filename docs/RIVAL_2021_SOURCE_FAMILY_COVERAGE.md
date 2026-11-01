@@ -70,3 +70,14 @@ and liquidation history must not be claimed by adding names to an inventory.
 **This ledger is not completion of Issue #188 or #151.** Its job is to make
 missing evidence visible without blocking existing recovery, or changing
 the bot's predictions and free-only quota limits.
+
+
+## Scheduled reporting, not duplicate backfill
+
+PR #203 wires the same calendar inventory into the pre-existing Binance 2021+
+ZIP workflow, OKX bulk recovery workflow, Gate source archive workflow, and
+monthly source research job. Each generates a current-run artifact and carries
+forward locally verified records only. Gate's own ledger may be included as
+explicitly **reported** remote SHA claims, never misrepresented as independent
+re-download by the new job. There is no new polling loop, no new provider API,
+no new secret, and no extra exchange request from this inventory.

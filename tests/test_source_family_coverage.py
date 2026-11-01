@@ -9,7 +9,7 @@ import pytest
 
 from parlay_bot.research.free_history import _persist
 from parlay_bot.research.source_family_coverage import (
-    last_completed_month, months, scan_local, write_ledger,
+    last_completed_month, months, reported_gate_states, scan_local, write_ledger,
 )
 
 NOW = datetime(2026, 11, 1, tzinfo=UTC)
@@ -126,3 +126,45 @@ def test_archive_sha_manifest_alone_cannot_prove_other_families(tmp_path):
     assert states[("binance", "ETH", "funding", "2021-03")] == (
         "local_integrity_only_month_continuity_not_qualified"
     )
+
+
+def test_gate_archive_claim_is_reported_not_certified(tmp_path):
+    report = tmp_path / "gate.json"
+    report.write_text(json.dumps({
+        "schema_version": "rival-gate-source-month-ledger-v1",
+        "rows": [{
+            "venue": "gate", "asset": "BTC", "utc_month": "2023-03",
+            "data_family": "candlesticks_5m",
+            "original_gate_gzip_verified_this_run": True,
+            "raw_status": "downloaded_and_drive_sha_readback_this_run",
+        }],
+    }))
+    receipts = reported_gate_states(report)
+    assert receipts[("gate", "BTC", "candles_5m", "2023-03")] == (
+        "gate_report_claims_sha_readback_not_reverified_here"
+    )
+    summary = write_ledger(
+        roots=[], first="2023-03", through="2023-03",
+        out_dir=tmp_path / "out", now=NOW, gate_report=report,
+    )
+    assert summary["gate_receipt_source_months_reported_not_independently_verified"] == 1
+    assert summary["full_2021_to_present_coverage_proven"] is False
+
+
+def test_gate_remote_filename_only_is_not_complete(tmp_path):
+    report = tmp_path / "gate.json"
+    report.write_text(json.dumps({
+        "schema_version": "rival-gate-source-month-ledger-v1",
+        "rows": [{
+            "venue": "gate", "asset": "SOL", "utc_month": "2023-05",
+            "data_family": "funding_applies",
+            "original_gate_gzip_verified_this_run": False,
+            "raw_status": "remote_manifest_name_only_not_reverified_this_run",
+        }],
+    }))
+    assert reported_gate_states(report)[("gate", "SOL", "funding", "2023-05")] == (
+        "gate_remote_name_only"
+    )
+    report.write_text("{}")
+    with pytest.raises((ValueError, TypeError)):
+        reported_gate_states(report)

@@ -18,6 +18,8 @@ on:
       - "tests/test_gate_api_fallback.py"
       - "tests/test_gate_coverage.py"
       - "tests/test_gate_minute_repair.py"
+      - "src/parlay_bot/research/source_family_coverage.py"
+      - "tests/test_source_family_coverage.py"
   push:
     branches: [main]
     paths:
@@ -204,12 +206,25 @@ jobs:
           set -euo pipefail
           python -m parlay_bot.research.gate_archive_backfill \
             --max-new "$MAX_NEW" --max-attempts 40
+      - name: Correlate Gate archive receipts without equating report names to restored bytes
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p data/gate-bulk data/native-reports
+          args=()
+          if [[ -f data/native-reports/gate-source-month-ledger.json ]]; then
+            args+=(--gate-report data/native-reports/gate-source-month-ledger.json)
+          fi
+          python -m parlay_bot.research.source_family_coverage \
+            --root data/gate-bulk --out-dir data/native-reports "${args[@]}"
       - name: Retain real uploaded SHA evidence and unavailable-source ledger
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gate-private-archive-progress
           path: |
+            data/native-reports/source-family-summary.json
+            data/native-reports/source-family-coverage.jsonl.gz
             data/native-reports/gate-bulk-progress.json
             data/native-reports/gate-source-month-ledger.json
           retention-days: 14

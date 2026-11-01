@@ -11,6 +11,8 @@ on:
       - "src/parlay_bot/research/source_native.py"
       - "tests/test_okx_bulk_bootstrap.py"
       - "tests/test_okx_file_first.py"
+      - "src/parlay_bot/research/source_family_coverage.py"
+      - "tests/test_source_family_coverage.py"
   push:
     branches: [main]
     paths:
@@ -97,12 +99,21 @@ jobs:
           set -euo pipefail
           python -m parlay_bot.research.okx_bulk_bootstrap \
             --asset "$ASSET" --passes 3 --months-per-pass 6
+      - name: Inventory source-month evidence across every required family
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p data/native-research data/native-reports
+          python -m parlay_bot.research.source_family_coverage \
+            --root data/native-research --out-dir data/native-reports
       - name: Retain bounded backfill verification receipts even when source blocks
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: okx-bulk-source-progress
           path: |
+            data/native-reports/source-family-summary.json
+            data/native-reports/source-family-coverage.jsonl.gz
             data/native-reports/okx-bulk-progress.json
             data/native-reports/*/*.json
           retention-days: 14

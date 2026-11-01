@@ -306,6 +306,13 @@ jobs:
               echo "No completed history report; do not claim training succeeded."
             fi
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Record historical evidence and all unverified 2021+ data families
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p data/research-history data/research-reports
+          python -m parlay_bot.research.source_family_coverage \
+            --root data/research-history --out-dir data/research-reports
       - name: Retain checksum-validated public Binance research until private Drive transfer
         if: always()
         uses: actions/upload-artifact@v4
@@ -319,6 +326,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rival-verified-history-reports
-          path: data/research-reports/*.json
+          path: |
+            data/research-reports/*.json
+            data/research-reports/source-family-coverage.jsonl.gz
           if-no-files-found: ignore
           retention-days: 14

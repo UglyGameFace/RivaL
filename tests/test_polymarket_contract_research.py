@@ -195,6 +195,9 @@ async def test_hourly_market_requires_current_year_time_and_real_binance_rule(mo
         transport=httpx.MockTransport(handle), timeout=3.5,
     ))
     reader = poly.PolymarketReader()
+    # The window deliberately belongs to a past year, but book receipt time
+    # must be the same simulated clock, not the CI runner's current date.
+    monkeypatch.setattr(reader, "_receipt_clock", lambda: now)
     try:
         assert await reader.market("BTC", 60, now=now) is not None
         controls["year"] = -1

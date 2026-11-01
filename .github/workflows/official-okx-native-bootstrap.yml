@@ -1,0 +1,107 @@
+name: Official OKX native history and advanced archive inventory
+
+on:
+  workflow_dispatch:
+    inputs:
+      asset:
+        description: Exact source-native OKX USDT swap asset
+        type: choice
+        options: [BTC, ETH, SOL, XRP]
+        required: true
+        default: BTC
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/official-okx-native-bootstrap.yml"
+      - "src/parlay_bot/research/official_okx_bootstrap.py"
+  pull_request:
+    paths:
+      - ".github/workflows/official-okx-native-bootstrap.yml"
+      - "src/parlay_bot/research/official_okx_bootstrap.py"
+      - "tests/test_official_okx_bootstrap.py"
+  schedule:
+    - cron: "13 7 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-official-okx-research
+  cancel-in-progress: false
+
+jobs:
+  okx-source-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Test official source and archive provenance without secrets
+        run: |
+          python -m pip install -e ".[dev]"
+          ruff check src/parlay_bot/research/official_okx_bootstrap.py tests/test_official_okx_bootstrap.py
+          pytest -q tests/test_official_okx_bootstrap.py
+
+  okx-research:
+    if: github.event_name != 'pull_request' && vars.RIVAL_NATIVE_PUBLIC_BOOTSTRAP_ENABLED != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 85
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install existing offline research
+        run: python -m pip install -e ".[dev,archive,ml-research]"
+      - name: Verify private Drive authorization before public-source bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in RIVAL_DRIVE_ROOT_FOLDER_ID RIVAL_DRIVE_HISTORY_FOLDER_ID \
+            RIVAL_DRIVE_MANIFESTS_FOLDER_ID RIVAL_DRIVE_STAGING_FOLDER_ID \
+            RIVAL_DRIVE_MODELS_FOLDER_ID RIVAL_DRIVE_REPORTS_FOLDER_ID \
+            RIVAL_DRIVE_OAUTH_CLIENT_ID RIVAL_DRIVE_OAUTH_CLIENT_SECRET \
+            RIVAL_DRIVE_OAUTH_REFRESH_TOKEN; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Private OKX native research archive not configured ($name missing)"
+              exit 1
+            fi
+          done
+      - name: Download exact OKX 5m months and separately inventory L2 funding and trades
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            ASSET="${{ github.event.inputs.asset }}"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            ASSET="BTC"
+          else
+            ASSET="$(python - <<'PY'
+          from datetime import UTC, datetime
+          print(("BTC", "ETH", "SOL", "XRP")[datetime.now(UTC).date().toordinal() % 4])
+          PY
+          )"
+          fi
+          echo "Official OKX native five-minute research: $ASSET; no live orders"
+          python -m parlay_bot.research.official_okx_bootstrap --asset "$ASSET"
+      - name: Retain non-private history and data module qualification receipts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: okx-source-native-research-receipts
+          path: data/native-reports/*.json
+          retention-days: 14
+          if-no-files-found: ignore

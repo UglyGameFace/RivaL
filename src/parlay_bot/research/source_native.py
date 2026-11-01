@@ -315,7 +315,17 @@ async def restore_verified_source_months(
         try:
             info = json.loads(blob.content)
             if (info.get("source") != SOURCE or info.get("venue") != venue
-                or info.get("source_integrity") != "postgres-first-observed-at-v1"
+                or not (
+                    info.get("source_integrity") == "postgres-first-observed-at-v1"
+                    or (
+                        venue == "okx"
+                        and info.get("source_integrity") == "okx-v5-public-history-5m-v1"
+                        and info.get("source_url") ==
+                            "https://www.okx.com/api/v5/market/history-candles"
+                        and info.get("source_transport") == "official_public_https"
+                        and info.get("provider_signed_checksum") is False
+                    )
+                )
                 or info.get("prospective_forecast") is not False
                 or info.get("live_trading_authorized") is not False
                 or info.get("interval_minutes") != 5):

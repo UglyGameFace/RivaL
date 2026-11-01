@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Verify updated private LLM inference and service discovery
+      - name: Check current Discloud subnet membership and private paths
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
@@ -18,124 +18,63 @@ jobs:
         run: |
           python - <<'PY'
           import base64, json, os, urllib.error, urllib.parse, urllib.request
-          TOKEN = os.environ.get("DISCLOUD_TOKEN", "")
-          MAIN = os.environ.get("DISCLOUD_APP_ID", "")
-          BASE = "https://api.discloud.app/v2"
-          
-          def api(path, method="GET", body=None):
-              req = urllib.request.Request(BASE+path, method=method,
-                  data=json.dumps(body).encode() if body is not None else None,
-                  headers={"api-token":TOKEN,"Content-Type":"application/json"})
-              try:
-                  with urllib.request.urlopen(req, timeout=85) as r:
-                      return json.loads(r.read(150000))
-              except urllib.error.HTTPError as e:
-                  print("Discloud API HTTP",e.code)
-                  return None
-              except Exception as e:
-                  print("Discloud API failure",type(e).__name__)
-                  return None
-          
-          if not TOKEN or not MAIN:
-              raise SystemExit("Missing existing Discloud deployment credentials")
-          catalog = api("/app/all")
-          apps = catalog.get("apps",[]) if isinstance(catalog,dict) else []
-          matches = [a for a in apps if isinstance(a,dict) and
-                     str(a.get("name","")).lower() == "rival-intelligence"]
-          if len(matches)!=1:
-              raise SystemExit("Intelligence app not uniquely identified")
-          llm_id=str(matches[0]["id"])
-          
-          def remote(appid, code, args=""):
-              payload=base64.b64encode(code.encode()).decode()
-              cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+payload+"\"))'"+(" "+args if args else "")
-              response=api("/app/"+urllib.parse.quote(str(appid),safe="")+"/console","PUT",{"command":cmd})
-              shell=response.get("apps",{}).get("shell",{}) if isinstance(response,dict) else {}
-              stdout=str(shell.get("stdout","")) if isinstance(shell,dict) else ""
-              marker="RIVAL_ACCEPTANCE="
-              if marker not in stdout:
-                  print("Console result missing for", "main" if appid==MAIN else "intelligence",
-                        "stderr_present", bool(shell.get("stderr")) if isinstance(shell,dict) else "unknown")
-                  return None
-              try:
-                  return json.loads(stdout.split(marker,1)[1].splitlines()[0])
-              except (ValueError,IndexError):
-                  print("Acceptance result parse error")
-                  return None
-          
-          llm_script = """import fcntl,struct,socket,json,os,time,pathlib,urllib.request,urllib.error
-          from service import GENERATION_TOKENS
-          ip_sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-          ip=socket.inet_ntoa(fcntl.ioctl(ip_sock.fileno(),0x8915,struct.pack("256s",b"eth0"))[20:24])
-          mask=socket.inet_ntoa(fcntl.ioctl(ip_sock.fileno(),0x891b,struct.pack("256s",b"eth0"))[20:24])
-          ip_sock.close()
-          out={"ip":ip,"mask":mask,"generation_budget":GENERATION_TOKENS,"environment_secret":bool(os.getenv("RIVAL_LLM_SHARED_TOKEN"))}
-          out["runtime_has_reasoning_budget"]=False
-          for p in pathlib.Path("/proc").iterdir():
-           if not p.name.isdigit():continue
-           try:cmdline=(p/"cmdline").read_bytes().replace(b"\\x00",b" ").decode(errors="replace")
-           except (OSError,PermissionError):continue
-           if "llama-server" in cmdline and "--reasoning-budget 0" in cmdline:
-            out["runtime_has_reasoning_budget"]=True
-            break
-          def call(method,path,body=None,timeout=55):
-           req=urllib.request.Request("http://127.0.0.1:8765"+path,
+          TOKEN=os.getenv("DISCLOUD_TOKEN","");MAIN=os.getenv("DISCLOUD_APP_ID","")
+          def api(p,method="GET",body=None):
+           req=urllib.request.Request("https://api.discloud.app/v2"+p,method=method,
             data=json.dumps(body).encode() if body is not None else None,
-            method=method,headers={"Authorization":"Bearer "+os.getenv("RIVAL_LLM_SHARED_TOKEN",""),"Content-Type":"application/json"})
-           start=time.monotonic()
+            headers={"api-token":TOKEN,"Content-Type":"application/json"})
            try:
-            with urllib.request.urlopen(req,timeout=timeout) as response:
-             obj=json.loads(response.read(12000))
-             return {"http":response.status,"seconds":round(time.monotonic()-start,2),
-                     "status":obj.get("status"),"ready":obj.get("ready"),
-                     "model_ok":bool(obj.get("model")),
-                     "direction":obj.get("direction"),
-                     "thesis_nonempty":bool(str(obj.get("thesis") or "").strip()),
-                     "risk_nonempty":bool(str(obj.get("risk") or "").strip()),
-                     "info_only":obj.get("informational_only"),
-                     "uncalibrated":obj.get("uncalibrated")}
-           except urllib.error.HTTPError as e:
-            try:code=json.loads(e.read(4096)).get("error")
-            except Exception:code="unparsed"
-            return {"http":e.code,"seconds":round(time.monotonic()-start,2),"error":code}
-           except Exception as e:
-            return {"error_class":type(e).__name__,"seconds":round(time.monotonic()-start,2)}
-          out["status"]=call("GET","/v1/status",timeout=5)
-          out["research"]=call("POST","/v1/research",{"asset":"BTC","evidence":{"analysis":"synthetic_connectivity_test_only","sources":[{"venue":"okx","status":"quotes_missing"}]}},timeout=55)
-          print("RIVAL_ACCEPTANCE="+json.dumps(out,sort_keys=True))
-          """
-          result=remote(llm_id,llm_script)
-          if not isinstance(result,dict):
-              raise SystemExit("No Intelligence acceptance result")
-          ip=result.pop("ip",None)
-          mask=result.pop("mask",None)
-          print("Intelligence acceptance:",json.dumps(result,sort_keys=True))
-          if not ip or not mask:
-              raise SystemExit("Missing current service network address")
-          import ipaddress
-          main_script = """import socket,sys,json,urllib.request,urllib.error,ipaddress,fcntl,struct
-          ip=sys.argv[1];mask=sys.argv[2]
+            with urllib.request.urlopen(req,timeout=50) as r:return json.loads(r.read(100000))
+           except Exception as e:print("Discloud API",type(e).__name__);return {}
+          apps=api("/app/all").get("apps",[]) if TOKEN else []
+          llm=[a for a in apps if isinstance(a,dict) and a.get("name","").lower()=="rival-intelligence"]
+          if not MAIN or len(llm)!=1:raise SystemExit("Missing app access")
+          remote="""import socket,fcntl,struct,ipaddress,json
           s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-          own=socket.inet_ntoa(fcntl.ioctl(s.fileno(),0x8915,struct.pack("256s",b"eth0"))[20:24])
-          s.close()
-          same=ipaddress.ip_address(ip) in ipaddress.ip_network(own+"/"+mask,strict=False)
-          out={"same_eth0_subnet":same}
-          for host in ("rival-llm","rival-bot"):
-           try:socket.getaddrinfo(host,8765,type=socket.SOCK_STREAM);out[host+"_dns"]=True
-           except socket.gaierror:out[host+"_dns"]=False
-          import os
-          key=os.getenv("RIVAL_LOCAL_AI_TOKEN")
-          out["token_configured"]=bool(key)
-          if same and key:
-           req=urllib.request.Request("http://"+ip+":8765/v1/status",headers={"Authorization":"Bearer "+key})
+          out={}
+          for interface in ("eth0","eth1"):
            try:
-            with urllib.request.urlopen(req,timeout=10) as resp:
-             obj=json.loads(resp.read(4096))
-             out["private_ip_auth"]={"http":resp.status,"ready":obj.get("ready"),"model_present":bool(obj.get("model"))}
-           except urllib.error.HTTPError as e:out["private_ip_auth"]={"http":e.code}
-           except Exception as e:out["private_ip_auth"]={"error_class":type(e).__name__}
-          print("RIVAL_ACCEPTANCE="+json.dumps(out,sort_keys=True))
+            ip=socket.inet_ntoa(fcntl.ioctl(s.fileno(),0x8915,struct.pack("256s",interface.encode()))[20:24])
+            mask=socket.inet_ntoa(fcntl.ioctl(s.fileno(),0x891b,struct.pack("256s",interface.encode()))[20:24])
+            out[interface]={"ip":ip,"mask":mask}
+           except OSError:out[interface]={"error":"missing"}
+          s.close()
+          print("RIVAL_NET="+json.dumps(out))
           """
-          main_result=remote(MAIN,main_script,ip+" "+mask)
-          print("Main bot private connection:",json.dumps(main_result,sort_keys=True))
+          def console(appid,script,extra=""):
+           cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(script.encode()).decode()+"\"))'"+(" "+extra if extra else "")
+           v=api("/app/"+urllib.parse.quote(str(appid),safe="")+"/console","PUT",{"command":cmd})
+           out=str(v.get("apps",{}).get("shell",{}).get("stdout",""))
+           if "RIVAL_NET=" not in out:return None
+           try:return json.loads(out.split("RIVAL_NET=",1)[1].splitlines()[0])
+           except Exception:return None
+          main=console(MAIN,remote);other=console(llm[0]["id"],remote)
+          if not main or not other:raise SystemExit("Network address information unavailable")
+          import ipaddress
+          for iface in ("eth0","eth1"):
+           a,b=main.get(iface,{}),other.get(iface,{})
+           if "ip" not in a or "ip" not in b:
+            print(iface,"missing")
+            continue
+           an=ipaddress.ip_network(a["ip"]+"/"+a["mask"],strict=False)
+           bn=ipaddress.ip_network(b["ip"]+"/"+b["mask"],strict=False)
+           print(iface,"same_subnet",an==bn,"main_net",str(an),"llm_net",str(bn))
+          # No bearer token is sent in this test. Probe only the authenticated account's app IPs on the previously observed Discloud 172.4/172.5 network.
+          probe="""import json,sys,urllib.request,urllib.error,ipaddress,time
+          ip=sys.argv[1];address=ipaddress.ip_address(ip)
+          out={"target_discloud_range":address in ipaddress.ip_network("172.4.0.0/15")}
+          if out["target_discloud_range"]:
+           t=time.monotonic()
+           try:
+            with urllib.request.urlopen("http://"+ip+":8765/health",timeout=3) as r:
+             data=json.loads(r.read(2000))
+             out["http"]=r.status;out["status"]=data.get("status")
+           except Exception as e:out["error_class"]=type(e).__name__
+           out["elapsed"]=round(time.monotonic()-t,2)
+          print("RIVAL_NET="+json.dumps(out))
+          """
+          for iface in ("eth0","eth1"):
+           if "ip" in other.get(iface,{}):
+            result=console(MAIN,probe,other[iface]["ip"])
+            print("main_to_llm",iface,result)
           PY

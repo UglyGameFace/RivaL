@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+from contextlib import asynccontextmanager
 import json
 import math
 from datetime import UTC, datetime
@@ -56,6 +57,14 @@ class PacedOkxClient:
     def __init__(self, raw: httpx.AsyncClient, pacer: SharedOkxPacer) -> None:
         self.raw = raw
         self.pacer = pacer
+
+    @asynccontextmanager
+    async def stream(self, method: str, url: str, **kwargs):
+        # ZIP downloads consume one request budget token too; a separate
+        # unpaced HTTP client would defeat the exchange-wide IP budget.
+        await self.pacer.wait()
+        async with self.raw.stream(method, url, **kwargs) as response:
+            yield response
 
     async def get(self, url: str, **kwargs) -> httpx.Response:
         for attempt in range(MAX_RETRIES):

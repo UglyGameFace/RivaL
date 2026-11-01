@@ -34,3 +34,33 @@ Further source-native backfill, feature-model parity, historical gap inventory a
 - https://github.com/binance/binance-public-data
 - https://www.gate.com/developer/historical_quotes
 - https://www.bitget.com/data-download
+
+## Resumable failures versus verified completeness (November 1 operational repair)
+
+- OKX has **two independent outputs**: source-native 5m candle history and optional
+  trade/funding/L2 catalog discovery. Advanced catalog host/filename validation
+  remains strict. Invalid optional records are logged as `unverified_catalog`
+  per module, rather than being allowed to erase earlier SHA-readback candle
+  uploads. A failed individual month stays `source_month_blocked` and must
+  be retried. Errors publishing research-only models are separately recorded
+  as `blocked_native_research`; no live model is activated.
+- Duplicate immutable research model/report objects can be reused only when
+  **every** candidate in the exact Drive folder independently passes size,
+  MD5, and a full streamed SHA-256 byte readback. Divergent copies, excess
+  pagination, and duplicate history objects remain hard blockers. No remote
+  files are trashed or relabeled during reconciliation.
+- The OKX bulk receipt now counts actually completed month uploads even if a
+  later month or model publication fails. Blocking errors still produce a
+  failing workflow, and unverified advanced catalogs are never converted into
+  trained feature data. OKX `complete` applies only to its current **2023+
+  native five-minute candle** scope, not all 2021+ RivaL data families.
+- Monthly Binance training research uses a seven-day calendar grace period
+  to avoid demanding just-closed monthly ZIPs before source publication.
+  The provider checksum and full calendar requirements are unchanged.
+  Dedicated retry dates (8th, 15th, 22nd) and manual dispatch remain; broad
+  source-code pushes no longer launch an expensive incomplete backfill run.
+- **No set-and-forget acceptance yet:** verify clean scheduled executions with
+  per-source successful Drive byte readback, forward progress and retries,
+  source-native imported models, Discloud production database continuity,
+  and independent off-host monitoring. Do not confuse green CI, stored
+  historical rows, or an incomplete ledger with proven readiness.

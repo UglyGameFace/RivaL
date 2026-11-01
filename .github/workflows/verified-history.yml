@@ -7,14 +7,10 @@ on:
       - "src/parlay_bot/research/**"
       - "src/parlay_bot/archive/drive.py"
       - "tests/test_research_*.py"
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/verified-history.yml"
-      - "src/parlay_bot/research/**"
   schedule:
-    # First Monday's monthly archive publication has had time to complete.
-    - cron: "15 7 8 * *"
+    # Retry missing published months on the 8th, 15th and 22nd.
+    # Do not start expensive production research on every source-code push.
+    - cron: "15 7 8,15,22 * *"
   workflow_dispatch:
     inputs:
       months:
@@ -270,7 +266,7 @@ jobs:
             fi
           fi
           python -m parlay_bot.research.production \
-            --months "$months" --max-new 100 \
+            --months "$months" --archive-grace-days 7 --max-new 100 \
             --assets BTC ETH SOL XRP --intervals 5m \
             --seasons \
             --root data/research-history \

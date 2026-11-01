@@ -280,93 +280,134 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
         archive_fallbacks = []
         raw_one_minute_archives_verified = []
         raw_archive_shas = set()
+        month_failures = []
         for month in targets:
-            # Prefer official monthly ZIPs. An OKX archive month spans UTC+8;
-            # paired month files must reproduce the *exact* UTC 1m grid.
-            # When the archive is absent/malformed, the old source-native
-            # 5m REST collector remains a separately verified fallback.
-            from parlay_bot.research.okx_file_first import download_file_month
-
             try:
-                result = await download_file_month(
-                    client, asset=asset, month=month, root=root, now=clock,
+                # Prefer official monthly ZIPs. An OKX archive month spans UTC+8;
+                # paired month files must reproduce the *exact* UTC 1m grid.
+                # When the archive is absent/malformed, the old source-native
+                # 5m REST collector remains a separately verified fallback.
+                from parlay_bot.research.okx_file_first import download_file_month
+
+                try:
+                    result = await download_file_month(
+                        client, asset=asset, month=month, root=root, now=clock,
+                    )
+                except HistoryImportError as exc:
+                    archive_fallbacks.append({
+                        "month": month, "status": "archive_blocked_api_fallback",
+                        "reason": str(exc)[:240],
+                    })
+                    result = await download_month(
+                        client, asset=asset, month=month, root=root, now=clock,
+                        delay=download_delay,
+                    )
+                # Preserve each original one-minute ZIP as its own immutable,
+                # remote-SHA-readback historical object, in addition to derived 5m.
+                # No raw source can be silently discarded after aggregation.
+                record = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+                if record.get("source_integrity") == "okx-v5-official-1m-zip-derived-5m-v1":
+                    from parlay_bot.research.okx_file_first import archive_cache_path
+
+                    for item in record["source_archive_files"]:
+                        raw_path = archive_cache_path(
+                            root=root, asset=asset, month=item["month"], url=item["url"],
+                        )
+                        raw_artifact = _artifact(raw_path, 1)
+                        if raw_artifact.sha256 != item["sha256"]:
+                            raise HistoryImportError("raw OKX archive changed before Drive upload")
+                        if raw_artifact.sha256 in raw_archive_shas:
+                            continue  # Shared adjacent ZIP already verified in this batch.
+                        raw_saved = await drive.ensure_history_file(
+                            artifact=raw_artifact,
+                            batch_id="okx-raw-1m-" + raw_artifact.sha256[:24],
+                            mime_type="application/zip",
+                        )
+                        await drive.verify_downloaded_artifact(
+                            file_id=raw_saved.file_id,
+                            parent_id=drive.folders.history,
+                            artifact=raw_artifact,
+                        )
+                        raw_archive_shas.add(raw_artifact.sha256)
+                        raw_one_minute_archives_verified.append({
+                            "month": item["month"], "sha256": raw_artifact.sha256,
+                            "source": "official_okx_one_minute_zip",
+                        })
+                history = _artifact(result.data_path, result.records)
+                manifest = _artifact(result.manifest_path, 1)
+                key = "native-" + history.sha256[:24]
+                saved = await drive.ensure_history_file(
+                    artifact=history, batch_id=key, mime_type="application/x-ndjson",
                 )
-            except HistoryImportError as exc:
-                archive_fallbacks.append({
-                    "month": month, "status": "archive_blocked_api_fallback",
+                await drive.verify_downloaded_artifact(
+                    file_id=saved.file_id, parent_id=drive.folders.history,
+                    artifact=history,
+                )
+                meta = await drive.ensure_manifest_file(
+                    artifact=manifest, batch_id=key,
+                )
+                await drive.verify_downloaded_artifact(
+                    file_id=meta.file_id, parent_id=drive.folders.manifests,
+                    artifact=manifest,
+                )
+                added.append(month)
+            except (HistoryImportError, httpx.HTTPError, OSError,
+                    RuntimeError, ValueError) as exc:
+                # Earlier successfully uploaded source months must not be
+                # reported as zero merely because a later one was blocked.
+                # A failed month remains missing and is retried next run.
+                month_failures.append({
+                    "month": month, "status": "source_month_blocked",
                     "reason": str(exc)[:240],
                 })
-                result = await download_month(
-                    client, asset=asset, month=month, root=root, now=clock,
-                    delay=download_delay,
-                )
-            # Preserve each original one-minute ZIP as its own immutable,
-            # remote-SHA-readback historical object, in addition to derived 5m.
-            # No raw source can be silently discarded after aggregation.
-            record = json.loads(result.manifest_path.read_text(encoding="utf-8"))
-            if record.get("source_integrity") == "okx-v5-official-1m-zip-derived-5m-v1":
-                from parlay_bot.research.okx_file_first import archive_cache_path
-
-                for item in record["source_archive_files"]:
-                    raw_path = archive_cache_path(
-                        root=root, asset=asset, month=item["month"], url=item["url"],
-                    )
-                    raw_artifact = _artifact(raw_path, 1)
-                    if raw_artifact.sha256 != item["sha256"]:
-                        raise HistoryImportError("raw OKX archive changed before Drive upload")
-                    if raw_artifact.sha256 in raw_archive_shas:
-                        continue  # Shared adjacent ZIP already verified in this batch.
-                    raw_saved = await drive.ensure_history_file(
-                        artifact=raw_artifact,
-                        batch_id="okx-raw-1m-" + raw_artifact.sha256[:24],
-                        mime_type="application/zip",
-                    )
-                    await drive.verify_downloaded_artifact(
-                        file_id=raw_saved.file_id,
-                        parent_id=drive.folders.history,
-                        artifact=raw_artifact,
-                    )
-                    raw_archive_shas.add(raw_artifact.sha256)
-                    raw_one_minute_archives_verified.append({
-                        "month": item["month"], "sha256": raw_artifact.sha256,
-                        "source": "official_okx_one_minute_zip",
-                    })
-            history = _artifact(result.data_path, result.records)
-            manifest = _artifact(result.manifest_path, 1)
-            key = "native-" + history.sha256[:24]
-            saved = await drive.ensure_history_file(
-                artifact=history, batch_id=key, mime_type="application/x-ndjson",
-            )
-            await drive.verify_downloaded_artifact(
-                file_id=saved.file_id, parent_id=drive.folders.history,
-                artifact=history,
-            )
-            meta = await drive.ensure_manifest_file(
-                artifact=manifest, batch_id=key,
-            )
-            await drive.verify_downloaded_artifact(
-                file_id=meta.file_id, parent_id=drive.folders.manifests,
-                artifact=manifest,
-            )
-            added.append(month)
 
         # A six-month segment can only produce models after all its source
         # months pass the exact zero-gap check. A shorter transition segment
         # is archived but is NEVER falsely treated as six complete months.
-        if len(block) == 6:
-            receipt = await run_native_research(
-                drive=drive, venue="okx", months=block, root=root,
-                report_dir=report_dir, publish=True,
-            )
+        native_research_error = None
+        if len(block) == 6 and added:
+            try:
+                receipt = await run_native_research(
+                    drive=drive, venue="okx", months=block, root=root,
+                    report_dir=report_dir, publish=True,
+                )
+            except (HistoryImportError, OSError, RuntimeError, ValueError) as exc:
+                # Model publication can be blocked independently of already
+                # SHA-readback-verified candle data (e.g. duplicate Drive models).
+                native_research_error = str(exc)[:240]
+                receipt = {"status": "blocked_native_research", "published_models": 0}
         else:
-            receipt = {"status": "under_six_months",
-                       "published_models": 0}
+            receipt = {"status": ("no_new_months" if len(block) == 6
+                                  else "under_six_months"), "published_models": 0}
         report_dir.mkdir(parents=True, exist_ok=True)
-        # The advanced modules are cataloged, not silently marked imported.
+        advanced_catalog_failures = []
+        # Validate each optional module independently. A malformed trade/L2
+        # catalog cannot invalidate a separately verified 5m candle receipt.
+        # The strict trusted-host/filename validator itself stays unchanged.
         for month in targets:
-            catalog = await inventory_extra_modules(
-                client, asset=asset, month=month,
-            )
+            catalog = {
+                "venue": "okx", "asset": asset, "month": month,
+                "modules": {}, "all_modules_imported": False,
+            }
+            for module_id, label in MODULES.items():
+                try:
+                    one = await inventory_extra_modules(
+                        client, asset=asset, month=month,
+                        module_ids=(module_id,),
+                    )
+                    item = one.get("modules", {}).get(label)
+                    if not isinstance(item, dict):
+                        raise HistoryImportError("missing OKX advanced catalog module")
+                    catalog["modules"][label] = item
+                except (HistoryImportError, httpx.HTTPError, OSError) as exc:
+                    reason = str(exc)[:240]
+                    catalog["modules"][label] = {
+                        "files": [], "status": "unverified_catalog",
+                        "reason": reason,
+                    }
+                    advanced_catalog_failures.append({
+                        "month": month, "module": label, "reason": reason,
+                    })
             (report_dir / f"okx-extra-inventory-{asset}-{month}.json").write_text(
                 json.dumps(catalog, sort_keys=True, indent=2) + "\n",
                 encoding="utf-8",
@@ -375,6 +416,9 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
             "venue": "okx", "asset": asset,
             "newly_published_months": added,
             "archive_fallbacks": archive_fallbacks,
+            "source_month_failures": month_failures,
+            "advanced_catalog_failures": advanced_catalog_failures,
+            "native_research_error": native_research_error,
             "raw_one_minute_archives_verified": raw_one_minute_archives_verified,
             "target_scope_months": block,
             "native_status": receipt["status"],

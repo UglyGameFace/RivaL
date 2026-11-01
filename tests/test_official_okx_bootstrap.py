@@ -138,3 +138,93 @@ def test_okx_2023_archive_start_and_unfinished_month_protection():
         okx.month_bounds("2023-06")
     with pytest.raises(HistoryImportError):
         okx.month_bounds("2026-13")
+
+@pytest.mark.asyncio
+async def test_okx_keeps_verified_month_when_another_month_and_optional_sources_fail(
+    tmp_path, monkeypatch,
+):
+    """Optional catalog or research failures must not erase SHA-readback OHLCV."""
+    from types import SimpleNamespace
+
+    from parlay_bot.research import audit, okx_file_first
+    from parlay_bot.research.free_history import _persist
+    from parlay_bot.research.source_native import SOURCE
+
+    class Drive:
+        folders = SimpleNamespace(history="history", manifests="manifests")
+
+        def __init__(self):
+            self.verified = []
+
+        async def ensure_history_file(self, **kwargs):
+            return SimpleNamespace(file_id="history")
+
+        async def ensure_manifest_file(self, **kwargs):
+            return SimpleNamespace(file_id="manifest")
+
+        async def verify_downloaded_artifact(self, *, file_id, parent_id, artifact):
+            self.verified.append((file_id, parent_id, artifact.sha256))
+
+    async def contract(client, asset):
+        assert asset == "BTC"
+        return "BTC-USDT-SWAP"
+
+    async def restore(*args, **kwargs):
+        return []
+
+    async def download_file(client, *, asset, month, root, now):
+        if month == "2026-10":
+            raise HistoryImportError("official archive not yet published")
+        return _persist(
+            source=SOURCE, key=f"okx-{asset}-USDT-SWAP-USDT-5m-{month}",
+            records=[{
+                "venue": "okx", "contract": "BTC-USDT-SWAP",
+                "quote": "USDT", "interval_minutes": 5,
+                "opened_at": f"{month}-01T00:00:00+00:00",
+                "closed_at": f"{month}-01T00:04:59.999000+00:00",
+                "first_observed_at": now.isoformat(),
+                "open": 100, "high": 102, "low": 99, "close": 101,
+                "volume_contracts": 2, "volume_base": 1,
+                "volume_quote": 100, "trades": -1,
+            }],
+            raw_sha="f" * 64, url=okx.CANDLES, out_dir=root,
+            extra={"source_integrity": okx.INTEGRITY, "venue": "okx"},
+        )
+
+    async def fallback(*args, **kwargs):
+        raise HistoryImportError("historical REST gap")
+
+    async def blocked_models(**kwargs):
+        raise RuntimeError("Multiple Drive objects exist for candidate model")
+
+    async def inventory(client, *, asset, month, module_ids):
+        if module_ids == (1,):
+            raise HistoryImportError("unverified OKX archive host/filename")
+        label = okx.MODULES[module_ids[0]]
+        return {"modules": {label: {"files": [], "status": "unavailable"}}}
+
+    monkeypatch.setattr(okx, "verify_contract", contract)
+    monkeypatch.setattr(okx, "restore_verified_source_months", restore)
+    monkeypatch.setattr(audit, "audit_catalog", lambda *a, **kw: {"partitions": []})
+    monkeypatch.setattr(okx_file_first, "download_file_month", download_file)
+    monkeypatch.setattr(okx, "download_month", fallback)
+    monkeypatch.setattr(okx, "run_native_research", blocked_models)
+    monkeypatch.setattr(okx, "inventory_extra_modules", inventory)
+    drive = Drive()
+    result = await okx.bootstrap(
+        drive=drive, client=object(), asset="BTC",
+        root=tmp_path / "data", report_dir=tmp_path / "reports",
+        max_new_months=2, now=OBSERVED,
+    )
+    assert result["newly_published_months"] == ["2026-09"]
+    assert result["source_month_failures"][0]["month"] == "2026-10"
+    assert result["native_status"] == "blocked_native_research"
+    assert result["native_models_published"] == 0
+    assert result["native_research_error"].startswith("Multiple Drive")
+    assert len(result["advanced_catalog_failures"]) == 2
+    assert all(row["module"] == "trades" for row in result["advanced_catalog_failures"])
+    assert len(drive.verified) == 2
+    inventory_report = (
+        tmp_path / "reports" / "okx-extra-inventory-BTC-2026-09.json"
+    ).read_text(encoding="utf-8")
+    assert '"status": "unverified_catalog"' in inventory_report

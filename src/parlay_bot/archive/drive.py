@@ -210,6 +210,7 @@ class GoogleDriveArchiveClient:
         parent_id: str,
         batch_id: str,
         kind: str,
+        expected_artifact: ArchiveArtifact | None = None,
     ) -> DriveObject | None:
         allowed = {
             self.folders.history,
@@ -234,7 +235,7 @@ class GoogleDriveArchiveClient:
                 "q": query,
                 "spaces": "drive",
                 "pageSize": 10,
-                "fields": "files(id,name,size,md5Checksum,parents)",
+                "fields": "nextPageToken,files(id,name,size,md5Checksum,parents)",
             },
             headers=await self._headers(),
         )
@@ -247,10 +248,31 @@ class GoogleDriveArchiveClient:
         files = payload.get("files") if isinstance(payload, dict) else None
         if not isinstance(files, list):
             raise DriveArchiveError("Google Drive bounded search returned invalid data")
+        if payload.get("nextPageToken"):
+            raise DriveArchiveError("Ambiguous Drive batch search pagination")
         if len(files) > 1:
-            raise DriveArchiveError(
-                f"Multiple Drive objects exist for RivaL batch {batch_id}/{kind}"
-            )
+            # A previous interrupted upload may have created identical,
+            # immutable model/research report copies. Accept one only when
+            # *every* copy is in the correct folder and the complete remote
+            # bytes independently match the expected SHA-256. Never delete.
+            if kind not in {"model", "report"} or expected_artifact is None:
+                raise DriveArchiveError(
+                    f"Multiple Drive objects exist for RivaL batch {batch_id}/{kind}"
+                )
+            candidates = []
+            for row in files:
+                if not isinstance(row, dict):
+                    raise DriveArchiveError("Invalid duplicate Drive object")
+                obj = self._object(row)
+                if parent_id not in obj.parents:
+                    raise DriveArchiveError("Duplicate Drive object escaped warehouse")
+                self._verify_artifact(obj, expected_artifact)
+                await self.verify_downloaded_artifact(
+                    file_id=obj.file_id, parent_id=parent_id,
+                    artifact=expected_artifact,
+                )
+                candidates.append(obj)
+            return min(candidates, key=lambda item: item.file_id)
         if not files:
             return None
         if not isinstance(files[0], dict):
@@ -644,6 +666,7 @@ class GoogleDriveArchiveClient:
         await self._verify_folder_boundary()
         existing = await self._find_batch_object(
             parent_id=parent_id, batch_id=batch_id, kind=kind,
+            expected_artifact=artifact,
         )
         if existing is not None:
             self._verify_artifact(existing, artifact)

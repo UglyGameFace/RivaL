@@ -132,7 +132,7 @@ async def listed_native_months(drive) -> set[tuple[str, str]]:
     page_token = None
     matcher = re.compile(
         r"gate-(BTC|ETH|SOL|XRP)_USDT-USDT-5m-"
-        r"(20\\d{2}-(?:0[1-9]|1[0-2]))--[0-9a-f]{16}\\.manifest\\.json"
+        r"(20\d{2}-(?:0[1-9]|1[0-2]))--[0-9a-f]{16}\.manifest\.json"
     )
     for _ in range(MAX_PAGES):
         params = {"q": query, "spaces": "drive", "pageSize": 1000,

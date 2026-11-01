@@ -1,3 +1,11 @@
+## ACTIVE TASK: Cap historical-read PostgreSQL checkout duration (2026-11-01)
+
+- **Evidence:** Discloud 11:45–11:47 logs show six-month `history_quality.audit_stream` SELECTs of 3.21–5.31 seconds, connections held 5.81–8.29 seconds, and `source_native.export_source_month` SELECTs of 2.39–4.31 seconds while live 10-source BTC/ETH/SOL/XRP ingestion remains active. BTC audit reported only 2/9 source streams complete; this work MUST NOT relabel gaps as ready.
+- **Root cause in code:** single six-month SELECT and Python timestamp walk hold a small pool connection until the full fetch/iteration finishes; native calendar-month export pulls every OHLCV row in one SELECT. The candle primary key already supports exact scoped range/indexed keyset reads.
+- **Branch:** `fix/postgres-history-page-reads-20261101`. Small bounded keyset pages (2048 rows) release connections before Python processing. Native publisher pre-checks month count, fetches at most 2048 source rows per checkout and rechecks count before exact original lineage validation. No schema, market math, data values, or 2021+ collection policy changes.
+- **Validation:** CI and PostgreSQL/SQLite tests pending on branch; new tests cover page-boundary gap detection, connection release prior to processing, full-month digest compatibility and incomplete-month rejection. **Discloud post-deployment performance remains unverified.**
+- **Next:** inspect exact PR CI; repair findings; merge only if green, then compare production history audit SELECT/held timings and monitor pool pressure during concurrent Drive imports; continue separate historical backfills in #188. Dedicated RivaL DB remains separately tracked in #200 after LLM integration acceptance.
+
 ## Active outcome: native research production receipt visibility (2026-10-31)
 - Goal: Make exact source-native six-month readiness visible from the actual host PostgreSQL, without projecting Binance archive coverage onto another exchange or turning backfills into live predictions.
 - Change in progress: bounded, per-selected-venue six complete calendar-month count and publisher-receipt evidence in the existing Math & History → History & gaps screen. Each count-only month is explicitly NOT certified; receipts follow full-grid validation and private Drive downloaded-byte checks. Reporting does not train, promote or trade.

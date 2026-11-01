@@ -176,3 +176,47 @@ async def test_drive_native_manifest_listing_handles_multiple_pages(tmp_path):
     assert rows == []
     assert len(pages) == 2
     assert pages[1]["pageToken"] == "second-page"
+
+@pytest.mark.asyncio
+async def test_bulk_reports_independent_blocks_without_erasing_acquired_months(
+    tmp_path, monkeypatch,
+):
+    class Drive:
+        async def aclose(self):
+            return None
+
+    async def fake_bootstrap(*, asset, **kwargs):
+        return {
+            "asset": asset,
+            "newly_published_months": ["2026-09"],
+            "source_month_failures": [
+                {"month": "2026-10", "reason": "official ZIP unavailable"}
+            ],
+            "native_research_error": "ambiguous candidate model duplicates",
+            "advanced_catalog_failures": [
+                {"month": "2026-09", "module": "trades",
+                 "reason": "unverified host"}
+            ],
+            "full_2023_to_present_verified": False,
+        }
+
+    monkeypatch.setattr(bulk, "_drive", lambda settings: Drive())
+    monkeypatch.setattr(bulk, "bootstrap", fake_bootstrap)
+    result = await bulk.run_bulk(
+        assets=("BTC",), passes=1,
+        root=tmp_path / "raw", report_dir=tmp_path / "reports",
+    )
+    assert result["new_months_by_asset"] == {"BTC": 1}
+    assert result["new_months_total"] == 1
+    assert len(result["failures"]) == 2
+    assert {row["stage"] for row in result["failures"]} == {
+        "source_month", "offline_model_publication",
+    }
+    assert len(result["advanced_catalog_unverified"]) == 1
+    assert result["complete"] is False
+    import json
+    saved = json.loads(
+        (tmp_path / "reports" / "okx-bulk-progress.json").read_text()
+    )
+    assert saved["new_months_total"] == 1
+    assert saved["live_model_promoted"] is False

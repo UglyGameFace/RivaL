@@ -6,14 +6,19 @@ on:
       - ".github/workflows/official-okx-bulk-bootstrap.yml"
       - ".github/workflows/official-okx-native-bootstrap.yml"
       - "src/parlay_bot/research/okx_bulk_bootstrap.py"
+      - "src/parlay_bot/research/okx_file_first.py"
       - "src/parlay_bot/research/official_okx_bootstrap.py"
       - "src/parlay_bot/research/source_native.py"
       - "tests/test_okx_bulk_bootstrap.py"
+      - "tests/test_okx_file_first.py"
   push:
     branches: [main]
     paths:
       - ".github/workflows/official-okx-bulk-bootstrap.yml"
       - "src/parlay_bot/research/okx_bulk_bootstrap.py"
+      - "src/parlay_bot/research/okx_file_first.py"
+      - "src/parlay_bot/research/official_okx_bootstrap.py"
+      - "src/parlay_bot/research/source_native.py"
   workflow_dispatch:
     inputs:
       asset:
@@ -47,8 +52,8 @@ jobs:
       - name: Check paced downloader, month validation and Drive restore regressions
         run: |
           python -m pip install -e ".[dev]"
-          ruff check src/parlay_bot/research/okx_bulk_bootstrap.py src/parlay_bot/research/official_okx_bootstrap.py src/parlay_bot/research/source_native.py tests/test_okx_bulk_bootstrap.py
-          pytest -q tests/test_okx_bulk_bootstrap.py tests/test_official_okx_bootstrap.py
+          ruff check src/parlay_bot/research/okx_bulk_bootstrap.py src/parlay_bot/research/okx_file_first.py src/parlay_bot/research/official_okx_bootstrap.py src/parlay_bot/research/source_native.py tests/test_okx_bulk_bootstrap.py tests/test_okx_file_first.py
+          pytest -q tests/test_okx_bulk_bootstrap.py tests/test_okx_file_first.py tests/test_official_okx_bootstrap.py
 
   bulk-history:
     if: github.event_name != 'pull_request' && vars.RIVAL_NATIVE_PUBLIC_BOOTSTRAP_ENABLED != 'false'
@@ -86,7 +91,7 @@ jobs:
               exit 1
             fi
           done
-      - name: Advance source exact 5m months for all selected assets under one shared IP pacing budget
+      - name: Download official one-minute ZIP months first and use paced 5m API only for gaps
         shell: bash
         run: |
           set -euo pipefail

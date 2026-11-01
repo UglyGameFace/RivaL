@@ -3,18 +3,19 @@ set -euo pipefail
 
 # Build separately from RivaL's 512MB bot. Never include >1GB model weights
 # in source control, Discloud build archives, or the RivaL app package.
+mkdir -p runtime/bin
+if [ -x runtime/bin/llama-server ]; then
+  echo 'Using the prebuilt, CI-validated CPU llama-server binary.'
+  runtime/bin/llama-server --help >/dev/null
+  exit 0
+fi
 if ! command -v git >/dev/null || ! command -v cmake >/dev/null; then
-  echo 'ERROR: Install Discloud APT tools and libgl to provide git, cmake, make.' >&2
+  echo 'ERROR: Local build requires git and cmake; use the CI-built application ZIP.' >&2
   exit 1
 fi
 if ! command -v c++ >/dev/null; then
-  echo 'ERROR: No C++ compiler in this Discloud build image. Build binary in CI or on supported builder.' >&2
+  echo 'ERROR: No C++ compiler; use the prebuilt artifact instead.' >&2
   exit 1
-fi
-mkdir -p runtime/bin
-if [ -x runtime/bin/llama-server ]; then
-  echo 'Existing llama-server binary present, skipping build.'
-  exit 0
 fi
 REF=v0.8.0
 if [ ! -d runtime/llama.cpp ]; then

@@ -62,9 +62,14 @@ class Drive:
     def __init__(self):
         self.folders = SimpleNamespace(history="history", manifests="manifests")
         self.raw = []
+        self.evidence = []
         self.manifests = []
         self.verified = []
     async def ensure_history_file(self, *, artifact, batch_id, mime_type):
+        if mime_type == "application/json":
+            assert batch_id == "gateapi-" + artifact.sha256[:24]
+            self.evidence.append(artifact)
+            return SimpleNamespace(file_id="original-api-file")
         assert mime_type == "application/x-ndjson"
         self.raw.append(artifact)
         return SimpleNamespace(file_id="native-file-id")
@@ -102,7 +107,9 @@ async def test_complete_original_month_qualifies_only_with_dated_multiplier(tmp_
     assert result["total_candles"] == COUNT
     assert result["same_venue_api_recovered"] == 0
     assert result["live_model_promoted"] is False
-    assert len(drive.verified) == 2
+    assert len(drive.verified) == 3
+    assert len(drive.evidence) == 1
+    assert json.loads(drive.evidence[0].path.read_bytes())["name"] == "BTC_USDT"
     assert len(requests) == 1  # Contract metadata, no unnecessary candle API.
     meta, rows = _rows(drive.manifests[0].path)
     assert native_manifest_provenance(meta)
@@ -127,6 +134,12 @@ async def test_only_real_same_gate_api_recovers_missing_source_slot(tmp_path):
     assert len(meta["source_api_recovery"][0]["response_sha256"]) == 64
     assert len(records) == COUNT
     assert len(requests) == 2
+    assert len(drive.evidence) == 2
+    assert len(drive.verified) == 4
+    assert all(
+        hashlib.sha256(item.path.read_bytes()).hexdigest() == item.sha256
+        for item in drive.evidence
+    )
     # Keep actual raw bytes, do not mutate the underlying official download.
     original = tmp_path / "native-month-original.csv.gz"
     assert hashlib.sha256(original.read_bytes()).hexdigest() == result["source_raw_sha256"]
@@ -168,6 +181,11 @@ def test_native_gate_provenance_rejects_claimed_provider_signature_and_forged_ap
     forged = {**meta, "source_archive_sha256": "0" * 64}
     assert native_manifest_provenance(forged) is False
     forged = {**meta, "source_archive_rows": meta["records"]}
+    assert native_manifest_provenance(forged) is False
+    forged = {**meta, "contract_multiplier_evidence": {
+        **meta["contract_multiplier_evidence"],
+        "contract_metadata_raw_file": "missing.json",
+    }}
     assert native_manifest_provenance(forged) is False
     assert receipt["source_training_eligible"] is True
 

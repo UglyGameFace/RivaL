@@ -29,9 +29,16 @@ for required in git cmake c++; do
   fi
 done
 
-REF=v0.8.0
+# b12024 includes the LFM3 JSON-grammar and reasoning-budget fixes in
+# upstream #31374 and #31380. Pin the verified immutable release commit.
+REF=b12024
+EXPECTED_SHA=ddf48f85c933c1f438212a02eb21e7b001d2d37d
 if [ ! -d runtime/llama.cpp ]; then
   git clone --depth 1 --branch "$REF" https://github.com/ggml-org/llama.cpp.git runtime/llama.cpp
+fi
+if [ "$(git -C runtime/llama.cpp rev-parse HEAD)" != "$EXPECTED_SHA" ]; then
+  echo 'ERROR: pinned llama.cpp source does not match validated release commit.' >&2
+  exit 1
 fi
 cmake -S runtime/llama.cpp -B runtime/llama.cpp/build \
   -DGGML_NATIVE=OFF -DGGML_CUDA=OFF -DLLAMA_CURL=OFF -DCMAKE_BUILD_TYPE=Release

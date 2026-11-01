@@ -27,7 +27,7 @@ MODEL_CATALOG = {
 MAX_BODY = 30_000
 MAX_EVIDENCE_CHARS = 24_000
 CONTEXT_TOKENS = 4096
-GENERATION_TOKENS = 300
+GENERATION_TOKENS = 220
 CONTEXT_SAFETY_TOKENS = 96
 
 
@@ -99,7 +99,8 @@ class Gateway(ThreadingHTTPServer):
         """
         template_request = urllib.request.Request(
             self.backend_url + "/apply-template",
-            data=json.dumps({"messages": messages}).encode("utf-8"),
+            data=json.dumps({"messages": messages,
+                             "chat_template_kwargs": {"enable_thinking": False}}).encode("utf-8"),
             headers={"Content-Type": "application/json"}, method="POST",
         )
         with urllib.request.urlopen(template_request, timeout=5) as response:
@@ -138,6 +139,11 @@ class Gateway(ThreadingHTTPServer):
             "model": MODEL_CATALOG[self.model][0],
             "messages": messages,
             "temperature": 0.1,
+            "top_k": 50,
+            "repeat_penalty": 1.1,
+            # LFM3 defaults to lengthy internal thinking, which exhausted the
+            # 40s CPU deadline without generating any actual response text.
+            "chat_template_kwargs": {"enable_thinking": False},
             "max_tokens": GENERATION_TOKENS,
             "stream": False,
             "response_format": {"type": "json_object"},
@@ -151,7 +157,13 @@ class Gateway(ThreadingHTTPServer):
                 raise ValueError("local inference response rejected")
             raw = response.read(50_000)
         data = json.loads(raw)
-        result = json.loads(data["choices"][0]["message"]["content"])
+        choice = data["choices"][0]
+        if choice.get("finish_reason") == "length":
+            raise ValueError("local model exhausted generation token budget")
+        content = choice["message"]["content"]
+        if not isinstance(content, str) or not content.strip():
+            raise ValueError("local model produced no answer text")
+        result = json.loads(content)
         if not validated_research(result):
             raise ValueError("invalid model fields")
         return {
@@ -273,6 +285,7 @@ def launch_server():
         "--host", "127.0.0.1", "--port", "8766",
         "--ctx-size", "4096", "--threads", "2", "--parallel", "1",
         "--batch-size", "128", "--n-gpu-layers", "0",
+        "--jinja", "--reasoning-budget", "0",
     ]
     env = os.environ.copy()
     env["LD_LIBRARY_PATH"] = str(binary.parent) + ":" + env.get("LD_LIBRARY_PATH", "")

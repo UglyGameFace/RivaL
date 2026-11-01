@@ -167,6 +167,7 @@ def test_prompt_preflight_uses_rendered_chat_template_and_real_tokenizer(monkeyp
             "apply-template", "tokenize"
         ]
         assert observed[0][1]["messages"][0]["role"] == "system"
+        assert observed[0][1]["chat_template_kwargs"] == {"enable_thinking": False}
         assert observed[1][1]["content"] == "Rendered chat with special tokens"
     finally:
         server.server_close()
@@ -211,6 +212,43 @@ def test_prompt_preflight_allows_complete_compatible_requests(monkeypatch):
         assert [path for path, _ in calls] == [
             "apply-template", "tokenize", "completions"
         ]
-        assert calls[-1][1]["max_tokens"] == 300
+        assert calls[-1][1]["max_tokens"] == 220
+        assert calls[-1][1]["chat_template_kwargs"] == {"enable_thinking": False}
+        assert calls[-1][1]["top_k"] == 50
+        assert calls[-1][1]["repeat_penalty"] == 1.1
+    finally:
+        server.server_close()
+
+
+def test_reasoning_only_or_truncated_output_is_never_accepted(monkeypatch):
+    server = Gateway("127.0.0.1", 0, token="t" * 48, model="lfm3")
+
+    class FakeResponse:
+        status = 200
+        def __init__(self, data):
+            self.raw = json.dumps(data).encode("utf-8")
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self, _n):
+            return self.raw
+
+    choice = {"finish_reason": "length",
+              "message": {"content": "", "reasoning_content": "thinking forever"}}
+    def fake_urlopen(request, timeout):
+        if request.full_url.endswith("/apply-template"):
+            return FakeResponse({"prompt": "template"})
+        if request.full_url.endswith("/tokenize"):
+            return FakeResponse({"tokens": [1] * 180})
+        return FakeResponse({"choices": [choice]})
+
+    try:
+        monkeypatch.setattr(SERVICE["urllib"].request, "urlopen", fake_urlopen)
+        with pytest.raises(ValueError, match="exhausted generation token budget"):
+            server.infer("BTC", {"sources": [{"venue": "okx"}]})
+        choice["finish_reason"] = "stop"
+        with pytest.raises(ValueError, match="produced no answer text"):
+            server.infer("BTC", {"sources": [{"venue": "okx"}]})
     finally:
         server.server_close()

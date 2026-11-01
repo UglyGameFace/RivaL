@@ -166,3 +166,55 @@ async def test_no_contracts_or_missing_local_secret():
     with pytest.raises(ResearchUnavailable, match="oracle"):
         await ai.review_contract({"target": "polymarket", "slug": "x"})
     await ai.aclose()
+
+
+@pytest.mark.asyncio
+async def test_discloud_dns_failure_recovers_via_authenticated_discovery(monkeypatch):
+    market = Market()
+    monkeypatch.setattr(openrouter_research, "build_evidence", market_evidence)
+    calls = []
+    discovered = []
+
+    def lookup(token):
+        discovered.append(token)
+        return "172.4.72.19"
+
+    monkeypatch.setattr(module, "discover_private_llm", lookup)
+
+    def handler(request):
+        calls.append(str(request.url.host))
+        if request.url.host == "rival-llm":
+            raise httpx.ConnectError("name resolution failed", request=request)
+        assert request.url.host == "172.4.72.19"
+        assert request.headers["Authorization"] == "Bearer " + "k" * 40
+        return httpx.Response(200, json=success(module.LOCAL_MODEL))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ai = module.LocalFirstResearch(market, local_key="k" * 40, client=client)
+        first = await ai.ask(asset="BTC", venues=("okx",))
+        assert first.model == module.LOCAL_MODEL
+        second = await ai.ask(asset="ETH", venues=("gate",))
+        assert second.model == module.LOCAL_MODEL
+    assert calls == ["rival-llm", "172.4.72.19", "172.4.72.19"]
+    assert discovered == ["k" * 40]
+    assert len(market.quota) == 2
+
+
+@pytest.mark.asyncio
+async def test_discovery_failure_retains_existing_free_fallback(monkeypatch):
+    market = Market()
+    monkeypatch.setattr(openrouter_research, "build_evidence", market_evidence)
+    monkeypatch.setattr(module, "discover_private_llm", lambda _token: None)
+
+    def handler(request):
+        if request.url.host == "rival-llm":
+            raise httpx.ConnectError("name resolution failed", request=request)
+        assert request.url.host == "rival-ai-research.staytrippynlw.workers.dev"
+        return httpx.Response(200, json=success(module.CLOUD_MODEL))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ai = module.LocalFirstResearch(market, local_key="k" * 40,
+                                       cloudflare_key="backup-key", client=client)
+        outcome = await ai.ask(asset="SOL", venues=("okx",))
+    assert outcome.model == module.CLOUD_MODEL
+    assert len(market.quota) == 1

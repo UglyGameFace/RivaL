@@ -66,6 +66,10 @@ def test_candidate_sha_coverage_and_live_isolation(tmp_path):
     assert report["total"] == 1
     assert report["candidate"]["holdout_accuracy"] == pytest.approx(.57)
     assert report["active_offline_model"] is False
+    # A passed legacy logistic does not meet the live feature contract.
+    assert registry.inventory_receipt() == {
+        "total": 1, "passed": 0, "compatible": 0, "missing_artifacts": 0,
+    }
     with hot.connect() as conn:
         row = conn.execute(
             "SELECT active_live FROM rival_offline_candidates"
@@ -117,3 +121,39 @@ def test_candidate_import_real_postgresql16():
                 ("drivePostgres_1",),
             )
         hot.close()
+
+def test_import_receipts_show_real_db_counts_and_screen_reasons(tmp_path, caplog):
+    hot = SQLiteHotStore(tmp_path / "receipts.sqlite")
+    hot.initialize()
+    registry = ResearchCandidateRegistry(hot)
+    candidate = json.loads(artifact())
+    candidate["model_spec"]["identity"]["venue"] = "binance"
+    # Keep a valid model hash; only change retrospective evidence.
+    candidate["validation"]["brier_gain"] = .0002
+    candidate["out_of_sample_test"]["brier_gain"] = .0001
+    payload = json.dumps(candidate).encode()
+    detail = verified_candidate(payload)
+    assert detail["retrospective_screen"] == "insufficient"
+    assert detail["admission_reason"] == "validation_brier_gain_below_0.005"
+    with caplog.at_level("INFO"):
+        registry.import_verified("driveReceipt_1", payload)
+        registry.import_verified("driveReceipt_1", payload)
+    assert registry.inventory_receipt() == {
+        "total": 1, "passed": 0, "compatible": 0, "missing_artifacts": 0,
+    }
+    messages = [r.message for r in caplog.records if "verified model imported" in r.message]
+    assert len(messages) == 1
+    assert detail["model_sha256"] in messages[0]
+    assert "retrospective_screen=insufficient" in messages[0]
+    hot.close()
+
+
+def test_offline_screen_distinguishes_missing_months_and_holdout():
+    assert verified_candidate(artifact(source_months=3))["admission_reason"] == (
+        "fewer_than_six_source_months"
+    )
+    doc = json.loads(artifact())
+    doc["out_of_sample_test"]["brier_gain"] = 0
+    assert verified_candidate(json.dumps(doc).encode())["admission_reason"] == (
+        "holdout_brier_gain_below_0.005"
+    )

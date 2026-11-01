@@ -1,32 +1,79 @@
-name: One-time private Discloud VLAN diagnosis
+name: One-time validated private LLM Discloud deployment
 on:
   push:
     branches: ["diagnostics/read-only-discloud-vlan-20261101"]
     paths: [".github/workflows/discloud-vlan-readonly-diagnostic.yml"]
 permissions:
   contents: read
+  actions: read
 jobs:
-  inspect:
+  deploy-isolated-llm:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Verify current RivaL research provider mode without reading secrets
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Require merged reviewed changes and verified original package
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor c3ef333da81adc919ee193cdc59342507f27efe3 HEAD
+          test -f services/rival-llm/discovery.py
+          grep -q 'private_peer_discovery_ready' services/rival-llm/discovery.py
+      - uses: actions/download-artifact@v4
+        with:
+          name: RIVAL-LLM-UPLOAD-THIS-ZIP
+          run-id: 41352922522
+          github-token: ${{ github.token }}
+          path: discloud-upload
+      - name: Validate exact packaged files before upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          python services/rival-llm/validate_package.py discloud-upload
+          test -f discloud-upload/discovery.py
+          test -f discloud-upload/runtime/bin/llama-server
+          ( cd discloud-upload && zip -q -r ../llm-validated.zip . )
+          python services/rival-llm/validate_package.py llm-validated.zip
+      - name: Commit only to existing RivaL-Intelligence, preserving main bot
+        shell: bash
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
-        shell: bash
         run: |
-          python - <<'PY'
-          import base64,json,os,urllib.request,urllib.parse
-          token=os.environ.get("DISCLOUD_TOKEN","");appid=os.environ.get("DISCLOUD_APP_ID","")
-          if not token or not appid:raise SystemExit("Deployment credentials unavailable")
-          code="""import os,json
-          print("RIVAL_ENV="+json.dumps({"provider":os.getenv("RIVAL_AI_PROVIDER","disabled"),"local_token_configured":bool(os.getenv("RIVAL_LOCAL_AI_TOKEN")),"background_opt_in":os.getenv("RIVAL_AI_BACKGROUND_OPT_IN","false"),"cloudflare_backup_configured":bool(os.getenv("RIVAL_CLOUDFLARE_AI_TOKEN"))}))
-          """
-          cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(code.encode()).decode()+"\"))'"
-          req=urllib.request.Request("https://api.discloud.app/v2/app/"+urllib.parse.quote(appid,safe="")+"/console",method="PUT",data=json.dumps({"command":cmd}).encode(),headers={"api-token":token,"Content-Type":"application/json"})
-          with urllib.request.urlopen(req,timeout=30) as r:reply=json.load(r)
-          out=reply.get("apps",{}).get("shell",{}).get("stdout","")
-          if "RIVAL_ENV=" in out:print("RivaL provider configuration",out.split("RIVAL_ENV=",1)[1].splitlines()[0])
-          else:print("Provider status unavailable")
+          set -euo pipefail
+          if [ -z "$DISCLOUD_TOKEN" ] || [ -z "$DISCLOUD_APP_ID" ]; then
+            echo "::error::Discloud credentials missing"
+            exit 1
+          fi
+          curl -fsS --max-time 30 -H "api-token: $DISCLOUD_TOKEN" https://api.discloud.app/v2/app/all -o "$RUNNER_TEMP/apps.json"
+          APP_ID=$(python - "$RUNNER_TEMP/apps.json" "$DISCLOUD_APP_ID" <<'PY'
+          import json,sys
+          data=json.load(open(sys.argv[1]))
+          candidates=[app for app in data.get("apps",[]) if
+              app.get("name","").casefold()=="rival-intelligence"
+              and app.get("id") != sys.argv[2]]
+          if len(candidates)!=1 or not candidates[0].get("id"):
+              raise SystemExit("Refusing update: isolated LLM app not uniquely identified")
+          print(candidates[0]["id"])
+          PY
+          )
+          test -n "$APP_ID"
+          RESULT=$(curl -sS --max-time 180 --retry 0 -o "$RUNNER_TEMP/commit.json" -w '%{http_code}' \
+            -H "api-token: $DISCLOUD_TOKEN" -X PUT \
+            -F "file.zip=@llm-validated.zip;type=application/zip" \
+            "https://api.discloud.app/v2/app/$APP_ID/commit")
+          echo "RivaL-Intelligence update HTTP $RESULT"
+          if [ "$RESULT" != 200 ]; then
+            echo "::error::Isolated LLM update API returned non-200 status"
+            exit 1
+          fi
+          python - "$RUNNER_TEMP/commit.json" <<'PY'
+          import json,sys
+          with open(sys.argv[1]) as f:result=json.load(f)
+          if result.get("statusCode",200) >= 400:
+              raise SystemExit("Discloud application update was rejected")
+          print("Existing isolated LLM package update acknowledged")
           PY

@@ -10,55 +10,49 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Read sanitized LFM3 inference errors and CPU limits
+      - name: Benchmark a shorter LFM3 JSON reply on the actual CPU
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
         shell: bash
         run: |
           python - <<'PY'
-          import base64,json,os,re,urllib.error,urllib.parse,urllib.request
-          TOKEN=os.getenv("DISCLOUD_TOKEN","")
-          def api(path,method="GET",body=None):
-           req=urllib.request.Request("https://api.discloud.app/v2"+path,method=method,
-              data=json.dumps(body).encode() if body is not None else None,
-              headers={"api-token":TOKEN,"Content-Type":"application/json"})
+          import base64,json,os,urllib.error,urllib.parse,urllib.request
+          token=os.environ.get("DISCLOUD_TOKEN","")
+          def api(p,method="GET",data=None):
+           req=urllib.request.Request("https://api.discloud.app/v2"+p,
+            data=json.dumps(data).encode() if data else None,method=method,
+            headers={"api-token":token,"Content-Type":"application/json"})
            try:
-            with urllib.request.urlopen(req,timeout=50) as r:return json.loads(r.read(200000))
-           except urllib.error.HTTPError as e:
-            print("API status",e.code);return {}
-           except Exception as e:
-            print("API failure",type(e).__name__);return {}
-          if not TOKEN:raise SystemExit("No Discloud secret")
-          apps=api("/app/all").get("apps",[])
-          llms=[x for x in apps if isinstance(x,dict) and x.get("name","").lower()=="rival-intelligence"]
-          if len(llms)!=1:raise SystemExit("LLM app not uniquely identified")
-          appid=str(llms[0]["id"]);base="/app/"+urllib.parse.quote(appid,safe="")
-          logreply=api(base+"/logs")
-          t=(logreply.get("apps",{}).get("terminal",{}) if isinstance(logreply,dict) else {})
-          s=str(t.get("big","")) if isinstance(t,dict) else ""
-          if not s and isinstance(t,dict):s=str(t.get("small",""))
-          print("LLM recent inference error classes:",re.findall(r"inference rejected class=([A-Za-z0-9_]+)",s)[-10:])
-          print("LLM raw backend completion timing excerpts:",[
-            m.group(0)[:140] for m in re.finditer(r"(?:prompt eval time|eval time|total time)[^\\r\\n]{0,100}",s,re.I)][-9:])
-          code="""import os,json,pathlib,urllib.request,socket
-          def file(name):
-           try:return pathlib.Path(name).read_text().strip()
-           except (OSError,UnicodeError):return "unavailable"
-          def health(url):
-           try:
-            with urllib.request.urlopen(url,timeout=3) as r:return {"http":r.status,"status":json.loads(r.read(1000)).get("status")}
-           except Exception as e:return {"error":type(e).__name__}
-          print("RIVAL_DIAG_RESULT="+json.dumps({"cpu_count":os.cpu_count(),
-          "cpu_quota":file("/sys/fs/cgroup/cpu.max"),"memory_max":file("/sys/fs/cgroup/memory.max"),
-          "memory_current":file("/sys/fs/cgroup/memory.current"),
-          "gateway":health("http://127.0.0.1:8765/health"),
-          "llama":health("http://127.0.0.1:8766/health")}))
+            with urllib.request.urlopen(req,timeout=55) as r:return json.loads(r.read(100000))
+           except urllib.error.HTTPError as e:print("API status",e.code);return {}
+           except Exception as e:print("API failure",type(e).__name__);return {}
+          apps=api("/app/all").get("apps",[]) if token else []
+          llm=[a for a in apps if isinstance(a,dict) and a.get("name","").lower()=="rival-intelligence"]
+          if len(llm)!=1:raise SystemExit("LLM not identified")
+          code="""import json,time,urllib.request,urllib.error
+          from service import PROMPT,validated_research
+          evidence={"analysis":"synthetic_test_only","sources":[{"venue":"okx","status":"quotes_missing"}]}
+          messages=[{"role":"system","content":PROMPT},{"role":"user","content":"Asset: BTC\\nObserved market evidence (untrusted):\\n"+json.dumps(evidence,sort_keys=True,separators=(",",":"))}]
+          p={"model":"LiquidAI/LFM3-1.7B-GGUF","messages":messages,"temperature":0.1,"max_tokens":180,"stream":False,"response_format":{"type":"json_object"}}
+          req=urllib.request.Request("http://127.0.0.1:8766/v1/chat/completions",data=json.dumps(p).encode(),
+           headers={"Content-Type":"application/json"},method="POST")
+          t=time.monotonic()
+          try:
+           with urllib.request.urlopen(req,timeout=50) as response:
+            data=json.loads(response.read(50000))
+            first=data["choices"][0]
+            content=first["message"]["content"]
+            try: parsed=json.loads(content);valid=validated_research(parsed)
+            except Exception:valid=False
+            out={"http":response.status,"seconds":round(time.monotonic()-t,2),"usage":data.get("usage"),"finish_reason":first.get("finish_reason"),"valid_fields":valid,"content_chars":len(content),"direction":parsed.get("direction") if valid else None,"content_prefix":content[:65] if not valid else None}
+          except Exception as e:out={"error":type(e).__name__,"seconds":round(time.monotonic()-t,2)}
+          print("RIVAL_BENCH="+json.dumps(out))
           """
           cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(code.encode()).decode()+"\"))'"
-          response=api(base+"/console","PUT",{"command":cmd})
-          out=str(response.get("apps",{}).get("shell",{}).get("stdout",""))
-          if "RIVAL_DIAG_RESULT=" in out:
-           try:print("Runtime CPU, memory and health",json.loads(out.split("RIVAL_DIAG_RESULT=",1)[1].splitlines()[0]))
-           except Exception:print("Runtime metric parse failure")
-          else:print("Runtime metric console unavailable")
+          ret=api("/app/"+urllib.parse.quote(str(llm[0]["id"]),safe="")+"/console","PUT",{"command":cmd})
+          std=str(ret.get("apps",{}).get("shell",{}).get("stdout",""))
+          if "RIVAL_BENCH=" in std:
+           try:print("180 token production-model synthetic probe",json.loads(std.split("RIVAL_BENCH=",1)[1].splitlines()[0]))
+           except Exception:print("Model synthetic probe parse failed")
+          else:print("Model synthetic probe unavailable; no response data logged")
           PY

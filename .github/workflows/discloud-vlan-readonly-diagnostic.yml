@@ -10,82 +10,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Verify private VLAN UDP broadcast viability without credentials or code changes
+      - name: Verify current RivaL research provider mode without reading secrets
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         shell: bash
         run: |
           python - <<'PY'
-          import base64, concurrent.futures, json, os, urllib.request, urllib.error, urllib.parse
-          T=os.getenv("DISCLOUD_TOKEN",""); M=os.getenv("DISCLOUD_APP_ID","")
-          def api(path,method="GET",body=None):
-           req=urllib.request.Request("https://api.discloud.app/v2"+path,method=method,
-            data=json.dumps(body).encode() if body else None,
-            headers={"api-token":T,"Content-Type":"application/json"})
-           try:
-            with urllib.request.urlopen(req,timeout=55) as r:return json.loads(r.read(120000))
-           except Exception as exc:
-            print("discloud_api_error_class",type(exc).__name__);return {}
-          if not T or not M:raise SystemExit("Discloud secrets unavailable")
-          apps=api("/app/all").get("apps",[])
-          llms=[a for a in apps if isinstance(a,dict) and a.get("name","").lower()=="rival-intelligence"]
-          if len(llms)!=1:raise SystemExit("Cannot identify LLM app")
-          def console(app,source):
-           command="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(source.encode()).decode()+"\"))'"
-           reply=api("/app/"+urllib.parse.quote(str(app),safe="")+"/console","PUT",{"command":command})
-           shell=reply.get("apps",{}).get("shell",{}) if isinstance(reply,dict) else {}
-           out=str(shell.get("stdout",""))
-           if "RIVAL_UDP_PROBE=" not in out:
-            return {"error":"console_probe_unavailable","stderr_present":bool(shell.get("stderr"))}
-           try:return json.loads(out.split("RIVAL_UDP_PROBE=",1)[1].splitlines()[0])
-           except Exception:return {"error":"unparseable"}
-          listener="""import json,socket,time
-          sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-          sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-          sock.bind(("0.0.0.0",29785))
-          sock.settimeout(1)
-          count=0
-          deadline=time.monotonic()+17
-          while time.monotonic()<deadline:
-           try:data,addr=sock.recvfrom(160)
-           except socket.timeout:continue
-           if data==b"RIVAL_PROBE_20261101":
-            sock.sendto(b"RIVAL_PROBE_REPLY_20261101",addr);count+=1
-          sock.close()
-          print("RIVAL_UDP_PROBE="+json.dumps({"received_broadcast_count":count>0}))
+          import base64,json,os,urllib.request,urllib.parse
+          token=os.environ.get("DISCLOUD_TOKEN","");appid=os.environ.get("DISCLOUD_APP_ID","")
+          if not token or not appid:raise SystemExit("Deployment credentials unavailable")
+          code="""import os,json
+          print("RIVAL_ENV="+json.dumps({"provider":os.getenv("RIVAL_AI_PROVIDER","disabled"),"local_token_configured":bool(os.getenv("RIVAL_LOCAL_AI_TOKEN")),"background_opt_in":os.getenv("RIVAL_AI_BACKGROUND_OPT_IN","false"),"cloudflare_backup_configured":bool(os.getenv("RIVAL_CLOUDFLARE_AI_TOKEN"))}))
           """
-          client="""import socket,fcntl,struct,ipaddress,json,time
-          results={}
-          sock=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-          sock.setsockopt(socket.SOL_SOCKET,socket.SO_BROADCAST,1)
-          sock.bind(("0.0.0.0",0))
-          sock.settimeout(0.5)
-          time.sleep(1.5)
-          for iface in ("eth0","eth1"):
-           try:
-            ctl=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
-            ip=socket.inet_ntoa(fcntl.ioctl(ctl.fileno(),0x8915,struct.pack("256s",iface.encode()))[20:24])
-            mask=socket.inet_ntoa(fcntl.ioctl(ctl.fileno(),0x891b,struct.pack("256s",iface.encode()))[20:24])
-            ctl.close()
-            network=ipaddress.ip_network(ip+"/"+mask,strict=False)
-            target=str(network.broadcast_address)
-            ok=False
-            for _ in range(3):
-             sock.sendto(b"RIVAL_PROBE_20261101",(target,29785))
-             try:
-              reply,addr=sock.recvfrom(200)
-              if reply==b"RIVAL_PROBE_REPLY_20261101":ok=True
-             except socket.timeout:pass
-             if ok:break
-            results[iface]={"broadcast_reply":ok}
-           except Exception as e:results[iface]={"error_class":type(e).__name__}
-          sock.close()
-          print("RIVAL_UDP_PROBE="+json.dumps(results))
-          """
-          with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-           a=pool.submit(console,llms[0]["id"],listener)
-           b=pool.submit(console,M,client)
-           print("LLM UDP listener result:",a.result(timeout=60))
-           print("RivaL UDP broadcast result:",b.result(timeout=60))
+          cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(code.encode()).decode()+"\"))'"
+          req=urllib.request.Request("https://api.discloud.app/v2/app/"+urllib.parse.quote(appid,safe="")+"/console",method="PUT",data=json.dumps({"command":cmd}).encode(),headers={"api-token":token,"Content-Type":"application/json"})
+          with urllib.request.urlopen(req,timeout=30) as r:reply=json.load(r)
+          out=reply.get("apps",{}).get("shell",{}).get("stdout","")
+          if "RIVAL_ENV=" in out:print("RivaL provider configuration",out.split("RIVAL_ENV=",1)[1].splitlines()[0])
+          else:print("Provider status unavailable")
           PY

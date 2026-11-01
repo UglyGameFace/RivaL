@@ -22,7 +22,8 @@ from parlay_bot.research.audit import audit_partition
 from parlay_bot.research.batch import complete_months
 from parlay_bot.research.free_history import HistoryImportError, _persist
 from parlay_bot.research.source_native import (
-    SOURCE, restore_verified_source_months,
+    SOURCE,
+    restore_verified_source_months,
 )
 
 URL = "https://api.bitget.com/api/v3/market/history-candles"

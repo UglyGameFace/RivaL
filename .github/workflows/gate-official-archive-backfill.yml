@@ -52,7 +52,7 @@ jobs:
         run: |
           python -m pip install -e ".[dev,archive]"
           ruff check src/parlay_bot/archive/drive.py src/parlay_bot/research/gate_bulk_archive.py src/parlay_bot/research/gate_archive_backfill.py src/parlay_bot/research/gate_api_fallback.py src/parlay_bot/research/gate_native.py src/parlay_bot/research/source_native.py tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_api_fallback.py tests/test_gate_native.py
-          pytest -q tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_native.py
+          pytest -q tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_api_fallback.py tests/test_gate_native.py tests/test_polymarket_contract_research.py -k 'not postgres'
 
   gate-real-archive-smoke:
     if: github.event_name == 'pull_request'

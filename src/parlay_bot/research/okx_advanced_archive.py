@@ -89,7 +89,7 @@ def _col(row: dict, names: tuple[str, ...]):
     raise HistoryImportError("unsupported OKX archive schema: " + ",".join(names))
 
 
-def _parse_member(name: str, stream, *, module: str, start: datetime,
+def _parse_member(name: str, stream, *, asset: str, module: str, start: datetime,
                   end: datetime, buckets: dict, count: list[int]) -> None:
     if name.endswith(".csv"):
         text = io.TextIOWrapper(stream, encoding="utf-8-sig", newline="")
@@ -100,6 +100,9 @@ def _parse_member(name: str, stream, *, module: str, start: datetime,
             for row in reader:
                 if not row or None in row:
                     raise HistoryImportError("malformed OKX CSV record")
+                for field in ("instId", "inst_id", "symbol"):
+                    if field in row and row[field] and row[field] != f"{asset}-USDT-SWAP":
+                        raise HistoryImportError("wrong swap identity inside archive")
                 count[0] += 1
                 if count[0] > MAX_RECORDS:
                     raise HistoryImportError("archive exceeds sample row budget")
@@ -190,7 +193,7 @@ def inspect_archive(path: Path, *, asset: str, month: str, module: str) -> dict:
                 if total > MAX_EXPANDED_BYTES:
                     raise HistoryImportError("ZIP decompression budget exceeded")
                 with archive.open(entry) as source:
-                    _parse_member(entry.filename, source, module=module, start=start,
+                    _parse_member(entry.filename, source, asset=asset, module=module, start=start,
                                   end=end, buckets=buckets, count=count)
     elif tarfile.is_tarfile(path):
         with tarfile.open(path, mode="r:gz") as archive:
@@ -209,7 +212,7 @@ def inspect_archive(path: Path, *, asset: str, month: str, module: str) -> dict:
                 if source is None:
                     raise HistoryImportError("missing tar file content")
                 with source:
-                    _parse_member(entry.name, source, module=module, start=start,
+                    _parse_member(entry.name, source, asset=asset, module=module, start=start,
                                   end=end, buckets=buckets, count=count)
     else:
         raise HistoryImportError("unsupported OKX archive encoding")
@@ -245,7 +248,6 @@ async def ingest_one(*, client: httpx.AsyncClient, asset: str, month: str,
     if target.exists():
         raise HistoryImportError("archive already exists; refusing evidence replacement")
     digest = hashlib.sha256()
-    observed = datetime.now(UTC).isoformat()
     fd, tmpname = tempfile.mkstemp(prefix=".okx-", dir=root)
     try:
         with os.fdopen(fd, "wb") as output:
@@ -265,6 +267,7 @@ async def ingest_one(*, client: httpx.AsyncClient, asset: str, month: str,
                     output.write(chunk)
         if total == 0:
             raise HistoryImportError("empty OKX archive")
+        observed = datetime.now(UTC).isoformat()
         parsed = inspect_archive(Path(tmpname), asset=asset, month=month, module=module)
         # Every retained output is retrospective and feature availability is
         # event-time only; true first observation is this retrieval.

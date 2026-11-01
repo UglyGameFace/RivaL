@@ -208,3 +208,39 @@ matched quote coverage, stable/positive comparison to incumbent and after-cost
 stress tests. No backfill can manufacture those future outcomes. The system
 must retain NO CALL when evidence is insufficient. A GitHub successful
 deployment and a Discloud `Online` status do not waive any of these gates.
+
+
+## Direct official-source native bootstrap (Bitget V3)
+
+Use the GitHub Actions **Official Bitget six-month native bootstrap** job.
+It can be manually dispatched for BTC, ETH, SOL or XRP and normally runs
+one rotating asset per day. On its first merged code release it tries BTC.
+It requires the existing private Drive OAuth/folder secrets, never API trade
+credentials, and reads only Bitget's public
+`https://api.bitget.com/api/v3/market/history-candles` endpoint.
+It validates the **USDT-FUTURES perpetual instrument identity**, requests
+one 100-candle 5m page at a time, enforces exact order, boundaries, OHLCV,
+timestamps and uninterrupted six *completed* calendar months, and refuses
+publication if even one source candle is missing. It does not use Binance
+prices to fill unavailable Bitget bars.
+
+After a complete month it uploads the Bitget-labeled research bytes and
+manifest to the existing private Drive using the same checksum readback as
+the on-host exporter. Already published, restored and independently audited
+full months are reused on the next run. When all six months exist for one
+matching instrument, the **existing** source-native offline research workflow
+evaluates historical models and publishes research-only model candidates.
+Discloud's existing candidate importer scans that same Drive; only models
+which pass its independent retrospective eligibility can enter autonomous
+shadow research. None is auto-approved for signals or trading. Models still
+need genuine future-only comparisons, matched bid/ask quotes, and after-cost
+promotion evidence.
+
+The bootstrap records each page's actual archive retrieval time as
+`first_observed_at`, so backfilled bars cannot become past-time live
+predictions. The source integrity label
+`bitget-v3-public-history-v1` identifies verified official HTTPS source
+responses and locally hashed research bytes; Bitget does **not** supply a
+provider-signed checksum for these responses. This provenance is not
+interchangeable with `postgres-first-observed-at-v1`. A provider timeout,
+short page, gap or failed Drive readback fails the job as unverified. 

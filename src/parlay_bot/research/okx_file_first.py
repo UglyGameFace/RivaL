@@ -147,12 +147,21 @@ async def _download_archive(client: httpx.AsyncClient, *, url: str) -> bytes:
         return tmp.read()
 
 
+def archive_cache_path(*, root: Path, asset: str, month: str,
+                       url: str) -> Path:
+    """Exact immutable archive cache locator shared with Drive preservation."""
+    if asset not in ASSETS:
+        raise HistoryImportError("unapproved OKX archive cache asset")
+    month_bounds(month)
+    key = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
+    return root / ".okx-one-minute-zip-cache" / f"{asset}-{month}-{key}.zip"
+
+
 async def _cached_archive(client: httpx.AsyncClient, *, root: Path,
                           asset: str, month: str, url: str) -> bytes:
     """Reuse adjacent-month official bytes only after checking their saved hash."""
-    key = hashlib.sha256(url.encode("utf-8")).hexdigest()[:24]
-    cache = root / ".okx-one-minute-zip-cache"
-    path = cache / f"{asset}-{month}-{key}.zip"
+    path = archive_cache_path(root=root, asset=asset, month=month, url=url)
+    cache = path.parent
     checksum_path = cache / f"{asset}-{month}-{key}.sha256"
     if path.exists():
         try:

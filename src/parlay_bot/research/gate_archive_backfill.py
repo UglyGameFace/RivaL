@@ -328,7 +328,8 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
             len(all_jobs) - len(pending),
         "pending_jobs": len(pending),
         "selected_jobs": len(selected),
-        "published": [], "unavailable_or_rejected": [],
+        "published": [], "reverified_existing": [],
+        "unavailable_or_rejected": [],
         "native_qualified": [], "native_blockers": [],
         "native_months_already_listed_without_readback": len(native_months),
         "model_research": {"status": "not_run_no_six_verified_months",
@@ -357,11 +358,20 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                             download, client=client, asset=asset, kind=kind,
                             month=month, output=output,
                         )
+                        already_published = key in existing
+                        if (already_published
+                            and existing[key] != receipt["compressed_sha256"][:16]):
+                            raise HistoryImportError(
+                                "Gate provider archive changed since immutable Drive copy"
+                            )
                         saved = await publish_raw(
                             drive, archive=output, source=receipt,
                             asset=asset, kind=kind, month=month, root=root,
                         )
-                        result["published"].append(saved)
+                        if already_published:
+                            result["reverified_existing"].append(saved)
+                        else:
+                            result["published"].append(saved)
                         existing[key] = receipt["compressed_sha256"][:16]
                         if kind == "candlesticks_5m" and (asset, month) not in native_months:
                             from parlay_bot.research.gate_native import qualify_and_publish
@@ -457,7 +467,8 @@ def main(argv: list[str] | None = None) -> int:
             RuntimeError, ValueError, OSError) as exc:
         parser.exit(2, f"Gate archival blocked: {exc}\n")
     print(json.dumps({
-        "published": len(data["published"]),
+        "published_new": len(data["published"]),
+        "reverified_existing": len(data["reverified_existing"]),
         "unavailable_or_rejected": len(data["unavailable_or_rejected"]),
         "provider_throttled": data["provider_throttled"],
         "native_qualified": len(data["native_qualified"]),
@@ -469,6 +480,7 @@ def main(argv: list[str] | None = None) -> int:
     # every selected archive is blocked or the provider asks to slow down.
     return 2 if data["provider_throttled"] or (
         data["selected_jobs"] and not data["published"]
+        and not data["reverified_existing"]
     ) else 0
 
 

@@ -50,7 +50,7 @@ def archive_url(*, asset: str, month: str, record: dict) -> str:
         or not parsed.path.startswith("/cdn/okex/")
         or name != Path(name).name or ".." in name or "\\" in name
         or not name.startswith(f"{asset}-USDT-SWAP-")
-        or not (name.endswith(".zip") or name.endswith(".tar.gz"))
+        or not name.endswith((".zip", ".tar.gz"))
         or not parsed.path.endswith("/" + name)
         or (month not in name and month.replace("-", "") not in name)):
         raise HistoryImportError("untrusted OKX archive URL or instrument/month")

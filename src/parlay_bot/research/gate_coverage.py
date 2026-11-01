@@ -47,6 +47,14 @@ def build_gate_coverage(
         (item["asset"], item["month"]): item
         for item in result.get("five_minute_source_gap_inventory", [])
     }
+    minute = {
+        (item["asset"], item["month"]): item
+        for item in result.get("one_minute_gap_repairs", [])
+    }
+    minute_failures = {
+        (item["asset"], item["month"]): item["reason"]
+        for item in result.get("one_minute_gap_blockers", [])
+    }
     # Defensive: no untrusted selected-job string can be treated as a
     # verified source, and no local success implies future skill.
     rows = []
@@ -104,6 +112,18 @@ def build_gate_coverage(
                         row["raw_missing_utc_timestamps"] = evidence.get(
                             "missing_utc_timestamps", []
                         )
+                    if ident in minute:
+                        proof = minute[ident]
+                        row["one_minute_gap_source_status"] = proof.get(
+                            "status", "gate_one_minute_original_sha_verified"
+                        )
+                        row["one_minute_derived_candle_count"] = proof.get(
+                            "same_gate_1m_candles_derived", 0
+                        )
+                        row["one_minute_repair_model_training_eligible"] = False
+                    elif ident in minute_failures:
+                        row["one_minute_gap_source_status"] = "blocked"
+                        row["one_minute_gap_blocker"] = minute_failures[ident]
                     if ident in api:
                         item = api[ident]
                         row["api_fallback_status"] = item["status"]

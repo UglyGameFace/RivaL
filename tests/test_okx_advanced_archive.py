@@ -12,7 +12,9 @@ import pytest
 
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.okx_advanced_archive import (
-    archive_url, ingest_one, inspect_archive,
+    archive_url,
+    ingest_one,
+    inspect_archive,
 )
 
 ASSET = "BTC"

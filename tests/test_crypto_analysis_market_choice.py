@@ -202,14 +202,14 @@ async def test_dashboard_shows_polymarket_outcomes_without_market_choice(tmp_pat
         pane = await home.render()
         fields = {x.name: x.value for x in pane.fields}
         assert "99" in fields["🎯 Polymarket"]
-        assert "**0** model calls settled" in fields["🎯 Polymarket"]
-        assert "not measured" in fields["🎯 Polymarket"]
+        assert "0 settled calls" in fields["🎯 Polymarket"]
+        assert "no paired score available" in fields["🎯 Polymarket"]
         assert "Choose a market" not in str(pane.to_dict())
         assert len(pane.fields) == 4
 
         home.polymarket_status = None
         offline = await home.render()
-        assert "Polymarket results unavailable" in str(offline.to_dict())
+        assert "Contract score read unavailable" in str(offline.to_dict())
         assert "0% win rate" not in str(offline.to_dict())
     finally:
         home.stop()
@@ -238,11 +238,11 @@ async def test_polymarket_stats_do_not_require_exchange_or_drive(tmp_path):
         }
         view = await home.render()
         body = str(view.to_dict())
-        assert "**12** past outcomes learned" in body
-        assert "**5** model calls settled" in body
+        assert "12 historical outcomes (not forward calls)" in body
+        assert "5 settled calls" in body
         assert "0.2100" in body
         assert "0.2400" in body
-        assert "No verified live learning status" in body
+        assert "Learning heartbeat: read unavailable" in body
         home.navigate("trust")
         assert home.page == "performance"
         detail = await home.render()
@@ -285,14 +285,20 @@ async def test_exchange_performance_one_page_shows_sample_and_learning(
             home_module, "ForwardAccuracyMonitor", lambda _market: Audit(),
         )
         home.market = object()
-        home.training_status = lambda asset, horizon: {
-            "live_engine": "prospective-logistic-persistent-v3",
-            "live_learning": {
-                "completed_at": "2026-10-31T13:00:00+00:00",
-                "math_ok": True, "math_issued": 4, "math_settled": 7,
+        from datetime import UTC, datetime
+
+        # Training registry/Drive queries must never be called by the overview.
+        home.training_status = lambda *_: (_ for _ in ()).throw(
+            AssertionError("Performance invoked expensive training read")
+        )
+        monkeypatch.setattr(home_module, "_performance_cycles", lambda *_: {
+            "learning": {
+                "status": "recorded", "checked_at": datetime.now(UTC),
+                "math_ok": True, "model_review_ok": True,
+                "issued": 4, "settled": 7,
             },
-            "active_offline_model": False,
-        }
+            "forecast": None,
+        })
         home.polymarket_status = lambda _asset, _horizon: {
             "learned_contracts": 99, "settled_forward_contracts": 0,
             "forward_brier": None, "market_baseline_brier": None,
@@ -310,11 +316,11 @@ async def test_exchange_performance_one_page_shows_sample_and_learning(
         assert "4,159" in body and "4,150" in body
         assert "2,063/4,150" in body and "49.7%" in body
         assert "0.2510" in body and "0.2490" in body
-        assert "99" in body and "not measured" in body
-        assert "14" in body and "Historical seed used" in body
-        assert "Issued **4**" in body and "settled **7**" in body
-        assert "Historical model eligibility unavailable" in body
-        assert "Current learning benefit: unavailable" in body
+        assert "99" in body and "no paired score available" in body
+        assert "14" in body and "Historical seeds in recent verified lineage" in body
+        assert "4 issued / 7 settled" in body
+        assert "NO VERIFIED TRADING EDGE" in body
+        assert "14d comparison: read unavailable" in body
         assert "practice usdt" not in body.lower()
     finally:
         home.stop()

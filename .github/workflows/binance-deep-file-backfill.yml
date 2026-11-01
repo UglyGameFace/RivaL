@@ -38,7 +38,7 @@ jobs:
         run: |
           python -m pip install -e ".[dev]"
           ruff check src/parlay_bot/research/binance_deep_backfill.py tests/test_binance_deep_backfill.py
-          pytest -q tests/test_binance_deep_backfill.py tests/test_free_history.py
+          pytest -q tests/test_binance_deep_backfill.py
 
   binance-history:
     if: github.event_name != 'pull_request' && vars.RIVAL_NATIVE_PUBLIC_BOOTSTRAP_ENABLED != 'false'

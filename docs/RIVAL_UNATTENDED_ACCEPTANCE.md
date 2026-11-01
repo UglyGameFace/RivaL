@@ -167,3 +167,44 @@ authenticated console API returns only command acknowledgment rather than
 stdout/exit status, obtain the actual probe receipt from the running host
 or an explicitly scoped read-only DB connection. An acknowledged command
 is not an acceptance result.
+
+
+## Independent off-host application availability
+
+A GitHub Actions monitor runs separately from the Discloud host at approximately
+ten-minute intervals, using the existing CI secrets `DISCLOUD_TOKEN` and
+`DISCLOUD_APP_ID`, with explicit `issues: write` access. The monitor reads
+`GET /v2/app/{appId}/status` twice, compares the exact authenticated app
+identity, and opens/reopens **one** `[Uptime] RivaL Discloud application
+offline` issue on confirmed `Offline` status. The same issue is closed on
+confirmed recovery. It never starts, stops, or restarts the bot; no user
+credentials, API payloads or database data are logged. Malformed, unauthorized,
+timed-out, or unknown provider responses produce an `UNVERIFIED` failed
+workflow rather than being mislabeled online or offline.
+
+Manual probe: GitHub Actions → **RivaL independent Discloud uptime** →
+**Run workflow**. Workflow schedule is best-effort, not exact ten-minute
+SLA. No separate service subscription is required. GitHub's availability is
+also a dependency. This is genuine independent *process/container* status,
+**not** proof that the database, feeds, model evaluations, or 5m quote coverage
+are healthy; continue to use `python main.py --health` for those host-sourced
+facts. When reviewing production readiness, cite both sources separately.
+
+## Remaining source-native and forward-evidence gates
+
+The retained finalized-row restart result and genuinely post-boot forecasts
+prove autonomous persistence/continuity, **not** model skill or historical
+training. Source-native six-month readiness requires six full consecutive
+calendar months of immutable 5m bars from the **same** real venue, instrument
+and quote, successfully published/restored from the private Drive manifests
+and then used to train a source-compatible registered model. Binance-only
+boosted artifacts do not count as another venue's native model. Keep training
+and imports blocked for missing or inconsistent source-month receipts.
+
+Learning must keep issuing and settling genuinely future-only shadow
+predictions, with source-matched bid/ask observations. The governing
+requirements remain at least 150 outcomes over 21 days, at least 80%
+matched quote coverage, stable/positive comparison to incumbent and after-cost
+stress tests. No backfill can manufacture those future outcomes. The system
+must retain NO CALL when evidence is insufficient. A GitHub successful
+deployment and a Discloud `Online` status do not waive any of these gates.

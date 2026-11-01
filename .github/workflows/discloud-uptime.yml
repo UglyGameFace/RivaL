@@ -1,0 +1,31 @@
+name: RivaL independent Discloud uptime
+
+on:
+  schedule:
+    # GitHub-owned check, outside Discloud. GitHub schedules are best-effort.
+    - cron: "7,17,27,37,47,57 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: rival-independent-discloud-uptime
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check Discloud application outside its process
+        env:
+          DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+          DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+          GH_TOKEN: ${{ github.token }}
+        run: python tools/discloud_uptime.py

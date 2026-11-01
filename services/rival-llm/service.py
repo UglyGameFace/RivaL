@@ -18,7 +18,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from discovery import serve as serve_peer_discovery
-from evidence_policy import enforce as enforce_grounding
+try:
+    # Inside the standalone Discloud ZIP the policy is shipped at app root.
+    from evidence_policy import enforce as enforce_grounding
+except ModuleNotFoundError:
+    # Editable repository test/developer environment imports source package.
+    from parlay_bot.perpetuals.evidence_policy import enforce as enforce_grounding
 from model_download import ensure_model
 
 LOG = logging.getLogger("rival_llm")

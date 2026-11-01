@@ -10,7 +10,6 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-
 MIB = 1024 * 1024
 # Only valid on the shipped 512 MB Discloud configuration when cgroups are
 # unavailable. Operators changing RAM should set RIVAL_HOST_MEMORY_MB too.

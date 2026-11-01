@@ -214,7 +214,7 @@ async def inventory_extra_modules(client: httpx.AsyncClient, *,
                     if (parsed.scheme != "https" or parsed.hostname != "static.okx.com"
                         or parsed.query or parsed.fragment or parsed.username
                         or not filename.startswith(f"{asset}-USDT-SWAP-")
-                        or not filename.endswith(".zip")
+                        or not filename.endswith((".zip", ".tar.gz"))
                         or not parsed.path.endswith("/" + filename)):
                         raise HistoryImportError("unverified OKX archive host/filename")
                     files.append({"filename": filename, "source_url": url})
@@ -307,7 +307,7 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
                 client, asset=asset, month=month,
             )
             (report_dir / f"okx-extra-inventory-{asset}-{month}.json").write_text(
-                json.dumps(catalog, sort_keys=True, indent=2) + "\\n",
+                json.dumps(catalog, sort_keys=True, indent=2) + "\n",
                 encoding="utf-8",
             )
         return {

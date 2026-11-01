@@ -1,4 +1,4 @@
-name: RivaL production self-learning evidence readiness
+name: One-time RivaL native model hold reasons
 on:
   push:
     branches: ["diagnostics/read-only-discloud-vlan-20261101"]
@@ -6,26 +6,25 @@ on:
 permissions:
   contents: read
 jobs:
-  evidence:
+  inspect:
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
-      - name: Read recent independent forward model outcomes and candidate imports
+      - name: Read latest historical model selection and paper promotion blockers
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         run: |
           python - <<'PY'
           import json,os,base64,urllib.request,urllib.parse
-          t=os.environ['DISCLOUD_TOKEN'];a=os.environ['DISCLOUD_APP_ID']
-          script="import json,os,sys\nfrom datetime import UTC,datetime,timedelta\nsys.path.insert(0,os.path.abspath(\"src\"))\nfrom parlay_bot.config import Settings\nfrom parlay_bot.storage.hot import PostgresHotStore\ns=Settings()\nresult={}\nif s.rival_storage_backend!=\"postgres\" or s.rival_database_url is None:\n result[\"error\"]=\"not_postgres\"\nelse:\n store=PostgresHotStore(s.rival_database_url.get_secret_value())\n try:\n  with store.connect() as con:\n   checks={\n    \"learning_heartbeat\":\"SELECT slot_utc,completed_at,math_issued,math_settled,math_ok,model_review_ok FROM perp_learning_cycle_health ORDER BY completed_at DESC LIMIT 1\",\n    \"forward_2w\":\"SELECT asset,horizon_minutes,COUNT(*) AS issued,SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END) AS settled,COUNT(DISTINCT SUBSTR(issued_at,1,10)) AS days,AVG(model_brier) AS brier,AVG(baseline_brier) AS baseline FROM perp_forward_audit WHERE issued_at>=? GROUP BY asset,horizon_minutes ORDER BY asset,horizon_minutes\",\n    \"promotion\":\"SELECT asset,horizon_minutes,status,MAX(evaluated_at) AS evaluated_at FROM perp_model_promotion GROUP BY asset,horizon_minutes,status ORDER BY evaluated_at DESC LIMIT 18\",\n    \"native_models\":\"SELECT COUNT(*) AS imported,SUM(CASE WHEN compatible=1 THEN 1 ELSE 0 END) AS compatible FROM rival_offline_model_artifacts\",\n    \"selected_models\":\"SELECT COUNT(*) AS n,SUM(CASE WHEN selected_sha256 IS NOT NULL THEN 1 ELSE 0 END) AS selected FROM rival_history_selection\",\n    \"ai\":\"SELECT model,COUNT(*) AS n,MAX(issued_at) AS latest FROM perp_ai_research GROUP BY model\",\n   }\n   for name,sql in checks.items():\n    try:\n     params=((datetime.now(UTC)-timedelta(days=14)).isoformat(),) if name==\"forward_2w\" else ()\n     result[name]=[dict(r) for r in con.execute(sql,params).fetchall()][:20]\n    except Exception as e:\n     result[name+\"_error\"]=type(e).__name__\n except Exception as e:result[\"database_error\"]=type(e).__name__\n finally:store.close()\nprint(\"RIVAL_READINESS=\"+json.dumps(result,sort_keys=True,default=str))\n"
+          t=os.environ['DISCLOUD_TOKEN'];app=os.environ['DISCLOUD_APP_ID']
+          script="import json,os,sys\nsys.path.insert(0,os.path.abspath(\"src\"))\nfrom parlay_bot.config import Settings\nfrom parlay_bot.storage.hot import PostgresHotStore\ns=Settings()\nr={}\nstore=PostgresHotStore(s.rival_database_url.get_secret_value())\ntry:\n with store.connect() as con:\n  queries={\n   \"selection_reasons\":\"SELECT reason,COUNT(*) AS n FROM rival_history_selection GROUP BY reason ORDER BY n DESC LIMIT 12\",\n   \"candidate_screens\":\"SELECT retrospective_screen,COUNT(*) AS n,MAX(source_months) AS max_source_months, SUM(CASE WHEN active_live=1 THEN 1 ELSE 0 END) AS live FROM rival_offline_candidates GROUP BY retrospective_screen ORDER BY n DESC LIMIT 12\",\n   \"promotion_reasons\":\"SELECT reason,COUNT(*) AS n FROM perp_model_promotion WHERE evaluated_at >= '2026-10-31' GROUP BY reason ORDER BY n DESC LIMIT 8\",\n  }\n  for k,q in queries.items():\n   try:\n    items=[dict(x) for x in con.execute(q).fetchall()]\n    for item in items:\n     if \"reason\" in item:item[\"reason\"]=str(item[\"reason\"])[:220]\n    r[k]=items\n   except Exception as e:r[k+\"_error\"]=type(e).__name__\nfinally:store.close()\nprint(\"RIVAL_MODEL_HOLDS=\"+json.dumps(r,sort_keys=True))\n"
           cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(script.encode()).decode()+"\"))'"
-          req=urllib.request.Request('https://api.discloud.app/v2/app/'+urllib.parse.quote(a,safe='')+'/console',
-           data=json.dumps({'command':cmd}).encode(),method='PUT',headers={'api-token':t,'Content-Type':'application/json'})
-          with urllib.request.urlopen(req,timeout=65) as r:d=json.load(r)
-          out=str(d.get('apps',{}).get('shell',{}).get('stdout',''))
-          if 'RIVAL_READINESS=' not in out:
-           print('Readiness not returned; stderr present',bool(d.get('apps',{}).get('shell',{}).get('stderr')))
-           raise SystemExit(1)
-          print('Production model evidence readiness',out.split('RIVAL_READINESS=',1)[1].splitlines()[0])
+          q=urllib.request.Request('https://api.discloud.app/v2/app/'+urllib.parse.quote(app,safe='')+'/console',
+            method='PUT',data=json.dumps({'command':cmd}).encode(),headers={'api-token':t,'Content-Type':'application/json'})
+          with urllib.request.urlopen(q,timeout=65) as resp:obj=json.load(resp)
+          stdout=str(obj.get('apps',{}).get('shell',{}).get('stdout',''))
+          if 'RIVAL_MODEL_HOLDS=' not in stdout:
+           print('no result; stderr_present',bool(obj.get('apps',{}).get('shell',{}).get('stderr')));raise SystemExit(1)
+          print('Live model admission blocker groups',stdout.split('RIVAL_MODEL_HOLDS=',1)[1].splitlines()[0])
           PY

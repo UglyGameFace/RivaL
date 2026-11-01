@@ -287,10 +287,9 @@ async def test_bitget_exact_slot_queue_repairs_scattered_audited_gaps_without_cu
                    SET next_opened_at=? WHERE venue='bitget' AND asset='BTC'""",
                 (cursor.isoformat(),),
             )
-        for offset in range(3):
-            assert await worker.fetch_asset(
-                "BTC", now=NOW + timedelta(minutes=offset),
-            ) == 1
+        # The same scheduled Bitget turn can heal multiple isolated slots
+        # without multiplying its normal long-range history request.
+        assert await worker.run_once(now=NOW) == 3
         assert requested == [
             int((start + timedelta(minutes=5 * i)).timestamp() * 1000)
             for i in sorted(skipped)

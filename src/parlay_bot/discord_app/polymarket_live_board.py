@@ -464,6 +464,12 @@ class LivePolymarketBoardService:
             for tracker in trackers:
                 by_key.setdefault((tracker.asset, tracker.horizon), []).append(tracker)
             budget = asyncio.Semaphore(8)
+            # Quote/event reads are limited separately from message edits.
+            # Without this budget twelve tracked asset/timeframe boards can
+            # launch twelve simultaneous Gamma + dual-CLOB lookups on top of
+            # the independent background bulk scanner, exhausting host HTTP
+            # connections and creating synchronized request timeouts.
+            observation_budget = asyncio.Semaphore(4)
 
             async def update(tracker, embed, fingerprint) -> int:
                 async with budget, self._user_locks.setdefault(tracker.user_id, asyncio.Lock()):
@@ -492,7 +498,10 @@ class LivePolymarketBoardService:
 
             async def observe(key, members) -> int:
                 try:
-                    embed, fingerprint = await self._observation(*key)
+                    async with observation_budget:
+                        embed, fingerprint = await self._observation(*key)
+                    # Release the quote-read budget before Discord edits.
+                    # One slow DM must not block another verified book.
                     return sum(await asyncio.gather(*(
                         update(tracker, embed, fingerprint) for tracker in members
                     )))

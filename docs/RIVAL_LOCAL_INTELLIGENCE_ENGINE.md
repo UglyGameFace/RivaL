@@ -7,7 +7,7 @@
 - Existing RivaL app: \`RAM=512\`, \`VLAN=true\`, \`HOSTNAME=rival-bot\`.
 - New **separate** Discloud application: [services/rival-llm](../services/rival-llm), \`RAM=2450\`, \`VLAN=true\`, \`HOSTNAME=rival-llm\`, \`TYPE=bot\`. No public website or external port. The private gateway listens on TCP 8765; llama.cpp listens ONLY on loopback 8766.
 - Service has **no** database credentials, exchange keys, Polymarket keys, Discord token, trading authority, or ability to alter model weights. Only the RivaL bot accesses already-assembled read-only evidence.
-- Primary: official Liquid AI LFM3-1.7B Q4_K_M (~1.1GB weight file, total RAM depends on CPU/runtime/context). One parallel request, 2 threads, 2048 context, 300 max output tokens, CPU only.
+- Primary: official Liquid AI LFM3-1.7B Q4_K_M (~1.1GB weight file, total RAM depends on CPU/runtime/context). One parallel request, 2 threads, 4096 context, 300 max output tokens, CPU only.
 - Optional comparison mode: Qwen3.5-2B Q4_K_M selected by \`RIVAL_LLM_PROFILE=qwen2b\`, never both memory-heavy models concurrently.
 - Existing isolated Cloudflare Worker is **backup only** for local timeouts/transport failure/502/503/504. No fallback for local authentication errors, local overload (429), or malformed output.
 - Existing SQL stored budget: 18 explicit user-requested local-first research requests/day with 3600-second cooldown (including those using backup), per-user fairness and cache, plus the standalone Cloudflare D1 cap of 24 attempted requests/day. Other Cloudflare account apps share the underlying Workers AI daily free allocation. Do **not** enable unattended LLM calls unless separately justified.

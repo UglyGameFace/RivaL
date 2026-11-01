@@ -101,7 +101,7 @@ def native_manifest_provenance(manifest: dict) -> bool:
             if len(observed) != recovered or len(observed) != len(set(observed)):
                 return False
             config = manifest["contract_multiplier_evidence"]
-            if (not isinstance(config, dict)
+            invalid_config = (not isinstance(config, dict)
                 or config.get("contract_metadata_url") !=
                     f"https://api.gateio.ws/api/v4/futures/usdt/contracts/{contract}"
                 or not isinstance(config.get("contract_metadata_sha256"), str)
@@ -112,9 +112,8 @@ def native_manifest_provenance(manifest: dict) -> bool:
                 or not 0 < config["contract_created_at_unix"] <=
                     config["contract_config_last_changed_unix"] <= int(first.timestamp())
                 or not math.isfinite(float(config.get("multiplier")))
-                or float(config["multiplier"]) <= 0):
-                return False
-            return True
+                or float(config["multiplier"]) <= 0)
+            return not invalid_config
         except (KeyError, ValueError, TypeError, IndexError, OverflowError):
             return False
     if manifest.get("venue") != "okx" or manifest.get("provider_signed_checksum") is not False:

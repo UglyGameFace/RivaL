@@ -14,7 +14,6 @@ from __future__ import annotations
 import csv
 import gzip
 import hashlib
-import json
 import math
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -24,7 +23,12 @@ import httpx
 from parlay_bot.research.audit import audit_partition
 from parlay_bot.research.free_history import HistoryImportError, _persist
 from parlay_bot.research.gate_bulk_archive import (
-    ASSETS, MAX_BYTES, _finite, _validate_row, inspect, url_for,
+    ASSETS,
+    MAX_BYTES,
+    _finite,
+    _validate_row,
+    inspect,
+    url_for,
 )
 from parlay_bot.research.publish import _artifact
 from parlay_bot.research.source_native import SOURCE
@@ -186,7 +190,7 @@ def investigate_missing(client: httpx.Client, *, asset: str,
             raise HistoryImportError("invalid Gate API gap window response")
         captured = []
         for entry in response:
-            if not isinstance(entry, dict) or set(("t", "v", "c", "h", "l", "o")) - set(entry):
+            if not isinstance(entry, dict) or {"t", "v", "c", "h", "l", "o"} - set(entry):
                 raise HistoryImportError("Gate API returned incompatible candle")
             raw = [str(entry[key]) for key in ("t", "v", "c", "h", "l", "o")]
             stamp, row = candle(raw, month=month)

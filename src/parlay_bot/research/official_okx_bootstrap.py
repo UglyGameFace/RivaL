@@ -395,7 +395,10 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
                         client, asset=asset, month=month,
                         module_ids=(module_id,),
                     )
-                    catalog["modules"][label] = one["modules"][label]
+                    item = one.get("modules", {}).get(label)
+                    if not isinstance(item, dict):
+                        raise HistoryImportError("missing OKX advanced catalog module")
+                    catalog["modules"][label] = item
                 except (HistoryImportError, httpx.HTTPError, OSError) as exc:
                     reason = str(exc)[:240]
                     catalog["modules"][label] = {

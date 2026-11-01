@@ -15,7 +15,11 @@ import httpx
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.gate_bulk_archive import ASSETS
 from parlay_bot.research.gate_native import (
-    API, _request_json, candle, month_bounds, preserve_gate_api_response,
+    API,
+    _request_json,
+    candle,
+    month_bounds,
+    preserve_gate_api_response,
 )
 from parlay_bot.research.publish import _artifact
 

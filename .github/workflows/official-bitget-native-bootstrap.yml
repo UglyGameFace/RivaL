@@ -14,6 +14,13 @@ on:
     paths:
       - ".github/workflows/official-bitget-native-bootstrap.yml"
       - "src/parlay_bot/research/official_bitget_bootstrap.py"
+  pull_request:
+    paths:
+      - ".github/workflows/official-bitget-native-bootstrap.yml"
+      - "src/parlay_bot/research/official_bitget_bootstrap.py"
+      - "src/parlay_bot/research/source_native.py"
+      - "src/parlay_bot/research/learning.py"
+      - "tests/test_official_bitget_native_bootstrap.py"
   schedule:
     # One asset daily, conservative public-data budget; resumes verified
     # Drive months without rebuilding already archived native partitions.
@@ -27,8 +34,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  source-contract-tests:
+    # Pull requests never receive or require production Drive credentials.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install contract tests
+        run: python -m pip install -e ".[dev,ml-research]"
+      - name: Verify source-native contract before any real API use
+        run: |
+          ruff check src/parlay_bot/research/official_bitget_bootstrap.py tests/test_official_bitget_native_bootstrap.py
+          pytest -q tests/test_official_bitget_native_bootstrap.py
   public-bitget-months:
-    if: vars.RIVAL_NATIVE_PUBLIC_BOOTSTRAP_ENABLED != 'false'
+    if: github.event_name != 'pull_request' && vars.RIVAL_NATIVE_PUBLIC_BOOTSTRAP_ENABLED != 'false'
     runs-on: ubuntu-latest
     timeout-minutes: 80
     env:

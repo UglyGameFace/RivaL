@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
 from parlay_bot.storage.hot import RelationalHotStore

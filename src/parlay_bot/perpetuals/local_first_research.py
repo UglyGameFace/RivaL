@@ -13,6 +13,7 @@ import httpx
 
 from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
 from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
+from parlay_bot.perpetuals.local_llm_discovery import discover_private_llm
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 
 _LOG = logging.getLogger(__name__)
@@ -55,6 +56,7 @@ class LocalFirstResearch(OpenRouterResearch):
         # super() sees the explicit client; this class closes its own client.
         self._owned_client = client is None
         self.model = "rival-local-cloudflare-shared-budget"
+        self._peer_ip: str | None = None
         self._backup = (
             CloudflareResearch(
                 market, api_key=cloudflare_key, daily_max=daily_max,
@@ -87,13 +89,26 @@ class LocalFirstResearch(OpenRouterResearch):
         # The original OpenRouterResearch.ask() has already reserved ONE shared,
         # user-fair, persisted request for this entire local-then-backup attempt.
         try:
-            response = await self._client.post(
-                LOCAL_ENDPOINT,
-                headers={"Authorization": f"Bearer {self._key}",
-                         "Content-Type": "application/json"},
-                json={"asset": evidence.get("asset"), "evidence": evidence},
-                follow_redirects=False,
-            )
+            headers = {"Authorization": f"Bearer {self._key}",
+                       "Content-Type": "application/json"}
+            payload = {"asset": evidence.get("asset"), "evidence": evidence}
+            endpoint = (f"http://{self._peer_ip}:8765/v1/research"
+                        if self._peer_ip else LOCAL_ENDPOINT)
+            try:
+                response = await self._client.post(
+                    endpoint, headers=headers, json=payload, follow_redirects=False)
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                # Retry *only* a connection that never completed, not a model
+                # timeout or HTTP failure (which may already have issued research).
+                # No paid API, static container IP, or Discloud owner credential.
+                self._peer_ip = None
+                peer = await asyncio.to_thread(discover_private_llm, self._key)
+                if peer is None:
+                    raise
+                self._peer_ip = peer
+                response = await self._client.post(
+                    f"http://{peer}:8765/v1/research", headers=headers,
+                    json=payload, follow_redirects=False)
             if response.status_code in (502, 503, 504):
                 raise httpx.HTTPStatusError(
                     "local temporarily unavailable",

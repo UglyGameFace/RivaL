@@ -15,6 +15,7 @@ APP_FILES = {
     "main.py",
     "requirements.txt",
     "service.py",
+    "discovery.py",
     "model_download.py",
     "build.sh",
     "runtime/bin/llama-server",

@@ -18,6 +18,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from model_download import ensure_model
+from discovery import serve as serve_peer_discovery
 
 LOG = logging.getLogger("rival_llm")
 MODEL_CATALOG = {
@@ -296,12 +297,18 @@ def launch_server():
     )
     thread = threading.Thread(target=gateway.serve_forever, daemon=True)
     thread.start()
+    stopped = threading.Event()
+    peer = threading.Thread(target=serve_peer_discovery, args=(token, stopped),
+                            daemon=True, name="private-llm-discovery")
+    peer.start()
     LOG.info("local_gateway_start model=%s port=%s", profile, gateway.server_port)
     try:
         while process.poll() is None:
             time.sleep(2)
         raise RuntimeError("llama-server exited; fail closed and let host restart")
     finally:
+        stopped.set()
+        peer.join(timeout=2)
         gateway.shutdown()
         gateway.server_close()
         if process.poll() is None:

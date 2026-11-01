@@ -252,6 +252,7 @@ class NativeMonthlyPublisher:
 
 async def restore_verified_source_months(
     drive, *, venue: str, months: list[str], root: Path,
+    contract: str | None = None,
 ) -> list[Path]:
     """Restore only actual source/month files from our private Drive archive.
 
@@ -264,6 +265,12 @@ async def restore_verified_source_months(
         raise HistoryImportError("invalid or oversized native research request")
     if len(months) != len(set(months)):
         raise HistoryImportError("duplicate source research month")
+    if contract is not None and (
+        venue != "okx"
+        or contract not in {"BTC-USDT-SWAP", "ETH-USDT-SWAP",
+                            "SOL-USDT-SWAP", "XRP-USDT-SWAP"}
+    ):
+        raise HistoryImportError("invalid OKX source-native contract filter")
     await drive._verify_folder_boundary()
     folder = drive.folders.manifests
     query = (
@@ -271,22 +278,36 @@ async def restore_verified_source_months(
         f"and name contains '{drive._escape_query(venue + '-')}' "
         "and appProperties has { key='rival_kind' and value='manifest' }"
     )
-    response = await drive._client.get(
-        f"{drive.DRIVE_URL}/files",
-        params={
+    # A long backfill produces >100 native manifests. Exhaust bounded Drive
+    # pagination instead of treating the 101st verified month as an error.
+    found = []
+    page_token = None
+    for _ in range(20):
+        params = {
             "q": query, "spaces": "drive", "pageSize": 100,
             "fields": "nextPageToken,files(id,name,size,md5Checksum,parents,"
                       "appProperties,trashed)",
-        },
-        headers=await drive._headers(),
-    )
-    if response.status_code != 200:
-        raise HistoryImportError("private native manifest listing unavailable")
-    result = response.json()
-    found = result.get("files") if isinstance(result, dict) else None
-    if (not isinstance(found, list) or len(found) > 100
-        or result.get("nextPageToken")):
-        raise HistoryImportError("unbounded or paginated native model source listing")
+        }
+        if page_token is not None:
+            params["pageToken"] = page_token
+        response = await drive._client.get(
+            f"{drive.DRIVE_URL}/files",
+            params=params, headers=await drive._headers(),
+        )
+        if response.status_code != 200:
+            raise HistoryImportError("private native manifest listing unavailable")
+        result = response.json()
+        page = result.get("files") if isinstance(result, dict) else None
+        if not isinstance(page, list) or len(page) > 100:
+            raise HistoryImportError("invalid native manifest Drive page")
+        found.extend(page)
+        page_token = result.get("nextPageToken")
+        if page_token is None:
+            break
+        if not isinstance(page_token, str) or not page_token:
+            raise HistoryImportError("invalid native Drive pagination token")
+    else:
+        raise HistoryImportError("native research manifest listing exceeds bounded pages")
     target = Path(root) / SOURCE
     target.mkdir(parents=True, exist_ok=True)
     imported = []
@@ -295,6 +316,16 @@ async def restore_verified_source_months(
         if (not isinstance(entry, dict)
             or not str(entry.get("name", "")).startswith(venue + "-")):
             raise HistoryImportError("unexpected native manifest listing record")
+        # OKX month snapshots have exact, immutable -5m-YYYY-MM names.
+        # Filter the Drive metadata *before* downloading each manifest.
+        if venue == "okx" and not any(
+            f"-5m-{month}--" in entry["name"] for month in months
+        ):
+            continue
+        if contract is not None and not entry["name"].startswith(
+            f"okx-{contract}-"
+        ):
+            continue
         item = drive._object(entry)
         props = entry.get("appProperties") or {}
         expected_sha = props.get("rival_sha256")

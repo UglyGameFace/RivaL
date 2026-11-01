@@ -226,10 +226,12 @@ async def inventory_extra_modules(client: httpx.AsyncClient, *,
 
 async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
                     report_dir: Path, max_new_months: int = 3,
-                    now: datetime | None = None) -> dict:
+                    now: datetime | None = None,
+                    download_delay: float = 0.13) -> dict:
     """Qualify latest 6 months first, then extend historic catalog back to 2023."""
     clock = now or datetime.now(UTC)
-    if asset not in ASSETS or not 1 <= max_new_months <= 6:
+    if (asset not in ASSETS or not 1 <= max_new_months <= 6
+        or not 0 <= download_delay <= 2):
         raise HistoryImportError("invalid bounded OKX research batch")
     recent = complete_months(now=clock, count=6)
     if any(month_bounds(a)[1] != month_bounds(b)[0]
@@ -252,6 +254,7 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
     for block in blocks:
         await restore_verified_source_months(
             drive, venue="okx", months=block, root=root,
+            contract=f"{asset}-USDT-SWAP",
         )
         inventory = audit_catalog(root, months=block, sources=(SOURCE,))
         verified = {
@@ -269,6 +272,7 @@ async def bootstrap(*, drive, client: httpx.AsyncClient, asset: str, root: Path,
         for month in targets:
             result = await download_month(
                 client, asset=asset, month=month, root=root, now=clock,
+                delay=download_delay,
             )
             history = _artifact(result.data_path, result.records)
             manifest = _artifact(result.manifest_path, 1)

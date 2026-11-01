@@ -1,0 +1,104 @@
+name: OKX paced multi-asset private historical backfill
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/official-okx-bulk-bootstrap.yml"
+      - ".github/workflows/official-okx-native-bootstrap.yml"
+      - "src/parlay_bot/research/okx_bulk_bootstrap.py"
+      - "src/parlay_bot/research/official_okx_bootstrap.py"
+      - "src/parlay_bot/research/source_native.py"
+      - "tests/test_okx_bulk_bootstrap.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/official-okx-bulk-bootstrap.yml"
+      - "src/parlay_bot/research/okx_bulk_bootstrap.py"
+  workflow_dispatch:
+    inputs:
+      asset:
+        description: Historical research asset selection
+        required: true
+        type: choice
+        options: [all, BTC, ETH, SOL, XRP]
+        default: all
+  schedule:
+    # Four serialized batches/day while source-native OHLCV remains incomplete.
+    - cron: "13 2,8,14,20 * * *"
+
+permissions:
+  contents: read
+
+# One job across all assets: OKX history rate limit is per IP.
+concurrency:
+  group: rival-okx-public-backfill
+  cancel-in-progress: false
+
+jobs:
+  bulk-contract-tests:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check paced downloader, month validation and Drive restore regressions
+        run: |
+          python -m pip install -e ".[dev]"
+          ruff check src/parlay_bot/research/okx_bulk_bootstrap.py src/parlay_bot/research/official_okx_bootstrap.py src/parlay_bot/research/source_native.py tests/test_okx_bulk_bootstrap.py
+          pytest -q tests/test_okx_bulk_bootstrap.py tests/test_official_okx_bootstrap.py
+
+  bulk-history:
+    if: github.event_name != 'pull_request' && vars.RIVAL_NATIVE_PUBLIC_BOOTSTRAP_ENABLED != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      ASSET: ${{ github.event.inputs.asset || 'all' }}
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install existing source-native and model evidence validators
+        run: python -m pip install -e ".[dev,archive,ml-research]"
+      - name: Fail closed if verified private Drive archive is not configured
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in RIVAL_DRIVE_ROOT_FOLDER_ID RIVAL_DRIVE_HISTORY_FOLDER_ID \
+            RIVAL_DRIVE_MANIFESTS_FOLDER_ID RIVAL_DRIVE_STAGING_FOLDER_ID \
+            RIVAL_DRIVE_MODELS_FOLDER_ID RIVAL_DRIVE_REPORTS_FOLDER_ID \
+            RIVAL_DRIVE_OAUTH_CLIENT_ID RIVAL_DRIVE_OAUTH_CLIENT_SECRET \
+            RIVAL_DRIVE_OAUTH_REFRESH_TOKEN; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Private archive not configured: $name"
+              exit 1
+            fi
+          done
+      - name: Advance source exact 5m months for all selected assets under one shared IP pacing budget
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m parlay_bot.research.okx_bulk_bootstrap \
+            --asset "$ASSET" --passes 3 --months-per-pass 6
+      - name: Retain bounded backfill verification receipts even when source blocks
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: okx-bulk-source-progress
+          path: |
+            data/native-reports/okx-bulk-progress.json
+            data/native-reports/*/*.json
+          retention-days: 14
+          if-no-files-found: ignore

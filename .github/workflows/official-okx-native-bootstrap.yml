@@ -1,6 +1,8 @@
 name: Official OKX native history and advanced archive inventory
 
 on:
+  # Older single-asset operator path is manual; high-throughput workflow
+  # owns automatic collection so the same public IP budget is not doubled.
   workflow_dispatch:
     inputs:
       asset:
@@ -9,19 +11,11 @@ on:
         options: [BTC, ETH, SOL, XRP]
         required: true
         default: BTC
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/official-okx-native-bootstrap.yml"
-      - "src/parlay_bot/research/official_okx_bootstrap.py"
   pull_request:
     paths:
       - ".github/workflows/official-okx-native-bootstrap.yml"
       - "src/parlay_bot/research/official_okx_bootstrap.py"
       - "tests/test_official_okx_bootstrap.py"
-  schedule:
-    - cron: "13 7 * * *"
-
 permissions:
   contents: read
 

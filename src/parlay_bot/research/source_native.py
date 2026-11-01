@@ -30,6 +30,98 @@ def native_manifest_provenance(manifest: dict) -> bool:
     integrity = manifest.get("source_integrity")
     if integrity == "postgres-first-observed-at-v1":
         return True
+    if integrity == "gate-official-gzip-with-v4-api-reconciliation-v1":
+        if (manifest.get("venue") != "gate"
+            or manifest.get("source_transport") != "official_public_https"
+            or manifest.get("source_archive_type") != "five_minute_monthly_csv_gz"
+            or manifest.get("provider_signed_checksum") is not False
+            or manifest.get("historical_source_complete_utc_month") is not True
+            or manifest.get("original_observation_time_known") is not False
+            or manifest.get("checksum_verified") is not True
+            or manifest.get("interval_minutes") != 5
+            or manifest.get("quote") != "USDT"
+            or manifest.get("volume_base_conversion") !=
+                "contract_size_times_historically_dated_quanto_multiplier"):
+            return False
+        try:
+            contract = manifest["contract"]
+            asset = contract.removesuffix("_USDT")
+            if (asset not in {"BTC", "ETH", "SOL", "XRP"}
+                or contract != asset + "_USDT"
+                or not manifest["file"].startswith(f"gate-{contract}-USDT-5m-")):
+                return False
+            month = manifest["file"].split("-5m-")[1][:7]
+            year, mm = map(int, month.split("-"))
+            first = datetime(year, mm, 1, tzinfo=UTC)
+            end = first.replace(year=year + 1, month=1) if mm == 12 else first.replace(month=mm + 1)
+            expected = int((end - first) / STEP)
+            digest = manifest["source_archive_sha256"]
+            if (not isinstance(digest, str) or len(digest) != 64
+                or any(ch not in "0123456789abcdef" for ch in digest)
+                or manifest["source_url"] !=
+                    f"https://download.gatedata.org/futures_usdt/candlesticks_5m/"
+                    f"{year:04d}{mm:02d}/{contract}-{year:04d}{mm:02d}.csv.gz"
+                or manifest.get("source_archive_file") !=
+                    f"gatebulk-futures_usdt-{contract}-candlesticks_5m-{month}--"
+                    f"{digest[:16]}.csv.gz"
+                or type(manifest.get("records")) is not int or manifest["records"] != expected
+                or type(manifest.get("source_archive_rows")) is not int
+                or not 0 < manifest["source_archive_rows"] <= expected
+                or manifest.get("source_minutes_verified") != expected * 5):
+                return False
+            recovered = manifest["source_api_recovered_count"]
+            witnesses = manifest["source_api_recovery"]
+            if (type(recovered) is not int
+                or recovered != expected - manifest["source_archive_rows"]
+                or not isinstance(witnesses, list) or len(witnesses) > 10
+                or (recovered == 0 and witnesses) or (recovered > 0 and not witnesses)):
+                return False
+            observed = []
+            for item in witnesses:
+                if (not isinstance(item, dict)
+                    or item.get("source_url") !=
+                        "https://api.gateio.ws/api/v4/futures/usdt/candlesticks"
+                    or not isinstance(item.get("response_sha256"), str)
+                    or len(item["response_sha256"]) != 64
+                    or any(ch not in "0123456789abcdef" for ch in item["response_sha256"])
+                    or type(item.get("from")) is not int
+                    or type(item.get("to")) is not int
+                    or not isinstance(item.get("recovered"), list)
+                    or len(item["recovered"]) > 1500):
+                    return False
+                if (item["from"] < int(first.timestamp())
+                    or item["to"] >= int(end.timestamp())
+                    or item["from"] > item["to"]):
+                    return False
+                if item.get("raw_json_file") != (
+                    "gate-api-" + item["response_sha256"][:16] + ".json"
+                ):
+                    return False
+                for stamp in item["recovered"]:
+                    if (type(stamp) is not int or stamp % 300
+                        or not item["from"] <= stamp <= item["to"]):
+                        return False
+                    observed.append(stamp)
+            if len(observed) != recovered or len(observed) != len(set(observed)):
+                return False
+            config = manifest["contract_multiplier_evidence"]
+            invalid_config = (not isinstance(config, dict)
+                or config.get("contract_metadata_url") !=
+                    f"https://api.gateio.ws/api/v4/futures/usdt/contracts/{contract}"
+                or not isinstance(config.get("contract_metadata_sha256"), str)
+                or len(config["contract_metadata_sha256"]) != 64
+                or any(ch not in "0123456789abcdef" for ch in config["contract_metadata_sha256"])
+                or config.get("contract_metadata_raw_file") !=
+                    "gate-api-" + config["contract_metadata_sha256"][:16] + ".json"
+                or type(config.get("contract_created_at_unix")) is not int
+                or type(config.get("contract_config_last_changed_unix")) is not int
+                or not 0 < config["contract_created_at_unix"] <=
+                    config["contract_config_last_changed_unix"] <= int(first.timestamp())
+                or not math.isfinite(float(config.get("multiplier")))
+                or float(config["multiplier"]) <= 0)
+            return not invalid_config
+        except (KeyError, ValueError, TypeError, IndexError, OverflowError):
+            return False
     if manifest.get("venue") != "okx" or manifest.get("provider_signed_checksum") is not False:
         return False
     if (integrity == "okx-v5-public-history-5m-v1"
@@ -320,12 +412,14 @@ async def restore_verified_source_months(
         raise HistoryImportError("invalid or oversized native research request")
     if len(months) != len(set(months)):
         raise HistoryImportError("duplicate source research month")
-    if contract is not None and (
-        venue != "okx"
-        or contract not in {"BTC-USDT-SWAP", "ETH-USDT-SWAP",
-                            "SOL-USDT-SWAP", "XRP-USDT-SWAP"}
-    ):
-        raise HistoryImportError("invalid OKX source-native contract filter")
+    supported_contracts = (
+        {f"{asset}-USDT-SWAP" for asset in ("BTC", "ETH", "SOL", "XRP")}
+        if venue == "okx" else
+        {f"{asset}_USDT" for asset in ("BTC", "ETH", "SOL", "XRP")}
+        if venue == "gate" else set()
+    )
+    if contract is not None and contract not in supported_contracts:
+        raise HistoryImportError("invalid source-native contract filter")
     await drive._verify_folder_boundary()
     folder = drive.folders.manifests
     query = (
@@ -373,12 +467,12 @@ async def restore_verified_source_months(
             raise HistoryImportError("unexpected native manifest listing record")
         # OKX month snapshots have exact, immutable -5m-YYYY-MM names.
         # Filter the Drive metadata *before* downloading each manifest.
-        if venue == "okx" and not any(
+        if venue in {"okx", "gate"} and not any(
             f"-5m-{month}--" in entry["name"] for month in months
         ):
             continue
         if contract is not None and not entry["name"].startswith(
-            f"okx-{contract}-"
+            f"{venue}-{contract}-"
         ):
             continue
         item = drive._object(entry)
@@ -427,6 +521,56 @@ async def restore_verified_source_months(
                 or not isinstance(history.size_bytes, int)
                 or not 0 < history.size_bytes <= 12_000_000):
                 raise HistoryImportError("native source history missing or oversized")
+            if info.get("source_integrity") == (
+                "gate-official-gzip-with-v4-api-reconciliation-v1"
+            ):
+                digest = info["source_archive_sha256"]
+                raw = await drive._find_batch_object(
+                    parent_id=drive.folders.history,
+                    batch_id="gatebulk-" + digest[:24], kind="history",
+                )
+                if (raw is None or raw.name != info["source_archive_file"]
+                    or not isinstance(raw.size_bytes, int)
+                    or not 0 < raw.size_bytes <= 64 * 1024 * 1024):
+                    raise HistoryImportError("Gate native source raw archive missing")
+                original = await drive._client.get(
+                    f"{drive.DRIVE_URL}/files/{raw.file_id}",
+                    params={"alt": "media"}, headers=await drive._headers(),
+                    follow_redirects=False,
+                )
+                if (original.status_code != 200
+                    or len(original.content) != raw.size_bytes
+                    or hashlib.sha256(original.content).hexdigest() != digest):
+                    raise HistoryImportError("Gate original raw archive SHA mismatch")
+                # Re-fetch the exact public JSON responses used to fill gaps
+                # and verify the historic base-volume multiplier. Their
+                # hashes are not enough if the original bytes were lost.
+                proof = info["contract_multiplier_evidence"]
+                witnesses = [{
+                    "response_sha256": proof["contract_metadata_sha256"],
+                    "raw_json_file": proof["contract_metadata_raw_file"],
+                }] + info["source_api_recovery"]
+                for witness in witnesses:
+                    digest = witness["response_sha256"]
+                    witness_file = witness["raw_json_file"]
+                    stored = await drive._find_batch_object(
+                        parent_id=drive.folders.history,
+                        batch_id="gateapi-" + digest[:24],
+                        kind="history",
+                    )
+                    if (stored is None or stored.name != witness_file
+                        or not isinstance(stored.size_bytes, int)
+                        or not 0 < stored.size_bytes <= 512 * 1024):
+                        raise HistoryImportError("Gate API evidence bytes missing")
+                    response_bytes = await drive._client.get(
+                        f"{drive.DRIVE_URL}/files/{stored.file_id}",
+                        params={"alt": "media"}, headers=await drive._headers(),
+                        follow_redirects=False,
+                    )
+                    if (response_bytes.status_code != 200
+                        or len(response_bytes.content) != stored.size_bytes
+                        or hashlib.sha256(response_bytes.content).hexdigest() != digest):
+                        raise HistoryImportError("Gate API evidence SHA readback failed")
             response = await drive._client.get(
                 f"{drive.DRIVE_URL}/files/{history.file_id}",
                 params={"alt": "media"}, headers=await drive._headers(),

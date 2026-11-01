@@ -440,7 +440,7 @@ class GoogleDriveArchiveClient:
         batch_id: str,
         mime_type: str = "application/vnd.apache.parquet",
     ) -> DriveObject:
-        if mime_type not in {"application/vnd.apache.parquet", "application/x-ndjson", "application/gzip"}:
+        if mime_type not in {"application/vnd.apache.parquet", "application/x-ndjson", "application/gzip", "application/json"}:
             raise DriveArchiveError("unsupported archive history MIME type")
         await self._verify_folder_boundary()
         existing = await self._find_batch_object(

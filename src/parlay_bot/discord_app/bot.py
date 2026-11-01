@@ -50,6 +50,7 @@ from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
 from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
+from parlay_bot.perpetuals import host_memory
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
 from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
@@ -152,6 +153,10 @@ class RivalDiscordClient(discord.Client):
         self.store = build_hot_store(settings)
         self.store.initialize()
         self.health_monitor = RuntimeHealthMonitor(self.store)
+        memory = host_memory.snapshot()
+        self._memory_pressure_last = memory.pressure
+        self._last_oom_kills = memory.oom_kills
+        _LOG.info("RivaL boot memory %s", memory.detail)
         self._health_task: asyncio.Task[None] | None = None
         self._health_restarts: dict[str, list[datetime]] = {}
         self._health_acceptance_seen = False
@@ -2359,6 +2364,12 @@ class RivalDiscordClient(discord.Client):
         )
         recovery_cursor = 0
         while not self.is_closed():
+            # Preserve RAM for Discord and prospective learning; persisted
+            # history cursors resume when the host has headroom again.
+            if host_memory.snapshot().pressure:
+                _LOG.warning("RivaL optional history deferred: high host RSS")
+                await asyncio.sleep(min(300, self.settings.rival_history_recovery_seconds))
+                continue
             for _ in range(min(2, len(recovery_jobs))):
                 name, recovery = recovery_jobs[recovery_cursor % len(recovery_jobs)]
                 recovery_cursor += 1
@@ -2427,6 +2438,11 @@ class RivalDiscordClient(discord.Client):
         assert self.research_drive is not None
         assert self.offline_registry is not None
         while not self.is_closed():
+            if host_memory.snapshot().pressure:
+                self.candidate_sync_status = "deferred_memory_pressure"
+                _LOG.warning("RivaL optional model import deferred: high host RSS")
+                await asyncio.sleep(300)
+                continue
             try:
                 saved = 0
                 pages = 0
@@ -2492,6 +2508,29 @@ class RivalDiscordClient(discord.Client):
         while not self.is_closed():
             faults: dict[str, str] = {}
             now = datetime.now(UTC)
+            memory = host_memory.snapshot()
+            if memory.pressure:
+                faults["host_memory_pressure"] = memory.detail
+                if not self._memory_pressure_last:
+                    _LOG.warning(
+                        "RivaL host memory pressure: %s; optional imports, history "
+                        "and archival pause while live collection continues",
+                        memory.detail,
+                    )
+            elif self._memory_pressure_last:
+                _LOG.info("RivaL host memory pressure cleared: %s", memory.detail)
+            self._memory_pressure_last = memory.pressure
+            if (
+                memory.oom_kills is not None
+                and self._last_oom_kills is not None
+                and memory.oom_kills > self._last_oom_kills
+            ):
+                _LOG.error(
+                    "RivaL cgroup OOM-kill counter increased: previous=%d current=%d",
+                    self._last_oom_kills, memory.oom_kills,
+                )
+                faults["host_oom_kill"] = memory.detail
+            self._last_oom_kills = memory.oom_kills
             workers = (
                 ("_perp_task", self._perp_loop, "rival-perp-auto-collector"),
                 ("_shadow_task", self._shadow_loop, "rival-shadow-learning"),
@@ -2667,6 +2706,10 @@ class RivalDiscordClient(discord.Client):
         assert self.archive_runtime is not None
 
         while not self.is_closed():
+            if host_memory.snapshot().pressure:
+                _LOG.warning("RivaL optional archival deferred: high host RSS")
+                await asyncio.sleep(min(300, self.settings.rival_archive_run_seconds))
+                continue
             try:
                 cutoff = datetime.now(UTC) - timedelta(
                     minutes=self.settings.rival_archive_closed_state_minutes

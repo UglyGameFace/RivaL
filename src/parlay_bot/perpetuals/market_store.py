@@ -87,6 +87,22 @@ class PerpetualMarketStore:
                     CREATE INDEX IF NOT EXISTS idx_perp_market_candles_observed
                         ON perp_market_candles
                            (interval_minutes,first_observed_at);
+                    -- Lighter revises the base-volume value on settled
+                    -- candles. Keep the original point-in-time source row
+                    -- immutable. Retain a separate, bounded per-bar latest
+                    -- revision for diagnosis, never backdate it to issuance.
+                    CREATE TABLE IF NOT EXISTS perp_lighter_volume_revisions (
+                        venue TEXT NOT NULL,
+                        contract TEXT NOT NULL,
+                        quote TEXT NOT NULL,
+                        interval_minutes INTEGER NOT NULL,
+                        opened_at TEXT NOT NULL,
+                        original_volume_base DOUBLE PRECISION NOT NULL,
+                        last_volume_base DOUBLE PRECISION NOT NULL,
+                        last_observed_at TEXT NOT NULL,
+                        observation_count INTEGER NOT NULL,
+                        PRIMARY KEY (venue,contract,quote,interval_minutes,opened_at)
+                    );
                     CREATE TABLE IF NOT EXISTS perp_feed_health (
                         venue TEXT NOT NULL,
                         asset TEXT NOT NULL,
@@ -194,6 +210,9 @@ class PerpetualMarketStore:
         conflict_fields: dict[tuple[str, str], Counter[str]] = {}
         conflict_counts: Counter[tuple[str, str]] = Counter()
         conflict_samples: dict[tuple[str, str], str] = {}
+        lighter_volume_only: Counter[tuple[str, str]] = Counter()
+        # One latest receipt per candle, not a new row every five minutes.
+        lighter_revisions: dict[tuple, tuple] = {}
         bounds: dict[tuple[str, str, str, int], tuple[str, str]] = {}
         for candle in batch.candles:
             group = (
@@ -255,8 +274,15 @@ class PerpetualMarketStore:
                     if old is not None
                     else ("duplicate_in_batch",)
                 )
-                conflict_fields.setdefault(group, Counter()).update(reasons)
+                changed = tuple(reasons)
+                conflict_fields.setdefault(group, Counter()).update(changed)
                 conflict_samples.setdefault(group, str(values[4]))
+                if old is not None and values[0] == "lighter" and changed == ("volume_base",):
+                    lighter_volume_only[group] += 1
+                    lighter_revisions[values[:5]] = (
+                        *values[:5], float(old["volume_base"]),
+                        float(values[11]), str(values[6]), 1,
+                    )
 
             for candle in batch.candles:
                 values = (
@@ -328,6 +354,27 @@ class PerpetualMarketStore:
                         unchanged += 1
                     else:
                         report_conflict(values, dict(fetched) if fetched else None)
+            # A current revised volume must not rewrite what the model
+            # first saw. Bulk update a separate, explicitly retrospective
+            # ledger, with no change to original candle or observation time.
+            pending_revisions = list(lighter_revisions.values())
+            for offset in range(0, len(pending_revisions), 100):
+                chunk = pending_revisions[offset:offset + 100]
+                placeholders = ", ".join("(" + ",".join("?" for _ in range(9)) + ")"
+                                         for _ in chunk)
+                conn.execute(
+                    "INSERT INTO perp_lighter_volume_revisions "
+                    "(venue,contract,quote,interval_minutes,opened_at,"
+                    "original_volume_base,last_volume_base,last_observed_at,"
+                    "observation_count) VALUES " + placeholders
+                    + " ON CONFLICT (venue,contract,quote,interval_minutes,opened_at)"
+                    " DO UPDATE SET last_volume_base=excluded.last_volume_base,"
+                    " last_observed_at=excluded.last_observed_at,"
+                    " observation_count=perp_lighter_volume_revisions.observation_count+1"
+                    " WHERE perp_lighter_volume_revisions.last_observed_at"
+                    "<=excluded.last_observed_at",
+                    tuple(part for record in chunk for part in record),
+                )
             for context in batch.contexts:
                 conn.execute(
                     """INSERT INTO perp_market_contexts
@@ -346,15 +393,24 @@ class PerpetualMarketStore:
         # One grouped warning distinguishes revised volume from revised
         # prices; no original record is overwritten or silently relabeled.
         for (venue, contract), changed in conflict_fields.items():
-            _LOG.warning(
+            # Expected volume-only Lighter amendments are persisted as
+            # observations, not reported as broken prices or a failed cycle.
+            level = (
+                logging.INFO if lighter_volume_only[(venue, contract)]
+                == conflict_counts[(venue, contract)] else logging.WARNING
+            )
+            _LOG.log(
+                level,
                 "RivaL immutable candle conflicts skipped venue=%s "
                 "contract=%s bars=%d changed_fields=%s "
-                "example_opened_at=%s; stored bars retained",
+                "example_opened_at=%s; original bars retained; "
+                "lighter_volume_revisions=%d",
                 venue, contract, conflict_counts[(venue, contract)],
                 ",".join(
                     f"{name}:{count}" for name, count in sorted(changed.items())
                 ),
                 conflict_samples[(venue, contract)],
+                lighter_volume_only[(venue, contract)],
             )
         return MarketWriteResult(
             inserted, unchanged, len(batch.contexts), conflicted,

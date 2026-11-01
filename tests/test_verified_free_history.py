@@ -107,7 +107,7 @@ def test_source_allowlist_rejects_malicious_paths_and_partial_month():
     with pytest.raises(HistoryImportError):
         binance_archive_url(asset="BTC", interval="1s", month="2024-01")
     with pytest.raises(HistoryImportError):
-        binance_archive_url(asset="BTC", interval="5m", month="2026-10")
+        binance_archive_url(asset="BTC", interval="5m", month=datetime.now(UTC).strftime("%Y-%m"))
 
 
 def test_bound_on_remote_payload():

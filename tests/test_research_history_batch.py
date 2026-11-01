@@ -73,3 +73,22 @@ def test_verified_research_plan_can_include_xrp_live_contract():
     assert len(jobs) == 8
     assert all(job[0] == "binance" for job in jobs)
     assert ("binance", "XRP", "5m", "2026-09") in jobs
+
+
+def test_research_publication_grace_excludes_just_closed_unpublished_month():
+    from datetime import UTC, datetime
+    from parlay_bot.research.production import publication_ready_months
+
+    assert publication_ready_months(
+        now=datetime(2026, 11, 1, tzinfo=UTC), count=6, grace_days=7,
+    ) == ["2026-04", "2026-05", "2026-06",
+          "2026-07", "2026-08", "2026-09"]
+    assert publication_ready_months(
+        now=datetime(2026, 11, 8, tzinfo=UTC), count=6, grace_days=7,
+    ) == ["2026-05", "2026-06", "2026-07",
+          "2026-08", "2026-09", "2026-10"]
+    import pytest
+    with pytest.raises(ValueError, match="grace"):
+        publication_ready_months(
+            now=datetime(2026, 11, 8, tzinfo=UTC), count=6, grace_days=15,
+        )

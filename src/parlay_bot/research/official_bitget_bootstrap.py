@@ -12,10 +12,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-from itertools import pairwise
 import json
 import math
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 import httpx

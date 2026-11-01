@@ -1607,8 +1607,6 @@ class ResearchDashboard(discord.ui.View):
                     name=(
                         "Private local AI & Cloudflare backup"
                         if isinstance(self.ai, LocalFirstResearch)
-                        else "Private local AI & Cloudflare backup"
-                        if isinstance(self.ai, LocalFirstResearch)
                         else "Cloudflare AI model & request limits"
                         if isinstance(self.ai, CloudflareResearch)
                         else "OpenRouter free model & request limits"
@@ -1636,7 +1634,9 @@ class ResearchDashboard(discord.ui.View):
                 _LOG.warning("RivaL AI quota status read unavailable")
                 embed.add_field(
                     name=(
-                        "Cloudflare AI model & request limits"
+                        "Private local AI & Cloudflare backup"
+                        if isinstance(self.ai, LocalFirstResearch)
+                        else "Cloudflare AI model & request limits"
                         if isinstance(self.ai, CloudflareResearch)
                         else "OpenRouter free model & request limits"
                         if isinstance(self.ai, OpenRouterResearch)

@@ -48,6 +48,8 @@ jobs:
           test -f pyproject.toml
           test -f src/parlay_bot/discord_app/targeting.py
           test -f tools/unattended_acceptance.py
+          test -f src/parlay_bot/perpetuals/acceptance_cli.py
+          grep -q 'parlay_bot.perpetuals.acceptance_cli' main.py
           grep -q '^TYPE=bot$' discloud.config
           grep -q '^MAIN=main.py$' discloud.config
 

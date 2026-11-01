@@ -38,7 +38,7 @@ partially missing months, replacement data, model promotion, or simulated fills.
 
 The older daily single-asset runner is manual-only to prevent competing for
 the same OKX public IP budget. Runs are bounded to 3 passes x 6 months/asset
-twice daily, with GitHub Actions serialization and a 180-minute job timeout.
+every six hours, with GitHub Actions serialization and a 180-minute job timeout.
 Automatic source collection is still subject to GitHub Actions availability,
 provider availability, archive storage quota, and `RIVAL_NATIVE_PUBLIC_BOOTSTRAP_ENABLED`
 configuration.

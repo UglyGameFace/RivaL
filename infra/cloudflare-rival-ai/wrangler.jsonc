@@ -1,0 +1,22 @@
+{
+  "name": "rival-ai-research",
+  "main": "worker.js",
+  "compatibility_date": "2026-11-01",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "ai": {
+    "binding": "AI"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "rival-ai-usage-ledger",
+      "database_id": "9cb0c28a-0ee9-4020-aee9-e14b51577c4b"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 0.1
+  }
+}

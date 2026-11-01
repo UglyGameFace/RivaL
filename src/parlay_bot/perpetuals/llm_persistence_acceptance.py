@@ -110,7 +110,7 @@ def verify_once() -> dict:
             return {**report, "outcome": "failed",
                     "reason": "ordinary_research_unavailable",
                     "details": str(exc)[:160]}
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - host receipt fails closed
             return {**report, "outcome": "failed",
                     "reason": "ordinary_research_exception",
                     "error_class": type(exc).__name__}
@@ -143,7 +143,7 @@ def verify_once() -> dict:
 def main() -> int:
     try:
         report = verify_once()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - redact host errors
         report = {"outcome": "failed", "reason": "unverified_host_exception",
                   "error_class": type(exc).__name__}
     print(MARKER + json.dumps(report, sort_keys=True))

@@ -12,10 +12,12 @@ from parlay_bot.discord_app.opportunities import crypto_desk_embed
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
+from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
+from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
@@ -1577,7 +1579,7 @@ class ResearchDashboard(discord.ui.View):
                 quota = await self.ai.request_status()
                 reasons = {
                     "provider_error_pause": (
-                        "A previous OpenRouter API error caused a pause"
+                        "A previous free AI provider error caused a pause"
                         if isinstance(self.ai, OpenRouterResearch)
                         else "A previous Google API error caused a pause"
                     ),
@@ -1603,7 +1605,11 @@ class ResearchDashboard(discord.ui.View):
                         )
                 embed.add_field(
                     name=(
-                        "OpenRouter free model & request limits"
+                        "Private local AI & Cloudflare backup"
+                        if isinstance(self.ai, LocalFirstResearch)
+                        else "Cloudflare AI model & request limits"
+                        if isinstance(self.ai, CloudflareResearch)
+                        else "OpenRouter free model & request limits"
                         if isinstance(self.ai, OpenRouterResearch)
                         else "Gemini model & request limits"
                     ),
@@ -1612,7 +1618,11 @@ class ResearchDashboard(discord.ui.View):
                         f"RivaL usage: **{quota['requests_today']}/"
                         f"{quota['rival_daily_limit']}** requests today "
                         + (
-                            "(not OpenRouter's account-wide limit)\n"
+                            "(local 18/day; Cloudflare has a separate emergency cap)\n"
+                            if isinstance(self.ai, LocalFirstResearch)
+                            else "(separate from the Cloudflare Worker daily cap)\n"
+                            if isinstance(self.ai, CloudflareResearch)
+                            else "(not OpenRouter's account-wide limit)\n"
                             if isinstance(self.ai, OpenRouterResearch)
                             else "(not Google's account-wide limit)\n"
                         )
@@ -1624,7 +1634,11 @@ class ResearchDashboard(discord.ui.View):
                 _LOG.warning("RivaL AI quota status read unavailable")
                 embed.add_field(
                     name=(
-                        "OpenRouter free model & request limits"
+                        "Private local AI & Cloudflare backup"
+                        if isinstance(self.ai, LocalFirstResearch)
+                        else "Cloudflare AI model & request limits"
+                        if isinstance(self.ai, CloudflareResearch)
+                        else "OpenRouter free model & request limits"
                         if isinstance(self.ai, OpenRouterResearch)
                         else "Gemini model & request limits"
                     ),

@@ -52,6 +52,7 @@ from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
+from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
 from parlay_bot.perpetuals.deribit_history_recovery import DeribitHistoryRecovery
 from parlay_bot.perpetuals.dydx_history_recovery import DydxHistoryRecovery
@@ -71,6 +72,7 @@ from parlay_bot.perpetuals.live_quotes import (
     QuoteUnavailable,
     quote_embed,
 )
+from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
@@ -395,7 +397,29 @@ class RivalDiscordClient(discord.Client):
         free_secret = settings.open_router_api_key or settings.openrouter_api_key
         google_secret = settings.gemini_api_key or settings.google_api_key
         if settings.rival_ai_provider == "disabled":
-            self.gemini_research: GeminiResearch | OpenRouterResearch | None = None
+            self.gemini_research: GeminiResearch | OpenRouterResearch | CloudflareResearch | None = None
+        elif settings.rival_ai_provider == "local":
+            self.gemini_research = LocalFirstResearch(
+                self.perp_collector.market if self.perp_collector is not None
+                else PerpetualMarketStore(self.store),
+                local_key=(settings.rival_local_ai_token.get_secret_value()
+                           if settings.rival_local_ai_token is not None else None),
+                cloudflare_key=(settings.rival_cloudflare_ai_token.get_secret_value()
+                                if settings.rival_cloudflare_ai_token is not None else None),
+                daily_max=settings.rival_openrouter_daily_max,
+                cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
+            )
+            _LOG.info("RivaL optional AI reviewer: private Discloud local first")
+        elif settings.rival_ai_provider == "cloudflare":
+            self.gemini_research = CloudflareResearch(
+                self.perp_collector.market if self.perp_collector is not None
+                else PerpetualMarketStore(self.store),
+                api_key=(settings.rival_cloudflare_ai_token.get_secret_value()
+                         if settings.rival_cloudflare_ai_token is not None else None),
+                daily_max=settings.rival_openrouter_daily_max,
+                cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
+            )
+            _LOG.info("RivaL optional AI reviewer: isolated Cloudflare Worker")
         elif settings.rival_ai_provider == "openrouter":
             # No Gemini/paid fallback when a free coding model or the key
             # is unavailable. Only explicit legacy Gemini mode can use it.
@@ -428,6 +452,7 @@ class RivalDiscordClient(discord.Client):
                 auto_ai=(
                     settings.rival_gemini_auto_enabled
                     and settings.rival_ai_background_opt_in
+                    and settings.rival_ai_provider not in ("local", "cloudflare")
                 ),
             )
             if self.forward_audit is not None and self.perp_collector is not None
@@ -472,7 +497,8 @@ class RivalDiscordClient(discord.Client):
         )
         self.polymarket_research = PolymarketResearch(
             self.store, ai=self.gemini_research
-            if isinstance(self.gemini_research, OpenRouterResearch) else None,
+            if isinstance(self.gemini_research, OpenRouterResearch)
+            and not isinstance(self.gemini_research, (CloudflareResearch, LocalFirstResearch)) else None,
         )
         self.auto_hunt.contract_research = self.polymarket_research
         def secret_value(value):

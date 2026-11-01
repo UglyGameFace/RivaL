@@ -10,59 +10,31 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Recreate isolated LLM container once and verify private DNS registration
+      - name: Check isolated service token persistence without reading values
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
-          DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         shell: bash
         run: |
           python - <<'PY'
-          import base64,json,os,time,urllib.error,urllib.parse,urllib.request
-          TOKEN=os.getenv("DISCLOUD_TOKEN","");MAIN=os.getenv("DISCLOUD_APP_ID","")
+          import base64,json,os,urllib.error,urllib.parse,urllib.request
+          T=os.getenv("DISCLOUD_TOKEN","")
           def api(path,method="GET",body=None):
            req=urllib.request.Request("https://api.discloud.app/v2"+path,method=method,
-             data=json.dumps(body).encode() if body is not None else None,
-             headers={"api-token":TOKEN,"Content-Type":"application/json"})
+             data=json.dumps(body).encode() if body else None,
+             headers={"api-token":T,"Content-Type":"application/json"})
            try:
             with urllib.request.urlopen(req,timeout=40) as r:return json.loads(r.read(100000))
-           except urllib.error.HTTPError as e:
-            print("API status",e.code);return {}
-           except Exception as e:
-            print("API failure",type(e).__name__);return {}
-          if not TOKEN or not MAIN:raise SystemExit("No deployment credentials")
-          apps=api("/app/all").get("apps",[])
-          matches=[a for a in apps if isinstance(a,dict) and a.get("name","").lower()=="rival-intelligence" and a.get("online")]
-          if len(matches)!=1 or matches[0].get("id")==MAIN:
-           print("LLM service not uniquely online or same as main; no restart")
-           raise SystemExit(0)
-          llm=str(matches[0]["id"])
-          # Only the isolated, currently non-authoritative LLM process is restarted.
-          reply=api("/app/"+urllib.parse.quote(llm,safe="")+"/restart","PUT")
-          print("Isolated LLM restart request", "accepted" if reply and not reply.get("error") else "not confirmed")
-          code="""import json,socket,urllib.request
-          def lookup(h):
-           try:socket.getaddrinfo(h,8765,type=socket.SOCK_STREAM);return True
-           except socket.gaierror:return False
-          def health():
-           try:
-            with urllib.request.urlopen("http://127.0.0.1:8765/health",timeout=2) as r:
-             return r.status==200 and json.loads(r.read(1000)).get("status")=="ready"
-           except Exception:return False
-          print("RIVAL_DIAG_RESULT="+json.dumps({"rival_llm_resolves":lookup("rival-llm"),
-           "rival_bot_resolves":lookup("rival-bot"),"local_model_ready":health()}))
+           except Exception as e:print("API error",type(e).__name__);return {}
+          apps=api("/app/all").get("apps",[]) if T else []
+          llm=[x for x in apps if isinstance(x,dict) and x.get("name","").lower()=="rival-intelligence"]
+          if len(llm)!=1:raise SystemExit("LLM app not uniquely found")
+          code="""import os,pathlib,json
+          print("RIVAL_DIAG_RESULT="+json.dumps({"runtime_secret_in_host_environment":bool(os.environ.get("RIVAL_LLM_SHARED_TOKEN")),"private_env_file_present":pathlib.Path(".env").is_file(),"model_file_cached":any(pathlib.Path("runtime/models").glob("*.gguf"))}))
           """
           cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(code.encode()).decode()+"\"))'"
-          def console(app):
-           res=api("/app/"+urllib.parse.quote(app,safe="")+"/console","PUT",{"command":cmd})
-           s=str(res.get("apps",{}).get("shell",{}).get("stdout",""))
-           if "RIVAL_DIAG_RESULT=" not in s:return None
-           try:return json.loads(s.split("RIVAL_DIAG_RESULT=",1)[1].splitlines()[0])
-           except Exception:return None
-          result=None
-          for i in range(8):
-           time.sleep(5)
-           result=console(llm)
-           if result and result.get("local_model_ready"):break
-          print("LLM after isolated restart",result)
-          print("Main DNS after isolated LLM restart",console(MAIN))
+          a=api("/app/"+urllib.parse.quote(llm[0]["id"],safe="")+"/console","PUT",{"command":cmd})
+          stdout=str(a.get("apps",{}).get("shell",{}).get("stdout",""))
+          if "RIVAL_DIAG_RESULT=" in stdout:
+           print("Secret provenance without disclosure",json.loads(stdout.split("RIVAL_DIAG_RESULT=",1)[1].splitlines()[0]))
+          else:print("Secret provenance unavailable")
           PY

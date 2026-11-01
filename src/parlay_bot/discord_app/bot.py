@@ -106,6 +106,7 @@ from parlay_bot.research.sports_results import (
 )
 from parlay_bot.storage.catalog import MarketCatalogStore
 from parlay_bot.storage.hot import PostgresHotStore, RelationalHotStore, SQLiteHotStore
+from parlay_bot.storage.startup import initialize_with_dns_recovery
 
 _LOG = logging.getLogger(__name__)
 
@@ -151,7 +152,7 @@ class RivalDiscordClient(discord.Client):
         self.tree = app_commands.CommandTree(self)
 
         self.store = build_hot_store(settings)
-        self.store.initialize()
+        initialize_with_dns_recovery(self.store)
         self.health_monitor = RuntimeHealthMonitor(self.store)
         memory = host_memory.snapshot()
         self._memory_pressure_last = memory.pressure

@@ -38,6 +38,7 @@ def load_optional_local_secret() -> None:
     if path.stat().st_mode & 0o077:
         raise ValueError("Private .env permissions cannot be restricted")
     seen = False
+    candidate: str | None = None
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
         if not line or line.startswith("#"):
@@ -51,6 +52,7 @@ def load_optional_local_secret() -> None:
         candidate = value.strip().strip('"').strip("'")
         if not TOKEN_PATTERN.fullmatch(candidate):
             raise ValueError("Private RIVAL_LLM_SHARED_TOKEN is invalid")
+    if candidate is not None:
         os.environ[SECRET_NAME] = candidate
 
 

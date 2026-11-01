@@ -315,7 +315,22 @@ async def restore_verified_source_months(
         try:
             info = json.loads(blob.content)
             if (info.get("source") != SOURCE or info.get("venue") != venue
-                or info.get("source_integrity") != "postgres-first-observed-at-v1"
+                or not (
+                    info.get("source_integrity") == "postgres-first-observed-at-v1"
+                    or (
+                        info.get("source_integrity")
+                        == "official-bitget-rest-observed-at-v1"
+                        and info.get("venue") == "bitget"
+                        and info.get("quote") == "USDT"
+                        and info.get("source_url")
+                            == "https://api.bitget.com/api/v3/market/history-candles"
+                        and info.get("source_api_category") == "USDT-FUTURES"
+                        and info.get("source_api_interval") == "5m"
+                        and info.get("source_api_type") == "market"
+                        and info.get("provider_signed_checksum") is False
+                        and info.get("historical_first_observed_at_is_fetch_time") is True
+                    )
+                )
                 or info.get("prospective_forecast") is not False
                 or info.get("live_trading_authorized") is not False
                 or info.get("interval_minutes") != 5):

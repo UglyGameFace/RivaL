@@ -86,6 +86,20 @@ No separate PostgreSQL editor is needed.
 For a quick watchdog-only result, run `python main.py --health`. This
 checks persisted host evidence without opening Discord or sending orders.
 
+**Read the separate statuses:** `status` retains its old aggregate meaning,
+so it may show `DEGRADED` when *only experimental challenger models* are
+underperforming. `operational_status` is the host/recovery signal: a fresh
+watchdog without worker, feed, import, quote or settlement incidents is
+`HEALTHY`, while genuine operational incidents remain `DEGRADED` and a
+stale/missing watchdog remains `UNVERIFIED`. `research_status` is
+`UNDERPERFORMING` when there are model regression alerts. The original
+`open_incidents`, plus separate `research_regressions` and
+`operational_incidents`, remain visible. The CLI exits successfully for a
+healthy *host* even when research models are losing, and a controlled restart
+can pass under that same condition. This never approves a losing model, hides
+its evidence, changes promotion safeguards, or substitutes for off-host uptime
+checks.
+
 Run the ordinary command to see the causal receipt plus a new host_health
 section (last watchdog timestamp, process boot identity, and open incidents):
 

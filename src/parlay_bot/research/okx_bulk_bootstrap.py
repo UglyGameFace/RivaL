@@ -8,9 +8,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-from contextlib import asynccontextmanager
 import json
 import math
+from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 

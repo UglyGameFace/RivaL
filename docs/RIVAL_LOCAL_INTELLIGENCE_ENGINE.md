@@ -17,7 +17,7 @@
 
 GitHub Actions [local-llm-discloud-package.yml](../.github/workflows/local-llm-discloud-package.yml) builds \`llama-server\` from llama.cpp v0.8.0 (LFM3 support) and packages **only** this separate app's Python sources, config, CPU executable and shared libraries. It never downloads or packages GGUF model weights or private tokens.
 
-The archive is \`rival-llm-discloud.zip\`. It must be deployed as **its own new Discloud application**, not uploaded as an update to the existing RivaL application. If GitHub prebuilds the executable successfully, Discloud's \`build.sh\` detects and reuses it; otherwise a local C++ compiler, git, cmake and sufficient build resources are required. Do not replace or modify any other app.
+Download the GitHub Actions artifact named RIVAL-LLM-UPLOAD-THIS-ZIP and upload that downloaded ZIP directly to Discloud. It contains discloud.config, service.py, build.sh and runtime/bin/llama-server at its root. Do not extract it and do not upload the older, nested rival-llm-discloud-package ZIP. The updated workflow validates the downloaded artifact on a clean runner. Deploy only as a separate new Discloud application, never as an update to the original RivaL.
 
 At first start, the gateway fetches only the allowlisted official quantized GGUF over TLS into \`runtime/models/\`, checks the exact Hugging Face LFS SHA256 and byte size, and atomically publishes it. It checks the SHA again at every restart. A corrupt model, unavailable API, missing executable, weak/missing token, or unavailable backend **fails closed** rather than using an unknown model. First-run disk space and download volume are not included in the ~2GB CPU memory estimate; verify Discloud persistent storage and network availability.
 
@@ -80,3 +80,20 @@ Benchmark scores measure *research response behavior*, not the probability of a 
 ## Reconciliation / ownership
 
 This extends the existing [RivaL Cloudflare backup PR #193](https://github.com/UglyGameFace/RivaL/pull/193) instead of introducing another competing AI branch. The independent Gate archive [PR #192](https://github.com/UglyGameFace/RivaL/pull/192) remains unaffected. The separate Discloud runtime is not automatically deployable with the connected GitHub/Cloudflare tools; avoid claiming a live local model or a production-approved research advantage until verified.
+
+## Discloud form: exact command values
+
+If Discloud still shows blank detected commands and RAM 100 MB, it has not recognized the deployment root. Switch to the newly built RIVAL-LLM-UPLOAD-THIS-ZIP archive and re-analyze.
+
+NAME=RivaL LLM
+TYPE=bot
+MAIN=service.py
+RAM=2450
+VERSION=3.11
+BUILD=bash build.sh
+START=python -u service.py
+AUTORESTART=true
+VLAN=true
+HOSTNAME=rival-llm
+
+If the dashboard requests manual commands, set Build to `bash build.sh`, Start to `python -u service.py`, Main to `service.py`, Python 3.11 and RAM 2450 MB. Add a private RIVAL_LLM_SHARED_TOKEN in the separate Discloud environment before starting the service. Missing authentication deliberately prevents boot.

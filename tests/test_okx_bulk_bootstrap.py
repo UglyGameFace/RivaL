@@ -283,10 +283,12 @@ async def test_okx_archive_stream_retries_429_before_using_candle_api(monkeypatc
         pacer.throttles += 1
 
     monkeypatch.setattr(pacer, "cooldown", cooldown)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as raw:
-        async with bulk.PacedOkxClient(raw, pacer).stream("GET", BASE) as response:
-            assert response.status_code == 200
-            assert await response.aread() == b"source"
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(respond)) as raw,
+        bulk.PacedOkxClient(raw, pacer).stream("GET", BASE) as response,
+    ):
+        assert response.status_code == 200
+        assert await response.aread() == b"source"
     assert seen == [429, 503, 200]
     assert pacer.requests == 3
     assert delays == [4, 8]
@@ -306,9 +308,11 @@ async def test_okx_archive_stream_exhaustion_remains_unverified(monkeypatch):
         pacer.throttles += 1
 
     monkeypatch.setattr(pacer, "cooldown", cooldown)
-    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as raw:
-        async with bulk.PacedOkxClient(raw, pacer).stream("GET", BASE) as response:
-            assert response.status_code == 429
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(respond)) as raw,
+        bulk.PacedOkxClient(raw, pacer).stream("GET", BASE) as response,
+    ):
+        assert response.status_code == 429
     assert len(seen) == bulk.MAX_RETRIES
     assert pacer.requests == bulk.MAX_RETRIES
 

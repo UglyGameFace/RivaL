@@ -6,9 +6,12 @@ on:
       - ".github/workflows/gate-official-archive-backfill.yml"
       - "src/parlay_bot/research/gate_bulk_archive.py"
       - "src/parlay_bot/research/gate_archive_backfill.py"
+      - "src/parlay_bot/research/gate_native.py"
+      - "src/parlay_bot/research/source_native.py"
       - "src/parlay_bot/archive/drive.py"
       - "tests/test_gate_bulk_archive.py"
       - "tests/test_gate_archive_backfill.py"
+      - "tests/test_gate_native.py"
   push:
     branches: [main]
     paths:
@@ -21,9 +24,9 @@ on:
     inputs:
       max_new:
         description: Maximum independently verified Gate archive files per run
-        default: "12"
+        default: "24"
         type: choice
-        options: ["4", "8", "12", "16"]
+        options: ["8", "16", "24", "32"]
 
 permissions:
   contents: read
@@ -45,8 +48,8 @@ jobs:
       - name: Test source format, source budgets and actual Drive readback wiring
         run: |
           python -m pip install -e ".[dev,archive]"
-          ruff check src/parlay_bot/archive/drive.py src/parlay_bot/research/gate_bulk_archive.py src/parlay_bot/research/gate_archive_backfill.py tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py
-          pytest -q tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py
+          ruff check src/parlay_bot/archive/drive.py src/parlay_bot/research/gate_bulk_archive.py src/parlay_bot/research/gate_archive_backfill.py src/parlay_bot/research/gate_native.py src/parlay_bot/research/source_native.py tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_native.py
+          pytest -q tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_native.py tests/test_source_native.py tests/test_source_native_offline.py
 
   gate-real-archive-smoke:
     if: github.event_name == 'pull_request'
@@ -66,6 +69,25 @@ jobs:
           python -m parlay_bot.research.gate_bulk_archive \
             --asset BTC --kind candlesticks_5m \
             --month 2023-04 --out-dir data/gate-smoke
+      - name: Inspect real Gate contract multiplier evidence without assuming history
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import httpx
+          from parlay_bot.research.gate_native import source_multiplier
+          from parlay_bot.research.free_history import HistoryImportError
+          with httpx.Client(timeout=25, follow_redirects=False) as client:
+              try:
+                  info = source_multiplier(client, asset="BTC", month="2023-03")
+              except (HistoryImportError, httpx.HTTPError) as exc:
+                  print(json.dumps({"gate_historical_multiplier_2023_03": "unverified",
+                                    "reason": str(exc)[:180]}))
+              else:
+                  print(json.dumps({"gate_historical_multiplier_2023_03": "verified",
+                                    "configured_unix": info["contract_config_last_changed_unix"],
+                                    "provider_metadata_sha256": info["contract_metadata_sha256"]}))
+          PY
       - name: Preserve independently downloaded public source proof
         if: always()
         uses: actions/upload-artifact@v4
@@ -80,7 +102,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
-      MAX_NEW: ${{ inputs.max_new || '12' }}
+      MAX_NEW: ${{ inputs.max_new || '24' }}
       RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
       RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
       RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
@@ -115,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m parlay_bot.research.gate_archive_backfill \
-            --max-new "$MAX_NEW" --max-attempts 20
+            --max-new "$MAX_NEW" --max-attempts 40
       - name: Retain real uploaded SHA evidence and unavailable-source ledger
         if: always()
         uses: actions/upload-artifact@v4

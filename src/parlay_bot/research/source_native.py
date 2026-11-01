@@ -271,22 +271,39 @@ async def restore_verified_source_months(
         f"and name contains '{drive._escape_query(venue + '-')}' "
         "and appProperties has { key='rival_kind' and value='manifest' }"
     )
-    response = await drive._client.get(
-        f"{drive.DRIVE_URL}/files",
-        params={
+    # A multi-year OKX archive holds many more than 100 monthly files.
+    # Never interpret a truncated Drive listing as a missing native month.
+    found = []
+    token = None
+    tokens = set()
+    for _ in range(10):
+        params = {
             "q": query, "spaces": "drive", "pageSize": 100,
             "fields": "nextPageToken,files(id,name,size,md5Checksum,parents,"
                       "appProperties,trashed)",
-        },
-        headers=await drive._headers(),
-    )
-    if response.status_code != 200:
-        raise HistoryImportError("private native manifest listing unavailable")
-    result = response.json()
-    found = result.get("files") if isinstance(result, dict) else None
-    if (not isinstance(found, list) or len(found) > 100
-        or result.get("nextPageToken")):
-        raise HistoryImportError("unbounded or paginated native model source listing")
+        }
+        if token is not None:
+            params["pageToken"] = token
+        response = await drive._client.get(
+            f"{drive.DRIVE_URL}/files", params=params,
+            headers=await drive._headers(),
+        )
+        if response.status_code != 200:
+            raise HistoryImportError("private native manifest listing unavailable")
+        result = response.json()
+        page = result.get("files") if isinstance(result, dict) else None
+        if not isinstance(page, list) or len(page) > 100:
+            raise HistoryImportError("invalid native Drive listing page")
+        found.extend(page)
+        token = result.get("nextPageToken")
+        if not token:
+            break
+        if (not isinstance(token, str) or len(token) > 2048
+            or token in tokens):
+            raise HistoryImportError("unsafe native Drive continuation token")
+        tokens.add(token)
+    else:
+        raise HistoryImportError("native archive listing exceeds safe page bound")
     target = Path(root) / SOURCE
     target.mkdir(parents=True, exist_ok=True)
     imported = []

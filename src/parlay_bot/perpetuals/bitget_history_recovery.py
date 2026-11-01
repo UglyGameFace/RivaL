@@ -13,7 +13,10 @@ from typing import Any
 
 import httpx
 
-from parlay_bot.perpetuals.history_inventory import six_complete_months_start
+from parlay_bot.perpetuals.history_inventory import (
+    six_complete_months_start,
+    six_months_prior,
+)
 from parlay_bot.perpetuals.history_recovery import (
     _ALLOWED,
     _STEP,
@@ -101,6 +104,63 @@ class BitgetHistoryRecovery(GateHistoryRecovery):
                 ),
             )
 
+    def _pending_gaps(self, asset: str, *, now: datetime) -> int:
+        floor = six_months_prior(now).isoformat()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT COUNT(*) AS n FROM perp_history_gap_repair
+                   WHERE venue='bitget' AND asset=? AND opened_at>=?""",
+                (asset, floor),
+            ).fetchone()
+        return int(row["n"])
+
+    def _claim_due_gap(
+        self, asset: str, *, now: datetime, end: datetime,
+    ) -> datetime | None:
+        """Claim one audited, source-exact gap, never rewind the bulk cursor.
+
+        The large Bitget historical ledger may have filled an audited slot
+        since the hourly audit. Remove those obsolete queue items before
+        issuing another API request. No other venue may satisfy this claim.
+        """
+        floor = six_months_prior(now).isoformat()
+        with self.store.connect() as conn:
+            conn.execute(
+                """DELETE FROM perp_history_gap_repair
+                   WHERE venue='bitget' AND asset=? AND opened_at>=?
+                     AND EXISTS (
+                       SELECT 1 FROM perp_market_candles AS c
+                       WHERE c.venue='bitget' AND c.contract=?
+                         AND c.quote='USDT' AND c.interval_minutes=5
+                         AND c.opened_at=perp_history_gap_repair.opened_at
+                     )""",
+                (asset, floor, f"{asset}USDT"),
+            )
+            row = conn.execute(
+                """UPDATE perp_history_gap_repair
+                   SET attempted_at=?, retry_after=?
+                   WHERE venue='bitget' AND asset=?
+                     AND opened_at=(
+                       SELECT opened_at FROM perp_history_gap_repair
+                       WHERE venue='bitget' AND asset=? AND opened_at>=?
+                         AND opened_at<? AND retry_after<=?
+                       ORDER BY opened_at LIMIT 1
+                     ) AND retry_after<=?
+                   RETURNING opened_at""",
+                (now.isoformat(), (now + timedelta(hours=6)).isoformat(),
+                 asset, asset, floor, end.isoformat(), now.isoformat(),
+                 now.isoformat()),
+            ).fetchone()
+        return _utc(datetime.fromisoformat(str(row["opened_at"]))) if row else None
+
+    def _complete_gap(self, asset: str, opened: datetime) -> None:
+        with self.store.connect() as conn:
+            conn.execute(
+                """DELETE FROM perp_history_gap_repair
+                   WHERE venue='bitget' AND asset=? AND opened_at=?""",
+                (asset, opened.isoformat()),
+            )
+
     async def _instrument(self, asset: str, symbol: str, now: datetime) -> None:
         checked = self._metadata.get(symbol)
         if checked and timedelta(0) <= now - checked < timedelta(hours=1):
@@ -141,13 +201,25 @@ class BitgetHistoryRecovery(GateHistoryRecovery):
         cutoff = clock.replace(
             minute=clock.minute // 5 * 5, second=0, microsecond=0,
         ) - timedelta(hours=4)
+        repairing = False
         if cursor >= cutoff:
-            await asyncio.to_thread(
-                self._advance, asset, now=clock, next_open=None,
-                status="caught_up",
+            gap = await asyncio.to_thread(
+                self._claim_due_gap, asset, now=clock, end=cutoff,
             )
-            return 0
-        until = min(cursor + self.page_bars * _STEP, cutoff)
+            if gap is None:
+                pending = await asyncio.to_thread(
+                    self._pending_gaps, asset, now=clock,
+                )
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=None,
+                    status="gaps_pending" if pending else "caught_up",
+                )
+                return 0
+            cursor = gap
+            repairing = True
+        # A gap retry requests only the audited 5m slot. Even if Bitget
+        # includes an adjacent bar, only an exact target can clear the queue.
+        until = min(cursor + (1 if repairing else self.page_bars) * _STEP, cutoff)
         symbol = f"{asset}USDT"
         try:
             await self._instrument(asset, symbol, clock)
@@ -202,6 +274,18 @@ class BitgetHistoryRecovery(GateHistoryRecovery):
                     opened + _STEP - timedelta(milliseconds=1),
                     observed, op, high, low, close, _num(row[5]), -1,
                 ))
+            if not candles and repairing:
+                # The source did not return this exact slot. Preserve the
+                # six-hour queue deadline; no synthetic candle or cursor move.
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=None,
+                    status="gaps_pending",
+                )
+                _LOG.info(
+                    "RivaL Bitget exact-slot repair unavailable asset=%s slot=%s",
+                    asset, cursor.isoformat(),
+                )
+                return 0
             if not candles:
                 # Never advance past an empty window: an upstream page
                 # with no in-window bars is an API gap, not coverage.
@@ -223,17 +307,31 @@ class BitgetHistoryRecovery(GateHistoryRecovery):
                     MarketBatch((), tuple(candles), 5, observed),
                 )
                 added = saved.inserted_candles
-            next_open = contiguous_forward_next(
-                cursor, until, [candle.opened_at for candle in candles],
-            )
-            await asyncio.to_thread(
-                self._advance, asset, now=clock, next_open=next_open,
-                inserted=added, empty=not bool(candles), status="progress",
-            )
-            _LOG.info(
-                "RivaL Bitget history asset=%s received=%d inserted=%d",
-                asset, len(rows), added,
-            )
+            if repairing:
+                exact = len(candles) == 1 and candles[0].opened_at == cursor
+                if (exact and saved.inserted_candles
+                        + saved.unchanged_candles == 1):
+                    await asyncio.to_thread(self._complete_gap, asset, cursor)
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=None,
+                    inserted=added, status="gap_repair" if exact else "gaps_pending",
+                )
+                _LOG.info(
+                    "RivaL Bitget exact-slot repair asset=%s found=%s inserted=%d",
+                    asset, exact, added,
+                )
+            else:
+                next_open = contiguous_forward_next(
+                    cursor, until, [candle.opened_at for candle in candles],
+                )
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=next_open,
+                    inserted=added, status="progress",
+                )
+                _LOG.info(
+                    "RivaL Bitget history asset=%s received=%d inserted=%d",
+                    asset, len(rows), added,
+                )
             return added
         except asyncio.CancelledError:
             raise

@@ -101,9 +101,9 @@ def test_research_challenger_needs_actual_paired_forward_proof_and_rolls_back(le
         for day in range(1,9):
             start = (now-timedelta(days=day if blocker != 'single_day' else 1)).replace(hour=0,minute=0)
             if blocker == 'single_day':
-                start += timedelta(minutes=day*200)
+                start += timedelta(minutes=day*100)
             for index in range(20):
-                target = start+timedelta(minutes=index*10)
+                target = start+timedelta(minutes=index*(5 if blocker == 'single_day' else 10))
                 conn.execute('''INSERT INTO rival_history_forward
                     (model_sha256,venue,contract,quote,horizon_minutes,reference_opened_at,reference_close,
                      issued_at,target_opened_at,probability_up,incumbent_up,weights_sha256,outcome_up,settled_at)

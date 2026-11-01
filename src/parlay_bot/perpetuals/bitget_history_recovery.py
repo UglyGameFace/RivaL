@@ -310,16 +310,20 @@ class BitgetHistoryRecovery(GateHistoryRecovery):
                 added = saved.inserted_candles
             if repairing:
                 exact = len(candles) == 1 and candles[0].opened_at == cursor
-                if (exact and saved.inserted_candles
-                        + saved.unchanged_candles == 1):
+                accepted = (
+                    exact and
+                    saved.inserted_candles + saved.unchanged_candles == 1
+                )
+                if accepted:
                     await asyncio.to_thread(self._complete_gap, asset, cursor)
                 await asyncio.to_thread(
                     self._advance, asset, now=clock, next_open=None,
-                    inserted=added, status="gap_repair" if exact else "gaps_pending",
+                    inserted=added,
+                    status="gap_repair" if accepted else "gaps_pending",
                 )
                 _LOG.info(
-                    "RivaL Bitget exact-slot repair asset=%s found=%s inserted=%d",
-                    asset, exact, added,
+                    "RivaL Bitget exact-slot repair asset=%s accepted=%s inserted=%d",
+                    asset, accepted, added,
                 )
             else:
                 next_open = contiguous_forward_next(

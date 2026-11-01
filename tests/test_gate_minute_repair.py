@@ -4,7 +4,6 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -130,8 +129,6 @@ async def test_actual_original_1m_and_derived_evidence_immutable_drive_readback(
     tmp_path, monkeypatch,
 ):
     raw = minute_data()
-    async def unused():
-        raise AssertionError("No rest requests needed for original 1m proof")
     def fake_download(*, client, asset, kind, month, output):
         assert asset == "SOL"
         assert kind == "candlesticks_1m"

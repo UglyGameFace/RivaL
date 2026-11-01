@@ -4,10 +4,10 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+from test_research_candidate_registry import artifact
+
 from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
 from parlay_bot.storage.hot import SQLiteHotStore
-
-from test_research_candidate_registry import artifact
 
 
 def test_rejected_reason_is_durable_across_restart(tmp_path):

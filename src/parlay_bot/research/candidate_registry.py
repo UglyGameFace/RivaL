@@ -293,17 +293,22 @@ class ResearchCandidateRegistry:
         with self.store.connect() as conn:
             row = conn.execute(
                 """SELECT COUNT(*) AS total,
-                          COUNT(*) FILTER (WHERE c.retrospective_screen='passed')
-                              AS passed,
-                          COUNT(*) FILTER (WHERE a.compatible=1) AS compatible
+                          COUNT(*) FILTER (
+                            WHERE a.compatible=1
+                              AND c.retrospective_screen='passed'
+                          ) AS passed,
+                          COUNT(*) FILTER (WHERE a.compatible=1) AS compatible,
+                          COUNT(*) FILTER (WHERE a.model_sha256 IS NULL)
+                              AS missing_artifacts
                    FROM rival_offline_candidates c
-                   JOIN rival_offline_model_artifacts a
+                   LEFT JOIN rival_offline_model_artifacts a
                      ON a.model_sha256=c.model_sha256"""
             ).fetchone()
         return {
             "total": int(row["total"]),
             "passed": int(row["passed"]),
             "compatible": int(row["compatible"]),
+            "missing_artifacts": int(row["missing_artifacts"]),
         }
 
     def compatible_candidates(self, *, venue, contract, quote, horizon, now):

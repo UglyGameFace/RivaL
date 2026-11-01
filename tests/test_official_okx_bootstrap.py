@@ -145,6 +145,7 @@ async def test_okx_keeps_verified_month_when_another_month_and_optional_sources_
 ):
     """Optional catalog or research failures must not erase SHA-readback OHLCV."""
     from types import SimpleNamespace
+
     from parlay_bot.research import audit, okx_file_first
     from parlay_bot.research.free_history import _persist
     from parlay_bot.research.source_native import SOURCE

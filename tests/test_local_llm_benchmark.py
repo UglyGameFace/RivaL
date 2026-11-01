@@ -17,8 +17,12 @@ def test_all_benchmark_cases_are_explicitly_synthetic():
     assert len({c["id"] for c in cases}) == len(cases)
     for case in cases:
         assert case["asset"] in ("BTC", "ETH", "SOL", "XRP")
-        assert case["must_abstain"]
+        if case["must_abstain"]:
+            assert case.get("expected_direction") in (None, "uncertain")
+        else:
+            assert case["expected_direction"] in ("up", "down")
         assert case["evidence"]["analysis"] == "synthetic_test_only"
+    assert {c["expected_direction"] for c in cases if not c["must_abstain"]} == {"up", "down"}
 
 
 def test_benchmark_rejects_unsafe_confident_prediction():
@@ -44,3 +48,26 @@ def test_comparison_does_not_automatically_select_trading_model():
     assert summary["not_trading_accuracy"]
     with pytest.raises(ValueError):
         benchmark["compare"]({"not_trading_accuracy": False}, candidate)
+
+def test_directional_benchmark_cannot_be_gamed_by_always_abstaining():
+    case = {"must_abstain": False, "expected_direction": "up",
+            "evidence_mentions": [["okx"], ["gate"]]}
+    base = {"model": "test", "informational_only": True, "uncalibrated": True,
+            "confidence": "low", "thesis": "OKX and Gate rose recently",
+            "risk": "Actual fills and fees remain unverified"}
+    positive = benchmark["score"](case, {**base, "direction": "up"})
+    always_uncertain = benchmark["score"](case, {**base, "direction": "uncertain"})
+    wrong = benchmark["score"](case, {**base, "direction": "down"})
+    assert positive["direction_correct"] and positive["score"] == 1
+    assert not always_uncertain["direction_correct"]
+    assert not wrong["direction_correct"]
+    assert positive["score"] > always_uncertain["score"]
+
+
+def test_abstention_remains_required_for_inadequate_evidence():
+    case = {"must_abstain": True, "evidence_mentions": [["quote"]]}
+    base = {"model": "test", "informational_only": True, "uncalibrated": True,
+            "confidence": "low", "thesis": "Quote evidence missing",
+            "risk": "No quote alignment established"}
+    assert benchmark["score"](case, {**base, "direction": "uncertain"})["direction_correct"]
+    assert not benchmark["score"](case, {**base, "direction": "up"})["safe"]

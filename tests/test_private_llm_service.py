@@ -123,3 +123,94 @@ def test_model_output_validation():
 def test_select_only_allowlisted_quantized_model():
     assert sorted(SERVICE["MODEL_CATALOG"]) == ["lfm3", "qwen2b"]
     assert all(file.endswith(".gguf") for _, file in SERVICE["MODEL_CATALOG"].values())
+
+def test_context_overflow_returns_non_fallback_422(gateway):
+    server, calls = gateway
+    def too_large(_asset, _evidence):
+        raise SERVICE["ContextBudgetExceeded"]("would truncate")
+    server.infer = too_large
+    status, result = send(server)
+    assert status == 422
+    assert result == {"error": "context_budget_exceeded"}
+    assert calls == []
+
+
+def test_prompt_preflight_uses_rendered_chat_template_and_real_tokenizer(monkeypatch):
+    server = Gateway("127.0.0.1", 0, token="t" * 48, model="lfm3")
+    observed = []
+    class FakeResponse:
+        def __init__(self, data):
+            self.payload = json.dumps(data).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return self.payload
+
+    def fake_urlopen(request, timeout):
+        observed.append((request.full_url, json.loads(request.data), timeout))
+        if request.full_url.endswith("/apply-template"):
+            return FakeResponse({"prompt": "Rendered chat with special tokens"})
+        if request.full_url.endswith("/tokenize"):
+            return FakeResponse({"tokens": [7] * 3800})
+        raise AssertionError("oversized prompt must never start generation")
+
+    try:
+        monkeypatch.setattr(SERVICE["urllib"].request, "urlopen", fake_urlopen)
+        with pytest.raises(SERVICE["ContextBudgetExceeded"], match="context window"):
+            server.infer("BTC", {"sources": [{"venue": "okx"}]})
+        assert [url.rsplit("/", 1)[-1] for url, _, _ in observed] == [
+            "apply-template", "tokenize"
+        ]
+        assert observed[0][1]["messages"][0]["role"] == "system"
+        assert observed[1][1]["content"] == "Rendered chat with special tokens"
+    finally:
+        server.server_close()
+
+def test_prompt_preflight_allows_complete_compatible_requests(monkeypatch):
+    server = Gateway("127.0.0.1", 0, token="t" * 48, model="lfm3")
+    calls = []
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, data):
+            self.data = json.dumps(data).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return self.data
+
+    def fake_urlopen(request, timeout):
+        path = request.full_url.rsplit("/", 1)[-1]
+        calls.append((path, json.loads(request.data)))
+        if path == "apply-template":
+            return FakeResponse({"prompt": "model-rendered prompt"})
+        if path == "tokenize":
+            return FakeResponse({"tokens": [11] * 200})
+        if path == "completions":
+            return FakeResponse({"choices": [{"message": {"content": json.dumps({
+                "direction": "uncertain", "confidence": "low",
+                "thesis": "Insufficient forward evidence", "risk": "No matched quotes"
+            })}}]})
+        raise AssertionError("unexpected outbound local service path")
+
+    try:
+        monkeypatch.setattr(SERVICE["urllib"].request, "urlopen", fake_urlopen)
+        result = server.infer("BTC", {"sources": [{"venue": "okx"}]})
+        assert result["model"] == "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
+        assert result["informational_only"] is True
+        assert [path for path, _ in calls] == [
+            "apply-template", "tokenize", "completions"
+        ]
+        assert calls[-1][1]["max_tokens"] == 300
+    finally:
+        server.server_close()

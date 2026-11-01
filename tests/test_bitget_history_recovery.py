@@ -219,3 +219,196 @@ async def test_bitget_empty_page_does_not_advance_cursor(tmp_path):
         assert row["inserted_bars"] == 0
     finally:
         await worker.aclose()
+
+
+@pytest.mark.asyncio
+async def test_bitget_exact_slot_queue_repairs_scattered_audited_gaps_without_cursor_rewind(
+    tmp_path, monkeypatch,
+):
+    """Bitget missing one-bar slots are fetched exactly, not filled from other venues."""
+    import parlay_bot.perpetuals.history_quality as quality_module
+    from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
+    from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle
+
+    start = NOW - timedelta(hours=6)
+    monkeypatch.setattr(quality_module, "six_months_prior", lambda _: start)
+    store = SQLiteHotStore(tmp_path / "bitget-scattered-gaps.sqlite")
+    market = PerpetualMarketStore(store)
+    skipped = {1, 4, 8}
+    known = [
+        MarketCandle(
+            "bitget", "BTCUSDT", "USDT", 5,
+            start + timedelta(minutes=5 * i),
+            start + timedelta(minutes=5 * (i + 1), milliseconds=-1),
+            NOW, 100, 110, 95, 102, 1.5, -1,
+        )
+        for i in range(72) if i not in skipped
+    ]
+    market.ingest(MarketBatch((), tuple(known), 5, NOW))
+    audited = SixMonthQualityAudit(market).audit_stream(
+        venue="bitget", asset="BTC", now=NOW,
+    )
+    assert audited["missing_bars"] == 3
+    assert audited["gap_segments"] == 3
+    with store.connect() as conn:
+        queued = conn.execute(
+            """SELECT opened_at FROM perp_history_gap_repair
+               WHERE venue='bitget' AND asset='BTC' ORDER BY opened_at"""
+        ).fetchall()
+    assert [row["opened_at"] for row in queued] == [
+        (start + timedelta(minutes=5 * i)).isoformat()
+        for i in sorted(skipped)
+    ]
+
+    requested = []
+
+    def exact(req):
+        if req.url.path.endswith("/instruments"):
+            return response(req)
+        assert req.url.path.endswith("/history-candles")
+        assert req.url.params["limit"] == "2"
+        start_ms = int(req.url.params["startTime"]) + 1
+        assert int(req.url.params["endTime"]) == start_ms + 300_000 - 1
+        requested.append(start_ms)
+        return httpx.Response(200, json={"code": "00000", "data": [
+            [str(start_ms), "100", "110", "95", "102", "1.25", "127.50"],
+        ]})
+
+    raw = httpx.AsyncClient(transport=httpx.MockTransport(exact))
+    worker = BitgetHistoryRecovery(
+        market, assets=("BTC",), page_bars=12, client=raw,
+    )
+    try:
+        worker._position("BTC", NOW)
+        cursor = NOW - timedelta(hours=4)
+        with store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_history_recovery
+                   SET next_opened_at=? WHERE venue='bitget' AND asset='BTC'""",
+                (cursor.isoformat(),),
+            )
+        # The same scheduled Bitget turn can heal multiple isolated slots
+        # without multiplying its normal long-range history request.
+        assert await worker.run_once(now=NOW) == 3
+        assert requested == [
+            int((start + timedelta(minutes=5 * i)).timestamp() * 1000)
+            for i in sorted(skipped)
+        ]
+        with store.connect() as conn:
+            left = conn.execute(
+                "SELECT COUNT(*) AS n FROM perp_history_gap_repair WHERE venue='bitget'"
+            ).fetchone()
+            total = conn.execute(
+                """SELECT COUNT(*) AS n FROM perp_market_candles
+                   WHERE venue='bitget' AND contract='BTCUSDT'""",
+            ).fetchone()
+        assert left["n"] == 0
+        assert total["n"] == 72
+        assert worker.progress()[0]["next_opened_at"] == cursor.isoformat()
+        assert worker.progress()[0]["inserted_bars"] == 3
+        # Nothing else is fetched or certified by queue processing.
+        assert await worker.fetch_asset("BTC", now=NOW + timedelta(minutes=3)) == 0
+        assert len(requested) == 3
+        report = SixMonthQualityAudit(market).audit_stream(
+            venue="bitget", asset="BTC", now=NOW,
+        )
+        assert report["missing_bars"] == 0
+        # An actual future observed_at must not be reclassified as a
+        # 2026-10-28 point-in-time signal by this synthetic test clock.
+        assert report["status"] == "gaps_or_anomalies"
+        assert report["invalid_observations"] == 3
+    finally:
+        await raw.aclose()
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_bitget_unavailable_exact_slot_remains_queued_with_backoff(
+    tmp_path, monkeypatch,
+):
+    import parlay_bot.perpetuals.history_quality as quality_module
+    from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
+    from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle
+
+    start = NOW - timedelta(hours=6)
+    monkeypatch.setattr(quality_module, "six_months_prior", lambda _: start)
+    store = SQLiteHotStore(tmp_path / "bitget-missing-slot.sqlite")
+    market = PerpetualMarketStore(store)
+    candles = tuple(
+        MarketCandle(
+            "bitget", "BTCUSDT", "USDT", 5,
+            start + timedelta(minutes=5 * i),
+            start + timedelta(minutes=5 * (i + 1), milliseconds=-1),
+            NOW, 100, 110, 95, 102, 1.5, -1,
+        )
+        for i in range(72) if i != 3
+    )
+    market.ingest(MarketBatch((), candles, 5, NOW))
+    SixMonthQualityAudit(market).audit_stream(
+        venue="bitget", asset="BTC", now=NOW,
+    )
+    calls = []
+
+    def missing(req):
+        if req.url.path.endswith("/instruments"):
+            return response(req)
+        calls.append(str(req.url))
+        # An empty response is not permission to invent the missing candle.
+        return httpx.Response(200, json={"code": "00000", "data": []})
+
+    raw = httpx.AsyncClient(transport=httpx.MockTransport(missing))
+    worker = BitgetHistoryRecovery(
+        market, assets=("BTC",), page_bars=12, client=raw,
+    )
+    try:
+        worker._position("BTC", NOW)
+        with store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_history_recovery SET next_opened_at=?
+                   WHERE venue='bitget' AND asset='BTC'""",
+                ((NOW - timedelta(hours=4)).isoformat(),),
+            )
+        assert await worker.fetch_asset("BTC", now=NOW) == 0
+        assert worker.progress()[0]["status"] == "gaps_pending"
+        assert await worker.fetch_asset("BTC", now=NOW + timedelta(minutes=1)) == 0
+        assert len(calls) == 1
+        with store.connect() as conn:
+            queued = conn.execute(
+                """SELECT opened_at,retry_after FROM perp_history_gap_repair
+                   WHERE venue='bitget' AND asset='BTC'"""
+            ).fetchone()
+        assert queued["opened_at"] == (start + timedelta(minutes=15)).isoformat()
+        assert datetime.fromisoformat(queued["retry_after"]) >= NOW + timedelta(hours=6)
+        assert worker.progress()[0]["next_opened_at"] == (
+            NOW - timedelta(hours=4)
+        ).isoformat()
+    finally:
+        await raw.aclose()
+        store.close()
+
+
+def test_bitget_large_missing_month_is_not_misclassified_as_small_gap(
+    tmp_path, monkeypatch,
+):
+    import parlay_bot.perpetuals.history_quality as quality_module
+    from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
+
+    monkeypatch.setattr(
+        quality_module, "six_months_prior", lambda _: NOW - timedelta(days=3),
+    )
+    store = SQLiteHotStore(tmp_path / "bitget-large-absence.sqlite")
+    market = PerpetualMarketStore(store)
+    try:
+        result = SixMonthQualityAudit(market).audit_stream(
+            venue="bitget", asset="BTC", now=NOW,
+        )
+        assert result["missing_bars"] == 3 * 24 * 12
+        assert result["status"] == "gaps_or_anomalies"
+        with store.connect() as conn:
+            count = conn.execute(
+                """SELECT COUNT(*) AS n FROM perp_history_gap_repair
+                   WHERE venue='bitget'"""
+            ).fetchone()
+        assert count["n"] == 0
+    finally:
+        store.close()

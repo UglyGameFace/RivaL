@@ -1,3 +1,12 @@
+## ACTIVE: Fill audited Bitget scattered gaps without relabeling bulk history (2026-11-01)
+
+- **Owner evidence:** BTC Bitget 340 missing in 340 isolated 5m gaps; ETH Bitget 339 missing in 339 isolated gaps. Existing six-month audit accurately flags these but only queued KuCoin's <=32 missing slots, leaving Bitget with no targeted repair path after its forward cursor caught up.
+- **Source limitation:** Official Bitget V3 `history-candles` supports >90-day history and <=100 rows/request, with possible adjacent older candle. A newly added exact-slot queue allows only <=512 fully identified gaps for Bitget, never large missing months.
+- **Branch:** `fix/source-specific-bitget-gap-repairs-20261101`. The existing audit queues precise timestamps at no additional scan; Bitget requests exactly one 5m candle at a time (bounded two-row response), persists 6-hour retry deadlines, deduplicates already-filled slots and never moves the authoritative forward cursor during repair. Causal `first_observed_at` remains actual retrieval time, not original historical time.
+- **Separate unsolved large gaps:** Hyperliquid official 5m `candleSnapshot` serves only the most recent 5,000 candles, so six-month old gaps need an independently verified archive/trade reconstruction source. Official historical S3 has requester-paid transfer; respect the owner's free-only constraint and do not start paid retrieval. Gate/dYdX/Lighter/OKX large stream gaps still need their existing native backfill worker/Drive manifests validated against production.
+- **Validation:** PR CI and SQLite/Postgres regression tests pending; user-hosted Discloud backfill cannot be asserted until after deployment and a new audit. Do not claim six months complete.
+- **Tracking:** [Issue #188](https://github.com/UglyGameFace/RivaL/issues/188) owns all source-native 2021+ history, [#200](https://github.com/UglyGameFace/RivaL/issues/200) owns independent RivaL database.
+
 ## ACTIVE TASK: Cap historical-read PostgreSQL checkout duration (2026-11-01)
 
 - **Evidence:** Discloud 11:45–11:47 logs show six-month `history_quality.audit_stream` SELECTs of 3.21–5.31 seconds, connections held 5.81–8.29 seconds, and `source_native.export_source_month` SELECTs of 2.39–4.31 seconds while live 10-source BTC/ETH/SOL/XRP ingestion remains active. BTC audit reported only 2/9 source streams complete; this work MUST NOT relabel gaps as ready.

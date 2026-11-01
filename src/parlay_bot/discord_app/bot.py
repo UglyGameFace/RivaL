@@ -67,12 +67,12 @@ from parlay_bot.perpetuals.hyperliquid_history_recovery import (
 from parlay_bot.perpetuals.kalshi_forward import KalshiForwardResearch
 from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
 from parlay_bot.perpetuals.lighter_history_recovery import LighterHistoryRecovery
-from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
 from parlay_bot.perpetuals.live_quotes import (
     PublicBestQuoteClient,
     QuoteUnavailable,
     quote_embed,
 )
+from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch

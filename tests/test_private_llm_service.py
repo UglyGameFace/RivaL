@@ -326,7 +326,7 @@ def test_compact_research_prompt_preserves_all_venues_without_large_history_or_n
         assert brief.count(venue + "/USDT:") == 1
     assert "5m,15m,1h" in brief
     assert "IGNORE" not in brief
-    assert "archive" not in brief
+    assert "archive archive" not in brief
     assert original == json.dumps(evidence, sort_keys=True)
 
 

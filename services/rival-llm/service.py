@@ -183,7 +183,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_json({"error": "invalid_json"}, 400)
             return
         if (
-            not isinstance(body, dict) or body.get("asset") not in ("BTC", "ETH", "SOL")
+            not isinstance(body, dict) or body.get("asset") not in ("BTC", "ETH", "SOL", "XRP")
             or not isinstance(body.get("evidence"), dict)
             or len(json.dumps(body["evidence"])) > MAX_EVIDENCE_CHARS
         ):

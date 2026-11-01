@@ -16,7 +16,7 @@ def test_all_benchmark_cases_are_explicitly_synthetic():
     assert len(cases) >= 6
     assert len({c["id"] for c in cases}) == len(cases)
     for case in cases:
-        assert case["asset"] in ("BTC", "ETH", "SOL")
+        assert case["asset"] in ("BTC", "ETH", "SOL", "XRP")
         assert case["must_abstain"]
         assert case["evidence"]["analysis"] == "synthetic_test_only"
 

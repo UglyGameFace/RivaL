@@ -259,5 +259,43 @@
         "insufficient"
       ]
     ]
+  },
+  {
+    "id": "xrp-no-synchronized-quotes",
+    "asset": "XRP",
+    "evidence": {
+      "analysis": "synthetic_test_only",
+      "sources": [
+        {
+          "venue": "gate",
+          "instrument": "XRP/USDT",
+          "snapshot_time": "2026-10-31T11:00:00Z"
+        },
+        {
+          "venue": "okx",
+          "instrument": "XRP/USDT",
+          "snapshot_time": "2026-10-31T11:10:00Z"
+        }
+      ],
+      "matched_bid_ask_quotes": 0,
+      "venue_alignment": "missing synchronized snapshots"
+    },
+    "must_abstain": true,
+    "evidence_mentions": [
+      [
+        "xrp",
+        "quote",
+        "venue",
+        "source"
+      ],
+      [
+        "synchron",
+        "match",
+        "fresh",
+        "time",
+        "stale",
+        "missing"
+      ]
+    ]
   }
 ]

@@ -26,7 +26,7 @@ async def test_optional_model_import_recovers_startup_pool_failure(monkeypatch):
             return 1
 
         def inventory_receipt(self):
-            return {"total": len(self.imported), "compatible": 1, "passed": 0}
+            return {"total": len(self.imported), "compatible": 1, "passed": 0, "missing_artifacts": 0}
 
     class Drive:
         async def read_verified_research_candidates(self, **kwargs):

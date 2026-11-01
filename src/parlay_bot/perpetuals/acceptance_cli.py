@@ -61,7 +61,9 @@ def main(argv: list[str] | None = None) -> int:
             passed = result["status"] == "PASS"
         elif args.health:
             result = host_health(store)
-            passed = result["status"] == "HEALTHY"
+            # Underperforming experimental shadow models are reported but
+            # cannot mark an otherwise live bot process as unavailable.
+            passed = result["operational_status"] == "HEALTHY"
         else:
             result = unattended_acceptance_receipt(store)
             try:

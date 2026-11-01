@@ -61,6 +61,17 @@ class SixMonthQualityAudit:
                 );
                 CREATE INDEX IF NOT EXISTS idx_perp_history_quality_latest
                     ON perp_history_quality(asset,venue,audited_at);
+                -- Shared with the existing Gate recovery ledger. KuCoin may
+                -- queue a small number of audit-proven missing exact slots,
+                -- never fill holes with synthesized provider prices.
+                CREATE TABLE IF NOT EXISTS perp_history_gap_repair (
+                    venue TEXT NOT NULL, asset TEXT NOT NULL,
+                    opened_at TEXT NOT NULL, attempted_at TEXT,
+                    retry_after TEXT NOT NULL,
+                    PRIMARY KEY(venue,asset,opened_at)
+                );
+                CREATE INDEX IF NOT EXISTS idx_perp_history_gap_due
+                    ON perp_history_gap_repair(venue,asset,retry_after,opened_at);
                 """
             )
 
@@ -82,6 +93,17 @@ class SixMonthQualityAudit:
         contract, quote = _market(venue, asset)
         valid = invalid = off_grid = segments = longest = 0
         cursor = start
+        # Bounded repair candidates, generated during the already-scheduled
+        # six-month integrity scan. Never start another large SQL scan just
+        # to locate a handful of KuCoin missing candles.
+        missing_slots: list[datetime] = []
+
+        def note_missing(first: datetime, bars: int) -> None:
+            if venue != "kucoin" or bars <= 0:
+                return
+            remaining = 32 - len(missing_slots)
+            for offset in range(min(remaining, bars)):
+                missing_slots.append(first + offset * _STEP)
         self.initialize()
         with self.store.connect() as conn:
             rows = conn.execute(
@@ -118,6 +140,7 @@ class SixMonthQualityAudit:
                         gap = int((opened - cursor).total_seconds() // 300)
                         segments += 1
                         longest = max(longest, gap)
+                        note_missing(cursor, gap)
                     valid += 1
                     if (
                         closed != opened + _STEP - timedelta(milliseconds=1)
@@ -131,6 +154,7 @@ class SixMonthQualityAudit:
             gap = int((end - cursor).total_seconds() // 300)
             segments += 1
             longest = max(longest, gap)
+            note_missing(cursor, gap)
         missing = expected - valid
         # Never claim fully gap-checked history on a malformed timestamp.
         status = (
@@ -147,6 +171,18 @@ class SixMonthQualityAudit:
             "invalid_observations": invalid, "status": status,
         }
         with self.store.connect() as conn:
+            # Only queue genuinely small, exactly identified gaps. Do not
+            # queue tens of thousands of missing bars on young/blocked venues,
+            # misclassify invalid observations, or grant history approval.
+            if venue == "kucoin" and 0 < missing <= 32 and len(missing_slots) == missing:
+                for slot in missing_slots:
+                    conn.execute(
+                        """INSERT INTO perp_history_gap_repair
+                           (venue,asset,opened_at,retry_after)
+                           VALUES ('kucoin',?,?,?)
+                           ON CONFLICT(venue,asset,opened_at) DO NOTHING""",
+                        (asset, slot.isoformat(), clock.isoformat()),
+                    )
             conn.execute(
                 """INSERT INTO perp_history_quality
                    (venue,asset,contract,quote,audited_at,window_start,window_end,

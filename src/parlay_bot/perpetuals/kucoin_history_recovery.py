@@ -100,6 +100,47 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                  retry_after.isoformat() if retry_after else None, asset),
             )
 
+    def _pending_gaps(self, asset: str, *, now: datetime) -> int:
+        floor = six_complete_months_start(now).isoformat()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT COUNT(*) AS n FROM perp_history_gap_repair
+                   WHERE venue='kucoin' AND asset=? AND opened_at>=?""",
+                (asset, floor),
+            ).fetchone()
+        return int(row["n"])
+
+    def _claim_due_gap(
+        self, asset: str, *, now: datetime, end: datetime,
+    ) -> datetime | None:
+        """Atomically claim one audit-proven KuCoin gap with six-hour backoff."""
+        floor = six_complete_months_start(now).isoformat()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """UPDATE perp_history_gap_repair SET
+                     attempted_at=?, retry_after=?
+                   WHERE venue='kucoin' AND asset=?
+                     AND opened_at=(
+                       SELECT opened_at FROM perp_history_gap_repair
+                       WHERE venue='kucoin' AND asset=? AND opened_at>=?
+                         AND opened_at<? AND retry_after<=?
+                       ORDER BY opened_at LIMIT 1
+                     ) AND retry_after<=?
+                   RETURNING opened_at""",
+                (now.isoformat(), (now + timedelta(hours=6)).isoformat(),
+                 asset, asset, floor, end.isoformat(), now.isoformat(),
+                 now.isoformat()),
+            ).fetchone()
+        return _utc(datetime.fromisoformat(str(row["opened_at"]))) if row else None
+
+    def _complete_gap(self, asset: str, opened: datetime) -> None:
+        with self.store.connect() as conn:
+            conn.execute(
+                """DELETE FROM perp_history_gap_repair
+                   WHERE venue='kucoin' AND asset=? AND opened_at=?""",
+                (asset, opened.isoformat()),
+            )
+
     async def _multiplier(self, asset: str, symbol: str, now: datetime) -> float:
         cached = self._metadata.get(symbol)
         if cached and timedelta(0) <= now - cached[1] < timedelta(hours=1):
@@ -144,13 +185,23 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
         end = clock.replace(
             minute=clock.minute // 5 * 5, second=0, microsecond=0,
         ) - timedelta(hours=4)
+        repairing = False
         if cursor >= end:
-            await asyncio.to_thread(
-                self._advance, asset, now=clock, next_open=None,
-                status="caught_up",
+            gap = await asyncio.to_thread(
+                self._claim_due_gap, asset, now=clock, end=end,
             )
-            return 0
-        until = min(cursor + self.page_bars * _STEP, end)
+            if gap is None:
+                pending = await asyncio.to_thread(self._pending_gaps, asset, now=clock)
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=None,
+                    status="gaps_pending" if pending else "caught_up",
+                )
+                return 0
+            cursor = gap
+            repairing = True
+        # A repair request covers ONLY the exact missing five-minute slot.
+        # A provider returning a neighbor cannot be counted as recovery.
+        until = min(cursor + (1 if repairing else self.page_bars) * _STEP, end)
         base = "XBT" if asset == "BTC" else asset
         symbol = f"{base}USDTM"
         try:
@@ -211,6 +262,14 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                     observed, op, high, low, close,
                     _num(row[5]) * factor, -1,
                 ))
+            if not candles and repairing:
+                # The claimed slot stays queued for another source request
+                # after the per-gap backoff, without rewinding forward data.
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=None,
+                    status="gaps_pending",
+                )
+                return 0
             if not candles:
                 # Never advance past an empty window: an upstream page
                 # with no bars is an API gap, not coverage. Retrying
@@ -231,14 +290,23 @@ class KucoinHistoryRecovery(GateHistoryRecovery):
                     self.market.ingest, MarketBatch((), tuple(candles), 5, observed)
                 )
                 added = saved.inserted_candles
-            next_open = contiguous_forward_next(
-                cursor, until, [candle.opened_at for candle in candles],
-            )
-            await asyncio.to_thread(
-                self._advance, asset, now=clock, next_open=next_open,
-                inserted=added, empty=not bool(candles),
-                status="progress",
-            )
+            if repairing:
+                # Only accepted source bars clear a persisted hole. Immutable
+                # conflicting market candles must remain visible for audit.
+                if saved.inserted_candles + saved.unchanged_candles == len(candles):
+                    await asyncio.to_thread(self._complete_gap, asset, cursor)
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=None,
+                    inserted=added, status="gaps_pending",
+                )
+            else:
+                next_open = contiguous_forward_next(
+                    cursor, until, [candle.opened_at for candle in candles],
+                )
+                await asyncio.to_thread(
+                    self._advance, asset, now=clock, next_open=next_open,
+                    inserted=added, empty=False, status="progress",
+                )
             _LOG.info(
                 "RivaL KuCoin history asset=%s rows=%d inserted=%d",
                 asset, len(candles), added,

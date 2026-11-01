@@ -153,18 +153,26 @@ class NativeMonthlyPublisher:
         months = complete_months(now=now, count=6)
         floor = months[0] + "-01T00:00:00+00:00"
         ceiling = now.astimezone(UTC).strftime("%Y-%m") + "-01T00:00:00+00:00"
+        # Aggregate the large candle table before looking up archive receipts.
+        # Joining every single candle to the receipt table forced millions
+        # of repeated joins and held the small production PG pool too long.
         with self.market.store.connect() as conn:
             groups = conn.execute(
-                """SELECT c.venue,c.contract,c.quote,substr(c.opened_at,1,7) AS month,
-                          COUNT(*) AS n
-                   FROM perp_market_candles c
+                """WITH counted_months AS (
+                     SELECT venue,contract,quote,substr(opened_at,1,7) AS month,
+                            COUNT(*) AS n
+                     FROM perp_market_candles
+                     WHERE interval_minutes=5 AND opened_at>=?
+                       AND opened_at<?
+                     GROUP BY venue,contract,quote,substr(opened_at,1,7)
+                   )
+                   SELECT m.venue,m.contract,m.quote,m.month,m.n
+                   FROM counted_months m
                    LEFT JOIN rival_native_research_receipts r
-                     ON r.venue=c.venue AND r.contract=c.contract
-                    AND r.quote=c.quote AND r.month=substr(c.opened_at,1,7)
-                   WHERE c.interval_minutes=5 AND c.opened_at>=?
-                     AND c.opened_at<? AND r.month IS NULL
-                   GROUP BY c.venue,c.contract,c.quote,substr(c.opened_at,1,7)
-                   ORDER BY month,c.venue,c.contract""",
+                     ON r.venue=m.venue AND r.contract=m.contract
+                    AND r.quote=m.quote AND r.month=m.month
+                   WHERE r.month IS NULL
+                   ORDER BY m.month,m.venue,m.contract""",
                 (floor, ceiling),
             ).fetchall()
         selected = []

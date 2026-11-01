@@ -149,14 +149,13 @@ async def test_unproven_historical_multiplier_fails_closed(tmp_path):
 @pytest.mark.asyncio
 async def test_api_response_only_allowed_from_exact_gate_contract_and_utc_window(tmp_path):
     data = archive_data(missing=MISSING)
-    assert gate_native.gaps(
-        gate_native.original_candles(
-            (lambda p: (p.write_bytes(data), p)[1])(tmp_path / "raw.gz"),
-            asset="BTC", month=MONTH,
-            expected_sha=hashlib.sha256(data).hexdigest(),
-        )[0],
-        month=MONTH,
-    ) == [MISSING]
+    raw_path = tmp_path / "raw.gz"
+    raw_path.write_bytes(data)
+    rows, _ = gate_native.original_candles(
+        raw_path, asset="BTC", month=MONTH,
+        expected_sha=hashlib.sha256(data).hexdigest(),
+    )
+    assert gate_native.gaps(rows, month=MONTH) == [MISSING]
 
 
 def test_native_gate_provenance_rejects_claimed_provider_signature_and_forged_api(tmp_path):

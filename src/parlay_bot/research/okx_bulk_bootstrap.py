@@ -217,7 +217,16 @@ def main(argv: list[str] | None = None) -> int:
         "completion_scope": report["completion_scope"],
         "live_model_promoted": False,
     }, sort_keys=True))
-    return 2 if report["failures"] or report["throttles"] else 0
+    # Successfully recovered provider throttles are an operational warning,
+    # not proof the immutable, SHA-readback source-month uploads failed.
+    # An exhausted retry / unverified month remains in failures and exits 2.
+    if report["throttles"]:
+        print(
+            f"::warning::OKX historical requests needed "
+            f"{report['throttles']} transient cooldowns; "
+            "verified candle history is preserved and retries continue."
+        )
+    return 2 if report["failures"] else 0
 
 
 if __name__ == "__main__":

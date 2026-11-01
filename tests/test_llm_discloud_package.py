@@ -1,7 +1,6 @@
 """Discloud upload MUST have config and binary directly at archive root."""
 from __future__ import annotations
 
-import io
 import runpy
 import zipfile
 from pathlib import Path

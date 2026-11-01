@@ -21,7 +21,6 @@ from parlay_bot.config import Settings
 from parlay_bot.research.audit import audit_partition
 from parlay_bot.research.batch import complete_months
 from parlay_bot.research.free_history import HistoryImportError, _persist
-from parlay_bot.research.publish import _artifact, _drive
 from parlay_bot.research.source_native import (
     SOURCE, restore_verified_source_months,
 )

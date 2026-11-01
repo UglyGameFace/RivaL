@@ -2508,9 +2508,10 @@ class RivalDiscordClient(discord.Client):
                 _LOG.info(
                     "RivaL offline candidate import receipt "
                     "verified_reads=%d db_imported=%d compatible=%d "
-                    "retrospective_passed=%d (no live promotion)",
+                    "eligible_retrospective_passed=%d missing_artifacts=%d "
+                    "(no live promotion)",
                     saved, inventory["total"], inventory["compatible"],
-                    inventory["passed"],
+                    inventory["passed"], inventory["missing_artifacts"],
                 )
             except asyncio.CancelledError:
                 raise

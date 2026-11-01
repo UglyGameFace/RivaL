@@ -10,6 +10,11 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
 from parlay_bot.perpetuals.features import LabeledExample
 from parlay_bot.perpetuals.forward_audit import MODEL, ForwardAccuracyMonitor
+from parlay_bot.perpetuals.host_acceptance import (
+    capture_restart_baseline,
+    host_health,
+    verify_restart_baseline,
+)
 from parlay_bot.perpetuals.live_quotes import PerpReferenceBook
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
@@ -239,3 +244,74 @@ def test_backend_acceptance_and_postgres_connection_pool_reboot(learning_store):
     finally:
         if reopened is not store:
             reopened.close()
+
+
+def test_host_console_checks_genuine_boot_and_preserved_finalized_records(learning_store):
+    store = learning_store
+    mark = datetime.now(UTC).replace(second=0, microsecond=0)
+    wall = mark.replace(minute=mark.minute//5*5)-timedelta(minutes=20)
+    _run_acceptance(store, wall)
+
+    boot1 = RuntimeHealthMonitor(store)
+    boot1.publish({}, now=mark)
+    health = host_health(store, now=mark)
+    assert health["status"] == "HEALTHY"
+    assert health["boot_id"] == boot1.boot_id
+
+    baseline = capture_restart_baseline(store, now=mark+timedelta(seconds=1))
+    assert baseline["status"] == "BASELINE_SAVED"
+    assert baseline["frozen_records"] >= 3
+    premature = verify_restart_baseline(store, now=mark+timedelta(seconds=2))
+    assert premature["status"] == "UNVERIFIED"
+    assert not premature["distinct_host_boot"]
+    assert premature["original_records_changed"] == []
+
+    # The new process writes a distinct boot identity on its actual watchdog
+    # cycle, not when a separate command-line verifier connects to the DB.
+    boot2 = RuntimeHealthMonitor(store)
+    boot2.started_at = mark+timedelta(minutes=2)
+    after = mark+timedelta(minutes=3)
+    boot2.publish({}, now=after)
+    stalled = verify_restart_baseline(store, now=after+timedelta(seconds=2))
+    assert stalled["distinct_host_boot"]
+    assert stalled["watchdog_advanced"]
+    assert stalled["new_forecasts_since_mark"] == 0
+    assert stalled["status"] == "UNVERIFIED"
+
+    # A new forecast shows that work continues independently after reboot.
+    with store.connect() as conn:
+        row = dict(conn.execute(
+            "SELECT * FROM rival_model_shadow_forecasts ORDER BY family LIMIT 1"
+        ).fetchone())
+        row.update({
+            "reference_opened_at": after.isoformat(),
+            "issued_at": after.isoformat(),
+            "target_opened_at": after.isoformat(),
+            "settled_at": None,
+            "outcome_up": None,
+            "model_brier": None,
+            "incumbent_brier": None,
+            "baseline_brier": None,
+        })
+        cols = tuple(row)
+        conn.execute(
+            f"INSERT INTO rival_model_shadow_forecasts ({','.join(cols)}) "
+            f"VALUES ({','.join('?' for _ in cols)})",
+            tuple(row[col] for col in cols),
+        )
+    passed = verify_restart_baseline(store, now=after+timedelta(seconds=5))
+    assert passed["status"] == "PASS"
+    assert passed["original_records_changed"] == []
+    assert passed["new_forecasts_since_mark"] == 1
+    assert passed["host_health"] == "HEALTHY"
+
+    # Mutating a settled model invalidates the exact before/after proof.
+    with store.connect() as conn:
+        conn.execute(
+            """UPDATE rival_model_shadow_forecasts SET model_brier=0.999
+               WHERE reference_opened_at=? AND settled_at IS NOT NULL""",
+            ((wall-timedelta(minutes=5)).isoformat(),),
+        )
+    invalid = verify_restart_baseline(store, now=after+timedelta(seconds=6))
+    assert invalid["status"] == "UNVERIFIED"
+    assert invalid["original_records_changed"]

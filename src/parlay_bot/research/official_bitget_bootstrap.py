@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
+from itertools import pairwise
 import json
 import math
 from datetime import UTC, datetime, timedelta
@@ -24,7 +25,8 @@ from parlay_bot.research.batch import complete_months
 from parlay_bot.research.free_history import HistoryImportError, _persist
 from parlay_bot.research.publish import _artifact, _drive
 from parlay_bot.research.source_native import (
-    SOURCE, restore_verified_source_months,
+    SOURCE,
+    restore_verified_source_months,
 )
 from parlay_bot.research.source_native_offline import run_native_research
 
@@ -199,7 +201,7 @@ async def bootstrap(
     if (clock.utcoffset() is None or asset not in ASSETS or len(months) != 6
         or months != sorted(months)):
         raise HistoryImportError("invalid Bitget six-month research scope")
-    for a, b in zip(months, months[1:]):
+    for a, b in pairwise(months):
         if _month_bounds(a)[1] != _month_bounds(b)[0]:
             raise HistoryImportError("nonconsecutive native research months")
     await verify_instrument(client, asset)

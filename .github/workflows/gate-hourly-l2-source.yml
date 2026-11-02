@@ -5,12 +5,19 @@ on:
     paths:
       - ".github/workflows/gate-hourly-l2-source.yml"
       - "src/parlay_bot/research/gate_hourly_l2_archive.py"
+      - "src/parlay_bot/research/gate_hourly_l2_batch.py"
+      - "src/parlay_bot/research/gate_l2_quality.py"
+      - "src/parlay_bot/research/drive_source_census.py"
       - "tests/test_gate_hourly_l2_archive.py"
+      - "tests/test_gate_l2_quality_batch.py"
+      - "tests/test_drive_source_census.py"
   push:
     branches: [main]
     paths:
       - ".github/workflows/gate-hourly-l2-source.yml"
       - "src/parlay_bot/research/gate_hourly_l2_archive.py"
+  schedule:
+    - cron: "19 1,7,13,19 * * *"
   workflow_dispatch:
     inputs:
       hour:
@@ -44,8 +51,8 @@ jobs:
           python-version: "3.11"
       - run: |
           python -m pip install -e ".[dev,archive]"
-          ruff check src/parlay_bot/research/gate_hourly_l2_archive.py tests/test_gate_hourly_l2_archive.py
-          pytest -q tests/test_gate_hourly_l2_archive.py
+          ruff check src/parlay_bot/research/gate_hourly_l2_archive.py src/parlay_bot/research/gate_hourly_l2_batch.py src/parlay_bot/research/gate_l2_quality.py src/parlay_bot/research/drive_source_census.py tests/test_gate_hourly_l2_archive.py tests/test_gate_l2_quality_batch.py tests/test_drive_source_census.py
+          pytest -q tests/test_gate_hourly_l2_archive.py tests/test_gate_l2_quality_batch.py tests/test_drive_source_census.py
 
   public-source-probe:
     if: github.event_name == 'pull_request'
@@ -81,6 +88,9 @@ jobs:
                       "compressed_bytes": info["compressed_bytes"],
                       "expanded_bytes": info["expanded_bytes"],
                       "unparsed_original_sample_repr": repr(first[:200]),
+                      "parsed_snapshots": info.get("original_snapshot_quality", {}).get("observed_snapshots"),
+                      "source_schema_checked": info.get("original_snapshot_quality", {}).get(
+                          "source_jsonl_snapshot_schema_verified", False),
                       "l2_continuity_verified": False,
                   }
               except (HistoryImportError, httpx.HTTPError) as exc:
@@ -96,6 +106,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     env:
+      GATE_SAMPLE_HOUR: ${{ inputs.hour || '2023042505' }}
+      GATE_SAMPLE_FAMILY: ${{ inputs.family || 'orderbooks_slice' }}
       RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
       RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
       RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
@@ -122,16 +134,25 @@ jobs:
               exit 1
             fi
           done
-      - name: Store at most four original hourly gzip samples with remote SHA readback
+      - name: Record original Gate L2 proofs with independent Drive byte readback
+        shell: bash
         run: |
-          python -m parlay_bot.research.gate_hourly_l2_archive \
-            --hour "${{ inputs.hour || '2023042505' }}" \
-            --family "${{ inputs.family || 'orderbooks_slice' }}" \
-            --assets BTC ETH SOL XRP
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            python -m parlay_bot.research.gate_hourly_l2_archive \
+              --hour "$GATE_SAMPLE_HOUR" \
+              --family "$GATE_SAMPLE_FAMILY" \
+              --assets BTC ETH SOL XRP
+          else
+            python -m parlay_bot.research.gate_hourly_l2_batch \
+              --max-attempts 12
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: gate-l2-original-hourly-readback-receipts
-          path: data/native-reports/gate-hourly-l2-attempt.json
+          path: |
+            data/native-reports/gate-hourly-l2-attempt.json
+            data/native-reports/gate-l2-batch.json
           retention-days: 14
           if-no-files-found: ignore

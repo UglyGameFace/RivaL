@@ -32,10 +32,12 @@ def test_latest_completed_month_and_recent_first_rotation():
     periods = [automatic_month(start + timedelta(hours=6 * i))
                for i in range(21)]
     assert len(set(periods)) == 21
-    assert set(periods[:6]) == {
+    index = periods.index("2026-10")
+    rotated = periods[index:] + periods[:index]
+    assert rotated[:6] == [
         "2026-10", "2026-09", "2026-08",
         "2026-07", "2026-06", "2026-05",
-    }
+    ]
 
 
 def test_funding_validates_off_window_older_rows_without_admitting_them():

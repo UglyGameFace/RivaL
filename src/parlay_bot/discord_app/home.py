@@ -1576,16 +1576,24 @@ class GuidedHome(discord.ui.View):
             # Acknowledge a real Discord request quickly with a truthful
             # loading view. Slow market checks never hold the button handler
             # or block navigation; only the last generation can replace it.
-            if self.page == "forecast" and isinstance(
+            if self.page in ("forecast", "performance") and isinstance(
                 interaction, discord.Interaction,
             ):
-                loading = discord.Embed(
-                    title=f"🔄 Checking {self.coin} {self.horizon}m",
-                    description=(
+                if self.page == "forecast":
+                    title = f"🔄 Checking {self.coin} {self.horizon}m"
+                    description = (
                         "Checking newly issued model forecasts, matching live "
                         "quotes, and real forward evidence. The previous "
                         "forecast is not automatically a new trade."
-                    ),
+                    )
+                else:
+                    title = f"🔄 Loading {self.coin} performance"
+                    description = (
+                        "Checking saved prediction results, learning progress "
+                        "and live feed health. No verified trading edge."
+                    )
+                loading = discord.Embed(
+                    title=title, description=description,
                     color=discord.Color.blurple(),
                 )
                 try:
@@ -1598,8 +1606,11 @@ class GuidedHome(discord.ui.View):
                     _LOG.warning("Fast forecast loading edit failed")
                     return
                 asyncio.create_task(
-                    self._finish_forecast(interaction, revision),
-                    name="rival-forecast-details",
+                    self._finish_forecast(interaction, revision)
+                    if self.page == "forecast" else
+                    self._finish_performance(interaction, revision),
+                    name="rival-forecast-details" if self.page == "forecast"
+                    else "rival-performance-details",
                 )
                 return
             await self._redraw_locked(interaction)
@@ -1632,6 +1643,41 @@ class GuidedHome(discord.ui.View):
             raise
         except Exception:  # noqa: BLE001 - a closed menu cannot stop source collection
             _LOG.info("Live market completion unavailable; shared tracking continues")
+
+    async def _finish_performance(
+        self, interaction: discord.Interaction, revision: int,
+    ) -> None:
+        """Complete slow scorecard reads after the user can already navigate."""
+        try:
+            embed = await asyncio.wait_for(self.render(), timeout=8)
+        except TimeoutError:
+            _LOG.warning("Performance background render timed out")
+            embed = discord.Embed(
+                title="⏳ Performance read delayed",
+                description=(
+                    "Saved prediction results are taking too long to load. "
+                    "Refresh to retry; no result was estimated."
+                ),
+                color=discord.Color.orange(),
+            )
+        except Exception:  # noqa: BLE001
+            _LOG.exception("Performance background render failed")
+            embed = discord.Embed(
+                title="Performance temporarily unavailable",
+                description="The evidence could not be read. No accuracy was inferred.",
+                color=discord.Color.orange(),
+            )
+        async with self._redraw_lock:
+            if self._render_revision["value"] != revision:
+                return
+            try:
+                await asyncio.wait_for(
+                    interaction.edit_original_response(
+                        embed=embed, view=self._display_generation(),
+                    ), timeout=4,
+                )
+            except (discord.HTTPException, TimeoutError):
+                _LOG.warning("Performance background display update failed")
 
     async def _finish_forecast(
         self, interaction: discord.Interaction, revision: int,

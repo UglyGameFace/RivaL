@@ -324,9 +324,6 @@ def ingest_binance(
         extra={"venue": "binance", "market_type": "usd_m_linear_futures",
                "contract": f"{asset}USDT", "quote": "USDT",
                "interval_minutes": INTERVALS[interval], "checksum_verified": True,
-               **({"original_zip_retained_locally": True,
-                   "original_zip_remote_readback_proven_by_manifest": False}
-                  if retain_original else {}),
                "time_reference": "exchange_candle_open_not_first_observed_at"},
     )
 

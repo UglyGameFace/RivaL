@@ -1,0 +1,55 @@
+name: RivaL LFM3 read-only forward-edge audit
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/llm-edge-audit.yml"
+      - "tools/discloud_llm_edge_audit.py"
+      - "tests/test_discloud_llm_edge_audit.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/llm-edge-audit.yml"
+      - "tools/discloud_llm_edge_audit.py"
+  workflow_dispatch:
+  schedule:
+    - cron: "23 8,20 * * *"
+permissions:
+  contents: read
+concurrency:
+  group: rival-llm-read-only-edge-audit
+  cancel-in-progress: false
+jobs:
+  evidence:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Test research-vs-forward evidence boundary
+        run: |
+          python -m pip install pytest
+          pytest -q tests/test_discloud_llm_edge_audit.py
+      - name: Read current PostgreSQL state without calling the LLM
+        env:
+          DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+          DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+        run: python tools/discloud_llm_edge_audit.py
+      - name: Publish factual edge readiness
+        if: always()
+        run: |
+          if [[ -f data/llm-edge-audit.json ]]; then
+            echo "## LFM3: research is not future trading proof" >> "$GITHUB_STEP_SUMMARY"
+            echo '~~~json' >> "$GITHUB_STEP_SUMMARY"
+            cat data/llm-edge-audit.json >> "$GITHUB_STEP_SUMMARY"
+            echo '~~~' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rival-llm-real-edge-readiness
+          path: data/llm-edge-audit.json
+          retention-days: 14
+          if-no-files-found: ignore

@@ -1,6 +1,12 @@
 name: Bitget verified original-history offline research
 
 on:
+  push:
+    branches: [main]
+    paths:
+      # One-time catch-up when this job itself changes. No retraining on
+      # unrelated main commits, and no interference with Bitget acquisition.
+      - ".github/workflows/bitget-original-offline-research.yml"
   schedule:
     # Research one Bitget asset per day without disturbing live collectors.
     - cron: "29 12 * * *"
@@ -15,15 +21,21 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: rival-bitget-verified-offline-training
-  cancel-in-progress: false
-
 jobs:
   research:
     if: vars.RIVAL_NATIVE_RESEARCH_ENABLED != 'false' && vars.RIVAL_BITGET_OFFLINE_RESEARCH_ENABLED != 'false'
+    # The initial source-byte restore proved XRP. On this workflow's first
+    # push, research the three untrained assets in parallel. Other events
+    # remain one bounded asset, retaining the existing daily free runner pace.
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: ${{ fromJSON(github.event_name == 'push' && '["BTC","ETH","SOL"]' || github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.asset) || '["daily"]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 110
+    concurrency:
+      group: rival-bitget-verified-offline-training-${{ matrix.asset }}
+      cancel-in-progress: false
     env:
       RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
       RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
@@ -55,12 +67,12 @@ jobs:
               exit 1
             fi
           done
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            ASSET="${{ github.event.inputs.asset }}"
-          else
+          if [[ "${{ matrix.asset }}" == "daily" ]]; then
             ASSETS=(BTC ETH SOL XRP)
             SLOT=$(( $(date -u +%s) / 86400 % 4 ))
             ASSET="${ASSETS[$SLOT]}"
+          else
+            ASSET="${{ matrix.asset }}"
           fi
           echo "Research-only Bitget source: $ASSET"
           python -m parlay_bot.research.source_native_offline \

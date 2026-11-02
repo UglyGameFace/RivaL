@@ -994,6 +994,19 @@ class ResearchDashboard(discord.ui.View):
                         value="Verified observation ledger currently unavailable.",
                         inline=False,
                     )
+            if self.section == "learning":
+                embed.add_field(
+                    name="Mathematical model",
+                    value=(
+                        "Online weights are evaluated in the background on "
+                        "settled observations. No model is approved for "
+                        "production trading signals."
+                    ) if self.shadow_enabled else (
+                        "Automatic shadow evaluation is disabled; "
+                        "no production model is approved."
+                    ),
+                    inline=False,
+                )
             if self.section == "learning" and self.shadow_enabled:
                 try:
                     snapshots = await asyncio.to_thread(

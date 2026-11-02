@@ -82,14 +82,21 @@ def automatic_archive_slot(now: datetime | None = None, *, offset: int = 0) -> t
 
 
 def official_catalog_http_400(exc: Exception) -> bool:
-    """Only classify an actual provider HTTP 400 as a rejected catalog slot.
+    """Identify ONLY OKX's verified 50016 monthly-L2 aggregation rejection.
 
-    This does not mark any source family as complete and must not suppress
-    authentication, transport, throttling, or source-identity failures.
+    Historical L2 module 4 is available in a *daily* catalog, but a single
+    400-level day was advertised at 478.63 MB (BTC, 2026-04-01). That is
+    not a small monthly archive and must never be silently downloaded or
+    mistaken for full-month historical liquidity coverage.
     """
     cause = exc.__cause__ if isinstance(exc, HistoryImportError) else None
-    return (isinstance(cause, httpx.HTTPStatusError)
-            and cause.response.status_code == 400)
+    if not isinstance(cause, httpx.HTTPStatusError) or cause.response.status_code != 400:
+        return False
+    try:
+        payload = cause.response.json()
+    except (ValueError, UnicodeError):
+        return False
+    return isinstance(payload, dict) and payload.get("code") == "50016"
 
 
 def archive_url(*, asset: str, month: str, record: dict) -> str:

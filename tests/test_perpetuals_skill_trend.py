@@ -16,10 +16,10 @@ def test_raw_brier_improves_but_relative_skill_worsens(tmp_path):
     now = datetime(2026, 10, 28, 12, tzinfo=UTC)
     try:
         with store.connect() as conn:
-            for section, days in (("prior", 10), ("recent", 2)):
+            for section, days in (("prior", 13), ("recent", 6)):
                 start = now - timedelta(days=days)
                 for i in range(120):
-                    target = start + timedelta(minutes=5 * i)
+                    # 120 independent targets across five UTC days, not one.\n                    target = start + timedelta(days=i // 24,\n                                               minutes=5 * (i % 24))
                     issued = target - timedelta(minutes=1)
                     opened = target - timedelta(minutes=5)
                     # Both weeks predict up correctly, but the baseline is

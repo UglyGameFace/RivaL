@@ -14,8 +14,8 @@ from parlay_bot.discord_app.research_dashboard import (
     _SECTIONS,
     ResearchDashboard,
     _compact_embed,
-    _plain_training_line,
     _plain_boosted_proof,
+    _plain_training_line,
 )
 
 

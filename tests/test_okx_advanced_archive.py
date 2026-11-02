@@ -34,10 +34,10 @@ def test_auto_advanced_slot_rotates_months_and_all_native_families():
     assert all_families == {
         "funding_rates", "trades", "orderbook_l2_400", "orderbook_l2_5000",
     }
-    assert all("2023-07" <= month <= "2026-10" for month, _ in slots)
+    assert all("2021-09" <= month <= "2026-10" for month, _ in slots)
     # November 1 must not pull an October archive before its grace period.
     early, _ = automatic_archive_slot(datetime(2026, 11, 1, tzinfo=UTC))
-    assert "2023-07" <= early <= "2026-09"
+    assert "2021-09" <= early <= "2026-09"
 
 
 def test_automatic_advanced_catalog_never_schedules_5000_level_before_launch():
@@ -54,7 +54,7 @@ def test_source_gap_candidates_are_bounded_and_disjoint():
     clock = datetime(2026, 11, 4, tzinfo=UTC)
     slots = [automatic_archive_slot(clock, offset=i) for i in range(12)]
     assert len(slots) == len(set(slots))
-    assert all("2023-07" <= month <= "2026-10" for month, _ in slots)
+    assert all("2021-09" <= month <= "2026-10" for month, _ in slots)
 
 
 def test_only_explicit_provider_http_400_is_skippable_catalog_rejection():
@@ -304,3 +304,43 @@ async def test_okx_auxiliary_listing_rejects_untrusted_foreign_folder():
 
     with pytest.raises(HistoryImportError, match="untrusted"):
         await listed_auxiliary_receipts(Drive(), asset="BTC")
+
+
+def test_advanced_history_family_eras_precede_five_minute_candles():
+    from parlay_bot.research.official_okx_bootstrap import (
+        ADVANCED_FIRST,
+        advanced_month_bounds,
+    )
+
+    assert ADVANCED_FIRST == {
+        1: "2021-09", 2: "2023-07", 3: "2022-03",
+        4: "2023-03", 5: "2025-11",
+    }
+    for module, start in ADVANCED_FIRST.items():
+        first, _ = advanced_month_bounds(start, module)
+        assert first.strftime("%Y-%m") == start
+        prior = (first - timedelta(days=1)).strftime("%Y-%m")
+        with pytest.raises(HistoryImportError, match="predates"):
+            advanced_month_bounds(prior, module)
+    with pytest.raises(HistoryImportError, match="not completed"):
+        advanced_month_bounds("2026-11", 1)
+
+    # Official archive URL can be authenticated without moving the separate
+    # strict five-minute candle bootstrap floor from July 2023.
+    from parlay_bot.research.official_okx_bootstrap import month_bounds
+    with pytest.raises(HistoryImportError):
+        month_bounds("2022-03")
+
+
+def test_okx_old_trade_and_funding_catalog_urls_are_allowed_only_for_family():
+    old = "BTC-USDT-SWAP-trades-2021-09.zip"
+    url = "https://static.okx.com/cdn/okex/traderecords/trades/monthly/202109/" + old
+    assert archive_url(
+        asset="BTC", month="2021-09", module="trades",
+        record={"filename": old, "source_url": url},
+    ) == url
+    with pytest.raises(HistoryImportError, match="predates"):
+        archive_url(
+            asset="BTC", month="2021-09", module="funding_rates",
+            record={"filename": old, "source_url": url},
+        )

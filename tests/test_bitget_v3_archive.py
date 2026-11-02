@@ -463,5 +463,5 @@ async def test_unattended_bitget_reads_only_same_asset_sha_verified_prior_status
         assert await prior_source_decisions(drive, asset="BTC") == {
             ("premium", "2021-03"): prior,
         }
-        with pytest.raises(HistoryImportError, match="wrong source identity"):
+        with pytest.raises(HistoryImportError, match="outside private boundary"):
             await prior_source_decisions(drive, asset="ETH")

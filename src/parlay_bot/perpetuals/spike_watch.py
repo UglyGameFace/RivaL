@@ -218,6 +218,8 @@ class SpikeWatch:
                     closed = utc(bar["closed_at"])
                     price, previous = float(bar["close_price"]), float(source["close"])
                     if not (detected < closed <= observed <= clock
+                            and observed - closed <= FRESH
+                            and observed - detected <= SETTLE_LATE
                             and price > 0 and previous > 0
                             and math.isfinite(price) and math.isfinite(previous)):
                         continue

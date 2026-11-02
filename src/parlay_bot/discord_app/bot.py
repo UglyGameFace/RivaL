@@ -86,8 +86,8 @@ from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
 from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
-from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 from parlay_bot.perpetuals.spike_watch import SpikeWatch
+from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 from parlay_bot.perpetuals.unattended_acceptance import unattended_acceptance_receipt
 from parlay_bot.providers.errors import QuotaReserveReached
 from parlay_bot.providers.oddspapi import OddsPapiClient

@@ -130,6 +130,8 @@ def inspect_original_zip(raw: bytes, *, asset: str, family: str,
     except (zipfile.BadZipFile, UnicodeError, OSError, csv.Error) as exc:
         raise HistoryImportError("Binance auxiliary ZIP or CSV invalid") from exc
     if family == "funding":
+        if not seen:
+            raise HistoryImportError("Binance funding archive contains no source events")
         return {
             "rows": len(seen), "expected_rows": None,
             "complete_utc_grid": False, "missing_slots": None,

@@ -9,8 +9,9 @@ from parlay_bot.archive.drive import DriveArchiveFolders, GoogleDriveArchiveClie
 from parlay_bot.archive.models import ArchiveArtifact
 
 
+@pytest.mark.parametrize("mime_type", ("application/vnd.apache.parquet", "application/zip", "application/gzip"))
 @pytest.mark.asyncio
-async def test_history_upload_is_bounded_staged_verified_and_idempotent(tmp_path) -> None:
+async def test_history_upload_is_bounded_staged_verified_and_idempotent(tmp_path, mime_type: str) -> None:
     path = tmp_path / "batch.parquet"
     payload = b"parquet-test-payload"
     path.write_bytes(payload)
@@ -141,10 +142,12 @@ async def test_history_upload_is_bounded_staged_verified_and_idempotent(tmp_path
         first = await client.ensure_history_file(
             artifact=artifact,
             batch_id="batch-1",
+            mime_type=mime_type,
         )
         second = await client.ensure_history_file(
             artifact=artifact,
             batch_id="batch-1",
+            mime_type=mime_type,
         )
 
     assert first.file_id == "file-1"

@@ -5,7 +5,7 @@ import io
 import json
 import tarfile
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -13,9 +13,25 @@ import pytest
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.okx_advanced_archive import (
     archive_url,
+    automatic_archive_slot,
     ingest_one,
     inspect_archive,
 )
+
+
+def test_auto_advanced_slot_rotates_months_and_all_native_families():
+    now = datetime(2026, 11, 4, tzinfo=UTC)
+    slots = [automatic_archive_slot(now + timedelta(hours=4 * i))
+             for i in range(8)]
+    assert len(set(slots)) == 8
+    assert {family for _, family in slots} == {
+        "funding_rates", "trades", "orderbook_l2_400", "orderbook_l2_5000",
+    }
+    assert all("2023-07" <= month <= "2026-10" for month, _ in slots)
+    # November 1 must not pull an October archive before its grace period.
+    early, _ = automatic_archive_slot(datetime(2026, 11, 1, tzinfo=UTC))
+    assert "2023-07" <= early <= "2026-09"
+
 
 ASSET = "BTC"
 MONTH = "2026-05"

@@ -12,7 +12,7 @@ on:
       - ".github/workflows/dydx-v4-original-funding.yml"
       - "src/parlay_bot/research/dydx_funding_archive.py"
   schedule:
-    - cron: "17 0,4,8,12,16,20 * * *"
+    - cron: "17 */2 * * *"
   workflow_dispatch:
     inputs:
       month:

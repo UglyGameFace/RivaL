@@ -9,8 +9,8 @@ on:
       - "src/parlay_bot/research/okx_l2_replay.py"
       - "src/parlay_bot/research/okx_auxiliary_ablation.py"
   schedule:
-    # One bounded source-native funding partition each week, outside Discloud.
-    - cron: "37 7 * * 1"
+    # Rotate every advanced source family and historic month every four hours.
+    - cron: "37 1,5,9,13,17,21 * * *"
   pull_request:
     paths:
       - ".github/workflows/official-okx-advanced-archive.yml"
@@ -62,12 +62,17 @@ jobs:
 
   archive-research:
     if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        asset: ${{ fromJSON(github.event_name == 'workflow_dispatch' && format('["{0}"]', inputs.asset) || '["BTC","ETH","SOL","XRP"]') }}
     runs-on: ubuntu-latest
     timeout-minutes: 50
     env:
-      ASSET: ${{ inputs.asset || '' }}
+      ASSET: ${{ matrix.asset }}
       MONTH: ${{ inputs.month || '' }}
-      MODULE: ${{ inputs.module || 'funding_rates' }}
+      MODULE: ${{ inputs.module || '' }}
       RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
       RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
       RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
@@ -92,7 +97,7 @@ jobs:
           import asyncio
           import json
           import os
-          from datetime import UTC, datetime, timedelta
+          from datetime import UTC, datetime
           from pathlib import Path
 
           import httpx
@@ -100,22 +105,17 @@ jobs:
           from parlay_bot.config import Settings
           from parlay_bot.research.free_history import HistoryImportError
           from parlay_bot.research.official_okx_bootstrap import inventory_extra_modules
-          from parlay_bot.research.okx_advanced_archive import ingest_one
+          from parlay_bot.research.okx_advanced_archive import (
+              automatic_archive_slot, ingest_one,
+          )
           from parlay_bot.research.publish import _artifact, _drive
 
           async def run():
               clock = datetime.now(UTC)
-              # Public source archives commonly appear T+2 / order books T+3.
-              # On the first three days prefer the prior older complete month.
-              previous = clock.replace(day=1) - timedelta(days=1)
-              if clock.day <= 3:
-                  previous = previous.replace(day=1) - timedelta(days=1)
-              month = os.environ["MONTH"] or previous.strftime("%Y-%m")
-              # Small bounded funding archive first; weekly source rotation.
-              asset = os.environ["ASSET"] or (
-                  ("BTC", "ETH", "SOL", "XRP")[clock.isocalendar().week % 4]
-              )
-              module = os.environ["MODULE"]
+              automatic_month, automatic_module = automatic_archive_slot(clock)
+              month = os.environ["MONTH"] or automatic_month
+              asset = os.environ["ASSET"]
+              module = os.environ["MODULE"] or automatic_module
               root = Path("data/okx-advanced")
               root.mkdir(parents=True, exist_ok=True)
               drive = _drive(Settings())

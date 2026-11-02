@@ -17,15 +17,18 @@ def _workflow(name: str) -> str:
 
 
 def _scheduled_hours(content: str) -> tuple[int, ...]:
-    matches = re.findall(r'cron: "(\d+) ([\d,]+) \* \* \*"', content)
+    matches = re.findall(r'cron: "(\d+) ([\d,*/]+) \* \* \*"', content)
     assert len(matches) == 1, "must have exactly one bounded daily provider schedule"
-    return tuple(int(value) for value in matches[0][1].split(","))
+    hours = matches[0][1]
+    if hours == "*/2":
+        return tuple(range(0, 24, 2))
+    return tuple(int(value) for value in hours.split(","))
 
 
-def test_gate_advanced_recovery_has_bounded_six_run_capacity():
+def test_gate_advanced_recovery_has_bounded_twelve_run_capacity():
     config = _workflow("gate-official-archive-backfill.yml")
     hours = _scheduled_hours(config)
-    assert len(hours) == len(set(hours)) == 6
+    assert len(hours) == len(set(hours)) == 12
     assert '--max-new "$MAX_NEW" --max-attempts 48' in config
     assert "MAX_NEW: ${{ inputs.max_new || '32' }}" in config
     assert "group: rival-gate-public-bulk-archive" in config
@@ -38,7 +41,7 @@ def test_binance_is_staggered_and_keeps_source_integrity():
     binance = _workflow("binance-deep-file-backfill.yml")
     gh = _scheduled_hours(gate)
     bh = _scheduled_hours(binance)
-    assert len(bh) == len(set(bh)) == 6
+    assert len(bh) == len(set(bh)) == 12
     assert not set(gh).intersection(bh)
     assert "python -m parlay_bot.research.binance_deep_backfill --max-new 32" in binance
     assert "group: rival-binance-2021-monthly-archive" in binance
@@ -47,6 +50,6 @@ def test_binance_is_staggered_and_keeps_source_integrity():
     assert "source_family_coverage" in gate and "source_family_coverage" in binance
 
 
-def test_perfect_gate_capacity_is_less_than_eight_days_but_not_proven():
-    # Based on latest production backlog of 764, not fabricated success.
-    assert math.ceil(764 / (6 * 32)) == 4
+def test_perfect_gate_capacity_is_under_three_days_but_not_proven():
+    # Based on latest source-family backlog of 716, not fabricated success.
+    assert math.ceil(716 / (12 * 32)) == 2

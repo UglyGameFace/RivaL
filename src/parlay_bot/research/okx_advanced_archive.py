@@ -24,7 +24,7 @@ from urllib.parse import unquote, urlparse
 import httpx
 
 from parlay_bot.research.free_history import HistoryImportError
-from parlay_bot.research.official_okx_bootstrap import ASSETS, month_bounds
+from parlay_bot.research.official_okx_bootstrap import ASSETS, FIRST, month_bounds
 from parlay_bot.research.okx_l2_replay import ArchivedBook
 
 MODULES = frozenset({"trades", "funding_rates", "orderbook_l2_400", "orderbook_l2_5000"})
@@ -32,6 +32,39 @@ MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
 MAX_EXPANDED_BYTES = 160 * 1024 * 1024
 MAX_RECORDS = 2_000_000
 MAX_MEMBERS = 16
+
+# A separate four-hour archive slot from the standard candle ZIP collector.
+# Never fabricate missing source months, or treat cataloged files as stored.
+AUTOMATIC_MODULES = ("funding_rates", "trades", "orderbook_l2_400", "orderbook_l2_5000")
+
+
+def automatic_archive_slot(now: datetime | None = None) -> tuple[str, str]:
+    """Rotate every obtainable advanced family and completed 2023+ month.
+
+    The publication delay excludes the previous month on days 1-3 of a new
+    month. One slot across all four assets is selected every four hours; the
+    workflow applies its own bounded parallelism and exact source validation.
+    """
+    clock = (now or datetime.now(UTC)).astimezone(UTC)
+    release_boundary = clock.replace(day=1, hour=0, minute=0, second=0,
+                                     microsecond=0)
+    if clock.day <= 3:
+        release_boundary = (release_boundary - timedelta(days=1)).replace(day=1)
+    first = datetime.strptime(FIRST, "%Y-%m").replace(tzinfo=UTC)
+    month_count = ((release_boundary.year - first.year) * 12
+                   + release_boundary.month - first.month)
+    if month_count <= 0:
+        raise HistoryImportError("no published OKX auxiliary month scheduled")
+    slot = (int(clock.timestamp()) // (4 * 3600)) % (
+        month_count * len(AUTOMATIC_MODULES)
+    )
+    month_index, module_index = divmod(slot, len(AUTOMATIC_MODULES))
+    year, zero_based_month = divmod(
+        first.year * 12 + first.month - 1 + month_index, 12
+    )
+    month = f"{year:04d}-{zero_based_month + 1:02d}"
+    month_bounds(month)
+    return month, AUTOMATIC_MODULES[module_index]
 
 
 def archive_url(*, asset: str, month: str, record: dict) -> str:

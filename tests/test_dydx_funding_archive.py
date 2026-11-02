@@ -84,7 +84,7 @@ def test_actual_dydx_chain_settlement_seconds_after_each_hour_are_complete():
 def test_month_rotation_covers_all_completed_v4_months_without_future_dates():
     start = datetime(2026, 11, 1, tzinfo=UTC)
     selected = {
-        automatic_month(start + timedelta(hours=4 * i))
+        automatic_month(start + timedelta(hours=2 * i))
         for i in range(36)
     }
     assert len(selected) == 36

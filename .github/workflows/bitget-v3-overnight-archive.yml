@@ -12,7 +12,7 @@ on:
       - ".github/workflows/bitget-v3-overnight-archive.yml"
       - "src/parlay_bot/research/bitget_v3_archive.py"
   schedule:
-    - cron: "17 3 * * *"
+    - cron: "17 3,9,15,21 * * *"
   workflow_dispatch:
     inputs:
       max_requests:

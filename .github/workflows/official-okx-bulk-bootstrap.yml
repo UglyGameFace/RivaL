@@ -31,7 +31,7 @@ on:
         default: all
   schedule:
     # Four serialized batches/day while source-native OHLCV remains incomplete.
-    - cron: "13 2,8,14,20 * * *"
+    - cron: "13 2,5,8,11,14,17,20,23 * * *"
 
 permissions:
   contents: read

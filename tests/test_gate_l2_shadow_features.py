@@ -111,3 +111,62 @@ def test_one_hour_cannot_be_admitted_as_six_month_training(tmp_path):
     _, receipt = write_sidecar(original, manifest)
     with pytest.raises((HistoryImportError, ValueError)):
         evaluate_shadow([], [receipt], horizon=5)
+
+
+@pytest.mark.asyncio
+async def test_verified_gate_snapshot_publishes_independent_derived_drive_receipts(tmp_path):
+    from types import SimpleNamespace
+
+    from parlay_bot.research.gate_hourly_l2_archive import (
+        inspect_gzip,
+        source_url,
+        store,
+    )
+
+    raw = _source()
+    sha = hashlib.sha256(raw).hexdigest()
+    evidence = {
+        **inspect_gzip(raw),
+        "source_url": source_url(
+            asset="BTC", family="orderbooks_slice", hour=HOUR,
+        ),
+        "original_source_sha256": sha,
+        "original_snapshot_quality": {
+            "source_jsonl_snapshot_schema_verified": True,
+        },
+    }
+
+    class Drive:
+        folders = SimpleNamespace(history="history", manifests="manifests")
+
+        def __init__(self):
+            self.filenames = []
+            self.history_batches = []
+            self.readbacks = []
+
+        async def ensure_history_file(self, *, artifact, batch_id, mime_type):
+            self.filenames.append(artifact.path.name)
+            self.history_batches.append(batch_id)
+            return SimpleNamespace(file_id=artifact.sha256)
+
+        async def ensure_manifest_file(self, *, artifact, batch_id):
+            self.filenames.append(artifact.path.name)
+            return SimpleNamespace(file_id=artifact.sha256)
+
+        async def verify_downloaded_artifact(self, *, file_id, parent_id, artifact):
+            assert file_id == artifact.sha256
+            self.readbacks.append((parent_id, file_id))
+
+    drive = Drive()
+    stored = await store(
+        drive, raw=raw, asset="BTC", family="orderbooks_slice",
+        hour=HOUR, evidence=evidence, root=tmp_path,
+    )
+    assert stored["drive_sha256_readback_verified"] is True
+    assert stored["shadow_features_drive_readback"] is True
+    assert stored["shadow_feature_buckets"] == 2
+    assert stored["model_training_eligible"] is False
+    assert len(drive.readbacks) == 4
+    assert len(set(drive.history_batches)) == 3
+    assert any(name.endswith(".research.ndjson") for name in drive.filenames)
+    assert any(name.endswith(".research.receipt.json") for name in drive.filenames)

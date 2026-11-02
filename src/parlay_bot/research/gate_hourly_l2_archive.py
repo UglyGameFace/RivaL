@@ -19,6 +19,7 @@ from pathlib import Path
 
 import httpx
 
+from parlay_bot.archive.drive import DriveArchiveError
 from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.publish import _artifact, _drive
@@ -209,7 +210,7 @@ async def store(drive, *, raw: bytes, asset: str, family: str, hour: str,
             shadow["shadow_feature_buckets"] = sum(
                 1 for _ in sidecar.open("r", encoding="utf-8")
             )
-        except (HistoryImportError, OSError, ValueError, TypeError) as exc:
+        except (DriveArchiveError, HistoryImportError, OSError, ValueError, TypeError) as exc:
             shadow["shadow_feature_status"] = (
                 "original_preserved_auxiliary_blocked_" + type(exc).__name__
             )

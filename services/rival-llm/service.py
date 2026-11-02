@@ -125,6 +125,13 @@ def compact_evidence(asset: str, evidence: dict) -> str:
                 f"offline_math:imported={fields[0]},screen_pass={fields[1]},"
                 f"source_match={fields[2]};not_forward_skill"
             )
+    forward = evidence.get("prospective_math")
+    if (isinstance(forward, dict)
+            and forward.get("source") == "postgres_perp_forward_audit"
+            and forward.get("status") in ("supported", "insufficient", "not_improving")):
+        n = forward.get("settled_targets")
+        if type(n) is int and 0 <= n <= 2_000_000:
+            lines.append(f"prospective_math:status={forward['status']},settled={n};not_after_cost")
     audits = evidence.get("historical_quality")
     if isinstance(audits, list) and len(audits) <= 12:
         verified = [r for r in audits if isinstance(r, dict)

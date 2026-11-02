@@ -403,6 +403,10 @@ class RivalDiscordClient(discord.Client):
             else None
         )
         self._shadow_task: asyncio.Task[None] | None = None
+        if self.perp_collector is not None:
+            # Read the already-persisted, genuinely future-settled mathematical
+            # score; RivaL's model and promotion remain authoritative.
+            self.perp_collector.market.research_forward_auditor = self.forward_audit
         # Both OPEN_ROUTER_API_KEY (the Discloud owner's variable) and
         # OPENROUTER_API_KEY (provider convention) are accepted. OpenRouter
         # has priority when configured, but there is never a paid fallback.

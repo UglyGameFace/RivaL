@@ -127,6 +127,19 @@ def enforce(reply: dict, evidence: object, *, asset: str,
                     f" Offline mathematical models: {passed}/{imported}"
                     " passed historical screening; forward edge unverified."
                 )
+        forward = evidence.get("prospective_math")
+        if isinstance(forward, dict) and forward.get("source") == "postgres_perp_forward_audit":
+            n, a, b = (forward.get(k) for k in (
+                "settled_targets", "model_brier", "baseline_brier",
+            ))
+            if (type(n) is int and 1 <= n <= 2_000_000
+                    and type(a) in (int, float) and type(b) in (int, float)
+                    and math.isfinite(a) and math.isfinite(b)
+                    and 0 <= a <= 1 and 0 <= b <= 1):
+                thesis += (
+                    f" Settled 5m model Brier: {a:.3f} vs baseline {b:.3f}"
+                    f" on {n} matched targets; not after-cost profit."
+                )
         audits = evidence.get("historical_quality")
         if isinstance(audits, list) and len(audits) <= 12:
             fresh = [r for r in audits if isinstance(r, dict)

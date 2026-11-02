@@ -92,6 +92,44 @@ def _persisted_math_evidence(market: PerpetualMarketStore, *, asset: str,
         return {"status": "unavailable", "forward_edge_verified": False}
 
 
+
+def _prospective_math_evidence(market: PerpetualMarketStore, *, asset: str,
+                               clock: datetime) -> dict[str, Any]:
+    """Score existing immutable future outcomes, not retrospective backtests."""
+    auditor = market.research_forward_auditor
+    if auditor is None:
+        return {"status": "not_configured", "after_cost_edge_verified": False}
+    try:
+        report = auditor.active_learning_evidence(
+            asset=asset, horizon_minutes=5, now=clock,
+        )
+        status = report.get("status")
+        if status not in ("supported", "insufficient", "not_improving"):
+            raise ValueError("unrecognized scored forward evidence state")
+        targets, days = int(report["targets"]), int(report["days"])
+        if not (0 <= targets <= 2_000_000 and 0 <= days <= 14):
+            raise ValueError("unbounded future score")
+        def score(value: object) -> float | None:
+            return (float(value) if type(value) in (float, int)
+                    and math.isfinite(value) and 0 <= value <= 1 else None)
+        return {
+            "status": status,
+            "source": "postgres_perp_forward_audit",
+            "scope": "current_adaptive_policy_14_day_matched_future_outcomes",
+            "horizon_minutes": 5,
+            "settled_targets": targets,
+            "distinct_days": days,
+            "model_brier": score(report.get("brier")),
+            "baseline_brier": score(report.get("baseline_brier")),
+            "research_comparison_only": True,
+            "frozen_model_improvement_verified": False,
+            "after_cost_edge_verified": False,
+        }
+    except Exception:  # noqa: BLE001 - optional scores never block other research
+        _LOG.warning("Persisted prospective mathematical evidence unavailable", exc_info=True)
+        return {"status": "unavailable", "after_cost_edge_verified": False}
+
+
 def _audited_history_evidence(market: PerpetualMarketStore, *, asset: str,
                               venues: tuple[str, ...], clock: datetime) -> list[dict]:
     """Only stored source-exact six-month audits, never Drive-name claims."""
@@ -241,6 +279,7 @@ def build_evidence(
     quality = _audited_history_evidence(
         market, asset=asset, venues=healthy, clock=clock,
     )
+    forward_math = _prospective_math_evidence(market, asset=asset, clock=clock)
     # Stable digest: if none of the input candles changes, reuse stored analysis.
     # Disconnected/blocked provider health changes also invalidate old evidence.
     evidence = {
@@ -249,6 +288,7 @@ def build_evidence(
         "sources": independent,
         "unavailable_sources": unavailable,
         "mathematical_research": mathematical,
+        "prospective_math": forward_math,
         "historical_quality": quality,
         "cold_archive_readback": "not_performed_by_live_research",
         "coverage": {"usable_venues": len(independent), "configured_venues": len(set(venues))},

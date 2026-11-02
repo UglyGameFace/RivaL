@@ -140,3 +140,17 @@ model output, invalid source evidence and global user quota denial still fail
 closed. The first attempted LFM3 request keeps the existing shared quota.
 Production acceptance for *actual LFM3 inference* still requires the real
 LFM3 model identity and successful authenticated host response.
+
+
+### Existing quantitative forward-score integration
+
+The same evidence SHA also includes `ForwardAccuracyMonitor.active_learning_evidence`
+from the already-persisted mathematical forecast audit: the number of genuine
+future-settled, aligned 5-minute targets, days and Brier score versus the actual
+baseline for the current adaptive policy. The LFM3 CPU brief receives only a
+compact source-labeled score/status. The shared deterministic policy exposes
+this as **measured prospective research**, not probability of the next outcome,
+proof of frozen historical weights, model promotion, matched executable quotes,
+or positive after-cost profitability. The source is always the existing on-host
+PostgreSQL audit, never an LLM-generated evaluation. Missing/failed audit
+queries are marked unavailable. The production receipt exposes this status.

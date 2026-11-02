@@ -57,6 +57,7 @@ class PerpetualMarketStore:
         # Optional, read-only evidence dependencies installed by the bot.
         self.research_candidate_registry = None
         self.research_history_auditor = None
+        self.research_forward_auditor = None
 
     def initialize(self) -> None:
         if self._schema_ready:

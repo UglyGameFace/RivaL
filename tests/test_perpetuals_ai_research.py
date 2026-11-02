@@ -269,6 +269,14 @@ def test_xrp_intelligence_reuses_persisted_model_and_history_audit(tmp_path):
     try:
         market.research_candidate_registry = StoredModels()
         market.research_history_auditor = StoredAudits()
+        class StoredForward:
+            def active_learning_evidence(self, **scope):
+                assert scope["asset"] == "XRP"
+                return {
+                    "status": "supported", "targets": 150, "days": 7,
+                    "brier": .23, "baseline_brier": .25,
+                }
+        market.research_forward_auditor = StoredForward()
         evidence, digest = build_evidence(
             market, asset="XRP", venues=tuple(row[0] for row in contracts),
             now=now + timedelta(minutes=2),
@@ -276,6 +284,8 @@ def test_xrp_intelligence_reuses_persisted_model_and_history_audit(tmp_path):
         assert evidence["mathematical_research"]["passed_retrospective_screen"] == 1
         assert evidence["mathematical_research"]["forward_edge_verified"] is False
         assert evidence["historical_quality"][0]["status"] == "complete"
+        assert evidence["prospective_math"]["settled_targets"] == 150
+        assert evidence["prospective_math"]["after_cost_edge_verified"] is False
         assert evidence["cold_archive_readback"] == "not_performed_by_live_research"
         from parlay_bot.perpetuals.evidence_policy import enforce
         reply = enforce(
@@ -285,6 +295,8 @@ def test_xrp_intelligence_reuses_persisted_model_and_history_audit(tmp_path):
         assert reply["direction"] == "uncertain"
         assert "1/3" in reply["thesis"]
         assert "1/1" in reply["thesis"]
+        assert "0.230" in reply["thesis"]
+        assert reply["informational_only"] is True
         market.research_candidate_registry = None
         evidence_without_models, digest_without_models = build_evidence(
             market, asset="XRP", venues=tuple(row[0] for row in contracts),

@@ -1064,14 +1064,14 @@ class ResearchDashboard(discord.ui.View):
                             f"**{live_proof['portable_screened']}** screened. "
                             f"**Last 30 days:** {live_proof['issued']} immutable "
                             f"forecasts, {live_proof['settled']} future settlements, "
-                            f"{live_proof['quote_exits']} matched exit book quotes.\\n"
+                            f"{live_proof['quote_exits']} matched exit book quotes.\n"
                             f"**Most recent source:** {scope_label}. "
                             f"**Paper-qualified:** "
-                            f"{len(live_proof['fresh_paper_promotions'])}.\\n"
-                            f"**Verdict:** {live_proof['status_reason']}.\\n"
+                            f"{len(live_proof['fresh_paper_promotions'])}.\n"
+                            f"**Verdict:** {live_proof['status_reason']}.\n"
                             "Real fills, fees, funding and slippage: **NOT VERIFIED**. "
                             "GitHub research artifacts are not imported live models."
-                        )[:1024].replace("\\\\n", "\\n"),
+                        )[:1024],
                         inline=False,
                     )
                 except Exception:  # noqa: BLE001 - source evidence fails closed

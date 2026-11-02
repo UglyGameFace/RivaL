@@ -1058,11 +1058,28 @@ class ResearchDashboard(discord.ui.View):
                         f"{recent['horizon']}m"
                         if recent else "None verified"
                     )
+                    reasons = {
+                        "fewer_than_six_source_months": "fewer than 6 verified source months",
+                        "insufficient_purged_validation_or_holdout": "too few validation/holdout examples",
+                        "validation_brier_gain_below_0.005": "validation edge below 0.005 Brier",
+                        "holdout_brier_gain_below_0.005": "holdout edge below 0.005 Brier",
+                        "calibration_or_evaluation_days_below_gate": "calibration or evaluation-day gate failed",
+                        "reason_unrecorded": "older import lacks a recorded screening reason",
+                    }
+                    blockers = live_proof.get("screening_blockers") or []
+                    explanation = (
+                        "Screening blockers: " + "; ".join(
+                            f"{int(row['count'])} {reasons.get(row['reason'], 'other recorded screening gate')}"
+                            for row in blockers[:2]
+                        ) + ("; additional reasons in registry" if len(blockers) > 2 else "")
+                        if blockers else "Screening blockers: none recorded"
+                    )
                     embed.add_field(
                         name="Boosted model production proof",
                         value=(
                             f"**Imported:** {live_proof['portable_imported']} portable trees, "
-                            f"**{live_proof['portable_screened']}** screened. "
+                            f"**{live_proof['portable_screened']}** screened.\\n"
+                            f"{explanation}\\n"
                             f"**Last 30 days:** {live_proof['issued']} immutable "
                             f"forecasts, {live_proof['settled']} future settlements, "
                             f"{live_proof['quote_exits']} matched exit book quotes.\n"

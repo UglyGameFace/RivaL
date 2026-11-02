@@ -1,0 +1,65 @@
+name: RivaL cumulative warehouse source-month census
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/drive-source-census.yml"
+      - "src/parlay_bot/research/drive_source_census.py"
+      - "tests/test_drive_source_census.py"
+  workflow_dispatch:
+  schedule:
+    - cron: "17 23 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-cumulative-source-census
+  cancel-in-progress: false
+
+jobs:
+  census:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Use existing authenticated Drive client
+        run: python -m pip install -e ".[archive]"
+      - name: Inspect manifest names across previous independent archive runs
+        run: python -m parlay_bot.research.drive_source_census
+      - name: Show progress with exact evidence limitations
+        if: success()
+        run: |
+          python - <<'PY'
+          import json,os
+          d=json.load(open("data/native-reports/drive-source-census.json"))
+          rows=["## Warehouse names by source and asset",
+             "Manifest names are not actual byte-SHA readbacks or trained models.",
+             "| Venue | Asset | Named months | Unlisted months |",
+             "|---|---|---:|---:|"]
+          for r in d["month_scopes"]:
+              rows.append(f"| {r['venue']} | {r['asset']} | {r['listed_manifest_months']} | {r['not_listed_months']} |")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("\n".join(rows)+"\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rival-cumulative-warehouse-source-names
+          path: data/native-reports/drive-source-census.json
+          retention-days: 30
+          if-no-files-found: ignore

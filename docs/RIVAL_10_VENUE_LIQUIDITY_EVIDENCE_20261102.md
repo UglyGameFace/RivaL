@@ -40,3 +40,12 @@
 - Gate: genuine March 2023 SOL missing 5m slots and the provider's HTTP 400 reason, stable exact source hashes; report blocked without training admission.
 - Lighter: monthly hour counts for each asset × funding/mark family, launch-date proof, and any API time-window truncation that needs bounded pagination.
 - All other venues: per source-month ledger for original L2/depth snapshots/deltas, trade tape, OI, funding, liquidations and contract metadata; independent full-history proof remains open.
+
+
+## Gate hourly market depth: bounded original-source proof (separate feature)
+
+Gate's official historical quotations documentation defines **hourly** USDT-perpetual `orderbooks` and `orderbooks_slice` files in `futures_usdt`, using a UTC `YYYYMMDDHH` suffix. The portal advertises market depth and depth snapshots beginning August 2021, but that is a publication-era floor, **not** a guarantee every BTC/ETH/SOL/XRP instrument was listed or that a requested hour exists.
+
+`gate_hourly_l2_archive.py` provides an independently bounded `2023042505`-era original-source sample collector with exact document-grounded URL construction, no redirects, compressed-body cap, decompression cap, raw gzip SHA-256, immutable private Drive original/receipt and actual downloaded-byte readback. Both `orderbooks` (.csv.gz) and `orderbooks_slice` (.gz) have separate source identities. This **does not** parse provider-specific L2 schemas, establish a linked book, prove a full hour or month, or qualify model training: those claims remain false until original source schema and continuity are established. A failed request or oversized source remains visibly unavailable.
+
+The first pull request tests only a bounded public sample. Push-to-`main` attempts at most four exact hourly original files with the already connected RivaL warehouse; authenticated monthly or continuous backfill is not enabled without observed source sizes, quota and storage evidence. GitHub workflow manual dispatch accepts an explicit UTC hour and source type. Do not turn an untested 2021+ full-hour historical dataset into a massive Drive download on the assumption it is free to store.

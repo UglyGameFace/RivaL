@@ -82,18 +82,41 @@ def advanced_month_bounds(month: str, module_id: int) -> tuple[datetime, datetim
 async def official(client: httpx.AsyncClient, url: str, params: dict) -> list:
     if url not in (CANDLES, INSTRUMENTS, ARCHIVES):
         raise HistoryImportError("untrusted OKX endpoint")
-    try:
-        response = await client.get(url, params=params, follow_redirects=False)
-        response.raise_for_status()
+    for attempt in range(4):
+        try:
+            response = await client.get(url, params=params, follow_redirects=False)
+        except (httpx.ConnectError, httpx.TimeoutException) as exc:
+            if attempt == 3:
+                raise HistoryImportError("official OKX transport exhausted") from exc
+            await asyncio.sleep(min(12, 2 ** attempt))
+            continue
+        if response.status_code in (429, 500, 502, 503, 504):
+            if attempt == 3:
+                raise HistoryImportError(
+                    f"official OKX API HTTP {response.status_code} retry exhausted")
+            retry = response.headers.get("retry-after", "")
+            delay = int(retry) if retry.isascii() and retry.isdecimal() else 0
+            await asyncio.sleep(min(20, max(delay, 2 ** (attempt + 1))))
+            continue
+        if response.status_code != 200:
+            raise HistoryImportError(
+                f"official OKX API HTTP {response.status_code} rejected")
         if len(response.content) > 700_000:
             raise HistoryImportError("oversized OKX public JSON")
-        data = response.json()
-    except (httpx.HTTPError, ValueError, UnicodeError) as exc:
-        raise HistoryImportError("official OKX API request failed") from exc
-    if (not isinstance(data, dict) or data.get("code") != "0"
-        or not isinstance(data.get("data"), list)):
-        raise HistoryImportError("unverified official OKX response")
-    return data["data"]
+        try:
+            data = response.json()
+        except (ValueError, UnicodeError) as exc:
+            raise HistoryImportError("official OKX public JSON malformed") from exc
+        if isinstance(data, dict) and data.get("code") == "50011":
+            if attempt == 3:
+                raise HistoryImportError("official OKX code 50011 retry exhausted")
+            await asyncio.sleep(min(20, 2 ** (attempt + 1)))
+            continue
+        if (not isinstance(data, dict) or data.get("code") != "0"
+            or not isinstance(data.get("data"), list)):
+            raise HistoryImportError("unverified official OKX response")
+        return data["data"]
+    raise AssertionError("bounded OKX recovery exhausted")
 
 
 async def verify_contract(client: httpx.AsyncClient, asset: str) -> str:

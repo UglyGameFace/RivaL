@@ -47,6 +47,9 @@ ATTEMPT_FLOORS: dict[tuple[str, str], str] = {
 # The source's earliest REAL contract listing is unknown until separately proven.
 ROUTES: dict[tuple[str, str], tuple[str, str]] = {
     ("binance", "candles_5m"): ("binance-deep-file-backfill.yml", "scheduled_bulk"),
+    **{("binance", family): ("binance-original-auxiliary.yml", "official_checksum_zip")
+       for family in ("mark", "index", "premium", "candles_1m",
+                      "candles_15m", "candles_1h", "candles_4h", "candles_1d")},
     ("binance", "open_interest"): ("historical-source-provenance.yml", "official_daily_5m_metrics_partial"),
     ("binance", "positioning"): ("historical-source-provenance.yml", "official_daily_5m_metrics_partial"),
     ("bitget", "open_interest"): ("bitget-liquidity-archive.yml", "live_history_pages_not_complete"),
@@ -202,6 +205,15 @@ def build_plan(census: dict, *, max_jobs: int = 2,
             ),
             "earliest_technical_attempt_month": attempt_floor,
             "actual_contract_listing_month": listed_month,
+            "source_availability_evidence": (
+                "provider_current_contract_start_timestamp" if listed_month
+                else "provider_availability_not_verified"),
+            "official_current_contract_prelisting_months": [
+                m for m in priority.completed_months
+                if listed_month and m < listed_month
+            ],
+            "source_gaps_permanently_unavailable_from_missing_filename": False,
+            "missing_route_requires_implementation": route is None,
             "contract_listing_evidence": (
                 "provider_onboard_or_list_time_snapshot" if listed_month
                 else "not_verified"),

@@ -13,7 +13,7 @@ from parlay_bot.research.historical_coordinator import (
 )
 from parlay_bot.research.source_native import publication_ranges
 from parlay_bot.research.source_native_offline import select_training_months
-from tools.historical_dispatch import run_plan, should_dispatch
+from tools.historical_dispatch import run_plan, should_dispatch, should_recover_failed
 
 NOW = datetime(2026, 11, 2, 14, tzinfo=UTC)
 
@@ -201,3 +201,46 @@ def test_old_native_month_names_are_scoped_and_not_training_proof():
     assert research and research[0]["inputs"] == {
         "venue": "hyperliquid", "first_month": "2021-01", "asset": "",
     }
+
+
+
+def test_source_failure_recovery_is_bounded_and_never_retries_active_jobs():
+    stale = [{"status": "completed", "conclusion": "failure",
+              "event": "schedule", "created_at": "2026-11-02T01:00:00Z"}]
+    assert should_recover_failed(stale, now=NOW)[0]
+    assert not should_recover_failed(
+        stale + [{"status": "in_progress", "event": "schedule"}], now=NOW,
+    )[0]
+    latest_success = stale + [{
+        "status": "completed", "conclusion": "success",
+        "event": "push", "created_at": "2026-11-02T11:00:00Z",
+    }]
+    assert not should_recover_failed(latest_success, now=NOW)[0]
+    failures = [
+        {"status": "completed", "conclusion": "failure",
+         "event": "schedule", "created_at": f"2026-11-02T0{hour}:00:00Z"}
+        for hour in (1, 2, 3)
+    ]
+    assert should_recover_failed(failures, now=NOW) == (
+        False, "repeated_failure_requires_provider_review",
+    )
+    assert not should_recover_failed(stale, now=NOW.replace(hour=4))[0]
+
+
+def test_coordinator_prefers_one_auto_recovery_before_optional_sampling():
+    class Fake:
+        def __init__(self):
+            self.called = []
+        def runs(self, workflow):
+            if workflow == "bitget-v3-overnight-archive.yml":
+                return [{"status": "completed", "conclusion": "failure",
+                         "event": "schedule", "created_at": "2026-11-02T01:00:00Z"}]
+            return []
+        def dispatch(self, workflow, inputs):
+            self.called.append((workflow, inputs))
+    plan = build_plan(summarize([], now=NOW))
+    client = Fake()
+    report = run_plan(plan, client, now=NOW)
+    assert 0 <= report["dispatched"] <= 2
+    assert sum(x == {} for _, x in client.called) <= 1
+    assert len(client.called) <= 2

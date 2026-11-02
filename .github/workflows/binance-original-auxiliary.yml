@@ -1,0 +1,68 @@
+name: Binance verified original auxiliary monthly archive backfill
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/binance-original-auxiliary.yml"
+      - "src/parlay_bot/research/binance_auxiliary_backfill.py"
+      - "tests/test_binance_auxiliary_backfill.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/binance-original-auxiliary.yml"
+      - "src/parlay_bot/research/binance_auxiliary_backfill.py"
+  schedule:
+    - cron: "41 0,4,8,12,16,20 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-binance-original-auxiliary
+  cancel-in-progress: false
+
+jobs:
+  validate-archive-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install -e ".[dev,archive]"
+          ruff check src/parlay_bot/research/binance_auxiliary_backfill.py tests/test_binance_auxiliary_backfill.py
+          pytest -q tests/test_binance_auxiliary_backfill.py
+
+  original-auxiliary-to-drive:
+    if: github.event_name != 'pull_request' && vars.RIVAL_NATIVE_PUBLIC_BOOTSTRAP_ENABLED != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[archive]"
+      - name: Preserve official original ZIP and signed checksum with SHA readback
+        run: python -m parlay_bot.research.binance_auxiliary_backfill --max-new 24 --max-attempts 48
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: binance-original-auxiliary-evidence
+          path: data/binance-aux/binance-auxiliary-progress.json
+          retention-days: 14
+          if-no-files-found: ignore

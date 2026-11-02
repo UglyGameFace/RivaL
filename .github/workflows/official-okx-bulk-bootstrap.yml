@@ -78,7 +78,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install existing source-native and model evidence validators
-        run: python -m pip install -e ".[dev,archive,ml-research]"
+        run: python -m pip install -e ".[archive]"
       - name: Fail closed if verified private Drive archive is not configured
         shell: bash
         run: |

@@ -84,6 +84,20 @@ def test_invalid_source_rows_cannot_be_archived(rows):
         )
 
 
+def test_provider_clock_may_follow_pre_request_reference_clock():
+    rows, cursor = validate_page(
+        source_page([trade(22)], at=CLOCK + 750),
+        asset="BTC", start=START, end=END, cursor=None, now_ms=CLOCK,
+    )
+    assert len(rows) == 1
+    assert cursor is None
+    with pytest.raises(HistoryImportError):
+        validate_page(
+            source_page([trade(22)], at=CLOCK + 200_000),
+            asset="BTC", start=START, end=END, cursor=None, now_ms=CLOCK,
+        )
+
+
 def test_wrong_cursor_clock_and_provider_error_fail_closed():
     for raw, cursor in [
         (source_page([trade(99)]), "99"),

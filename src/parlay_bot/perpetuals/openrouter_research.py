@@ -187,7 +187,13 @@ class OpenRouterResearch:
             # A fallback may have served the previous successful analysis.
             # Cache lookup must check the same two catalog-approved models as
             # the routing plan or a repeat click needlessly burns the free cap.
-            for candidate in models[:2]:
+            # A provider-specific deterministic evidence summary is NOT an
+            # LLM and must never be relabeled as one when served from cache.
+            # Other research providers have no additional cache identities.
+            cache_models = tuple(dict.fromkeys(
+                (*models[:2], *getattr(self, "_extra_cache_models", ())),
+            ))
+            for candidate in cache_models:
                 cached = await asyncio.to_thread(
                     self.market.cached_ai_research, asset=asset,
                     model=candidate, evidence_sha256=digest,

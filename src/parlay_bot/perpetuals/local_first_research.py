@@ -19,6 +19,7 @@ from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 
 _LOG = logging.getLogger(__name__)
 LOCAL_MODEL = "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
+EVIDENCE_MODEL = "RivaL/verified-evidence-summary-v1"
 CLOUD_MODEL = "@cf/meta/llama-3.2-3b-instruct"
 LOCAL_ENDPOINT = "http://rival-llm:8765/v1/research"
 MAX_LOCAL_EVIDENCE_BYTES = 24_000
@@ -57,6 +58,8 @@ class LocalFirstResearch(OpenRouterResearch):
         # super() sees the explicit client; this class closes its own client.
         self._owned_client = client is None
         self.model = "rival-local-cloudflare-shared-budget"
+        # Cache data-only degradation by its honest model identity, never LFM3.
+        self._extra_cache_models = (EVIDENCE_MODEL,)
         self._peer_ip: str | None = None
         self._backup = (
             CloudflareResearch(
@@ -145,24 +148,27 @@ class LocalFirstResearch(OpenRouterResearch):
                 "to any fallback."
             ) from exc
 
-        if self._backup is None or fallbacks != (CLOUD_MODEL,):
-            await asyncio.to_thread(
-                self.market.pause_ai_requests, model=self.model, now=now, seconds=1800,
-            )
-            raise ResearchUnavailable(
-                "Local AI unavailable; no Cloudflare backup configured. "
-                "Mathematical collection and learning continue."
-            )
-        # Cloudflare's separate D1 24/day cap is also enforced by the Worker.
-        # One backup attempt, never unbounded retries and never paid fallback.
-        _LOG.warning("Using explicit Cloudflare research fallback")
-        try:
-            return await self._backup._complete(
-                selected=CLOUD_MODEL, evidence=evidence, instruction=instruction,
-                now=now, fallbacks=(),
-            )
-        except ResearchUnavailable:
-            await asyncio.to_thread(
-                self.market.pause_ai_requests, model=self.model, now=now, seconds=1800,
-            )
-            raise
+        if self._backup is not None and fallbacks == (CLOUD_MODEL,):
+            # Existing optional free backup keeps priority when configured.
+            _LOG.warning("Using explicit Cloudflare research fallback")
+            try:
+                return await self._backup._complete(
+                    selected=CLOUD_MODEL, evidence=evidence, instruction=instruction,
+                    now=now, fallbacks=(),
+                )
+            except ResearchUnavailable:
+                _LOG.warning("Cloudflare unavailable; returning local verified facts")
+        # A CPU timeout must not masquerade as an LFM3 answer. Only the same
+        # prevalidated, hashed source evidence can produce this free, read-only
+        # deterministic fallback, with its OWN model identity and cache key.
+        if evidence.get("analysis") != "unvalidated_research":
+            raise ResearchUnavailable("Verified mathematical evidence unavailable.")
+        grounded = enforce_grounding(
+            {"direction": "uncertain", "confidence": "low"}, evidence,
+            asset=evidence.get("asset"),
+        )
+        return {
+            "direction": grounded["direction"], "confidence": grounded["confidence"],
+            "thesis": grounded["thesis"], "risk": grounded["risk"],
+            "served_model": EVIDENCE_MODEL,
+        }

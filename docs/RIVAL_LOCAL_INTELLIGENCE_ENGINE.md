@@ -125,3 +125,18 @@ optional registry or audit readers report unavailable rather than making up
 zero coverage. Read-only implementation requires successful main CI and a
 real authenticated on-host request persisted to PostgreSQL before production
 acceptance. It does not change quota, model-promotion, NO CALL or trades.
+
+
+## Data-backed degraded answers when the CPU LLM is unavailable
+
+A failed local 502/503/504 or transport request (and an unavailable optional
+free backup) now returns a **clearly labeled** `RivaL/verified-evidence-summary-v1`
+response derived solely from the shared deterministic observation policy and
+persisted mathematical evidence. This is **not** LFM3 output, does not invent
+forecast probabilities, and has its own immutable research cache identity.
+A repeated request for the same evidence reuses the exact PostgreSQL receipt
+without spending another AI request slot. Authentication errors, malformed
+model output, invalid source evidence and global user quota denial still fail
+closed. The first attempted LFM3 request keeps the existing shared quota.
+Production acceptance for *actual LFM3 inference* still requires the real
+LFM3 model identity and successful authenticated host response.

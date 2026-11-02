@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import json
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from parlay_bot.research.dydx_funding_archive import (
     LIMIT,
+    automatic_month,
+    complete_hourly_month,
     month_bounds,
     validate_page,
 )
@@ -62,3 +64,30 @@ def test_invalid_schema_and_page_budget():
     with pytest.raises(HistoryImportError):
         validate_page(page([funding("2023-11-03T01:00:00.000Z")]*101),
                       asset="BTC", cursor=end, start=start, end=end)
+
+def test_actual_dydx_chain_settlement_seconds_after_each_hour_are_complete():
+    start, end = month_bounds("2023-11")
+    hours = int((end - start).total_seconds() // 3600)
+    stamps = [start + timedelta(hours=i, seconds=1, milliseconds=59)
+              for i in range(hours)]
+    assert complete_hourly_month(stamps, start=start, end=end,
+                                 crossed_boundary=True)
+    assert not complete_hourly_month(stamps, start=start, end=end,
+                                     crossed_boundary=False)
+    assert not complete_hourly_month(stamps[:-1], start=start, end=end,
+                                     crossed_boundary=True)
+    doubled = stamps[:-1] + [stamps[-2] + timedelta(milliseconds=1)]
+    assert not complete_hourly_month(doubled, start=start, end=end,
+                                     crossed_boundary=True)
+
+
+def test_month_rotation_covers_all_completed_v4_months_without_future_dates():
+    start = datetime(2026, 11, 1, tzinfo=UTC)
+    selected = {
+        automatic_month(start + timedelta(hours=4 * i))
+        for i in range(36)
+    }
+    assert len(selected) == 36
+    assert "2023-11" in selected
+    assert "2026-10" in selected
+    assert "2026-11" not in selected

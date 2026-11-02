@@ -705,13 +705,11 @@ class ResearchDashboard(discord.ui.View):
             embed.add_field(
                 name="🟢 Live collection status",
                 value=(
-                    f"**{live}/{configured}** exchanges with recently saved "
-                    f"{self.asset} candles. "
-                    f"Last source check: **{stamp}**. "
-                    f"Newest completed candle: **{bar}**.\n"
-                    "Database read: **just now**. Values update on navigation "
-                    "or **Update live stats**; exchange polling runs every 5m, "
-                    "not tick-by-tick."
+                    f"**{live}/{configured}** exchanges have recent {self.asset} prices.\n"
+                    f"**Last update check:** {stamp}. "
+                    f"**Newest finished price update:** {bar}.\n"
+                    "Exchange prices refresh about every 5 minutes, "
+                    "not continuously."
                 ), inline=False,
             )
         except Exception:  # noqa: BLE001 - collection may be down

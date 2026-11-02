@@ -1,6 +1,7 @@
 """Offline acceptance for bounded Binance 2021+ ZIP research publication."""
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -89,10 +90,31 @@ async def test_publish_only_complete_source_month_and_remote_sha_readback(tmp_pa
         return {"BTCUSDT-5m-2021-01"}
     monkeypatch.setattr(deep, "existing_month_keys", existing)
     calls = []
-    def ingest(client, *, asset, interval, month, out_dir):
-        calls.append((asset, interval, month))
-        return SimpleNamespace(records=8928, manifest_path=Path("pretend"))
+    remote = []
+    original = b"verified provider-original zip fixture"
+    digest = hashlib.sha256(original).hexdigest()
+    def ingest(client, *, asset, interval, month, out_dir, retain_original=False):
+        calls.append((asset, interval, month, retain_original))
+        target = out_dir / "binance_um_klines"
+        target.mkdir(parents=True, exist_ok=True)
+        filename = f"{asset}USDT-5m-{month}.zip"
+        (target / filename).write_bytes(original)
+        (target / (filename + ".CHECKSUM")).write_text(
+            digest + "  " + filename + "\n")
+        manifest = target / "fixture.manifest.json"
+        manifest.write_text(json.dumps({"source_sha256": digest}))
+        return SimpleNamespace(records=8928, manifest_path=manifest)
     monkeypatch.setattr(deep, "ingest_binance", ingest)
+    class Drive:
+        folders = SimpleNamespace(history="hist")
+        async def ensure_history_file(self, *, artifact, batch_id, mime_type):
+            remote.append(("stored", artifact.sha256, batch_id))
+            return SimpleNamespace(file_id="source-" + artifact.sha256[:20])
+        async def verify_downloaded_artifact(self, *, file_id, parent_id,
+                                             artifact, max_bytes):
+            assert parent_id == "hist" and max_bytes > artifact.size_bytes
+            remote.append(("verified", artifact.sha256, file_id))
+
     monkeypatch.setattr(deep, "audit_partition", lambda p: {
         "month": "2021-02", "venue": "binance", "contract": "BTCUSDT",
         "interval_minutes": 5, "full_calendar_month_verified": True,
@@ -104,14 +126,16 @@ async def test_publish_only_complete_source_month_and_remote_sha_readback(tmp_pa
         return {"restore_sha256_verified": True}
     monkeypatch.setattr(deep, "publish", publish)
     outcome = await deep.collect_official_binance(
-        drive=object(), assets=("BTC",), max_new=1,
+        drive=Drive(), assets=("BTC",), max_new=1,
         now=datetime(2021, 3, 1, tzinfo=UTC),
         root=tmp_path / "archive", report_dir=tmp_path / "reports",
     )
-    assert calls == [("BTC", "5m", "2021-02")]
+    assert calls == [("BTC", "5m", "2021-02", True)]
+    assert len(remote) == 4
     assert outcome["new_months"] == 1
     assert outcome["remote_manifest_names_skipped_without_readback"] == 1
     assert outcome["newly_published"][0]["restore_sha256_verified"] is True
+    assert outcome["newly_published"][0]["original_zip_and_checksum_drive_sha_readback"] is True
     assert outcome["fully_verified_2021_to_present"] is False
     assert json.loads((tmp_path / "reports/binance-2021-bulk-progress.json").read_text())["live_model_promoted"] is False
 

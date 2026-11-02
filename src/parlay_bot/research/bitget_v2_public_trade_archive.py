@@ -88,7 +88,10 @@ def validate_page(
     if not isinstance(obj, dict) or obj.get("code") != "00000":
         raise HistoryImportError("Bitget public trade API rejected request")
     response_clock = _millis(obj.get("requestTime"))
-    if not 0 <= now_ms - response_clock <= 120_000:
+    # Captured now_ms precedes the HTTP request. Bitget's genuine
+    # requestTime is typically milliseconds *after* that reference clock.
+    # Permit bounded request/transit skew, but never arbitrary stale/future.
+    if abs(now_ms - response_clock) > 120_000:
         raise HistoryImportError("Bitget public trade API response clock invalid")
     rows = obj.get("data")
     if not isinstance(rows, list) or len(rows) > PAGE_LIMIT:

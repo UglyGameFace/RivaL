@@ -30,7 +30,7 @@ on:
       - "src/parlay_bot/research/gate_coverage.py"
       - "src/parlay_bot/research/gate_minute_repair.py"
   schedule:
-    - cron: "27 0,4,8,12,16,20 * * *"
+    - cron: "27 */2 * * *"
   workflow_dispatch:
     inputs:
       max_new:

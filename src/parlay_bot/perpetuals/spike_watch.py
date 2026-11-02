@@ -5,6 +5,7 @@ new exchange requests, LLM requests, trading orders, or backfill-as-live claims.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import math
 import statistics
@@ -40,7 +41,7 @@ def summarize(rows: list[dict], now: datetime) -> dict | None:
         return None
     try:
         opened = [utc(r["opened_at"]) for r in rows]
-        if any(b-a != timedelta(minutes=5) for a, b in zip(opened, opened[1:])):
+        if any(b-a != timedelta(minutes=5) for a, b in itertools.pairwise(opened)):
             return None
         last = rows[-1]
         close_time = utc(last["closed_at"])
@@ -55,7 +56,7 @@ def summarize(rows: list[dict], now: datetime) -> dict | None:
                 or any(not math.isfinite(x) or x < 0 for x in volumes)):
             return None
         historic = [abs(100 * math.log(b/a))
-                    for a, b in zip(closes[:-2], closes[1:-1])]
+                    for a, b in itertools.pairwise(closes[:-1])]
         known_volumes = [x for x in volumes[:-1] if x > 0]
         ratio = (volumes[-1] / statistics.median(known_volumes)
                  if len(known_volumes) >= 16 else None)
@@ -281,7 +282,7 @@ class SpikeWatch:
                     (asset, (clock-timedelta(hours=24)).isoformat(),
                      clock.isoformat()),
                 ).fetchone()
-        except Exception:
+        except Exception:  # noqa: BLE001 - legacy PostgreSQL schema may be absent
             return {"status": "unavailable", "events_24h": None, "recent": [],
                     "scored_continuations_24h": None}
         result = "not_checked"

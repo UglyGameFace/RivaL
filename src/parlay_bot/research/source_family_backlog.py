@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
-from datetime import UTC, datetime
 from pathlib import Path
 
 from parlay_bot.research.source_family_coverage import (

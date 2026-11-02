@@ -99,6 +99,64 @@ def official_catalog_http_400(exc: Exception) -> bool:
     return isinstance(payload, dict) and payload.get("code") == "50016"
 
 
+async def listed_auxiliary_receipts(drive, *, asset: str, max_pages: int = 12) -> set[str]:
+    """Read names of existing OKX auxiliary receipts as resume hints ONLY.
+
+    Only a newly downloaded source and remote byte rehash count as verified
+    during a run. Never delete originals or trust an unrelated Drive folder.
+    """
+    if asset not in ("BTC", "ETH", "SOL", "XRP") or not 1 <= max_pages <= 12:
+        raise HistoryImportError("untrusted OKX archive inventory scope")
+    await drive._verify_folder_boundary()
+    folder = drive.folders.manifests
+    query = (
+        f"'{drive._escape_query(folder)}' in parents and trashed = false "
+        f"and name contains '{asset}-USDT-SWAP-' "
+        "and appProperties has { key='rival_kind' and value='manifest' }"
+    )
+    names, cursor, seen_ids = set(), None, set()
+    for _ in range(max_pages):
+        params = {
+            "q": query, "spaces": "drive", "pageSize": 1000,
+            "fields": "nextPageToken,files(id,name,parents,appProperties,trashed)",
+        }
+        if cursor:
+            params["pageToken"] = cursor
+        response = await drive._client.get(
+            f"{drive.DRIVE_URL}/files", params=params,
+            headers=await drive._headers(),
+        )
+        if response.status_code != 200:
+            raise HistoryImportError("OKX private auxiliary receipt listing unavailable")
+        data = response.json()
+        records = data.get("files") if isinstance(data, dict) else None
+        if not isinstance(records, list) or len(records) > 1000:
+            raise HistoryImportError("invalid OKX historical receipt listing")
+        for item in records:
+            if not isinstance(item, dict):
+                raise HistoryImportError("invalid OKX receipt metadata")
+            ident, name = item.get("id"), item.get("name")
+            if (item.get("trashed") or folder not in (item.get("parents") or [])
+                or (item.get("appProperties") or {}).get("rival_kind") != "manifest"
+                or not isinstance(ident, str) or not ident or ident in seen_ids
+                or not isinstance(name, str) or len(name) > 240):
+                raise HistoryImportError("untrusted or repeated OKX receipt")
+            seen_ids.add(ident)
+            if name.startswith(f"{asset}-USDT-SWAP-") and name.endswith(
+                (".zip.receipt.json", ".tar.gz.receipt.json")
+            ):
+                names.add(name)
+        cursor_next = data.get("nextPageToken")
+        if cursor_next is None:
+            return names
+        if (not isinstance(cursor_next, str) or not cursor_next.isascii()
+            or not cursor_next.isprintable() or not cursor_next
+            or cursor_next == cursor):
+            raise HistoryImportError("untrusted OKX receipt cursor")
+        cursor = cursor_next
+    raise HistoryImportError("OKX historical receipts exceed paged inventory budget")
+
+
 def archive_url(*, asset: str, month: str, record: dict) -> str:
     """Verify an exact URL issued by the public catalog, never invent a link."""
     if not isinstance(record, dict):

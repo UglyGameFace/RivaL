@@ -221,3 +221,15 @@ def test_retained_provider_original_zip_is_additive_no_source_relabel(
     # receipts. New source ZIP readback is a SEPARATE publication receipt.
     assert "original_zip_retained_locally" not in manifest
     assert "original_zip_remote_readback_proven_by_manifest" not in manifest
+
+
+def test_february_census_requires_correct_calendar_day_count_not_any_28_days():
+    names = [
+        f"binance-metrics-BTC-2024-02-{day:02d}--" + "a" * 16 +
+        ".manifest.json" for day in range(1, 29)
+    ]
+    report = summarize(names, now=NOW)
+    assert report["binance_daily_metrics_not_full_months"][0][
+        "distinct_named_days"] == 28
+    assert not report["binance_daily_metrics_not_full_months"][0][
+        "all_utc_days_present_by_name"]

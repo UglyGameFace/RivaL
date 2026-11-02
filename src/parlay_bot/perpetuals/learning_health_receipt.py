@@ -49,6 +49,8 @@ def read_receipt() -> dict:
         both_fresh = (
             forecast["status"] == "fresh"
             and learning["status"] == "fresh"
+            and learning.get("math_ok") is True
+            and learning.get("model_review_ok") is True
         )
         return {
             "outcome": "verified" if both_fresh else "unverified",

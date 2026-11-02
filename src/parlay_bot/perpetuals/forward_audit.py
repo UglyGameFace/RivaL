@@ -330,22 +330,39 @@ class ForwardAccuracyMonitor:
                     FROM rival_forward_model_lineage
                     WHERE model_version=? AND horizon_minutes=? AND issued_at<=? AND issued_at>=?
                 )
-                SELECT f.target_opened_at, AVG(f.model_brier) AS model_brier,
-                       AVG(f.baseline_brier) AS baseline_brier, COUNT(*) AS forecasts
-                FROM perp_forward_audit f
-                JOIN rival_forward_model_lineage l ON l.venue=f.venue
-                  AND l.contract=f.contract AND l.quote=f.quote
-                  AND l.horizon_minutes=f.horizon_minutes AND l.model_version=f.model_version
-                  AND l.reference_opened_at=f.reference_opened_at AND l.issued_at=f.issued_at
-                JOIN current_policy c ON c.venue=f.venue AND c.contract=f.contract
-                  AND c.quote=f.quote AND c.position=1
-                  AND COALESCE(c.historical_seed_sha256,'')=COALESCE(l.historical_seed_sha256,'')
-                WHERE f.asset=? AND f.horizon_minutes=? AND f.model_version=?
-                  AND f.issued_at>=? AND f.issued_at<=? AND f.settled_at<=?
-                  AND f.settled_at>f.issued_at AND f.outcome_up IN (0,1)
-                  AND f.model_brier BETWEEN 0 AND 1 AND f.baseline_brier BETWEEN 0 AND 1
-                GROUP BY f.target_opened_at HAVING MIN(f.outcome_up)=MAX(f.outcome_up)
-                ORDER BY f.target_opened_at""",
+                , per_venue AS (
+                    SELECT f.target_opened_at, f.venue,
+                           AVG(f.model_brier) AS model_brier,
+                           AVG(f.baseline_brier) AS baseline_brier
+                    FROM perp_forward_audit f
+                    JOIN rival_forward_model_lineage l ON l.venue=f.venue
+                      AND l.contract=f.contract AND l.quote=f.quote
+                      AND l.horizon_minutes=f.horizon_minutes
+                      AND l.model_version=f.model_version
+                      AND l.reference_opened_at=f.reference_opened_at
+                      AND l.issued_at=f.issued_at
+                    JOIN current_policy c ON c.venue=f.venue
+                      AND c.contract=f.contract AND c.quote=f.quote
+                      AND c.position=1
+                      AND COALESCE(c.historical_seed_sha256,'')=
+                          COALESCE(l.historical_seed_sha256,'')
+                    WHERE f.asset=? AND f.horizon_minutes=? AND f.model_version=?
+                      AND f.issued_at>=? AND f.issued_at<=? AND f.settled_at<=?
+                      AND f.settled_at>f.issued_at AND f.outcome_up IN (0,1)
+                      AND f.model_brier BETWEEN 0 AND 1
+                      AND f.baseline_brier BETWEEN 0 AND 1
+                    GROUP BY f.target_opened_at, f.venue
+                )
+                SELECT target_opened_at, AVG(model_brier) AS model_brier,
+                       AVG(baseline_brier) AS baseline_brier,
+                       COUNT(*) AS independent_venues
+                FROM per_venue
+                -- Opposite valid venue outcomes are evidence, not a reason
+                -- to drop the whole target and select only agreements.
+                -- Weight each venue equally so two contracts on one venue
+                -- cannot outweigh another venue's worse predictions.
+                GROUP BY target_opened_at
+                ORDER BY target_opened_at""",
                 (MODEL, horizon_minutes, stamp.isoformat(), (stamp-timedelta(days=14)).isoformat(),
                  asset, horizon_minutes, MODEL,
                  (stamp-timedelta(days=14)).isoformat(), stamp.isoformat(), stamp.isoformat()),

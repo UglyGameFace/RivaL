@@ -98,6 +98,16 @@ async def official(client: httpx.AsyncClient, url: str, params: dict) -> list:
             delay = int(retry) if retry.isascii() and retry.isdecimal() else 0
             await asyncio.sleep(min(20, max(delay, 2 ** (attempt + 1))))
             continue
+        if response.status_code == 400 and url == ARCHIVES:
+            # Keep the actual typed HTTP error as the cause. The advanced
+            # archive runner recognizes ONLY the official 50016 response
+            # for unsupported monthly L2 aggregation. A generic replacement
+            # error silently broke that contract, failing all four assets.
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                raise HistoryImportError(
+                    "official OKX archive catalog HTTP 400") from exc
         if response.status_code != 200:
             raise HistoryImportError(
                 f"official OKX API HTTP {response.status_code} rejected")

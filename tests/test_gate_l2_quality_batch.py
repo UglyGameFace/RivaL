@@ -74,8 +74,8 @@ def test_source_month_stratification_covers_2021_to_last_completed_month():
     assert all(batch.hour_bounds(hour, now=CLOCK) for hour in hours)
     slots = batch.candidate_slots(CLOCK)
     assert len(slots) == len(hours) * 8
-    assert set(family for _, family, _ in slots) == {"orderbooks_slice", "orderbooks"}
-    assert set(asset for asset, _, _ in slots) == set(batch.ASSETS)
+    assert {family for _, family, _ in slots} == {"orderbooks_slice", "orderbooks"}
+    assert {asset for asset, _, _ in slots} == set(batch.ASSETS)
 
 
 def test_remote_manifest_only_skips_exact_source_family_hour():

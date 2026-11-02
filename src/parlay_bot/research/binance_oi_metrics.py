@@ -22,7 +22,9 @@ import httpx
 from parlay_bot.config import Settings
 from parlay_bot.research.drive_source_census import list_names
 from parlay_bot.research.free_history import (
-    HistoryImportError, _checked_zip, _fetch,
+    HistoryImportError,
+    _checked_zip,
+    _fetch,
 )
 from parlay_bot.research.publish import _artifact, _drive
 

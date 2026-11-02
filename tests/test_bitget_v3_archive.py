@@ -423,6 +423,7 @@ async def test_one_missing_source_bar_is_repaired_only_from_real_original_respon
 @pytest.mark.asyncio
 async def test_unattended_bitget_reads_only_same_asset_sha_verified_prior_status():
     import hashlib
+
     from parlay_bot.research.bitget_v3_archive import prior_source_decisions
 
     prior = {"asset": "BTC", "family": "premium", "month": "2021-03",

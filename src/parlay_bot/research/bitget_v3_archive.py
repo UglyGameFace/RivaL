@@ -142,12 +142,18 @@ class Pacer:
 
 
 async def request_page(client: httpx.AsyncClient, *, asset: str, family: str,
-                       begin: int, end: int, pacer: Pacer) -> tuple[bytes, dict]:
+                       begin: int, end: int, pacer: Pacer,
+                       start_back_steps: int = 0,
+                       end_forward_steps: int = 0) -> tuple[bytes, dict]:
+    if (start_back_steps not in (0, 1)
+        or end_forward_steps not in (0, 1)):
+        raise ValueError("unbounded Bitget window boundary probe")
     if asset not in ASSETS or family not in FAMILIES:
         raise HistoryImportError("Bitget historical request outside scope")
     params = {"category": "USDT-FUTURES", "symbol": asset + "USDT",
               "interval": "5m", "type": family, "limit": "100",
-              "startTime": str(begin - 1), "endTime": str(end - 1)}
+              "startTime": str(begin - 1 - start_back_steps * STEP),
+              "endTime": str(end - 1 + end_forward_steps * STEP)}
     for attempt in range(4):
         await pacer.wait()
         try:
@@ -396,6 +402,10 @@ async def probe_source_windows(*, client: httpx.AsyncClient, asset: str,
                         begin=begin, end=end, pacer=pacer,
                     )
                     record["returned"] = len(rows)
+                    record["first_returned_utc_ms"] = min(rows) if rows else None
+                    record["last_returned_utc_ms"] = max(rows) if rows else None
+                    record["missing_first"] = begin not in rows
+                    record["missing_last"] = (end - STEP) not in rows
                     record["status"] = ("complete_window"
                                         if len(rows) == expected and all(
                                             tick in rows for tick in range(begin, end, STEP))
@@ -404,8 +414,39 @@ async def probe_source_windows(*, client: httpx.AsyncClient, asset: str,
                     record["status"] = "source_error"
                     record["reason"] = str(exc)[:180]
                 checks.append(record)
+    # Isolate the provider's exclusive/rounded boundary behavior without
+    # changing active collectors or guessing a missing candle.
+    probe_month = candidates[0]
+    start, end = windows(probe_month)[0]
+    for label, start_back_steps, end_forward_steps in (
+        ("start_back_one_bar", 1, 0),
+        ("end_forward_one_bar", 0, 1),
+        ("both_sides_one_bar", 1, 1),
+    ):
+        item = {"month": probe_month, "family": "market", "window": "first",
+                "variant": label, "expected": (end - start) // STEP}
+        try:
+            _, rows = await request_page(
+                client, asset=asset, family="market", begin=start, end=end,
+                pacer=pacer, start_back_steps=start_back_steps,
+                end_forward_steps=end_forward_steps,
+            )
+            item["returned"] = len(rows)
+            item["first_returned_utc_ms"] = min(rows) if rows else None
+            item["last_returned_utc_ms"] = max(rows) if rows else None
+            item["missing_first"] = start not in rows
+            item["missing_last"] = end - STEP not in rows
+            item["status"] = (
+                "complete_window" if len(rows) == item["expected"] and all(
+                    tick in rows for tick in range(start, end, STEP))
+                else "incomplete_window"
+            )
+        except (HistoryImportError, httpx.HTTPError) as exc:
+            item["status"] = "source_error"
+            item["reason"] = str(exc)[:180]
+        checks.append(item)
     result = {
-        "schema_version": "rival-bitget-v3-bounded-source-probe-v1",
+        "schema_version": "rival-bitget-v3-bounded-source-probe-v2",
         "asset": asset, "source": ENDPOINT,
         "generated_at": datetime.now(UTC).isoformat(),
         "samples": checks, "request_window_count": len(checks),

@@ -27,7 +27,7 @@ from parlay_bot.research.source_native import SOURCE, VENUES, restore_verified_s
 
 async def run_native_research(
     *, drive, venue: str, months: list[str], root: Path,
-    report_dir: Path, publish: bool,
+    report_dir: Path, publish: bool, asset: str | None = None,
 ) -> dict:
     """Research-only. A successful run is NOT forward accuracy or profitability."""
     if venue not in VENUES or len(months) != 6:
@@ -39,9 +39,23 @@ async def run_native_research(
         _next_month(a) != b for a, b in pairwise(months)
     ):
         raise HistoryImportError("nonconsecutive source-native research months")
-    artifacts = await restore_verified_source_months(
-        drive, venue=venue, months=months, root=root,
-    )
+    if venue == "bitget":
+        # Original API months live in a distinct Drive format. Restore them
+        # through their strict original-response SHA/UTC verifier, not the
+        # PostgreSQL source-native snapshot reader. Never mix both formats.
+        from parlay_bot.research.bitget_source_bridge import (
+            restore_verified_bitget_market_months,
+        )
+
+        artifacts = await restore_verified_bitget_market_months(
+            drive, months=months, root=root, asset=asset or "BTC",
+        )
+    else:
+        if asset is not None:
+            raise HistoryImportError("asset selection applies only to Bitget")
+        artifacts = await restore_verified_source_months(
+            drive, venue=venue, months=months, root=root,
+        )
     quality = audit_catalog(root, months=months, sources=(SOURCE,))
     requested = [s for s in quality["streams"] if s["venue"] == venue]
     # The general history audit permits small research-grade gaps. This
@@ -70,6 +84,7 @@ async def run_native_research(
         blocked = {
             "schema_version": "rival-native-source-research-v1",
             "status": "source_months_incomplete", "venue": venue,
+            "asset": asset if venue == "bitget" else None,
             "requested_months": months, "restored_manifests": len(artifacts),
             "qualified_source_scopes": 0, "published_models": 0,
             "source_scopes": [
@@ -101,7 +116,9 @@ async def run_native_research(
     )
     report = {
         "schema_version": "rival-native-source-research-v1",
-        "venue": venue, "months": months, "source_scopes": sorted(
+        "venue": venue, "months": months,
+        "asset": asset if venue == "bitget" else None,
+        "source_scopes": sorted(
             [{"venue": s[0], "contract": s[1], "quote": s[2], "interval": s[3]}
              for s in qualified], key=lambda x: (x["contract"], x["quote"])),
         "restored_manifests": len(artifacts),
@@ -175,6 +192,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Source-exact private offline RivaL model research")
     parser.add_argument("--venue", choices=sorted(VENUES), required=True)
     parser.add_argument("--months", type=int, choices=(6,), default=6)
+    parser.add_argument("--asset", choices=("BTC", "ETH", "SOL", "XRP"))
     parser.add_argument("--root", type=Path, default=Path("data/native-research"))
     parser.add_argument("--report-dir", type=Path, default=Path("data/native-reports"))
     parser.add_argument("--publish", action="store_true")
@@ -187,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
                 drive=drive, venue=args.venue,
                 months=complete_months(now=datetime.now(UTC), count=args.months),
                 root=args.root, report_dir=args.report_dir,
-                publish=args.publish,
+                publish=args.publish, asset=args.asset,
             )
         finally:
             await drive.aclose()

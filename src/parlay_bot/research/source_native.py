@@ -28,6 +28,47 @@ def native_manifest_provenance(manifest: dict) -> bool:
     if not isinstance(manifest, dict):
         return False
     integrity = manifest.get("source_integrity")
+    if integrity == "bitget-v3-original-api-5m-v1":
+        # A derived offline view is admissible only after fresh original
+        # Drive readback and every provider page was revalidated. No claim
+        # that provider supplied a signed checksum or observed trade counts.
+        import re
+
+        name = manifest.get("file")
+        contract = manifest.get("contract")
+        asset = contract.removesuffix("USDT") if isinstance(contract, str) else ""
+        raw_hash = manifest.get("source_archive_sha256")
+        if (manifest.get("venue") != "bitget"
+            or asset not in {"BTC", "ETH", "SOL", "XRP"}
+            or contract != asset + "USDT"
+            or manifest.get("quote") != "USDT"
+            or manifest.get("interval_minutes") != 5
+            or manifest.get("provider_signed_checksum") is not False
+            or manifest.get("historical_listing_date_verified") is not False
+            or manifest.get("trades_observed") is not False
+            or manifest.get("original_observation_time_known") is not False
+            or manifest.get("model_training_eligible") is not False
+            or manifest.get("source_original_drive_readback_checked") is not True
+            or manifest.get("source_transport") != "bitget_public_v3_api"
+            or manifest.get("source_url") !=
+               "https://api.bitget.com/api/v3/market/history-candles"
+            or manifest.get("checksum_verified") is not True
+            or not isinstance(raw_hash, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", raw_hash)
+            or not isinstance(name, str)):
+            return False
+        match = re.fullmatch(
+            rf"bitget-{asset}USDT-USDT-5m-(20\d{{2}}-(?:0[1-9]|1[0-2]))--"
+            r"[0-9a-f]{16}\.ndjson", name,
+        )
+        return bool(
+            match and manifest.get("source_archive_file") ==
+            f"bitget-v3-{asset}-market-{match[1]}--{raw_hash[:16]}.responses.jsonl.gz"
+            and isinstance(manifest.get("source_manifest_sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", manifest["source_manifest_sha256"])
+            and isinstance(manifest.get("source_metadata_sha256"), str)
+            and re.fullmatch(r"[0-9a-f]{64}", manifest["source_metadata_sha256"])
+        )
     if integrity == "postgres-first-observed-at-v1":
         return True
     if integrity == "gate-official-gzip-with-v4-api-reconciliation-v1":

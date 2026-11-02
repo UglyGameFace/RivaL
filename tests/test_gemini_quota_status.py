@@ -117,7 +117,7 @@ async def test_research_menu_shows_honest_pause_and_exact_retry_time():
     embed = await dashboard.render()
     budget = next(
         field.value for field in embed.fields
-        if field.name == "Gemini model & request limits"
+        if field.name == "AI provider & request limits"
     )
     assert "gemini-3.8-flash" in budget
     assert "2/24" in budget

@@ -178,7 +178,7 @@ def validate(raw: bytes, *, asset: str, family: str, now_ms: int) -> dict:
                 value = Decimal(str(row["fundingRate"]))
             except (KeyError, InvalidOperation) as exc:
                 raise HistoryImportError("Bitget funding value invalid") from exc
-            if not value.is_finite() or abs(value) > Decimal("1"):
+            if not value.is_finite() or abs(value) > Decimal(1):
                 raise HistoryImportError("Bitget funding value invalid")
         return {"records": len(rows), "last_ts_ms": max(stamps) if stamps else None,
                 "full_historical_coverage_verified": False}
@@ -300,7 +300,7 @@ async def collect(client: httpx.AsyncClient, *, now: datetime, mode: str,
                     try:
                         data = json.loads(raw)["data"]
                         token = data.get("cursor")
-                    except (ValueError, KeyError, AttributeError) as exc:
+                    except (ValueError, KeyError, AttributeError):
                         issues.append({"asset": asset, "family": family,
                                        "reason": "missing liquidation page cursor"})
                         break

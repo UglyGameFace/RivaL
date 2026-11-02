@@ -24,8 +24,9 @@ import httpx
 
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.official_okx_bootstrap import (
-    FIRST,
-    month_bounds,
+    ADVANCED_FIRST,
+    ADVANCED_MODULE_BY_NAME,
+    advanced_month_bounds,
     verify_advanced_archive_catalog_url,
 )
 from parlay_bot.research.okx_l2_replay import ArchivedBook
@@ -58,7 +59,7 @@ def automatic_archive_slot(now: datetime | None = None, *, offset: int = 0) -> t
                                      microsecond=0)
     if clock.day <= 3:
         release_boundary = (release_boundary - timedelta(days=1)).replace(day=1)
-    first = datetime.strptime(FIRST, "%Y-%m").replace(tzinfo=UTC)
+    first = datetime.strptime(min(ADVANCED_FIRST.values()), "%Y-%m").replace(tzinfo=UTC)
     month_count = ((release_boundary.year - first.year) * 12
                    + release_boundary.month - first.month)
     if month_count <= 0:
@@ -73,7 +74,7 @@ def automatic_archive_slot(now: datetime | None = None, *, offset: int = 0) -> t
     ordered = list(reversed(all_months[-6:])) + all_months[:-6]
     candidates = [
         (month, module) for month in ordered for module in AUTOMATIC_MODULES
-        if module != "orderbook_l2_5000" or month >= L2_5000_FIRST
+        if month >= ADVANCED_FIRST[ADVANCED_MODULE_BY_NAME[module]]
     ]
     if not candidates:
         raise HistoryImportError("no release-eligible OKX archive slots")
@@ -157,7 +158,8 @@ async def listed_auxiliary_receipts(drive, *, asset: str, max_pages: int = 12) -
     raise HistoryImportError("OKX historical receipts exceed paged inventory budget")
 
 
-def archive_url(*, asset: str, month: str, record: dict) -> str:
+def archive_url(*, asset: str, month: str, record: dict,
+                module: str | None = None) -> str:
     """Verify an exact URL issued by the public catalog, never invent a link."""
     if not isinstance(record, dict):
         raise HistoryImportError("malformed OKX catalog entry")
@@ -165,7 +167,7 @@ def archive_url(*, asset: str, month: str, record: dict) -> str:
         asset=asset,
         month=month,
         filename=record.get("filename"),
-        url=record.get("source_url"),
+        url=record.get("source_url"), module=module,
     )
 
 def _positive(value: object, *, zero_allowed: bool = False) -> float:
@@ -282,7 +284,7 @@ def inspect_archive(path: Path, *, asset: str, month: str, module: str) -> dict:
     """Validate bounded decompression and schema, derive research-only 5m events."""
     if module not in MODULES or not path.is_file() or path.stat().st_size > MAX_ARCHIVE_BYTES:
         raise HistoryImportError("unapproved or oversized archive")
-    start, end = month_bounds(month)
+    start, end = advanced_month_bounds(month, ADVANCED_MODULE_BY_NAME[module])
     buckets = defaultdict(lambda: defaultdict(float))
     count = [0]
     total = 0
@@ -348,7 +350,7 @@ async def ingest_one(*, client: httpx.AsyncClient, asset: str, month: str,
     """One archive per invocation; never overwrite historical evidence."""
     if module not in MODULES or not 1 <= max_bytes <= MAX_ARCHIVE_BYTES:
         raise HistoryImportError("unsupported archive request or byte budget")
-    url = archive_url(asset=asset, month=month, record=record)
+    url = archive_url(asset=asset, month=month, record=record, module=module)
     root.mkdir(parents=True, exist_ok=True)
     name = record["filename"]
     target = root / name

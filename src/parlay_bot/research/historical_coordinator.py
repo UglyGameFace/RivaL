@@ -206,7 +206,8 @@ def build_plan(census: dict, *, max_jobs: int = 2,
                 "provider_onboard_or_list_time_snapshot" if listed_month
                 else "not_verified"),
             "named_months_before_reported_listing": [
-                m for m in named if listed_month and m < listed_month
+                m for m in sorted(all_hints.get((venue, asset, family), set()))
+                if listed_month and m < listed_month
             ],
             "reported_listing_is_archive_proof": False,
             "collector": route,

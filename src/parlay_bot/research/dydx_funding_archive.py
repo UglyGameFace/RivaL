@@ -160,14 +160,14 @@ def complete_hourly_month(stamps: list[datetime], *, start: datetime,
 
 
 def automatic_month(now: datetime | None = None) -> str:
-    """Rotate completed v4 months across 6 daily scheduled collection slots."""
+    """Rotate completed v4 months across 12 daily scheduled collection slots."""
     clock = (now or datetime.now(UTC)).astimezone(UTC)
     first = datetime(2023, 11, 1, tzinfo=UTC)
     last = clock.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     count = (last.year - first.year) * 12 + last.month - first.month
     if count <= 0:
         raise HistoryImportError("no completed v4 month for scheduled recovery")
-    cycle = int(clock.timestamp()) // (4 * 3600)
+    cycle = int(clock.timestamp()) // (2 * 3600)
     index = cycle % count
     year, month_index = divmod(2023 * 12 + 10 + index, 12)
     return f"{year:04d}-{month_index + 1:02d}"

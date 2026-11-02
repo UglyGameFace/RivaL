@@ -61,10 +61,41 @@ def test_exact_utc_grid_is_independent_of_authentic_original_checksum():
 def test_census_and_coordinator_recognize_new_real_aux_sources():
     for family in (
         "mark", "index", "premium", "candles_1m", "candles_15m",
-        "candles_1h", "candles_4h", "candles_1d",
+        "candles_1h", "candles_4h", "candles_1d", "funding",
     ):
         raw = f"binance-aux-BTC-{family}-2026-02--" + "a" * 16 + ".manifest.json"
         assert parse_name(raw) == ("binance", "BTC", family, "2026-02", "a" * 16)
         assert ROUTES[("binance", family)] == (
             "binance-original-auxiliary.yml", "official_checksum_zip",
         )
+
+
+def _funding_zip(rows: list[str]) -> bytes:
+    buf = io.BytesIO()
+    content = "calc_time,funding_interval_hours,last_funding_rate\n"
+    content += "\n".join(rows) + "\n"
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as z:
+        z.writestr("BTCUSDT-fundingRate-2026-02.csv", content)
+    return buf.getvalue()
+
+
+def test_official_monthly_funding_event_source_preserves_original_semantics():
+    assert source_url("BTC", "funding", "2026-02").endswith(
+        "/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2026-02.zip"
+    )
+    at = int(datetime(2026, 2, 2, 8, tzinfo=UTC).timestamp() * 1000)
+    raw = _funding_zip([f"{at},8,-0.0001", f"{at + 8 * 3600000},8,0.0002"])
+    info = inspect_original_zip(raw, asset="BTC", family="funding", month="2026-02")
+    assert info["rows"] == 2
+    assert info["source_event_timestamps_validated"] is True
+    assert info["expected_rows"] is None
+    assert info["complete_utc_grid"] is False
+    assert info["complete_funding_settlement_history_proven"] is False
+    with pytest.raises(HistoryImportError, match="duplicate"):
+        inspect_original_zip(
+            _funding_zip([f"{at},8,0.1", f"{at},8,0.2"]),
+            asset="BTC", family="funding", month="2026-02",
+        )
+    with pytest.raises(HistoryImportError, match="no source events"):
+        inspect_original_zip(_funding_zip([]), asset="BTC",
+                             family="funding", month="2026-02")

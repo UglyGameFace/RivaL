@@ -21,7 +21,7 @@ ASSETS = ("BTC", "ETH", "SOL", "XRP")
 START_MONTH = {"binance": "2021-01", "bitget": "2021-01",
                "okx": "2023-07", "gate": "2023-01"}
 PATTERNS = (
-    (r"binance-aux-(BTC|ETH|SOL|XRP)-(mark|index|premium|candles_1m|candles_15m|candles_1h|candles_4h|candles_1d)-(20\d{2}-(?:0[1-9]|1[0-2]))--([a-f0-9]{16})\.manifest\.json", "binance", None),
+    (r"binance-aux-(BTC|ETH|SOL|XRP)-(mark|index|premium|funding|candles_1m|candles_15m|candles_1h|candles_4h|candles_1d)-(20\d{2}-(?:0[1-9]|1[0-2]))--([a-f0-9]{16})\.manifest\.json", "binance", None),
     (r"(BTC|ETH|SOL|XRP)USDT-5m-(20\d{2}-\d{2})--([a-f0-9]{16})\.manifest\.json", "binance", "candles_5m"),
     (r"okx-(BTC|ETH|SOL|XRP)-USDT-SWAP-USDT-5m-(20\d{2}-\d{2})--([a-f0-9]{16})\.manifest\.json", "okx", "candles_5m"),
     (r"gatebulk-futures_usdt-(BTC|ETH|SOL|XRP)_USDT-(candlesticks_1m|candlesticks_5m|candlesticks_1h|mark_prices|funding_applies|funding_updates|trades)-(20\d{2}-\d{2})--([a-f0-9]{16})\.manifest\.json", "gate", None),

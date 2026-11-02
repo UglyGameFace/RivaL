@@ -1058,11 +1058,35 @@ class ResearchDashboard(discord.ui.View):
                         f"{recent['horizon']}m"
                         if recent else "None verified"
                     )
+                    reasons = {
+                        "fewer_than_six_source_months":
+                            "fewer than 6 verified source months",
+                        "insufficient_purged_validation_or_holdout":
+                            "too few validation/holdout examples",
+                        "validation_brier_gain_below_0.005":
+                            "validation Brier edge below 0.005",
+                        "holdout_brier_gain_below_0.005":
+                            "holdout Brier edge below 0.005",
+                        "calibration_or_evaluation_days_below_gate":
+                            "calibration or evaluation days below gate",
+                        "reason_unrecorded": "screening reason unavailable",
+                    }
+                    blockers = live_proof.get("screening_blockers") or []
+                    explanation = (
+                        "Screening blockers: " + "; ".join(
+                            f"{int(row['count'])} "
+                            f"{reasons.get(row['reason'], 'other screening gate')}"
+                            for row in blockers[:2]
+                        ) + ("; other reasons in registry" if len(blockers) > 2
+                             else "")
+                        if blockers else "Screening blockers: none recorded"
+                    )
                     embed.add_field(
                         name="Boosted model production proof",
                         value=(
                             f"**Imported:** {live_proof['portable_imported']} portable trees, "
-                            f"**{live_proof['portable_screened']}** screened. "
+                            f"**{live_proof['portable_screened']}** screened.\n"
+                            f"{explanation}\n"
                             f"**Last 30 days:** {live_proof['issued']} immutable "
                             f"forecasts, {live_proof['settled']} future settlements, "
                             f"{live_proof['quote_exits']} matched exit book quotes.\n"

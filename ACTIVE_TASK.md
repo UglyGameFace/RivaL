@@ -1,3 +1,14 @@
+## Active: restore real learning receipts and expose historical-model blockers (2026-11-02)
+
+- **Observed:** BTC 5m shows 52.4% direction but Brier 0.2486 vs 0.2484 baseline, Polymarket Brier 0.2332 vs market 0.2219, 9/9 feeds fresh, *both* cycle states shown unavailable/no record, and 0/100 incumbent forecasts historically seeded despite 1,430 online updates.
+- **Confirmed code cause:** `PostgresDatabase` uses `psycopg.rows.dict_row`, but both scorecard worker-cycle readers index rows as `row[0]`, `row[1]`; forecast can raise `KeyError` and erase independent learning status because the combined 4-second reader fails. Correct to named columns. No forecast-data mutation.
+- **Model screen:** Screening is source-specific and requires six original source months, prospective-safe purged validation, holdout Brier gain and calibration. 54 imported trees are **not** 54 approved/active models. Preserve strict screens and return actual immutable import rejection counts via the detailed research page; do not inject unapproved historical weights into incumbent forecasts.
+- **Live check:** After a genuinely successful main Discloud deployment, read only existing PostgreSQL heartbeat rows on host using verified source readers and the Discloud console relay. Fail acceptance for absent, stale or failed-stage receipts, without making any AI calls or database writes.
+- **Acceptance:** Full GitHub CI on the branch, then merge, main CI and Discloud deploy, then inspect actual read-only acceptance; if fresh cycles remain absent, follow server logs and worker exit/DB contention instead of faking success.
+- **Unresolved:** Model prospective accuracy, screened qualified historical seeds, complete source-native history and live profitability are **not** proven. Issue #6 and #188 remain open.
+
+---
+
 ## Active: mobile research navigation and legacy Gemini retirement (2026-11-02)
 
 - **Request:** Remove misleading Gemini AI button, simplify excessive RivaL Performance/Detailed Research controls on Android, keep real accuracy/history diagnostics; screenshot also exposed literal `\\n` in boosted model proof.

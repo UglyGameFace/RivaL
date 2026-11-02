@@ -149,3 +149,95 @@ async def test_persisted_learning_heartbeat_is_read_without_model_registry(tmp_p
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
         bot.store.close()
+
+
+class _MappingRowConnection:
+    """Fake the actual psycopg dict_row contract, not sqlite.Row[0]."""
+
+    def __init__(self, table, result):
+        self.table, self.result = table, result
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, sql, *_args):
+        assert self.table in sql
+        return self
+
+    def fetchone(self):
+        return self.result
+
+
+class _MappingRowStore:
+    def __init__(self, learning, forecast):
+        self.rows = {
+            "perp_learning_cycle_health": learning,
+            "perp_forward_cycle_diagnostics": forecast,
+        }
+
+    def connect(self):
+        # The production readers open separate connections per query. Return
+        # psycopg-style dictionaries with no integer keys.
+        store = self
+
+        class Connection:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def execute(self, sql):
+                for table, row in store.rows.items():
+                    if table in sql:
+                        if isinstance(row, Exception):
+                            raise row
+                        return _MappingRowConnection(table, row)
+                raise AssertionError("unexpected table")
+        return Connection()
+
+
+def test_postgres_dictionary_rows_make_both_worker_receipts_visible():
+    now = datetime.now(UTC)
+    market = SimpleNamespace(store=_MappingRowStore(
+        learning={
+            "completed_at": now.isoformat(), "math_ok": 1,
+            "model_review_ok": 1, "math_issued": 12, "math_settled": 9,
+        },
+        forecast={
+            "checked_at": now.isoformat(), "issued_forecasts": 12,
+            "target_expired": 2,
+        },
+    ))
+    result = home_module._performance_cycles(market)
+    assert result["learning"] == {
+        "status": "recorded", "checked_at": now, "math_ok": True,
+        "model_review_ok": True, "issued": 12, "settled": 9,
+    }
+    assert result["forecast"] == {
+        "status": "recorded", "checked_at": now, "issued": 12, "expired": 2,
+    }
+
+
+def test_missing_forecast_table_does_not_hide_learning_receipt():
+    now = datetime.now(UTC)
+    market = SimpleNamespace(store=_MappingRowStore(
+        learning={
+            "completed_at": now.isoformat(), "math_ok": 0,
+            "model_review_ok": 1, "math_issued": 0, "math_settled": 4,
+        },
+        forecast=RuntimeError("missing forecast diagnostics table"),
+    ))
+    result = home_module._performance_cycles(market)
+    assert result["forecast"]["status"] == "unavailable"
+    assert result["learning"]["status"] == "recorded"
+    assert result["learning"]["math_ok"] is False
+
+
+def test_empty_cycle_tables_are_absent_not_misreported_as_healthy():
+    market = SimpleNamespace(store=_MappingRowStore(learning=None, forecast=None))
+    result = home_module._performance_cycles(market)
+    assert result == {"forecast": None, "learning": None}

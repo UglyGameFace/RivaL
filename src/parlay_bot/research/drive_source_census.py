@@ -40,7 +40,7 @@ OKX_AUX_RECEIPT = re.compile(
 # historical depth or quote availability. Keep this distinct from 5m candles.
 GATE_L2_HOURLY_MANIFEST = re.compile(
     r"gate-hourly-l2-(BTC|ETH|SOL|XRP)-(orderbooks|orderbooks_slice)-"
-    r"(20[0-9]{8})--([a-f0-9]{16})\\.gz\\.manifest\\.json"
+    r"(20[0-9]{8})--([a-f0-9]{16})\.gz\.manifest\.json"
 )
 
 PAGE_PATTERNS = (

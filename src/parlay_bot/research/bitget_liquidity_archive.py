@@ -12,7 +12,6 @@ import base64
 import gzip
 import hashlib
 import json
-import math
 import tempfile
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -175,9 +174,10 @@ def validate(raw: bytes, *, asset: str, family: str, now_ms: int) -> dict:
             if stamp in stamps:
                 raise HistoryImportError("Bitget duplicate funding settlement")
             stamps.add(stamp)
-            value = _number(row.get("fundingRate"), positive=False) if (
-                str(row.get("fundingRate", "")).startswith("-") is False
-            ) else Decimal(str(row["fundingRate"]))
+            try:
+                value = Decimal(str(row["fundingRate"]))
+            except (KeyError, InvalidOperation) as exc:
+                raise HistoryImportError("Bitget funding value invalid") from exc
             if not value.is_finite() or abs(value) > Decimal("1"):
                 raise HistoryImportError("Bitget funding value invalid")
         return {"records": len(rows), "last_ts_ms": max(stamps) if stamps else None,

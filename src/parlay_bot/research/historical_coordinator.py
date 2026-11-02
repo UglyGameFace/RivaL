@@ -47,11 +47,15 @@ ATTEMPT_FLOORS: dict[tuple[str, str], str] = {
 # The source's earliest REAL contract listing is unknown until separately proven.
 ROUTES: dict[tuple[str, str], tuple[str, str]] = {
     ("binance", "candles_5m"): ("binance-deep-file-backfill.yml", "scheduled_bulk"),
+    ("binance", "open_interest"): ("historical-source-provenance.yml", "official_daily_5m_metrics_partial"),
+    ("binance", "positioning"): ("historical-source-provenance.yml", "official_daily_5m_metrics_partial"),
+    ("bitget", "open_interest"): ("bitget-liquidity-archive.yml", "live_history_pages_not_complete"),
+    ("bitget", "liquidations"): ("bitget-liquidity-archive.yml", "recent_history_pages_not_complete"),
+    ("bitget", "orderbook_l2"): ("bitget-tardis-source-archive.yml", "sample_days_only"),
     **{("bitget", f): ("bitget-v3-overnight-archive.yml", "scheduled_bulk")
        for f in ("candles_5m", "mark", "index", "premium")},
     ("bitget", "funding"): ("bitget-liquidity-archive.yml", "scheduled_pages"),
     ("bitget", "trades"): ("bitget-tardis-source-archive.yml", "sample_days_only"),
-    ("bitget", "orderbook_l2"): ("bitget-tardis-source-archive.yml", "sample_days_only"),
     ("deribit", "trades"): ("deribit-hourly-native-backfill.yml", "hourly_chunks_only"),
     ("dydx", "funding"): ("dydx-v4-original-funding.yml", "scheduled_pages"),
     ("lighter", "funding"): ("lighter-original-auxiliary.yml", "scheduled_pages"),
@@ -186,8 +190,16 @@ def build_plan(census: dict, *, max_jobs: int = 2,
         named = entry["priority_window_named_months_not_reverified"]
         listing = listing_by_instrument.get((venue, asset))
         listed_month = listing[0] if listing and listing[0] else None
+        source_days = [
+            r for r in census.get("binance_daily_metrics_not_full_months", [])
+            if venue == "binance" and r.get("asset") == asset
+            and family in r.get("family", [])
+        ]
         rows.append({
             "venue": venue, "asset": asset, "family": family,
+            "original_daily_source_name_hints_not_months": sum(
+                r["distinct_named_days"] for r in source_days
+            ),
             "earliest_technical_attempt_month": attempt_floor,
             "actual_contract_listing_month": listed_month,
             "contract_listing_evidence": (

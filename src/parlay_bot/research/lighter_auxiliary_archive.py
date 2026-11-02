@@ -187,9 +187,10 @@ async def store(drive, *, raw: bytes, asset: str, family: str,
         "utc_month": month, "section": section,
         "source_url": url, "source_filename": source.name,
         "original_sha256": digest, "records_in_requested_window": rows,
-        "original_source_rows": len(json.loads(raw)[
-            "fundings" if family == "funding" else "c"
-        ]),
+        "original_source_rows": len(
+            json.loads(raw)["fundings"] if family == "funding"
+            else json.loads(raw).get("c", json.loads(raw).get("candles", []))
+        ),
         "provider_response_preserved_including_older_rows": True,
         "source_provider_checksum_available": False,
         "prospective_forecast": False, "model_admission": False,

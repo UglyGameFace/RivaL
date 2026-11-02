@@ -18,7 +18,7 @@ on:
       month:
         required: true
         type: string
-        default: "2025-02"
+        default: "latest"
 
 permissions:
   contents: read
@@ -41,7 +41,6 @@ jobs:
           python -m pip install -e ".[dev,archive]"
           ruff check src/parlay_bot/research/lighter_auxiliary_archive.py tests/test_lighter_auxiliary_archive.py
           pytest -q tests/test_lighter_auxiliary_archive.py tests/test_lighter_history_recovery.py
-
   verified-source-acquisition:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
@@ -76,7 +75,7 @@ jobs:
               --month auto --assets BTC ETH SOL XRP
           else
             python -m parlay_bot.research.lighter_auxiliary_archive \
-              --month "${{ inputs.month || '2025-02' }}" --assets BTC ETH
+              --month "${{ inputs.month || 'latest' }}" --assets BTC ETH SOL XRP
           fi
       - uses: actions/upload-artifact@v4
         if: always()

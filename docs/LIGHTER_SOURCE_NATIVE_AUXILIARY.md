@@ -12,7 +12,13 @@ another, and no derived signed funding feature is fabricated from the
 original unsigned rate/direction until independently validated.
 
 Archive scope starts at February 2025, since Lighter did not operate
-perpetuals in 2021. Four serialized scheduled runs each day rotate
+perpetuals in 2021. Some earliest source responses lack mark-price candles.
+Lighter's historical funding and mark-price API can return original rows from
+before the requested start timestamp alongside in-window rows. The collector
+now SHA-preserves the full response but attributes only rows inside the
+requested UTC window to that month; missing periods are not filled or called
+complete. Main-branch acquisition starts from the latest complete month,
+while the six-hour schedule rotates recent six months and older months. Four serialized scheduled runs each day rotate
 all completed native market months, with authenticated Drive bytes
 reverified and original source family identities preserved.
 

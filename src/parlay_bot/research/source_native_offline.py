@@ -18,8 +18,8 @@ from pathlib import Path
 from parlay_bot.config import Settings
 from parlay_bot.research.audit import audit_catalog
 from parlay_bot.research.batch import complete_months
-from parlay_bot.research.candidate_registry import verified_candidate
 from parlay_bot.research.boosted_models import evaluate_directory as evaluate_boosters
+from parlay_bot.research.candidate_registry import verified_candidate
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.live_training import evaluate_directory as evaluate_logistic
 from parlay_bot.research.production import _report

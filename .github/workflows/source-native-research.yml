@@ -157,6 +157,22 @@ jobs:
                   f"Restored monthly manifests: {data.get('restored_manifests', 0)}",
                   f"Published research models: {data.get('published_models', 0)}",
               ])
+              screening = data.get("actual_registry_screening") or {}
+              if screening:
+                  lines.append(
+                      "Actual importer screen: "
+                      f"{screening.get('retrospective_passed', 0)}/"
+                      f"{screening.get('evaluated', 0)} retrospective passes"
+                  )
+                  for rejected in screening.get("rejected_by_reason", [])[:8]:
+                      lines.append(
+                          f"- Importer rejected {rejected['count']}: "
+                          f"{rejected['reason']}"
+                      )
+                  lines.append(
+                      "These retrospective passes do NOT authorize "
+                      "live promotion or after-cost trading."
+                  )
               for stream in data.get("source_scopes", [])[:24]:
                   if "missing_or_incomplete_months" not in stream:
                       continue

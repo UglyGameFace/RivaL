@@ -8,7 +8,6 @@ promotion may be manufactured from retrospective OHLCV data.
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
@@ -19,7 +18,9 @@ from parlay_bot.research.boosted_portable import certified_export
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.learning import _metrics, assemble
 from parlay_bot.research.live_training import (
-    compatible_partitions, historical_features, qualified_manifest_groups,
+    compatible_partitions,
+    historical_features,
+    qualified_manifest_groups,
 )
 
 FAMILIES = ("hist_gradient_boosting", "lightgbm", "xgboost", "catboost")

@@ -24,7 +24,12 @@ def test_auto_advanced_slot_rotates_months_and_all_native_families():
     slots = [automatic_archive_slot(now + timedelta(hours=2 * i))
              for i in range(8)]
     assert len(set(slots)) == 8
-    assert {family for _, family in slots} == {
+    # Early 2023+ months have only three families; 5000-level begins 2025-11.
+    all_families = {
+        automatic_archive_slot(now + timedelta(hours=2 * i))[1]
+        for i in range(200)
+    }
+    assert all_families == {
         "funding_rates", "trades", "orderbook_l2_400", "orderbook_l2_5000",
     }
     assert all("2023-07" <= month <= "2026-10" for month, _ in slots)

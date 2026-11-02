@@ -7,7 +7,12 @@ from urllib import parse
 import pytest
 
 from tools.other_venue_download_discovery import (
-    CANDIDATES, MAX_BYTES, PROBE_PARAMS, probe_url, report, verify_candidate,
+    CANDIDATES,
+    MAX_BYTES,
+    PROBE_PARAMS,
+    probe_url,
+    report,
+    verify_candidate,
 )
 
 

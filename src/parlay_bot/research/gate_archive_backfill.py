@@ -19,6 +19,7 @@ import httpx
 from parlay_bot.archive.drive import DriveArchiveError
 from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.history_priority import window
 from parlay_bot.research.gate_bulk_archive import ASSETS, TYPES, download
 from parlay_bot.research.publish import _artifact, _drive
 
@@ -180,6 +181,7 @@ def prioritize_backfill(
     so gaps are investigated without starving fresh multi-year acquisitions.
     """
     recent = set(months[-6:])
+    priority = set(window(now).completed_months)
     recertify = [
         key for key in jobs if key[1] == "candlesticks_5m"
         and key in existing and (key[0], key[2]) not in native
@@ -188,14 +190,24 @@ def prioritize_backfill(
         key for key in jobs if key[1] == "candlesticks_5m"
         and key[2] in recent and key not in existing
     ]
-    old_candles = [
+    priority_candles = [
         key for key in jobs if key[1] == "candlesticks_5m"
-        and key[2] not in recent and key not in existing
-    ]
-    extra = [
-        key for key in jobs if key[1] != "candlesticks_5m"
+        and key[2] in priority and key[2] not in recent
         and key not in existing
     ]
+    old_candles = [
+        key for key in jobs if key[1] == "candlesticks_5m"
+        and key[2] not in priority and key not in existing
+    ]
+    priority_extra = [
+        key for key in jobs if key[1] != "candlesticks_5m"
+        and key[2] in priority and key not in existing
+    ]
+    older_extra = [
+        key for key in jobs if key[1] != "candlesticks_5m"
+        and key[2] not in priority and key not in existing
+    ]
+    extra = priority_extra + older_extra
     recheck_count = min(len(recertify), max(1, max_attempts // 8))
     chosen = rotate_attempts(recertify, now=now, count=recheck_count)
     remaining = max_attempts - len(chosen)
@@ -206,10 +218,11 @@ def prioritize_backfill(
     # rotate existing tasks within the same configured max_attempts budget.
     enrichment_reserve = (
         min(len(extra), remaining // 3)
-        if extra and (recent_candles or old_candles) and remaining >= 12 else 0
+        if extra and (recent_candles or priority_candles or old_candles)
+        and remaining >= 12 else 0
     )
     candle_budget = remaining - enrichment_reserve
-    for group in (recent_candles, old_candles):
+    for group in (recent_candles, priority_candles, old_candles):
         if candle_budget <= 0:
             break
         selected = rotate_attempts(group, now=now, count=candle_budget)
@@ -219,7 +232,12 @@ def prioritize_backfill(
     # including the reserved share. When no candle gaps remain it uses all
     # available slots instead of slowing down.
     enrichment_budget = max_attempts - len(chosen)
-    chosen.extend(rotate_attempts(extra, now=now, count=enrichment_budget))
+    for group in (priority_extra, older_extra):
+        if enrichment_budget <= 0:
+            break
+        selected = rotate_attempts(group, now=now, count=enrichment_budget)
+        chosen.extend(selected)
+        enrichment_budget -= len(selected)
     return chosen
 
 

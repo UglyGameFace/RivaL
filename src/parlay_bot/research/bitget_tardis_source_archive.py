@@ -57,8 +57,7 @@ def validate_selection(*, asset: str, month: str, family: str, now: datetime) ->
         start = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
     except ValueError as exc:
         raise HistoryImportError("invalid Tardis source month") from exc
-    if (start.strftime("%Y-%m") != month or not 2024 <= start.year <= 2026
-        or start < datetime(2024, 12, 1, tzinfo=UTC)
+    if (start.strftime("%Y-%m") != month or start < datetime(2024, 12, 1, tzinfo=UTC)
         or now.utcoffset() is None or start >= now.astimezone(UTC)):
         raise HistoryImportError("Tardis public day not in available Bitget history")
     return (f"{SOURCE}/v1/bitget-futures/{family}/"
@@ -74,15 +73,15 @@ def _positive(value: str, *, allow_zero: bool = False) -> None:
         raise HistoryImportError("negative, zero or nonfinite Bitget CSV number")
 
 
-def verify_gzip_csv(path: Path, *, asset: str, month: str, family: str) -> dict:
+def verify_gzip_csv(path: Path, *, asset: str, month: str, family: str,
+                    now: datetime | None = None) -> dict:
     """Fully decompress, authenticate venue/symbol/schema, and bound all rows."""
     validate_selection(
         asset=asset, month=month, family=family,
-        now=datetime(2026, 11, 2, tzinfo=UTC),
+        now=now or datetime.now(UTC),
     )
     if not 0 < path.stat().st_size <= MAX_COMPRESSED_BYTES:
         raise HistoryImportError("Tardis downloaded gzip outside file-size budget")
-    from calendar import monthrange
     year, mo = (int(x) for x in month.split("-"))
     start = int(datetime(year, mo, 1, tzinfo=UTC).timestamp() * 1_000_000)
     end = start + 86_400_000_000
@@ -255,7 +254,7 @@ async def run(*, asset: str, month: str, family: str, root: Path,
             client, asset=asset, month=month, family=family, root=root, now=now,
         )
     try:
-        metrics = verify_gzip_csv(temp, asset=asset, month=month, family=family)
+        metrics = verify_gzip_csv(temp, asset=asset, month=month, family=family, now=now)
         if probe_only:
             result = {
                 "status": "verified_source_probe", "source": url,

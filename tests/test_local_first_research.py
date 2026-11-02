@@ -250,7 +250,7 @@ async def test_data_only_research_uses_own_persisted_cache_without_extra_quota(m
         def cached_ai_research(self, *, model, evidence_sha256, **_args):
             for row in self.saved:
                 if row["model"] == model and row["evidence_sha256"] == evidence_sha256:
-                    return row
+                    return {**row, "issued_at": row["issued_at"].isoformat()}
             return None
 
     market = Persisted()

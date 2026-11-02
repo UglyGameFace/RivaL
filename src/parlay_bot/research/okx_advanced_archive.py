@@ -81,6 +81,17 @@ def automatic_archive_slot(now: datetime | None = None, *, offset: int = 0) -> t
     return candidates[slot]
 
 
+def official_catalog_http_400(exc: Exception) -> bool:
+    """Only classify an actual provider HTTP 400 as a rejected catalog slot.
+
+    This does not mark any source family as complete and must not suppress
+    authentication, transport, throttling, or source-identity failures.
+    """
+    cause = exc.__cause__ if isinstance(exc, HistoryImportError) else None
+    return (isinstance(cause, httpx.HTTPStatusError)
+            and cause.response.status_code == 400)
+
+
 def archive_url(*, asset: str, month: str, record: dict) -> str:
     """Verify an exact URL issued by the public catalog, never invent a link."""
     if not isinstance(record, dict):

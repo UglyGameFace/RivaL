@@ -24,6 +24,7 @@ from parlay_bot.research.gate_hourly_l2_archive import (
 from parlay_bot.research.publish import _drive
 
 MAX_ATTEMPTS = 12
+MAX_BATCH_SOURCE_BYTES = 32 * 1024 * 1024
 WINDOW_HOURS = 6
 # Retain two independent original formats. One source snapshot is not a
 # substitute for a linked change-log and vice versa.
@@ -137,6 +138,7 @@ async def collect_batch(
             "candidate_attempts": len(slots),
             "already_listed_not_byte_reverified": skipped,
             "readbacks": [], "blocked": [],
+            "original_source_bytes_uploaded": 0,
             "source_months_qualified": 0, "full_hourly_coverage_verified": False,
             "future_only_model_approval": False,
         }
@@ -147,10 +149,18 @@ async def collect_batch(
                         download, client, asset=asset, family=family,
                         hour=hour, now=now,
                     )
+                    if (status["original_source_bytes_uploaded"] + len(data)
+                        > MAX_BATCH_SOURCE_BYTES):
+                        status["blocked"].append({
+                            "asset": asset, "family": family, "hour": hour,
+                            "reason": "Gate L2 session original-byte budget reached",
+                        })
+                        break
                     result = await store(
                         drive, raw=data, asset=asset, family=family,
                         hour=hour, evidence=evidence, root=root, now=now,
                     )
+                    status["original_source_bytes_uploaded"] += len(data)
                     status["readbacks"].append(result)
                 except (HistoryImportError, httpx.HTTPError, OSError) as exc:
                     status["blocked"].append({

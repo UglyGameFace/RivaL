@@ -873,6 +873,24 @@ class ForwardAccuracyMonitor:
                     LIKE '%"model":"portable-boosted-binary-v1"%'""",
                 (asset,),
             ).fetchone()
+            # Exact rejection counts from the imported immutable model
+            # registry. Zero screened is not a pipeline error by itself:
+            # these candidates must pass six source months, purged validation,
+            # holdout advantage and calibration before shadow issuance.
+            blockers = conn.execute(
+                """SELECT COALESCE(c.admission_reason, 'reason_unrecorded')
+                              AS reason, COUNT(*) AS total
+                   FROM rival_offline_candidates c
+                   JOIN rival_offline_model_artifacts a
+                     ON a.model_sha256=c.model_sha256
+                   WHERE c.asset=?
+                     AND a.model_spec_json
+                       LIKE '%"model":"portable-boosted-binary-v1"%'
+                     AND (c.retrospective_screen!='passed' OR a.compatible<>1)
+                   GROUP BY COALESCE(c.admission_reason, 'reason_unrecorded')
+                   ORDER BY total DESC, reason LIMIT 8""",
+                (asset,),
+            ).fetchall()
             forecasts = conn.execute(
                 """SELECT s.venue,s.contract,s.quote,s.horizon_minutes,s.family,
                           COUNT(*) AS issued,
@@ -966,6 +984,10 @@ class ForwardAccuracyMonitor:
             "as_of": stamp.isoformat(), "window_days": 30, "asset": asset,
             "portable_imported": int(imported["total"] or 0),
             "portable_screened": qualified,
+            "screening_blockers": [
+                {"reason": str(row["reason"]), "count": int(row["total"])}
+                for row in blockers
+            ],
             "issued": issued, "settled": settled,
             "quote_entries": sum(x["quote_entries"] for x in scopes),
             "quote_exits": exits,

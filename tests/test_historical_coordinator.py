@@ -9,7 +9,6 @@ from parlay_bot.research.drive_source_census import summarize
 from parlay_bot.research.historical_coordinator import (
     ATTEMPT_FLOORS,
     build_plan,
-    candidate_training_window,
     completed_range,
 )
 from parlay_bot.research.source_native_offline import select_training_months
@@ -72,7 +71,7 @@ def test_real_same_venue_coin_family_six_month_hint_window():
     # A matching Binance source and unrelated Bitget ETH month cannot
     # satisfy the six BTC/Bitget months.
     names.append(_name("ETH", "market", "2025-06"))
-    plan = build_plan(summarize(names, now=NOW))
+    plan = build_plan(summarize(names, now=NOW), max_jobs=4)
     research = [r for r in plan["dispatch_candidates"]
                 if r["workflow"] == "source-native-research.yml"]
     assert len(research) == 1

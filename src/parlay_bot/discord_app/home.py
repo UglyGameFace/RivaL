@@ -1304,10 +1304,11 @@ class GuidedHome(discord.ui.View):
                 )
         elif p == "performance":
             embed = discord.Embed(
-                title=f"📊 RivaL Performance | {self.coin} {self.horizon}m",
+                title=f"📊 RivaL | {self.coin} Performance ({self.horizon} min)",
                 description=(
-                    "**NO VERIFIED TRADING EDGE** · Real forward forecasts, last 7 days. "
-                    "Lower Brier error is better. Practice is separate."
+                    "**Profitable predictions: not proven yet.** These scores use "
+                    "predictions recorded before results were known. "
+                    "Practice-only trades are shown elsewhere."
                 ),
                 color=discord.Color.blurple(),
             )
@@ -1362,27 +1363,27 @@ class GuidedHome(discord.ui.View):
                 scored = int(part.get("scored", settled) or 0)
                 hit = part.get("hit_rate")
                 accuracy = (
-                    f"{hit:.1%} directional ({correct:,}/{decided:,})"
+                    f"**{correct:,} of {decided:,} right** ({hit:.0%})"
                     if isinstance(hit, (int, float)) and decided else
-                    "Direction accuracy not measured"
+                    "Not enough verified outcomes to measure"
                 )
                 brier, baseline = part.get("brier"), part.get("baseline_brier")
                 if isinstance(brier, (int, float)) and isinstance(baseline, (int, float)):
-                    verdict = "Better in this window; not approved" if brier < baseline else (
-                        "Not better than baseline"
-                    )
-                    scoring = f"Brier {brier:.4f} vs baseline {baseline:.4f} · **{verdict}**"
+                    verdict = ("Better in these tests, but not approved for trading"
+                               if brier < baseline else "Not better than a basic prediction")
+                    scoring = (f"**Against a basic prediction:** {verdict}. "
+                               f"Error score {brier:.3f} vs {baseline:.3f} (lower is better).")
                 else:
-                    scoring = "Paired baseline score not available"
+                    scoring = "Cannot fairly compare with a basic prediction yet"
                 paired = (
-                    f" · {scored:,}/{settled:,} paired scores"
+                    f" · {scored:,}/{settled:,} comparable results"
                     if scored != settled else ""
                 )
                 exchange_text = (
-                    f"{accuracy}\n{scoring}\n"
-                    f"{settled:,}/{issued:,} settled{paired} · 7d"
+                    f"**Correct direction:** {accuracy}\n{scoring}\n"
+                    f"**Results checked:** {settled:,} of {issued:,} recorded predictions{paired} (7 days)"
                 )
-            embed.add_field(name="📈 Exchange accuracy", value=exchange_text, inline=False)
+            embed.add_field(name="📈 How accurate are BTC exchange predictions?", value=exchange_text, inline=False)
 
             # 2. Contract-native comparisons; historical labels are NOT model wins.
             poly = reports.get("polymarket")
@@ -1398,26 +1399,27 @@ class GuidedHome(discord.ui.View):
                 if (resolved and isinstance(model_error, (int, float))
                         and isinstance(market_error, (int, float))):
                     outcome = (
-                        "Better in this window; not approved"
-                        if model_error < market_error else "Not better than market"
+                        "Better in these tests, but not approved for trading"
+                        if model_error < market_error else "Not better than market prices"
                     )
                     poly_text = (
-                        f"{resolved:,} settled calls · last {window}d\n"
-                        f"Brier {model_error:.4f} vs market {market_error:.4f} · "
-                        f"**{outcome}**"
+                        f"**Real-time predictions checked:** {resolved:,} (last {window} days)\n"
+                        f"**Compared with market prices:** {outcome}. "
+                        f"Error score {model_error:.3f} vs {market_error:.3f} (lower is better)."
                     )
                 else:
-                    poly_text = f"{resolved:,} settled calls · no paired score available"
-                poly_text += f"\n{learned:,} historical outcomes (not forward calls)"
-            embed.add_field(name="🎯 Polymarket", value=poly_text, inline=False)
+                    poly_text = (f"**Real-time predictions checked:** {resolved:,} "
+                                 "· no fair comparison available yet")
+                poly_text += f"\n**Past results learned from:** {learned:,} (not live predictions)"
+            embed.add_field(name="🎯 How accurate are Polymarket predictions?", value=poly_text, inline=False)
 
             # 3. Live worker state is distinct from statistical learning benefit.
             cycles = reports.get("cycles")
             heart = cycles.get("learning") if isinstance(cycles, dict) else None
             if heart is None:
-                engine_text = "Learning heartbeat: no recorded cycle"
+                engine_text = "**Is learning running?** No completed check recorded"
             elif heart.get("status") != "recorded":
-                engine_text = "Learning heartbeat: read unavailable"
+                engine_text = "**Is learning running?** Cannot check right now"
             else:
                 age = int((now - heart["checked_at"].astimezone(UTC)).total_seconds() // 60)
                 if not heart["math_ok"] or not heart["model_review_ok"]:
@@ -1427,34 +1429,34 @@ class GuidedHome(discord.ui.View):
                 else:
                     state = "Running"
                 engine_text = (
-                    f"Engine: **{state}** · cycle {age}m ago "
-                    f"({heart['issued']} issued / {heart['settled']} settled)"
+                    f"**Is learning running?** {state} (last checked {age} min ago; "
+                    f"{heart['issued']} predictions logged, {heart['settled']} results checked)"
                 )
             comparison = reports.get("comparison")
             benefit = comparison.get("benefit") if isinstance(comparison, dict) else None
             lineage = comparison.get("lineage") if isinstance(comparison, dict) else None
             if isinstance(benefit, dict):
                 reason = {
-                    "supported": "Promising; not approved",
-                    "not_improving": "Not beating both baselines",
-                    "insufficient": "Too few future outcomes",
+                    "supported": "Possibly improving, not yet approved",
+                    "not_improving": "Not beating basic predictions yet",
+                    "insufficient": "Not enough future results to tell yet",
                 }.get(benefit.get("status"), "Not verified")
                 trend_text = (
-                    f"14d comparison: **{reason}** "
-                    f"({int(benefit.get('targets') or 0)} targets / "
-                    f"{int(benefit.get('days') or 0)} days)"
+                    f"**Is accuracy improving?** {reason} "
+                    f"({int(benefit.get('targets') or 0)} results / "
+                    f"{int(benefit.get('days') or 0)} days checked)"
                 )
             else:
-                trend_text = "14d comparison: read unavailable; improvement not verified"
+                trend_text = "**Is accuracy improving?** Cannot check right now; improvement unproven"
             if isinstance(lineage, dict) and lineage.get("lineage_proven"):
                 lineage_text = (
-                    f"Historical seeds in recent verified lineage: "
-                    f"{lineage['historically_seeded']}/{lineage['lineage_proven']}"
+                    f"**Used verified historical training:** "
+                    f"{lineage['historically_seeded']}/{lineage['lineage_proven']} recent predictions"
                 )
             else:
-                lineage_text = "Historical seed use: unverified in recent forecasts"
+                lineage_text = "**Used verified historical training:** Cannot confirm for recent predictions"
             embed.add_field(
-                name="🧠 Learning",
+                name="🧠 Is RivaL actually learning?",
                 value=f"{engine_text}\n{trend_text}\n{lineage_text}",
                 inline=False,
             )
@@ -1463,7 +1465,7 @@ class GuidedHome(discord.ui.View):
             # substitute for an actual forecast-worker heartbeat.
             feeds = reports.get("feeds")
             if not isinstance(feeds, (list, tuple)):
-                feeds_text = "Feeds: **read unavailable**"
+                feeds_text = "**Live price feeds:** Cannot check right now"
             else:
                 fresh = set()
                 for row in feeds:
@@ -1481,26 +1483,27 @@ class GuidedHome(discord.ui.View):
                     except (ValueError, TypeError, OverflowError):
                         continue
                 feeds_text = (
-                    f"Feeds: **{len(fresh)}/{len(self.venues)}** fresh"
-                    if self.venues else "Feeds: not configured"
+                    f"**Live price feeds:** {len(fresh)}/{len(self.venues)} up to date"
+                    if self.venues else "**Live price feeds:** Not configured"
                 )
             cycle = cycles.get("forecast") if isinstance(cycles, dict) else None
             if cycle is None:
-                cycle_text = "Forecast cycle: **no cycle recorded**" if isinstance(
+                cycle_text = "**Prediction checks:** No check recorded" if isinstance(
                     cycles, dict,
-                ) else "Forecast cycle: **read unavailable**"
+                ) else "**Prediction checks:** Cannot check right now"
             elif cycle.get("status") != "recorded":
-                cycle_text = "Forecast cycle: **read unavailable**"
+                cycle_text = "**Prediction checks:** Cannot check right now"
             else:
                 age = int((now - cycle["checked_at"].astimezone(UTC)).total_seconds() // 60)
                 status = "fresh" if 0 <= age <= 10 else "stale/invalid time"
-                cycle_text = f"Forecast check: **{age}m ago** ({status}), **{cycle['issued']}** issued"
+                cycle_text = (f"**Prediction checks:** Last ran {age} min ago ({status}); "
+                              f"{cycle['issued']} predictions recorded")
             embed.add_field(
-                name="📡 System status", value=f"{feeds_text}\n{cycle_text}", inline=False,
+                name="📡 Are market feeds and predictions running?", value=f"{feeds_text}\n{cycle_text}", inline=False,
             )
             embed.timestamp = now
             embed.set_footer(
-                text="Live PostgreSQL reads · Detailed Research has training/import proof · NO CALL"
+                text="Live data snapshot · More proof in Results / Technical evidence · NO CALL"
             )
         elif p == "help":
             embed = discord.Embed(

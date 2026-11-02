@@ -377,3 +377,42 @@ def test_only_actual_okx_byte_budget_excess_can_skip_to_next_original():
     assert not archive_exceeds_free_transfer_budget(ValueError(
         "OKX archive exceeds allowed transfer"
     ))
+
+
+@pytest.mark.asyncio
+async def test_actual_official_catalog_http_400_keeps_provider_50016_cause():
+    from parlay_bot.research.official_okx_bootstrap import inventory_extra_modules
+
+    month = "2026-04"
+
+    def provider(req: httpx.Request) -> httpx.Response:
+        assert req.url.host == "www.okx.com"
+        assert req.url.path == "/api/v5/public/market-data-history"
+        assert req.url.params["module"] == "4"
+        return httpx.Response(400, request=req, json={
+            "code": "50016", "msg": "monthly book archive aggregation unsupported",
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as client:
+        with pytest.raises(HistoryImportError) as caught:
+            await inventory_extra_modules(
+                client, asset="BTC", month=month, module_ids=(4,),
+            )
+    assert official_catalog_http_400(caught.value) is True
+
+
+@pytest.mark.asyncio
+async def test_unknown_official_catalog_http_400_never_skips_unsupported_source():
+    from parlay_bot.research.official_okx_bootstrap import inventory_extra_modules
+
+    def provider(req: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, request=req, json={
+            "code": "51000", "msg": "invalid source request",
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(provider)) as client:
+        with pytest.raises(HistoryImportError) as caught:
+            await inventory_extra_modules(
+                client, asset="BTC", month="2026-04", module_ids=(4,),
+            )
+    assert official_catalog_http_400(caught.value) is False

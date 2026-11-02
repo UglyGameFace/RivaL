@@ -197,10 +197,19 @@ class ResearchCandidateRegistry:
                     holdout_accuracy REAL,
                     holdout_brier REAL,
                     retrospective_screen TEXT NOT NULL,
+                    admission_reason TEXT,
                     first_imported_at TEXT NOT NULL,
                     active_live INTEGER NOT NULL DEFAULT 0
                 )"""
             )
+            # One-time migration for existing PostgreSQL and SQLite inventories.
+            if "admission_reason" not in self.store.database.column_names(
+                conn, "rival_offline_candidates",
+            ):
+                conn.execute(
+                    "ALTER TABLE rival_offline_candidates "
+                    "ADD COLUMN admission_reason TEXT"
+                )
             conn.execute("""CREATE TABLE IF NOT EXISTS rival_offline_model_artifacts (
                 model_sha256 TEXT PRIMARY KEY, model_spec_json TEXT NOT NULL,
                 compatible INTEGER NOT NULL, imported_at TEXT NOT NULL
@@ -229,15 +238,27 @@ class ResearchCandidateRegistry:
                 """INSERT INTO rival_offline_candidates (
                     model_sha256,drive_file_id,asset,horizon_minutes,
                     source_months,data_version,holdout_accuracy,holdout_brier,
-                    retrospective_screen,first_imported_at,active_live
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,0)
+                    retrospective_screen,admission_reason,
+                    first_imported_at,active_live
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,0)
                 ON CONFLICT(model_sha256) DO NOTHING""",
                 (candidate["model_sha256"], file_id, candidate["asset"],
                  candidate["horizon"], candidate["source_months"],
                  candidate["data_version"], candidate["holdout_accuracy"],
                  candidate["holdout_brier"],
-                 candidate["retrospective_screen"], timestamp),
+                 candidate["retrospective_screen"],
+                 candidate["admission_reason"], timestamp),
             )
+            # Replaying the original verified file may fill a missing legacy
+            # reason; never rewrite historical screening, scores or weights.
+            if inserted.rowcount == 0:
+                conn.execute(
+                    """UPDATE rival_offline_candidates SET admission_reason=?
+                       WHERE model_sha256=? AND drive_file_id=?
+                         AND retrospective_screen=? AND admission_reason IS NULL""",
+                    (candidate["admission_reason"], candidate["model_sha256"],
+                     file_id, candidate["retrospective_screen"]),
+                )
             conn.execute(
                 "INSERT INTO rival_offline_model_artifacts "
                 "(model_sha256,model_spec_json,compatible,imported_at) VALUES (?,?,?,?) "
@@ -398,7 +419,7 @@ class ResearchCandidateRegistry:
             row = conn.execute(
                 """SELECT model_sha256,source_months,data_version,
                           holdout_accuracy,holdout_brier,
-                          retrospective_screen,first_imported_at
+                          retrospective_screen,admission_reason,first_imported_at
                    FROM rival_offline_candidates
                    WHERE asset=? AND horizon_minutes=?
                    ORDER BY first_imported_at DESC LIMIT 1""",
@@ -413,10 +434,28 @@ class ResearchCandidateRegistry:
                 "ON a.model_sha256=c.model_sha256 WHERE c.asset=? AND c.horizon_minutes=?",
                 (asset, horizon),
             ).fetchall()
-            selected = conn.execute(
-                "SELECT * FROM rival_history_selection WHERE contract=? AND horizon_minutes=? "
-                "ORDER BY evaluated_at DESC LIMIT 1", (asset+'USDT', horizon),
-            ).fetchone()
+            # Selection rows carry source-native BTC-USDT-SWAP style names,
+            # not the synthetic legacy BTCUSDT contract.
+            selections = conn.execute(
+                """SELECT * FROM rival_history_selection WHERE horizon_minutes=?
+                   ORDER BY evaluated_at DESC LIMIT 300""",
+                (horizon,),
+            ).fetchall()
+            reasons = conn.execute(
+                """SELECT COALESCE(admission_reason, 'legacy_reason_unreported')
+                          AS reason, COUNT(*) AS n
+                   FROM rival_offline_candidates
+                   WHERE asset=? AND horizon_minutes=?
+                   GROUP BY COALESCE(admission_reason, 'legacy_reason_unreported')
+                   ORDER BY n DESC, reason LIMIT 12""",
+                (asset, horizon),
+            ).fetchall()
+        selected = next(
+            (r for r in selections
+             if asset_for_contract(str(r["contract"])) == asset
+             and (live_venues is None or r["venue"] in live_venues)),
+            None,
+        )
         compatible = [r for r in inventory if r["compatible"] == 1]
         passed = [r for r in compatible if r["retrospective_screen"] == "passed"]
         matched = [r for r in passed if live_venues is None or
@@ -448,6 +487,9 @@ class ResearchCandidateRegistry:
         else:
             seed_reason = "Historical challenger selected on paired future outcomes"
         return {"total": int(total), "candidate": dict(row) if row else None,
+                "admission_reasons": [
+                    {"reason": r["reason"], "count": int(r["n"])} for r in reasons
+                ],
                 "seed_reason": seed_reason, "slot_imported": len(inventory),
                 "slot_compatible": len(compatible), "slot_passed": len(passed),
                 "slot_live_source_matched": len(matched),

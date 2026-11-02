@@ -1,0 +1,171 @@
+name: Bitget genuine 2024+ historical Tardis public sample days to Drive
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/bitget-tardis-source-archive.yml"
+      - "src/parlay_bot/research/bitget_tardis_source_archive.py"
+      - "tests/test_bitget_tardis_source_archive.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/bitget-tardis-source-archive.yml"
+      - "src/parlay_bot/research/bitget_tardis_source_archive.py"
+  schedule:
+    - cron: "11 1,7,13,19 * * *"
+  workflow_dispatch:
+    inputs:
+      asset:
+        type: choice
+        required: true
+        options: [BTC, ETH, SOL, XRP]
+        default: BTC
+      month:
+        description: "UTC first-day sample month YYYY-MM, starting 2024-12"
+        required: true
+        default: "2024-12"
+      family:
+        required: true
+        type: choice
+        options: [trades, incremental_book_L2]
+        default: trades
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate Tardis original source and independent readback contract
+        run: |
+          python -m pip install -e ".[dev,archive]"
+          ruff check src/parlay_bot/research/bitget_tardis_source_archive.py tests/test_bitget_tardis_source_archive.py
+          pytest -q tests/test_bitget_tardis_source_archive.py
+      - name: Probe genuinely older BTC futures trades (2024-12-01) without Drive writes
+        timeout-minutes: 12
+        run: |
+          python -m parlay_bot.research.bitget_tardis_source_archive \
+            --asset BTC --month 2024-12 --family trades --probe-only
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bitget-tardis-2024-public-source-probe
+          path: data/native-reports/bitget-tardis-BTC-trades-2024-12.json
+          retention-days: 7
+          if-no-files-found: ignore
+
+  public-source-to-drive:
+    if: github.event_name != 'pull_request' && vars.RIVAL_BITGET_TARDIS_SAMPLES_ENABLED != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    concurrency:
+      group: rival-bitget-tardis-source-day
+      cancel-in-progress: false
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[archive]"
+      - name: Select source-owned sample month and asset, avoiding Bitget official region restrictions
+        id: batch
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+          MANUAL_ASSET: ${{ inputs.asset }}
+          MANUAL_MONTH: ${{ inputs.month }}
+          MANUAL_FAMILY: ${{ inputs.family }}
+        run: |
+          python - <<'PY'
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          assets = ("BTC", "ETH", "SOL", "XRP")
+          families = ("trades", "incremental_book_L2")
+          now = datetime.now(timezone.utc)
+          months = [(y, m) for y in range(2024, now.year + 1)
+                    for m in range(1, 13)
+                    if (y, m) >= (2024, 12) and (y, m) < (now.year, now.month)]
+          if os.environ["EVENT"] == "workflow_dispatch":
+              asset = os.environ["MANUAL_ASSET"]
+              month = os.environ["MANUAL_MONTH"]
+              family = os.environ["MANUAL_FAMILY"]
+          elif os.environ["EVENT"] == "push":
+              asset, month, family = "BTC", "2024-12", "trades"
+          else:
+              # One deterministic partition every 6h; no duplicate full
+              # multi-year downloads or false claim of monthly completeness.
+              slot = (int(now.timestamp()) // (6 * 3600)) % (len(months) * 8)
+              y, m = months[slot // 8]
+              month = f"{y:04d}-{m:02d}"
+              asset = assets[(slot % 8) // 2]
+              family = families[slot % 2]
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"asset={asset}\nmonth={month}\nfamily={family}\n")
+          print(f"Source day: {asset}/{family}/{month}-01")
+          PY
+      - name: Enforce private Drive access
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in RIVAL_DRIVE_ROOT_FOLDER_ID RIVAL_DRIVE_HISTORY_FOLDER_ID \
+            RIVAL_DRIVE_MANIFESTS_FOLDER_ID RIVAL_DRIVE_STAGING_FOLDER_ID \
+            RIVAL_DRIVE_OAUTH_CLIENT_ID RIVAL_DRIVE_OAUTH_CLIENT_SECRET \
+            RIVAL_DRIVE_OAUTH_REFRESH_TOKEN; do
+            [[ -n "${!key}" ]] || { echo "::error::Missing private Drive $key"; exit 1; }
+          done
+      - name: Download verified 2024+ Tardis first-of-month trades or L2 source day
+        timeout-minutes: 80
+        shell: bash
+        run: |
+          python -m parlay_bot.research.bitget_tardis_source_archive \
+            --asset "${{ steps.batch.outputs.asset }}" \
+            --month "${{ steps.batch.outputs.month }}" \
+            --family "${{ steps.batch.outputs.family }}"
+      - name: Publish source receipts, never third-party raw data in Actions artifacts
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          p = Path("data/native-reports") / (
+              "bitget-tardis-${{ steps.batch.outputs.asset }}-"
+              "${{ steps.batch.outputs.family }}-${{ steps.batch.outputs.month }}.json")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write("### Original historical Bitget futures source day\n")
+              if p.exists():
+                  obj = json.loads(p.read_text())
+                  for key in ("status", "asset", "utc_day", "family",
+                              "source_rows", "source_sha256",
+                              "drive_sha256_readback_verified"):
+                      f.write(f"- {key}: {obj.get(key)}\n")
+              else:
+                  f.write("- No verified Drive receipt; review source or size limit.\n")
+              f.write("- No complete month, 2021 coverage, or model approval claimed.\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bitget-tardis-public-source-receipt
+          path: data/native-reports/bitget-tardis-*.json
+          retention-days: 14
+          if-no-files-found: ignore

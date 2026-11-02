@@ -201,9 +201,9 @@ async def test_dashboard_shows_polymarket_outcomes_without_market_choice(tmp_pat
         }
         pane = await home.render()
         fields = {x.name: x.value for x in pane.fields}
-        assert "99" in fields["🎯 Polymarket"]
-        assert "0 settled calls" in fields["🎯 Polymarket"]
-        assert "no paired score available" in fields["🎯 Polymarket"]
+        assert "99" in fields["🎯 How accurate are Polymarket predictions?"]
+        assert "0" in fields["🎯 How accurate are Polymarket predictions?"]
+        assert "no fair comparison available yet" in fields["🎯 How accurate are Polymarket predictions?"]
         assert "Choose a market" not in str(pane.to_dict())
         assert len(pane.fields) == 4
 

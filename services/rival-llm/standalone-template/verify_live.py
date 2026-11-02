@@ -5,6 +5,7 @@ include bearer tokens, model responses, console stdout or private evidence in CI
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -51,7 +52,9 @@ def parse_receipt(stdout: str, expected_sha: str) -> dict | None:
 
 
 def check_host(token: str, app_id: str, expected_sha: str) -> dict | None:
-    command = "python -c " + shlex.quote(HOST_CHECK)
+    # A single-line shell argument is reliable across Discloud console relays.
+    program = "import base64;exec(base64.b64decode(" + repr(base64.b64encode(HOST_CHECK.encode("utf-8")).decode("ascii")) + "))"
+    command = "python -c " + shlex.quote(program)
     endpoint = "https://api.discloud.app/v2/app/" + parse.quote(app_id, safe="") + "/console"
     req = request.Request(
         endpoint,
@@ -61,7 +64,8 @@ def check_host(token: str, app_id: str, expected_sha: str) -> dict | None:
     )
     with request.urlopen(req, timeout=45) as response:
         data = json.load(response)
-    shell = data.get("apps", {}).get("shell") if isinstance(data, dict) else None
+    apps = data.get("apps") if isinstance(data, dict) else None
+    shell = apps.get("shell") if isinstance(apps, dict) else None
     if not isinstance(shell, dict):
         return None
     return parse_receipt(str(shell.get("stdout", "")), expected_sha)

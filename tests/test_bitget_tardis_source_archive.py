@@ -3,10 +3,8 @@ from __future__ import annotations
 
 import gzip
 import hashlib
-import io
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 

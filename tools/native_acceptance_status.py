@@ -21,7 +21,8 @@ _REPO = "UglyGameFace/RivaL"
 def latest_report(report_dir: Path) -> dict | None:
     """Read the run's final hash-suffixed native report, not a stale file."""
     paths = sorted(
-        report_dir.glob("source-*-research-*.json"),
+        (*report_dir.glob("source-*-research-*.json"),
+         *report_dir.glob("source-*-research.json")),
         key=lambda path: path.stat().st_mtime_ns,
         reverse=True,
     )

@@ -1,3 +1,14 @@
+## Active: prevent unqualified historical model imports and expose actual skill gaps (2026-11-02)
+
+- **Live finding:** [OKX source-native run #41544709789](https://github.com/UglyGameFace/RivaL/actions/runs/41544709789) verified May–October 2026 as six full source-native months for BTC, ETH, SOL and XRP (24 original manifests). It evaluated **48** models (12 logistic + 36 boosted), **0 passed** the exact importer screen; all 48 failed `validation_brier_gain_below_0.005`. This proves the historical data reached real model research, not that any model learned a tradable edge.
+- **Root cause:** `source_native_offline` published even rejected research models into the Google Drive **model import folder**; model inventory consequently accumulated artifacts that the screen was guaranteed to reject. Previously archived originals must be preserved.
+- **PR:** [#274](https://github.com/UglyGameFace/RivaL/pull/274). Archive unqualified model bytes as checksum-verified **research reports** instead of importable models; allow only SHA-matched retrospective passes into the model folder. Preserve all source digests and rejected artifacts, do not wipe prior imports, and do not modify prediction/promotion state.
+- **Transparency:** Report `published_models` separately from `archived_rejected_models`, named gate failures, exact per-model validation/holdout Brier gains and the validation-only coin/horizon shortfall. The status for 0 qualified candidates is `verified_research_archived_no_qualified_models`, not an apparent model qualification success.
+- **Validation:** Full CI, host-independent fake Drive routing tests, immutable registry compatibility, status reporting, then main CI, live source-native research and Drive receipts. Training still needs genuinely positive retrospective improvement, followed by prospective future quote/cost evidence before any promotion. Keep issue #6 and source-completeness #188 open.
+- **Parallel work:** PR #273 changes Discord Bot Performance; this PR does not touch its files. Keep bot/Discloud and standalone LFM3 deployments independent.
+
+---
+
 ## Active: qualify historical models without source contamination (2026-11-02)
 
 - **Goal:** Turn immutable complete source-native BTC/ETH/SOL/XRP history into eligible, *source-matched* model candidates, then compare against the live incumbent prospectively. Never loosen retrospective Brier/calibration gates or replace weights on historical-only evidence.

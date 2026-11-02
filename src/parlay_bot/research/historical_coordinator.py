@@ -47,6 +47,9 @@ ATTEMPT_FLOORS: dict[tuple[str, str], str] = {
 # The source's earliest REAL contract listing is unknown until separately proven.
 ROUTES: dict[tuple[str, str], tuple[str, str]] = {
     ("binance", "candles_5m"): ("binance-deep-file-backfill.yml", "scheduled_bulk"),
+    **{("binance", family): ("binance-original-auxiliary.yml", "official_checksum_zip")
+       for family in ("mark", "index", "premium", "candles_1m",
+                      "candles_15m", "candles_1h", "candles_4h", "candles_1d")},
     ("binance", "open_interest"): ("historical-source-provenance.yml", "official_daily_5m_metrics_partial"),
     ("binance", "positioning"): ("historical-source-provenance.yml", "official_daily_5m_metrics_partial"),
     ("bitget", "open_interest"): ("bitget-liquidity-archive.yml", "live_history_pages_not_complete"),

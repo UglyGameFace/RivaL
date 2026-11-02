@@ -312,22 +312,24 @@ def _latest_learning_cycle(market: object) -> dict | None:
     if row is None:
         return None
     try:
-        when = datetime.fromisoformat(str(row[0]))
+        when = datetime.fromisoformat(str(row["completed_at"]))
         if when.tzinfo is None:
             raise ValueError("heartbeat timestamp has no timezone")
         return {
             "status": "recorded", "checked_at": when,
-            "math_ok": bool(int(row[1])),
-            "model_review_ok": bool(int(row[2])),
-            "issued": int(row[3]), "settled": int(row[4]),
+            "math_ok": bool(int(row["math_ok"])),
+            "model_review_ok": bool(int(row["model_review_ok"])),
+            "issued": int(row["math_issued"]), "settled": int(row["math_settled"]),
         }
-    except (TypeError, ValueError, OverflowError):
+    except (TypeError, ValueError, OverflowError, KeyError):
         _LOG.warning("Performance learning heartbeat contains invalid data")
         return {"status": "unavailable"}
 
 
 def _performance_cycles(market: object) -> dict:
     """Read independent persisted worker heartbeats without expensive training."""
+    # Each reader owns its own database checkout. A failed/missing forecast
+    # receipt must never erase an independently persisted learning receipt.
     return {
         "forecast": _latest_forward_cycle(market),
         "learning": _latest_learning_cycle(market),
@@ -349,13 +351,13 @@ def _latest_forward_cycle(market: object) -> dict | None:
     if row is None:
         return None
     try:
-        checked = datetime.fromisoformat(str(row[0]))
+        checked = datetime.fromisoformat(str(row["checked_at"]))
         if checked.tzinfo is None:
             raise ValueError("forecast heartbeat timestamp has no timezone")
-        issued, expired = int(row[1] or 0), int(row[2] or 0)
+        issued, expired = int(row["issued_forecasts"] or 0), int(row["target_expired"] or 0)
         if issued < 0 or expired < 0:
             raise ValueError("negative forecast diagnostics")
-    except (ValueError, TypeError, OverflowError):
+    except (ValueError, TypeError, OverflowError, KeyError):
         _LOG.warning("Invalid forecast-cycle diagnostics row")
         return {"status": "unavailable"}
     return {"status": "recorded", "checked_at": checked, "issued": issued, "expired": expired}

@@ -10,7 +10,9 @@ import pytest
 
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.gate_l2_shadow_features import (
-    derive_features, load_sidecars, write_sidecar,
+    derive_features,
+    load_sidecars,
+    write_sidecar,
 )
 
 HOUR = "2023042505"

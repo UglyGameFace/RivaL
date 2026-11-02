@@ -205,6 +205,15 @@ def build_plan(census: dict, *, max_jobs: int = 2,
             ),
             "earliest_technical_attempt_month": attempt_floor,
             "actual_contract_listing_month": listed_month,
+            "source_availability_evidence": (
+                "provider_current_contract_start_timestamp" if listed_month
+                else "provider_availability_not_verified"),
+            "official_current_contract_prelisting_months": [
+                m for m in priority.completed_months
+                if listed_month and m < listed_month
+            ],
+            "source_gaps_permanently_unavailable_from_missing_filename": False,
+            "missing_route_requires_implementation": route is None,
             "contract_listing_evidence": (
                 "provider_onboard_or_list_time_snapshot" if listed_month
                 else "not_verified"),

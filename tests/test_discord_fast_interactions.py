@@ -170,3 +170,84 @@ async def test_contract_ai_wiring_survives_disabled_exchange_collection(tmp_path
     finally:
         await bot.gemini_research.aclose()
         await _close(bot)
+
+
+@pytest.mark.asyncio
+async def test_research_navigation_acknowledges_and_shows_loading_before_slow_results(
+    monkeypatch,
+):
+    from parlay_bot.discord_app import research_dashboard as research
+
+    view = research.ResearchDashboard(
+        owner_id=123, market=None, ai=None, venues=(),
+    )
+    view.screen = "accuracy"
+    view.section = "overview"
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class RealInteraction:
+        def __init__(self):
+            self.response = SimpleNamespace(defer=AsyncMock())
+            self.edit_original_response = AsyncMock()
+
+    event = RealInteraction()
+    monkeypatch.setattr(research.discord, "Interaction", RealInteraction)
+
+    async def slow_render(self):
+        started.set()
+        await release.wait()
+        return discord.Embed(title="Verified results")
+
+    monkeypatch.setattr(research.ResearchDashboard, "render", slow_render)
+    try:
+        await asyncio.wait_for(view.redraw(event), timeout=0.5)
+        event.response.defer.assert_awaited_once()
+        assert event.edit_original_response.await_count == 1
+        assert "Checking saved market data" in (
+            event.edit_original_response.await_args.kwargs["embed"].description
+        )
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        release.set()
+        await asyncio.wait_for(view._navigation_state["pending"], timeout=0.5)
+        assert event.edit_original_response.await_count == 2
+        assert event.edit_original_response.await_args.kwargs["embed"].title == "Verified results"
+        assert event.edit_original_response.await_args.kwargs["view"] is not view
+    finally:
+        release.set()
+        view.stop()
+
+
+@pytest.mark.asyncio
+async def test_research_newer_selection_cancels_old_slow_render(monkeypatch):
+    from parlay_bot.discord_app import research_dashboard as research
+
+    view = research.ResearchDashboard(owner_id=123, market=None, ai=None, venues=())
+    release = asyncio.Event()
+
+    class RealInteraction:
+        def __init__(self):
+            self.response = SimpleNamespace(defer=AsyncMock())
+            self.edit_original_response = AsyncMock()
+
+    monkeypatch.setattr(research.discord, "Interaction", RealInteraction)
+    async def controlled_render(self):
+        if self.section == "pulse":
+            await release.wait()
+        return discord.Embed(title=self.section)
+
+    monkeypatch.setattr(research.ResearchDashboard, "render", controlled_render)
+    first, second = RealInteraction(), RealInteraction()
+    try:
+        view.screen, view.section = "math", "pulse"
+        await view.redraw(first)
+        await asyncio.sleep(0)
+        view.section = "spikes"
+        await view.redraw(second)
+        await asyncio.wait_for(view._navigation_state["pending"], timeout=0.5)
+        release.set()
+        await asyncio.sleep(0)
+        assert second.edit_original_response.await_args.kwargs["embed"].title == "spikes"
+        assert first.edit_original_response.await_count == 1  # loading only
+    finally:
+        release.set()
+        view.stop()

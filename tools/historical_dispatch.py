@@ -20,6 +20,18 @@ ALLOWED_WORKFLOWS = {
     "deribit-hourly-native-backfill.yml": {"day", "hour"},
 }
 MAX_DISPATCH = 2
+# Only existing read-only acquisition workflows with workflow_dispatch support.
+# Production is hosted from main, and recovery never promotes models or trades.
+RECOVERY_WORKFLOWS = (
+    "bitget-v3-overnight-archive.yml",
+    "official-okx-advanced-archive.yml",
+    "gate-official-archive-backfill.yml",
+    "official-okx-bulk-bootstrap.yml",
+    "binance-deep-file-backfill.yml",
+    "binance-original-auxiliary.yml",
+    "historical-source-provenance.yml",
+)
+
 
 
 def should_dispatch(runs: list[dict], *, now: datetime) -> tuple[bool, str]:
@@ -51,6 +63,46 @@ def should_dispatch(runs: list[dict], *, now: datetime) -> tuple[bool, str]:
             # a duplicate collector while its last receipt is still fresh.
             return False, "recent_scheduled_or_main_source_run"
     return True, "not_running_or_recently_dispatched"
+
+
+def should_recover_failed(runs: list[dict], *, now: datetime) -> tuple[bool, str]:
+    """Recover a failed source workflow only if no newer success or active run exists."""
+    if now.utcoffset() is None:
+        raise ValueError("timezone-aware Actions timestamp required")
+    if not runs:
+        return False, "no_source_run_to_recover"
+    if any(r.get("status") in ("queued", "in_progress", "waiting", "requested",
+                               "pending") for r in runs):
+        return False, "source_job_currently_active"
+    observed = []
+    for item in runs[:30]:
+        if item.get("event") not in ("push", "schedule", "workflow_dispatch"):
+            continue
+        try:
+            stamped = datetime.fromisoformat(item["created_at"])
+        except (KeyError, TypeError, ValueError):
+            return False, "invalid_source_job_history"
+        if stamped.utcoffset() is None:
+            return False, "invalid_source_job_history"
+        observed.append((stamped.astimezone(UTC), item))
+    if not observed:
+        return False, "no_applicable_main_source_run"
+    observed.sort(key=lambda x: x[0], reverse=True)
+    last_time, last = observed[0]
+    if last.get("conclusion") != "failure":
+        return False, "newest_source_run_not_failed"
+    elapsed = now.astimezone(UTC) - last_time
+    if elapsed < timedelta(hours=6) or elapsed > timedelta(days=14):
+        return False, "failure_cooldown_or_stale"
+    recent_errors = [
+        run for stamp, run in observed
+        if stamp >= now.astimezone(UTC) - timedelta(days=1)
+        and run.get("conclusion") == "failure"
+    ]
+    if len(recent_errors) >= 3:
+        return False, "repeated_failure_requires_provider_review"
+    # Scheduled workflows and their own per-provider concurrency remain primary.
+    return True, "recoverable_last_source_run_failed"
 
 
 class GitHubActions:
@@ -107,6 +159,22 @@ def run_plan(plan: dict, client: GitHubActions, *,
         raise ValueError("untrusted or unbounded historical plan")
     results = []
     accepted = 0
+    # Check one bounded rotating subset of existing collectors per coordinator
+    # run. Recovery has priority over optional sample/research dispatches.
+    offset = now.date().toordinal() % len(RECOVERY_WORKFLOWS)
+    selected = (RECOVERY_WORKFLOWS[offset:] +
+                RECOVERY_WORKFLOWS[:offset])[:4]
+    for workflow in selected:
+        if accepted >= 1:
+            break
+        runs = client.runs(workflow)
+        permitted, reason = should_recover_failed(runs, now=now)
+        if permitted:
+            client.dispatch(workflow, {})
+            accepted += 1
+            reason = "failed_source_collector_restarted_on_main"
+        results.append({"workflow": workflow, "scope": "failed_source_recovery",
+                        "status": reason})
     for task in plan.get("dispatch_candidates", []):
         if accepted >= max_dispatches:
             break

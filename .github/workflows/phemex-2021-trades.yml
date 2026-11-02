@@ -35,6 +35,34 @@ jobs:
           ruff check src/parlay_bot/research/phemex_trade_archive.py tests/test_phemex_trade_archive.py
           pytest -q tests/test_phemex_trade_archive.py tests/test_phemex_history_recovery.py
 
+      - name: Read-only source endpoint acceptance (no Drive writes)
+        run: |
+          python - <<'PY'
+          import json
+          import httpx
+          start = 1609459200000
+          url = "https://api.phemex.com/exchange/public/nomics/trades"
+          try:
+              response = httpx.get(
+                  url, params={"market": "BTCUSD", "since": "0-0-0",
+                               "start": start, "end": start + 60000},
+                  timeout=20, follow_redirects=False,
+              )
+              data = response.json() if response.status_code == 200 else None
+              rows = data.get("data") if isinstance(data, dict) else None
+              verdict = {
+                  "http_status": response.status_code,
+                  "provider_code": data.get("code") if isinstance(data, dict) else None,
+                  "trade_rows": len(rows) if isinstance(rows, list) else None,
+                  "historical_source_2021_month_verified": False,
+              }
+              print(json.dumps(verdict))
+              if response.status_code != 200 or not isinstance(rows, list):
+                  raise SystemExit("Phemex official 2021 trade source could not be verified")
+          except (httpx.HTTPError, ValueError, TypeError) as exc:
+              raise SystemExit(f"Phemex endpoint unavailable: {type(exc).__name__}") from exc
+          PY
+
   original-2021-trades:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest

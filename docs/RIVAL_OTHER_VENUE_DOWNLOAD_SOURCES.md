@@ -11,7 +11,7 @@
 | Lighter | https://mainnet.zklighter.elliot.ai/api/v1/candles | Official REST, not ZIP | Candles; funding endpoint separately | Historical paged fetch, verify market ID and UTC units before model import |
 | Phemex | https://api.phemex.com/exchange/public/md/v2/kline/list | Official API, not bulk | Perpetual candles | Check historical endpoint range / retention; trade history may use other endpoint |
 | Hyperliquid | https://hyperliquid.gitbook.io/hyperliquid-docs/historical-data | Official L2/book/fills S3, **requester pays** | Book snapshots, contexts, fills / events | Never auto-download with owner's free-only constraints; investigate independently verified cost-free mirror before ingest |
-| Lighter secondary | https://github.com/Ankvik-Tech-Labs/lighter-historical-data/releases | **Third-party** rolling release | Multiple candle intervals and funding | First verify license, manifest, original API parity and release bytes; never claim original-source checksum |
+| Lighter secondary | https://github.com/Ankvik-Tech-Labs/lighter-historical-data/releases | **Third-party** release: latest checked 2026-05-29 (stale in Nov 2026), no explicit repository license confirmed | Multiple candle intervals and funding | Not preferred: check license, stale coverage, manifest, official API parity and file bytes before any optional use |
 
 ## Operational constraints
 

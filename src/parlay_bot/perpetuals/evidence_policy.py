@@ -114,9 +114,33 @@ def enforce(reply: dict, evidence: object, *, asset: str,
                   "support a market direction.")
     risk = ("No verified future advantage, synchronized executable bid/ask "
             "quotes, or after-cost fills. Fees, funding and slippage are unverified.")
+    # Present mathematical screening as observed research state, NEVER
+    # silently promote a retrospective score into future trade confidence.
+    if isinstance(evidence, dict):
+        model = evidence.get("mathematical_research")
+        if isinstance(model, dict) and model.get("status") == "persisted_registry":
+            imported = model.get("imported_this_asset_horizon")
+            passed = model.get("passed_retrospective_screen")
+            if (type(imported) is int and 0 <= imported <= 10000
+                    and type(passed) is int and 0 <= passed <= imported):
+                thesis += (
+                    f" Offline mathematical models: {passed}/{imported}"
+                    " passed historical screening; forward edge unverified."
+                )
+        audits = evidence.get("historical_quality")
+        if isinstance(audits, list) and len(audits) <= 12:
+            fresh = [r for r in audits if isinstance(r, dict)
+                     and r.get("source") == "postgres_perp_history_quality"
+                     and r.get("status") in ("complete", "incomplete")]
+            if fresh:
+                thesis += (
+                    f" Six-month DB audits: "
+                    f"{sum(r['status'] == 'complete' for r in fresh)}/{len(fresh)}"
+                    " fresh sources complete."
+                )
     return {
         **reply, "direction": "uncertain", "confidence": "low",
-        "thesis": thesis, "risk": risk,
+        "thesis": thesis[:400], "risk": risk,
         **facts, "grounded_by": "deterministic_historical_evidence_policy",
         "model_direction_overridden": reply.get("direction") != "uncertain",
         "informational_only": True, "uncalibrated": True,

@@ -112,6 +112,30 @@ def compact_evidence(asset: str, evidence: dict) -> str:
         "Full timestamps, longer windows, events and archives remain separately "
         "available for deterministic validation, not this CPU review."
     )
+    # A bounded factual statement from the on-host mathematical registry and
+    # source-specific history audits. Never insert model-generated probabilities
+    # or free-form DB text into the small CPU model's instructions.
+    math_proof = evidence.get("mathematical_research")
+    if isinstance(math_proof, dict) and math_proof.get("status") == "persisted_registry":
+        fields = [math_proof.get(k) for k in (
+            "imported_this_asset_horizon", "passed_retrospective_screen",
+            "matched_live_source")]
+        if all(type(n) is int and 0 <= n <= 10000 for n in fields):
+            lines.append(
+                f"offline_math:imported={fields[0]},screen_pass={fields[1]},"
+                f"source_match={fields[2]};not_forward_skill"
+            )
+    audits = evidence.get("historical_quality")
+    if isinstance(audits, list) and len(audits) <= 12:
+        verified = [r for r in audits if isinstance(r, dict)
+                    and r.get("source") == "postgres_perp_history_quality"
+                    and r.get("status") in ("complete", "incomplete", "stale")]
+        fresh = [r for r in verified if r["status"] != "stale"]
+        lines.append(
+            f"db_6m_audits:fresh={len(fresh)},complete="
+            f"{sum(r['status'] == 'complete' for r in fresh)};"
+            "not_original_archive_proof"
+        )
     return header + "\n" + "\n".join(lines)
 
 

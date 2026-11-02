@@ -100,6 +100,14 @@ def verify_once() -> dict:
             report["reason"] = "insufficient_live_venues"
             return report
         report["healthy_venues"] = len(evidence["sources"])
+        report["mathematical_evidence_status"] = (
+            evidence.get("mathematical_research", {}).get("status", "unavailable")
+        )
+        report["fresh_six_month_source_audits"] = sum(
+            x.get("status") in ("complete", "incomplete")
+            for x in evidence.get("historical_quality", [])
+        )
+        report["cold_archive_readback"] = evidence.get("cold_archive_readback")
         report["evidence_hash_valid"] = len(digest) == 64
 
         # The request itself performs a SECOND atomic quota reservation. If a

@@ -102,3 +102,26 @@ A genuine, authorized BTC research request with nine healthy sources sent ~8,164
 ### Real-workload CPU deadline refinement
 
 After deploying the first all-venue compaction, a genuine nine-source BTC gateway replay still returned HTTP 503 after 40.06 seconds. The installed service was verified to contain the compactor, and a representative nine-source brief rendered to **424 model prompt tokens** before allowing 220 generation tokens. At the measured approximately 52 ms/prompt-token and 100 ms/generation-token on the hosted CPU, a full-budget reply could exceed the 40-second upstream deadline. The reviewer now receives shorter nonpredictive instructions and a smaller labeled brief, with a **140-token completion cap** and explicit <=120/<=100 character thesis/risk targets; the full original evidence still powers source validation and SHA/persistence. Do not claim live recovery unless the full multi-venue workload returns authenticated HTTP 200 inside the unchanged 40-second gateway limit.
+
+
+## November 2: verified mathematical provenance in Intelligence requests
+
+The on-host RivaL market now exposes the **existing** screened offline model
+registry and latest persisted six-month source audits to the same cross-venue
+research evidence builder used by the private LFM3 reviewer. The evidence SHA
+covers those read-only facts alongside current venue observations and the
+existing source-native historical endpoint-price returns. XRP is accepted in
+that same evidence path. The isolated CPU gateway receives a bounded numeric
+summary, not archive files or provider instructions. The deterministic shared
+policy reports screening counts and recent completed DB audit counts without
+pretending retrospective scores establish future skill.
+
+**Evidence limitations:** historical endpoint returns alone are not
+continuous-grid proof; a stored monthly audit is not a new original-provider
+ZIP verification; model-registry import is not active live deployment; and
+neither analysis nor the isolated LLM verifies a predictive edge. The live
+request explicitly marks Drive readback as not performed. Failed/missing
+optional registry or audit readers report unavailable rather than making up
+zero coverage. Read-only implementation requires successful main CI and a
+real authenticated on-host request persisted to PostgreSQL before production
+acceptance. It does not change quota, model-promotion, NO CALL or trades.

@@ -386,6 +386,12 @@ class RivalDiscordClient(discord.Client):
             and settings.rival_history_recovery_enabled else None
         )
         self._history_task: asyncio.Task[None] | None = None
+        if self.perp_collector is not None:
+            # The AI researcher reads the SAME screened model registry and
+            # six-month quality auditor as RivaL's mathematical features.
+            # These are metadata readers, not model-promotion permissions.
+            self.perp_collector.market.research_candidate_registry = self.offline_registry
+            self.perp_collector.market.research_history_auditor = self.history_auditor
         self.shadow_monitor: ShadowLearningMonitor | None = (
             ShadowLearningMonitor(self.store)
             if self.perp_collector is not None and settings.rival_shadow_learning_enabled

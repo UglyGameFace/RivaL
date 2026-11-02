@@ -12,6 +12,7 @@ import pytest
 
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.okx_advanced_archive import (
+    archive_exceeds_free_transfer_budget,
     archive_url,
     automatic_archive_slot,
     ingest_one,
@@ -360,3 +361,19 @@ def test_two_year_okx_primary_lane_and_low_frequency_older_provenance():
     assert primary >= 20
     assert any(month < "2024-11" for month, _ in selected)
     assert all(month < "2026-11" for month, _ in selected)
+
+
+def test_only_actual_okx_byte_budget_excess_can_skip_to_next_original():
+    for text in ("OKX archive exceeds allowed transfer",
+                 "OKX archive byte limit exceeded"):
+        assert archive_exceeds_free_transfer_budget(HistoryImportError(text))
+    for text in ("wrong swap identity inside archive",
+                 "missing/duplicate archive CSV headers",
+                 "archive request not successful",
+                 "private Drive checksum readback unavailable",
+                 "OKX archive provider HTTP 429",
+                 "no OKX events fell within the requested UTC month"):
+        assert not archive_exceeds_free_transfer_budget(HistoryImportError(text))
+    assert not archive_exceeds_free_transfer_budget(ValueError(
+        "OKX archive exceeds allowed transfer"
+    ))

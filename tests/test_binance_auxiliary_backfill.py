@@ -7,7 +7,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from parlay_bot.research.binance_auxiliary_backfill import (
-    checksum, inspect_original_zip, source_url,
+    checksum,
+    inspect_original_zip,
+    source_url,
 )
 from parlay_bot.research.drive_source_census import parse_name
 from parlay_bot.research.free_history import HistoryImportError

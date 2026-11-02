@@ -1,0 +1,92 @@
+name: Mirror RivaL Intelligence into its independent main repo
+
+on:
+  pull_request:
+    paths:
+      - "services/rival-llm/**"
+      - "src/parlay_bot/perpetuals/evidence_policy.py"
+      - "tools/prepare_intelligence_repo.py"
+      - ".github/workflows/sync-intelligence-repo.yml"
+      - "tests/test_intelligence_repo_sync.py"
+  push:
+    branches: [main]
+    paths:
+      - "services/rival-llm/**"
+      - "src/parlay_bot/perpetuals/evidence_policy.py"
+      - "tools/prepare_intelligence_repo.py"
+      - ".github/workflows/sync-intelligence-repo.yml"
+  schedule:
+    - cron: "37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-intelligence-source-mirror
+  cancel-in-progress: false
+
+jobs:
+  stage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check deterministic, secret-free standalone source
+        run: |
+          python tools/prepare_intelligence_repo.py prepare --output "$RUNNER_TEMP/rival-intelligence-stage" --source-sha "$GITHUB_SHA"
+          test -f "$RUNNER_TEMP/rival-intelligence-stage/discloud.config"
+          test -f "$RUNNER_TEMP/rival-intelligence-stage/.github/workflows/release.yml"
+          test ! -d "$RUNNER_TEMP/rival-intelligence-stage/runtime"
+          test ! -e "$RUNNER_TEMP/rival-intelligence-stage/.env"
+          python -m py_compile "$RUNNER_TEMP/rival-intelligence-stage/main.py" "$RUNNER_TEMP/rival-intelligence-stage/service.py" "$RUNNER_TEMP/rival-intelligence-stage/verify_live.py"
+      - name: Create or update dedicated private GitHub repository main
+        if: github.event_name != 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RIVAL_INTELLIGENCE_REPO_TOKEN }}
+          RIVAL_REPO_TOKEN: ${{ secrets.RIVAL_INTELLIGENCE_REPO_TOKEN }}
+          TARGET_REPO: UglyGameFace/RivaL-Intelligence
+        run: |
+          set -euo pipefail
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::RIVAL_INTELLIGENCE_REPO_TOKEN is missing. A cross-repository credential is needed to create and synchronize UglyGameFace/RivaL-Intelligence."
+            exit 1
+          fi
+          if ! gh api "repos/$TARGET_REPO" --jq '.full_name' >/dev/null 2>&1; then
+            echo "Creating the dedicated private Intelligence repository."
+            gh api -X POST user/repos -f name=RivaL-Intelligence -F private=true -F auto_init=false --jq '.full_name'
+          fi
+
+          # No credential is placed in the remote URL, project source, or logs.
+          cat > "$RUNNER_TEMP/rival-repo-askpass" <<'ASKPASS'
+          #!/bin/sh
+          case "$1" in
+            *Username*) printf '%s' 'x-access-token' ;;
+            *) printf '%s' "$RIVAL_REPO_TOKEN" ;;
+          esac
+          ASKPASS
+          chmod 700 "$RUNNER_TEMP/rival-repo-askpass"
+          export GIT_ASKPASS="$RUNNER_TEMP/rival-repo-askpass"
+          export GIT_TERMINAL_PROMPT=0
+          dest="$RUNNER_TEMP/rival-intelligence-repo"
+          git clone --depth 1 "https://github.com/$TARGET_REPO.git" "$dest"
+          if [[ -z "$(git -C "$dest" rev-parse --verify HEAD 2>/dev/null || true)" ]]; then
+            git -C "$dest" symbolic-ref HEAD refs/heads/main
+          elif [[ "$(git -C "$dest" branch --show-current)" != "main" ]]; then
+            echo "::error::The dedicated Intelligence repository must use main as its default release branch."
+            exit 1
+          fi
+          python tools/prepare_intelligence_repo.py apply --staged "$RUNNER_TEMP/rival-intelligence-stage" --repository "$dest"
+          git -C "$dest" config user.name 'rival-intelligence-sync[bot]'
+          git -C "$dest" config user.email '85308991+UglyGameFace@users.noreply.github.com'
+          git -C "$dest" add -A
+          if git -C "$dest" diff --cached --quiet; then
+            echo "Source already synchronized; no release needed."
+          else
+            git -C "$dest" commit -m "Sync verified Intelligence source from RivaL main $GITHUB_SHA"
+            git -C "$dest" push origin HEAD:main
+            echo "Published source commit $GITHUB_SHA to dedicated Intelligence main."
+          fi

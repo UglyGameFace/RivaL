@@ -323,3 +323,22 @@ def test_stale_history_audit_cannot_prove_six_month_completeness(tmp_path):
         assert report[0]["cold_drive_originals_reverified_this_request"] is False
     finally:
         store.close()
+
+def test_real_empty_registry_proves_unknown_not_fake_historical_skill(tmp_path):
+    from parlay_bot.perpetuals.analysis_evidence import _persisted_math_evidence
+    from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
+
+    store = SQLiteHotStore(tmp_path / "no_models.sqlite")
+    market = PerpetualMarketStore(store)
+    try:
+        market.research_candidate_registry = ResearchCandidateRegistry(store)
+        result = _persisted_math_evidence(
+            market, asset="BTC", venues=("binance",),
+        )
+        assert result["status"] == "persisted_registry"
+        assert result["imported_this_asset_horizon"] == 0
+        assert result["passed_retrospective_screen"] == 0
+        assert result["selected_after_forward_comparison"] is False
+        assert result["forward_edge_verified"] is False
+    finally:
+        store.close()

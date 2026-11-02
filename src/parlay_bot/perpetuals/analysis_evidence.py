@@ -9,8 +9,8 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
-import math
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -58,7 +58,6 @@ def _summary(candles: list[dict[str, Any]], size: int) -> dict[str, float] | Non
         "volatility_pct_per_5m": round(100 * vol, 5),
         "sample_bars": size,
     }
-
 
 
 def _persisted_math_evidence(market: PerpetualMarketStore, *, asset: str,

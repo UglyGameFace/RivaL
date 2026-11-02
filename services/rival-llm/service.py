@@ -131,11 +131,12 @@ def compact_evidence(asset: str, evidence: dict) -> str:
                     and r.get("source") == "postgres_perp_history_quality"
                     and r.get("status") in ("complete", "incomplete", "stale")]
         fresh = [r for r in verified if r["status"] != "stale"]
-        lines.append(
-            f"db_6m_audits:fresh={len(fresh)},complete="
-            f"{sum(r['status'] == 'complete' for r in fresh)};"
-            "not_original_archive_proof"
-        )
+        if verified:
+            lines.append(
+                f"db_6m_audits:fresh={len(fresh)},complete="
+                f"{sum(r['status'] == 'complete' for r in fresh)};"
+                "not_original_archive_proof"
+            )
     return header + "\n" + "\n".join(lines)
 
 

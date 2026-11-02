@@ -69,7 +69,7 @@ def main() -> int:
         with request.urlopen(req, timeout=110) as response:
             data = json.load(response)
         if not isinstance(data, dict):
-            raise ValueError("unexpected console response")
+            raise TypeError("unexpected console response")
         apps = data.get("apps")
         shell = apps.get("shell") if isinstance(apps, dict) else None
         stdout = str(shell.get("stdout", "")) if isinstance(shell, dict) else ""

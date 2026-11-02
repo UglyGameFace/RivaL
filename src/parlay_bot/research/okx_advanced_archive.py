@@ -23,6 +23,7 @@ from pathlib import Path
 import httpx
 
 from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.history_priority import ordered_months
 from parlay_bot.research.official_okx_bootstrap import (
     ADVANCED_FIRST,
     ADVANCED_MODULE_BY_NAME,
@@ -70,8 +71,8 @@ def automatic_archive_slot(now: datetime | None = None, *, offset: int = 0) -> t
             first.year * 12 + first.month - 1 + month_index, 12
         )
         all_months.append(f"{year:04d}-{zero_based_month + 1:02d}")
-    # Six latest fully published months first; older ones remain reachable.
-    ordered = list(reversed(all_months[-6:])) + all_months[:-6]
+    # Last 24 completed months first; older genuine provider eras remain eligible.
+    ordered = ordered_months(all_months, now=clock)
     candidates = [
         (month, module) for month in ordered for module in AUTOMATIC_MODULES
         if month >= ADVANCED_FIRST[ADVANCED_MODULE_BY_NAME[module]]

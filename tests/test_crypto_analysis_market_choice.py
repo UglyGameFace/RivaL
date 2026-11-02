@@ -201,9 +201,9 @@ async def test_dashboard_shows_polymarket_outcomes_without_market_choice(tmp_pat
         }
         pane = await home.render()
         fields = {x.name: x.value for x in pane.fields}
-        assert "99" in fields["🎯 Polymarket"]
-        assert "0 settled calls" in fields["🎯 Polymarket"]
-        assert "no paired score available" in fields["🎯 Polymarket"]
+        assert "99" in fields["🎯 How accurate are Polymarket predictions?"]
+        assert "0" in fields["🎯 How accurate are Polymarket predictions?"]
+        assert "no fair comparison available yet" in fields["🎯 How accurate are Polymarket predictions?"]
         assert "Choose a market" not in str(pane.to_dict())
         assert len(pane.fields) == 4
 
@@ -238,12 +238,12 @@ async def test_polymarket_stats_do_not_require_exchange_or_drive(tmp_path):
         }
         view = await home.render()
         body = str(view.to_dict())
-        assert "12 historical outcomes (not forward calls)" in body
-        assert "5 settled calls" in body
-        assert "0.2100" in body
-        assert "0.2400" in body
+        assert "Past results learned from:** 12 (not live predictions)" in body
+        assert "Real-time predictions checked:** 5" in body
+        assert "0.210" in body
+        assert "0.240" in body
         # A healthy empty heartbeat table means no cycle, not a failed read.
-        assert "Learning heartbeat: no recorded cycle" in body
+        assert "Is learning running?** No completed check recorded" in body
         home.navigate("trust")
         assert home.page == "performance"
         detail = await home.render()
@@ -315,13 +315,13 @@ async def test_exchange_performance_one_page_shows_sample_and_learning(
         body = str(pane.to_dict())
         assert len(pane.fields) == 4
         assert "4,159" in body and "4,150" in body
-        assert "2,063/4,150" in body and "49.7%" in body
-        assert "0.2510" in body and "0.2490" in body
-        assert "99" in body and "no paired score available" in body
-        assert "14" in body and "Historical seeds in recent verified lineage" in body
-        assert "4 issued / 7 settled" in body
-        assert "NO VERIFIED TRADING EDGE" in body
-        assert "14d comparison: read unavailable" in body
+        assert "2,063 of 4,150" in body and "49.7%" in body
+        assert "0.251" in body and "0.249" in body
+        assert "99" in body and "no fair comparison available yet" in body
+        assert "14" in body and "Used verified historical training" in body
+        assert "4 predictions logged, 7 results checked" in body
+        assert "Profitable predictions: not proven yet" in body
+        assert "Is accuracy improving?** Cannot check right now" in body
         assert "practice usdt" not in body.lower()
     finally:
         home.stop()

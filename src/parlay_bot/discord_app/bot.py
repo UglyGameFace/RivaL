@@ -482,7 +482,7 @@ class RivalDiscordClient(discord.Client):
                 auto_ai=(
                     settings.rival_gemini_auto_enabled
                     and settings.rival_ai_background_opt_in
-                    and settings.rival_ai_provider not in ("local", "cloudflare")
+                    and settings.rival_ai_provider == "openrouter"
                 ),
             )
             if self.forward_audit is not None and self.perp_collector is not None

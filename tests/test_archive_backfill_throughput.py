@@ -17,7 +17,7 @@ def _workflow(name: str) -> str:
 
 
 def _scheduled_hours(content: str) -> tuple[int, ...]:
-    matches = re.findall(r'cron: "(\\d+) ([\\d,]+) \\* \\* \\*"', content)
+    matches = re.findall(r'cron: "(\d+) ([\d,]+) \* \* \*"', content)
     assert len(matches) == 1, "must have exactly one bounded daily provider schedule"
     return tuple(int(value) for value in matches[0][1].split(","))
 

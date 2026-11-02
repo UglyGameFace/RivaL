@@ -463,8 +463,16 @@ class GatewayHandler(BaseHTTPRequestHandler):
             if not self.authorized():
                 self.send_json({"error": "unauthorized"}, 401)
                 return
+            source_file = Path(__file__).with_name("UPSTREAM_COMMIT")
+            try:
+                source_sha = source_file.read_text(encoding="ascii").strip()
+                if not re.fullmatch(r"[0-9a-f]{40}", source_sha):
+                    source_sha = "unverified"
+            except (OSError, UnicodeError):
+                source_sha = "unverified"
             self.send_json({"model": self.server.identity,
                             "ready": self.server.backend_ready(),
+                            "source_sha": source_sha,
                             "repair_state": self.server.repair_state,
                             "repair_count": self.server.repair_count})
             return

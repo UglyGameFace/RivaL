@@ -68,6 +68,25 @@ def test_mirror_does_not_remove_unrelated_owner_files(fake_source, tmp_path):
     assert (repo / "main.py").read_text().endswith("services/rival-llm/main.py")
 
 
+def test_unrelated_main_commit_does_not_trigger_another_model_release(fake_source, tmp_path):
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    repo = tmp_path / "repo"
+    (repo / ".git").mkdir(parents=True)
+    SYNC["prepare"](fake_source, first, SHA)
+    SYNC["apply"](first, repo)
+    assert (repo / "UPSTREAM_COMMIT").read_text().strip() == SHA
+    SYNC["prepare"](fake_source, second, "b" * 40)
+    SYNC["apply"](second, repo)
+    # Source and deployment contracts are byte-identical; retain prior release.
+    assert (repo / "UPSTREAM_COMMIT").read_text().strip() == SHA
+    (fake_source / "services/rival-llm/service.py").write_text("changed service")
+    latest = tmp_path / "latest"
+    SYNC["prepare"](fake_source, latest, "c" * 40)
+    SYNC["apply"](latest, repo)
+    assert (repo / "UPSTREAM_COMMIT").read_text().strip() == "c" * 40
+
+
 def test_mirror_retires_only_old_managed_files(fake_source, tmp_path):
     stage = tmp_path / "stage"
     repo = tmp_path / "repo"

@@ -19,7 +19,9 @@ def test_raw_brier_improves_but_relative_skill_worsens(tmp_path):
             for section, days in (("prior", 13), ("recent", 6)):
                 start = now - timedelta(days=days)
                 for i in range(120):
-                    # 120 independent targets across five UTC days, not one.\n                    target = start + timedelta(days=i // 24,\n                                               minutes=5 * (i % 24))
+                    # 120 independent targets across five UTC days, not one.
+                    target = start + timedelta(days=i // 24,
+                                               minutes=5 * (i % 24))
                     issued = target - timedelta(minutes=1)
                     opened = target - timedelta(minutes=5)
                     # Both weeks predict up correctly, but the baseline is

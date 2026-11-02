@@ -46,7 +46,8 @@ def _bucket(rows: list[dict]) -> dict:
     chosen = [x for x in binary if x["pred_count"] and x["gross_bps"] is not None]
     return {
         "events": n,
-        "days": len({str(x["target_opened_at"])[:10] for x in rows\n                     if x.get("target_opened_at")}),
+        "days": len({str(x["target_opened_at"])[:10] for x in rows
+                     if x.get("target_opened_at")}),
         "binary_targets": len(binary),
         "brier": round(brier, 5), "baseline": round(base, 5),
         "ece": round(ece, 5) if ece is not None else None,

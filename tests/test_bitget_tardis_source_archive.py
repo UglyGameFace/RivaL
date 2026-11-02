@@ -12,8 +12,13 @@ import httpx
 import pytest
 
 from parlay_bot.research.bitget_tardis_source_archive import (
-    SCHEMA, SOURCE, obtain, publish, sha,
-    validate_selection, verify_gzip_csv,
+    SCHEMA,
+    SOURCE,
+    obtain,
+    publish,
+    sha,
+    validate_selection,
+    verify_gzip_csv,
 )
 from parlay_bot.research.free_history import HistoryImportError
 
@@ -136,9 +141,9 @@ async def test_public_endpoint_raw_gzip_and_private_drive_readbacks(tmp_path):
 @pytest.mark.asyncio
 async def test_redirect_or_access_restriction_does_not_bypass_site(tmp_path):
     for code in (302, 403, 451):
-        def route(_):
+        def route(_, status=code):
             return httpx.Response(
-                code, headers={"Location": "https://not-tardis.example/data"},
+                status, headers={"Location": "https://not-tardis.example/data"},
             )
         async with httpx.AsyncClient(transport=httpx.MockTransport(route)) as client:
             with pytest.raises(HistoryImportError):

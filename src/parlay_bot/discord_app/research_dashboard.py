@@ -329,7 +329,8 @@ class _RefreshButton(discord.ui.Button["ResearchDashboard"]):
     async def callback(self, interaction: discord.Interaction) -> None:
         dashboard = self.view
         assert dashboard is not None
-        dashboard._history_cache.clear()
+        if dashboard.section in ("history", "recovery"):
+            dashboard._history_cache.pop(dashboard.asset, None)
         await dashboard.redraw(interaction)
 
 
@@ -479,6 +480,9 @@ class ResearchDashboard(discord.ui.View):
         # briefly per asset; ALWAYS read live source health and market pulse
         # from PostgreSQL on every navigation/refresh.
         self._history_cache: dict[str, tuple[datetime, dict]] = {}
+        # Shared across successive message generations. The newest click wins,
+        # so an old slow database response cannot repaint a newer selection.
+        self._navigation_state: dict[str, object] = {"revision": 0, "pending": None}
         self._rebuild()
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
@@ -1820,7 +1824,97 @@ class ResearchDashboard(discord.ui.View):
         )
         return embed
 
+    def _display_generation(self) -> ResearchDashboard:
+        """Build new buttons without detaching the controls currently on Discord."""
+        fresh = ResearchDashboard(
+            owner_id=self.owner_id, market=self.market, ai=self.ai,
+            venues=self.venues, shadow_enabled=self.shadow_enabled,
+            target_service=self.target_service,
+        )
+        fresh.asset = self.asset
+        fresh.screen = self.screen
+        fresh.section = self.section
+        fresh.selected_venue = self.selected_venue
+        fresh.opinion = self.opinion
+        fresh.message = self.message
+        fresh._history_cache = self._history_cache
+        fresh._navigation_state = self._navigation_state
+        fresh._rebuild()
+        return fresh
+
+    async def _finish_redraw(
+        self, interaction: discord.Interaction, fresh: ResearchDashboard,
+        revision: int,
+    ) -> None:
+        """Finish a deferred research read without blocking the button handler."""
+        state = self._navigation_state
+        try:
+            embed = await asyncio.wait_for(fresh.render(), timeout=10)
+        except asyncio.CancelledError:
+            raise
+        except TimeoutError:
+            _LOG.warning(
+                "Research render timed out screen=%s section=%s",
+                fresh.screen, fresh.section,
+            )
+            embed = discord.Embed(
+                title="⏳ Results temporarily delayed",
+                description=(
+                    "This database check did not finish in time. "
+                    "The previous results are not proof of a new trade. "
+                    "Use Update live stats or choose another section."
+                ),
+                color=discord.Color.orange(),
+            )
+        except Exception:  # noqa: BLE001 - preserve usable controls on failures
+            _LOG.exception("RivaL research render failed")
+            embed = discord.Embed(
+                title="Research temporarily unavailable",
+                description="Could not read verified results. Try another section.",
+                color=discord.Color.orange(),
+            )
+        if state["revision"] != revision:
+            return
+        try:
+            await asyncio.wait_for(
+                interaction.edit_original_response(embed=embed, view=fresh), timeout=5,
+            )
+        except (discord.HTTPException, TimeoutError):
+            _LOG.warning(
+                "Research edit failed screen=%s section=%s",
+                fresh.screen, fresh.section,
+            )
+
     async def redraw(self, interaction: discord.Interaction) -> None:
+        # Discord needs acknowledgment before any database or model queries.
         await interaction.response.defer()
-        self._rebuild()
-        await interaction.edit_original_response(embed=await self.render(), view=self)
+        if not isinstance(interaction, discord.Interaction):
+            # Lightweight test interactions still exercise the entire renderer.
+            self._rebuild()
+            await interaction.edit_original_response(embed=await self.render(), view=self)
+            return
+        state = self._navigation_state
+        state["revision"] = int(state["revision"]) + 1
+        revision = int(state["revision"])
+        prior = state["pending"]
+        if isinstance(prior, asyncio.Task) and not prior.done():
+            prior.cancel()
+        fresh = self._display_generation()
+        loading = discord.Embed(
+            title=f"🔄 {self.asset} | {dict(_SECTIONS[self.screen])[self.section]}",
+            description="Checking saved market data and verified outcomes. No trade is approved.",
+            color=discord.Color.blurple(),
+        )
+        try:
+            await asyncio.wait_for(
+                interaction.edit_original_response(embed=loading, view=fresh), timeout=5,
+            )
+        except (discord.HTTPException, TimeoutError):
+            _LOG.warning("Research loading display failed; old controls remain usable")
+            return
+        task = asyncio.create_task(
+            self._finish_redraw(interaction, fresh, revision),
+            name="rival-research-detail",
+        )
+        state["pending"] = task
+

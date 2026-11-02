@@ -116,3 +116,61 @@ def test_okx_census_uses_actual_official_first_supported_month():
     assert btc["name_inventory_complete"] is True
     assert btc["bytes_reverified_in_this_census"] is False
     assert report["out_of_supported_month_range"] == 1
+
+
+def test_bitget_all_four_source_families_remain_separate_and_unqualified():
+    names = [
+        "bitget-v3-BTC-market-2025-12--" + "a"*16 + ".manifest.json",
+        "bitget-v3-BTC-mark-2025-12--" + "b"*16 + ".manifest.json",
+        "bitget-v3-BTC-index-2025-12--" + "c"*16 + ".manifest.json",
+        "bitget-v3-BTC-premium-2025-12--" + "d"*16 + ".manifest.json",
+    ]
+    report = census.summarize(names, now=NOW)
+    scopes = [row for row in report["month_scopes"]
+              if row["venue"] == "bitget" and row["asset"] == "BTC"]
+    assert {row["family"] for row in scopes} == {"market", "mark", "index", "premium"}
+    assert len(scopes) == 4
+    assert all(row["listed_manifest_months"] == 1 for row in scopes)
+    assert all(row["bytes_reverified_in_this_census"] is False for row in scopes)
+    assert all(row["model_training_qualified"] is False for row in scopes)
+    assert all(row["start_month_is_attempt_floor_not_listing_proof"] for row in scopes)
+    assert report["all_source_families_2021_to_present_verified"] is False
+    assert census.parse_name("bitget-v3-BTC-invalid-2025-12--" + "d"*16 +
+                             ".manifest.json") is None
+
+
+def test_partial_lighter_and_dydx_pages_not_misrepresented_as_full_months():
+    names = [
+        "dydx-v4-SOL-USD-funding-2025-06-00-" + "a"*16 + ".manifest.json",
+        "dydx-v4-SOL-USD-funding-2025-06-01-" + "b"*16 + ".manifest.json",
+        "lighter-XRP-mark_price-2025-06-00-" + "c"*16 + ".manifest.json",
+        "lighter-XRP-funding-2025-06-00-" + "d"*16 + ".manifest.json",
+    ]
+    report = census.summarize(names, now=NOW)
+    partial = report["page_level_sources_not_full_months"]
+    assert len(partial) == 3
+    funding = next(p for p in partial if p["venue"] == "dydx")
+    assert funding["listed_page_numbers"] == 2
+    assert funding["family"] == "funding_with_oracle_price"
+    assert all(p["full_calendar_month_verified"] is False for p in partial)
+    assert all(p["model_training_qualified"] is False for p in partial)
+    assert not any(p["venue"] in ("dydx", "lighter")
+                   for p in report["month_scopes"])
+    assert report["unrecognized_manifest_names"] == 0
+
+
+def test_identical_remote_names_and_conflicting_original_pages_are_visible():
+    duplicate = "bitget-v3-ETH-market-2025-08--" + "a"*16 + ".manifest.json"
+    first = "lighter-ETH-mark_price-2025-07-00-" + "b"*16 + ".manifest.json"
+    second = "lighter-ETH-mark_price-2025-07-00-" + "c"*16 + ".manifest.json"
+    report = census.summarize([duplicate, duplicate, first, second], now=NOW)
+    scope = next(r for r in report["month_scopes"]
+                 if r["venue"] == "bitget" and r["asset"] == "ETH"
+                 and r["family"] == "market")
+    assert scope["duplicate_name_months"] == ["2025-08"]
+    assert scope["name_inventory_complete"] is False
+    assert report["duplicate_manifest_names"] == 1
+    partial = next(p for p in report["page_level_sources_not_full_months"]
+                   if p["venue"] == "lighter")
+    assert partial["conflicting_page_numbers"] == [0]
+    assert partial["full_calendar_month_verified"] is False

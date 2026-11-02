@@ -170,3 +170,38 @@ async def test_incomplete_source_month_does_not_publish(tmp_path, monkeypatch):
     assert result["new_months"] == 0
     assert result["unavailable_or_rejected"][0]["month"] == "2021-01"
     assert result["fully_verified_2021_to_present"] is False
+
+
+@pytest.mark.asyncio
+async def test_original_archive_resume_requires_both_zip_and_checksum():
+    calls = []
+    class Client:
+        async def get(self, url, *, params, headers):
+            calls.append(params)
+            if len(calls) == 1:
+                files = [{
+                    "id": "oldzip", "name": "BTCUSDT-5m-2021-01.zip",
+                    "parents": ["hist"], "appProperties": {"rival_kind": "history"},
+                }, {
+                    "id": "newzip", "name": "ETHUSDT-5m-2024-06.zip",
+                    "parents": ["hist"], "appProperties": {"rival_kind": "history"},
+                }]
+                return httpx.Response(200, json={"files": files, "nextPageToken": "next"})
+            return httpx.Response(200, json={"files": [{
+                "id": "oldcheck", "name": "BTCUSDT-5m-2021-01.zip.CHECKSUM",
+                "parents": ["hist"], "appProperties": {"rival_kind": "history"},
+            }]})
+    class Drive:
+        DRIVE_URL = "https://www.googleapis.com/drive/v3"
+        folders = SimpleNamespace(history="hist")
+        _client = Client()
+        async def _verify_folder_boundary(self):
+            pass
+        async def _headers(self):
+            return {}
+        @staticmethod
+        def _escape_query(value):
+            return value
+    keys = await deep.existing_original_keys(Drive())
+    assert keys == {"BTCUSDT-5m-2021-01"}
+    assert calls[1]["pageToken"] == "next"

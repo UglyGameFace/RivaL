@@ -4,12 +4,13 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals.governance import score_paired_forward
+from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.spike_challenger import (
-    spike_context_at_issuance, spike_score_rows,
+    spike_context_at_issuance,
+    spike_score_rows,
 )
 from parlay_bot.perpetuals.spike_watch import SpikeWatch
-from parlay_bot.perpetuals.market_store import PerpetualMarketStore
-from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.storage.hot import SQLiteHotStore
 
 

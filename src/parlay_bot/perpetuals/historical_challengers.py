@@ -13,8 +13,8 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.learning import _sigmoid
-from parlay_bot.perpetuals.model_checkpoints import canonical
 from parlay_bot.perpetuals.markets import asset_for_contract
+from parlay_bot.perpetuals.model_checkpoints import canonical
 from parlay_bot.perpetuals.spike_challenger import spike_context_at_issuance, spike_score_rows
 from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
 

@@ -19,8 +19,8 @@ import httpx
 from parlay_bot.archive.drive import DriveArchiveError
 from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
-from parlay_bot.research.history_priority import window
 from parlay_bot.research.gate_bulk_archive import ASSETS, TYPES, download
+from parlay_bot.research.history_priority import window
 from parlay_bot.research.publish import _artifact, _drive
 
 FIRST = "2023-01"  # Gate explicitly advertises candle/trade downloads since Jan 2023.

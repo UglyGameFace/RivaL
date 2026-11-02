@@ -107,6 +107,51 @@ jobs:
           asyncio.run(main())
           PY
 
+      - name: Probe public OKX L2 catalog aggregate support, metadata only
+        continue-on-error: true
+        shell: bash
+        run: |
+          python - <<'PY'
+          import asyncio
+          import json
+          from datetime import UTC, datetime, timedelta, timezone
+
+          import httpx
+
+          async def main():
+              base = "https://www.okx.com/api/v5/public/market-data-history"
+              probes = (
+                  ("l2_400_monthly", "4", "monthly", datetime(2026, 4, 1, tzinfo=UTC)),
+                  ("l2_400_daily", "4", "daily", datetime(2026, 4, 1, tzinfo=UTC)),
+                  ("funding_monthly_control", "3", "monthly",
+                   datetime(2026, 9, 1, tzinfo=timezone(timedelta(hours=8)))),
+              )
+              results = []
+              async with httpx.AsyncClient(timeout=18, follow_redirects=False) as client:
+                  for label, module, aggregation, instant in probes:
+                      stamp = str(int(instant.timestamp() * 1000))
+                      response = await client.get(base, params={
+                          "module": module, "instType": "SWAP",
+                          "instFamilyList": "BTC-USDT",
+                          "dateAggrType": aggregation,
+                          "begin": stamp, "end": stamp,
+                      })
+                      try:
+                          data = response.json()
+                      except ValueError:
+                          data = {}
+                      results.append({
+                          "probe": label, "http_status": response.status_code,
+                          "provider_code": str(data.get("code", ""))[:20],
+                          "provider_message": str(data.get("msg", ""))[:180],
+                          "catalog_records": len(data.get("data", []))
+                              if isinstance(data.get("data"), list) else None,
+                      })
+              print(json.dumps({"status": "source_metadata_only_no_download",
+                                "results": results}, sort_keys=True))
+          asyncio.run(main())
+          PY
+
   archive-research:
     if: github.event_name != 'pull_request'
     strategy:

@@ -107,6 +107,61 @@ jobs:
           asyncio.run(main())
           PY
 
+      - name: Probe public OKX L2 catalog aggregate support, metadata only
+        continue-on-error: true
+        shell: bash
+        run: |
+          python - <<'PY'
+          import asyncio
+          import json
+          from datetime import UTC, datetime, timedelta, timezone
+
+          import httpx
+
+          async def main():
+              base = "https://www.okx.com/api/v5/public/market-data-history"
+              probes = (
+                  ("l2_400_monthly", "4", "monthly", datetime(2026, 4, 1, tzinfo=UTC)),
+                  ("l2_400_daily", "4", "daily", datetime(2026, 4, 1, tzinfo=UTC)),
+                  ("funding_monthly_control", "3", "monthly",
+                   datetime(2026, 9, 1, tzinfo=timezone(timedelta(hours=8)))),
+              )
+              results = []
+              async with httpx.AsyncClient(timeout=18, follow_redirects=False) as client:
+                  for label, module, aggregation, instant in probes:
+                      stamp = str(int(instant.timestamp() * 1000))
+                      response = await client.get(base, params={
+                          "module": module, "instType": "SWAP",
+                          "instFamilyList": "BTC-USDT",
+                          "dateAggrType": aggregation,
+                          "begin": stamp, "end": stamp,
+                      })
+                      try:
+                          data = response.json()
+                      except ValueError:
+                          data = {}
+                      samples = []
+                      for item in data.get("data", [])[:2] if isinstance(data.get("data"), list) else []:
+                          for group in item.get("details", [])[:2]:
+                              for entry in group.get("groupDetails", [])[:2]:
+                                  samples.append({
+                                      "filename": str(entry.get("filename", ""))[:180],
+                                      "sizeMB": str(entry.get("sizeMB", ""))[:30],
+                                      "dateTs": str(entry.get("dateTs", ""))[:30],
+                                  })
+                      results.append({
+                          "probe": label, "http_status": response.status_code,
+                          "provider_code": str(data.get("code", ""))[:20],
+                          "provider_message": str(data.get("msg", ""))[:180],
+                          "catalog_records": len(data.get("data", []))
+                              if isinstance(data.get("data"), list) else None,
+                          "source_file_samples": samples,
+                      })
+              print(json.dumps({"status": "source_metadata_only_no_download",
+                                "results": results}, sort_keys=True))
+          asyncio.run(main())
+          PY
+
   archive-research:
     if: github.event_name != 'pull_request'
     strategy:
@@ -156,6 +211,7 @@ jobs:
           )
           from parlay_bot.research.okx_advanced_archive import (
               MAX_PROBE_SLOTS, automatic_archive_slot, ingest_one,
+              official_catalog_http_400,
           )
           from parlay_bot.research.publish import _artifact, _drive
 
@@ -184,10 +240,22 @@ jobs:
                               number for number, label in MODULES.items()
                               if label == candidate_module
                           )
-                          catalog = await inventory_extra_modules(
-                              client, asset=asset, month=candidate_month,
-                              module_ids=(module_id,),
-                          )
+                          try:
+                              catalog = await inventory_extra_modules(
+                                  client, asset=asset, month=candidate_month,
+                                  module_ids=(module_id,),
+                              )
+                          except HistoryImportError as exc:
+                              if (candidate_module not in ("orderbook_l2_400", "orderbook_l2_5000")
+                                  or not official_catalog_http_400(exc)):
+                                  raise
+                              attempts.append({
+                                  "month": candidate_month,
+                                  "module": candidate_module,
+                                  "status": "provider_50016_monthly_l2_not_downloaded",
+                                  "source_file_count": 0,
+                              })
+                              continue
                           slot = catalog["modules"][candidate_module]
                           attempts.append({
                               "month": candidate_month, "module": candidate_module,

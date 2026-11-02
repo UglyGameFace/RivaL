@@ -16,6 +16,7 @@ from parlay_bot.research.okx_advanced_archive import (
     automatic_archive_slot,
     ingest_one,
     inspect_archive,
+    official_catalog_http_400,
 )
 
 
@@ -53,6 +54,25 @@ def test_source_gap_candidates_are_bounded_and_disjoint():
     slots = [automatic_archive_slot(clock, offset=i) for i in range(12)]
     assert len(slots) == len(set(slots))
     assert all("2023-07" <= month <= "2026-10" for month, _ in slots)
+
+
+def test_only_explicit_provider_http_400_is_skippable_catalog_rejection():
+    req = httpx.Request("GET", "https://www.okx.com/api/v5/public/market-data-history")
+    for status, code, expected in (
+        (400, "50016", True),
+        (400, "51000", False),
+        (403, "50016", False),
+        (429, "50016", False),
+        (500, "50016", False),
+    ):
+        response = httpx.Response(status, request=req, json={"code": code})
+        try:
+            raise HistoryImportError("official OKX API request failed") from (
+                httpx.HTTPStatusError("catalog request", request=req, response=response)
+            )
+        except HistoryImportError as exc:
+            assert official_catalog_http_400(exc) is expected
+    assert not official_catalog_http_400(HistoryImportError("untrusted archive"))
 
 
 ASSET = "BTC"

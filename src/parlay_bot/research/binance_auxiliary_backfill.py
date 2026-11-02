@@ -223,7 +223,9 @@ async def collect(*, drive, client: httpx.AsyncClient, out_dir: Path,
             proof.write_text(json.dumps({
                 "venue": "binance", "asset": asset, "family": fam,
                 "source_url": url, "source_sha256": original_digest,
-                "provider_signed_checksum": True, "original_zip_preserved": True,
+                "provider_signed_checksum": False,
+                "provider_published_checksum_sha256_verified": True,
+                "original_zip_preserved": True,
                 **quality, "live_model_approved": False,
                 "retrospective_source_only": True,
             }, sort_keys=True))

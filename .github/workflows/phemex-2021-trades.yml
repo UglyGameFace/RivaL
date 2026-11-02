@@ -1,0 +1,71 @@
+name: Phemex original historical 2021 trades research proof
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/phemex-2021-trades.yml"
+      - "src/parlay_bot/research/phemex_trade_archive.py"
+      - "tests/test_phemex_trade_archive.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/phemex-2021-trades.yml"
+      - "src/parlay_bot/research/phemex_trade_archive.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-phemex-old-trades-source
+  cancel-in-progress: false
+
+jobs:
+  source-tests:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install -e ".[dev,archive]"
+          ruff check src/parlay_bot/research/phemex_trade_archive.py tests/test_phemex_trade_archive.py
+          pytest -q tests/test_phemex_trade_archive.py tests/test_phemex_history_recovery.py
+
+  original-2021-trades:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[dev,archive]"
+      - name: Require known RivaL private Google Drive credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in RIVAL_DRIVE_ROOT_FOLDER_ID RIVAL_DRIVE_HISTORY_FOLDER_ID RIVAL_DRIVE_MANIFESTS_FOLDER_ID RIVAL_DRIVE_STAGING_FOLDER_ID RIVAL_DRIVE_OAUTH_CLIENT_ID RIVAL_DRIVE_OAUTH_CLIENT_SECRET RIVAL_DRIVE_OAUTH_REFRESH_TOKEN; do
+            if [[ -z "${!name}" ]]; then echo "::error::Missing $name"; exit 1; fi
+          done
+      - name: Read 2021 original source trades and independently verify Drive bytes
+        run: python -m parlay_bot.research.phemex_trade_archive --day 2021-01-01
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rival-phemex-2021-original-trades
+          path: data/native-reports/phemex-2021-trade-proof.json
+          retention-days: 14
+          if-no-files-found: ignore

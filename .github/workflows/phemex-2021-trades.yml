@@ -58,6 +58,10 @@ jobs:
                   "historical_source_2021_month_verified": False,
               }
               if response.status_code == 200 and isinstance(rows, list):
+                  print("source_sample", json.dumps([{
+                      "timestamp": x.get("timestamp"), "side": x.get("side"),
+                      "fields": sorted(x.keys()),
+                  } for x in rows[:2] if isinstance(x, dict)]))
                   proof = validate(
                       response.content, market="BTCUSD",
                       start=start, end=start+60000,
@@ -68,7 +72,7 @@ jobs:
               if response.status_code != 200 or not isinstance(rows, list):
                   raise SystemExit("Phemex official 2021 trade source could not be verified")
           except (httpx.HTTPError, ValueError, TypeError) as exc:
-              raise SystemExit(f"Phemex endpoint unavailable: {type(exc).__name__}") from exc
+              raise SystemExit(f"Phemex source verification failed: {type(exc).__name__}: {exc}") from exc
           PY
 
   original-2021-trades:

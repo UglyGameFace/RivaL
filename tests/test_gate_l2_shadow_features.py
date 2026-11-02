@@ -76,7 +76,7 @@ def test_shadow_receipts_rehash_original_manifest_and_derived_bytes(tmp_path):
     assert proof["prospective_forecasts"] == 0
     assert proof["live_model_import_allowed"] is False
     assert proof["after_cost_edge_verified"] is False
-    assert not proof["full_utc_hour_covered"]
+    assert not proof["all_twelve_five_minute_buckets_sampled"]
     assert write_sidecar(original, manifest) == (sidecar, receipt)
 
     sidecar.write_text(sidecar.read_text() + "{}\n")

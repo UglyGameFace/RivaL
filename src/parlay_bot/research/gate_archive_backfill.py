@@ -206,7 +206,7 @@ def prioritize_backfill(
     # rotate existing tasks within the same configured max_attempts budget.
     enrichment_reserve = (
         min(len(extra), remaining // 3)
-        if extra and (recent_candles or old_candles) else 0
+        if extra and (recent_candles or old_candles) and remaining >= 12 else 0
     )
     candle_budget = remaining - enrichment_reserve
     for group in (recent_candles, old_candles):

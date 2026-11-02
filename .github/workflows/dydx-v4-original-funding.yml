@@ -11,6 +11,8 @@ on:
     paths:
       - ".github/workflows/dydx-v4-original-funding.yml"
       - "src/parlay_bot/research/dydx_funding_archive.py"
+  schedule:
+    - cron: "17 0,4,8,12,16,20 * * *"
   workflow_dispatch:
     inputs:
       month:
@@ -44,7 +46,7 @@ jobs:
   archive-original-funding:
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 45
     env:
       RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
       RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
@@ -66,11 +68,17 @@ jobs:
           for name in RIVAL_DRIVE_ROOT_FOLDER_ID RIVAL_DRIVE_HISTORY_FOLDER_ID RIVAL_DRIVE_MANIFESTS_FOLDER_ID RIVAL_DRIVE_STAGING_FOLDER_ID RIVAL_DRIVE_OAUTH_CLIENT_ID RIVAL_DRIVE_OAUTH_CLIENT_SECRET RIVAL_DRIVE_OAUTH_REFRESH_TOKEN; do
             if [[ -z "${!name}" ]]; then echo "::error::Missing $name"; exit 1; fi
           done
-      - name: Read historic v4 funding and oracle prices, verify exact private Drive bytes
+      - name: Read historic funding and oracle prices, verify original Drive bytes
         shell: bash
         run: |
-          python -m parlay_bot.research.dydx_funding_archive \
-            --month "${{ inputs.month || '2023-11' }}" --assets BTC ETH
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "schedule" ]]; then
+            python -m parlay_bot.research.dydx_funding_archive --month auto \
+              --assets BTC ETH SOL XRP
+          else
+            python -m parlay_bot.research.dydx_funding_archive \
+              --month "${{ inputs.month || '2023-11' }}" --assets BTC ETH
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

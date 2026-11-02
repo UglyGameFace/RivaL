@@ -138,6 +138,41 @@ async def archive_page(drive, *, root: Path, asset: str, month: str,
             "original_sha256": digest, "readback_verified": True}
 
 
+def complete_hourly_month(stamps: list[datetime], *, start: datetime,
+                          end: datetime, crossed_boundary: bool) -> bool:
+    """Exact *UTC hour buckets*, not invented :00.000 funding timestamps.
+
+    dYdX's chain settlement happens seconds after the hourly boundary,
+    e.g. genuine 2023-11-30T23:00:01.059Z. One native event per hour
+    is qualifying, but duplicated or absent hour buckets are not.
+    """
+    expected = int((end - start).total_seconds() // 3600)
+    if not crossed_boundary or len(stamps) != expected:
+        return False
+    buckets = {
+        t.replace(minute=0, second=0, microsecond=0)
+        for t in stamps if start <= t < end
+    }
+    return (
+        len(buckets) == expected
+        and all(start + timedelta(hours=i) in buckets for i in range(expected))
+    )
+
+
+def automatic_month(now: datetime | None = None) -> str:
+    """Rotate completed v4 months across 6 daily scheduled collection slots."""
+    clock = (now or datetime.now(UTC)).astimezone(UTC)
+    first = datetime(2023, 11, 1, tzinfo=UTC)
+    last = clock.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    count = (last.year - first.year) * 12 + last.month - first.month
+    if count <= 0:
+        raise HistoryImportError("no completed v4 month for scheduled recovery")
+    cycle = int(clock.timestamp()) // (4 * 3600)
+    index = cycle % count
+    year, month_index = divmod(2023 * 12 + 10 + index, 12)
+    return f"{year:04d}-{month_index + 1:02d}"
+
+
 async def acquire_asset(drive, client: httpx.AsyncClient, *, asset: str,
                         month: str, root: Path) -> dict:
     start, end = month_bounds(month)
@@ -178,11 +213,10 @@ async def acquire_asset(drive, client: httpx.AsyncClient, *, asset: str,
             break
         cursor = stamps[-1] - timedelta(milliseconds=1)
         await asyncio.sleep(0.5)
-    expected = int((end - start).total_seconds() // 3600)
     in_month = sorted(t for t in seen if start <= t < end)
-    full = crossed_start and len(in_month) == expected and all(
-        stamp == start + timedelta(hours=i) for i, stamp in enumerate(in_month)
-    )
+    expected = int((end - start).total_seconds() // 3600)
+    full = complete_hourly_month(in_month, start=start, end=end,
+                                 crossed_boundary=crossed_start)
     return {
         "asset": asset, "month": month, "pages": pages,
         "source_events_in_month": len(in_month), "expected_hourly_events": expected,
@@ -203,16 +237,25 @@ async def acquire(*, month: str, assets: tuple[str, ...],
         raise HistoryImportError("invalid dYdX funded contract scope")
     drive = _drive(Settings())
     results = []
+    blocked = []
     try:
         async with httpx.AsyncClient(timeout=40, follow_redirects=False) as client:
             for asset in assets:
-                results.append(await acquire_asset(
-                    drive, client, asset=asset, month=month, root=root))
+                try:
+                    results.append(await acquire_asset(
+                        drive, client, asset=asset, month=month, root=root))
+                except (HistoryImportError, httpx.HTTPError, OSError) as exc:
+                    blocked.append({
+                        "asset": asset, "month": month, "reason": str(exc)[:180],
+                        "source_coverage_verified": False,
+                    })
+                    if "HTTP 429" in str(exc) or "HTTP 403" in str(exc):
+                        break
     finally:
         await drive.aclose()
     report = {
         "schema_version": "rival-dydx-v4-original-funding-month-v1",
-        "month": month, "assets": results,
+        "month": month, "assets": results, "blocked_assets": blocked,
         "original_source_pages_readback_verified": sum(
             item["raw_page_readbacks_verified"] for item in results),
         "all_venue_family_history_complete": False,
@@ -231,7 +274,8 @@ def main() -> int:
                         default=["BTC", "ETH"])
     args = parser.parse_args()
     try:
-        result = asyncio.run(acquire(month=args.month, assets=tuple(args.assets)))
+        target = automatic_month() if args.month == "auto" else args.month
+        result = asyncio.run(acquire(month=target, assets=tuple(args.assets)))
     except (HistoryImportError, httpx.HTTPError, OSError,
             RuntimeError, ValueError) as exc:
         parser.exit(2, f"dYdX source-native funding BLOCKED: {exc}\n")
@@ -242,6 +286,7 @@ def main() -> int:
             "full_hourly_coverage": x["full_utc_month_hourly_coverage"],
             "truncated_or_unavailable": x["truncated_or_unavailable"],
         } for x in result["assets"]],
+        "blocked_assets": result["blocked_assets"],
         "complete_2021_to_present": False,
     }, sort_keys=True))
     return 0

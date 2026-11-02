@@ -25,3 +25,25 @@ recovery. Full unattended 2023-present monthly backfill, source-native trade
 history and historical order-book snapshots remain separate completion gates.
 
 Official docs: https://docs.dydx.exchange/api_integration-clients/indexer_client
+
+## Automated multi-asset recovery
+
+The readback-verified 2023-11 production batch contained 720 legitimate
+funding events per BTC and ETH (16 original pages total), settling slightly
+after the hourly clock boundary. The first report incorrectly required
+literally xx:00:00.000 timestamps; the corrected qualifier now requires
+one genuine UTC event in **every** hourly bucket, with no missing/duplicated
+bucket and evidence the pages crossed the start boundary. It does not
+change the original bytes or any live model.
+
+Six serialized scheduled jobs per day rotate through all completed native
+v4 UTC months from 2023-11 to the latest completed month. The preferred
+four tickers are BTC, ETH, SOL and XRP; missing/unlisted markets are
+reported separately rather than substituted. With 36 completed months
+the *ideal* first rotation is six days, but rate limits, missing contracts,
+upstream retention and Drive write failures may extend it. Repeated runs
+keep deterministic batch identities and previously stored SHA evidence.
+
+A completed v4 funding month does not imply complete L2/trades/candles or
+historical v3 coverage. Source rights, unavailable months, and 2021-v3
+history remain explicit separate gaps.

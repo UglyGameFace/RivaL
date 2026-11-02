@@ -58,7 +58,7 @@ def test_download_preserves_exact_bytes_and_rejects_provider_failure():
 
     def reply(request):
         urls.append(str(request.url))
-        return httpx.Response(200, content=original)
+        return httpx.Response(200, stream=httpx.ByteStream(original))
 
     with httpx.Client(transport=httpx.MockTransport(reply)) as client:
         raw, metadata = l2.download(

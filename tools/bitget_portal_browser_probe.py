@@ -62,7 +62,19 @@ def inspect(*, output: Path) -> dict:
             count = buttons.count()
             evidence["download_control_count"] = count
             page.screenshot(path=str(output / "bitget-landing.png"), full_page=False)
-            if count < 6:
+            initial_text = evidence["initial_visible_text"]
+            restricted = (
+                "Restricted IP" in initial_text
+                and "not intended for users in United States" in initial_text
+            )
+            evidence["geographic_restriction_visible"] = restricted
+            evidence["futures_control_markup"] = [
+                buttons.nth(i).evaluate("(el) => el.outerHTML.slice(0, 1500)")
+                for i in range(3, min(count, 6))
+            ]
+            if restricted:
+                evidence["errors"].append("US region restricted; do not accept false citizenship declaration")
+            elif count < 6:
                 evidence["errors"].append("did not find six public spot/futures download controls")
             else:
                 # Public site shows three spot controls followed by three futures controls.
@@ -82,7 +94,7 @@ def inspect(*, output: Path) -> dict:
                         page.wait_for_timeout(2500)
                     except (PlaywrightError, TimeoutError, OSError, ValueError) as exc:
                         evidence["errors"].append(f"{family}: {type(exc).__name__}")
-            evidence["futures_downloads_verified"] = bool(evidence["dialogs"])
+            evidence["futures_downloads_verified"] = bool(evidence["dialogs"]) and not restricted
         except (PlaywrightError, TimeoutError, OSError, ValueError) as exc:
             evidence["errors"].append(f"navigation: {type(exc).__name__}")
         finally:
@@ -91,6 +103,8 @@ def inspect(*, output: Path) -> dict:
     report.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     print(json.dumps({
         "public_page_text": evidence.get("initial_visible_text", "")[-1600:],
+        "geographic_restriction_visible": evidence.get("geographic_restriction_visible", False),
+        "futures_markup": evidence.get("futures_control_markup", []),
         "dialog_excerpts": [{"family": x["family"], "text": x["visible_text"][-2400:]} for x in evidence["dialogs"]],
         "status": "public_dialog_inspection_only",
         "controls": evidence.get("download_control_count", 0),

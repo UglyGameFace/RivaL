@@ -762,190 +762,193 @@ class ResearchDashboard(discord.ui.View):
                               "No source-native model training is proven.",
                         inline=False,
                     )
-            if self.market is None:
-                embed.add_field(
-                    name="Mathematical analysis",
-                    value="PostgreSQL collector unavailable.", inline=False,
-                )
-            else:
-                try:
-                    status = await asyncio.to_thread(
-                        self._history_inventory_cached,
-                    )
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("History audit unavailable")
+            if self.section in ("overview", "history", "recovery"):
+                if self.market is None:
                     embed.add_field(
-                        name="History", value="Coverage check unavailable.",
-                        inline=False,
+                        name="Mathematical analysis",
+                        value="PostgreSQL collector unavailable.", inline=False,
                     )
                 else:
-                    embed.add_field(
-                        name="Six-month history target",
-                        value=(
-                            f"**{status['saved']:,} / {status['expected']:,}** "
-                            "five-minute observations across configured streams.\n"
-                            f"**{status['coverage_pct_ceiling']:.3f}%** "
-                            "maximum possible row-count coverage. "
-                            "Gaps and real-time availability need separate audits."
-                        ), inline=False,
-                    )
                     try:
-                        audits, recovery = await asyncio.to_thread(
-                            self._history_quality_status,
-                        )
-                        if audits:
-                            complete = sum(x["status"] == "complete" for x in audits)
-                            missing = sum(int(x["missing_bars"]) for x in audits)
-                            anomalies = sum(
-                                int(x["off_grid_bars"]) +
-                                int(x["invalid_observations"])
-                                for x in audits
-                            )
-                            last = max(
-                                datetime.fromisoformat(x["audited_at"])
-                                for x in audits
-                            )
-                            embed.add_field(
-                                name="Historical gap audit",
-                                value=(
-                                    f"**{complete}/{len(audits)}** inspected streams "
-                                    f"have complete six-month history; "
-                                    f"**{missing:,}** missing bars and "
-                                    f"**{anomalies:,}** malformed/invalid observations "
-                                    f"across last completed per-venue audits. "
-                                    f"Last check {discord.utils.format_dt(last, style='R')}. "
-                                    "This measures real continuity, not model accuracy."
-                                ), inline=False,
-                            )
-                        else:
-                            embed.add_field(
-                                name="Historical gap audit",
-                                value="No completed background six-month continuity audit yet.",
-                                inline=False,
-                            )
-                        if recovery is not None:
-                            embed.add_field(
-                                name="Gate six-month recovery",
-                                value=(
-                                    f"**{recovery['status']}** · "
-                                    f"**{int(recovery['inserted_bars']):,}** old "
-                                    f"candles imported for {self.asset}. "
-                                    f"Cursor: {str(recovery['next_opened_at'])[:16]} UTC. "
-                                    "No old candle is counted as a live prediction."
-                                ), inline=False,
-                            )
-                        bitget = await asyncio.to_thread(
-                            self._bitget_history_progress,
-                        )
-                        kucoin = await asyncio.to_thread(
-                            self._kucoin_history_progress,
-                        )
-                        if kucoin is not None:
-                            embed.add_field(
-                                name="KuCoin six-month recovery",
-                                value=(
-                                    f"**{kucoin['status']}** · "
-                                    f"**{int(kucoin['inserted_bars']):,}** old "
-                                    f"candles imported for {self.asset}. "
-                                    f"Cursor: {str(kucoin['next_opened_at'])[:16]} UTC. "
-                                    f"Missing intervals: **{int(kucoin['empty_windows'])}** "
-                                    "empty request windows. "
-                                    "These are NOT live forward tests."
-                                )[:1024], inline=False,
-                            )
-                        okx = await asyncio.to_thread(
-                            self._okx_history_progress,
-                        )
-                        progress = (
-                            ("Gate", recovery), ("KuCoin", kucoin),
-                            ("Bitget", bitget), ("OKX", okx),
-                        )
-                        lines = [
-                            (
-                                f"**{name}**: {row['status']} · "
-                                f"{int(row['inserted_bars']):,} imported · "
-                                f"cursor {str(row['next_opened_at'])[:16]} UTC"
-                            ) if row is not None else f"**{name}**: not started"
-                            for name, row in progress
-                        ]
-                        embed.add_field(
-                            name="Historical recovery progress",
-                            value="\n".join(lines) +
-                                  "\nBackfills are NOT past live predictions. "
-                                  "Continuity audits verify actual gaps.",
-                            inline=False,
+                        status = await asyncio.to_thread(
+                            self._history_inventory_cached,
                         )
                     except Exception:  # noqa: BLE001
-                        _LOG.exception("History audit status read unavailable")
+                        _LOG.exception("History audit unavailable")
                         embed.add_field(
-                            name="Historical gap audit",
-                            value="Gap-check report temporarily unavailable.",
+                            name="History", value="Coverage check unavailable.",
                             inline=False,
                         )
-                    embed.add_field(
-                        name="Mathematical model",
-                        value=(
-                            "Online weights are evaluated in the background on "
-                            "settled historical observations. **No model is "
-                            "approved for live trading or automated signals.**"
-                        ) if self.shadow_enabled else (
-                            "Point-in-time features and offline shadow evaluation "
-                            "exist; scheduled evaluation is disabled."
-                        ), inline=False,
-                    )
-                # This describes *observed* cross-venue movement; no
-                # target/stop-loss/probability is invented from raw momentum.
-                try:
-                    pulse = await asyncio.to_thread(
-                        calculate_market_pulse, self.market,
-                        asset=self.asset, venues=self.venues,
-                    )
-                except InsufficientEvidence as exc:
-                    embed.add_field(
-                        name="Current market pulse",
-                        value=(
-                            f"NO SIGNAL · {exc} "
-                            "Exchange collection can be healthy while "
-                            "the required continuous five-minute history "
-                            "is still incomplete. Tap **Update live stats**."
-                        )[:1024], inline=False,
-                    )
-                except Exception:  # noqa: BLE001 - no credentials in Discord
-                    _LOG.exception("RivaL market pulse calculation failed")
-                    embed.add_field(
-                        name="Current market pulse",
-                        value="Current read-only market observations unavailable.",
-                        inline=False,
-                    )
-                else:
-                    quarter = (
-                        f"{pulse.median_15m_pct:+.3f}%"
-                        if pulse.median_15m_pct is not None else "unavailable"
-                    )
-                    hour = (
-                        f"{pulse.median_1h_pct:+.3f}%"
-                        if pulse.median_1h_pct is not None else "insufficient history"
-                    )
-                    embed.add_field(
-                        name="Current market pulse · NOT a trading signal",
-                        value=(
-                            f"**{pulse.sources}/{pulse.configured}** fresh venues "
-                            f"· most recent shared close "
-                            f"{discord.utils.format_dt(pulse.observed_at, style='R')}\n"
-                            f"Previous 5m median move: "
-                            f"**{pulse.median_5m_pct:+.3f}%**\n"
-                            f"15m context: **{quarter}** · 1h: **{hour}**\n"
-                            f"Past 5m sources: **{pulse.up} up / "
-                            f"{pulse.down} down / {pulse.flat} flat**\n"
-                            f"Exchange range: "
-                            f"{pulse.range_5m_pct[0]:+.3f}% to "
-                            f"{pulse.range_5m_pct[1]:+.3f}%\n"
-                            "**Next 5m forecast: NOT VALIDATED.** "
-                            "Suggested take-profit/stop: not approved. "
-                            "Past momentum is not the next candle."
-                        )[:1024],
-                        inline=False,
-                    )
+                    else:
+                        embed.add_field(
+                            name="Six-month history target",
+                            value=(
+                                f"**{status['saved']:,} / {status['expected']:,}** "
+                                "five-minute observations across configured streams.\n"
+                                f"**{status['coverage_pct_ceiling']:.3f}%** "
+                                "maximum possible row-count coverage. "
+                                "Gaps and real-time availability need separate audits."
+                            ), inline=False,
+                        )
+                        if self.section in ("history", "recovery"):
+                            try:
+                                audits, recovery = await asyncio.to_thread(
+                                    self._history_quality_status,
+                                )
+                                if audits:
+                                    complete = sum(x["status"] == "complete" for x in audits)
+                                    missing = sum(int(x["missing_bars"]) for x in audits)
+                                    anomalies = sum(
+                                        int(x["off_grid_bars"]) +
+                                        int(x["invalid_observations"])
+                                        for x in audits
+                                    )
+                                    last = max(
+                                        datetime.fromisoformat(x["audited_at"])
+                                        for x in audits
+                                    )
+                                    embed.add_field(
+                                        name="Historical gap audit",
+                                        value=(
+                                            f"**{complete}/{len(audits)}** inspected streams "
+                                            f"have complete six-month history; "
+                                            f"**{missing:,}** missing bars and "
+                                            f"**{anomalies:,}** malformed/invalid observations "
+                                            f"across last completed per-venue audits. "
+                                            f"Last check {discord.utils.format_dt(last, style='R')}. "
+                                            "This measures real continuity, not model accuracy."
+                                        ), inline=False,
+                                    )
+                                else:
+                                    embed.add_field(
+                                        name="Historical gap audit",
+                                        value="No completed background six-month continuity audit yet.",
+                                        inline=False,
+                                    )
+                                if recovery is not None:
+                                    embed.add_field(
+                                        name="Gate six-month recovery",
+                                        value=(
+                                            f"**{recovery['status']}** · "
+                                            f"**{int(recovery['inserted_bars']):,}** old "
+                                            f"candles imported for {self.asset}. "
+                                            f"Cursor: {str(recovery['next_opened_at'])[:16]} UTC. "
+                                            "No old candle is counted as a live prediction."
+                                        ), inline=False,
+                                    )
+                                bitget = await asyncio.to_thread(
+                                    self._bitget_history_progress,
+                                )
+                                kucoin = await asyncio.to_thread(
+                                    self._kucoin_history_progress,
+                                )
+                                if kucoin is not None:
+                                    embed.add_field(
+                                        name="KuCoin six-month recovery",
+                                        value=(
+                                            f"**{kucoin['status']}** · "
+                                            f"**{int(kucoin['inserted_bars']):,}** old "
+                                            f"candles imported for {self.asset}. "
+                                            f"Cursor: {str(kucoin['next_opened_at'])[:16]} UTC. "
+                                            f"Missing intervals: **{int(kucoin['empty_windows'])}** "
+                                            "empty request windows. "
+                                            "These are NOT live forward tests."
+                                        )[:1024], inline=False,
+                                    )
+                                okx = await asyncio.to_thread(
+                                    self._okx_history_progress,
+                                )
+                                progress = (
+                                    ("Gate", recovery), ("KuCoin", kucoin),
+                                    ("Bitget", bitget), ("OKX", okx),
+                                )
+                                lines = [
+                                    (
+                                        f"**{name}**: {row['status']} · "
+                                        f"{int(row['inserted_bars']):,} imported · "
+                                        f"cursor {str(row['next_opened_at'])[:16]} UTC"
+                                    ) if row is not None else f"**{name}**: not started"
+                                    for name, row in progress
+                                ]
+                                embed.add_field(
+                                    name="Historical recovery progress",
+                                    value="\n".join(lines) +
+                                          "\nBackfills are NOT past live predictions. "
+                                          "Continuity audits verify actual gaps.",
+                                    inline=False,
+                                )
+                            except Exception:  # noqa: BLE001
+                                _LOG.exception("History audit status read unavailable")
+                                embed.add_field(
+                                    name="Historical gap audit",
+                                    value="Gap-check report temporarily unavailable.",
+                                    inline=False,
+                                )
+                        embed.add_field(
+                            name="Mathematical model",
+                            value=(
+                                "Online weights are evaluated in the background on "
+                                "settled historical observations. **No model is "
+                                "approved for live trading or automated signals.**"
+                            ) if self.shadow_enabled else (
+                                "Point-in-time features and offline shadow evaluation "
+                                "exist; scheduled evaluation is disabled."
+                            ), inline=False,
+                        )
+            if self.section in ("overview", "pulse"):
+                    # This describes *observed* cross-venue movement; no
+                    # target/stop-loss/probability is invented from raw momentum.
+                    try:
+                        pulse = await asyncio.to_thread(
+                            calculate_market_pulse, self.market,
+                            asset=self.asset, venues=self.venues,
+                        )
+                    except InsufficientEvidence as exc:
+                        embed.add_field(
+                            name="Current market pulse",
+                            value=(
+                                f"NO SIGNAL · {exc} "
+                                "Exchange collection can be healthy while "
+                                "the required continuous five-minute history "
+                                "is still incomplete. Tap **Update live stats**."
+                            )[:1024], inline=False,
+                        )
+                    except Exception:  # noqa: BLE001 - no credentials in Discord
+                        _LOG.exception("RivaL market pulse calculation failed")
+                        embed.add_field(
+                            name="Current market pulse",
+                            value="Current read-only market observations unavailable.",
+                            inline=False,
+                        )
+                    else:
+                        quarter = (
+                            f"{pulse.median_15m_pct:+.3f}%"
+                            if pulse.median_15m_pct is not None else "unavailable"
+                        )
+                        hour = (
+                            f"{pulse.median_1h_pct:+.3f}%"
+                            if pulse.median_1h_pct is not None else "insufficient history"
+                        )
+                        embed.add_field(
+                            name="Current market pulse · NOT a trading signal",
+                            value=(
+                                f"**{pulse.sources}/{pulse.configured}** fresh venues "
+                                f"· most recent shared close "
+                                f"{discord.utils.format_dt(pulse.observed_at, style='R')}\n"
+                                f"Previous 5m median move: "
+                                f"**{pulse.median_5m_pct:+.3f}%**\n"
+                                f"15m context: **{quarter}** · 1h: **{hour}**\n"
+                                f"Past 5m sources: **{pulse.up} up / "
+                                f"{pulse.down} down / {pulse.flat} flat**\n"
+                                f"Exchange range: "
+                                f"{pulse.range_5m_pct[0]:+.3f}% to "
+                                f"{pulse.range_5m_pct[1]:+.3f}%\n"
+                                "**Next 5m forecast: NOT VALIDATED.** "
+                                "Suggested take-profit/stop: not approved. "
+                                "Past momentum is not the next candle."
+                            )[:1024],
+                            inline=False,
+                        )
                 if self.section == "spikes":
                     try:
                         spike = await asyncio.to_thread(
@@ -987,57 +990,58 @@ class ResearchDashboard(discord.ui.View):
                             value="Verified observation ledger currently unavailable.",
                             inline=False,
                         )
-                if self.shadow_enabled:
-                    try:
-                        snapshots = await asyncio.to_thread(
-                            ShadowLearningMonitor(self.market.store).latest,
-                            asset=self.asset,
-                        )
-                    except Exception:  # noqa: BLE001 - view must never crash
-                        _LOG.exception("Stored shadow evaluation read failed")
-                        embed.add_field(
-                            name="Automatic learning",
-                            value="Learning history unavailable; collection can continue.",
-                            inline=False,
-                        )
-                    else:
-                        ready = [
-                            row for row in snapshots
-                            if row["evaluated"] >= MIN_EVALUATED
-                            and row["brier"] is not None
-                        ]
-                        if ready:
-                            total = sum(int(x["evaluated"]) for x in ready)
-                            model_score = sum(
-                                float(x["brier"]) * int(x["evaluated"])
-                                for x in ready
-                            ) / total
-                            baseline_score = sum(
-                                float(x["baseline_brier"]) * int(x["evaluated"])
-                                for x in ready
-                            ) / total
+                if self.section == "learning":
+                    if self.shadow_enabled:
+                        try:
+                            snapshots = await asyncio.to_thread(
+                                ShadowLearningMonitor(self.market.store).latest,
+                                asset=self.asset,
+                            )
+                        except Exception:  # noqa: BLE001 - view must never crash
+                            _LOG.exception("Stored shadow evaluation read failed")
                             embed.add_field(
-                                name="Automatic shadow evaluation",
-                                value=(
-                                    f"**{len(ready)}** qualifying venue/horizon streams "
-                                    f"· **{total:,}** settled evaluations (may overlap).\n"
-                                    f"Mean Brier: **{model_score:.4f}** vs "
-                                    f"baseline **{baseline_score:.4f}**.\n"
-                                    "Research only: not a calibrated or deployed signal."
-                                ),
+                                name="Automatic learning",
+                                value="Learning history unavailable; collection can continue.",
                                 inline=False,
                             )
                         else:
-                            embed.add_field(
-                                name="Automatic shadow evaluation",
-                                value=(
-                                    f"**{len(snapshots)}** tracked venue/horizon streams. "
-                                    f"Waiting for at least {MIN_EVALUATED} causal "
-                                    "settled evaluations per stream. Backfilled "
-                                    "candles cannot qualify as live predictions."
-                                ),
-                                inline=False,
-                            )
+                            ready = [
+                                row for row in snapshots
+                                if row["evaluated"] >= MIN_EVALUATED
+                                and row["brier"] is not None
+                            ]
+                            if ready:
+                                total = sum(int(x["evaluated"]) for x in ready)
+                                model_score = sum(
+                                    float(x["brier"]) * int(x["evaluated"])
+                                    for x in ready
+                                ) / total
+                                baseline_score = sum(
+                                    float(x["baseline_brier"]) * int(x["evaluated"])
+                                    for x in ready
+                                ) / total
+                                embed.add_field(
+                                    name="Automatic shadow evaluation",
+                                    value=(
+                                        f"**{len(ready)}** qualifying venue/horizon streams "
+                                        f"· **{total:,}** settled evaluations (may overlap).\n"
+                                        f"Mean Brier: **{model_score:.4f}** vs "
+                                        f"baseline **{baseline_score:.4f}**.\n"
+                                        "Research only: not a calibrated or deployed signal."
+                                    ),
+                                    inline=False,
+                                )
+                            else:
+                                embed.add_field(
+                                    name="Automatic shadow evaluation",
+                                    value=(
+                                        f"**{len(snapshots)}** tracked venue/horizon streams. "
+                                        f"Waiting for at least {MIN_EVALUATED} causal "
+                                        "settled evaluations per stream. Backfilled "
+                                        "candles cannot qualify as live predictions."
+                                    ),
+                                    inline=False,
+                                )
             embed.set_footer(
                 text="Historical backfills do not count as live forward tests."
             )
@@ -1268,132 +1272,133 @@ class ResearchDashboard(discord.ui.View):
             # Do not run every other accuracy, analytics and readiness query
             # for lineage, ledger, regime or cost screens. The old full-render
             # path did this despite showing at most two fields on a phone.
-            if self.section in ("lineage", "ledger", "regimes", "costs"):
+            if self.section in ("lineage", "technical", "ledger", "regimes", "costs"):
                 embed.set_footer(text="Read-only database evidence • No trading approval")
                 return embed
 
-            # Read-only proof that the autonomous engine actually attempted
-            # its last scheduled research cycle. Do not confuse zero issued
-            # forecasts with a failed learning process.
-            if self.market is not None:
-                try:
-                    latest = await asyncio.to_thread(
-                        AutonomousResearch(
-                            self.market, ai=None, venues=self.venues,
-                        ).learning_heartbeat,
-                    )
-                    if latest is None:
-                        heartbeat = (
-                            "No automatic learning cycle has been recorded "
-                            "since this feature was deployed. This is not "
-                            "evidence of a trained model."
+            if self.section == "engine":
+                # Read-only proof that the autonomous engine actually attempted
+                # its last scheduled research cycle. Do not confuse zero issued
+                # forecasts with a failed learning process.
+                if self.market is not None:
+                    try:
+                        latest = await asyncio.to_thread(
+                            AutonomousResearch(
+                                self.market, ai=None, venues=self.venues,
+                            ).learning_heartbeat,
                         )
-                    else:
-                        completed = datetime.fromisoformat(
-                            str(latest["completed_at"])
-                        )
-                        age = datetime.now(UTC) - completed.astimezone(UTC)
-                        if age < timedelta(0):
-                            health = "Invalid future timestamp"
-                        elif age > timedelta(minutes=12):
-                            health = "🔴 Stale: automatic research may be stalled"
-                        elif any(not bool(latest[key]) for key in (
-                            "math_ok", "ai_settlement_ok",
-                            "model_review_ok", "gemini_ok",
-                        )):
-                            health = "🟡 Cycle ran, but a stage failed"
+                        if latest is None:
+                            heartbeat = (
+                                "No automatic learning cycle has been recorded "
+                                "since this feature was deployed. This is not "
+                                "evidence of a trained model."
+                            )
                         else:
-                            health = "🟢 Background research cycle completed"
-                        stages = (
-                            "math " + ("OK" if latest["math_ok"] else "FAILED")
-                            + " · settlement "
-                            + ("OK" if latest["ai_settlement_ok"] else "FAILED")
-                            + " · governance "
-                            + ("OK" if latest["model_review_ok"] else "FAILED")
-                            + " · optional AI scheduler "
-                            + ("OK" if latest["gemini_ok"] else "FAILED")
+                            completed = datetime.fromisoformat(
+                                str(latest["completed_at"])
+                            )
+                            age = datetime.now(UTC) - completed.astimezone(UTC)
+                            if age < timedelta(0):
+                                health = "Invalid future timestamp"
+                            elif age > timedelta(minutes=12):
+                                health = "🔴 Stale: automatic research may be stalled"
+                            elif any(not bool(latest[key]) for key in (
+                                "math_ok", "ai_settlement_ok",
+                                "model_review_ok", "gemini_ok",
+                            )):
+                                health = "🟡 Cycle ran, but a stage failed"
+                            else:
+                                health = "🟢 Background research cycle completed"
+                            stages = (
+                                "math " + ("OK" if latest["math_ok"] else "FAILED")
+                                + " · settlement "
+                                + ("OK" if latest["ai_settlement_ok"] else "FAILED")
+                                + " · governance "
+                                + ("OK" if latest["model_review_ok"] else "FAILED")
+                                + " · optional AI scheduler "
+                                + ("OK" if latest["gemini_ok"] else "FAILED")
+                            )
+                            heartbeat = (
+                                f"**{health}** · "
+                                f"{discord.utils.format_dt(completed, style='R')}\\n"
+                                f"{stages}\\n"
+                                f"Last cycle: **{latest['math_issued']}** math "
+                                f"forecasts issued, **{latest['math_settled']}** "
+                                "settled, "
+                                f"**{latest['ai_issued']}** optional AI records.\\n"
+                                "Zero means no new qualifying forecast, "
+                                "**not** that prior predictions became more accurate."
+                            ).replace("\\n", "\n")
+                        embed.add_field(
+                            name="Automatic learning engine · LIVE",
+                            value=heartbeat[:1024], inline=False,
                         )
-                        heartbeat = (
-                            f"**{health}** · "
-                            f"{discord.utils.format_dt(completed, style='R')}\\n"
-                            f"{stages}\\n"
-                            f"Last cycle: **{latest['math_issued']}** math "
-                            f"forecasts issued, **{latest['math_settled']}** "
-                            "settled, "
-                            f"**{latest['ai_issued']}** optional AI records.\\n"
-                            "Zero means no new qualifying forecast, "
-                            "**not** that prior predictions became more accurate."
-                        ).replace("\\n", "\n")
-                    embed.add_field(
-                        name="Automatic learning engine · LIVE",
-                        value=heartbeat[:1024], inline=False,
-                    )
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL learning heartbeat read unavailable")
-                    embed.add_field(
-                        name="Automatic learning engine · LIVE",
-                        value="PostgreSQL cycle diagnostics unavailable; "
-                              "do not assume the engine is running.",
-                        inline=False,
-                    )
-            # A successful heartbeat with zero predictions is ambiguous until
-            # we inspect the forecast gate outcomes from the *actual* run.
-            # Query one small durable row; never infer readiness from candle totals.
-            if self.market is not None:
-                try:
-                    diagnostics = await asyncio.to_thread(
-                        ForwardAccuracyMonitor(self.market).latest_diagnostics,
-                    )
-                    if diagnostics is None:
-                        details = (
-                            "No automatic issuance audit has been recorded yet. "
-                            "Collection may be working, but forecast readiness "
-                            "has not been verified."
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("RivaL learning heartbeat read unavailable")
+                        embed.add_field(
+                            name="Automatic learning engine · LIVE",
+                            value="PostgreSQL cycle diagnostics unavailable; "
+                                  "do not assume the engine is running.",
+                            inline=False,
                         )
-                    else:
-                        checked = datetime.fromisoformat(
-                            str(diagnostics["checked_at"])
-                        ).astimezone(UTC)
-                        elapsed = datetime.now(UTC) - checked
-                        state = (
-                            "🔴 Stale execution"
-                            if elapsed > timedelta(minutes=12)
-                            else "🟢 Fresh execution"
-                            if elapsed >= timedelta(0)
-                            else "⚠️ Invalid future timestamp"
+                # A successful heartbeat with zero predictions is ambiguous until
+                # we inspect the forecast gate outcomes from the *actual* run.
+                # Query one small durable row; never infer readiness from candle totals.
+                if self.market is not None:
+                    try:
+                        diagnostics = await asyncio.to_thread(
+                            ForwardAccuracyMonitor(self.market).latest_diagnostics,
                         )
-                        details = (
-                            f"**{state}** · "
-                            f"{discord.utils.format_dt(checked, style='R')}\\n"
-                            f"Discovered **{diagnostics['discovered_streams']}** "
-                            f"fresh streams, checked "
-                            f"**{diagnostics['selected_streams']}** this cycle.\\n"
-                            f"Issued **{diagnostics['issued_forecasts']}**, "
-                            f"settled **{diagnostics['settled_forecasts']}**, "
-                            f"already-issued **{diagnostics['duplicate_forecasts']}**.\\n"
-                            f"Blocked by short history "
-                            f"**{diagnostics['short_history']}**, "
-                            f"stale **{diagnostics['stale_last_candle']}**, "
-                            f"invalid **{diagnostics['invalid_data']}**; "
-                            f"insufficient causal labels "
-                            f"**{diagnostics['insufficient_causal_labels']}**, "
-                            f"insufficient evaluation "
-                            f"**{diagnostics['insufficient_training']}**, "
-                            f"expired target **{diagnostics['target_expired']}**."
-                        ).replace("\\n", "\n")
-                    embed.add_field(
-                        name="Forward issue audit · LIVE",
-                        value=details[:1024],
-                        inline=False,
-                    )
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL forward issue diagnostics unavailable")
-                    embed.add_field(
-                        name="Forward issue audit · LIVE",
-                        value="Cannot read forecast issue audit from PostgreSQL. "
-                              "Do not infer model health from candle counts.",
-                        inline=False,
-                    )
+                        if diagnostics is None:
+                            details = (
+                                "No automatic issuance audit has been recorded yet. "
+                                "Collection may be working, but forecast readiness "
+                                "has not been verified."
+                            )
+                        else:
+                            checked = datetime.fromisoformat(
+                                str(diagnostics["checked_at"])
+                            ).astimezone(UTC)
+                            elapsed = datetime.now(UTC) - checked
+                            state = (
+                                "🔴 Stale execution"
+                                if elapsed > timedelta(minutes=12)
+                                else "🟢 Fresh execution"
+                                if elapsed >= timedelta(0)
+                                else "⚠️ Invalid future timestamp"
+                            )
+                            details = (
+                                f"**{state}** · "
+                                f"{discord.utils.format_dt(checked, style='R')}\\n"
+                                f"Discovered **{diagnostics['discovered_streams']}** "
+                                f"fresh streams, checked "
+                                f"**{diagnostics['selected_streams']}** this cycle.\\n"
+                                f"Issued **{diagnostics['issued_forecasts']}**, "
+                                f"settled **{diagnostics['settled_forecasts']}**, "
+                                f"already-issued **{diagnostics['duplicate_forecasts']}**.\\n"
+                                f"Blocked by short history "
+                                f"**{diagnostics['short_history']}**, "
+                                f"stale **{diagnostics['stale_last_candle']}**, "
+                                f"invalid **{diagnostics['invalid_data']}**; "
+                                f"insufficient causal labels "
+                                f"**{diagnostics['insufficient_causal_labels']}**, "
+                                f"insufficient evaluation "
+                                f"**{diagnostics['insufficient_training']}**, "
+                                f"expired target **{diagnostics['target_expired']}**."
+                            ).replace("\\n", "\n")
+                        embed.add_field(
+                            name="Forward issue audit · LIVE",
+                            value=details[:1024],
+                            inline=False,
+                        )
+                    except Exception:  # noqa: BLE001
+                        _LOG.exception("RivaL forward issue diagnostics unavailable")
+                        embed.add_field(
+                            name="Forward issue audit · LIVE",
+                            value="Cannot read forecast issue audit from PostgreSQL. "
+                                  "Do not infer model health from candle counts.",
+                            inline=False,
+                        )
             embed.description = (
                 "**Prospective accuracy ledger** · RivaL records shadow "
                 "predictions before future candles exist, then settles them "
@@ -1427,57 +1432,58 @@ class ResearchDashboard(discord.ui.View):
                         inline=False,
                     )
                 else:
-                    # Always recompute genuine live observation readiness from
-                    # PostgreSQL, never reuse six-month historical cache.
-                    try:
-                        readiness = await asyncio.to_thread(
-                            forecast_readiness, self.market,
-                            asset=self.asset, venues=self.venues,
-                        )
-                    except Exception:  # noqa: BLE001
-                        _LOG.exception("RivaL forecast readiness audit failed")
-                        embed.add_field(
-                            name="Mathematical forecast readiness · LIVE",
-                            value="Current readiness audit unavailable; "
-                                  "no forecast was inferred.",
-                            inline=False,
-                        )
-                    else:
-                        ready = readiness["eligible"]
-                        configured = readiness["configured"]
-                        streak = readiness["best_live_streak"]
-                        blocker = (
-                            "Eligible for shadow evaluation; verify actual "
-                            "issued/settled forecasts below."
-                            if ready else
-                            "Collecting is not training: RivaL requires "
-                            "continuous live-observed candles and outcomes "
-                            "already known before model evaluation."
-                        )
-                        embed.add_field(
-                            name="Mathematical forecast readiness · LIVE",
-                            value=(
-                                f"**{ready}/{configured}** exchange streams "
-                                "eligible for 5m and 15m shadow evaluation.\n"
-                                f"Longest genuine live streak: "
-                                f"**{streak}/{readiness['min_live_bars']}** bars.\n"
-                                f"Best 5m causal samples: "
-                                f"**{readiness['best_causal_5m']}**, "
-                                f"evaluated **{readiness['best_evaluated_5m']}** "
-                                f"(minimum {readiness['min_evaluations']}).\n"
-                                f"Stale/blocked: **{readiness['stale_or_blocked']}** "
-                                f"· awaiting live history: "
-                                f"**{readiness['waiting_history']}**.\n"
-                                f"{blocker} No betting permission implied."
-                            )[:1024], inline=False,
-                        )
-                        embed.add_field(
-                            name="Why this exchange is or isn't ready",
-                            value=explain_venue_readiness(
-                                readiness, self.selected_venue,
-                            )[:1024],
-                            inline=False,
-                        )
+                    if self.section in ("readiness", "venue"):
+                        # Always recompute genuine live observation readiness from
+                        # PostgreSQL, never reuse six-month historical cache.
+                        try:
+                            readiness = await asyncio.to_thread(
+                                forecast_readiness, self.market,
+                                asset=self.asset, venues=self.venues,
+                            )
+                        except Exception:  # noqa: BLE001
+                            _LOG.exception("RivaL forecast readiness audit failed")
+                            embed.add_field(
+                                name="Mathematical forecast readiness · LIVE",
+                                value="Current readiness audit unavailable; "
+                                      "no forecast was inferred.",
+                                inline=False,
+                            )
+                        else:
+                            ready = readiness["eligible"]
+                            configured = readiness["configured"]
+                            streak = readiness["best_live_streak"]
+                            blocker = (
+                                "Eligible for shadow evaluation; verify actual "
+                                "issued/settled forecasts below."
+                                if ready else
+                                "Collecting is not training: RivaL requires "
+                                "continuous live-observed candles and outcomes "
+                                "already known before model evaluation."
+                            )
+                            embed.add_field(
+                                name="Mathematical forecast readiness · LIVE",
+                                value=(
+                                    f"**{ready}/{configured}** exchange streams "
+                                    "eligible for 5m and 15m shadow evaluation.\n"
+                                    f"Longest genuine live streak: "
+                                    f"**{streak}/{readiness['min_live_bars']}** bars.\n"
+                                    f"Best 5m causal samples: "
+                                    f"**{readiness['best_causal_5m']}**, "
+                                    f"evaluated **{readiness['best_evaluated_5m']}** "
+                                    f"(minimum {readiness['min_evaluations']}).\n"
+                                    f"Stale/blocked: **{readiness['stale_or_blocked']}** "
+                                    f"· awaiting live history: "
+                                    f"**{readiness['waiting_history']}**.\n"
+                                    f"{blocker} No betting permission implied."
+                                )[:1024], inline=False,
+                            )
+                            embed.add_field(
+                                name="Why this exchange is or isn't ready",
+                                value=explain_venue_readiness(
+                                    readiness, self.selected_venue,
+                                )[:1024],
+                                inline=False,
+                            )
                     for horizon in (5, 15):
                         stats = report["last_7d"][horizon]
                         earlier = report["prior_7d"][horizon]
@@ -1563,6 +1569,10 @@ class ResearchDashboard(discord.ui.View):
                             "momentum as a recommended trade."
                         )[:1024], inline=False,
                     )
+                    # Overview and horizon summaries already have their verified
+                    # prospective results; advanced analytics belongs to its own section.
+                    if self.section in ("overview", "five", "fifteen", "readiness", "venue"):
+                        return embed
                     # Database evidence is queried at every Accuracy screen
                     # render, never a frozen Discord embed or cached AI claim.
                     try:

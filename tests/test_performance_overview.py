@@ -86,19 +86,21 @@ async def test_scorecard_is_short_source_specific_and_skips_heavy_training(tmp_p
         panel = await home.render()
         fields = _fields(panel)
         assert list(fields) == [
-            "📈 Exchange accuracy", "🎯 Polymarket",
-            "🧠 Learning", "📡 System status",
+            "📈 How accurate are BTC exchange predictions?",
+            "🎯 How accurate are Polymarket predictions?",
+            "🧠 Is RivaL actually learning?",
+            "📡 Are market feeds and predictions running?",
         ]
-        assert "NO VERIFIED TRADING EDGE" in panel.description
-        assert "Not better than baseline" in fields["📈 Exchange accuracy"]
-        assert "6/7 paired scores" in fields["📈 Exchange accuracy"]
-        assert "Not better than market" in fields["🎯 Polymarket"]
-        assert "402 historical outcomes (not forward calls)" in fields["🎯 Polymarket"]
-        assert "Too few future outcomes" in fields["🧠 Learning"]
-        assert "Historical seeds in recent verified lineage: 0/10" in fields["🧠 Learning"]
-        assert "Engine: **Running**" in fields["🧠 Learning"]
-        assert "Feeds: **1/1** fresh" in fields["📡 System status"]
-        assert "Forecast check:" in fields["📡 System status"]
+        assert "Profitable predictions: not proven yet" in panel.description
+        assert "Not better than a basic prediction" in fields["📈 How accurate are BTC exchange predictions?"]
+        assert "6/7 comparable results" in fields["📈 How accurate are BTC exchange predictions?"]
+        assert "Not better than market prices" in fields["🎯 How accurate are Polymarket predictions?"]
+        assert "Past results learned from:** 402 (not live predictions)" in fields["🎯 How accurate are Polymarket predictions?"]
+        assert "Not enough future results to tell yet" in fields["🧠 Is RivaL actually learning?"]
+        assert "Used verified historical training:** 0/10 recent predictions" in fields["🧠 Is RivaL actually learning?"]
+        assert "Is learning running?** Running" in fields["🧠 Is RivaL actually learning?"]
+        assert "Live price feeds:** 1/1 up to date" in fields["📡 Are market feeds and predictions running?"]
+        assert "Prediction checks:" in fields["📡 Are market feeds and predictions running?"]
         assert max(map(len, fields.values())) < 1024
     finally:
         await _close(bot, home)
@@ -122,12 +124,12 @@ async def test_slow_or_broken_learning_cannot_hide_exchange_or_cycle(tmp_path, m
     home.market.feed_health = bad_feeds
     try:
         fields = _fields(await home.render())
-        assert "Not better than baseline" in fields["📈 Exchange accuracy"]
-        assert "14d comparison: read unavailable" in fields["🧠 Learning"]
-        assert "Learning heartbeat: read unavailable" in fields["🧠 Learning"]
-        assert "Feeds: **read unavailable**" in fields["📡 System status"]
-        assert "**7** issued" in fields["📡 System status"]
-        assert "Not better than market" in fields["🎯 Polymarket"]
+        assert "Not better than a basic prediction" in fields["📈 How accurate are BTC exchange predictions?"]
+        assert "Is accuracy improving?** Cannot check right now" in fields["🧠 Is RivaL actually learning?"]
+        assert "Is learning running?** Cannot check right now" in fields["🧠 Is RivaL actually learning?"]
+        assert "Live price feeds:** Cannot check right now" in fields["📡 Are market feeds and predictions running?"]
+        assert "7 predictions recorded" in fields["📡 Are market feeds and predictions running?"]
+        assert "Not better than market prices" in fields["🎯 How accurate are Polymarket predictions?"]
     finally:
         await _close(bot, home)
 

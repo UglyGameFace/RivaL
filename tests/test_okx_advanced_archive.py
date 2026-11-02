@@ -89,6 +89,14 @@ async def test_trade_archive_is_downloaded_hashed_and_research_only(tmp_path):
                              module="trades", record=ENTRY, root=tmp_path)
 
 
+def test_signed_okx_catalog_version_is_allowed_for_exact_source_file():
+    signed = URL + "?v=202605"
+    assert archive_url(
+        asset=ASSET, month=MONTH,
+        record={"filename": FILENAME, "source_url": signed},
+    ) == signed
+
+
 @pytest.mark.parametrize("url", [
     "https://evil.example/cdn/okex/" + FILENAME,
     "http://static.okx.com/cdn/okex/" + FILENAME,

@@ -278,6 +278,14 @@ async def collect_month(client: httpx.AsyncClient, *, asset: str, family: str,
             client, asset=asset, family=family,
             begin=begin, end=end, pacer=pacer,
         )
+        required = (end - begin) // STEP
+        # A single missing source bar already disqualifies this whole month.
+        # Stop here rather than making ~90 more requests and discarding them.
+        if len(rows) != required or any(tick not in rows for tick in range(begin, end, STEP)):
+            raise HistoryImportError(
+                f"Bitget {asset}/{family}/{month} incomplete UTC grid in "
+                f"window {begin}:{end} ({len(rows)}/{required})"
+            )
         for opened in rows:
             if opened in seen:
                 raise HistoryImportError("duplicate cross-page Bitget candle")
@@ -354,6 +362,63 @@ async def publish_month(drive, *, raw: Path, manifest: Path, count: int) -> dict
             "models_approved": False}
 
 
+def write_checkpoint(report: dict, *, report_dir: Path, asset: str) -> Path:
+    """Atomically preserve source-month progress for timeout/error artifacts."""
+    report_dir.mkdir(parents=True, exist_ok=True)
+    dest = report_dir / f"bitget-{asset}-overnight-progress.json"
+    partial = dest.with_suffix(".json.part")
+    partial.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n",
+                       encoding="utf-8")
+    partial.replace(dest)
+    return dest
+
+
+async def probe_source_windows(*, client: httpx.AsyncClient, asset: str,
+                               report_dir: Path, now: datetime | None = None,
+                               pacer: Pacer | None = None) -> dict:
+    """Bounded public-source diagnostics. Never publish or claim full months."""
+    if asset not in ASSETS:
+        raise ValueError("unsupported Bitget diagnostic asset")
+    clock = now or datetime.now(UTC)
+    candidates = [months(clock, "2021-01")[-6], "2025-06", "2021-06"]
+    checks: list[dict] = []
+    pacer = pacer or Pacer()
+    for month in dict.fromkeys(candidates):
+        for family in FAMILIES:
+            spans = windows(month)
+            for position, (begin, end) in (("first", spans[0]), ("last", spans[-1])):
+                expected = (end - begin) // STEP
+                record = {"month": month, "family": family,
+                          "window": position, "expected": expected}
+                try:
+                    _, rows = await request_page(
+                        client, asset=asset, family=family,
+                        begin=begin, end=end, pacer=pacer,
+                    )
+                    record["returned"] = len(rows)
+                    record["status"] = ("complete_window"
+                                        if len(rows) == expected and all(
+                                            tick in rows for tick in range(begin, end, STEP))
+                                        else "incomplete_window")
+                except (HistoryImportError, httpx.HTTPError) as exc:
+                    record["status"] = "source_error"
+                    record["reason"] = str(exc)[:180]
+                checks.append(record)
+    result = {
+        "schema_version": "rival-bitget-v3-bounded-source-probe-v1",
+        "asset": asset, "source": ENDPOINT,
+        "generated_at": datetime.now(UTC).isoformat(),
+        "samples": checks, "request_window_count": len(checks),
+        "complete_month_claimed": False, "drive_bytes_verified": False,
+        "model_training_eligible": False, "network_bypass": False,
+    }
+    report_dir.mkdir(parents=True, exist_ok=True)
+    (report_dir / f"bitget-source-probe-{asset}.json").write_text(
+        json.dumps(result, sort_keys=True, indent=2) + "\n", encoding="utf-8"
+    )
+    return result
+
+
 async def run(*, drive, client: httpx.AsyncClient, root: Path,
               report_dir: Path, asset: str, first: str,
               max_requests: int, max_months: int, now: datetime | None = None,
@@ -363,8 +428,6 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
     if asset not in ASSETS or not 1 <= max_requests <= 40000 or not 1 <= max_months <= 400:
         raise ValueError("invalid bounded Bitget overnight job")
     pacer = pacer or Pacer()
-    existing = await existing_manifests(drive, asset=asset)
-    metadata = await verify_symbol(client, asset=asset, pacer=pacer)
     # Prioritize the latest six full months for research, then deepest history.
     prioritized = all_months[-6:] + all_months[:-6]
     job = [(month, family) for month in prioritized for family in FAMILIES]
@@ -376,9 +439,16 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
         "source_months_published_and_readback": [], "unavailable": [],
         "api_request_pages_reserved": 0, "request_budget": max_requests,
         "full_2021_present_coverage_proven": False, "live_models_approved": False,
+        "phase": "inventory", "current_source_month": None,
     }
     root.mkdir(parents=True, exist_ok=True)
-    report_dir.mkdir(parents=True, exist_ok=True)
+    write_checkpoint(report, report_dir=report_dir, asset=asset)
+    existing = await existing_manifests(drive, asset=asset)
+    report["phase"] = "contract_metadata"
+    write_checkpoint(report, report_dir=report_dir, asset=asset)
+    metadata = await verify_symbol(client, asset=asset, pacer=pacer)
+    report["phase"] = "collecting"
+    write_checkpoint(report, report_dir=report_dir, asset=asset)
     for month, family in job:
         if (family, month) in existing:
             report["existing_manifest_names_only"] += 1
@@ -388,8 +458,10 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
             or len(report["source_months_published_and_readback"]) >= max_months):
             report["budget_exhausted_before_next_month"] = True
             break
-        # Budget is reserved for a whole month, including at most three retry
-        # attempts per page; available counts never certify missing rows.
+        # Budget is reserved for a whole month, including retries. A source gap
+        # aborts its month early; no missing candle is silently filled.
+        report["current_source_month"] = {"month": month, "family": family}
+        write_checkpoint(report, report_dir=report_dir, asset=asset)
         try:
             raw, manifest, certificate = await collect_month(
                 client, asset=asset, family=family, month=month,
@@ -413,8 +485,19 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
                 break
         finally:
             report["api_request_pages_reserved"] += needed
-    path = report_dir / f"bitget-{asset}-overnight-progress.json"
-    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+            report["last_attempted_source_month"] = {"month": month, "family": family}
+            report["current_source_month"] = None
+            write_checkpoint(report, report_dir=report_dir, asset=asset)
+            print(json.dumps({
+                "event": "bitget_month_attempt", "asset": asset,
+                "month": month, "family": family,
+                "readback_receipts": len(report["source_months_published_and_readback"]),
+                "missing_or_rejected": len(report["unavailable"]),
+                "pages_budgeted": report["api_request_pages_reserved"],
+            }, sort_keys=True), flush=True)
+    report["phase"] = ("blocked" if report.get("source_access_blocked_or_throttled")
+                       else "finished")
+    path = write_checkpoint(report, report_dir=report_dir, asset=asset)
     if drive.folders.reports:
         artifact = _artifact(path, 1)
         stored = await drive.ensure_research_output(
@@ -437,7 +520,31 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max-months", type=int, default=320)
     parser.add_argument("--root", type=Path, default=Path("data/bitget-v3-archive"))
     parser.add_argument("--report-dir", type=Path, default=Path("data/native-reports"))
+    parser.add_argument("--probe-only", action="store_true",
+                        help="sample bounded official windows without Drive writes")
     args = parser.parse_args(argv)
+
+    if args.probe_only:
+        async def diagnostic() -> dict:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(40), follow_redirects=False,
+            ) as client:
+                return await probe_source_windows(
+                    client=client, asset=args.asset, report_dir=args.report_dir,
+                )
+
+        result = asyncio.run(diagnostic())
+        print(json.dumps({
+            "asset": args.asset, "source_probe_windows": result["request_window_count"],
+            "complete_windows": sum(s["status"] == "complete_window"
+                                    for s in result["samples"]),
+            "incomplete_windows": sum(s["status"] == "incomplete_window"
+                                      for s in result["samples"]),
+            "source_errors": sum(s["status"] == "source_error"
+                                 for s in result["samples"]),
+            "no_drive_writes": True,
+        }, sort_keys=True), flush=True)
+        return 0
 
     async def worker() -> dict:
         drive = _drive(Settings())

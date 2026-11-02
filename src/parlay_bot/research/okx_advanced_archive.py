@@ -19,13 +19,11 @@ import zipfile
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 import httpx
 
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.official_okx_bootstrap import (
-    ASSETS,
     FIRST,
     month_bounds,
     verify_advanced_archive_catalog_url,

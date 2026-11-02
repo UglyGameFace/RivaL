@@ -149,6 +149,11 @@ def summarize(names: list[str], *, now: datetime) -> dict:
             outside += 1
             continue
         streams[(venue, asset, family)][month].add(sha)
+    duplicate_scopes = defaultdict(set)
+    for name, count in name_counts.items():
+        if count > 1 and (parsed := parse_name(name)) is not None:
+            venue, asset, family, month, _ = parsed
+            duplicate_scopes[(venue, asset, family)].add(month)
     scopes = []
     for venue, floor, family in (
         ("binance", START_MONTH["binance"], "candles_5m"),
@@ -162,12 +167,8 @@ def summarize(names: list[str], *, now: datetime) -> dict:
             missing = [month for month in required if month not in collected]
             conflicts = [month for month in required
                          if len(collected.get(month, ())) > 1]
-            duplicate_names = [month for month in required if any(
-                name_counts.get(name, 0) > 1
-                for name in names
-                if (parsed := parse_name(name)) is not None
-                and parsed[:4] == (venue, asset, family, month)
-            )]
+            duplicate_names = [month for month in required
+                               if month in duplicate_scopes[(venue, asset, family)]]
             scopes.append({
                 "venue": venue, "asset": asset, "family": family,
                 "source_first_month": floor,

@@ -4,7 +4,6 @@ from __future__ import annotations
 import gzip
 import hashlib
 import json
-from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -97,6 +96,7 @@ def test_source_and_manifest_conflicts_fail_closed(tmp_path):
     original.write_bytes(_source() + b"another-source")
     with pytest.raises(HistoryImportError):
         load_sidecars([receipt], contract="BTC_USDT")
+    original.write_bytes(_source())
     with pytest.raises(HistoryImportError, match="conflict"):
         sidecar.write_bytes(b"tampered")
         write_sidecar(original, manifest)

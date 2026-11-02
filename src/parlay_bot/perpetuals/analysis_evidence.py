@@ -19,7 +19,6 @@ from parlay_bot.perpetuals.event_intelligence import EventIntelligence
 from parlay_bot.perpetuals.history_inventory import six_months_prior
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
-
 _LOG = logging.getLogger(__name__)
 
 

@@ -1363,7 +1363,7 @@ class GuidedHome(discord.ui.View):
                 scored = int(part.get("scored", settled) or 0)
                 hit = part.get("hit_rate")
                 accuracy = (
-                    f"**{correct:,} of {decided:,} right** ({hit:.0%})"
+                    f"**{correct:,} of {decided:,} right** ({hit:.1%})"
                     if isinstance(hit, (int, float)) and decided else
                     "Not enough verified outcomes to measure"
                 )

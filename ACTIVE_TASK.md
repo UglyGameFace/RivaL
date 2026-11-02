@@ -1,3 +1,14 @@
+## Active: qualify historical models without source contamination (2026-11-02)
+
+- **Goal:** Turn immutable complete source-native BTC/ETH/SOL/XRP history into eligible, *source-matched* model candidates, then compare against the live incumbent prospectively. Never loosen retrospective Brier/calibration gates or replace weights on historical-only evidence.
+- **Root cause identified in code:** Both offline logistic and boosted trainers used only `(contract, interval)` for model input grouping after source-native scope qualification. The same ticker string at different exchanges or quote currencies could be mixed into one group, where the strict assembler rejects the mismatched instrument. The verifier rejecting mixed data was correct; the grouping key was not.
+- **Fix:** One shared source+venue+contract+quote+interval manifest grouper consumed by both trainer families. Exact grouping preserves Binance's separate source and honors the strict qualified-stream allowlist. The existing assembler still verifies every file SHA/UTC chronology; no retrospective fabrication.
+- **Evidence gate:** Validate each generated model (including portable trees) through `verified_candidate`, the **same** policy as the live bot, before publishing any artifacts. Fail the research run on an invalid payload or disagreement with the trainer's pass flag; report actual retrospective-pass counts and per-reason failures in Drive research report and GitHub Actions summary. Passing history remains shadow research, not a live win.
+- **Validation:** Full CI, separate-venue collision tests, importer-parity/rejected model tests, research workflow run on main and original Drive-readback evidence. Actual source-native complete six months and positive holdout Brier are not assumed; don't close issue #6 or #188 or auto-promote from zero forward outcomes.
+- **Deployment:** Source-native research lives in GitHub Actions and Drive, not in Discloud's isolated LFM3 service. Preserve API quotas and main-bot `.env`.
+
+---
+
 ## Active: restore real learning receipts and expose historical-model blockers (2026-11-02)
 
 - **Observed:** BTC 5m shows 52.4% direction but Brier 0.2486 vs 0.2484 baseline, Polymarket Brier 0.2332 vs market 0.2219, 9/9 feeds fresh, *both* cycle states shown unavailable/no record, and 0/100 incumbent forecasts historically seeded despite 1,430 online updates.

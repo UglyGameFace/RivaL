@@ -25,7 +25,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Skip completed one-time proof
+      - name: Check original acceptance and new main integration proof
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
@@ -34,9 +34,17 @@ jobs:
           set -euo pipefail
           state="$(gh api "repos/$GITHUB_REPOSITORY/issues/216" --jq .state)"
           if [[ "$state" == "open" ]]; then
+            echo "issue_open=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "issue_open=false" >> "$GITHUB_OUTPUT"
+          fi
+          # A source change reaching main requires a NEW host/DB receipt,
+          # even when the earlier one-time proof issue was already resolved.
+          # Closed issues continue to suppress hourly scheduled probes.
+          if [[ "$GITHUB_EVENT_NAME" == "push" || "$state" == "open" ]]; then
             echo "pending=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Issue #216 is closed; no Discloud or AI request."
+            echo "Older proof is complete; no hourly Discloud/AI request."
             echo "pending=false" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/checkout@v4
@@ -53,7 +61,7 @@ jobs:
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         run: python tools/discloud_llm_persistence.py
       - name: Close only on actual persisted production proof
-        if: steps.receipt.outputs.outcome == 'verified'
+        if: steps.receipt.outputs.outcome == 'verified' && steps.gate.outputs.issue_open == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash

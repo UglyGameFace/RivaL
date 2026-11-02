@@ -11,9 +11,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
-from playwright.sync_api import Error as PlaywrightError
-from playwright.sync_api import sync_playwright
-
 PORTAL = "https://www.bitget.com/data-download"
 FAMILIES = ("candles", "trades", "depth")
 
@@ -25,6 +22,9 @@ def sanitized_url(url: str) -> dict:
 
 
 def inspect(*, output: Path) -> dict:
+    from playwright.sync_api import Error as PlaywrightError
+    from playwright.sync_api import sync_playwright
+
     output.mkdir(parents=True, exist_ok=True)
     evidence = {"schema": "rival-bitget-portal-browser-discovery-v1",
                 "observed_at": datetime.now(UTC).isoformat(),
@@ -68,6 +68,10 @@ def inspect(*, output: Path) -> dict:
                 and "not intended for users in United States" in initial_text
             )
             evidence["geographic_restriction_visible"] = restricted
+            evidence["source_access_status"] = (
+                "restricted_no_eligible_attestation" if restricted
+                else "public_dialog_probe"
+            )
             evidence["futures_control_markup"] = [
                 buttons.nth(i).evaluate("(el) => el.outerHTML.slice(0, 1500)")
                 for i in range(3, min(count, 6))

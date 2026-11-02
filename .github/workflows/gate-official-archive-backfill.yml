@@ -60,7 +60,7 @@ jobs:
         run: |
           python -m pip install -e ".[dev,archive]"
           ruff check src/parlay_bot/archive/drive.py src/parlay_bot/research/gate_bulk_archive.py src/parlay_bot/research/gate_archive_backfill.py src/parlay_bot/research/gate_api_fallback.py src/parlay_bot/research/gate_coverage.py src/parlay_bot/research/gate_minute_repair.py src/parlay_bot/research/gate_native.py src/parlay_bot/research/source_native.py tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_api_fallback.py tests/test_gate_coverage.py tests/test_gate_minute_repair.py tests/test_gate_native.py
-          pytest -q tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_api_fallback.py tests/test_gate_coverage.py tests/test_gate_native.py tests/test_polymarket_contract_research.py -k 'not postgres'
+          pytest -q tests/test_gate_bulk_archive.py tests/test_gate_archive_backfill.py tests/test_gate_api_fallback.py tests/test_gate_coverage.py tests/test_gate_minute_repair.py tests/test_gate_native.py tests/test_polymarket_contract_research.py -k 'not postgres'
 
   gate-real-archive-smoke:
     if: github.event_name == 'pull_request'
@@ -155,12 +155,61 @@ jobs:
                   "native_model_approved": False,
               }))
           PY
+      - name: Check genuine Gate public 5m API for the March 2023 gaps
+        shell: bash
+        run: |
+          python - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          import httpx
+          from parlay_bot.research.free_history import HistoryImportError
+          from parlay_bot.research.gate_native import (
+              gaps, investigate_missing, original_candles,
+          )
+
+          original = Path("data/gate-minute-smoke/candlesticks_5m/2023-03/SOL_USDT-2023-03.csv.gz")
+          if not original.exists():
+              print(json.dumps({"status": "no_original_source_for_probe"}))
+          else:
+              digest = hashlib.sha256(original.read_bytes()).hexdigest()
+              candles, _ = original_candles(
+                  original, asset="SOL", month="2023-03", expected_sha=digest,
+              )
+              missing = gaps(candles, month="2023-03")
+              with httpx.Client(timeout=35, follow_redirects=False) as client:
+                  try:
+                      recovered, witnesses = investigate_missing(
+                          client, asset="SOL", month="2023-03",
+                          missing=missing,
+                      )
+                      print(json.dumps({
+                          "status": "genuine_source_api_checked",
+                          "missing_in_original_5m": len(missing),
+                          "recovered_same_gate_api": len(recovered),
+                          "still_missing": len(set(missing) - set(recovered)),
+                          "original_sha256": digest,
+                          "api_response_sha256": [
+                              item["response_sha256"] for item in witnesses
+                          ],
+                          "model_approved": False,
+                      }, sort_keys=True))
+                  except (HistoryImportError, httpx.HTTPError) as exc:
+                      print(json.dumps({
+                          "status": "public_gate_api_unavailable",
+                          "reason": str(exc)[:180],
+                          "original_missing": len(missing),
+                          "model_approved": False,
+                      }, sort_keys=True))
+          PY
       - name: Preserve independently downloaded public source proof
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gate-public-2023-source-smoke
-          path: data/gate-smoke/**/*.manifest.json
+          path: |
+            data/gate-smoke/**/*.manifest.json
             data/gate-minute-smoke/**/*.manifest.json
           if-no-files-found: ignore
           retention-days: 14

@@ -17,21 +17,24 @@ from parlay_bot.research.lighter_auxiliary_archive import (
 
 
 def test_lighter_2025_launch_and_cycle():
-    for month in ("2021-01", "2025-01", "2026-11", "2025-13"):
+    for month in ("2021-01", "2024-12", "2026-11", "2025-13"):
         with pytest.raises(HistoryImportError):
             month_bounds(month)
+    first, last = month_bounds("2025-01")
+    assert first == datetime(2025, 1, 1, tzinfo=UTC)
+    assert last == datetime(2025, 2, 1, tzinfo=UTC)
     start = datetime(2026, 11, 1, tzinfo=UTC)
-    found = {automatic_month(start + timedelta(hours=6 * i)) for i in range(21)}
-    assert len(found) == 21
-    assert "2025-02" in found and "2026-10" in found
+    found = {automatic_month(start + timedelta(hours=6 * i)) for i in range(22)}
+    assert len(found) == 22
+    assert "2025-01" in found and "2026-10" in found
 
 
 def test_latest_completed_month_and_recent_first_rotation():
     assert latest_full_month(datetime(2026, 11, 2, tzinfo=UTC)) == "2026-10"
     start = datetime(2026, 11, 1, tzinfo=UTC)
     periods = [automatic_month(start + timedelta(hours=6 * i))
-               for i in range(21)]
-    assert len(set(periods)) == 21
+               for i in range(22)]
+    assert len(set(periods)) == 22
     index = periods.index("2026-10")
     rotated = periods[index:] + periods[:index]
     assert rotated[:6] == [

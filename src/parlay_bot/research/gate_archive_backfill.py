@@ -429,11 +429,40 @@ async def collect_gate(*, drive, root: Path, report_dir: Path,
                             # contract-size specs prevent model qualification.
                             minute_key = (asset, "candlesticks_1m", month)
                             if minute_key in existing:
-                                result["one_minute_gap_repairs"].append({
-                                    "asset": asset, "month": month,
-                                    "status": "one_minute_raw_listed_not_reverified",
-                                    "model_training_eligible": False,
-                                })
+                                # A listed 1m gzip may also omit the exact
+                                # missing 5m minutes. Retry only the genuine
+                                # same-contract public 5m API with preserved
+                                # response bytes rather than declaring repair.
+                                from parlay_bot.research.gate_minute_repair import (
+                                    publish_api_gap_evidence,
+                                )
+
+                                one_minute_gap_attempts += 1
+                                try:
+                                    api_proof = await publish_api_gap_evidence(
+                                        drive, client=client, original_5m=native_rows,
+                                        original_5m_sha=receipt["compressed_sha256"],
+                                        asset=asset, month=month, root=root,
+                                    )
+                                    result["one_minute_gap_repairs"].append({
+                                        "asset": asset, "month": month,
+                                        "status": "one_minute_raw_listed_not_reverified",
+                                        "remaining_api_gap_evidence": api_proof,
+                                        "model_training_eligible": False,
+                                    })
+                                except (HistoryImportError, DriveArchiveError,
+                                        httpx.HTTPError, OSError, RuntimeError,
+                                        ValueError) as api_exc:
+                                    reason = str(api_exc)[:240]
+                                    result["one_minute_gap_blockers"].append({
+                                        "asset": asset, "month": month,
+                                        "reason": reason, "source": "gate_5m_api",
+                                    })
+                                    if any(code in reason for code in (
+                                        "HTTP 429", "HTTP 503", "HTTP 502", "HTTP 504",
+                                    )):
+                                        result["provider_throttled"] = True
+                                        break
                             else:
                                 from parlay_bot.research.gate_minute_repair import (
                                     publish_minute_gap_evidence,

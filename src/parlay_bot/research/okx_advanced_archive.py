@@ -24,8 +24,9 @@ import httpx
 
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.official_okx_bootstrap import (
-    FIRST,
-    month_bounds,
+    ADVANCED_FIRST,
+    ADVANCED_MODULE_BY_NAME,
+    advanced_month_bounds,
     verify_advanced_archive_catalog_url,
 )
 from parlay_bot.research.okx_l2_replay import ArchivedBook
@@ -58,7 +59,7 @@ def automatic_archive_slot(now: datetime | None = None, *, offset: int = 0) -> t
                                      microsecond=0)
     if clock.day <= 3:
         release_boundary = (release_boundary - timedelta(days=1)).replace(day=1)
-    first = datetime.strptime(FIRST, "%Y-%m").replace(tzinfo=UTC)
+    first = datetime.strptime(min(ADVANCED_FIRST.values()), "%Y-%m").replace(tzinfo=UTC)
     month_count = ((release_boundary.year - first.year) * 12
                    + release_boundary.month - first.month)
     if month_count <= 0:
@@ -73,7 +74,7 @@ def automatic_archive_slot(now: datetime | None = None, *, offset: int = 0) -> t
     ordered = list(reversed(all_months[-6:])) + all_months[:-6]
     candidates = [
         (month, module) for month in ordered for module in AUTOMATIC_MODULES
-        if module != "orderbook_l2_5000" or month >= L2_5000_FIRST
+        if month >= ADVANCED_FIRST[ADVANCED_MODULE_BY_NAME[module]]
     ]
     if not candidates:
         raise HistoryImportError("no release-eligible OKX archive slots")
@@ -99,7 +100,66 @@ def official_catalog_http_400(exc: Exception) -> bool:
     return isinstance(payload, dict) and payload.get("code") == "50016"
 
 
-def archive_url(*, asset: str, month: str, record: dict) -> str:
+async def listed_auxiliary_receipts(drive, *, asset: str, max_pages: int = 12) -> set[str]:
+    """Read names of existing OKX auxiliary receipts as resume hints ONLY.
+
+    Only a newly downloaded source and remote byte rehash count as verified
+    during a run. Never delete originals or trust an unrelated Drive folder.
+    """
+    if asset not in ("BTC", "ETH", "SOL", "XRP") or not 1 <= max_pages <= 12:
+        raise HistoryImportError("untrusted OKX archive inventory scope")
+    await drive._verify_folder_boundary()
+    folder = drive.folders.manifests
+    query = (
+        f"'{drive._escape_query(folder)}' in parents and trashed = false "
+        f"and name contains '{asset}-USDT-SWAP-' "
+        "and appProperties has { key='rival_kind' and value='manifest' }"
+    )
+    names, cursor, seen_ids = set(), None, set()
+    for _ in range(max_pages):
+        params = {
+            "q": query, "spaces": "drive", "pageSize": 1000,
+            "fields": "nextPageToken,files(id,name,parents,appProperties,trashed)",
+        }
+        if cursor:
+            params["pageToken"] = cursor
+        response = await drive._client.get(
+            f"{drive.DRIVE_URL}/files", params=params,
+            headers=await drive._headers(),
+        )
+        if response.status_code != 200:
+            raise HistoryImportError("OKX private auxiliary receipt listing unavailable")
+        data = response.json()
+        records = data.get("files") if isinstance(data, dict) else None
+        if not isinstance(records, list) or len(records) > 1000:
+            raise HistoryImportError("invalid OKX historical receipt listing")
+        for item in records:
+            if not isinstance(item, dict):
+                raise HistoryImportError("invalid OKX receipt metadata")
+            ident, name = item.get("id"), item.get("name")
+            if (item.get("trashed") or folder not in (item.get("parents") or [])
+                or (item.get("appProperties") or {}).get("rival_kind") != "manifest"
+                or not isinstance(ident, str) or not ident or ident in seen_ids
+                or not isinstance(name, str) or len(name) > 240):
+                raise HistoryImportError("untrusted or repeated OKX receipt")
+            seen_ids.add(ident)
+            if name.startswith(f"{asset}-USDT-SWAP-") and name.endswith(
+                (".zip.receipt.json", ".tar.gz.receipt.json")
+            ):
+                names.add(name)
+        cursor_next = data.get("nextPageToken")
+        if cursor_next is None:
+            return names
+        if (not isinstance(cursor_next, str) or not cursor_next.isascii()
+            or not cursor_next.isprintable() or not cursor_next
+            or cursor_next == cursor):
+            raise HistoryImportError("untrusted OKX receipt cursor")
+        cursor = cursor_next
+    raise HistoryImportError("OKX historical receipts exceed paged inventory budget")
+
+
+def archive_url(*, asset: str, month: str, record: dict,
+                module: str | None = None) -> str:
     """Verify an exact URL issued by the public catalog, never invent a link."""
     if not isinstance(record, dict):
         raise HistoryImportError("malformed OKX catalog entry")
@@ -107,7 +167,7 @@ def archive_url(*, asset: str, month: str, record: dict) -> str:
         asset=asset,
         month=month,
         filename=record.get("filename"),
-        url=record.get("source_url"),
+        url=record.get("source_url"), module=module,
     )
 
 def _positive(value: object, *, zero_allowed: bool = False) -> float:
@@ -224,7 +284,7 @@ def inspect_archive(path: Path, *, asset: str, month: str, module: str) -> dict:
     """Validate bounded decompression and schema, derive research-only 5m events."""
     if module not in MODULES or not path.is_file() or path.stat().st_size > MAX_ARCHIVE_BYTES:
         raise HistoryImportError("unapproved or oversized archive")
-    start, end = month_bounds(month)
+    start, end = advanced_month_bounds(month, ADVANCED_MODULE_BY_NAME[module])
     buckets = defaultdict(lambda: defaultdict(float))
     count = [0]
     total = 0
@@ -290,7 +350,7 @@ async def ingest_one(*, client: httpx.AsyncClient, asset: str, month: str,
     """One archive per invocation; never overwrite historical evidence."""
     if module not in MODULES or not 1 <= max_bytes <= MAX_ARCHIVE_BYTES:
         raise HistoryImportError("unsupported archive request or byte budget")
-    url = archive_url(asset=asset, month=month, record=record)
+    url = archive_url(asset=asset, month=month, record=record, module=module)
     root.mkdir(parents=True, exist_ok=True)
     name = record["filename"]
     target = root / name

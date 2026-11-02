@@ -158,6 +158,89 @@ def reconstruct_gaps(
     return repaired, evidence
 
 
+
+async def publish_api_gap_evidence(
+    drive, *, client: httpx.Client, original_5m: dict[int, dict],
+    original_5m_sha: str, asset: str, month: str, root: Path,
+    recovered_from_minutes: dict[int, dict] | None = None,
+) -> dict:
+    """Try the actual Gate 5m API for slots missing from BOTH source archives.
+
+    Even an empty historical API result is retained as genuine response bytes.
+    This never replaces the immutable provider gzip or certifies contract sizes.
+    """
+    from parlay_bot.research.gate_native import (
+        investigate_missing,
+        preserve_gate_api_response,
+    )
+
+    if (asset not in ASSETS or len(original_5m_sha) != 64
+        or any(c not in "0123456789abcdef" for c in original_5m_sha)):
+        raise HistoryImportError("untrusted Gate original 5m API repair identity")
+    minute_recovered = recovered_from_minutes or {}
+    missing = sorted(set(gaps(original_5m, month=month)) - set(minute_recovered))
+    if not missing:
+        return {"asset": asset, "month": month, "original_5m_sha256": original_5m_sha,
+                "api_recovered": 0, "still_missing": 0, "source_api_readback_verified": True,
+                "model_training_eligible": False}
+    recovered, witnesses = await asyncio.to_thread(
+        investigate_missing, client, asset=asset, month=month, missing=missing,
+    )
+    public_witnesses = []
+    for witness in witnesses:
+        original_bytes = witness.pop("_raw_response_bytes")
+        original_file = await preserve_gate_api_response(
+            drive, root=root, payload=original_bytes,
+            sha256=witness["response_sha256"],
+        )
+        public_witnesses.append({**witness, "original_api_file": original_file})
+    evidence = {
+        "schema_version": "rival-gate-exact-missing-api-source-v1",
+        "asset": asset, "contract": f"{asset}_USDT", "month": month,
+        "original_5m_sha256": original_5m_sha,
+        "requested_missing_unix_seconds": missing,
+        "recovered_api_unix_seconds": sorted(recovered),
+        "remaining_missing_unix_seconds": sorted(set(missing) - set(recovered)),
+        "api_candles": [
+            {"opened_unix_seconds": stamp, "contract_ohlcv": recovered[stamp]}
+            for stamp in sorted(recovered)
+        ],
+        "source_api_witnesses": public_witnesses,
+        "source_api_readback_verified": True,
+        "original_5m_archive_unchanged": True,
+        "historical_contract_multiplier_verified": False,
+        "model_training_eligible": False,
+    }
+    path = root / "gate-api-evidence" / (
+        f"gate-gap-{asset}-{month}-{original_5m_sha[:16]}-"
+        f"{hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()[:16]}.json"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (json.dumps(evidence, sort_keys=True, indent=2) + "\n").encode()
+    if path.exists() and path.read_bytes() != encoded:
+        raise HistoryImportError("immutable Gate API repair receipt mismatch")
+    if not path.exists():
+        path.write_bytes(encoded)
+    artifact = _artifact(path, 1)
+    saved = await drive.ensure_research_output(
+        artifact=artifact, batch_id="gate-gap-" + artifact.sha256[:24],
+        kind="report",
+    )
+    await drive.verify_downloaded_artifact(
+        file_id=saved.file_id, parent_id=drive.folders.reports,
+        artifact=artifact,
+    )
+    return {
+        "asset": asset, "month": month,
+        "original_5m_sha256": original_5m_sha,
+        "api_recovered": len(recovered),
+        "still_missing": len(evidence["remaining_missing_unix_seconds"]),
+        "source_api_readback_verified": True,
+        "model_training_eligible": False,
+        "report_sha256": artifact.sha256,
+    }
+
+
 async def publish_minute_gap_evidence(
     drive, *, client: httpx.Client, original_5m: dict[int, dict],
     original_5m_sha: str, asset: str, month: str, root: Path,
@@ -198,6 +281,20 @@ async def publish_minute_gap_evidence(
         sha=source["compressed_sha256"],
     ) + ".csv.gz"
     details["source_original_1m_file"] = name
+    try:
+        api_recovery = await publish_api_gap_evidence(
+            drive, client=client, original_5m=original_5m,
+            original_5m_sha=original_5m_sha, asset=asset, month=month,
+            root=root, recovered_from_minutes=repaired,
+        )
+        details["same_gate_5m_api_evidence"] = api_recovery
+    except (HistoryImportError, httpx.HTTPError, OSError) as exc:
+        # The original verified 1m source and its genuine reconstructions
+        # survive API retention limits and provider failures.
+        details["same_gate_5m_api_evidence"] = {
+            "status": "unavailable_or_unqualified", "reason": str(exc)[:180],
+            "model_training_eligible": False,
+        }
     path = root / "gate-raw-verified" / (
         f"gate-minute-gap-{asset}-{month}-{source['compressed_sha256'][:16]}.json"
     )
@@ -223,8 +320,12 @@ async def publish_minute_gap_evidence(
         "original_5m_sha256": original_5m_sha,
         "source_5m_missing": details["missing_source_5m_before"],
         "same_gate_1m_candles_derived": len(repaired),
-        "still_missing": len(details["unresolved_open_unix_seconds"]),
+        "still_missing_after_one_minute": len(details["unresolved_open_unix_seconds"]),
+        "still_missing": details["same_gate_5m_api_evidence"].get(
+            "still_missing", len(details["unresolved_open_unix_seconds"])
+        ),
         "crosschecked_existing_5m": details["crosschecked_5m_source_bars"],
+        "api_gap_evidence": details["same_gate_5m_api_evidence"],
         "original_minute_drive_sha_readback_verified": True,
         "repair_receipt_drive_sha_readback_verified": True,
         "model_training_eligible": False,

@@ -181,3 +181,61 @@ async def test_actual_original_1m_and_derived_evidence_immutable_drive_readback(
     assert report["source_original_1m_file"].endswith(".csv.gz")
     assert report["five_minute_candles_reconstructed_from_exact_5x_1m"] == 1
     assert report["historical_contract_multiplier_verified"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider_has_candle", [True, False])
+async def test_exact_gate_public_api_gap_evidence_never_fabricates_candles(
+    tmp_path, provider_has_candle,
+):
+    def api(request):
+        assert request.url.path.endswith("/futures/usdt/candlesticks")
+        assert request.url.params["contract"] == "SOL_USDT"
+        assert request.url.params["interval"] == "5m"
+        assert int(request.url.params["from"]) == MISSING
+        return httpx.Response(200, json=([{
+            "t": MISSING, "v": "10", "c": "100", "h": "101",
+            "l": "99", "o": "100",
+        }] if provider_has_candle else []))
+
+    class Drive:
+        folders = SimpleNamespace(history="history", reports="reports")
+
+        def __init__(self):
+            self.uploads = []
+            self.readbacks = []
+
+        async def ensure_history_file(self, *, artifact, batch_id, mime_type):
+            assert mime_type == "application/json"
+            self.uploads.append(artifact)
+            return SimpleNamespace(file_id=artifact.sha256)
+
+        async def ensure_research_output(self, *, artifact, batch_id, kind):
+            assert kind == "report"
+            self.uploads.append(artifact)
+            return SimpleNamespace(file_id=artifact.sha256)
+
+        async def verify_downloaded_artifact(self, *, file_id, parent_id, artifact):
+            assert file_id == artifact.sha256
+            self.readbacks.append((parent_id, artifact.sha256))
+
+    drive = Drive()
+    with httpx.Client(transport=httpx.MockTransport(api)) as client:
+        status = await minutes.publish_api_gap_evidence(
+            drive, client=client, original_5m=five_bars(),
+            original_5m_sha="b" * 64,
+            asset="SOL", month=MONTH, root=tmp_path,
+        )
+    assert status["source_api_readback_verified"] is True
+    assert status["api_recovered"] == int(provider_has_candle)
+    assert status["still_missing"] == (0 if provider_has_candle else 1)
+    assert status["model_training_eligible"] is False
+    assert len(drive.readbacks) == 2
+    report = json.loads(drive.uploads[-1].path.read_text())
+    assert report["original_5m_archive_unchanged"] is True
+    assert report["requested_missing_unix_seconds"] == [MISSING]
+    assert len(report["api_candles"]) == int(provider_has_candle)
+    assert report["remaining_missing_unix_seconds"] == (
+        [] if provider_has_candle else [MISSING]
+    )
+    assert len(report["source_api_witnesses"]) == 1

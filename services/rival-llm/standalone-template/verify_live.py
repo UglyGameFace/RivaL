@@ -16,12 +16,46 @@ from pathlib import Path
 from urllib import error, parse, request
 
 MARKER = "RIVAL_INTELLIGENCE_RELEASE_RECEIPT="
-HOST_CHECK = """import json, os, urllib.request
+HOST_CHECK = """import json, os, urllib.error, urllib.request
 port = int(os.environ.get("RIVAL_LLM_PORT", "8765"))
 token = os.environ["RIVAL_LLM_SHARED_TOKEN"]
-req = urllib.request.Request("http://127.0.0.1:%d/v1/status" % port, headers={"Authorization": "Bearer " + token})
+root = "http://127.0.0.1:%d" % port
+headers = {"Authorization": "Bearer " + token}
+req = urllib.request.Request(root + "/v1/status", headers=headers)
 with urllib.request.urlopen(req, timeout=8) as response:
     data = json.loads(response.read(5000))
+if not data.get("ready"):
+    raise RuntimeError("private model not ready")
+try:
+    urllib.request.urlopen(urllib.request.Request(root + "/v1/status"), timeout=8)
+except urllib.error.HTTPError as exc:
+    auth_rejected = exc.code == 401
+else:
+    auth_rejected = False
+if not auth_rejected:
+    raise RuntimeError("private status permits anonymous access")
+# One synthetic, read-only request: no historical claims, external APIs,
+# database writes, market orders, real quotes or user evidence.
+probe = {"asset": "BTC", "evidence": {
+    "asset": "BTC", "analysis": "unvalidated_research",
+    "horizon_minutes": 5, "sources": []}}
+req = urllib.request.Request(
+    root + "/v1/research", data=json.dumps(probe).encode("utf-8"),
+    headers={**headers, "Content-Type": "application/json"}, method="POST")
+with urllib.request.urlopen(req, timeout=38) as response:
+    result = json.loads(response.read(5000))
+smoke_ok = (result.get("model") == data.get("model")
+    and result.get("direction") == "uncertain"
+    and result.get("confidence") == "low"
+    and result.get("grounding_status") == "insufficient_evidence"
+    and result.get("grounded_by") == "deterministic_historical_evidence_policy"
+    and result.get("informational_only") is True
+    and result.get("uncalibrated") is True)
+if not smoke_ok:
+    raise RuntimeError("synthetic research was not safely grounded")
+# Only report low-cardinality verification facts; no model prose or tokens.
+data["research_smoke_ok"] = True
+data["auth_rejected"] = auth_rejected
 print("RIVAL_INTELLIGENCE_RELEASE_RECEIPT=" + json.dumps(data, separators=(",", ":")))
 """
 
@@ -42,6 +76,8 @@ def parse_receipt(stdout: str, expected_sha: str) -> dict | None:
             receipt.get("source_sha") != expected_sha
             or receipt.get("model") != "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
             or receipt.get("ready") is not True
+            or receipt.get("research_smoke_ok") is not True
+            or receipt.get("auth_rejected") is not True
             or receipt.get("repair_state") not in ("healthy", "warming")
             or type(receipt.get("repair_count")) is not int
             or receipt["repair_count"] < 0
@@ -93,6 +129,8 @@ def main() -> int:
         if receipt:
             print(json.dumps({
                 "verified": True,
+                "research_smoke_ok": receipt["research_smoke_ok"],
+                "auth_rejected": receipt["auth_rejected"],
                 "source_sha": sha,
                 "model": receipt["model"],
                 "repair_state": receipt["repair_state"],

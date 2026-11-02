@@ -125,6 +125,18 @@ def test_workflow_cooldown_and_active_job_never_dispatch_twice():
         "status": "completed", "event": "workflow_dispatch",
         "created_at": "2026-11-01T01:00:00Z",
     }], now=NOW)[0]
+    assert not should_dispatch([{
+        "status": "completed", "event": "schedule",
+        "created_at": "2026-11-02T12:15:00Z",
+    }], now=NOW)[0]
+    assert not should_dispatch([{
+        "status": "completed", "event": "push",
+        "created_at": "2026-11-02T13:00:00Z",
+    }], now=NOW)[0]
+    assert should_dispatch([{
+        "status": "completed", "event": "schedule",
+        "created_at": "2026-11-02T08:00:00Z",
+    }], now=NOW)[0]
 
 
 def test_dispatch_is_bounded_and_refuses_to_autorun_unknown_workflows():

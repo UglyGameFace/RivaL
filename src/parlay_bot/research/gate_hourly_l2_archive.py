@@ -40,6 +40,8 @@ def hour_bounds(hour: str, *, now: datetime | None = None) -> tuple[datetime, da
         start = datetime.strptime(hour, "%Y%m%d%H").replace(tzinfo=UTC)
     except ValueError as exc:
         raise HistoryImportError("invalid Gate L2 calendar hour") from exc
+    if now is not None and now.utcoffset() is None:
+        raise HistoryImportError("Gate source hour requires timezone-aware UTC clock")
     clock = (now or datetime.now(UTC)).astimezone(UTC)
     end = start + timedelta(hours=1)
     if start < FIRST_ATTEMPT or end > clock:
@@ -60,7 +62,7 @@ def source_url(*, asset: str, family: str, hour: str,
 
 def inspect_gzip(data: bytes) -> dict:
     """Bounded streaming gzip integrity check; not an L2 source-schema claim."""
-    if not 0 < len(data) <= MAX_COMPRESSED or not data.startswith(b"\\x1f\\x8b"):
+    if not 0 < len(data) <= MAX_COMPRESSED or not data.startswith(b"\x1f\x8b"):
         raise HistoryImportError("untrusted or oversized Gate depth gzip")
     lines, expanded = 0, 0
     try:
@@ -69,7 +71,7 @@ def inspect_gzip(data: bytes) -> dict:
                 expanded += len(chunk)
                 if expanded > MAX_EXPANDED:
                     raise HistoryImportError("Gate L2 decompression cap exceeded")
-                lines += chunk.count(b"\\n")
+                lines += chunk.count(b"\n")
                 if lines > MAX_SOURCE_LINES:
                     raise HistoryImportError("Gate L2 line count exceeds budget")
     except (EOFError, OSError) as exc:
@@ -96,7 +98,7 @@ def download(client: httpx.Client, *, asset: str, family: str,
             length = response.headers.get("content-length")
             if length and (not length.isdecimal() or int(length) > MAX_COMPRESSED):
                 raise HistoryImportError("Gate original L2 announced too many bytes")
-            for chunk in response.iter_bytes():
+            for chunk in response.iter_raw():
                 seen += len(chunk)
                 if seen > MAX_COMPRESSED:
                     raise HistoryImportError("Gate original L2 exceeded transfer budget")
@@ -132,7 +134,8 @@ async def store(drive, *, raw: bytes, asset: str, family: str, hour: str,
             key: value for key, value in evidence.items()
             if key != "original_source_sha256"
         },
-        "original_available_at": datetime.now(UTC).isoformat(),
+        "source_original_publication_time_verified": False,
+        "source_observation_time_unknown": True,
         "original_hourly_source_complete": False,
         "historical_orderbook_continuity_verified": False,
         "live_quote_available_at_source_event": False,
@@ -143,7 +146,7 @@ async def store(drive, *, raw: bytes, asset: str, family: str, hour: str,
     # The first-observed timestamp intentionally changes on retrieval. Reusing
     # prior immutable evidence is managed by distinct filename digest, not
     # retroactive reassignment to the original event time.
-    encoded = (json.dumps(proof, sort_keys=True, indent=2) + "\\n").encode()
+    encoded = (json.dumps(proof, sort_keys=True, indent=2) + "\n").encode()
     for target, bytes_ in ((path, raw), (manifest_path, encoded)):
         if target.exists() and target.read_bytes() != bytes_:
             raise HistoryImportError("Gate immutable L2 original conflict")
@@ -196,7 +199,7 @@ async def collect(*, hour: str, assets: tuple[str, ...],
         await drive.aclose()
     out = Path("data/native-reports/gate-hourly-l2-attempt.json")
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\\n")
+    out.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
     return result
 
 

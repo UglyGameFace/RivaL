@@ -14,7 +14,7 @@ from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
-from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
+from parlay_bot.perpetuals.gemini_research import AiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
@@ -402,7 +402,8 @@ class _ModelListButton(discord.ui.Button["ResearchDashboard"]):
 class ResearchDashboard(discord.ui.View):
     def __init__(
         self, *, owner_id: int, market: PerpetualMarketStore | None,
-        ai: GeminiResearch | OpenRouterResearch | None, venues: tuple[str, ...],
+        ai: LocalFirstResearch | CloudflareResearch | OpenRouterResearch | None,
+        venues: tuple[str, ...],
         shadow_enabled: bool = False,
         target_service: DirectionTargetService | None = None,
     ) -> None:
@@ -1239,7 +1240,7 @@ class ResearchDashboard(discord.ui.View):
                             f"**{latest['ai_issued']}** optional AI records.\\n"
                             "Zero means no new qualifying forecast, "
                             "**not** that prior predictions became more accurate."
-                        ).replace("\\\\n", "\\n")
+                        ).replace("\\n", "\n")
                     embed.add_field(
                         name="Automatic learning engine · LIVE",
                         value=heartbeat[:1024], inline=False,
@@ -1296,7 +1297,7 @@ class ResearchDashboard(discord.ui.View):
                             f"insufficient evaluation "
                             f"**{diagnostics['insufficient_training']}**, "
                             f"expired target **{diagnostics['target_expired']}**."
-                        ).replace("\\\\n", "\\n")
+                        ).replace("\\n", "\n")
                     embed.add_field(
                         name="Forward issue audit · LIVE",
                         value=details[:1024],
@@ -1568,7 +1569,7 @@ class ResearchDashboard(discord.ui.View):
                                     + ("\\n".join(bins) if bins else "Not enough outcomes.")
                                     + "\\nHistorical bins are descriptive, NOT "
                                       "a calibrated deployable model or trading approval."
-                                ).replace("\\\\n", "\\n")[:1024],
+                                ).replace("\\n", "\n")[:1024],
                                 inline=False,
                             )
                         ai_status = details["gemini"]

@@ -217,5 +217,7 @@ def test_retained_provider_original_zip_is_additive_no_source_relabel(
     assert (result.manifest_path.parent / zfile).read_bytes() == raw
     assert (result.manifest_path.parent / (zfile + ".CHECKSUM")).read_bytes() == checksum
     manifest = json.loads(result.manifest_path.read_text())
-    assert manifest["original_zip_retained_locally"]
-    assert not manifest["original_zip_remote_readback_proven_by_manifest"]
+    # Preserve original normalized manifest layout for older byte-identical
+    # receipts. New source ZIP readback is a SEPARATE publication receipt.
+    assert "original_zip_retained_locally" not in manifest
+    assert "original_zip_remote_readback_proven_by_manifest" not in manifest

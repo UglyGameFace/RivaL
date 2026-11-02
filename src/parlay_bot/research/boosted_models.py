@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections import defaultdict
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -19,7 +18,9 @@ from parlay_bot.perpetuals.model_checkpoints import FEATURE_CONTRACT, TARGET_CON
 from parlay_bot.research.boosted_portable import certified_export
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.learning import _metrics, assemble
-from parlay_bot.research.live_training import compatible_partitions, historical_features
+from parlay_bot.research.live_training import (
+    compatible_partitions, historical_features, qualified_manifest_groups,
+)
 
 FAMILIES = ("hist_gradient_boosting", "lightgbm", "xgboost", "catboost")
 MAX_TRAIN = 40000
@@ -233,29 +234,18 @@ def evaluate_compatible_boosters(manifests, *, horizon, prepared=None, estimator
 
 
 def evaluate_directory(root: Path, *, qualified_streams, artifact_dir=None):
-    groups = defaultdict(list)
-    for path in sorted((root / "binance_um_klines").glob("*.manifest.json")) + sorted(
-        (root / "verified_venue_perp_klines").glob("*.manifest.json")
-    ):
-        meta = json.loads(path.read_text(encoding="utf-8"))
-        key = (meta.get("contract"), meta.get("interval_minutes"))
-        source_key = (meta.get("venue"), meta.get("contract"),
-                      meta.get("quote"), meta.get("interval_minutes"))
-        if key[1] == 5 and (
-            (meta.get("source") == "binance_um_klines" and key in qualified_streams)
-            or (meta.get("source") == "verified_venue_perp_klines"
-                and source_key in qualified_streams)
-        ):
-            groups[key].append(path)
     results = []
-    for paths in groups.values():
+    # Reuse exactly the same strict venue, quote and contract scope as the
+    # native logistic learner, rather than silently mixing matching tickers.
+    for paths in qualified_manifest_groups(root, qualified_streams=qualified_streams):
         identity, rows, provenance = assemble(paths)
         vectors = historical_features(rows, identity)
         prepared = (identity, rows, provenance, vectors)
         for horizon in HORIZONS:
             try:
                 results.append(evaluate_compatible_boosters(
-                    paths, horizon=horizon, prepared=prepared, artifact_dir=artifact_dir,
+                    paths, horizon=horizon, prepared=prepared,
+                    artifact_dir=artifact_dir,
                 ))
             except HistoryImportError:
                 continue

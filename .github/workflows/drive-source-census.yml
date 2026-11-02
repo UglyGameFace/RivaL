@@ -47,12 +47,15 @@ jobs:
           python - <<'PY'
           import json,os
           d=json.load(open("data/native-reports/drive-source-census.json"))
-          rows=["## Warehouse names by source and asset",
-             "Manifest names are not actual byte-SHA readbacks or trained models.",
-             "| Venue | Asset | Named months | Unlisted months |",
-             "|---|---|---:|---:|"]
+          rows=["## Warehouse source and asset manifest inventory",
+             "Names are NOT byte-SHA readbacks, historical contract listing proof, or model training approval.",
+             "| Venue | Asset | Family | Named months | Unlisted months | Name conflicts |",
+             "|---|---|---|---:|---:|---:|"]
           for r in d["month_scopes"]:
-              rows.append(f"| {r['venue']} | {r['asset']} | {r['listed_manifest_months']} | {r['not_listed_months']} |")
+              conflicts=len(r["conflicting_months"])+len(r["duplicate_name_months"])
+              rows.append(f"| {r['venue']} | {r['asset']} | {r['family']} | {r['listed_manifest_months']} | {r['not_listed_months']} | {conflicts} |")
+          rows.append(f"\nPartial dYdX/Lighter source page scopes (NOT complete months): {len(d['page_level_sources_not_full_months'])}.")
+          rows.append(f"Duplicate manifest names: {d['duplicate_manifest_names']}.")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
               f.write("\n".join(rows)+"\n")
           PY

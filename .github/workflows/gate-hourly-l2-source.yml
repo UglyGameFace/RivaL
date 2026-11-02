@@ -60,22 +60,27 @@ jobs:
       - name: Probe documented old Gate BTC perpetual depth gzip, bounded and free
         run: |
           python - <<'PY'
+          import gzip
+          import io
           import json
           import httpx
           from parlay_bot.research.gate_hourly_l2_archive import download
           from parlay_bot.research.free_history import HistoryImportError
           with httpx.Client(timeout=35, follow_redirects=False) as client:
               try:
-                  _, info = download(
+                  raw, info = download(
                       client, asset="BTC", family="orderbooks_slice",
                       hour="2023042505",
                   )
+                  with gzip.GzipFile(fileobj=io.BytesIO(raw)) as stream:
+                      first = stream.read(240)
                   report = {
                       "source": "official_gate_usdt_perpetual_hourly_depth",
                       "hour": "2023042505", "status": "original_gzip_verified_locally",
                       "sha256": info["original_source_sha256"],
                       "compressed_bytes": info["compressed_bytes"],
                       "expanded_bytes": info["expanded_bytes"],
+                      "unparsed_original_sample_repr": repr(first[:200]),
                       "l2_continuity_verified": False,
                   }
               except (HistoryImportError, httpx.HTTPError) as exc:

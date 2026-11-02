@@ -48,18 +48,19 @@ _SECTIONS = {
         ("ai", "AI Review"),
     ),
     "accuracy": (
-        ("overview", "Overview"),
-        ("engine", "Engine health"),
-        ("readiness", "Forecast readiness"),
-        ("lineage", "Training actually used"),
-        ("venue", "Exchange blocker"),
-        ("five", "5-minute results"),
-        ("fifteen", "15-minute results"),
-        ("calibration", "Probability reliability"),
-        ("ledger", "Prediction ledger"),
-        ("regimes", "Market-regime skill"),
-        ("costs", "Costs (not verified)"),
-        ("method", "Scoring method"),
+        ("overview", "At a glance"),
+        ("engine", "Is the engine running?"),
+        ("readiness", "Can RivaL predict yet?"),
+        ("lineage", "Is it learning from history?"),
+        ("venue", "Which exchange is blocked?"),
+        ("five", "5-minute predictions"),
+        ("fifteen", "15-minute predictions"),
+        ("calibration", "Are probabilities reliable?"),
+        ("ledger", "Recent predictions"),
+        ("regimes", "Skill in different markets"),
+        ("costs", "Profit after trading fees"),
+        ("method", "How results are checked"),
+        ("technical", "Technical evidence"),
     ),
     "ai": (
         ("overview", "Overview"),
@@ -81,7 +82,8 @@ _FIELD_GROUPS = {
     "accuracy": {
         "engine": ("Automatic learning engine", "Forward issue audit"),
         "readiness": ("Mathematical forecast readiness",),
-        "lineage": ("Model training actually used", "Boosted model production proof"),
+        "lineage": ("How is RivaL learning?", "Are advanced models ready?"),
+        "technical": ("Model training actually used", "Boosted model production proof"),
         "venue": ("Why this exchange",),
         "five": ("Forward 5-minute evaluation", "Math 5m"),
         "fifteen": ("Forward 15-minute evaluation", "Math 15m"),
@@ -135,7 +137,7 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
         title=full.title,
         description={
             "math": "Live market observations and historical research. No approved trade.",
-            "accuracy": "Forward-only predictions versus actual outcomes. No verified betting edge.",
+            "accuracy": "Predictions checked against what really happened. Profit is not yet proven.",
             "ai": "Read-only AI research on source-verified market data.",
         }[screen] + f"\n**{label}** · Choose a section below for details.",
         color=full.color,
@@ -195,6 +197,59 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
     )
     return result
 
+
+
+def _plain_training_line(proof: dict, horizon: int) -> str:
+    """Training activity is not a measured prediction win."""
+    label = f"**{horizon}-minute predictions:**"
+    if not proof["forecasts"]:
+        return f"{label} No recorded predictions to check yet."
+    if not proof["latest_lineage_verified"]:
+        return (f"{label} Cannot confirm the latest prediction's training. "
+                f"Proof missing on {proof['lineage_unknown']}/{proof['forecasts']} records.")
+    status = (
+        "Verified historical training used in the latest prediction."
+        if proof["latest_historical_seed_sha256"] else
+        "No verified historical training used in the latest prediction."
+    )
+    return (
+        f"{label} {status} "
+        f"{int(proof['latest_online_training_updates']):,} new-data learning updates; "
+        f"{int(proof['historically_seeded'])}/{int(proof['lineage_proven'])} "
+        "checked predictions used verified history."
+    )
+
+
+def _plain_boosted_proof(proof: dict) -> str:
+    """Summarize boosted model screening without implying actual returns."""
+    reasons = {
+        "fewer_than_six_source_months": "not enough verified historical months",
+        "insufficient_purged_validation_or_holdout": "not enough independent test examples",
+        "validation_brier_gain_below_0.005": "not better than a basic forecast in validation",
+        "holdout_brier_gain_below_0.005": "not better than a basic forecast on unseen tests",
+        "calibration_or_evaluation_days_below_gate": "not enough days of reliable tests",
+        "reason_unrecorded": "reason not recorded",
+    }
+    blockers = proof.get("screening_blockers") or []
+    failures = "; ".join(
+        f"{int(row['count'])} {reasons.get(row['reason'], 'failed another check')}"
+        for row in blockers[:2]
+    ) or "none recorded"
+    paper = len(proof["fresh_paper_promotions"])
+    verdict = (
+        "Some qualify for simulated testing, not real trades." if paper
+        else "No model qualifies for simulated testing yet."
+    )
+    return (
+        f"**Advanced models imported:** {int(proof['portable_imported']):,}. "
+        f"**Screened:** {int(proof['portable_screened']):,}.\n"
+        f"**What's holding them back:** {failures}.\n"
+        f"**Predictions logged before outcomes (30 days):** {int(proof['issued']):,}; "
+        f"**results checked:** {int(proof['settled']):,}; "
+        f"**exit prices checked:** {int(proof['quote_exits']):,}.\n"
+        f"**Ready for practice-only tests:** {paper}. {verdict}\n"
+        "Real profit after trading fees, funding and slippage is not verified."
+    )
 
 
 class _AssetSelect(discord.ui.Select["ResearchDashboard"]):
@@ -997,15 +1052,17 @@ class ResearchDashboard(discord.ui.View):
             # Only request expensive, detailed proof when the user
             # actually opens that page. This is a fresh DB query, not
             # a 5-minute stale widget or an LLM-generated number.
-            if self.section == "lineage":
+            if self.section in ("lineage", "technical"):
                 try:
                     monitor = ForwardAccuracyMonitor(self.market)
                     rows = []
+                    plain_rows = []
                     for horizon in (5, 15, 60):
                         proof = await asyncio.to_thread(
                             monitor.learning_lineage_summary,
                             asset=self.asset, horizon_minutes=horizon,
                         )
+                        plain_rows.append(_plain_training_line(proof, horizon))
                         if not proof["forecasts"]:
                             rows.append(f"**{horizon}m:** No issued forecasts to audit.")
                         elif not proof["latest_lineage_verified"]:
@@ -1030,23 +1087,25 @@ class ResearchDashboard(discord.ui.View):
                                 "had a historical seed."
                             )
                     embed.add_field(
-                        name="Model training actually used",
+                        name=("How is RivaL learning?" if self.section == "lineage"
+                              else "Model training actually used"),
                         value=(
-                            "\n".join(rows)
-                            + "\nTraining evidence is NOT a measured win rate. "
-                              "An unapproved six-month archive does not count "
-                              "as live model training."
+                            ("\n".join(plain_rows) + "\nLearning updates are not prediction wins.")
+                            if self.section == "lineage" else
+                            ("\n".join(rows) + "\nTraining evidence is NOT a measured win rate. "
+                             "An unapproved six-month archive does not count as live model training.")
                         )[:1024], inline=False,
                     )
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL model training lineage unavailable")
                     embed.add_field(
-                        name="Model training actually used",
-                        value="Cannot verify the source of recent model weights. "
-                              "Do not assume six-month training was applied.",
+                        name=("How is RivaL learning?" if self.section == "lineage"
+                              else "Model training actually used"),
+                        value="Training history cannot be checked right now. "
+                              "Do not assume historical training was used.",
                         inline=False,
                     )
-            if self.section == "lineage":
+            if self.section in ("lineage", "technical"):
                 try:
                     live_proof = await asyncio.to_thread(
                         ForwardAccuracyMonitor(self.market).boosted_production_evidence,
@@ -1082,8 +1141,9 @@ class ResearchDashboard(discord.ui.View):
                         if blockers else "Screening blockers: none recorded"
                     )
                     embed.add_field(
-                        name="Boosted model production proof",
-                        value=(
+                        name=("Are advanced models ready?" if self.section == "lineage"
+                              else "Boosted model production proof"),
+                        value=(_plain_boosted_proof(live_proof) if self.section == "lineage" else (
                             f"**Imported:** {live_proof['portable_imported']} portable trees, "
                             f"**{live_proof['portable_screened']}** screened.\n"
                             f"{explanation}\n"
@@ -1096,15 +1156,16 @@ class ResearchDashboard(discord.ui.View):
                             f"**Verdict:** {live_proof['status_reason']}.\n"
                             "Real fills, fees, funding and slippage: **NOT VERIFIED**. "
                             "GitHub research artifacts are not imported live models."
-                        )[:1024],
+                        ))[:1024],
                         inline=False,
                     )
                 except Exception:  # noqa: BLE001 - source evidence fails closed
                     _LOG.exception("RivaL boosted production ledger read unavailable")
                     embed.add_field(
-                        name="Boosted model production proof",
-                        value="Live artifact and forward evidence unavailable. "
-                              "No imported model or profitability claim is justified.",
+                        name=("Are advanced models ready?" if self.section == "lineage"
+                              else "Boosted model production proof"),
+                        value="Cannot check model approval right now. "
+                              "No model readiness or profitability can be assumed.",
                         inline=False,
                     )
             if self.section == "ledger":

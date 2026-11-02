@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import runpy
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 import pytest
@@ -123,6 +125,8 @@ def test_live_acceptance_requires_exact_ready_model_source_and_repair_fields():
         "source_sha": SHA,
         "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
         "ready": True,
+        "research_smoke_ok": True,
+        "auth_rejected": True,
         "repair_state": "healthy",
         "repair_count": 1,
     }
@@ -133,6 +137,8 @@ def test_live_acceptance_requires_exact_ready_model_source_and_repair_fields():
         {"source_sha": "b" * 40},
         {"model": "fake"},
         {"ready": False},
+        {"research_smoke_ok": False},
+        {"auth_rejected": False},
         {"repair_state": "quarantined"},
         {"repair_count": -1},
         {"repair_count": True},
@@ -141,3 +147,94 @@ def test_live_acceptance_requires_exact_ready_model_source_and_repair_fields():
         assert parser(VERIFY["MARKER"] + json.dumps(bad), SHA) is None
     assert parser("just a successful job log", SHA) is None
     assert parser(VERIFY["MARKER"] + "not json", SHA) is None
+
+
+def test_live_probe_executes_one_authenticated_grounded_synthetic_inference(
+    monkeypatch, capsys
+):
+    # The in-host script must exercise real API endpoints without including
+    # arbitrary user research, current price claims, DB writes or API tokens
+    # in its emitted acceptance receipt.
+    monkeypatch.setenv("RIVAL_LLM_SHARED_TOKEN", "t" * 48)
+    urls = []
+    status = {"ready": True, "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
+              "source_sha": SHA, "repair_count": 0, "repair_state": "healthy"}
+    research = {
+        "model": status["model"], "direction": "uncertain", "confidence": "low",
+        "grounding_status": "insufficient_evidence",
+        "grounded_by": "deterministic_historical_evidence_policy",
+        "informational_only": True, "uncalibrated": True,
+    }
+
+    class Response:
+        def __init__(self, payload):
+            self.payload = json.dumps(payload).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_unused):
+            return False
+
+        def read(self, _limit):
+            return self.payload
+
+    def fake_urlopen(req, timeout):
+        urls.append((req.full_url, req.get_header("Authorization"), req.data))
+        if req.full_url.endswith("/v1/status"):
+            if not req.get_header("Authorization"):
+                raise urllib.error.HTTPError(req.full_url, 401, "no auth", None, None)
+            return Response(status)
+        assert req.full_url.endswith("/v1/research")
+        assert req.get_header("Authorization") == "Bearer " + "t" * 48
+        payload = json.loads(req.data)
+        assert payload == {"asset": "BTC", "evidence": {
+            "asset": "BTC", "analysis": "unvalidated_research",
+            "horizon_minutes": 5, "sources": [],
+        }}
+        return Response(research)
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})
+    stdout = capsys.readouterr().out
+    assert VERIFY["parse_receipt"](stdout, SHA)["research_smoke_ok"] is True
+    assert len(urls) == 3
+    assert "t" * 48 not in stdout
+
+
+def test_live_probe_rejects_anonymous_status_and_unsupported_inference(
+    monkeypatch, capsys
+):
+    monkeypatch.setenv("RIVAL_LLM_SHARED_TOKEN", "t" * 48)
+    status = {"ready": True, "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"}
+    class Response:
+        def __init__(self, data):
+            self.data = json.dumps(data).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size):
+            return self.data
+
+    def public_status(req, timeout):
+        return Response(status)
+    monkeypatch.setattr(urllib.request, "urlopen", public_status)
+    with pytest.raises(RuntimeError, match="anonymous"):
+        exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})
+    assert not capsys.readouterr().out
+
+    def unsafe_model(req, timeout):
+        if req.full_url.endswith("/v1/status"):
+            if not req.get_header("Authorization"):
+                raise urllib.error.HTTPError(req.full_url, 401, "no auth", None, None)
+            return Response(status)
+        return Response({"model": status["model"], "direction": "up",
+                         "confidence": "high", "informational_only": False})
+    monkeypatch.setattr(urllib.request, "urlopen", unsafe_model)
+    with pytest.raises(RuntimeError, match="safely grounded"):
+        exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})
+    assert not capsys.readouterr().out

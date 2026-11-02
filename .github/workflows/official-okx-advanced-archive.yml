@@ -151,7 +151,9 @@ jobs:
 
           from parlay_bot.config import Settings
           from parlay_bot.research.free_history import HistoryImportError
-          from parlay_bot.research.official_okx_bootstrap import inventory_extra_modules
+          from parlay_bot.research.official_okx_bootstrap import (
+              MODULES, inventory_extra_modules,
+          )
           from parlay_bot.research.okx_advanced_archive import (
               automatic_archive_slot, ingest_one,
           )
@@ -168,7 +170,10 @@ jobs:
               drive = _drive(Settings())
               try:
                   async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
-                      catalog = await inventory_extra_modules(client, asset=asset, month=month)
+                      module_id = next(number for number, label in MODULES.items() if label == module)
+                      catalog = await inventory_extra_modules(
+                          client, asset=asset, month=month, module_ids=(module_id,),
+                      )
                       (root / "inventory.json").write_text(
                           json.dumps(catalog, sort_keys=True, indent=2) + "\n"
                       )

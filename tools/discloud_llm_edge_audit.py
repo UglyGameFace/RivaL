@@ -16,6 +16,7 @@ from parlay_bot.storage.hot import PostgresHotStore
 s = Settings()
 r = {"schema":"llm-edge-v1", "model":"LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
      "provider":s.rival_ai_provider, "background_opt_in":s.rival_ai_background_opt_in,
+     "auto_ai_setting":s.rival_gemini_auto_enabled,
      "rows":[], "cycle":None}
 if s.rival_storage_backend != "postgres" or s.rival_database_url is None:
     r["error"] = "postgres_unavailable"
@@ -79,6 +80,7 @@ def evaluate(data):
             "reason":reason,"saved_research_count":count,
             "directional_research_count":directional,
             "background_ai_enabled":bool(data.get("background_opt_in"))
+              and bool(data.get("auto_ai_setting"))
               and data.get("provider") not in ("local","cloudflare"),
             "last_mathematical_learning_cycle":data.get("cycle"),
             "paired_llm_forecast_count":None,"llm_forward_brier":None,

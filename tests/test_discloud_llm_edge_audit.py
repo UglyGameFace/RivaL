@@ -11,7 +11,7 @@ def source(direction="uncertain",count=1):
 
 def receipt(rows=None):
     return {"schema":"llm-edge-v1","model":MODEL,"provider":"local",
-            "background_opt_in":False,"rows":[] if rows is None else rows,
+            "background_opt_in":False,"auto_ai_setting":False,"rows":[] if rows is None else rows,
             "cycle":{"math_issued":108,"math_settled":120}}
 
 def test_one_saved_llm_reply_is_not_trading_edge():
@@ -55,3 +55,7 @@ def test_enabling_local_background_flag_does_not_actually_enable_calls():
     data=receipt([source()])
     data["background_opt_in"]=True
     assert not evaluate(data)["background_ai_enabled"]
+    data["provider"]="openrouter"
+    assert not evaluate(data)["background_ai_enabled"]
+    data["auto_ai_setting"]=True
+    assert evaluate(data)["background_ai_enabled"]

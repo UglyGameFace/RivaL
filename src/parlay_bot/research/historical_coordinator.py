@@ -101,11 +101,12 @@ def candidate_training_window(row: dict, *, current: str,
         return None
     names = set(all_months if all_months is not None else
                 row["priority_window_named_months_not_reverified"])
-    floor = ATTEMPT_FLOORS.get((row["venue"], row["family"]), "2021-01")
-    # Only the same venue, contract/asset and family may form the window.
+    # Technical API attempt floors are NOT listing dates. An older archived
+    # source month may come from a different genuine acquisition method.
+    # Never reject it without letting the exact-byte importer audit it.
     eligible = []
     for first in sorted(names, reverse=True):
-        if first < floor:
+        if first < "2021-01":
             continue
         seq = [first]
         for _ in range(5):

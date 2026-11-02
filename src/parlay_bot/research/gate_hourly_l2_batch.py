@@ -18,7 +18,6 @@ import httpx
 from parlay_bot.config import Settings
 from parlay_bot.research.drive_source_census import list_names
 from parlay_bot.research.free_history import HistoryImportError
-from parlay_bot.research.history_priority import window
 from parlay_bot.research.gate_hourly_l2_archive import (
     ASSETS,
     FAMILIES,
@@ -27,6 +26,7 @@ from parlay_bot.research.gate_hourly_l2_archive import (
     hour_bounds,
     store,
 )
+from parlay_bot.research.history_priority import window
 from parlay_bot.research.publish import _drive
 
 MAX_ATTEMPTS = 12

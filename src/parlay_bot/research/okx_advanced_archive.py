@@ -36,19 +36,24 @@ MAX_EXPANDED_BYTES = 160 * 1024 * 1024
 MAX_RECORDS = 2_000_000
 MAX_MEMBERS = 16
 
-# A separate four-hour archive slot from the standard candle ZIP collector.
-# Never fabricate missing source months, or treat cataloged files as stored.
+# Keep historical discovery separate from market-price collection, and
+# never schedule archive types before their documented official start.
 AUTOMATIC_MODULES = ("funding_rates", "trades", "orderbook_l2_400", "orderbook_l2_5000")
+L2_5000_FIRST = "2025-11"
+SLOT_HOURS = 2
+MAX_PROBE_SLOTS = 12
 
 
-def automatic_archive_slot(now: datetime | None = None) -> tuple[str, str]:
-    """Rotate every obtainable advanced family and completed 2023+ month.
+def automatic_archive_slot(now: datetime | None = None, *, offset: int = 0) -> tuple[str, str]:
+    """Rotate release-eligible monthly archives, skipping unavailable eras.
 
-    The publication delay excludes the previous month on days 1-3 of a new
-    month. One slot across all four assets is selected every four hours; the
-    workflow applies its own bounded parallelism and exact source validation.
+    A source catalog can still report that an eligible archive is missing.
+    The scheduled runner probes up to twelve distinct slots per asset and
+    downloads only an explicitly returned, source-validated archive.
     """
     clock = (now or datetime.now(UTC)).astimezone(UTC)
+    if not isinstance(offset, int) or isinstance(offset, bool) or not 0 <= offset < MAX_PROBE_SLOTS:
+        raise ValueError("invalid bounded archive candidate offset")
     release_boundary = clock.replace(day=1, hour=0, minute=0, second=0,
                                      microsecond=0)
     if clock.day <= 3:
@@ -58,16 +63,22 @@ def automatic_archive_slot(now: datetime | None = None) -> tuple[str, str]:
                    + release_boundary.month - first.month)
     if month_count <= 0:
         raise HistoryImportError("no published OKX auxiliary month scheduled")
-    slot = (int(clock.timestamp()) // (4 * 3600)) % (
-        month_count * len(AUTOMATIC_MODULES)
-    )
-    month_index, module_index = divmod(slot, len(AUTOMATIC_MODULES))
-    year, zero_based_month = divmod(
-        first.year * 12 + first.month - 1 + month_index, 12
-    )
-    month = f"{year:04d}-{zero_based_month + 1:02d}"
-    month_bounds(month)
-    return month, AUTOMATIC_MODULES[module_index]
+    all_months = []
+    for month_index in range(month_count):
+        year, zero_based_month = divmod(
+            first.year * 12 + first.month - 1 + month_index, 12
+        )
+        all_months.append(f"{year:04d}-{zero_based_month + 1:02d}")
+    # Six latest fully published months first; older ones remain reachable.
+    ordered = list(reversed(all_months[-6:])) + all_months[:-6]
+    candidates = [
+        (month, module) for month in ordered for module in AUTOMATIC_MODULES
+        if module != "orderbook_l2_5000" or month >= L2_5000_FIRST
+    ]
+    if not candidates:
+        raise HistoryImportError("no release-eligible OKX archive slots")
+    slot = (int(clock.timestamp()) // (SLOT_HOURS * 3600) + offset) % len(candidates)
+    return candidates[slot]
 
 
 def archive_url(*, asset: str, month: str, record: dict) -> str:

@@ -156,6 +156,7 @@ jobs:
           )
           from parlay_bot.research.okx_advanced_archive import (
               MAX_PROBE_SLOTS, automatic_archive_slot, ingest_one,
+              official_catalog_http_400,
           )
           from parlay_bot.research.publish import _artifact, _drive
 
@@ -184,10 +185,21 @@ jobs:
                               number for number, label in MODULES.items()
                               if label == candidate_module
                           )
-                          catalog = await inventory_extra_modules(
-                              client, asset=asset, month=candidate_month,
-                              module_ids=(module_id,),
-                          )
+                          try:
+                              catalog = await inventory_extra_modules(
+                                  client, asset=asset, month=candidate_month,
+                                  module_ids=(module_id,),
+                              )
+                          except HistoryImportError as exc:
+                              if not official_catalog_http_400(exc):
+                                  raise
+                              attempts.append({
+                                  "month": candidate_month,
+                                  "module": candidate_module,
+                                  "status": "provider_http_400_not_downloaded",
+                                  "source_file_count": 0,
+                              })
+                              continue
                           slot = catalog["modules"][candidate_module]
                           attempts.append({
                               "month": candidate_month, "module": candidate_module,

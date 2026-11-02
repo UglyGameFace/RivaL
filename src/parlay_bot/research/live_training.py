@@ -162,24 +162,42 @@ def evaluate_compatible(manifests, *, horizon, prepared=None):
             "live_model_promoted": False, "prospective_accuracy": None}
 
 
-def evaluate_directory(root: Path, *, qualified_streams):
+def qualified_manifest_groups(root: Path, *, qualified_streams):
+    """Keep every offline training input inside one exact source identity.
+
+    A contract such as BTCUSDT may appear at multiple exchanges with
+    different order books, funding, and original candle provenance. Grouping
+    only on contract/interval merges unrelated manifests before assemble()
+    has a chance to verify the six-month source-local timeline.
+    """
     groups = defaultdict(list)
-    for p in sorted((root / "binance_um_klines").glob("*.manifest.json")) + sorted(
-        (root / "verified_venue_perp_klines").glob("*.manifest.json")
-    ):
-        # assemble performs all byte-checksum and chronology verification.
-        meta = json.loads(p.read_text())
-        key = (meta.get("contract"), meta.get("interval_minutes"))
-        source_key = (meta.get("venue"), meta.get("contract"),
-                      meta.get("quote"), meta.get("interval_minutes"))
-        if key[1] == 5 and (
-            (meta.get("source") == "binance_um_klines" and key in qualified_streams)
-            or (meta.get("source") == "verified_venue_perp_klines"
-                and source_key in qualified_streams)
-        ):
-            groups[key].append(p)
+    manifests = sorted((root / "binance_um_klines").glob("*.manifest.json"))
+    manifests += sorted((root / "verified_venue_perp_klines").glob("*.manifest.json"))
+    for path in manifests:
+        # assemble() still independently verifies original SHA, time grids,
+        # and identity for every grouped source. This filter is not approval.
+        meta = json.loads(path.read_text(encoding="utf-8"))
+        source = meta.get("source")
+        venue = meta.get("venue")
+        contract = meta.get("contract")
+        quote = meta.get("quote")
+        interval = meta.get("interval_minutes")
+        if interval != 5:
+            continue
+        if source == "binance_um_klines":
+            eligible = venue == "binance" and (contract, interval) in qualified_streams
+        elif source == "verified_venue_perp_klines":
+            eligible = (venue, contract, quote, interval) in qualified_streams
+        else:
+            continue
+        if eligible:
+            groups[(source, venue, contract, quote, interval)].append(path)
+    return list(groups.values())
+
+
+def evaluate_directory(root: Path, *, qualified_streams):
     results = []
-    for paths in groups.values():
+    for paths in qualified_manifest_groups(root, qualified_streams=qualified_streams):
         identity, rows, provenance = assemble(paths)
         vectors = historical_features(rows, identity)
         prepared = (identity, rows, provenance, vectors)

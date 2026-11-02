@@ -13,6 +13,7 @@ import httpx
 
 from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.history_priority import ordered_months
 from parlay_bot.research.publish import _artifact, _drive
 
 BASE = "https://mainnet.zklighter.elliot.ai/api/v1/"
@@ -62,7 +63,7 @@ def automatic_month(now: datetime | None = None) -> str:
             for index in range(months)
         )
     ]
-    ordered = list(reversed(all_months[-6:])) + all_months[:-6]
+    ordered = ordered_months(all_months, now=clock)
     offset = (int(clock.timestamp()) // (6 * 3600)) % len(ordered)
     return ordered[offset]
 

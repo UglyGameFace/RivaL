@@ -107,7 +107,12 @@ def apply(staged: Path, repository: Path) -> None:
         # An unrelated RivaL/main commit changes the upstream SHA but not this
         # service. Do not rebuild/redeploy a multi-GB model for that event.
         stable = expected - {STAMP}
-        if old_owned == expected and all(
+        stamp = checked_destination(repository, STAMP)
+        stamp_valid = (
+            stamp.is_file()
+            and re.fullmatch(r"[0-9a-f]{40}", stamp.read_text(encoding="ascii").strip())
+        )
+        if old_owned == expected and stamp_valid and all(
             checked_destination(repository, name).is_file()
             and (checked_destination(repository, name).read_bytes()
                  == (staged / safe_relative(name)).read_bytes())

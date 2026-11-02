@@ -95,6 +95,27 @@ async def existing_month_keys(drive) -> set[str]:
     raise HistoryImportError("Binance manifest listing exceeded bounded pages")
 
 
+
+def prioritize_missing_source_months(
+    months: list[str], assets: tuple[str, ...], available: set[str],
+) -> tuple[list[tuple[str, str]], int]:
+    """Fill the most recent six completed UTC months before older gaps.
+
+    This is an acquisition ordering only: a Drive manifest name is a resume
+    hint, not independent byte readback or evidence that a contract was listed.
+    Keep every older missing source month eligible in the same run.
+    """
+    planned = [(asset, month) for month in months for asset in assets]
+    recent = set(months[-6:])
+    missing = [
+        (asset, month) for asset, month in planned
+        if f"{asset}USDT-5m-{month}" not in available
+    ]
+    prioritized = [pair for pair in missing if pair[1] in recent]
+    prioritized.extend(pair for pair in missing if pair[1] not in recent)
+    return prioritized, len(planned) - len(missing)
+
+
 async def collect_official_binance(
     *, drive, root: Path, report_dir: Path, now: datetime | None = None,
     assets: tuple[str, ...] = ("BTC", "ETH", "SOL", "XRP"),
@@ -107,19 +128,16 @@ async def collect_official_binance(
         raise ValueError("invalid Binance bulk archival scope")
     months = months_since_2021(clock)
     available = await existing_month_keys(drive)
-    # Favor oldest missing history. Already archived months cannot be silently
-    # overwritten, and publication is checked against original archive SHA.
-    work = [(asset, month) for month in months for asset in assets]
-    downloaded, skipped, failed = [], [], []
+    # Fill recent source months first, then the older missing backlog.
+    # A manifest name remains an unverified resume hint, not readback proof.
+    work, skipped = prioritize_missing_source_months(months, assets, available)
+    downloaded, failed = [], []
     root.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
     async with asyncio.timeout(9000):
         with httpx.Client(timeout=45, follow_redirects=False) as client:
             for asset, month in work:
                 key = f"{asset}USDT-5m-{month}"
-                if key in available:
-                    skipped.append(key)
-                    continue
                 if len(downloaded) >= max_new:
                     break
                 try:
@@ -156,10 +174,11 @@ async def collect_official_binance(
         "source": "binance", "asset_scope": list(assets),
         "earliest_requested_month": FIRST,
         "latest_complete_month": months[-1] if months else None,
-        "planned_asset_months": len(work),
+        "planned_asset_months": len(work) + skipped,
+        "prioritization": "recent_six_completed_months_then_older_missing",
         "newly_published": downloaded,
         "new_months": len(downloaded),
-        "remote_manifest_names_skipped_without_readback": len(skipped),
+        "remote_manifest_names_skipped_without_readback": skipped,
         "unavailable_or_rejected": failed,
         "fully_verified_2021_to_present": False,
         "live_model_promoted": False, "forward_skill_proven": False,

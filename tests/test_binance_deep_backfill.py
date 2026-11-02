@@ -21,6 +21,23 @@ def test_plan_starts_at_january_2021_and_excludes_current_month():
         deep.months_since_2021(datetime(2021, 1, 1))
 
 
+
+def test_recent_months_first_while_older_backlog_and_resume_hints_survive():
+    months = ["2021-01", "2021-02", "2021-03", "2021-04",
+              "2021-05", "2021-06", "2026-09", "2026-10"]
+    existing = {"BTCUSDT-5m-2026-10", "ETHUSDT-5m-2021-01"}
+    pairs, skipped = deep.prioritize_missing_source_months(
+        months, ("BTC", "ETH"), existing,
+    )
+    assert skipped == 2
+    assert len(pairs) == len(months) * 2 - skipped
+    assert pairs[:2] == [("BTC", "2021-03"), ("ETH", "2021-03")]
+    assert pairs[-2:] == [("BTC", "2021-02"), ("ETH", "2021-02")]
+    assert ("BTC", "2021-01") in pairs
+    assert ("ETH", "2026-10") in pairs
+    assert ("BTC", "2026-10") not in pairs
+
+
 @pytest.mark.asyncio
 async def test_drive_binance_month_inventory_paginates_and_filters(tmp_path):
     queries = []

@@ -1912,6 +1912,8 @@ class ResearchDashboard(discord.ui.View):
         except (discord.HTTPException, TimeoutError):
             _LOG.warning("Research loading display failed; old controls remain usable")
             return
+        if state["revision"] != revision:
+            return
         task = asyncio.create_task(
             self._finish_redraw(interaction, fresh, revision),
             name="rival-research-detail",

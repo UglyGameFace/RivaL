@@ -155,11 +155,16 @@ async def obtain(client: httpx.AsyncClient, *, asset: str, month: str,
             try:
                 async with client.stream("GET", url, follow_redirects=False) as response:
                     if response.status_code == 200:
+                        # File gzip is an actual .csv.gz payload, not the HTTP
+                        # Content-Encoding layer. Reject encoded HTTP bodies,
+                        # which would otherwise silently change original bytes.
+                        if response.headers.get("content-encoding", "identity").lower() != "identity":
+                            raise HistoryImportError("Tardis HTTP transfer encoding is not identity")
                         size = 0
                         # Preserve bytes without blocking the async HTTP loop.
                         out = await asyncio.to_thread(location.open, "wb")
                         try:
-                            async for data in response.aiter_raw(1024 * 1024):
+                            async for data in response.aiter_bytes(1024 * 1024):
                                 size += len(data)
                                 if size > MAX_COMPRESSED_BYTES:
                                     raise HistoryImportError(

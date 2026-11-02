@@ -18,6 +18,7 @@ from parlay_bot.research.okx_advanced_archive import (
     inspect_archive,
 )
 
+
 def test_auto_advanced_slot_rotates_months_and_all_native_families():
     now = datetime(2026, 11, 4, tzinfo=UTC)
     slots = [automatic_archive_slot(now + timedelta(hours=4 * i))

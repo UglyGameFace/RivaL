@@ -48,7 +48,7 @@ def parse_time(raw: object) -> datetime:
     if not isinstance(raw, str) or not raw.endswith("Z"):
         raise HistoryImportError("invalid UTC funding timestamp")
     try:
-        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        value = datetime.fromisoformat(raw)
     except ValueError as exc:
         raise HistoryImportError("invalid funding timestamp") from exc
     if value.utcoffset() != timedelta(0):

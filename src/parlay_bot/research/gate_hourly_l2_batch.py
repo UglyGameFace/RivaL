@@ -29,7 +29,7 @@ WINDOW_HOURS = 6
 # substitute for a linked change-log and vice versa.
 GATE_L2_MANIFEST = re.compile(
     r"gate-hourly-l2-(BTC|ETH|SOL|XRP)-(orderbooks|orderbooks_slice)-"
-    r"(20[0-9]{8})--[a-f0-9]{16}\\.gz\\.manifest\\.json"
+    r"(20[0-9]{8})--[a-f0-9]{16}\.gz\.manifest\.json"
 )
 
 
@@ -120,15 +120,16 @@ async def collect_batch(
         if selected_hour:
             hour_bounds(selected_hour, now=now)
             # One manual UTC hour × two original families × four assets.
-            slots = [(asset, family, selected_hour)
-                     for family in FAMILIES for asset in ASSETS
-                     if (asset, family, selected_hour) not in listed]
-            skipped = 8 - len(slots)
+            candidates = [(asset, family, selected_hour)
+                          for family in FAMILIES for asset in ASSETS]
+            slots = [slot for slot in candidates if slot not in listed]
+            skipped = len(candidates) - len(slots)
+            slots = slots[:max_attempts]
         else:
             slots, skipped = select_slots(
                 now, listed, max_attempts=max_attempts,
             )
-        if len(slots) > max_attempts and not selected_hour:
+        if len(slots) > max_attempts:
             raise HistoryImportError("source file attempt budget exceeded")
         status = {
             "schema_version": "rival-gate-hourly-l2-resume-v1",

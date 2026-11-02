@@ -513,6 +513,7 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
     report["phase"] = "contract_metadata"
     write_checkpoint(report, report_dir=report_dir, asset=asset)
     metadata = await verify_symbol(client, asset=asset, pacer=pacer)
+    report["api_requests_attempted"] = pacer.attempted
     report["phase"] = "collecting"
     write_checkpoint(report, report_dir=report_dir, asset=asset)
     for month, family in job:

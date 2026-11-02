@@ -17,6 +17,9 @@ from parlay_bot.research.publish import _artifact, _drive
 
 BASE = "https://mainnet.zklighter.elliot.ai/api/v1/"
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
+# Public perpetual fills are reported from January 2025. Market-by-market
+# listing dates must be inferred from authenticated rows, not this attempt floor.
+FIRST_ATTEMPT = datetime(2025, 1, 1, tzinfo=UTC)
 MAX_BYTES = 3_000_000
 
 
@@ -30,7 +33,7 @@ def month_bounds(month: str) -> tuple[datetime, datetime]:
     except ValueError as exc:
         raise HistoryImportError("invalid Lighter source month") from exc
     current = datetime.now(UTC).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-    if not datetime(2025, 2, 1, tzinfo=UTC) <= start < current:
+    if not FIRST_ATTEMPT <= start < current:
         raise HistoryImportError("month not available before Lighter market launch")
     return start, (start + timedelta(days=32)).replace(day=1)
 
@@ -39,7 +42,7 @@ def latest_full_month(now: datetime | None = None) -> str:
     clock = (now or datetime.now(UTC)).astimezone(UTC)
     first_of_month = clock.replace(day=1, hour=0, minute=0, second=0,
                                    microsecond=0)
-    if first_of_month <= datetime(2025, 2, 1, tzinfo=UTC):
+    if first_of_month <= FIRST_ATTEMPT:
         raise HistoryImportError("no finished Lighter research month")
     return (first_of_month - timedelta(days=1)).strftime("%Y-%m")
 
@@ -47,7 +50,7 @@ def latest_full_month(now: datetime | None = None) -> str:
 def automatic_month(now: datetime | None = None) -> str:
     """Rotate recent qualified months first, without starving older months."""
     clock = (now or datetime.now(UTC)).astimezone(UTC)
-    first = datetime(2025, 2, 1, tzinfo=UTC)
+    first = FIRST_ATTEMPT
     current = clock.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     months = (current.year - first.year) * 12 + current.month - first.month
     if months <= 0:
@@ -55,7 +58,7 @@ def automatic_month(now: datetime | None = None) -> str:
     all_months = [
         f"{year:04d}-{month + 1:02d}"
         for year, month in (
-            divmod(2025 * 12 + 1 + index, 12)
+            divmod(2025 * 12 + index, 12)
             for index in range(months)
         )
     ]
@@ -261,9 +264,20 @@ async def collect(*, month: str, assets: tuple[str, ...]):
                         await asyncio.sleep(1.1)
                     hours = int((end - start).total_seconds() // 3600)
                     buckets = {ts // 3600 for ts in seen}
+                    missing_hours = [
+                        int(start.timestamp()) + i * 3600
+                        for i in range(hours)
+                        if int(start.timestamp()) + i * 3600 not in seen
+                    ]
                     outputs.append({
                         "asset": asset, "family": family, "month": month,
                         "observed_source_hours": len(seen), "expected_hours": hours,
+                        "missing_hour_count": len(missing_hours),
+                        "first_missing_utc_hours": [
+                            datetime.fromtimestamp(ts, UTC).isoformat()
+                            for ts in missing_hours[:12]
+                        ],
+                        "partial_before_actual_market_listing_possible": True,
                         "full_utc_hourly_coverage": (
                             len(buckets) == hours and len(seen) == hours
                             and all(int(start.timestamp()) // 3600 + i in buckets
@@ -277,7 +291,14 @@ async def collect(*, month: str, assets: tuple[str, ...]):
         "results": outputs, "blocked": blocked,
         "source_readbacks_verified": sum(
             x.get("drive_bytes_verified") is True for x in outputs),
-        "all_lighter_history_complete": False, "live_models_changed": False,
+        "all_lighter_history_complete": False,
+        "all_selected_month_families_hourly_complete": (
+            not blocked and all(
+                row.get("full_utc_hourly_coverage") is True
+                for row in outputs if "expected_hours" in row
+            )
+        ),
+        "live_models_changed": False,
     }
     dest = Path("data/native-reports/lighter-original-funding-mark.json")
     dest.parent.mkdir(parents=True, exist_ok=True)

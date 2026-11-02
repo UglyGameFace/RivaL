@@ -159,3 +159,23 @@ def test_missing_sources_never_get_automatic_correctness_credit(tmp_path):
         ] == 1
     finally:
         store.close()
+
+
+
+def test_volume_only_spike_cannot_claim_directional_success(tmp_path):
+    store, market, monitor = watcher(tmp_path)
+    try:
+        seed(market, surge=False, final_volume=3.5)
+        event = monitor.scan(
+            asset="BTC", venues=tuple(v[0] for v in VENUES), now=NOW,
+        )["event"]
+        assert event["kind"] == "volume"
+        assert event["direction"] == "mixed"
+        next_candles(market, seen_at=NOW+timedelta(minutes=5))
+        monitor.settle(asset="BTC", now=NOW+timedelta(minutes=6))
+        data = monitor.snapshot(asset="BTC", now=NOW+timedelta(minutes=6))
+        assert data["scored_continuations_24h"] == 0
+        assert data["scored_reversals_24h"] == 0
+        assert data["recent"][0]["outcome"] == "mixed_no_direction"
+    finally:
+        store.close()

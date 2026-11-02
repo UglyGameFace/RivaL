@@ -148,8 +148,9 @@ class SpikeWatch:
                     "detected_at": clock.isoformat(),
                     "kind": "price_and_volume" if price and vol else
                             "price" if price else "volume",
-                    "direction": "up" if movement > 0 else
-                                 "down" if movement < 0 else "mixed",
+                    # Volume-only event has NO directional hypothesis.
+                    "direction": "mixed" if not price else
+                                 "up" if movement > 0 else "down",
                     "source_count": len(rows),
                     "move_pct": round(movement, 6),
                     "volume_ratio": round(volume, 5) if volume is not None else None,

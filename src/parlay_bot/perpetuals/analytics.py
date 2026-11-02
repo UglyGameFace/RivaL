@@ -14,36 +14,42 @@ from parlay_bot.perpetuals.forward_audit import MODEL as FORWARD_MODEL
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
 MIN_TREND_EVENTS = 100
+MIN_TREND_DAYS = 5  # Avoid classifying one heavy trading day as a weekly trend.
 ROUNDTRIP_COST_BPS = 20.0  # Illustrative only, not actual exchange fills.
 
 
 def _bucket(rows: list[dict]) -> dict:
+    """Count paired scores for ALL source outcomes, directional ones only if binary."""
     n = len(rows)
     if not n:
         return {
-            "events": 0, "brier": None, "baseline": None,
-            "ece": None, "decided_events": 0, "hit_rate": None,
+            "events": 0, "days": 0, "binary_targets": 0,
+            "brier": None, "baseline": None, "ece": None,
+            "decided_events": 0, "hit_rate": None,
             "simulated_net_bps": None,
         }
     brier = sum(x["brier"] for x in rows) / n
     base = sum(x["baseline"] for x in rows) / n
-    # Genuine ten-bin expected calibration error (ECE) rather than
-    # per-event absolute error mislabeled as calibration.
+    binary = [x for x in rows if x["up_rate"] in (0, 1)]
     bins: dict[int, list[dict]] = {}
-    for row in rows:
+    for row in binary:
         bins.setdefault(min(9, max(0, int(float(row["probability"]) * 10))), []).append(row)
-    calib = sum(
-        (len(group) / n) * abs(
-            sum(float(x["probability"]) for x in group) / len(group)
-            - sum(float(x["up_rate"]) for x in group) / len(group)
-        )
-        for group in bins.values()
+    ece = (
+        sum(
+            len(group) / len(binary) * abs(
+                sum(x["probability"] for x in group) / len(group)
+                - sum(x["up_rate"] for x in group) / len(group)
+            )
+            for group in bins.values()
+        ) if binary else None
     )
-    chosen = [x for x in rows if x["pred_count"] and x["gross_bps"] is not None]
+    chosen = [x for x in binary if x["pred_count"] and x["gross_bps"] is not None]
     return {
         "events": n,
+        "days": len({str(x["target_opened_at"])[:10] for x in rows}),
+        "binary_targets": len(binary),
         "brier": round(brier, 5), "baseline": round(base, 5),
-        "ece": round(calib, 5),
+        "ece": round(ece, 5) if ece is not None else None,
         "decided_events": len(chosen),
         "hit_rate": (
             round(sum(x["correct"] for x in chosen) / len(chosen), 4)
@@ -60,7 +66,7 @@ def analytics_snapshot(
     market: PerpetualMarketStore, *, asset: str,
     now: datetime | None = None,
 ) -> dict:
-    if asset not in ("BTC", "ETH", "SOL"):
+    if asset not in ("BTC", "ETH", "SOL", "XRP"):
         raise ValueError("unsupported asset")
     clock = _utc(now or datetime.now(UTC))
     AutonomousResearch(market, ai=None, venues=()).initialize()
@@ -70,21 +76,38 @@ def analytics_snapshot(
         # Max 2*4032 result rows (5m and 15m for 14d), NOT a large per-venue
         # data transfer every time a user refreshes Discord.
         math_rows = conn.execute(
-            """SELECT horizon_minutes,target_opened_at,
+            """WITH per_venue AS (
+                   SELECT horizon_minutes,target_opened_at,venue,
+                          AVG(model_brier) AS model_brier,
+                          AVG(baseline_brier) AS baseline_brier,
+                          AVG(probability_up) AS probability,
+                          MIN(outcome_up) AS lowest_outcome,
+                          MAX(outcome_up) AS highest_outcome,
+                          AVG((realized_close/reference_close-1)*10000) AS up_bps
+                   FROM perp_forward_audit
+                   WHERE asset=? AND model_version=?
+                     AND settled_at IS NOT NULL
+                     AND settled_at>issued_at AND settled_at<=?
+                     AND issued_at<=? AND target_opened_at>=?
+                     AND target_opened_at<=? AND outcome_up IN (0,1)
+                     AND model_brier BETWEEN 0 AND 1
+                     AND baseline_brier BETWEEN 0 AND 1
+                     AND probability_up BETWEEN 0 AND 1
+                     AND reference_close>0 AND realized_close>0
+                   GROUP BY horizon_minutes,target_opened_at,venue
+               )
+               SELECT horizon_minutes,target_opened_at,
                       AVG(model_brier) AS brier,
                       AVG(baseline_brier) AS baseline,
-                      AVG(probability_up) AS probability,
-                      MIN(outcome_up) AS lowest_outcome,
-                      MAX(outcome_up) AS highest_outcome,
-                      AVG((realized_close/reference_close-1)*10000)
-                          AS venue_mean_up_bps
-               FROM perp_forward_audit
-               WHERE asset=? AND model_version=? AND settled_at IS NOT NULL
-                 AND target_opened_at>=? AND target_opened_at<=?
-                 AND outcome_up IS NOT NULL
+                      AVG(probability) AS probability,
+                      MIN(lowest_outcome) AS lowest_outcome,
+                      MAX(highest_outcome) AS highest_outcome,
+                      AVG(up_bps) AS venue_mean_up_bps
+               FROM per_venue
                GROUP BY horizon_minutes,target_opened_at
                ORDER BY target_opened_at DESC LIMIT 9000""",
-            (asset, FORWARD_MODEL, start_earlier.isoformat(), clock.isoformat()),
+            (asset, FORWARD_MODEL, clock.isoformat(), clock.isoformat(),
+             start_earlier.isoformat(), clock.isoformat()),
         ).fetchall()
         ai_rows = conn.execute(
             """SELECT model,issued_at,direction,settled_at,correct
@@ -105,28 +128,33 @@ def analytics_snapshot(
                WHERE asset=? AND model_version=? AND settled_at IS NULL""",
                 (asset, FORWARD_MODEL),
         ).fetchone()
-    # Every UTC target is ONE correlated event across providers. Never
-    # interpret opposite settled venue labels as a fractional win. Show
-    # disputed targets separately and exclude them from ALL scoring,
-    # calibration, hypothetical cost results and improvement decisions.
+    # Core mathematical scoring includes disagreements: discarding the whole
+    # target selects by its realized outcome. The dashboard must agree with
+    # authoritative venue-balanced forward-audit Brier calculations.
+    # Binary calibration, directional hit rate and cost remain disagreement-free.
     disputed: dict[tuple[int, str], int] = {}
+    all_scores = []
     resolved = []
     for row in math_rows:
         horizon = int(row["horizon_minutes"])
         when = str(row["target_opened_at"])
         period = "recent" if when >= start_recent.isoformat() else "prior"
-        if row["lowest_outcome"] != row["highest_outcome"]:
-            disputed[(horizon, period)] = disputed.get((horizon, period), 0) + 1
-            continue
         probability = float(row["probability"])
-        label = int(row["lowest_outcome"])
-        decision = probability >= .55 or probability <= .45
-        gross_up_bps = row["venue_mean_up_bps"]
-        resolved.append({
+        entry = {
             "horizon_minutes": horizon, "target_opened_at": when,
             "brier": float(row["brier"]),
             "baseline": float(row["baseline"]),
-            "probability": probability,
+            "probability": probability, "up_rate": None,
+            "pred_count": 0, "correct": None, "gross_bps": None,
+        }
+        all_scores.append(entry)
+        if row["lowest_outcome"] != row["highest_outcome"]:
+            disputed[(horizon, period)] = disputed.get((horizon, period), 0) + 1
+            continue
+        label = int(row["lowest_outcome"])
+        decision = probability >= .55 or probability <= .45
+        gross_up_bps = row["venue_mean_up_bps"]
+        entry.update({
             "up_rate": label,
             "pred_count": int(decision),
             "correct": (
@@ -138,19 +166,24 @@ def analytics_snapshot(
                 if decision and gross_up_bps is not None else None
             ),
         })
+        resolved.append(entry)
     by_horizon = {}
     for h in (5, 15):
         recent = [
-            dict(x) for x in resolved
+            dict(x) for x in all_scores
             if x["horizon_minutes"] == h
             and str(x["target_opened_at"]) >= start_recent.isoformat()
         ]
         prior = [
-            dict(x) for x in resolved
+            dict(x) for x in all_scores
             if x["horizon_minutes"] == h
             and str(x["target_opened_at"]) < start_recent.isoformat()
         ]
         today, previous = _bucket(recent), _bucket(prior)
+        clear_recent = [
+            x for x in resolved if x["horizon_minutes"] == h
+            and str(x["target_opened_at"]) >= start_recent.isoformat()
+        ]
         # Comparing raw Brier scores across weeks can label a model as
         # "improving" simply because the market became easier to predict.
         # Compare each week's model-vs-baseline *paired skill* instead.
@@ -166,6 +199,8 @@ def analytics_snapshot(
         if (
             today["events"] >= MIN_TREND_EVENTS
             and previous["events"] >= MIN_TREND_EVENTS
+            and today["days"] >= MIN_TREND_DAYS
+            and previous["days"] >= MIN_TREND_DAYS
             and current_skill is not None and prior_skill is not None
         ):
             gain = current_skill - prior_skill
@@ -174,15 +209,16 @@ def analytics_snapshot(
                 else "worsening" if gain < -0.005
                 else "unchanged"
             )
-        stress = score_cost_stress(recent)
-        reliability = forward_reliability(recent)
+        stress = score_cost_stress(clear_recent)
+        reliability = forward_reliability(clear_recent)
+        reliability["disputed_targets"] = disputed.get((h, "recent"), 0)
         by_horizon[h] = {
             "forward_reliability_7d": reliability,
             "cost_stress_7d": stress,
             "last_7d": today, "prior_7d": previous,
             "disputed_targets_7d": disputed.get((h, "recent"), 0),
             "disputed_targets_prior_7d": disputed.get((h, "prior"), 0),
-            "target_outcome_policy": "exclude_disagreeing_exchange_labels",
+            "target_outcome_policy": "score_source_brier;binary_outcomes_only_for_direction",
             "trend": trend, "last_7d_skill": current_skill,
             "prior_7d_skill": prior_skill,
             "trend_method": "relative_to_same_window_baseline",
@@ -216,6 +252,7 @@ def analytics_snapshot(
             ),
         },
         "min_trend_events": MIN_TREND_EVENTS,
+        "min_trend_days": MIN_TREND_DAYS,
         "linked_venue_outcomes": True,
         "fees_assumed_bps": ROUNDTRIP_COST_BPS,
         "includes_funding": False,

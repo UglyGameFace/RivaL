@@ -39,3 +39,23 @@ Historical Google Drive originals and other source families still need
 source-specific SHA-256 verification and legitimate source-native training
 through RivaL's existing Drive→candidate registry→PostgreSQL mathematics.
 This addition is *not* proof all those archives are already ingested by LFM3.
+
+
+## Mathematical correctness audit
+
+The forward-adaptive model's Brier statistics in PR #263 correctly retained
+source-disputed future outcomes, but the legacy *Discord analytics* still
+silently dropped those targets from its Brier mean. The analytics now scores
+genuine squared errors across every properly settled and causally ordered
+venue; contracts on one venue are averaged first, then venues equally per
+UTC target. Disputed outcomes remain explicitly counted. Only **binary**
+directional hit rate, probability calibration and theoretical trading
+costs exclude disputes, because a single synthetic fraction would invent
+a trade outcome. Weekly improvement trends require 100 UTC targets and at
+least five distinct UTC days in **each** week.
+
+Independent tests use two sources with known squared errors .01 and .64:
+the correct balanced Brier is .325, even with an additional duplicate
+contract from the first venue. Volume-only events have no implied
+up/down forecast and cannot score a directional continuation. Testing
+formula correctness is not equivalent to proving profitable accuracy.

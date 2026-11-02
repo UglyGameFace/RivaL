@@ -144,12 +144,15 @@ class Pacer:
 async def request_page(client: httpx.AsyncClient, *, asset: str, family: str,
                        begin: int, end: int, pacer: Pacer,
                        start_back_steps: int = 0,
-                       end_forward_steps: int = 0) -> tuple[bytes, dict]:
+                       end_forward_steps: int = 1) -> tuple[bytes, dict]:
     if (start_back_steps not in (0, 1)
         or end_forward_steps not in (0, 1)):
         raise ValueError("unbounded Bitget window boundary probe")
     if asset not in ASSETS or family not in FAMILIES:
         raise HistoryImportError("Bitget historical request outside scope")
+    # Live source probes proved the provider drops the final requested bar
+    # when endTime=end-1. A single additional 5m end interval returns all
+    # requested bars; the validator trims any surplus provider boundary row.
     params = {"category": "USDT-FUTURES", "symbol": asset + "USDT",
               "interval": "5m", "type": family, "limit": "100",
               "startTime": str(begin - 1 - start_back_steps * STEP),
@@ -301,7 +304,7 @@ async def collect_month(client: httpx.AsyncClient, *, asset: str, family: str,
             "request": {"endpoint": ENDPOINT, "category": "USDT-FUTURES",
                         "symbol": asset + "USDT", "type": family,
                         "interval": "5m", "startTime": begin - 1,
-                        "endTime": end - 1, "limit": 100},
+                        "endTime": end + STEP - 1, "limit": 100},
             "response_sha256": hashlib.sha256(data).hexdigest(),
             "response_base64": base64.b64encode(data).decode("ascii"),
         })
@@ -419,9 +422,9 @@ async def probe_source_windows(*, client: httpx.AsyncClient, asset: str,
     probe_month = candidates[0]
     start, end = windows(probe_month)[0]
     for label, start_back_steps, end_forward_steps in (
-        ("start_back_one_bar", 1, 0),
+        ("legacy_unpadded_end", 0, 0),
         ("end_forward_one_bar", 0, 1),
-        ("both_sides_one_bar", 1, 1),
+        ("start_back_one_bar", 1, 0),
     ):
         item = {"month": probe_month, "family": "market", "window": "first",
                 "variant": label, "expected": (end - start) // STEP}

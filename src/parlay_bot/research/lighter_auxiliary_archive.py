@@ -35,16 +35,34 @@ def month_bounds(month: str) -> tuple[datetime, datetime]:
     return start, (start + timedelta(days=32)).replace(day=1)
 
 
+def latest_full_month(now: datetime | None = None) -> str:
+    clock = (now or datetime.now(UTC)).astimezone(UTC)
+    first_of_month = clock.replace(day=1, hour=0, minute=0, second=0,
+                                   microsecond=0)
+    if first_of_month <= datetime(2025, 2, 1, tzinfo=UTC):
+        raise HistoryImportError("no finished Lighter research month")
+    return (first_of_month - timedelta(days=1)).strftime("%Y-%m")
+
+
 def automatic_month(now: datetime | None = None) -> str:
+    """Rotate recent qualified months first, without starving older months."""
     clock = (now or datetime.now(UTC)).astimezone(UTC)
     first = datetime(2025, 2, 1, tzinfo=UTC)
     current = clock.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     months = (current.year - first.year) * 12 + current.month - first.month
     if months <= 0:
         raise HistoryImportError("no finished Lighter research month")
-    offset = (int(clock.timestamp()) // (6 * 3600)) % months
-    year, month_index = divmod(2025 * 12 + 1 + offset, 12)
-    return f"{year:04d}-{month_index + 1:02d}"
+    all_months = [
+        f"{year:04d}-{month + 1:02d}"
+        for year, month in (
+            divmod(2025 * 12 + 1 + index, 12)
+            for index in range(months)
+        )
+    ]
+    ordered = list(reversed(all_months[-6:])) + all_months[:-6]
+    offset = (int(clock.timestamp()) // (6 * 3600)) % len(ordered)
+    return ordered[offset]
+
 
 
 async def fetch_source(client, endpoint: str, params: dict | None = None):
@@ -272,7 +290,8 @@ def main() -> int:
     parser.add_argument("--assets", nargs="+", choices=ASSETS, default=["BTC", "ETH"])
     args = parser.parse_args()
     try:
-        month = automatic_month() if args.month == "auto" else args.month
+        month = (automatic_month() if args.month == "auto"
+                 else latest_full_month() if args.month == "latest" else args.month)
         report = asyncio.run(collect(month=month, assets=tuple(args.assets)))
     except (HistoryImportError, httpx.HTTPError, RuntimeError, OSError) as exc:
         parser.exit(2, f"Lighter source-native auxiliary BLOCKED: {exc}\n")

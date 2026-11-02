@@ -7,6 +7,8 @@ on:
       - "src/parlay_bot/research/gate_hourly_l2_archive.py"
       - "src/parlay_bot/research/gate_hourly_l2_batch.py"
       - "src/parlay_bot/research/gate_l2_quality.py"
+      - "src/parlay_bot/research/gate_l2_shadow_features.py"
+      - "tests/test_gate_l2_shadow_features.py"
       - "src/parlay_bot/research/drive_source_census.py"
       - "tests/test_gate_hourly_l2_archive.py"
       - "tests/test_gate_l2_quality_batch.py"
@@ -51,8 +53,8 @@ jobs:
           python-version: "3.11"
       - run: |
           python -m pip install -e ".[dev,archive]"
-          ruff check src/parlay_bot/research/gate_hourly_l2_archive.py src/parlay_bot/research/gate_hourly_l2_batch.py src/parlay_bot/research/gate_l2_quality.py src/parlay_bot/research/drive_source_census.py tests/test_gate_hourly_l2_archive.py tests/test_gate_l2_quality_batch.py tests/test_drive_source_census.py
-          pytest -q tests/test_gate_hourly_l2_archive.py tests/test_gate_l2_quality_batch.py tests/test_drive_source_census.py
+          ruff check src/parlay_bot/research/gate_hourly_l2_archive.py src/parlay_bot/research/gate_hourly_l2_batch.py src/parlay_bot/research/gate_l2_quality.py src/parlay_bot/research/gate_l2_shadow_features.py src/parlay_bot/research/drive_source_census.py tests/test_gate_hourly_l2_archive.py tests/test_gate_l2_quality_batch.py tests/test_gate_l2_shadow_features.py tests/test_drive_source_census.py
+          pytest -q tests/test_gate_hourly_l2_archive.py tests/test_gate_l2_quality_batch.py tests/test_gate_l2_shadow_features.py tests/test_drive_source_census.py
 
   public-source-probe:
     if: github.event_name == 'pull_request'
@@ -72,6 +74,7 @@ jobs:
           import json
           import httpx
           from parlay_bot.research.gate_hourly_l2_archive import download
+          from parlay_bot.research.gate_l2_shadow_features import derive_features
           from parlay_bot.research.free_history import HistoryImportError
           with httpx.Client(timeout=35, follow_redirects=False) as client:
               try:
@@ -92,6 +95,18 @@ jobs:
                       "source_schema_checked": info.get("original_snapshot_quality", {}).get(
                           "source_jsonl_snapshot_schema_verified", False),
                       "l2_continuity_verified": False,
+                      "retrospective_shadow_buckets": len(derive_features(
+                          raw, {"schema_version": "rival-gate-hourly-l2-original-v1",
+                                "venue": "gate", "family": "orderbooks_slice",
+                                "asset": "BTC", "contract": "BTC_USDT", "quote": "USDT",
+                                "utc_hour": "2023042505",
+                                "original_file": "gate-hourly-l2-BTC-orderbooks_slice-2023042505--"
+                                                + info["original_source_sha256"][:16] + ".gz",
+                                "original_sha256": info["original_source_sha256"],
+                                "model_training_eligible": False,
+                                "forward_model_promoted": False,
+                          })),
+                      "live_model_import_allowed": False,
                   }
               except (HistoryImportError, httpx.HTTPError) as exc:
                   report = {"status": "provider_unavailable_or_outside_budget",

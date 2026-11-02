@@ -14,7 +14,7 @@ import math
 from datetime import UTC, datetime, timedelta, timezone
 from itertools import pairwise
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import httpx
 
@@ -176,6 +176,41 @@ async def download_month(client: httpx.AsyncClient, *, asset: str, month: str,
     )
 
 
+def verify_advanced_archive_catalog_url(*, asset: str, month: str,
+                                        filename: str, url: str) -> str:
+    """Validate an exact official OKX archive link, including its signed version.
+
+    The live OKX public catalog may append a single `v` query parameter for
+    its CDN archive links. The previously unconditional query rejection
+    discarded these genuine sources. We never accept user-supplied hosts,
+    arbitrary query keys, redirects, percent-encoded paths, or guessed files.
+    """
+    month_bounds(month)
+    if asset not in ASSETS or not isinstance(filename, str) or not isinstance(url, str):
+        raise HistoryImportError("unverified OKX archive host/filename")
+    parsed = urlparse(url)
+    if (
+        parsed.scheme != "https" or parsed.hostname != "static.okx.com"
+        or parsed.port not in (None, 443) or parsed.username or parsed.password
+        or parsed.fragment or unquote(parsed.path) != parsed.path
+        or not parsed.path.startswith("/cdn/okex/")
+        or filename != Path(filename).name or ".." in filename or "\\\\" in filename
+        or not filename.startswith(f"{asset}-USDT-SWAP-")
+        or not filename.endswith((".zip", ".tar.gz"))
+        or not parsed.path.endswith("/" + filename)
+        or (month not in filename and month.replace("-", "") not in filename)
+        or (parsed.query and not (
+            parsed.query.startswith("v=") and len(parsed.query) <= 130
+            and len(parsed.query) > 2
+            and all(char.isascii() and (
+                char.isalnum() or char in "._-"
+            ) for char in parsed.query[2:])
+        ))
+    ):
+        raise HistoryImportError("unverified OKX archive host/filename")
+    return url
+
+
 async def inventory_extra_modules(client: httpx.AsyncClient, *,
                                    asset: str, month: str,
                                    module_ids: tuple[int, ...] | None = None) -> dict:
@@ -218,13 +253,9 @@ async def inventory_extra_modules(client: httpx.AsyncClient, *,
                     url, filename = record.get("url"), record.get("filename")
                     if not isinstance(url, str) or not isinstance(filename, str):
                         raise HistoryImportError("missing archived OKX file identity")
-                    parsed = urlparse(url)
-                    if (parsed.scheme != "https" or parsed.hostname != "static.okx.com"
-                        or parsed.query or parsed.fragment or parsed.username
-                        or not filename.startswith(f"{asset}-USDT-SWAP-")
-                        or not filename.endswith((".zip", ".tar.gz"))
-                        or not parsed.path.endswith("/" + filename)):
-                        raise HistoryImportError("unverified OKX archive host/filename")
+                    verify_advanced_archive_catalog_url(
+                        asset=asset, month=month, filename=filename, url=url,
+                    )
                     files.append({"filename": filename, "source_url": url})
         evidence[label] = {"files": files,
                            "status": "cataloged_not_downloaded" if files else "unavailable"}

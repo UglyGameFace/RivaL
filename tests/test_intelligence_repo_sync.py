@@ -195,7 +195,8 @@ def test_live_probe_executes_one_authenticated_grounded_synthetic_inference(
         return Response(research)
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})
+    # This is fixed, repo-owned Python host probe code, never user input.
+    exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})  # noqa: S102
     stdout = capsys.readouterr().out
     assert VERIFY["parse_receipt"](stdout, SHA)["research_smoke_ok"] is True
     assert len(urls) == 3
@@ -224,7 +225,7 @@ def test_live_probe_rejects_anonymous_status_and_unsupported_inference(
         return Response(status)
     monkeypatch.setattr(urllib.request, "urlopen", public_status)
     with pytest.raises(RuntimeError, match="anonymous"):
-        exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})
+        exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})  # noqa: S102
     assert not capsys.readouterr().out
 
     def unsafe_model(req, timeout):
@@ -236,5 +237,5 @@ def test_live_probe_rejects_anonymous_status_and_unsupported_inference(
                          "confidence": "high", "informational_only": False})
     monkeypatch.setattr(urllib.request, "urlopen", unsafe_model)
     with pytest.raises(RuntimeError, match="safely grounded"):
-        exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})
+        exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})  # noqa: S102
     assert not capsys.readouterr().out

@@ -51,7 +51,7 @@ def _side(value: object, *, reverse: bool) -> tuple[Decimal, int]:
     for row in value:
         if not isinstance(row, dict) or not {"p", "s"} <= row.keys():
             raise HistoryImportError("Gate historical snapshot level schema mismatch")
-        px, size = _number(row["p"]), _number(row["s"])
+        px, _size = _number(row["p"]), _number(row["s"])
         if previous is not None and (
             (reverse and px >= previous) or (not reverse and px <= previous)
         ):

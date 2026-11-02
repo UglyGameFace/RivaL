@@ -134,7 +134,7 @@ def test_bad_prices_duplicates_and_mismatched_source_rejected():
             json.dumps({"code": "00000", "data": [malicious]}).encode(),
             start=first, end=first + 300000, family="market",
         )
-    with pytest.raises(HistoryImportError, match="nonfinite"):
+    with pytest.raises(HistoryImportError, match="unreasonable Bitget price")
         validate_response(
             json.dumps({"code": "00000", "data": [
                 [str(first), "NaN", "1", "1", "1", "0", "0"],

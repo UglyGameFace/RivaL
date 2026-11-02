@@ -61,7 +61,7 @@ def test_exact_utc_grid_is_independent_of_authentic_original_checksum():
 def test_census_and_coordinator_recognize_new_real_aux_sources():
     for family in (
         "mark", "index", "premium", "candles_1m", "candles_15m",
-        "candles_1h", "candles_4h", "candles_1d",
+        "candles_1h", "candles_4h", "candles_1d", "funding",
     ):
         raw = f"binance-aux-BTC-{family}-2026-02--" + "a" * 16 + ".manifest.json"
         assert parse_name(raw) == ("binance", "BTC", family, "2026-02", "a" * 16)

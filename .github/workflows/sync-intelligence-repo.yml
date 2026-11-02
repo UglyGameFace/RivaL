@@ -41,7 +41,19 @@ jobs:
           test -f "$RUNNER_TEMP/rival-intelligence-stage/.github/workflows/release.yml"
           test ! -d "$RUNNER_TEMP/rival-intelligence-stage/runtime"
           test ! -e "$RUNNER_TEMP/rival-intelligence-stage/.env"
-          python -m py_compile "$RUNNER_TEMP/rival-intelligence-stage/main.py" "$RUNNER_TEMP/rival-intelligence-stage/service.py" "$RUNNER_TEMP/rival-intelligence-stage/verify_live.py"
+          # Compile in memory: py_compile creates __pycache__ files that
+          # violate the strict source-only mirror manifest.
+          python - "$RUNNER_TEMP/rival-intelligence-stage" <<'PY'
+          import sys
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          for name in ("main.py", "service.py", "verify_live.py"):
+              compile((root / name).read_bytes(), str(root / name), "exec")
+          PY
+          # Exercise the exact initial-repository apply before contacting
+          # GitHub, so build side effects cannot break first-time bootstrap.
+          mkdir -p "$RUNNER_TEMP/intelligence-mirror-test/.git"
+          python tools/prepare_intelligence_repo.py apply --staged "$RUNNER_TEMP/rival-intelligence-stage" --repository "$RUNNER_TEMP/intelligence-mirror-test"
       - name: Create or update dedicated private GitHub repository main
         if: github.event_name != 'pull_request'
         shell: bash

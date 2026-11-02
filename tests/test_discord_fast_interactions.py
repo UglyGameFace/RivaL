@@ -251,3 +251,43 @@ async def test_research_newer_selection_cancels_old_slow_render(monkeypatch):
     finally:
         release.set()
         view.stop()
+
+
+@pytest.mark.asyncio
+async def test_performance_menu_shows_loading_before_blocked_database(monkeypatch, tmp_path):
+    from parlay_bot.discord_app import home as home_module
+
+    bot = _bot(tmp_path)
+    home = bot._build_guided_home(123)
+    home.navigate("performance")
+    started, release = asyncio.Event(), asyncio.Event()
+
+    class RealInteraction:
+        def __init__(self):
+            self.edit_original_response = AsyncMock()
+
+    monkeypatch.setattr(home_module.discord, "Interaction", RealInteraction)
+    interaction = RealInteraction()
+
+    async def slow_render():
+        started.set()
+        await release.wait()
+        return discord.Embed(title="Measured performance")
+
+    home.render = slow_render
+    try:
+        await asyncio.wait_for(home.redraw(interaction), timeout=0.5)
+        assert "Loading BTC performance" in (
+            interaction.edit_original_response.await_args.kwargs["embed"].title
+        )
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        release.set()
+        await asyncio.sleep(0.1)
+        assert interaction.edit_original_response.await_count == 2
+        assert interaction.edit_original_response.await_args.kwargs[
+            "embed"
+        ].title == "Measured performance"
+    finally:
+        release.set()
+        home.stop()
+        await _close(bot)

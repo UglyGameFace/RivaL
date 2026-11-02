@@ -282,7 +282,7 @@ def test_advanced_models_show_screening_blocker_not_paper_profit():
     }
     explanation = _plain_boosted_proof(proof)
     assert "54" in explanation
-    assert "not better than a basic forecast in validation" in explanation
+    assert "did not improve enough over basic forecasts in validation" in explanation
     assert "No model qualifies for simulated testing yet" in explanation
     assert "Real profit" in explanation
     assert len(explanation) < 1024

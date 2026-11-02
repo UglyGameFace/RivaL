@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import json
 import math
+import re
 from datetime import UTC, datetime, timedelta, timezone
 from itertools import pairwise
 from pathlib import Path
@@ -36,6 +37,16 @@ STEP = timedelta(minutes=5)
 MAX_PAGES_PER_MONTH = 500
 MODULES = {1: "trades", 2: "one_minute_candles", 3: "funding_rates",
            4: "orderbook_l2_400", 5: "orderbook_l2_5000"}
+# Official OKX publication-era attempt floors, NOT proof that a particular
+# instrument existed that month. The 5m candle research floor stays 2023-07.
+ADVANCED_FIRST = {
+    1: "2021-09",  # historical trades
+    2: FIRST,      # official one-minute candles
+    3: "2022-03",  # archived perpetual funding
+    4: "2023-03",  # high-resolution L2; monthly listing may be unsupported
+    5: "2025-11",  # 5000-level L2
+}
+ADVANCED_MODULE_BY_NAME = {name: number for number, name in MODULES.items()}
 
 
 def month_bounds(month: str) -> tuple[datetime, datetime]:
@@ -46,6 +57,25 @@ def month_bounds(month: str) -> tuple[datetime, datetime]:
     if start.strftime("%Y-%m") != month or month < FIRST:
         raise HistoryImportError("OKX month outside selected historical range")
     end = start.replace(year=start.year + 1, month=1) if start.month == 12 else start.replace(month=start.month + 1)
+    return start, end
+
+
+def advanced_month_bounds(month: str, module_id: int) -> tuple[datetime, datetime]:
+    """Per-product documented archive era, independent of 5m research history."""
+    if type(module_id) is not int or module_id not in ADVANCED_FIRST:
+        raise HistoryImportError("unknown OKX historical data module")
+    if not isinstance(month, str) or not re.fullmatch(
+        r"20\\d{2}-(?:0[1-9]|1[0-2])", month
+    ):
+        raise HistoryImportError("invalid OKX advanced calendar month")
+    if month < ADVANCED_FIRST[module_id]:
+        raise HistoryImportError("OKX advanced module predates publication era")
+    start = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
+    end = (start.replace(year=start.year + 1, month=1)
+           if start.month == 12 else start.replace(month=start.month + 1))
+    if end > datetime.now(UTC).replace(day=1, hour=0, minute=0,
+                                      second=0, microsecond=0):
+        raise HistoryImportError("OKX advanced month is not completed")
     return start, end
 
 
@@ -177,7 +207,8 @@ async def download_month(client: httpx.AsyncClient, *, asset: str, month: str,
 
 
 def verify_advanced_archive_catalog_url(*, asset: str, month: str,
-                                        filename: str, url: str) -> str:
+                                        filename: str, url: str,
+                                        module: str | None = None) -> str:
     """Validate an exact official OKX archive link, including its signed version.
 
     The live OKX public catalog may append a single `v` query parameter for
@@ -185,7 +216,14 @@ def verify_advanced_archive_catalog_url(*, asset: str, month: str,
     discarded these genuine sources. We never accept user-supplied hosts,
     arbitrary query keys, redirects, percent-encoded paths, or guessed files.
     """
-    month_bounds(month)
+    if module is None:
+        # Catalog-independent callers can verify source identity without
+        # claiming a particular historical module is available.
+        advanced_month_bounds(month, 1)
+    else:
+        if module not in ADVANCED_MODULE_BY_NAME:
+            raise HistoryImportError("unknown OKX archive family")
+        advanced_month_bounds(month, ADVANCED_MODULE_BY_NAME[module])
     if asset not in ASSETS or not isinstance(filename, str) or not isinstance(url, str):
         raise HistoryImportError("unverified OKX archive host/filename")
     parsed = urlparse(url)
@@ -214,8 +252,11 @@ def verify_advanced_archive_catalog_url(*, asset: str, month: str,
 async def inventory_extra_modules(client: httpx.AsyncClient, *,
                                    asset: str, month: str,
                                    module_ids: tuple[int, ...] | None = None) -> dict:
-    """Discover official 2023+ archives without claiming they were downloaded."""
-    start, _ = month_bounds(month)
+    """Discover bounded per-module official archives; do not infer listings."""
+    if not isinstance(month, str) or not re.fullmatch(
+        r"20\\d{2}-(?:0[1-9]|1[0-2])", month
+    ):
+        raise HistoryImportError("invalid OKX advanced calendar month")
     if module_ids is not None and (
         not module_ids or len(module_ids) != len(set(module_ids))
         or any(value not in MODULES for value in module_ids)
@@ -225,10 +266,10 @@ async def inventory_extra_modules(client: httpx.AsyncClient, *,
     for number_id, label in MODULES.items():
         if module_ids is not None and number_id not in module_ids:
             continue
-        # 5000-level L2 began in November 2025, so older months are absent.
-        if number_id == 5 and month < "2025-11":
+        if month < ADVANCED_FIRST[number_id]:
             evidence[label] = {"files": [], "status": "not_available_for_period"}
             continue
+        start, _ = advanced_month_bounds(month, number_id)
         offset = timezone(timedelta(hours=8)) if number_id in (1, 2, 3) else UTC
         date = datetime(start.year, start.month, 1, tzinfo=offset)
         response = await official(client, ARCHIVES, {
@@ -255,6 +296,7 @@ async def inventory_extra_modules(client: httpx.AsyncClient, *,
                         raise HistoryImportError("missing archived OKX file identity")
                     verify_advanced_archive_catalog_url(
                         asset=asset, month=month, filename=filename, url=url,
+                        module=label,
                     )
                     files.append({"filename": filename, "source_url": url})
         evidence[label] = {"files": files,

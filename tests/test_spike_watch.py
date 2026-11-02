@@ -6,8 +6,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-import pytest
-
 from parlay_bot.perpetuals.analysis_evidence import build_evidence
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.spike_watch import SpikeWatch

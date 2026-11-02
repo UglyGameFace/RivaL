@@ -174,3 +174,23 @@ def test_identical_remote_names_and_conflicting_original_pages_are_visible():
                    if p["venue"] == "lighter")
     assert partial["conflicting_page_numbers"] == [0]
     assert partial["full_calendar_month_verified"] is False
+
+
+
+def test_okx_advanced_receipts_are_visible_without_falsely_qualifying_l2():
+    authentic = [
+        "BTC-USDT-SWAP-funding_rates-2022-03.zip.receipt.json",
+        "BTC-USDT-SWAP-trades-2021-09.zip.receipt.json",
+        "SOL-USDT-SWAP-book-2025-11.tar.gz.receipt.json",
+    ]
+    report = census.summarize(authentic, now=NOW)
+    hints = report["okx_auxiliary_receipt_name_hints"]
+    assert len(hints) == 3
+    assert {(h["asset"], h["utc_month"]) for h in hints} == {
+        ("BTC", "2022-03"), ("BTC", "2021-09"), ("SOL", "2025-11"),
+    }
+    assert report["unrecognized_manifest_names"] == 0
+    assert all(h["source_modules_inferred_from_filename"] is False for h in hints)
+    assert all(h["bytes_reverified_in_this_census"] is False for h in hints)
+    assert all(h["full_source_month_verified"] is False for h in hints)
+    assert report["all_source_families_2021_to_present_verified"] is False

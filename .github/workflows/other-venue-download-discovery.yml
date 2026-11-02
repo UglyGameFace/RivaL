@@ -1,0 +1,55 @@
+name: Other venue official historical download discovery
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/other-venue-download-discovery.yml"
+      - "tools/other_venue_download_discovery.py"
+      - "tests/test_other_venue_download_discovery.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/other-venue-download-discovery.yml"
+      - "tools/other_venue_download_discovery.py"
+      - "tests/test_other_venue_download_discovery.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-other-venue-source-probe
+  cancel-in-progress: false
+
+jobs:
+  verify-source-download-entry-points:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Test no-cost source selection and truthful coverage
+        run: |
+          python -m pip install -e ".[dev]"
+          ruff check tools/other_venue_download_discovery.py tests/test_other_venue_download_discovery.py
+          pytest -q tests/test_other_venue_download_discovery.py
+      - name: Probe bounded official URLs without downloading bulk files
+        if: github.event_name != 'pull_request'
+        run: python tools/other_venue_download_discovery.py --probe
+      - name: Show source evidence status
+        if: always()
+        run: |
+          if [[ -f data/native-reports/other-venue-download-discovery.json ]]; then
+            echo "## Other venue historical download discovery (not completed recovery)" >> "$GITHUB_STEP_SUMMARY"
+            echo '~~~json' >> "$GITHUB_STEP_SUMMARY"
+            cat data/native-reports/other-venue-download-discovery.json >> "$GITHUB_STEP_SUMMARY"
+            echo '~~~' >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rival-other-venue-download-discovery
+          path: data/native-reports/other-venue-download-discovery.json
+          if-no-files-found: ignore
+          retention-days: 14

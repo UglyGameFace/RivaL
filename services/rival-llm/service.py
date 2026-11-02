@@ -199,6 +199,9 @@ class BackendRepair:
         self.repairs: list[float] = []
         self.next_attempt = 0.0
         self.last_fault = "none"
+        # CPU GGUF startup can take much longer than a healthy /health GET.
+        # Treat that as warming, not three successive hung responses.
+        self.warmup_until = self.clock() + 120
 
     def _verified_runtime(self) -> bool:
         try:
@@ -229,6 +232,10 @@ class BackendRepair:
             if ready:
                 self.failures = 0
                 gateway.repair_state = "healthy"
+                self.warmup_until = now
+                return
+            if now < self.warmup_until:
+                gateway.repair_state = "warming"
                 return
             self.failures += 1
             if self.failures < 3:
@@ -266,6 +273,7 @@ class BackendRepair:
         self.process = repaired
         self.failures = 0
         self.next_attempt = now + 30 * len(self.repairs)
+        self.warmup_until = now + 120
         gateway.repair_count += 1
         gateway.repair_state = "warming"
         LOG.info("llm_repair_started count=%d", gateway.repair_count)

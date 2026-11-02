@@ -463,6 +463,7 @@ def test_supervisor_recovers_from_three_idle_health_failures(tmp_path):
         clock=lambda: 100., launcher=lambda *_args, **_kwargs:
         started.append(1) or Process(),
     )
+    worker.warmup_until = 0
     try:
         worker.tick(server)
         worker.tick(server)
@@ -513,5 +514,40 @@ def test_supervisor_rejects_corrupt_artifacts_and_exhausted_repairs(tmp_path):
         with pytest.raises(RuntimeError, match="budget exhausted"):
             worker.tick(server)
         assert len(started) == 3
+    finally:
+        server.server_close()
+
+
+
+def test_unready_model_warmup_does_not_restart_slow_cpu(tmp_path):
+    binary = tmp_path / "llama-server"
+    binary.write_bytes(b"executable")
+    binary.chmod(0o700)
+    model = tmp_path / "model.gguf"
+    model.write_bytes(b"verified")
+    class Running:
+        def poll(self):
+            return None
+
+    now = [1000.]
+    server = Gateway("127.0.0.1", 0, token="x"*40, model="lfm3",
+                     process=Running())
+    server.backend_ready = lambda: False
+    started = []
+    watcher = SERVICE["BackendRepair"](
+        server.process, ["llama-server"], {}, binary=binary, model=model,
+        clock=lambda: now[0],
+        launcher=lambda *_args, **_kwargs: started.append(1),
+    )
+    try:
+        for time_ in (1000., 1030., 1119.):
+            now[0] = time_
+            watcher.tick(server)
+            assert server.repair_state == "warming"
+        assert not started
+        now[0] = 1120.
+        watcher.tick(server)
+        assert server.repair_state == "backend_health_check_failed"
+        assert not started
     finally:
         server.server_close()

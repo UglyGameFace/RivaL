@@ -74,3 +74,43 @@ def test_spike_future_score_rejects_post_issue_event_and_preissue_settlement():
     assert proof.targets == 1
     assert proof.paired_gain == .25 - (1-.90)**2
     assert proof.status == "insufficient"
+
+
+
+def test_challenger_settlement_rejects_late_drive_backfill(tmp_path):
+    from parlay_bot.perpetuals.historical_challengers import HistoricalChallengers
+    from parlay_bot.perpetuals.model_checkpoints import LiveModelCheckpoints
+
+    store = SQLiteHotStore(tmp_path / "no_backfill_wins.sqlite")
+    market = PerpetualMarketStore(store)
+    market.initialize()
+    challenger = HistoricalChallengers(store, LiveModelCheckpoints(store))
+    challenger.initialize()
+    target = datetime(2026, 11, 2, 17, tzinfo=UTC)
+    reference = target-timedelta(minutes=5)
+    issued = target-timedelta(seconds=20)
+    with store.connect() as conn:
+        conn.execute(
+            """INSERT INTO rival_history_forward
+               (model_sha256,venue,contract,quote,horizon_minutes,
+                reference_opened_at,reference_close,issued_at,target_opened_at,
+                probability_up,incumbent_up,weights_sha256)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("a"*64,"okx","BTC-USDT-SWAP","USDT",5,reference.isoformat(),
+             100.,issued.isoformat(),target.isoformat(),.8,.5,"b"*64),
+        )
+        conn.execute(
+            """INSERT INTO perp_market_candles
+               (venue,contract,quote,interval_minutes,opened_at,closed_at,
+                first_observed_at,open_price,high_price,low_price,close_price,
+                volume_base,trades)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            ("okx","BTC-USDT-SWAP","USDT",5,target.isoformat(),
+             (target+timedelta(minutes=5)-timedelta(milliseconds=1)).isoformat(),
+             (target+timedelta(hours=2)).isoformat(),100.,102.,99.,101.,1.,8),
+        )
+    challenger._settle(target+timedelta(hours=3))
+    with store.connect() as conn:
+        row = conn.execute("SELECT settled_at FROM rival_history_forward").fetchone()
+    assert row["settled_at"] is None
+    store.close()

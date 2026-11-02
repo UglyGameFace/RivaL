@@ -69,7 +69,7 @@ class HistoricalChallengers:
     def _settle(self, now):
         with self.store.connect() as conn:
             rows = conn.execute(
-                "SELECT f.*,c.close_price,c.first_observed_at FROM rival_history_forward f "
+                "SELECT f.*,c.close_price,c.first_observed_at,c.closed_at FROM rival_history_forward f "
                 "JOIN perp_market_candles c ON c.venue=f.venue AND c.contract=f.contract "
                 "AND c.quote=f.quote AND c.interval_minutes=5 AND c.opened_at=f.target_opened_at "
                 "WHERE f.settled_at IS NULL AND c.closed_at<? "
@@ -80,8 +80,13 @@ class HistoricalChallengers:
             for row in rows:
                 issued = datetime.fromisoformat(row["issued_at"])
                 close = datetime.fromisoformat(row["target_opened_at"]) + timedelta(minutes=5, milliseconds=-1)
+                observed = datetime.fromisoformat(row["first_observed_at"])
+                actual_close = datetime.fromisoformat(row["closed_at"])
+                # A late archive restoration is NOT a fresh post-issuance
+                # observation. Refuse to convert it into proof of a challenger.
                 if (issued >= close or not math.isfinite(row["close_price"])
-                    or row["close_price"] <= 0):
+                    or row["close_price"] <= 0
+                    or not timedelta(0) <= observed-actual_close <= timedelta(minutes=12)):
                     continue
                 conn.execute(
                     "UPDATE rival_history_forward SET outcome_up=?,settled_at=? WHERE "

@@ -30,12 +30,12 @@ on:
       - "src/parlay_bot/research/gate_coverage.py"
       - "src/parlay_bot/research/gate_minute_repair.py"
   schedule:
-    - cron: "27 4,10,16,22 * * *"
+    - cron: "27 0,4,8,12,16,20 * * *"
   workflow_dispatch:
     inputs:
       max_new:
         description: Maximum independently verified Gate archive files per run
-        default: "24"
+        default: "32"
         type: choice
         options: ["8", "16", "24", "32"]
 
@@ -170,7 +170,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
-      MAX_NEW: ${{ inputs.max_new || '24' }}
+      MAX_NEW: ${{ inputs.max_new || '32' }}
       RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
       RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
       RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
@@ -205,7 +205,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m parlay_bot.research.gate_archive_backfill \
-            --max-new "$MAX_NEW" --max-attempts 40
+            --max-new "$MAX_NEW" --max-attempts 48
       - name: Correlate Gate archive receipts without equating report names to restored bytes
         if: always()
         shell: bash

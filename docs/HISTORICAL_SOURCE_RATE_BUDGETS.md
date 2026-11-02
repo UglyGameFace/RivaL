@@ -47,3 +47,29 @@ configuration.
 instrument listing date, public archive start date, retention, complete-month
 check, verified historical book sequence, and downstream retrospective
 feature benefit are *separate* acceptance requirements.
+
+## Accelerated, source-safe archive collection (2026-11)
+
+The Gate public archive collection now schedules **six serialized runs per
+day**, staggered from Binance. Each Gate run is capped at **32 newly
+readback-verified archives** and **48 source attempts**; the existing
+recertification/5m-gap/advanced-family budget is preserved, as are the
+provider-throttle stop, same-Gate API fallback, and original-byte SHA checks.
+At a *perfect* 32 new archives per run, 764 pending source-family jobs take
+at least `ceil(764 / (6 * 32)) = 4` calendar days of full batches.
+This is a theoretical throughput floor, **not a delivery promise**: 404s,
+historical contract metadata gaps, unavailable source files, Google Drive
+limitations and GitHub scheduling affect realized progress.
+
+Binance's separate official-archive worker also schedules **six serialized
+runs per day** capped at **32 new source-month archives per run**, without
+raising REST request weights. Both jobs remain single-run per provider,
+preserve the existing off switches and avoid replacing source-specific history
+with another venue's prices.
+
+This does **not** finish or certify every venue/data family. OKX's confirmed
+2023–present five-minute archive scope is separate from its trades/funding/L2
+archive work; other venues need source-family month-by-month evidence.
+Training compatibility and future-only performance remain independent gates.
+Track actual new archives, rejected attempts, valid complete months, exact
+instrument start dates and model admissions before calling any family done.

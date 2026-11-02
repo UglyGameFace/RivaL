@@ -16,6 +16,7 @@ from parlay_bot.research.okx_advanced_archive import (
     automatic_archive_slot,
     ingest_one,
     inspect_archive,
+    listed_auxiliary_receipts,
     official_catalog_http_400,
 )
 
@@ -233,3 +234,73 @@ def test_incremental_l2_without_snapshot_not_treated_as_full_book(tmp_path):
     with pytest.raises(HistoryImportError, match="no recognizable research features"):
         inspect_archive(bad, asset=ASSET, month=MONTH,
                         module="orderbook_l2_400")
+
+
+@pytest.mark.asyncio
+async def test_okx_auxiliary_receipt_resume_is_only_a_bounded_name_hint():
+    from types import SimpleNamespace
+
+    existing = "BTC-USDT-SWAP-funding_rates-2023-07.zip.receipt.json"
+
+    class Client:
+        async def get(self, url, *, params, headers):
+            assert url.endswith("/files")
+            assert params["pageSize"] == 1000
+            assert "BTC-USDT-SWAP-" in params["q"]
+            return httpx.Response(200, json={"files": [
+                {"id": "authentic", "name": existing, "parents": ["manifests"],
+                 "appProperties": {"rival_kind": "manifest"}, "trashed": False},
+                {"id": "unrelated", "name": "ETH-USDT-SWAP-trades-2024-02.zip.receipt.json",
+                 "parents": ["manifests"],
+                 "appProperties": {"rival_kind": "manifest"}, "trashed": False},
+            ]})
+
+    class Drive:
+        DRIVE_URL = "https://www.googleapis.com/drive/v3"
+        folders = SimpleNamespace(manifests="manifests")
+        _client = Client()
+
+        async def _verify_folder_boundary(self):
+            pass
+
+        async def _headers(self):
+            return {}
+
+        @staticmethod
+        def _escape_query(value):
+            return value
+
+    assert await listed_auxiliary_receipts(Drive(), asset="BTC") == {existing}
+    with pytest.raises(HistoryImportError):
+        await listed_auxiliary_receipts(Drive(), asset="INVALID")
+
+
+@pytest.mark.asyncio
+async def test_okx_auxiliary_listing_rejects_untrusted_foreign_folder():
+    from types import SimpleNamespace
+
+    class Client:
+        async def get(self, url, *, params, headers):
+            return httpx.Response(200, json={"files": [
+                {"id": "bad", "name": "BTC-USDT-SWAP-trades-2025-02.zip.receipt.json",
+                 "parents": ["foreign"], "appProperties": {"rival_kind": "manifest"},
+                 "trashed": False},
+            ]})
+
+    class Drive:
+        DRIVE_URL = "https://www.googleapis.com/drive/v3"
+        folders = SimpleNamespace(manifests="manifests")
+        _client = Client()
+
+        async def _verify_folder_boundary(self):
+            pass
+
+        async def _headers(self):
+            return {}
+
+        @staticmethod
+        def _escape_query(value):
+            return value
+
+    with pytest.raises(HistoryImportError, match="untrusted"):
+        await listed_auxiliary_receipts(Drive(), asset="BTC")

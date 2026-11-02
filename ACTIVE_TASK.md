@@ -1,3 +1,13 @@
+## Active: mobile research navigation and legacy Gemini retirement (2026-11-02)
+
+- **Request:** Remove misleading Gemini AI button, simplify excessive RivaL Performance/Detailed Research controls on Android, keep real accuracy/history diagnostics; screenshot also exposed literal `\\n` in boosted model proof.
+- **PR:** [#270](https://github.com/UglyGameFace/RivaL/pull/270). Deep research now has 3 top-level tabs (Opportunities, Math & History, Results), with AI Review nested as a functional Math & History selector entry. Existing read-only proof selectors, refresh, coin controls and requests remain available; XRP is now in deep research selector.
+- **Gemini handling:** UI no longer exposes a Gemini tab/score selector or misleading Google labels. Old `RIVAL_AI_PROVIDER=gemini` is accepted but fails closed without instantiating Gemini or scheduling AI calls. Set `RIVAL_AI_PROVIDER=local` for private LFM3 research; old stored AI outcomes remain intact and are not relabeled as LFM3 performance. Do not delete forecast records.
+- **Visible evidence:** BTC 5m exchange directional 52.4% but Brier 0.2486 vs baseline 0.2484, so no proven edge. Polymarket Brier 0.2336 vs market baseline 0.2226, also worse. 0 screened/portable imported training evidence, forward comparison only 3 days, forecast-cycle read unavailable; green feeds alone do not prove learning health.
+- **Acceptance:** CI/lint, UI navigation, stale action compatibility, Discloud `main` release and screenshots after new /rival command. No model training or Gemini API calls needed for a UI redesign. Preserve separate Intelligence repo and private host environment.
+
+---
+
 ## Active: RivaL Intelligence live acceptance and recovery (2026-11-02)
 
 - **Architecture now verified:** Authoritative RivaL `main` mirrors the private LFM3 service into [UglyGameFace/RivaL-Intelligence](https://github.com/UglyGameFace/RivaL-Intelligence) `main`, then downstream GitHub Actions builds pinned CPU llama.cpp and deploys to the separate Discloud `RivaL-Intelligence` app. Do **not** require the Discloud-side GitHub badge or raw-source auto-deploy.

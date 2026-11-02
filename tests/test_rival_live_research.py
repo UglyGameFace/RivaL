@@ -37,7 +37,7 @@ def controls(view):
     return {item.custom_id: item for item in view.children}
 
 
-def test_research_both_tabs_are_clickable_and_refresh_is_visible():
+def test_research_three_tabs_and_nested_ai_review_keep_refresh():
     dashboard = ResearchDashboard(
         owner_id=21, market=None, ai=None,
         venues=("hyperliquid", "dydx"),
@@ -47,21 +47,25 @@ def test_research_both_tabs_are_clickable_and_refresh_is_visible():
     try:
         buttons = controls(dashboard)
         assert buttons["rival:research:math"].style is discord.ButtonStyle.success
-        assert buttons["rival:research:ai"].style is discord.ButtonStyle.primary
+        assert buttons["rival:research:accuracy"].style is discord.ButtonStyle.primary
+        assert "rival:research:ai" not in buttons
         assert not buttons["rival:research:math"].disabled
-        assert not buttons["rival:research:ai"].disabled
         assert buttons["rival:research:refresh"].style is discord.ButtonStyle.primary
         assert not buttons["rival:research:refresh"].disabled
-        dashboard.screen = "ai"
+        dashboard.section = "ai"
+        dashboard._rebuild()
+        assert controls(dashboard)["rival:research:analyze"].disabled
+        assert controls(dashboard)["rival:research:math"].style is discord.ButtonStyle.success
+        dashboard.screen = "accuracy"
+        dashboard.section = "overview"
         dashboard._rebuild()
         buttons = controls(dashboard)
         assert buttons["rival:research:math"].style is discord.ButtonStyle.primary
-        assert buttons["rival:research:ai"].style is discord.ButtonStyle.success
-        assert not buttons["rival:research:ai"].disabled
+        assert buttons["rival:research:accuracy"].style is discord.ButtonStyle.success
+        assert not buttons["rival:research:accuracy"].disabled
         assert "rival:research:refresh" in buttons
     finally:
         dashboard.stop()
-
 
 @pytest.mark.asyncio
 async def test_live_health_is_not_cached_but_history_is_cached_until_refresh(

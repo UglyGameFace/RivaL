@@ -59,7 +59,6 @@ from parlay_bot.perpetuals.deribit_history_recovery import DeribitHistoryRecover
 from parlay_bot.perpetuals.dydx_history_recovery import DydxHistoryRecovery
 from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
-from parlay_bot.perpetuals.gemini_research import GeminiResearch
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
 from parlay_bot.perpetuals.hyperliquid_history_recovery import (
@@ -428,9 +427,8 @@ class RivalDiscordClient(discord.Client):
         # OPENROUTER_API_KEY (provider convention) are accepted. OpenRouter
         # has priority when configured, but there is never a paid fallback.
         free_secret = settings.open_router_api_key or settings.openrouter_api_key
-        google_secret = settings.gemini_api_key or settings.google_api_key
         if settings.rival_ai_provider == "disabled":
-            self.gemini_research: GeminiResearch | OpenRouterResearch | CloudflareResearch | None = None
+            self.gemini_research: OpenRouterResearch | CloudflareResearch | LocalFirstResearch | None = None
         elif settings.rival_ai_provider == "local":
             self.gemini_research = LocalFirstResearch(
                 self.perp_collector.market if self.perp_collector is not None
@@ -454,8 +452,8 @@ class RivalDiscordClient(discord.Client):
             )
             _LOG.info("RivaL optional AI reviewer: isolated Cloudflare Worker")
         elif settings.rival_ai_provider == "openrouter":
-            # No Gemini/paid fallback when a free coding model or the key
-            # is unavailable. Only explicit legacy Gemini mode can use it.
+            # No paid fallback when a free coding model or the key
+            # is unavailable. Legacy Gemini mode is disabled.
             self.gemini_research = OpenRouterResearch(
                 self.perp_collector.market if self.perp_collector is not None
                 else PerpetualMarketStore(self.store),
@@ -465,17 +463,16 @@ class RivalDiscordClient(discord.Client):
                 cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
             )
             _LOG.info("RivaL optional AI reviewer: free-only OpenRouter coding")
-        elif self.perp_collector is None:
-            self.gemini_research = None
         else:
-            self.gemini_research = GeminiResearch(
-                self.perp_collector.market,
-                api_key=(google_secret.get_secret_value()
-                         if google_secret is not None else None),
-                model=settings.rival_gemini_model,
-                daily_max=settings.rival_gemini_daily_max,
-                cooldown_seconds=settings.rival_gemini_cooldown_seconds,
-            )
+            # An old RIVAL_AI_PROVIDER=gemini setting must not silently
+            # bring back Google requests after the owner retired that route.
+            # Fail closed without modifying stored historical AI outcomes.
+            self.gemini_research = None
+            if settings.rival_ai_provider == "gemini":
+                _LOG.warning(
+                    "Legacy Gemini AI provider is disabled; set "
+                    "RIVAL_AI_PROVIDER=local to use private RivaL Intelligence"
+                )
         self.autonomous: AutonomousResearch | None = (
             AutonomousResearch(
                 self.perp_collector.market,
@@ -485,7 +482,7 @@ class RivalDiscordClient(discord.Client):
                 auto_ai=(
                     settings.rival_gemini_auto_enabled
                     and settings.rival_ai_background_opt_in
-                    and settings.rival_ai_provider not in ("local", "cloudflare")
+                    and settings.rival_ai_provider == "openrouter"
                 ),
             )
             if self.forward_audit is not None and self.perp_collector is not None

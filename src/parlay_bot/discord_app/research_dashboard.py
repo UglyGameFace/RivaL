@@ -14,7 +14,7 @@ from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
-from parlay_bot.perpetuals.gemini_research import AiResearch, GeminiResearch, ResearchUnavailable
+from parlay_bot.perpetuals.gemini_research import AiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
@@ -45,6 +45,7 @@ _SECTIONS = {
         ("history", "History & gaps"),
         ("recovery", "Backfill progress"),
         ("learning", "Learning status"),
+        ("ai", "AI Review"),
     ),
     "accuracy": (
         ("overview", "Overview"),
@@ -55,7 +56,6 @@ _SECTIONS = {
         ("five", "5-minute results"),
         ("fifteen", "15-minute results"),
         ("calibration", "Probability reliability"),
-        ("gemini", "Gemini results"),
         ("ledger", "Prediction ledger"),
         ("regimes", "Market-regime skill"),
         ("costs", "Costs (not verified)"),
@@ -69,6 +69,8 @@ _SECTIONS = {
 }
 _FIELD_GROUPS = {
     "math": {
+        "ai": ("AI research · UNCALIBRATED", "Analysis status",
+               "Private local AI & Cloudflare backup", "AI provider & request limits"),
         "pulse": ("Current market pulse",),
         "spikes": ("Spike watch analytics", "Recent spike events"),
         "history": ("Source-native training readiness", "Historical gap audit"),
@@ -84,16 +86,15 @@ _FIELD_GROUPS = {
         "five": ("Forward 5-minute evaluation", "Math 5m"),
         "fifteen": ("Forward 15-minute evaluation", "Math 15m"),
         "calibration": ("Forward 5m calibration", "Forward 15m calibration"),
-        "gemini": ("Gemini · independent forward outcomes",
-                   "Independent track analytics"),
         "ledger": ("Prediction ledger · prospective",),
         "regimes": ("Prospective skill by market regime",),
         "costs": ("Execution cost verification", "How accuracy is audited"),
         "method": ("How accuracy is audited",),
     },
     "ai": {
-        "limits": ("Gemini model & request limits", "OpenRouter free model & request limits"),
-        "analysis": ("Gemini assessment", "Analysis status"),
+        "limits": ("Private local AI & Cloudflare backup", "Cloudflare AI model & request limits",
+                   "OpenRouter free model & request limits", "AI provider & request limits"),
+        "analysis": ("AI research · UNCALIBRATED", "Analysis status"),
     },
 }
 
@@ -135,7 +136,7 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
         description={
             "math": "Live market observations and historical research. No approved trade.",
             "accuracy": "Forward-only predictions versus actual outcomes. No verified betting edge.",
-            "ai": "Independent Gemini analysis from verified exchange data.",
+            "ai": "Read-only AI research on source-verified market data.",
         }[screen] + f"\n**{label}** · Choose a section below for details.",
         color=full.color,
     )
@@ -173,8 +174,9 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
             add_one(("Tonight's research verdict", "Accuracy tracking"), short=True)
             add_one(("Forward 5-minute evaluation",), short=True)
         else:
-            add_one(("Gemini assessment", "Analysis status"), short=True)
-            add_one(("Gemini model & request limits",), short=True)
+            add_one(("AI research · UNCALIBRATED", "Analysis status"), short=True)
+            add_one(("Private local AI & Cloudflare backup",
+                     "AI provider & request limits"), short=True)
     else:
         for prefix in _FIELD_GROUPS[screen].get(section, ()):
             if len(result.fields) >= 3:  # live + max two detailed metrics
@@ -201,7 +203,7 @@ class _AssetSelect(discord.ui.Select["ResearchDashboard"]):
             placeholder="Choose a coin",
             options=[
                 discord.SelectOption(label=a, value=a, default=a == current)
-                for a in ("BTC", "ETH", "SOL")
+                for a in ("BTC", "ETH", "SOL", "XRP")
             ],
             custom_id="rival:research:asset", row=1,
         )
@@ -242,7 +244,7 @@ class _ScreenButton(discord.ui.Button["ResearchDashboard"]):
     def __init__(self, screen: str) -> None:
         super().__init__(
             label={"opportunities": "Opportunities", "math": "Math & History",
-                   "ai": "Gemini AI", "accuracy": "Results"}[screen],
+                   "ai": "AI Review", "accuracy": "Results"}[screen],
             emoji={"opportunities": "🎯", "math": "📐",
                    "ai": "✨", "accuracy": "📊"}[screen],
             style=discord.ButtonStyle.primary,
@@ -322,12 +324,13 @@ class _AskButton(discord.ui.Button["ResearchDashboard"]):
         dashboard = self.view
         assert dashboard is not None
         await interaction.response.defer()
-        dashboard.screen = "ai"
+        dashboard.screen = "math"
+        dashboard.section = "ai"
         dashboard.message = None
         dashboard.opinion = None
         try:
             if dashboard.ai is None:
-                raise ResearchUnavailable("Gemini research is unavailable.")
+                raise ResearchUnavailable("AI review is unavailable.")
             dashboard.opinion = await dashboard.ai.ask(
                 asset=dashboard.asset, venues=dashboard.venues,
                 requester_id=interaction.user.id,
@@ -358,7 +361,7 @@ class _ModelListButton(discord.ui.Button["ResearchDashboard"]):
         await interaction.response.defer()
         try:
             if dashboard.ai is None:
-                raise ResearchUnavailable("Gemini research is not configured.")
+                raise ResearchUnavailable("AI review is not configured.")
             names = await dashboard.ai.list_advertised_models()
             configured = (
                 names[0]
@@ -388,7 +391,7 @@ class _ModelListButton(discord.ui.Button["ResearchDashboard"]):
         except ResearchUnavailable as exc:
             dashboard.message = str(exc)
         except Exception:  # noqa: BLE001
-            _LOG.exception("RivaL Gemini model inspection failed")
+            _LOG.exception("RivaL AI model inspection failed")
             dashboard.message = "Model lookup failed. No API key disclosed."
         dashboard._rebuild()
         await interaction.edit_original_response(
@@ -399,7 +402,8 @@ class _ModelListButton(discord.ui.Button["ResearchDashboard"]):
 class ResearchDashboard(discord.ui.View):
     def __init__(
         self, *, owner_id: int, market: PerpetualMarketStore | None,
-        ai: GeminiResearch | OpenRouterResearch | None, venues: tuple[str, ...],
+        ai: LocalFirstResearch | CloudflareResearch | OpenRouterResearch | None,
+        venues: tuple[str, ...],
         shadow_enabled: bool = False,
         target_service: DirectionTargetService | None = None,
     ) -> None:
@@ -433,7 +437,7 @@ class ResearchDashboard(discord.ui.View):
 
     def _rebuild(self) -> None:
         self.clear_items()
-        for name in ("opportunities", "math", "ai", "accuracy"):
+        for name in ("opportunities", "math", "accuracy"):
             item = _ScreenButton(name)
             # A selected tab is still clickable. Gray/disabled made users
             # think the entire research engine was unavailable.
@@ -452,10 +456,13 @@ class ResearchDashboard(discord.ui.View):
              or (self.screen == "math" and self.section == "history"))
                 and self.venues):
             self.add_item(_VenueSelect(self.venues, self.selected_venue))
-        if self.screen == "ai":
+        if self.screen == "ai" or (self.screen == "math" and self.section == "ai"):
             enabled = self.market is not None and self.ai is not None and self.ai.available
             self.add_item(_AskButton(enabled))
-            self.add_item(_ModelListButton(enabled=enabled))
+            # Local LFM3 exposes a fixed, audited model ID; an external
+            # catalog picker adds no useful choice in the mobile workflow.
+            if not isinstance(self.ai, LocalFirstResearch):
+                self.add_item(_ModelListButton(enabled=enabled))
 
     def _history_inventory_cached(self) -> dict:
         """Historical totals cached for 2 minutes, NEVER live feed status."""
@@ -621,7 +628,7 @@ class ResearchDashboard(discord.ui.View):
             title=f"RivaL  |  {self.asset} Research",
             description=(
                 "**Two independent tracks** · No validated betting edge. "
-                "Market collection continues regardless of Gemini."
+                "Market collection continues independently of AI requests."
             ),
             color=discord.Color.green(),
         )
@@ -661,7 +668,7 @@ class ResearchDashboard(discord.ui.View):
             )
         embed.timestamp = datetime.now(UTC)
 
-        if self.screen == "math":
+        if self.screen == "math" and self.section != "ai":
             if self.section == "history" and self.market is not None:
                 try:
                     state = await asyncio.to_thread(self._native_month_status)
@@ -1058,14 +1065,14 @@ class ResearchDashboard(discord.ui.View):
                             f"**{live_proof['portable_screened']}** screened. "
                             f"**Last 30 days:** {live_proof['issued']} immutable "
                             f"forecasts, {live_proof['settled']} future settlements, "
-                            f"{live_proof['quote_exits']} matched exit book quotes.\\n"
+                            f"{live_proof['quote_exits']} matched exit book quotes.\n"
                             f"**Most recent source:** {scope_label}. "
                             f"**Paper-qualified:** "
-                            f"{len(live_proof['fresh_paper_promotions'])}.\\n"
-                            f"**Verdict:** {live_proof['status_reason']}.\\n"
+                            f"{len(live_proof['fresh_paper_promotions'])}.\n"
+                            f"**Verdict:** {live_proof['status_reason']}.\n"
                             "Real fills, fees, funding and slippage: **NOT VERIFIED**. "
                             "GitHub research artifacts are not imported live models."
-                        )[:1024].replace("\\\\n", "\\n"),
+                        )[:1024],
                         inline=False,
                     )
                 except Exception:  # noqa: BLE001 - source evidence fails closed
@@ -1220,7 +1227,7 @@ class ResearchDashboard(discord.ui.View):
                             + ("OK" if latest["ai_settlement_ok"] else "FAILED")
                             + " · governance "
                             + ("OK" if latest["model_review_ok"] else "FAILED")
-                            + " · Gemini scheduler "
+                            + " · optional AI scheduler "
                             + ("OK" if latest["gemini_ok"] else "FAILED")
                         )
                         heartbeat = (
@@ -1230,10 +1237,10 @@ class ResearchDashboard(discord.ui.View):
                             f"Last cycle: **{latest['math_issued']}** math "
                             f"forecasts issued, **{latest['math_settled']}** "
                             "settled, "
-                            f"**{latest['ai_issued']}** Gemini research records.\\n"
+                            f"**{latest['ai_issued']}** optional AI records.\\n"
                             "Zero means no new qualifying forecast, "
                             "**not** that prior predictions became more accurate."
-                        ).replace("\\\\n", "\\n")
+                        ).replace("\\n", "\n")
                     embed.add_field(
                         name="Automatic learning engine · LIVE",
                         value=heartbeat[:1024], inline=False,
@@ -1290,7 +1297,7 @@ class ResearchDashboard(discord.ui.View):
                             f"insufficient evaluation "
                             f"**{diagnostics['insufficient_training']}**, "
                             f"expired target **{diagnostics['target_expired']}**."
-                        ).replace("\\\\n", "\\n")
+                        ).replace("\\n", "\n")
                     embed.add_field(
                         name="Forward issue audit · LIVE",
                         value=details[:1024],
@@ -1562,7 +1569,7 @@ class ResearchDashboard(discord.ui.View):
                                     + ("\\n".join(bins) if bins else "Not enough outcomes.")
                                     + "\\nHistorical bins are descriptive, NOT "
                                       "a calibrated deployable model or trading approval."
-                                ).replace("\\\\n", "\\n")[:1024],
+                                ).replace("\\n", "\n")[:1024],
                                 inline=False,
                             )
                         ai_status = details["gemini"]
@@ -1572,7 +1579,7 @@ class ResearchDashboard(discord.ui.View):
                             else "not measurable"
                         )
                         embed.add_field(
-                            name="Gemini · independent forward outcomes",
+                            name="Historical external AI · forward outcomes",
                             value=(
                                 f"Issued **{ai_status['issued']}**, "
                                 f"settled **{ai_status['settled']}**, "
@@ -1580,7 +1587,7 @@ class ResearchDashboard(discord.ui.View):
                                 f"uncertain/abstain **{ai_status['abstained']}**.\n"
                                 f"Observed hit rate **{quality}**. "
                                 "Self-reported confidence is NOT calibrated. "
-                                "Source health and Google availability may "
+                                "Source health and provider availability may "
                                 "cause skipped cycles."
                             )[:1024],
                             inline=False,
@@ -1625,7 +1632,7 @@ class ResearchDashboard(discord.ui.View):
                     "provider_error_pause": (
                         "A previous free AI provider error caused a pause"
                         if isinstance(self.ai, OpenRouterResearch)
-                        else "A previous Google API error caused a pause"
+                        else "A previous AI provider error caused a pause"
                     ),
                     "minimum_spacing": "RivaL's minimum interval between AI requests",
                     "daily_budget_exhausted": "RivaL's daily safety limit is reached",
@@ -1655,7 +1662,7 @@ class ResearchDashboard(discord.ui.View):
                         if isinstance(self.ai, CloudflareResearch)
                         else "OpenRouter free model & request limits"
                         if isinstance(self.ai, OpenRouterResearch)
-                        else "Gemini model & request limits"
+                        else "AI provider & request limits"
                     ),
                     value=(
                         f"Model: **{model}**\n"
@@ -1668,7 +1675,7 @@ class ResearchDashboard(discord.ui.View):
                             if isinstance(self.ai, CloudflareResearch)
                             else "(not OpenRouter's account-wide limit)\n"
                             if isinstance(self.ai, OpenRouterResearch)
-                            else "(not Google's account-wide limit)\n"
+                            else "(external provider limits may also apply)\n"
                         )
                         + f"{state}"
                     )[:1024],
@@ -1684,7 +1691,7 @@ class ResearchDashboard(discord.ui.View):
                         if isinstance(self.ai, CloudflareResearch)
                         else "OpenRouter free model & request limits"
                         if isinstance(self.ai, OpenRouterResearch)
-                        else "Gemini model & request limits"
+                        else "AI provider & request limits"
                     ),
                     value="The stored request budget could not be read. "
                           "No provider request was made to check it.",

@@ -207,7 +207,7 @@ def test_history_is_six_calendar_months_and_never_faked(tmp_path):
 def test_research_dashboard_does_not_claim_active_math_or_unconfigured_ai():
     view = ResearchDashboard(owner_id=15, market=None, ai=None, venues=())
     assert {x.custom_id for x in view.children} == {
-        "rival:research:math", "rival:research:ai", "rival:research:asset",
+        "rival:research:math", "rival:research:asset",
         "rival:research:refresh", "rival:research:accuracy",
         "rival:research:opportunities",
         "rival:research:section",

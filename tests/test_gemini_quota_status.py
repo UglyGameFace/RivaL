@@ -117,15 +117,15 @@ async def test_research_menu_shows_honest_pause_and_exact_retry_time():
     embed = await dashboard.render()
     budget = next(
         field.value for field in embed.fields
-        if field.name == "Gemini model & request limits"
+        if field.name == "AI provider & request limits"
     )
     assert "gemini-3.8-flash" in budget
     assert "2/24" in budget
-    assert "previous Google API error" in budget
+    assert "previous AI provider error" in budget
     assert "minimum interval" in budget
     assert "Next permitted request" in budget
     assert "<t:" in budget
-    assert "Google's account-wide limit" in budget
+    assert "external provider limits may also apply" in budget
     dashboard.section = "analysis"
     analysis_embed = await dashboard.render()
     status = next(

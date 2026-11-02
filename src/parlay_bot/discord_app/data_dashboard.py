@@ -131,7 +131,7 @@ def overview_embed(
     embed.description = (
         "**Your live collection overview**\n"
         "Monitor source availability and stored candles in one place.\n"
-        "**Learning:** shadow-only · **Gemini:** not connected."
+        "**Learning:** forward-tested shadow models; AI reviews are separate."
     )
     embed.add_field(
         name="🌐 Exchanges collecting",

@@ -63,8 +63,9 @@ class Settings(BaseSettings):
     rival_shadow_learning_enabled: bool = Field(default=True)
     rival_shadow_eval_seconds: int = Field(default=3600, ge=900, le=21600)
 
-    # Independent, user-triggered Gemini research (never called by candle worker).
-    # Reads existing GEMINI_API_KEY in Discloud if configured there.
+    # Independent, user-triggered AI research (never called by candle worker).
+    # Legacy 'gemini' configuration is accepted to read old deployments but
+    # deliberately disabled by the bot; use 'local' for RivaL Intelligence.
     rival_ai_provider: Literal["openrouter", "gemini", "cloudflare", "local", "disabled"] = Field(default="openrouter")
     rival_cloudflare_ai_token: SecretStr | None = Field(default=None)
     rival_local_ai_token: SecretStr | None = Field(default=None)

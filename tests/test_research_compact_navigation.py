@@ -180,3 +180,64 @@ async def test_database_error_surfaces_brief_unavailable_state(monkeypatch):
         assert "No results yet" in [x.name for x in result.fields]
     finally:
         dashboard.stop()
+
+
+def test_research_menu_consolidates_legacy_ai_and_keeps_all_four_assets():
+    dashboard = ResearchDashboard(
+        owner_id=42, market=None, ai=None,
+        venues=("hyperliquid", "okx", "gate"),
+    )
+    try:
+        assert {
+            item.custom_id for item in dashboard.children
+            if isinstance(item, discord.ui.Button)
+            and item.row == 0
+        } == {
+            "rival:research:opportunities",
+            "rival:research:math",
+            "rival:research:accuracy",
+        }
+        assert not any(
+            "Gemini" in getattr(item, "label", "")
+            for item in dashboard.children
+        )
+        asset = control(dashboard, "rival:research:asset")
+        assert {option.value for option in asset.options} == {
+            "BTC", "ETH", "SOL", "XRP",
+        }
+        dashboard.screen = "math"
+        dashboard.section = "ai"
+        dashboard._rebuild()
+        assert control(dashboard, "rival:research:analyze").disabled
+        assert "AI Review" in [label for _, label in _SECTIONS["math"]]
+        assert not any(label == "Gemini results" for _, label in _SECTIONS["accuracy"])
+        assert control(dashboard, "rival:research:section").row == 3
+    finally:
+        dashboard.stop()
+
+
+@pytest.mark.asyncio
+async def test_ai_review_is_reachable_inside_math_without_old_ai_tab(monkeypatch):
+    dashboard = ResearchDashboard(
+        owner_id=42, market=None, ai=None, venues=(),
+    )
+    dashboard.screen, dashboard.section = "math", "ai"
+    dashboard._rebuild()
+
+    async def detail():
+        embed = discord.Embed(title="RivaL Intelligence")
+        embed.add_field(name="Live collection status",
+                        value="No feed evidence", inline=False)
+        embed.add_field(name="Analysis status",
+                        value="Private AI reviewer not configured", inline=False)
+        return embed
+
+    monkeypatch.setattr(dashboard, "_render_full", detail)
+    try:
+        shown = await dashboard.render()
+        assert "AI Review" in shown.description
+        assert "Private AI reviewer not configured" in shown.fields[-1].value
+        assert "Gemini" not in str(shown.to_dict())
+        assert len(shown.fields) <= 3
+    finally:
+        dashboard.stop()

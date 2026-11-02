@@ -30,8 +30,12 @@ def _source(*, invalid=False):
             "bids": [{"p": "27403.9" if not invalid else "27405", "s": 3},
                      {"p": "27403.8", "s": 6}],
         })
+    # The test regenerates these exact source bytes after checking their
+    # immutable checksum. A wall-clock gzip header would make the same
+    # snapshots hash differently when the test crosses a second boundary.
     return gzip.compress(
-        ("".join(json.dumps(row) + "\n" for row in snapshots)).encode()
+        ("".join(json.dumps(row) + "\n" for row in snapshots)).encode(),
+        mtime=0,
     )
 
 

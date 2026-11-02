@@ -1,3 +1,13 @@
+## Active: independent Intelligence GitHub repository and main-to-main deployment (2026-11-02)
+
+- **Objective:** Stop manually uploading the standalone CPU LFM3 ZIP. Mirror the exact private service source from `RivaL/main` into its own `UglyGameFace/RivaL-Intelligence/main`, build llama.cpp on GitHub Actions rather than Discloud, deploy to only the separate Discloud app, and verify a fresh authenticated host status with exact upstream commit.
+- **PR:** [#267](https://github.com/UglyGameFace/RivaL/pull/267). One-way source and provenance manifest, independent downstream release workflow, on-host version receipt, and regression tests; RivaL bot deployment and research data unchanged.
+- **Configuration blocker:** GitHub integration available to this assistant has no create-repository or set-secrets API. Upstream `RIVAL_INTELLIGENCE_REPO_TOKEN` is required to create/write the private destination (including workflow write); downstream `DISCLOUD_TOKEN` and `DISCLOUD_LLM_APP_ID` must target the separate existing app. The new repo is not confirmed created, and no standalone Discloud deployment/self-repair proof is claimed.
+- **Validation gate:** PR CI and source staging must pass. Then confirm actual new repo `main` push, Actions build, separate Discloud deploy, SHA-matching authenticated `/v1/status` readiness and a real bounded fault recovery observation. Missing secrets or a skipped host receipt are blockers, not success.
+- **Deployment authority:** Downstream GitHub Actions compiles and uploads the binary. Do NOT enable raw-source Discloud GitHub Auto Deploy for the standalone repo at the same time; this would race the release and omit the runtime executable. Preserve separate source credentials and existing Discloud environment.
+
+---
+
 ## Active: continuous verified learning and LFM3 bounded self-repair (2026-11-02)
 
 - **Objective:** Consume screened source-specific models from private Drive without waiting six hours; link a real pre-issuance BTC/ETH/SOL/XRP spike to each historical challenger forecast and separately score its future accuracy; repair the CPU LFM3 runtime without confusing slow warm-up with a crash or rewriting unverified market evidence.

@@ -254,46 +254,56 @@ async def existing_manifests(drive, *, asset: str) -> set[tuple[str, str]]:
     raise HistoryImportError("Bitget Drive inventory exceeds ten pages")
 
 
+def write_original_responses(path: Path, entries: list[dict]) -> str:
+    """Write gzip deterministically, retaining each original API response."""
+    with path.open("wb") as sink, gzip.GzipFile(
+        filename="", mode="wb", fileobj=sink, mtime=0,
+    ) as stream:
+        for entry in entries:
+            stream.write((json.dumps(entry, sort_keys=True) + "\n").encode())
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
 async def collect_month(client: httpx.AsyncClient, *, asset: str, family: str,
                         month: str, root: Path, pacer: Pacer,
                         metadata: dict) -> tuple[Path, Path, dict]:
-    """Retain source request/response bytes and certify exact 5m UTC grid."""
+    """Retain original request/response bytes; certify exact 5m UTC grid."""
     steps = windows(month)
     root.mkdir(parents=True, exist_ok=True)
     seen: set[int] = set()
     raw_sha = hashlib.sha256()
+    source_entries: list[dict] = []
+    for begin, end in steps:
+        data, rows = await request_page(
+            client, asset=asset, family=family,
+            begin=begin, end=end, pacer=pacer,
+        )
+        for opened in rows:
+            if opened in seen:
+                raise HistoryImportError("duplicate cross-page Bitget candle")
+            seen.add(opened)
+        raw_sha.update(data)
+        source_entries.append({
+            "request": {"endpoint": ENDPOINT, "category": "USDT-FUTURES",
+                        "symbol": asset + "USDT", "type": family,
+                        "interval": "5m", "startTime": begin - 1,
+                        "endTime": end - 1, "limit": 100},
+            "response_sha256": hashlib.sha256(data).hexdigest(),
+            "response_base64": base64.b64encode(data).decode("ascii"),
+        })
+    first, last = bounds(month)
+    expected = (last - first) // STEP
+    if len(seen) != expected or seen != set(range(first, last, STEP)):
+        raise HistoryImportError(
+            f"Bitget {asset}/{family}/{month} incomplete UTC grid "
+            f"{len(seen)}/{expected}"
+        )
     with tempfile.NamedTemporaryFile(dir=root, suffix=".part", delete=False) as tmp:
         temporary = Path(tmp.name)
     try:
-        with temporary.open("wb") as sink:
-            with gzip.GzipFile(filename="", mode="wb", fileobj=sink, mtime=0) as stream:
-                for begin, end in steps:
-                    data, rows = await request_page(
-                        client, asset=asset, family=family,
-                        begin=begin, end=end, pacer=pacer,
-                    )
-                    for opened in rows:
-                        if opened in seen:
-                            raise HistoryImportError("duplicate cross-page Bitget candle")
-                        seen.add(opened)
-                    raw_sha.update(data)
-                    entry = {
-                        "request": {"endpoint": ENDPOINT, "category": "USDT-FUTURES",
-                                    "symbol": asset + "USDT", "type": family,
-                                    "interval": "5m", "startTime": begin - 1,
-                                    "endTime": end - 1, "limit": 100},
-                        "response_sha256": hashlib.sha256(data).hexdigest(),
-                        "response_base64": base64.b64encode(data).decode("ascii"),
-                    }
-                    stream.write((json.dumps(entry, sort_keys=True) + "\n").encode())
-        first, last = bounds(month)
-        expected = (last - first) // STEP
-        if len(seen) != expected or seen != set(range(first, last, STEP)):
-            raise HistoryImportError(
-                f"Bitget {asset}/{family}/{month} incomplete UTC grid "
-                f"{len(seen)}/{expected}"
-            )
-        data_digest = hashlib.sha256(temporary.read_bytes()).hexdigest()
+        data_digest = await asyncio.to_thread(
+            write_original_responses, temporary, source_entries,
+        )
         name = f"bitget-v3-{asset}-{family}-{month}--{data_digest[:16]}"
         saved_raw = root / (name + ".responses.jsonl.gz")
         temporary.replace(saved_raw)

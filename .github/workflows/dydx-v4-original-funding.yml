@@ -1,0 +1,80 @@
+name: dYdX v4 original historical funding with Drive readback
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/dydx-v4-original-funding.yml"
+      - "src/parlay_bot/research/dydx_funding_archive.py"
+      - "tests/test_dydx_funding_archive.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/dydx-v4-original-funding.yml"
+      - "src/parlay_bot/research/dydx_funding_archive.py"
+  workflow_dispatch:
+    inputs:
+      month:
+        description: "Completed v4 UTC month, beginning at 2023-11"
+        required: true
+        type: string
+        default: "2023-11"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-dydx-original-funding-drive
+  cancel-in-progress: false
+
+jobs:
+  research-tests:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install -e ".[dev,archive]"
+          ruff check src/parlay_bot/research/dydx_funding_archive.py tests/test_dydx_funding_archive.py
+          pytest -q tests/test_dydx_funding_archive.py tests/test_dydx_history_recovery.py
+
+  archive-original-funding:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[dev,archive]"
+      - name: Verify existing private warehouse credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in RIVAL_DRIVE_ROOT_FOLDER_ID RIVAL_DRIVE_HISTORY_FOLDER_ID RIVAL_DRIVE_MANIFESTS_FOLDER_ID RIVAL_DRIVE_STAGING_FOLDER_ID RIVAL_DRIVE_OAUTH_CLIENT_ID RIVAL_DRIVE_OAUTH_CLIENT_SECRET RIVAL_DRIVE_OAUTH_REFRESH_TOKEN; do
+            if [[ -z "${!name}" ]]; then echo "::error::Missing $name"; exit 1; fi
+          done
+      - name: Read historic v4 funding and oracle prices, verify exact private Drive bytes
+        shell: bash
+        run: |
+          python -m parlay_bot.research.dydx_funding_archive \
+            --month "${{ inputs.month || '2023-11' }}" --assets BTC ETH
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: dydx-original-funding-drive-receipt
+          path: data/native-reports/dydx-v4-original-funding.json
+          retention-days: 14
+          if-no-files-found: ignore

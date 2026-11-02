@@ -355,6 +355,39 @@ def export_source_month(market, *, venue: str, contract: str, quote: str,
     )
 
 
+
+def publication_ranges(now: datetime) -> list[tuple[str, str]]:
+    """Recent six months PLUS one rotated older source-month DB read.
+
+    Keep per-query memory/connection duration bounded as years accumulate.
+    Starting in 2021 is a scan floor, not evidence that any particular venue,
+    asset or contract existed then. Unfilled historical months remain unknown.
+    """
+    from parlay_bot.research.batch import complete_months
+
+    if now.utcoffset() is None:
+        raise ValueError("historical publication requires an aware clock")
+    clock = now.astimezone(UTC)
+    recent = complete_months(now=clock, count=6)
+    latest = clock.strftime("%Y-%m") + "-01T00:00:00+00:00"
+    output = [(recent[0] + "-01T00:00:00+00:00", latest)]
+    # All older completed months are eligible, without forcing expensive
+    # whole-2021-to-now GROUP BY scans on the small production database pool.
+    start = datetime(2021, 1, 1, tzinfo=UTC)
+    stop = datetime.strptime(recent[0], "%Y-%m").replace(tzinfo=UTC)
+    old_count = (stop.year - start.year) * 12 + stop.month - start.month
+    if old_count > 0:
+        slot = (int(clock.timestamp()) // (6 * 3600)) % old_count
+        idx = start.year * 12 + start.month - 1 + slot
+        year, zero_month = divmod(idx, 12)
+        first = datetime(year, zero_month + 1, 1, tzinfo=UTC)
+        last = (first.replace(year=year + 1, month=1)
+                if first.month == 12 else first.replace(month=first.month + 1))
+        output.append((first.isoformat(), last.isoformat()))
+    return output
+
+
+
 class NativeMonthlyPublisher:
     """Copy at most a few complete venue months to the EXISTING private Drive.
 
@@ -381,48 +414,47 @@ class NativeMonthlyPublisher:
             )
 
     def _eligible(self, now: datetime) -> list[tuple[str, str, str, str]]:
-        from parlay_bot.research.batch import complete_months
-
         self.initialize()
-        months = complete_months(now=now, count=6)
-        floor = months[0] + "-01T00:00:00+00:00"
-        ceiling = now.astimezone(UTC).strftime("%Y-%m") + "-01T00:00:00+00:00"
-        # Aggregate the large candle table before looking up archive receipts.
-        # Joining every single candle to the receipt table forced millions
-        # of repeated joins and held the small production PG pool too long.
-        with self.market.store.connect() as conn:
-            groups = conn.execute(
-                """WITH counted_months AS (
-                     SELECT venue,contract,quote,substr(opened_at,1,7) AS month,
-                            COUNT(*) AS n
-                     FROM perp_market_candles
-                     WHERE interval_minutes=5 AND opened_at>=?
-                       AND opened_at<?
-                     GROUP BY venue,contract,quote,substr(opened_at,1,7)
-                   )
-                   SELECT m.venue,m.contract,m.quote,m.month,m.n
-                   FROM counted_months m
-                   LEFT JOIN rival_native_research_receipts r
-                     ON r.venue=m.venue AND r.contract=m.contract
-                    AND r.quote=m.quote AND r.month=m.month
-                   WHERE r.month IS NULL
-                   ORDER BY m.month,m.venue,m.contract""",
-                (floor, ceiling),
-            ).fetchall()
-        selected = []
-        for row in groups:
-            if row["venue"] not in VENUES or row["month"] not in months:
-                continue
-            year, mon = map(int, row["month"].split("-"))
-            first = datetime(year, mon, 1, tzinfo=UTC)
-            end = (first.replace(year=year+1, month=1) if mon == 12
-                   else first.replace(month=mon+1))
-            expected = int((end-first)/STEP)
-            if int(row["n"]) == expected:
-                selected.append((
-                    str(row["venue"]), str(row["contract"]), str(row["quote"]),
-                    str(row["month"]),
-                ))
+        selected: list[tuple[str, str, str, str]] = []
+        # Each SELECT is bounded to six current months OR one older month.
+        # Release its connection before doing the expensive source audits.
+        # A venue only qualifies when its own exact 5m calendar grid exists.
+        for floor, ceiling in publication_ranges(now):
+            with self.market.store.connect() as conn:
+                groups = conn.execute(
+                    """WITH counted_months AS (
+                         SELECT venue,contract,quote,substr(opened_at,1,7) AS month,
+                                COUNT(*) AS n
+                         FROM perp_market_candles
+                         WHERE interval_minutes=5 AND opened_at>=?
+                           AND opened_at<?
+                         GROUP BY venue,contract,quote,substr(opened_at,1,7)
+                       )
+                       SELECT m.venue,m.contract,m.quote,m.month,m.n
+                       FROM counted_months m
+                       LEFT JOIN rival_native_research_receipts r
+                         ON r.venue=m.venue AND r.contract=m.contract
+                        AND r.quote=m.quote AND r.month=m.month
+                       WHERE r.month IS NULL
+                       ORDER BY m.month,m.venue,m.contract""",
+                    (floor, ceiling),
+                ).fetchall()
+            for row in groups:
+                month = str(row["month"])
+                if row["venue"] not in VENUES or not (
+                    floor[:7] <= month < ceiling[:7]
+                ):
+                    continue
+                year, mon = map(int, month.split("-"))
+                first = datetime(year, mon, 1, tzinfo=UTC)
+                last = (first.replace(year=year + 1, month=1)
+                        if mon == 12 else first.replace(month=mon + 1))
+                expected = int((last - first) / STEP)
+                if int(row["n"]) == expected:
+                    selected.append((
+                        str(row["venue"]), str(row["contract"]),
+                        str(row["quote"]), month,
+                    ))
         return selected
 
     async def run_once(self, *, now: datetime | None = None,

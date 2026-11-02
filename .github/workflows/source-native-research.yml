@@ -17,6 +17,16 @@ on:
           - deribit
           - lighter
           - phemex
+      first_month:
+        description: "Optional earliest of six completed same-source training months (YYYY-MM)"
+        required: false
+        type: string
+        default: ""
+      asset:
+        description: "Optional exact Bitget coin; other venues use own available streams"
+        required: false
+        type: string
+        default: ""
   push:
     branches: [main]
     paths:
@@ -45,6 +55,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 85
     env:
+      SELECTED_FIRST_MONTH: ${{ inputs.first_month || '' }}
+      SELECTED_ASSET: ${{ inputs.asset || '' }}
       RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
       RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
       RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
@@ -92,12 +104,19 @@ jobs:
           fi
           echo "Researching actual warehouse source: $VENUE"
           args=(--venue "$VENUE" --months 6 --publish)
+          if [[ -n "$SELECTED_FIRST_MONTH" ]]; then
+            args+=(--first-month "$SELECTED_FIRST_MONTH")
+          fi
+          if [[ -n "$SELECTED_ASSET" && "$VENUE" != "bitget" ]]; then
+            echo "::error::Exact coin selection applies only to Bitget"
+            exit 2
+          fi
           if [[ "$VENUE" == "bitget" ]]; then
             # Bounded one-asset job; daily venue rotation keeps the other
             # sources scheduled. This is OFFLINE ONLY.
             assets=(BTC ETH SOL XRP)
             slot=$(( $(date -u +%s) / 86400 % 4 ))
-            args+=(--asset "${assets[$slot]}")
+            args+=(--asset "${SELECTED_ASSET:-${assets[$slot]}}")
           fi
           # A known incomplete venue must not waste the only unattended
           # daily training slot. Retry ONE independent, better-covered source

@@ -44,6 +44,15 @@ GATE_L2_HOURLY_MANIFEST = re.compile(
     r"(20[0-9]{8})--([a-f0-9]{16})\.gz\.manifest\.json"
 )
 
+# Also index source-native publisher manifest NAMES for the six other
+# exchange ledgers. Contract identity and actual byte provenance are checked
+# during restore, not claimed by this filename pattern.
+OTHER_NATIVE = re.compile(
+    r"(hyperliquid|dydx|kucoin|deribit|lighter|phemex)-"
+    r"([A-Za-z0-9_-]{2,64})-(USDT|USDC|USD)-5m-"
+    r"(20\d{2}-(?:0[1-9]|1[0-2]))--([a-f0-9]{16})\.manifest\.json"
+)
+
 PAGE_PATTERNS = (
     (r"dydx-v4-(BTC|ETH|SOL|XRP)-USD-funding-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", "dydx", "funding_with_oracle_price"),
     (r"lighter-(BTC|ETH|SOL|XRP)-(funding|mark_price)-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", "lighter", None),
@@ -60,6 +69,14 @@ def parse_name(name: str):
                 asset, month, sha = m.groups()
                 kind = family
             return venue, asset, kind, month, sha
+    native = OTHER_NATIVE.fullmatch(name)
+    if native:
+        venue, contract, _quote, month, sha = native.groups()
+        asset = next((a for a in ASSETS if contract.startswith(a)), None)
+        if asset is None and contract.startswith("XBT"):
+            asset = "BTC"
+        if asset is not None:
+            return venue, asset, "candles_5m", month, sha
     return None
 
 
@@ -89,7 +106,7 @@ def months_from(start: str, now: datetime) -> list[str]:
     return out
 
 
-async def list_names(drive, *, max_pages: int = 20) -> list[str]:
+async def list_names(drive, *, max_pages: int = 100) -> list[str]:
     """Fail closed on incomplete pagination, duplicate IDs or untrusted folder."""
     await drive._verify_folder_boundary()
     folder = drive.folders.manifests
@@ -125,7 +142,7 @@ async def list_names(drive, *, max_pages: int = 20) -> list[str]:
                 raise HistoryImportError("duplicate or foreign source manifest item")
             seen.add(ident)
             names.append(name)
-            if len(names) > 20000:
+            if len(names) > 100000:
                 raise HistoryImportError("warehouse manifest census cap exceeded")
         next_page = result.get("nextPageToken")
         if next_page is None:
@@ -178,7 +195,7 @@ def summarize(names: list[str], *, now: datetime) -> dict:
             page_streams[(venue, asset, family, month)][page].add(sha)
             continue
         venue, asset, family, month, sha = key
-        floor = START_MONTH[venue]
+        floor = START_MONTH.get(venue, "2021-01")
         if (month < floor or month >= current or month[5:] not in
                 tuple(f"{x:02d}" for x in range(1, 13))):
             outside += 1
@@ -253,6 +270,12 @@ def summarize(names: list[str], *, now: datetime) -> dict:
         "schema_version": "rival-drive-source-manifest-census-v1",
         "priority_window": priority.metadata(),
         "priority_24_month_scope_name_hints": priority_scopes,
+        "all_completed_scope_name_hints": [{
+            "venue": venue, "asset": asset, "family": family,
+            "listed_completed_utc_months": sorted(months),
+            "byte_readbacks_verified_in_this_census": False,
+            "contract_listing_verified": False,
+        } for (venue, asset, family), months in sorted(streams.items())],
         "generated_at": now.astimezone(UTC).isoformat(),
         "all_manifest_objects_listed": len(names),
         "unrecognized_manifest_names": ignored,

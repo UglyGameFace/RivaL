@@ -1,3 +1,13 @@
+## Active: source-specific historical acquisition and older-month learning (2026-11-02)
+
+- Objective: One bounded history dashboard/queue with independent original venue, BTC/ETH/SOL/XRP and family scopes. 2021 Binance data MUST NOT imply that other contracts existed in 2021. Preserve all verified raw sources and per-provider quotas; no invented full trades, dates or books.
+- Branch/PR: feat/source-specific-history-coordinator-20261102, PR #253, based on main 0ea0ec0. Keep completeness Issue #188 open.
+- Changes: 640-scope name-only warehouse census and coordinator; 2021+ native names isolated by source; older verified full-month publishing with one extra bounded PostgreSQL monthly query; exact historical six-month candidate selection without weakening full-grid/Drive-SHA audits; at most two GitHub Actions gap dispatches with duplicate protection and immutable Drive status reports.
+- Validation: PR-head Ruff, full pytest/Postgres and targeted regression CI required before merge. New schedule and Drive report are unverified until a successful merged-main run. No live model approval or forecast-profit claim.
+- Next: repair CI, inspect diff, merge after approval/checks, verify exact main and Discloud release, then inspect first real Drive census. Extend missing source/family collectors only after official availability and listing metadata is independently checked. A public sample hour is not a full history.
+
+---
+
 ## ACTIVE: Fill audited Bitget scattered gaps without relabeling bulk history (2026-11-01)
 
 - **Owner evidence:** BTC Bitget 340 missing in 340 isolated 5m gaps; ETH Bitget 339 missing in 339 isolated gaps. Existing six-month audit accurately flags these but only queued KuCoin's <=32 missing slots, leaving Bitget with no targeted repair path after its forward cursor caught up.

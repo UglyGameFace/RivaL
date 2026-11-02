@@ -1,0 +1,151 @@
+name: RivaL source-exact historical acquisition coordinator
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/historical-acquisition-coordinator.yml"
+      - "src/parlay_bot/research/historical_coordinator.py"
+      - "src/parlay_bot/research/drive_source_census.py"
+      - "src/parlay_bot/research/source_native.py"
+      - "src/parlay_bot/research/source_native_offline.py"
+      - "tools/historical_dispatch.py"
+      - "tests/test_historical_coordinator.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/historical-acquisition-coordinator.yml"
+      - "src/parlay_bot/research/historical_coordinator.py"
+      - "src/parlay_bot/research/drive_source_census.py"
+      - "src/parlay_bot/research/source_native.py"
+      - "src/parlay_bot/research/source_native_offline.py"
+      - "tools/historical_dispatch.py"
+  schedule:
+    - cron: "29 2,14 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write
+
+concurrency:
+  group: rival-source-exact-historical-coordinator
+  cancel-in-progress: false
+
+jobs:
+  coordinate:
+    if: github.event_name == 'pull_request' || vars.RIVAL_HISTORY_COORDINATOR_ENABLED != 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install existing verified history clients
+        run: python -m pip install -e ".[dev,archive]"
+      - name: Prove that no venue, coin or data family borrows another listing date
+        run: |
+          ruff check src/parlay_bot/research/historical_coordinator.py src/parlay_bot/research/source_native_offline.py tools/historical_dispatch.py tests/test_historical_coordinator.py
+          pytest -q tests/test_historical_coordinator.py tests/test_source_family_backlog.py tests/test_source_family_coverage.py tests/test_drive_source_census.py tests/test_history_priority.py
+      - name: Read current cumulative private Drive manifest inventory
+        if: github.event_name != 'pull_request'
+        run: python -m parlay_bot.research.drive_source_census
+      - name: Generate independently scoped all-ten-venue backlog
+        if: github.event_name != 'pull_request'
+        run: |
+          python -m parlay_bot.research.source_family_backlog
+          python -m parlay_bot.research.historical_coordinator --max-jobs 2
+      - name: Dispatch bounded genuine gap workflows without duplicating active runs
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python tools/historical_dispatch.py
+      - name: Save immutable progress report in private RivaL Drive with byte readback
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          python - <<'PY'
+          import asyncio
+          from pathlib import Path
+          from parlay_bot.archive.drive import DriveArchiveError
+          from parlay_bot.config import Settings
+          from parlay_bot.research.publish import _artifact, _drive
+
+          async def publish():
+              drive = _drive(Settings())
+              try:
+                  for path in (
+                      Path("data/native-reports/historical-coordinator.json"),
+                      Path("data/native-reports/historical-dispatch.json"),
+                  ):
+                      if not path.is_file():
+                          raise RuntimeError("Missing history coordinator report")
+                      item = _artifact(path, 1)
+                      await drive.ensure_research_output(
+                          artifact=item, batch_id="history-plan-" + item.sha256[:24],
+                          kind="report",
+                      )
+              finally:
+                  await drive.aclose()
+
+          asyncio.run(publish())
+          PY
+      - name: Human-readable ten-venue original-source status
+        if: always() && github.event_name != 'pull_request'
+        run: |
+          python - <<'PY'
+          import json, os
+          from collections import Counter
+          from pathlib import Path
+          p = Path("data/native-reports/historical-coordinator.json")
+          lines = ["### RivaL independent historical collector status", ""]
+          if not p.is_file():
+              lines.append("Drive inventory or plan generation failed. No claim of completion.")
+          else:
+              data = json.loads(p.read_text())
+              lines.extend([
+                  "Source name hints are **not** verified complete months or listing dates.",
+                  "| Exchange | Routed families | Missing collection routes | Name-only month hints |",
+                  "|---|---:|---:|---:|",
+              ])
+              for venue in data["venues"]:
+                  rows = [r for r in data["scopes"] if r["venue"] == venue]
+                  lines.append(
+                      f"| {venue} | {sum(bool(r['collector']) for r in rows)}/64 | "
+                      f"{sum(not r['collector'] for r in rows)} | "
+                      f"{sum(r['name_hint_month_count'] for r in rows)} |"
+                  )
+              lines.extend(["", "**Do not infer another exchange's 2021 listing.**",
+                            "Existing venue collectors continue under their own limits.",
+                            "Every unsupported family stays unknown, not falsely unavailable."])
+          q = Path("data/native-reports/historical-dispatch.json")
+          if q.is_file():
+              dispatched = json.loads(q.read_text())
+              lines.extend(["", "### Bounded extra collectors"])
+              for result in dispatched["results"]:
+                  lines.append(f"- {result['scope']}: {result['status']}")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write("\n".join(lines) + "\n")
+          PY
+      - name: Preserve comprehensive 640-scope report and all dispatch outcomes
+        if: always() && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rival-ten-venue-source-exact-historical-progress
+          path: |
+            data/native-reports/drive-source-census.json
+            data/native-reports/drive-source-family-backlog.json
+            data/native-reports/historical-coordinator.json
+            data/native-reports/historical-dispatch.json
+          retention-days: 30
+          if-no-files-found: ignore

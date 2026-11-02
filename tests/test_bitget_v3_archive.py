@@ -418,3 +418,50 @@ async def test_one_missing_source_bar_is_repaired_only_from_real_original_respon
                record["request"]["endTime"] == first + 2 * 300000 - 1
                for record in requests)
     assert json.loads(manifest.read_text())["candles"] == 8640
+
+
+@pytest.mark.asyncio
+async def test_unattended_bitget_reads_only_same_asset_sha_verified_prior_status():
+    import hashlib
+    from parlay_bot.research.bitget_v3_archive import prior_source_decisions
+
+    prior = {"asset": "BTC", "family": "premium", "month": "2021-03",
+             "source_status": "source_returned_no_rows_not_permanently_proven",
+             "last_checked_utc": "2026-11-02T14:00:00+00:00",
+             "retry_after_utc": "2026-11-09T14:00:00+00:00"}
+    body = json.dumps({
+        "asset": "BTC", "schema_version": "rival-bitget-v3-overnight-progress-v1",
+        "source_decisions": [prior],
+    }).encode()
+
+    def server(req):
+        if req.url.path.endswith("/files"):
+            return httpx.Response(200, json={"files": [{
+                "id": "verifiedstatus1",
+                "name": "bitget-BTC-overnight-progress.json",
+                "size": len(body), "parents": ["reports"],
+                "appProperties": {"rival_kind": "report",
+                                  "rival_sha256": hashlib.sha256(body).hexdigest()},
+            }]})
+        assert req.url.path.endswith("/files/verifiedstatus1")
+        return httpx.Response(200, content=body)
+
+    class Fake:
+        DRIVE_URL = "https://www.googleapis.com/drive/v3"
+        folders = SimpleNamespace(reports="reports")
+        _escape_query = staticmethod(lambda x: x)
+
+        async def _verify_folder_boundary(self):
+            return None
+
+        async def _headers(self):
+            return {}
+
+    drive = Fake()
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as client:
+        drive._client = client
+        assert await prior_source_decisions(drive, asset="BTC") == {
+            ("premium", "2021-03"): prior,
+        }
+        with pytest.raises(HistoryImportError, match="wrong source identity"):
+            await prior_source_decisions(drive, asset="ETH")

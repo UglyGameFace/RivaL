@@ -60,16 +60,42 @@ def render_status(report: dict | None, run_url: str) -> str:
         status = report.get("status")
         count = report.get("published_models", 0)
         venue = _safe_label(report.get("venue", "unavailable"))
+        screened = report.get("actual_registry_screening")
         if status == "verified_research_published" and type(count) is int and count > 0:
             lines.append(
-                f"**RESEARCH PUBLISHED:** {count} checksum-restored research "
-                f"model file(s) for source `{venue}`. Production import remains unverified."
+                f"**RETROSPECTIVELY SCREENED RESEARCH PUBLISHED:** {count} "
+                f"immutable model file(s) for source `{venue}`. "
+                "Production import remains unverified."
+            )
+        elif status == "verified_research_archived_no_qualified_models":
+            archived = report.get("archived_rejected_models", 0)
+            lines.append(
+                f"**NO QUALIFIED HISTORICAL MODEL:** {archived} rejected "
+                f"source `{venue}` artifacts archived separately as immutable "
+                "research, NOT published for model import."
             )
         else:
             lines.append(
                 f"**BLOCKED:** source `{venue}`, reason "
                 f"`{_safe_label(status)}`; no qualified native model publication proven."
             )
+        if isinstance(screened, dict):
+            evaluated = screened.get("evaluated")
+            passed = screened.get("retrospective_passed")
+            if type(evaluated) is int and type(passed) is int:
+                lines.append(
+                    f"Actual historical importer screen: **{passed}/{evaluated} "
+                    "passed**. This is not live prediction proof."
+                )
+            for reason in screened.get("rejected_by_reason", [])[:8]:
+                if not isinstance(reason, dict):
+                    continue
+                number = reason.get("count")
+                if type(number) is int:
+                    lines.append(
+                        f"- Rejected {number}: "
+                        f"`{_safe_label(reason.get('reason'))}`"
+                    )
         lines.append(
             f"Restored native manifests in this attempt: "
             f"{report.get('restored_manifests', 'unknown')}."

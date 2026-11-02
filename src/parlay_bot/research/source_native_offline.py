@@ -66,6 +66,7 @@ def screening_receipt(logistic: list[dict], boosted: list[dict]) -> dict:
     source_scopes = []
     passed = 0
     candidates = []
+    eligible_hashes = []
     for experiment in logistic:
         candidates.append((
             json.dumps({
@@ -97,20 +98,35 @@ def screening_receipt(logistic: list[dict], boosted: list[dict]) -> dict:
                 "native model training and registry screening disagree"
             )
         passed += int(imported_passed)
-        if not imported_passed:
+        if imported_passed:
+            eligible_hashes.append(admission["model_sha256"])
+        else:
             rejections[admission["admission_reason"]] += 1
         identity = admission["model_spec"]["identity"]
+        evidence = json.loads(payload)
+        validation = evidence["validation"]
+        holdout = evidence["out_of_sample_test"]
+        # Score values come from immutable chronological evaluation; they
+        # describe performance, never justify retrospective promotions.
         source_scopes.append({
+            "model_sha256": admission["model_sha256"],
             "venue": identity["venue"], "contract": identity["contract"],
             "quote": identity["quote"], "asset": admission["asset"],
             "horizon": admission["horizon"],
             "family": admission["model_spec"]["model"],
             "screen": admission["admission_reason"],
+            "validation_brier_gain": validation.get("brier_gain"),
+            "holdout_brier_gain": holdout.get("brier_gain"),
+            "validation_ece_10": validation.get("ece_10"),
+            "holdout_ece_10": holdout.get("ece_10"),
+            "validation_days": validation.get("days"),
+            "holdout_days": holdout.get("days"),
         })
     return {
         "evaluated": len(candidates),
         "retrospective_passed": passed,
         "retrospective_rejected": len(candidates) - passed,
+        "eligible_model_sha256": sorted(eligible_hashes),
         "rejected_by_reason": [
             {"reason": reason, "count": count}
             for reason, count in sorted(rejections.items())
@@ -233,6 +249,8 @@ async def run_native_research(
         "real_fills_verified": False, "after_cost_gain_verified": False,
     }
     published = []
+    rejected_archives = []
+    eligible_hashes = set(admission["eligible_model_sha256"])
     if publish:
         for evaluation in logistic:
             model = {
@@ -247,29 +265,37 @@ async def run_native_research(
                 model,
             )
             item = _artifact(candidate_file, 1)
+            qualified = evaluation["model_sha256"] in eligible_hashes
             restored = await drive.ensure_research_output(
                 artifact=item, batch_id="candidate-" + item.sha256[:24],
-                kind="model",
+                kind="model" if qualified else "report",
             )
-            published.append(restored.file_id)
+            (published if qualified else rejected_archives).append(restored.file_id)
         for group in boosted:
             for model in group.get("portable_candidates", []):
                 item = _artifact(Path(model["path"]), 1)
                 if item.size_bytes != model["size"]:
                     raise HistoryImportError("portable model bytes changed after training")
+                qualified = model["model_sha256"] in eligible_hashes
                 restored = await drive.ensure_research_output(
                     artifact=item, batch_id="candidate-" + item.sha256[:24],
-                    kind="model",
+                    kind="model" if qualified else "report",
                 )
-                published.append(restored.file_id)
+                (published if qualified else rejected_archives).append(restored.file_id)
     result = {
         **report,
         "status": (
             "verified_research_published" if publish and published
+            else "verified_research_archived_no_qualified_models"
+            if publish and rejected_archives
             else "source_models_not_published" if publish
             else "verified_research_local_only"
         ),
+        # Eligible model imports and rejected immutable research are separate
+        # destinations. Never classify a rejected artifact as a model.
         "published_models": len(published),
+        "archived_rejected_models": len(rejected_archives),
+        "published_research_artifacts": len(published) + len(rejected_archives),
         "promoted_live": False, "profitability_verified": False,
     }
     # Persist the actual final outcome; the previous report was written
@@ -314,15 +340,20 @@ def main(argv: list[str] | None = None) -> int:
     print(json.dumps(result, sort_keys=True))
     # A green Actions job must mean verified publication, not merely a clean
     # Python exit after zero restored months or zero published candidates.
-    expected_status = (
-        "verified_research_published" if args.publish
-        else "verified_research_local_only"
-    )
-    if result.get("status") != expected_status:
-        return 2
-    if args.publish and result.get("published_models", 0) < 1:
-        return 2
-    return 0
+    status = result.get("status")
+    if not args.publish:
+        return 0 if status == "verified_research_local_only" else 2
+    if status == "verified_research_published":
+        return 0 if result.get("published_models", 0) > 0 else 2
+    if status == "verified_research_archived_no_qualified_models":
+        screening = result.get("actual_registry_screening") or {}
+        return 0 if (
+            result.get("archived_rejected_models", 0) > 0
+            and screening.get("evaluated") == result["archived_rejected_models"]
+            and screening.get("retrospective_passed") == 0
+            and result.get("published_models") == 0
+        ) else 2
+    return 2
 
 
 if __name__ == "__main__":

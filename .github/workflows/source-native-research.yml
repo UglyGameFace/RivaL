@@ -159,7 +159,8 @@ jobs:
                   f"Venue: `{data.get('venue', 'unknown')}`",
                   f"Status: `{data.get('status', 'missing')}`",
                   f"Restored monthly manifests: {data.get('restored_manifests', 0)}",
-                  f"Published research models: {data.get('published_models', 0)}",
+                  f"Screened model artifacts published: {data.get('published_models', 0)}",
+                  f"Rejected research artifacts archived: {data.get('archived_rejected_models', 0)}",
               ])
               screening = data.get("actual_registry_screening") or {}
               if screening:
@@ -173,9 +174,25 @@ jobs:
                           f"- Importer rejected {rejected['count']}: "
                           f"{rejected['reason']}"
                       )
+                  # Descriptive, validation-only comparison. Never rank or
+                  # select from the sealed holdout test after inspecting it.
+                  by_scope = {}
+                  for row in screening.get("source_specific_outcomes", []):
+                      key = (row.get("asset"), row.get("horizon"))
+                      gain = row.get("validation_brier_gain")
+                      if (isinstance(gain, (int, float))
+                          and row.get("screen") != "retrospective_pass"):
+                          by_scope.setdefault(key, []).append(gain)
+                  for (asset, horizon), gains in sorted(by_scope.items()):
+                      if asset and horizon and gains:
+                          lines.append(
+                              f"- {asset} {horizon}m: {len(gains)} rejected "
+                              f"candidates; best *validation-only* Brier gain "
+                              f"{max(gains):+.6f} vs required >+0.005000"
+                          )
                   lines.append(
-                      "These retrospective passes do NOT authorize "
-                      "live promotion or after-cost trading."
+                      "Retrospective passes are NOT live promotion, "
+                      "future accuracy, or after-cost trading proof."
                   )
               for stream in data.get("source_scopes", [])[:24]:
                   if "missing_or_incomplete_months" not in stream:

@@ -25,6 +25,33 @@ from parlay_bot.research.publish import _artifact, _drive
 from parlay_bot.research.source_native import SOURCE, VENUES, restore_verified_source_months
 
 
+def select_training_months(*, now: datetime, first_month: str | None) -> list[str]:
+    """Select any exact six completed UTC calendar months from ONE source.
+
+    A historical window can begin in 2021, 2023 or later, independently for
+    each venue/asset. Six contiguous verified months remain a MODEL integrity
+    requirement, not a global historical download cutoff.
+    """
+    if first_month is None:
+        return complete_months(now=now, count=6)
+    if now.utcoffset() is None:
+        raise ValueError("training requires a timezone-aware clock")
+    try:
+        first = datetime.strptime(first_month, "%Y-%m").replace(tzinfo=UTC)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("first_month must be YYYY-MM") from exc
+    if first.strftime("%Y-%m") != first_month or first_month < "2021-01":
+        raise ValueError("invalid historical training month")
+    selected = []
+    for n in range(6):
+        idx = first.year * 12 + first.month - 1 + n
+        year, month = divmod(idx, 12)
+        selected.append(f"{year:04d}-{month + 1:02d}")
+    if selected[-1] >= now.astimezone(UTC).strftime("%Y-%m"):
+        raise ValueError("model research cannot use an unfinished calendar month")
+    return selected
+
+
 async def run_native_research(
     *, drive, venue: str, months: list[str], root: Path,
     report_dir: Path, publish: bool, asset: str | None = None,
@@ -192,6 +219,7 @@ def main(argv: list[str] | None = None) -> int:
         description="Source-exact private offline RivaL model research")
     parser.add_argument("--venue", choices=sorted(VENUES), required=True)
     parser.add_argument("--months", type=int, choices=(6,), default=6)
+    parser.add_argument("--first-month", default=None)
     parser.add_argument("--asset", choices=("BTC", "ETH", "SOL", "XRP"))
     parser.add_argument("--root", type=Path, default=Path("data/native-research"))
     parser.add_argument("--report-dir", type=Path, default=Path("data/native-reports"))
@@ -203,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             return await run_native_research(
                 drive=drive, venue=args.venue,
-                months=complete_months(now=datetime.now(UTC), count=args.months),
+                months=select_training_months(now=datetime.now(UTC), first_month=args.first_month),
                 root=args.root, report_dir=args.report_dir,
                 publish=args.publish, asset=args.asset,
             )

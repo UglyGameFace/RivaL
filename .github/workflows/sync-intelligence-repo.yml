@@ -59,6 +59,14 @@ jobs:
             echo "Creating the dedicated private Intelligence repository."
             gh api -X POST user/repos -f name=RivaL-Intelligence -F private=true -F auto_init=false --jq '.full_name'
           fi
+          # Do not publish internal LFM3 source into an accidentally public
+          # repository. A missing-access 404 followed by an existing-name 422
+          # remains a hard failure, never an excuse to pick another target.
+          visibility="$(gh api "repos/$TARGET_REPO" --jq '.private')"
+          if [[ "$visibility" != "true" ]]; then
+            echo "::error::RivaL-Intelligence must be private before source synchronization."
+            exit 1
+          fi
 
           # No credential is placed in the remote URL, project source, or logs.
           cat > "$RUNNER_TEMP/rival-repo-askpass" <<'ASKPASS'

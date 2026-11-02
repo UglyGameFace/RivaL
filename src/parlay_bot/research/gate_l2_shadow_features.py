@@ -17,7 +17,9 @@ from pathlib import Path
 
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.gate_l2_quality import (
-    MAX_LINE, _number, inspect_snapshot_hour,
+    MAX_LINE,
+    _number,
+    inspect_snapshot_hour,
 )
 
 
@@ -194,7 +196,8 @@ def evaluate_shadow(candle_manifests: list[Path], receipts: list[Path],
     """Same-paired outcomes retrospective ablation; never production approval."""
     from parlay_bot.research.learning import assemble
     from parlay_bot.research.live_training import (
-        compatible_partitions, historical_features,
+        compatible_partitions,
+        historical_features,
     )
     from parlay_bot.research.okx_auxiliary_ablation import _asof, _fit, _scores
 

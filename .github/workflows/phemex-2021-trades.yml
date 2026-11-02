@@ -40,6 +40,7 @@ jobs:
           python - <<'PY'
           import json
           import httpx
+          from parlay_bot.research.phemex_trade_archive import validate
           start = 1609459200000
           url = "https://api.phemex.com/exchange/public/nomics/trades"
           try:
@@ -56,6 +57,13 @@ jobs:
                   "trade_rows": len(rows) if isinstance(rows, list) else None,
                   "historical_source_2021_month_verified": False,
               }
+              if response.status_code == 200 and isinstance(rows, list):
+                  proof = validate(
+                      response.content, market="BTCUSD",
+                      start=start, end=start+60000,
+                  )
+                  verdict["source_contract"] = proof["market"]
+                  verdict["original_trade_rows_validated"] = proof["source_rows"]
               print(json.dumps(verdict))
               if response.status_code != 200 or not isinstance(rows, list):
                   raise SystemExit("Phemex official 2021 trade source could not be verified")

@@ -157,7 +157,7 @@ async def obtain(client: httpx.AsyncClient, *, asset: str, month: str,
                     if response.status_code == 200:
                         size = 0
                         with location.open("wb") as out:
-                            async for data in response.aiter_bytes(1024 * 1024):
+                            async for data in response.aiter_raw(1024 * 1024):
                                 size += len(data)
                                 if size > MAX_COMPRESSED_BYTES:
                                     raise HistoryImportError(

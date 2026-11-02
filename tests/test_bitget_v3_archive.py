@@ -212,7 +212,7 @@ async def test_incomplete_first_page_stops_before_wasting_rest_of_month(tmp_path
             )
     finally:
         await client.aclose()
-    assert len(requested) == 1
+    assert len(requested) == 2  # One exact-slot source retry, never fabricated.
     assert not list(tmp_path.glob("*.manifest.json"))
 
 
@@ -382,3 +382,39 @@ def test_unattended_archive_frequency_budget_and_production_dependency_contract(
     assert 'python -m pip install -e ".[archive]"' in job
     assert "pytest -q" not in job and "ruff check" not in job
     assert "cancel-in-progress: false" in job
+
+
+@pytest.mark.asyncio
+async def test_one_missing_source_bar_is_repaired_only_from_real_original_response(
+    tmp_path: Path,
+):
+    first, _ = bounds("2021-06")
+    calls = []
+
+    def server(req):
+        assert req.url.path == "/api/v3/market/history-candles"
+        begin = int(req.url.params["startTime"]) + 1
+        end = int(req.url.params["endTime"]) + 1 - 300000
+        calls.append((begin, end))
+        values = [
+            row(tick) for tick in range(begin, end, 300000)
+            if not (end - begin > 300000 and tick == first)
+        ]
+        return httpx.Response(200, json={"code": "00000", "data": values})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(server)) as client:
+        raw, manifest, result = await collect_month(
+            client, asset="BTC", family="market", month="2021-06",
+            root=tmp_path, pacer=NoWait(), metadata={"metadata_sha256": "a" * 64},
+        )
+    assert result["exact_utc_5m_grid_verified"]
+    assert result["targeted_repair_requests"] == 1
+    assert result["request_pages"] == 91
+    assert len(calls) == 91
+    with gzip.open(raw, "rt") as restored:
+        requests = [json.loads(line) for line in restored]
+    assert len(requests) == 91
+    assert any(record["request"]["startTime"] == first - 1 and
+               record["request"]["endTime"] == first + 2 * 300000 - 1
+               for record in requests)
+    assert json.loads(manifest.read_text())["candles"] == 8640

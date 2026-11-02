@@ -33,7 +33,7 @@ PATTERNS = (
 # until the actual archived manifest and original bytes are read back.
 OKX_AUX_RECEIPT = re.compile(
     r"(BTC|ETH|SOL|XRP)-USDT-SWAP-[A-Za-z0-9_.-]{1,110}"
-    r"(20\\d{2}-(?:0[1-9]|1[0-2]))\\.(?:zip|tar\\.gz)\\.receipt\\.json"
+    r"(20\d{2}-(?:0[1-9]|1[0-2]))\.(?:zip|tar\.gz)\.receipt\.json"
 )
 
 PAGE_PATTERNS = (

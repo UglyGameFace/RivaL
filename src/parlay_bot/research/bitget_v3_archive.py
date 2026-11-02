@@ -26,6 +26,7 @@ from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.history_priority import ordered_months, window
 from parlay_bot.research.publish import _artifact, _drive
+from parlay_bot.research.source_recovery import decision, deferred
 
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
 FAMILIES = ("market", "mark", "index", "premium")
@@ -283,6 +284,74 @@ async def existing_manifests(drive, *, asset: str) -> set[tuple[str, str]]:
     raise HistoryImportError("Bitget Drive inventory exceeds ten pages")
 
 
+
+async def prior_source_decisions(drive, *, asset: str) -> dict[tuple[str, str], dict]:
+    """Read latest verified private report to avoid retrying same absent month hourly.
+
+    Fail open on missing reports, but fail closed on malformed owned Drive bytes.
+    A previous negative receipt is a cooldown hint, NEVER permanent proof.
+    """
+    folder = getattr(drive.folders, "reports", None)
+    if not folder:
+        return {}
+    await drive._verify_folder_boundary()
+    query = (
+        f"'{drive._escape_query(folder)}' in parents and trashed = false "
+        f"and name = 'bitget-{asset}-overnight-progress.json' "
+        "and appProperties has { key='rival_kind' and value='report' }"
+    )
+    res = await drive._client.get(
+        f"{drive.DRIVE_URL}/files",
+        params={"q": query, "orderBy": "modifiedTime desc", "pageSize": 10,
+                "fields": "nextPageToken,files(id,name,size,parents,appProperties,trashed)"},
+        headers=await drive._headers(), follow_redirects=False,
+    )
+    if res.status_code != 200:
+        raise HistoryImportError("Bitget previous Drive source status unavailable")
+    doc = res.json()
+    files = doc.get("files") if isinstance(doc, dict) else None
+    if not isinstance(files, list) or len(files) > 10:
+        raise HistoryImportError("untrusted Bitget previous source status inventory")
+    for entry in files:
+        if (not isinstance(entry, dict) or entry.get("trashed")
+            or folder not in entry.get("parents", [])
+            or entry.get("name") != f"bitget-{asset}-overnight-progress.json"):
+            raise HistoryImportError("previous Bitget report outside private boundary")
+        props = entry.get("appProperties") or {}
+        digest, file_id = props.get("rival_sha256"), entry.get("id")
+        size = int(entry.get("size") or 0)
+        if (props.get("rival_kind") != "report" or not isinstance(digest, str)
+            or not re.fullmatch(r"[0-9a-f]{64}", digest)
+            or not isinstance(file_id, str)
+            or not re.fullmatch(r"[A-Za-z0-9_-]{5,128}", file_id)
+            or not 0 < size <= 512_000):
+            raise HistoryImportError("previous Bitget report lacks original SHA evidence")
+        media = await drive._client.get(
+            f"{drive.DRIVE_URL}/files/{file_id}",
+            params={"alt": "media"}, headers=await drive._headers(),
+            follow_redirects=False,
+        )
+        if (media.status_code != 200 or len(media.content) != size
+            or hashlib.sha256(media.content).hexdigest() != digest):
+            raise HistoryImportError("previous Bitget report SHA256 restore failed")
+        try:
+            previous = json.loads(media.content)
+        except (ValueError, UnicodeError) as exc:
+            raise HistoryImportError("invalid prior Bitget status JSON") from exc
+        if (not isinstance(previous, dict) or previous.get("asset") != asset
+            or previous.get("schema_version") != "rival-bitget-v3-overnight-progress-v1"):
+            raise HistoryImportError("prior Bitget status has wrong source identity")
+        answers = {}
+        for prior in previous.get("source_decisions", []):
+            if not isinstance(prior, dict):
+                continue
+            key = (prior.get("family"), prior.get("month"))
+            if key[0] in FAMILIES and isinstance(key[1], str):
+                answers[key] = prior
+        return answers
+    return {}
+
+
 def write_original_responses(path: Path, entries: list[dict]) -> str:
     """Write gzip deterministically, retaining each original API response."""
     with path.open("wb") as sink, gzip.GzipFile(
@@ -502,6 +571,7 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
         "priority_window": window(clock).metadata(),
         "planned_source_months": len(job), "existing_manifest_names_only": 0,
         "source_months_published_and_readback": [], "unavailable": [],
+        "source_decisions": [], "deferred_source_months": 0,
         "api_request_pages_reserved": 0, "api_requests_attempted": 0,
         "request_budget": max_requests,
         "full_2021_present_coverage_proven": False, "live_models_approved": False,
@@ -510,6 +580,7 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
     root.mkdir(parents=True, exist_ok=True)
     write_checkpoint(report, report_dir=report_dir, asset=asset)
     existing = await existing_manifests(drive, asset=asset)
+    previous = await prior_source_decisions(drive, asset=asset)
     report["phase"] = "contract_metadata"
     write_checkpoint(report, report_dir=report_dir, asset=asset)
     metadata = await verify_symbol(client, asset=asset, pacer=pacer)
@@ -519,6 +590,11 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
     for month, family in job:
         if (family, month) in existing:
             report["existing_manifest_names_only"] += 1
+            continue
+        prior = previous.get((family, month))
+        if deferred(prior, asset=asset, family=family, month=month, now=clock):
+            report["deferred_source_months"] += 1
+            report["source_decisions"].append(prior)
             continue
         needed = len(windows(month))
         if (pacer.attempted + needed > max_requests
@@ -546,9 +622,16 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
             if "Bitget API request budget exhausted" in str(exc):
                 report["budget_exhausted_during_month"] = True
                 break
+            outcome = decision(
+                asset=asset, family=family, month=month, reason=str(exc), now=clock,
+                attempts=min(1000, (prior.get("attempts", 0) if prior else 0) + 1),
+            )
+            report["source_decisions"].append(outcome)
             if len(report["unavailable"]) < MAX_REPORT_ERRORS:
                 report["unavailable"].append(
-                    {"month": month, "family": family, "reason": str(exc)[:180]}
+                    {"month": month, "family": family, "reason": str(exc)[:180],
+                     "source_status": outcome["source_status"],
+                     "retry_after_utc": outcome["retry_after_utc"]}
                 )
             if any(term in str(exc) for term in
                    ("restricted HTTP", "HTTP 429", "HTTP 503", "HTTP 504")):
@@ -651,9 +734,9 @@ def main(argv: list[str] | None = None) -> int:
         "complete_2021_present": False,
         "source_access_blocked": result.get("source_access_blocked_or_throttled", False),
     }, sort_keys=True))
-    return 2 if result.get("source_access_blocked_or_throttled") or (
-        result["unavailable"] and not result["source_months_published_and_readback"]
-    ) else 0
+    # An unavailable historical source page is a reported data condition, not
+    # an infrastructure exception. Rate-limit/access errors still fail visibly.
+    return 2 if result.get("source_access_blocked_or_throttled") else 0
 
 
 if __name__ == "__main__":

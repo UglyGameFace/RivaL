@@ -1,13 +1,13 @@
-## Active: source-specific historical acquisition and older-month learning (2026-11-02)
+## Active: all-ten-venue source-native historical provenance (2026-11-02)
 
-- Objective: One bounded history dashboard/queue with independent original venue, BTC/ETH/SOL/XRP and family scopes. 2021 Binance data MUST NOT imply that other contracts existed in 2021. Preserve all verified raw sources and per-provider quotas; no invented full trades, dates or books.
-- Branch/PR: feat/source-specific-history-coordinator-20261102, PR #253, based on main 0ea0ec0. Keep completeness Issue #188 open.
-- Changes: 640-scope name-only warehouse census and coordinator; 2021+ native names isolated by source; older verified full-month publishing with one extra bounded PostgreSQL monthly query; exact historical six-month candidate selection without weakening full-grid/Drive-SHA audits; at most two GitHub Actions gap dispatches with duplicate protection and immutable Drive status reports.
-- Validation: PR-head Ruff, full pytest/Postgres and targeted regression CI required before merge. New schedule and Drive report are unverified until a successful merged-main run. No live model approval or forecast-profit claim.
-- Next: repair CI, inspect diff, merge after approval/checks, verify exact main and Discloud release, then inspect first real Drive census. Extend missing source/family collectors only after official availability and listing metadata is independently checked. A public sample hour is not a full history.
+- **Objective:** Complete source-exact BTC/ETH/SOL/XRP original history, contract starts and per-venue/family status. Never cross-label 2021 Binance history or fabricate missing liquidity/data.
+- **Merged:** #253 at `894005f`: 640-scope coordinator, bounded older-month publication and independent research windows. #254 at `ff027be`: official Binance/OKX contract metadata evidence, original Binance 5m ZIP+checksum retention, Binance daily OI/positioning, rotating Drive byte audit and compatibility tests (1,580 passing).
+- **Production:** #254 post-merge coordinator succeeded; 136/640 route scopes integrated. OKX: four official listing timestamps. Binance official `fapi` source returned HTTP 451 from GitHub's runner, so its listing date remains UNKNOWN. Binance OI source fetched/parsed but upload of literal checksum failed because the archive client rejected `text/plain`; the first main collector run is NOT successful.
+- **Repair:** PR #256 expands the narrowly scoped archive client MIME allowlist to include `text/plain`, tests original SHA256 checksum staging and readback, and re-triggers both affected collectors when it lands. Check main CI, source workflows and exact private Drive files/SHAs before declaring it operational.
+- **Still open:** Issue #188. Unknown provider-native start dates for eight venues and any delisted contracts; future-only admission gates; collection of OI/liquidations/orderbooks across unsupported source families; historic raw bytes and exact UTC coverage. A name-only archive census is NOT complete history.
+- **Next:** Validate and merge #256 after green CI, verify original ZIP & CHECKSUM remote readbacks and first Binance daily OI original day, observe current main Discloud release and reopen provider-specific 451 investigation without proxies or cross-exchange substitution. Keep nonessential workflows independent.
 
 ---
-
 ## ACTIVE: Fill audited Bitget scattered gaps without relabeling bulk history (2026-11-01)
 
 - **Owner evidence:** BTC Bitget 340 missing in 340 isolated 5m gaps; ETH Bitget 339 missing in 339 isolated gaps. Existing six-month audit accurately flags these but only queued KuCoin's <=32 missing slots, leaving Bitget with no targeted repair path after its forward cursor caught up.

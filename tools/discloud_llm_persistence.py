@@ -27,6 +27,29 @@ def parse_receipt(stdout: str) -> dict:
     raise ValueError("missing structured receipt")
 
 
+
+def integrated_receipt(report: dict) -> bool:
+    """Only the NEW hosted Intelligence/math/DB handoff passes; never a green skip."""
+    return (
+        report.get("outcome") == "verified"
+        and report.get("model") == "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
+        and report.get("mathematical_evidence_status") == "persisted_registry"
+        and report.get("prospective_math_status") in (
+            "supported", "insufficient", "not_improving",
+        )
+        and report.get("cold_archive_readback") == "not_performed_by_live_research"
+        and report.get("evidence_hash_valid") is True
+        and type(report.get("source_count")) is int
+        and report["source_count"] >= 3
+        and type(report.get("fresh_six_month_source_audits")) is int
+        and report["fresh_six_month_source_audits"] >= 0
+        and report.get("from_cache") is False
+        and type(report.get("saved_before")) is int
+        and type(report.get("saved_after")) is int
+        and report["saved_after"] > report["saved_before"]
+    )
+
+
 def main() -> int:
     token = os.environ.get("DISCLOUD_TOKEN", "")
     app_id = os.environ.get("DISCLOUD_APP_ID", "")
@@ -50,6 +73,12 @@ def main() -> int:
         return 1
 
     outcome = report["outcome"]
+    # An older LFM3 receipt or cache hit is not fresh evidence that the
+    # post-merge math/audit integration is deployed. Do not auto-close issues.
+    if outcome == "verified" and not integrated_receipt(report):
+        outcome = "failed"
+        report = {**report, "outcome": outcome,
+                  "reason": "new_integrated_host_receipt_not_verified"}
     print("LFM3 PostgreSQL acceptance:", json.dumps(report, sort_keys=True))
     if output := os.environ.get("GITHUB_OUTPUT"):
         with open(output, "a", encoding="utf-8") as stream:

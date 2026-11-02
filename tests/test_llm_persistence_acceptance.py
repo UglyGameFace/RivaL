@@ -84,3 +84,27 @@ def test_off_host_result_requires_structured_response():
 def test_invalid_gateway_receipts_fail_closed(message):
     with pytest.raises(ValueError):
         RELAY.parse_receipt(message)
+
+def test_new_host_acceptance_requires_actual_math_evidence_and_fresh_model_row():
+    valid = {
+        "outcome": "verified", "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
+        "mathematical_evidence_status": "persisted_registry",
+        "prospective_math_status": "insufficient",
+        "cold_archive_readback": "not_performed_by_live_research",
+        "evidence_hash_valid": True, "source_count": 9,
+        "fresh_six_month_source_audits": 2, "from_cache": False,
+        "saved_before": 3, "saved_after": 4,
+    }
+    assert RELAY.integrated_receipt(valid)
+    for key, value in (
+        ("outcome", "deferred"),
+        ("model", "RivaL/verified-evidence-summary-v1"),
+        ("mathematical_evidence_status", "unavailable"),
+        ("prospective_math_status", "unavailable"),
+        ("evidence_hash_valid", False),
+        ("source_count", 2),
+        ("from_cache", True),
+        ("saved_after", 3),
+    ):
+        assert not RELAY.integrated_receipt({**valid, key: value})
+    assert not RELAY.integrated_receipt({"outcome": "verified"})

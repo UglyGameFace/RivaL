@@ -236,7 +236,6 @@ async def publish_api_gap_evidence(
         "still_missing": len(evidence["remaining_missing_unix_seconds"]),
         "source_api_readback_verified": True,
         "model_training_eligible": False,
-        "api_gap_evidence": details["same_gate_5m_api_evidence"],
         "report_sha256": artifact.sha256,
     }
 
@@ -320,8 +319,12 @@ async def publish_minute_gap_evidence(
         "original_5m_sha256": original_5m_sha,
         "source_5m_missing": details["missing_source_5m_before"],
         "same_gate_1m_candles_derived": len(repaired),
-        "still_missing": len(details["unresolved_open_unix_seconds"]),
+        "still_missing_after_one_minute": len(details["unresolved_open_unix_seconds"]),
+        "still_missing": details["same_gate_5m_api_evidence"].get(
+            "still_missing", len(details["unresolved_open_unix_seconds"])
+        ),
         "crosschecked_existing_5m": details["crosschecked_5m_source_bars"],
+        "api_gap_evidence": details["same_gate_5m_api_evidence"],
         "original_minute_drive_sha_readback_verified": True,
         "repair_receipt_drive_sha_readback_verified": True,
         "model_training_eligible": False,

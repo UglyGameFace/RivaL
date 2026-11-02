@@ -194,3 +194,96 @@ async def test_http_451_cannot_be_retried_through_other_network_routes():
     finally:
         await client.aclose()
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_incomplete_first_page_stops_before_wasting_rest_of_month(tmp_path: Path):
+    requested = []
+    client = mock_client(remove_one=True, recorder=requested)
+    try:
+        with pytest.raises(HistoryImportError, match="incomplete UTC grid"):
+            await collect_month(
+                client, asset="BTC", family="market", month="2021-06",
+                root=tmp_path, pacer=NoWait(),
+                metadata={"metadata_sha256": "a" * 64},
+            )
+    finally:
+        await client.aclose()
+    assert len(requested) == 1
+    assert not list(tmp_path.glob("*.manifest.json"))
+
+
+@pytest.mark.asyncio
+async def test_public_probe_detects_missing_windows_without_drive_writes(tmp_path: Path):
+    from parlay_bot.research.bitget_v3_archive import probe_source_windows
+
+    observed = []
+    def reply(req: httpx.Request):
+        assert req.url.host == "api.bitget.com"
+        assert req.url.path == "/api/v3/market/history-candles"
+        begin = int(req.url.params["startTime"]) + 1
+        end = int(req.url.params["endTime"]) + 1
+        month = datetime.fromtimestamp(begin / 1000, UTC).strftime("%Y-%m")
+        family = req.url.params["type"]
+        observed.append((month, family))
+        keep = [
+            row(tick, premium=family == "premium")
+            for tick in range(begin, end, 300000)
+            if not (month == "2025-06" and family == "mark" and tick == begin)
+        ]
+        return httpx.Response(200, json={"code": "00000", "data": keep})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(reply))
+    try:
+        result = await probe_source_windows(
+            client=client, asset="BTC", report_dir=tmp_path,
+            now=datetime(2026, 11, 1, tzinfo=UTC), pacer=NoWait(),
+        )
+    finally:
+        await client.aclose()
+    assert result["request_window_count"] == 24
+    assert len(observed) == 24
+    assert any(s["status"] == "incomplete_window" for s in result["samples"])
+    assert result["complete_month_claimed"] is False
+    assert result["drive_bytes_verified"] is False
+    assert (tmp_path / "bitget-source-probe-BTC.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_live_run_writes_incremental_checkpoint_before_source_failure(
+    tmp_path: Path, monkeypatch,
+):
+    from parlay_bot.research import bitget_v3_archive as archive
+
+    async def existing(drive, *, asset):
+        return set()
+
+    async def symbol(client, *, asset, pacer):
+        return {"metadata_sha256": "a" * 64}
+
+    async def fail_month(client, *, asset, family, month, root, pacer, metadata):
+        report = json.loads(
+            (tmp_path / "bitget-BTC-overnight-progress.json").read_text()
+        )
+        assert report["phase"] == "collecting"
+        assert report["current_source_month"] == {"month": month, "family": family}
+        raise HistoryImportError("incomplete UTC grid")
+
+    monkeypatch.setattr(archive, "existing_manifests", existing)
+    monkeypatch.setattr(archive, "verify_symbol", symbol)
+    monkeypatch.setattr(archive, "collect_month", fail_month)
+    drive = SimpleNamespace(folders=SimpleNamespace(reports=None))
+    result = await archive.run(
+        drive=drive, client=None, root=tmp_path / "raw",
+        report_dir=tmp_path, asset="BTC", first="2021-01",
+        max_requests=400, max_months=4,
+        now=datetime(2021, 2, 1, tzinfo=UTC), pacer=NoWait(),
+    )
+    saved = json.loads(
+        (tmp_path / "bitget-BTC-overnight-progress.json").read_text()
+    )
+    assert result["phase"] == "finished"
+    assert saved["phase"] == "finished"
+    assert saved["current_source_month"] is None
+    assert len(saved["unavailable"]) == 4
+    assert saved["source_months_published_and_readback"] == []

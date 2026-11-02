@@ -89,6 +89,9 @@ async def test_publish_only_complete_source_month_and_remote_sha_readback(tmp_pa
     async def existing(drive):
         return {"BTCUSDT-5m-2021-01"}
     monkeypatch.setattr(deep, "existing_month_keys", existing)
+    async def originals(drive):
+        return {"BTCUSDT-5m-2021-01"}
+    monkeypatch.setattr(deep, "existing_original_keys", originals)
     calls = []
     remote = []
     original = b"verified provider-original zip fixture"
@@ -146,6 +149,9 @@ async def test_incomplete_source_month_does_not_publish(tmp_path, monkeypatch):
     async def existing(drive):
         return set()
     monkeypatch.setattr(deep, "existing_month_keys", existing)
+    async def originals(drive):
+        return set()
+    monkeypatch.setattr(deep, "existing_original_keys", originals)
     monkeypatch.setattr(deep, "ingest_binance", lambda *a, **kw:
                         SimpleNamespace(records=8927, manifest_path=Path("pretend")))
     monkeypatch.setattr(deep, "audit_partition", lambda p: {

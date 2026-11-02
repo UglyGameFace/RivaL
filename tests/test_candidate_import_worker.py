@@ -53,8 +53,13 @@ async def test_optional_model_import_recovers_startup_pool_failure(monkeypatch):
 
     async def advance(delay):
         delays.append(delay)
-        if delay == 21600:
+        # Stop the fake perpetual worker after its first successful import.
+        # Do NOT tie teardown to a legacy sleep duration: that previously
+        # looped forever when the import cadence was reduced from six hours.
+        if len(delays) == 2:
             client.closed = True
+        elif len(delays) > 2:
+            raise AssertionError("candidate sync did not stop after first import")
 
     monkeypatch.setattr(
         bot_module.host_memory, "snapshot",
@@ -69,6 +74,6 @@ async def test_optional_model_import_recovers_startup_pool_failure(monkeypatch):
     assert client.offline_registry.imported == [
         ("verifiedDriveFile", b"verified"),
     ]
-    assert delays == [60, 21600]
+    assert delays == [60, 3600]  # startup retry, then verified idle rescan
     assert client.candidate_sync_status == "verified_drive_read_1_db_1_screened_0"
     assert client.candidate_sync_checked_at is not None

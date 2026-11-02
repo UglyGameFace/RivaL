@@ -1383,7 +1383,7 @@ class GuidedHome(discord.ui.View):
                     f"**Correct direction:** {accuracy}\n{scoring}\n"
                     f"**Results checked:** {settled:,} of {issued:,} recorded predictions{paired} (7 days)"
                 )
-            embed.add_field(name="📈 How accurate are BTC exchange predictions?", value=exchange_text, inline=False)
+            embed.add_field(name=f"📈 How accurate are {self.coin} exchange predictions?", value=exchange_text, inline=False)
 
             # 2. Contract-native comparisons; historical labels are NOT model wins.
             poly = reports.get("polymarket")

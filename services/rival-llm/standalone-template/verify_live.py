@@ -53,7 +53,8 @@ def parse_receipt(stdout: str, expected_sha: str) -> dict | None:
 
 def check_host(token: str, app_id: str, expected_sha: str) -> dict | None:
     # A single-line shell argument is reliable across Discloud console relays.
-    program = "import base64;exec(base64.b64decode(" + repr(base64.b64encode(HOST_CHECK.encode("utf-8")).decode("ascii")) + "))"
+    payload = base64.b64encode(HOST_CHECK.encode("utf-8")).decode("ascii")
+    program = f"import base64;exec(base64.b64decode({payload!r}))"
     command = "python -c " + shlex.quote(program)
     endpoint = "https://api.discloud.app/v2/app/" + parse.quote(app_id, safe="") + "/console"
     req = request.Request(

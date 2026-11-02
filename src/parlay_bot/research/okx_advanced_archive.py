@@ -110,6 +110,21 @@ def official_catalog_http_400(exc: Exception) -> bool:
     return isinstance(payload, dict) and payload.get("code") == "50016"
 
 
+def archive_exceeds_free_transfer_budget(exc: Exception) -> bool:
+    """Only the two explicit original-byte-cap failures are recoverable.
+
+    Never hide wrong source identity, invalid schema, checksum mismatches,
+    provider throttling, or failed private Drive readback as a large file.
+    """
+    return (
+        isinstance(exc, HistoryImportError)
+        and str(exc) in {
+            "OKX archive exceeds allowed transfer",
+            "OKX archive byte limit exceeded",
+        }
+    )
+
+
 async def listed_auxiliary_receipts(drive, *, asset: str, max_pages: int = 12) -> set[str]:
     """Read names of existing OKX auxiliary receipts as resume hints ONLY.
 

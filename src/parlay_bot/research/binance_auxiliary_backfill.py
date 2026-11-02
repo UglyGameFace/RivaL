@@ -92,6 +92,8 @@ def inspect_original_zip(raw: bytes, *, asset: str, family: str,
                     ]:
                         raise HistoryImportError("Binance funding CSV header incompatible")
                     for fields in reader:
+                        if not fields:
+                            continue
                         if (len(fields) != 3 or not fields[0].isascii()
                             or not fields[0].isdigit()):
                             raise HistoryImportError("Binance funding event malformed")

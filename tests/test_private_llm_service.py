@@ -83,6 +83,23 @@ def test_one_authenticated_private_research_request(gateway):
     assert send(server, route="/health", method="GET")[1]["status"] == "ready"
 
 
+def test_authenticated_status_proves_exact_deployed_upstream_commit(
+    gateway, tmp_path, monkeypatch
+):
+    marker = tmp_path / "UPSTREAM_COMMIT"
+    marker.write_text("a" * 40 + "\\n")
+    handler_globals = SERVICE["GatewayHandler"].do_GET.__globals__
+    with monkeypatch.context() as patch:
+        patch.setitem(handler_globals, "__file__", str(tmp_path / "service.py"))
+        status, result = send(gateway[0], route="/v1/status", method="GET")
+        assert status == 200
+        assert result["source_sha"] == "a" * 40
+        assert result["ready"] is True
+        assert type(result["repair_count"]) is int
+        marker.write_text("untrusted\n")
+        assert send(gateway[0], route="/v1/status", method="GET")[1]["source_sha"] == "unverified"
+
+
 def test_xrp_supported_without_weakening_authentication(gateway):
     server, calls = gateway
     status, result = send(

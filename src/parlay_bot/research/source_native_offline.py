@@ -10,12 +10,14 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+from collections import Counter
 from datetime import UTC, datetime
 from itertools import pairwise
 from pathlib import Path
 
 from parlay_bot.config import Settings
 from parlay_bot.research.audit import audit_catalog
+from parlay_bot.research.candidate_registry import verified_candidate
 from parlay_bot.research.batch import complete_months
 from parlay_bot.research.boosted_models import evaluate_directory as evaluate_boosters
 from parlay_bot.research.free_history import HistoryImportError
@@ -50,6 +52,72 @@ def select_training_months(*, now: datetime, first_month: str | None) -> list[st
     if selected[-1] >= now.astimezone(UTC).strftime("%Y-%m"):
         raise ValueError("model research cannot use an unfinished calendar month")
     return selected
+
+
+
+def screening_receipt(logistic: list[dict], boosted: list[dict]) -> dict:
+    """Preflight exact live importer contracts before publishing any models.
+
+    A candidate can be an honest historical experiment but still fail the
+    actual immutable registry's retrospective gate. Reuse that registry as the
+    one screening authority, never guess qualification from trainer labels.
+    """
+    rejections: Counter[str] = Counter()
+    source_scopes = []
+    passed = 0
+    candidates = []
+    for experiment in logistic:
+        candidates.append((
+            json.dumps({
+                "research_only": True, "live_model_promoted": False,
+                "model_sha256": experiment["model_sha256"],
+                "model_spec": experiment["model_spec"],
+                "validation": experiment["validation"],
+                "out_of_sample_test": experiment["out_of_sample_test"],
+            }, sort_keys=True, separators=(",", ":")).encode(),
+            experiment["research_candidate_passed"],
+        ))
+    for batch in boosted:
+        for portable in batch.get("portable_candidates", []):
+            candidates.append((
+                Path(portable["path"]).read_bytes(),
+                portable["retrospective_passed"],
+            ))
+    for payload, trainer_passed in candidates:
+        try:
+            admission = verified_candidate(payload)
+        except (ValueError, KeyError, TypeError) as exc:
+            # Generated files that cannot be imported must never be published.
+            raise HistoryImportError(
+                "native model artifact failed the live importer contract"
+            ) from exc
+        imported_passed = admission["retrospective_screen"] == "passed"
+        if imported_passed != trainer_passed:
+            raise HistoryImportError(
+                "native model training and registry screening disagree"
+            )
+        passed += int(imported_passed)
+        if not imported_passed:
+            rejections[admission["admission_reason"]] += 1
+        identity = admission["model_spec"]["identity"]
+        source_scopes.append({
+            "venue": identity["venue"], "contract": identity["contract"],
+            "quote": identity["quote"], "asset": admission["asset"],
+            "horizon": admission["horizon"],
+            "family": admission["model_spec"]["model"],
+            "screen": admission["admission_reason"],
+        })
+    return {
+        "evaluated": len(candidates),
+        "retrospective_passed": passed,
+        "retrospective_rejected": len(candidates) - passed,
+        "rejected_by_reason": [
+            {"reason": reason, "count": count}
+            for reason, count in sorted(rejections.items())
+        ],
+        "source_specific_outcomes": source_scopes[:80],
+        "proves_prospective_edge": False,
+    }
 
 
 async def run_native_research(
@@ -141,6 +209,7 @@ async def run_native_research(
         root, qualified_streams=qualified,
         artifact_dir=report_dir / "source-native-boosted",
     )
+    admission = screening_receipt(logistic, boosted)
     report = {
         "schema_version": "rival-native-source-research-v1",
         "venue": venue, "months": months,
@@ -159,6 +228,7 @@ async def run_native_research(
             x["retrospective_passed"]
             for group in boosted for x in group.get("portable_candidates", [])
         ),
+        "actual_registry_screening": admission,
         "live_approved": False, "trades_placed": False,
         "real_fills_verified": False, "after_cost_gain_verified": False,
     }

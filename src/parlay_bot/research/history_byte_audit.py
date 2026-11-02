@@ -50,15 +50,23 @@ async def _get_source(drive, *, file_id: str,
         or SHA.fullmatch(expected_sha) is None
         or not 0 < size <= max_bytes):
         raise HistoryImportError("untrusted Drive history object")
-    response = await drive._client.get(
-        f"{drive.DRIVE_URL}/files/{file_id}",
+    digest = hashlib.sha256()
+    content = bytearray()
+    async with drive._client.stream(
+        "GET", f"{drive.DRIVE_URL}/files/{file_id}",
         params={"alt": "media"}, headers=await drive._headers(),
         follow_redirects=False,
-    )
-    if (response.status_code != 200 or len(response.content) != size
-        or hashlib.sha256(response.content).hexdigest() != expected_sha):
+    ) as response:
+        if response.status_code != 200:
+            raise HistoryImportError("remote historical bytes inaccessible")
+        async for chunk in response.aiter_bytes():
+            if len(content) + len(chunk) > min(size, max_bytes):
+                raise HistoryImportError("remote source exceeded exact byte budget")
+            content.extend(chunk)
+            digest.update(chunk)
+    if len(content) != size or digest.hexdigest() != expected_sha:
         raise HistoryImportError("actual remote source byte SHA mismatch")
-    return response.content
+    return bytes(content)
 
 
 async def verify_month(drive, *, name: str, root: Path) -> dict:

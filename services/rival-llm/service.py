@@ -173,6 +173,104 @@ def compact_evidence(asset: str, evidence: dict) -> str:
     return header + "\n" + "\n".join(lines)
 
 
+class BackendRepair:
+    """Correct the private CPU backend from a known-good runtime, not new code.
+
+    Diagnosis distinguishes a crashed process from a stalled health endpoint;
+    bounded restarts are allowed only while inference is idle. A mutated
+    binary/model is quarantined by refusing to launch it, not silently trusted.
+    """
+
+    MAX_REPAIRS = 3
+    WINDOW_SECONDS = 1800
+
+    def __init__(self, process, command, env, *, binary: Path, model: Path,
+                 launcher=None, clock=None):
+        self.process = process
+        self.command = tuple(command)
+        self.env = dict(env)
+        self.binary = binary
+        self.model = model
+        self.binary_stat = (binary.stat().st_size, binary.stat().st_mtime_ns)
+        self.model_stat = (model.stat().st_size, model.stat().st_mtime_ns)
+        self.launcher = launcher or subprocess.Popen
+        self.clock = clock or time.monotonic
+        self.failures = 0
+        self.repairs: list[float] = []
+        self.next_attempt = 0.0
+        self.last_fault = "none"
+
+    def _verified_runtime(self) -> bool:
+        try:
+            return (
+                self.binary.is_file()
+                and os.access(self.binary, os.X_OK)
+                and (self.binary.stat().st_size, self.binary.stat().st_mtime_ns)
+                == self.binary_stat
+                and self.model.is_file()
+                and (self.model.stat().st_size, self.model.stat().st_mtime_ns)
+                == self.model_stat
+            )
+        except OSError:
+            return False
+
+    def tick(self, gateway) -> None:
+        """Diagnose once, repair only a stopped/unresponsive backend."""
+        now = self.clock()
+        crashed = self.process.poll() is not None
+        if not crashed:
+            # Never terminate a backend that is handling a real inference.
+            if not gateway.busy.acquire(blocking=False):
+                return
+            try:
+                ready = gateway.backend_ready()
+            finally:
+                gateway.busy.release()
+            if ready:
+                self.failures = 0
+                gateway.repair_state = "healthy"
+                return
+            self.failures += 1
+            if self.failures < 3:
+                gateway.repair_state = "backend_health_check_failed"
+                return
+        if now < self.next_attempt:
+            gateway.repair_state = "cooldown"
+            return
+        self.repairs = [t for t in self.repairs if now-t < self.WINDOW_SECONDS]
+        if len(self.repairs) >= self.MAX_REPAIRS:
+            gateway.repair_state = "quarantined"
+            raise RuntimeError("Backend repair budget exhausted")
+        if not self._verified_runtime():
+            gateway.repair_state = "quarantined"
+            raise RuntimeError("Backend artifact changed; refusing unsafe repair")
+        self.repairs.append(now)
+        gateway.repair_state = "repairing"
+        self.last_fault = "process_exited" if crashed else "health_unresponsive"
+        LOG.warning("llm_repair_attempt reason=%s attempt=%d", self.last_fault,
+                    len(self.repairs))
+        if not crashed:
+            self.process.terminate()
+            try:
+                self.process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.process.kill()
+                self.process.wait(timeout=5)
+        try:
+            repaired = self.launcher(list(self.command), env=self.env)
+        except OSError:
+            gateway.repair_state = "repair_failed"
+            self.next_attempt = now + 30 * len(self.repairs)
+            raise
+        gateway.process = repaired
+        self.process = repaired
+        self.failures = 0
+        self.next_attempt = now + 30 * len(self.repairs)
+        gateway.repair_count += 1
+        gateway.repair_state = "warming"
+        LOG.info("llm_repair_started count=%d", gateway.repair_count)
+
+
 class Gateway(ThreadingHTTPServer):
     daemon_threads = True
 
@@ -191,6 +289,8 @@ class Gateway(ThreadingHTTPServer):
         self.backend_timeout = backend_timeout
         self.process = process
         self.busy = threading.BoundedSemaphore(1)
+        self.repair_state = "healthy"
+        self.repair_count = 0
 
     def backend_ready(self) -> bool:
         if self.process is not None and self.process.poll() is not None:
@@ -327,7 +427,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "unauthorized"}, 401)
                 return
             self.send_json({"model": self.server.identity,
-                            "ready": self.server.backend_ready()})
+                            "ready": self.server.backend_ready(),
+                            "repair_state": self.server.repair_state,
+                            "repair_count": self.server.repair_count})
             return
         self.send_json({"error": "not_found"}, 404)
 
@@ -415,10 +517,16 @@ def launch_server():
                             daemon=True, name="private-llm-discovery")
     peer.start()
     LOG.info("local_gateway_start model=%s port=%s", profile, gateway.server_port)
+    # The gateway stays up while a verified backend is repaired in-process.
+    # Failed or tampered runtimes fail closed for host-level escalation.
+    supervisor = BackendRepair(
+        process, command, env, binary=binary, model=model_path,
+    )
     try:
-        while process.poll() is None:
-            time.sleep(2)
-        raise RuntimeError("llama-server exited; fail closed and let host restart")
+        while True:
+            supervisor.tick(gateway)
+            process = supervisor.process
+            time.sleep(3)
     finally:
         stopped.set()
         peer.join(timeout=2)

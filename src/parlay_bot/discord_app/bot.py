@@ -141,6 +141,15 @@ def next_collection_delay(
     return max(0.01, boundary + settle_seconds - timestamp)
 
 
+def candidate_import_delay(*, backlog: bool, failed: bool = False) -> int:
+    """Bound Drive reads while keeping new trained models discoverable.
+
+    Progress through already verified pagination pages much faster than the
+    former fixed six-hour sleep; never redownload in a tight retry loop.
+    """
+    return 300 if failed else 900 if backlog else 3600
+
+
 class RivalDiscordClient(discord.Client):
     def __init__(self, settings: Settings) -> None:
         # Guilds is a non-privileged gateway intent needed for guild state,
@@ -2496,6 +2505,7 @@ class RivalDiscordClient(discord.Client):
                 _LOG.warning("RivaL optional model import deferred: high host RSS")
                 await asyncio.sleep(300)
                 continue
+            failed = False
             try:
                 saved = 0
                 pages = 0
@@ -2567,8 +2577,12 @@ class RivalDiscordClient(discord.Client):
                 self._candidate_inventory_cursor = None
                 self.candidate_sync_status = "drive_read_unverified"
                 self.candidate_sync_checked_at = datetime.now(UTC)
+                failed = True
                 _LOG.exception("RivaL candidate import from Drive unavailable")
-            await asyncio.sleep(21600)
+            await asyncio.sleep(candidate_import_delay(
+                backlog=self._candidate_inventory_cursor is not None,
+                failed=failed,
+            ))
 
     async def _health_loop(self) -> None:
         """Recover exited workers only, never clone a possibly busy worker."""

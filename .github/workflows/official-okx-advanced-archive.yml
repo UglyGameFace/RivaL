@@ -202,7 +202,7 @@ jobs:
                           "catalog_attempts": attempts,
                           "source_selected": chosen is not None,
                           "all_months_complete": False,
-                      }, sort_keys=True, indent=2) + "\\n")
+                      }, sort_keys=True, indent=2) + "\n")
                       if chosen is None:
                           raise HistoryImportError(
                               "No exact OKX source file in bounded eligible catalog slots; see inventory"

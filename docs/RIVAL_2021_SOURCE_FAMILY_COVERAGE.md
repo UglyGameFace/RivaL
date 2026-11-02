@@ -114,3 +114,13 @@ no new secret, and no extra exchange request from this inventory.
   accepted ledger. Bitget's oldest missing months are not a dependency for
   other venues, source-specific research or prospective model qualification.
   No archive is an automatic live-trading-model approval.
+
+
+## November 2 source-authentic repair and evidence policy
+
+This is **one integrated change** for OKX auxiliary, Gate gaps, and Lighter auxiliary. It cannot create unavailable original history or declare 2021-to-present complete because code shipped.
+
+- **Lighter** now attempts January 2025 as an **attempt floor**, not proof every BTC/ETH/SOL/XRP perpetual was listed January 1. External public trade-history evidence reports some Lighter perpetual fills as early as January 17, 2025; authenticate each actual pair and timestamp against the original public API. Funding and mark-price sources rotate over all completed eligible months, report explicitly missing hourly observations and never label any underfilled month as complete. The older independent 2021–2024 Lighter market history is not claimed to exist.
+- **Gate** retains original March 2023 SOL 5m/1m gzip files unchanged. If five-minute candles are absent from *both*, the exact same-contract public API is a **last source-native check**, bounded by the existing <=96 missing slots and <=10 requests per month with immutable original response JSON, SHA-256 Drive readback and a separate repair receipt. Empty or retention-expired API responses leave gaps open. No synthetic candle or unproved historical contract-size conversion is admitted.
+- **OKX** advanced funding, trades and L2 archives now consult source-specific manifest filenames before spending time redownloading the same archived source file. Listings are **resume hints** only, not independently downloaded-byte verification. Catalog 50016 unsupported monthly L2 archives remain unsupported; unverified or oversized archives remain blocked, not silently considered covered. No new paid transfer or provider quotas.
+- Existing mainline Binance, Bitget, Gate/OKX 5m and Lighter candle collectors, model promotion and historical authenticity gates remain authoritative. The status of funding, trades and L2 must be measured per actual source-month, not inferred from complete 5m candle months.

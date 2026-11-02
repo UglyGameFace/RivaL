@@ -23,7 +23,7 @@ from pathlib import Path
 import httpx
 
 from parlay_bot.research.free_history import HistoryImportError
-from parlay_bot.research.history_priority import ordered_months
+from parlay_bot.research.history_priority import ordered_months, window
 from parlay_bot.research.official_okx_bootstrap import (
     ADVANCED_FIRST,
     ADVANCED_MODULE_BY_NAME,
@@ -79,8 +79,17 @@ def automatic_archive_slot(now: datetime | None = None, *, offset: int = 0) -> t
     ]
     if not candidates:
         raise HistoryImportError("no release-eligible OKX archive slots")
-    slot = (int(clock.timestamp()) // (SLOT_HOURS * 3600) + offset) % len(candidates)
-    return candidates[slot]
+    cycle = int(clock.timestamp()) // (SLOT_HOURS * 3600)
+    priority = set(window(clock).completed_months)
+    primary = [item for item in candidates if item[0] in priority]
+    older = [item for item in candidates if item[0] not in priority]
+    # Eleven of twelve scheduled cycles collect the rolling 24 months first;
+    # one limited cycle keeps genuinely obtainable older originals eligible.
+    lane = older if older and cycle % 12 == 0 else primary or older
+    if not lane:
+        raise HistoryImportError("no eligible OKX archive in selected month lane")
+    slot = (cycle + offset) % len(lane)
+    return lane[slot]
 
 
 def official_catalog_http_400(exc: Exception) -> bool:

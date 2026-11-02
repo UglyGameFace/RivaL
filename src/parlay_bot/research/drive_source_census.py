@@ -28,6 +28,14 @@ PATTERNS = (
 
 # These providers publish paged source evidence. A page is never a complete
 # calendar month, even when all listed pages have passed a byte readback.
+# OKX official auxiliary archives have provider-issued filenames, not
+# normalized source family names. Keep them as *unclassified receipt names*
+# until the actual archived manifest and original bytes are read back.
+OKX_AUX_RECEIPT = re.compile(
+    r"(BTC|ETH|SOL|XRP)-USDT-SWAP-[A-Za-z0-9_.-]{1,110}"
+    r"(20\\d{2}-(?:0[1-9]|1[0-2]))\\.(?:zip|tar\\.gz)\\.receipt\\.json"
+)
+
 PAGE_PATTERNS = (
     (r"dydx-v4-(BTC|ETH|SOL|XRP)-USD-funding-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", "dydx", "funding_with_oracle_price"),
     (r"lighter-(BTC|ETH|SOL|XRP)-(funding|mark_price)-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", "lighter", None),
@@ -126,6 +134,7 @@ def summarize(names: list[str], *, now: datetime) -> dict:
     streams = defaultdict(lambda: defaultdict(set))
     page_streams = defaultdict(lambda: defaultdict(set))
     name_counts = defaultdict(int)
+    okx_aux = defaultdict(set)
     ignored, outside = 0, 0
     current = now.astimezone(UTC).strftime("%Y-%m")
     for name in names:
@@ -134,6 +143,14 @@ def summarize(names: list[str], *, now: datetime) -> dict:
         if key is None:
             page_key = parse_page_name(name)
             if page_key is None:
+                auxiliary = OKX_AUX_RECEIPT.fullmatch(name)
+                if auxiliary is not None:
+                    asset, month = auxiliary.groups()
+                    if "2021-09" <= month < current:
+                        okx_aux[(asset, month)].add(name)
+                    else:
+                        outside += 1
+                    continue
                 ignored += 1
                 continue
             venue, asset, family, month, page, sha = page_key
@@ -208,6 +225,14 @@ def summarize(names: list[str], *, now: datetime) -> dict:
         "month_scopes": scopes,
         "page_level_sources_not_full_months": partial_pages,
         "other_family_name_counts": enrichment,
+        "okx_auxiliary_receipt_name_hints": [{
+            "venue": "okx", "asset": asset, "utc_month": month,
+            "distinct_original_filenames": len(filenames),
+            "source_modules_inferred_from_filename": False,
+            "bytes_reverified_in_this_census": False,
+            "full_source_month_verified": False,
+            "model_training_qualified": False,
+        } for (asset, month), filenames in sorted(okx_aux.items())],
         "warning": "Drive metadata names only; not byte SHA revalidation, complete source data, historic listing-date proof, model admission, or after-cost profitability.",
         "all_source_families_2021_to_present_verified": False,
         "model_approved": False,
@@ -246,6 +271,9 @@ def main(argv: list[str] | None = None) -> int:
             "listed": r["listed_manifest_months"], "missing": r["not_listed_months"],
         } for r in report["month_scopes"]],
         "partial_page_source_months": len(report["page_level_sources_not_full_months"]),
+        "okx_auxiliary_name_hint_month_scopes": len(
+            report["okx_auxiliary_receipt_name_hints"]
+        ),
         "verified_byte_readbacks_in_this_census": 0,
         "live_approved": False,
     }, sort_keys=True))

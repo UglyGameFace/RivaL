@@ -108,3 +108,43 @@ def test_new_host_acceptance_requires_actual_math_evidence_and_fresh_model_row()
     ):
         assert not RELAY.integrated_receipt({**valid, key: value})
     assert not RELAY.integrated_receipt({"outcome": "verified"})
+
+
+
+def test_host_receipt_workflow_waits_for_actual_deployment():
+    """Green skipped CI/release jobs never authorize an LFM3 consumption."""
+    workflow = (ROOT / ".github" / "workflows" /
+                "llm-persistence-acceptance.yml").read_text(encoding="utf-8")
+    assert 'workflows: ["RivaL Production Release"]' in workflow
+    assert "types: [completed]" in workflow
+    assert 'RELEASE_SHA" != "$main_sha"' in workflow
+    assert 'RELEASE_CONCLUSION" != "success"' in workflow
+    assert 'deploy_steps" != "1"' in workflow
+    assert "Deploy tested RivaL app without replacing its host environment" in workflow
+    assert 'integration_state="$(gh api "repos/$GITHUB_REPOSITORY/issues/261"' in workflow
+    assert "if: steps.receipt.outputs.outcome == 'verified'" in workflow
+    assert "push:\n" not in workflow
+
+
+def test_host_console_diagnostic_never_exposes_stdout_or_stderr(monkeypatch, capsys):
+    from urllib import request
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, *args):
+            return b'{"apps":{"shell":{"stdout":"private console words", "stderr":"private error"}}}'
+
+    monkeypatch.setenv("DISCLOUD_TOKEN", "test-token")
+    monkeypatch.setenv("DISCLOUD_APP_ID", "test-app")
+    monkeypatch.setattr(request, "urlopen", lambda *_args, **_kwargs: Response())
+    assert RELAY.main() == 1
+    observed = capsys.readouterr().out
+    assert "structured_receipt" in observed and "absent" in observed
+    assert "console_object_present" in observed
+    assert "private console words" not in observed
+    assert "private error" not in observed

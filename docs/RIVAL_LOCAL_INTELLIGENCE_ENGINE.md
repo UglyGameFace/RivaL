@@ -154,3 +154,21 @@ proof of frozen historical weights, model promotion, matched executable quotes,
 or positive after-cost profitability. The source is always the existing on-host
 PostgreSQL audit, never an LLM-generated evaluation. Missing/failed audit
 queries are marked unavailable. The production receipt exposes this status.
+
+
+### Production acceptance sequencing and provenance (November 2, 2026)
+
+After #259, the first acceptance workflow for #260 ran before its main
+commit had completed CI and Discloud deployment. The console relay returned
+no recognizable LFM3 receipt (reported only as ValueError). Do not treat a
+successful GitHub job or prior #216 record as proof of new math integration.
+Follow-up tracking: [issue #261](https://github.com/UglyGameFace/RivaL/issues/261).
+The acceptance workflow now fires after the **production release completes**,
+checks it is a successful current-main release with the actual Discloud upload
+step executed, and only probes while the integration acceptance issue remains
+open. Scheduled retries honor existing quota/cooldown without forcing model
+inference. The off-host console error report logs only response structure and
+string lengths, never sensitive stdout/stderr. A genuine, fresh exact LFM3
+model receipt with previously persisted source and math evidence is still the
+only success condition. Main bot source deployment is not the standalone LFM3
+service deployment; verify each separately.

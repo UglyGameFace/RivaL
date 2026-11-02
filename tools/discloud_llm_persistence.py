@@ -63,13 +63,33 @@ def main() -> int:
         headers={"api-token": token, "Content-Type": "application/json"},
         method="PUT",
     )
+    data: object = None
+    stdout = ""
     try:
         with request.urlopen(req, timeout=110) as response:
             data = json.load(response)
-        stdout = str(data.get("apps", {}).get("shell", {}).get("stdout", ""))
+        if not isinstance(data, dict):
+            raise ValueError("unexpected console response")
+        apps = data.get("apps")
+        shell = apps.get("shell") if isinstance(apps, dict) else None
+        stdout = str(shell.get("stdout", "")) if isinstance(shell, dict) else ""
         report = parse_receipt(stdout)
-    except (error.URLError, TimeoutError, ValueError, KeyError, OSError) as exc:
-        print("LFM3 host acceptance not confirmed:", type(exc).__name__)
+    except (error.URLError, TimeoutError, ValueError, KeyError, OSError, TypeError) as exc:
+        # Never print host stdout/stderr: either may include private app data.
+        # Output bounded structural diagnostics so missing/malformed console
+        # receipts are actionable instead of an opaque ValueError.
+        apps = data.get("apps") if isinstance(data, dict) else None
+        shell = apps.get("shell") if isinstance(apps, dict) else None
+        detail = {
+            "exception": type(exc).__name__,
+            "structured_receipt": "invalid" if MARKER in stdout else "absent",
+            "stdout_chars": len(stdout),
+            "stderr_present": bool(shell.get("stderr")) if isinstance(shell, dict) else False,
+            "console_object_present": isinstance(shell, dict),
+            "response_fields": sorted(data)[:8] if isinstance(data, dict) else [],
+            "shell_fields": sorted(shell)[:8] if isinstance(shell, dict) else [],
+        }
+        print("LFM3 host acceptance not confirmed:", json.dumps(detail, sort_keys=True))
         return 1
 
     outcome = report["outcome"]

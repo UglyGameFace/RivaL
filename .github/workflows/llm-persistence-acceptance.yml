@@ -1,19 +1,20 @@
 name: RivaL LFM3 persisted-research acceptance
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/llm-persistence-acceptance.yml"
-      - "src/parlay_bot/perpetuals/llm_persistence_acceptance.py"
-      - "tools/discloud_llm_persistence.py"
+  # CI tests first, then Discloud deploys its exact passing main SHA.
+  # Never probe the host while the new commit is still being built.
+  workflow_run:
+    workflows: ["RivaL Production Release"]
+    types: [completed]
   schedule:
-    # Uses GitHub, not a sixth ChatGPT scheduled task. Best-effort timing.
+    # Until issue #261 is actually proven, retry only through ordinary quota
+    # and cooldown accounting. Skip once verified.
     - cron: "51 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: read
+  actions: read
   issues: write
 
 concurrency:
@@ -25,46 +26,82 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Check original acceptance and new main integration proof
+      - name: Confirm real deployed main and unresolved acceptance
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ github.event.workflow_run.id }}
+          RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          RELEASE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
         shell: bash
         run: |
           set -euo pipefail
-          state="$(gh api "repos/$GITHUB_REPOSITORY/issues/216" --jq .state)"
-          if [[ "$state" == "open" ]]; then
-            echo "issue_open=true" >> "$GITHUB_OUTPUT"
+          original_state="$(gh api "repos/$GITHUB_REPOSITORY/issues/216" --jq .state)"
+          integration_state="$(gh api "repos/$GITHUB_REPOSITORY/issues/261" --jq .state)"
+          if [[ "$original_state" == "open" ]]; then
+            echo "issue216_open=true" >> "$GITHUB_OUTPUT"
           else
-            echo "issue_open=false" >> "$GITHUB_OUTPUT"
+            echo "issue216_open=false" >> "$GITHUB_OUTPUT"
           fi
-          # A source change reaching main requires a NEW host/DB receipt,
-          # even when the earlier one-time proof issue was already resolved.
-          # Closed issues continue to suppress hourly scheduled probes.
-          if [[ "$GITHUB_EVENT_NAME" == "push" || "$state" == "open" ]]; then
-            echo "pending=true" >> "$GITHUB_OUTPUT"
+          if [[ "$integration_state" == "open" ]]; then
+            echo "issue261_open=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Older proof is complete; no hourly Discloud/AI request."
+            echo "issue261_open=false" >> "$GITHUB_OUTPUT"
+          fi
+          if [[ "$original_state" != "open" && "$integration_state" != "open" ]]; then
+            echo "::notice::Both genuine acceptance issues already proven. No AI request."
             echo "pending=false" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_run" ]]; then
+            main_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq .sha)"
+            if [[ "$RELEASE_CONCLUSION" != "success" ||
+                  "$RELEASE_BRANCH" != "main" ||
+                  "$RELEASE_REPO" != "$GITHUB_REPOSITORY" ||
+                  "$RELEASE_SHA" != "$main_sha" ]]; then
+              echo "::notice::Release did not prove current first-party main."
+              echo "pending=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            # A green release can merely skip deployment. Require the ACTUAL
+            # Discloud upload step to have succeeded before spending AI quota.
+            deploy_steps="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_ID/jobs" --jq '[.jobs[].steps[]? | select(.name == "Deploy tested RivaL app without replacing its host environment" and .conclusion == "success")] | length')"
+            if [[ "$deploy_steps" != "1" ]]; then
+              echo "::notice::No successful Discloud upload step for this commit."
+              echo "pending=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          # Scheduled/manual checks are still subject to production quota and
+          # never clear any persisted circuit breaker or require extra AI work.
+          echo "pending=true" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         if: steps.gate.outputs.pending == 'true'
       - uses: actions/setup-python@v5
         if: steps.gate.outputs.pending == 'true'
         with:
           python-version: "3.11"
-      - name: Verify normal research request and exact PostgreSQL receipt
+      - name: Verify real local LFM3 model and exact PostgreSQL receipt
         id: receipt
         if: steps.gate.outputs.pending == 'true'
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         run: python tools/discloud_llm_persistence.py
-      - name: Close only on actual persisted production proof
-        if: steps.receipt.outputs.outcome == 'verified' && steps.gate.outputs.issue_open == 'true'
+      - name: Close original LFM3 issue only on actual stored proof
+        if: steps.receipt.outputs.outcome == 'verified' && steps.gate.outputs.issue216_open == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        shell: bash
         run: |
           gh issue close 216 --repo "$GITHUB_REPOSITORY" --reason completed \
-            --comment "Verified normal quota-controlled LocalFirstResearch.ask and its exact persisted PostgreSQL perp_ai_research receipt in $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. No changes to trading, quota rules, LFM3 inference or background AI settings."
+            --comment "Verified genuine local LFM3 persisted PostgreSQL receipt in $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID."
+      - name: Close Intelligence integration issue only on actual stored proof
+        if: steps.receipt.outputs.outcome == 'verified' && steps.gate.outputs.issue261_open == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue close 261 --repo "$GITHUB_REPOSITORY" --reason completed \
+            --comment "Verified new math and source-quality evidence in genuine authenticated LFM3 research with a new persisted PostgreSQL row: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. No retrospective approval or after-cost advantage implied."

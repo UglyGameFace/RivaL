@@ -7,7 +7,10 @@ import pytest
 
 from parlay_bot.research import drive_source_census as census
 from parlay_bot.research.source_family_backlog import (
-    ASSETS, PERP_FAMILIES, VENUES, build_backlog,
+    ASSETS,
+    PERP_FAMILIES,
+    VENUES,
+    build_backlog,
 )
 
 
@@ -15,9 +18,9 @@ def test_all_ten_venues_sixteen_families_and_four_assets_are_enumerated():
     report = build_backlog(census.summarize([], now=datetime(2026, 11, 2, tzinfo=UTC)))
     assert report["required_scopes"] == 10 * 4 * 16 == 640
     assert len(report["scopes"]) == 640
-    assert set(r["venue"] for r in report["scopes"]) == set(VENUES)
-    assert set(r["asset"] for r in report["scopes"]) == set(ASSETS)
-    assert set(r["family"] for r in report["scopes"]) == set(PERP_FAMILIES)
+    assert {r["venue"] for r in report["scopes"]} == set(VENUES)
+    assert {r["asset"] for r in report["scopes"]} == set(ASSETS)
+    assert {r["family"] for r in report["scopes"]} == set(PERP_FAMILIES)
     assert all(not row["promoted_live"] for row in report["scopes"])
     assert all(not row["original_bytes_rehashed_in_this_report"]
                for row in report["scopes"])

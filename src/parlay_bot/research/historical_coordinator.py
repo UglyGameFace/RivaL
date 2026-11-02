@@ -155,7 +155,7 @@ def build_plan(census: dict, *, max_jobs: int = 2,
             or listing_report.get("all_listing_dates_verified") is not False):
             raise ValueError("untrusted official listing report")
         observed_at = datetime.fromisoformat(listing_report["observed_at"])
-        if (observed_at.utcoffset() is None or observed_at > now
+        if (observed_at.utcoffset() is None or observed_at > now + timedelta(minutes=5)
             or now - observed_at > timedelta(days=7)):
             raise ValueError("stale or future official contract metadata")
         for item in listing_report["assets"]:

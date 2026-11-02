@@ -120,6 +120,7 @@ def validate(raw: bytes, *, family: str, begin: datetime, end: datetime):
         raise HistoryImportError("unsupported or oversized Lighter page schema")
     lo, hi = int(begin.timestamp()), int(end.timestamp())
     times = set()
+    source_times = set()
     for row in rows:
         if not isinstance(row, dict):
             raise HistoryImportError("malformed original Lighter row")
@@ -128,9 +129,15 @@ def validate(raw: bytes, *, family: str, begin: datetime, end: datetime):
             or not str(stamp).isascii() or not str(stamp).isdecimal()):
             raise HistoryImportError("Lighter source timestamp unit ambiguous")
         epoch = int(stamp) // divisor
-        if not lo <= epoch < hi or epoch in times:
-            raise HistoryImportError("Lighter source off-window/duplicated timestamp")
-        times.add(epoch)
+        # Source responses are backward-filled from end_timestamp (up to
+        # count_back). They legitimately contain older events preceding the
+        # requested start; retain those original bytes without attributing
+        # older events to the requested UTC month.
+        if epoch >= hi or epoch in source_times:
+            raise HistoryImportError("Lighter source after-window/duplicated timestamp")
+        source_times.add(epoch)
+        if lo <= epoch < hi:
+            times.add(epoch)
         if family == "funding":
             if row.get("direction") not in ("long", "short"):
                 raise HistoryImportError("unknown funding direction")
@@ -141,7 +148,7 @@ def validate(raw: bytes, *, family: str, begin: datetime, end: datetime):
             o, h, l, c = (positive(row.get(k)) for k in ("o", "h", "l", "c"))
             if l > min(o, c) or h < max(o, c):
                 raise HistoryImportError("invalid mark price source OHLC")
-    return times, len(rows)
+    return times, len(times)
 
 
 async def store(drive, *, raw: bytes, asset: str, family: str,
@@ -161,7 +168,11 @@ async def store(drive, *, raw: bytes, asset: str, family: str,
         "quote": "USDC", "product": "perpetual", "family": family,
         "utc_month": month, "section": section,
         "source_url": url, "source_filename": source.name,
-        "original_sha256": digest, "records": rows,
+        "original_sha256": digest, "records_in_requested_window": rows,
+        "original_source_rows": len(json.loads(raw)[
+            "fundings" if family == "funding" else "c"
+        ]),
+        "provider_response_preserved_including_older_rows": True,
         "source_provider_checksum_available": False,
         "prospective_forecast": False, "model_admission": False,
         "complete_source_month_claimed": False,
@@ -178,7 +189,8 @@ async def store(drive, *, raw: bytes, asset: str, family: str,
         file_id=original.file_id, parent_id=drive.folders.history, artifact=first)
     await drive.verify_downloaded_artifact(
         file_id=manifest.file_id, parent_id=drive.folders.manifests, artifact=second)
-    return {"asset": asset, "family": family, "section": section, "rows": rows,
+    return {"asset": asset, "family": family, "section": section,
+            "rows_in_requested_window": rows,
             "original_sha256": digest, "drive_bytes_verified": True}
 
 

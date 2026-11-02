@@ -9,6 +9,7 @@ import hmac
 import json
 import logging
 import math
+import math
 import os
 import re
 import subprocess
@@ -132,6 +133,32 @@ def compact_evidence(asset: str, evidence: dict) -> str:
         n = forward.get("settled_targets")
         if type(n) is int and 0 <= n <= 2_000_000:
             lines.append(f"prospective_math:status={forward['status']},settled={n};not_after_cost")
+    spikes = evidence.get("spike_analytics")
+    if isinstance(spikes, dict) and spikes.get("status") == "watching":
+        count = spikes.get("events_24h")
+        continued = spikes.get("scored_continuations_24h")
+        reversed_count = spikes.get("scored_reversals_24h")
+        if (all(type(n) is int and 0 <= n <= 288 for n in
+                (count, continued, reversed_count))):
+            lines.append(
+                f"observed_spikes_24h:{count},future_continuations={continued},"
+                f"reversals={reversed_count};descriptive_not_predictive"
+            )
+        recent = spikes.get("recent")
+        if isinstance(recent, list) and recent:
+            event = recent[0]
+            if (isinstance(event, dict) and event.get("kind") in
+                    ("price", "volume", "price_and_volume")
+                    and event.get("direction") in ("up", "down", "mixed")
+                    and type(event.get("source_count")) is int
+                    and 3 <= event["source_count"] <= 12
+                    and type(event.get("move_pct")) in (int, float)
+                    and math.isfinite(event["move_pct"])):
+                lines.append(
+                    f"last_spike:{event['kind']},{event['direction']},"
+                    f"observed_move_pct={event['move_pct']:.3f},"
+                    f"venues={event['source_count']};not_a_trade_call"
+                )
     audits = evidence.get("historical_quality")
     if isinstance(audits, list) and len(audits) <= 12:
         verified = [r for r in audits if isinstance(r, dict)

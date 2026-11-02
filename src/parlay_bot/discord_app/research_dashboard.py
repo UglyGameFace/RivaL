@@ -23,6 +23,7 @@ from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 from parlay_bot.perpetuals.readiness import explain_venue_readiness, forecast_readiness
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
+from parlay_bot.perpetuals.spike_watch import SpikeWatch
 from parlay_bot.research.source_native import VENUES, source_month_readiness
 
 if TYPE_CHECKING:
@@ -40,6 +41,7 @@ _SECTIONS = {
     "math": (
         ("overview", "Overview"),
         ("pulse", "Market pulse"),
+        ("spikes", "Spikes & volume"),
         ("history", "History & gaps"),
         ("recovery", "Backfill progress"),
         ("learning", "Learning status"),
@@ -68,6 +70,7 @@ _SECTIONS = {
 _FIELD_GROUPS = {
     "math": {
         "pulse": ("Current market pulse",),
+        "spikes": ("Spike watch analytics", "Recent spike events"),
         "history": ("Source-native training readiness", "Historical gap audit"),
         "recovery": ("Historical recovery progress",),
         "learning": ("Mathematical model", "Automatic shadow evaluation",
@@ -883,6 +886,47 @@ class ResearchDashboard(discord.ui.View):
                         )[:1024],
                         inline=False,
                     )
+                if self.section == "spikes":
+                    try:
+                        spike = await asyncio.to_thread(
+                            SpikeWatch(self.market).snapshot, asset=self.asset,
+                        )
+                        events = spike.get("events_24h")
+                        embed.add_field(
+                            name="Spike watch analytics",
+                            value=(
+                                f"Status: **{spike['status'].replace('_', ' ')}** · "
+                                f"Fresh venues: **{spike.get('fresh_venues', 0)}**.\\n"
+                                f"Last scan: **{spike.get('checked_at') or 'not yet'}**.\\n"
+                                f"Past 24h unusual events: **"
+                                f"{events if events is not None else 'unknown'}** · "
+                                f"confirmed continuations: **{spike.get('scored_continuations_24h') or 0}** "
+                                f"· reversals: **{spike.get('scored_reversals_24h') or 0}** "
+                                f"· source-unverified: **{spike.get('unverified_24h') or 0}**.\\n"
+                                "Future outcomes update automatically, never backfilled "
+                                "as live scores; no validated trade signal."
+                            )[:1024], inline=False,
+                        )
+                        lines = [
+                            f"{r['opened_at'][5:16]} UTC · {r['kind']} "
+                            f"{r['direction']} {r['move_pct']:+.2f}% · "
+                            f"{r['source_count']} venues · "
+                            f"{r['outcome'] or 'awaiting future'}"
+                            for r in spike.get("recent", [])[:3]
+                        ]
+                        embed.add_field(
+                            name="Recent spike events",
+                            value="\\n".join(lines) if lines else
+                                  "No source-verified events recorded in 24h.",
+                            inline=False,
+                        )
+                    except Exception:  # noqa: BLE001 - keep Discord responsive
+                        _LOG.exception("RivaL spike analytics unavailable")
+                        embed.add_field(
+                            name="Spike watch analytics",
+                            value="Verified observation ledger currently unavailable.",
+                            inline=False,
+                        )
                 if self.shadow_enabled:
                     try:
                         snapshots = await asyncio.to_thread(

@@ -87,6 +87,7 @@ from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
+from parlay_bot.perpetuals.spike_watch import SpikeWatch
 from parlay_bot.perpetuals.unattended_acceptance import unattended_acceptance_receipt
 from parlay_bot.providers.errors import QuotaReserveReached
 from parlay_bot.providers.oddspapi import OddsPapiClient
@@ -407,6 +408,13 @@ class RivalDiscordClient(discord.Client):
             # Read the already-persisted, genuinely future-settled mathematical
             # score; RivaL's model and promotion remain authoritative.
             self.perp_collector.market.research_forward_auditor = self.forward_audit
+        # Reuse collected candles for persistent observational spike detection.
+        self.spike_watch: SpikeWatch | None = (
+            SpikeWatch(self.perp_collector.market)
+            if self.perp_collector is not None else None
+        )
+        if self.perp_collector is not None:
+            self.perp_collector.market.research_spike_watcher = self.spike_watch
         # Both OPEN_ROUTER_API_KEY (the Discloud owner's variable) and
         # OPENROUTER_API_KEY (provider convention) are accepted. OpenRouter
         # has priority when configured, but there is never a paid fallback.
@@ -1742,6 +1750,8 @@ class RivalDiscordClient(discord.Client):
         # worker inserts predictions caused live PostgreSQL deadlocks.
         if self.autonomous is not None:
             await asyncio.to_thread(self.autonomous.initialize)
+        if self.spike_watch is not None:
+            await asyncio.to_thread(self.spike_watch.initialize)
         # Retired duplicated Auto-Hunt alert producers. Live Polymarket
         # tracking and optional verified direction-shift notices continue.
         if self._target_task is None:
@@ -2279,6 +2289,31 @@ class RivalDiscordClient(discord.Client):
                     raise
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL autonomous research cycle failed safely")
+            # Bounded spike analytics and future-only self-evaluation: reuse
+            # the existing source collector cycle and saved original bars.
+            if self.spike_watch is not None and not host_memory.snapshot().pressure:
+                for asset in self.perp_collector.assets:
+                    if asset not in ("BTC", "ETH", "SOL", "XRP"):
+                        continue
+                    try:
+                        result = await asyncio.to_thread(
+                            self.spike_watch.scan, asset=asset,
+                            venues=tuple(self.perp_collector.providers),
+                        )
+                        scored = await asyncio.to_thread(
+                            self.spike_watch.settle, asset=asset,
+                        )
+                        if result["event"] or scored:
+                            _LOG.info(
+                                "RivaL source-verified spike asset=%s event=%s "
+                                "future_outcomes=%d (observational, not trading)",
+                                asset, result["event"]["kind"] if result["event"] else "none",
+                                scored,
+                            )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:  # noqa: BLE001 - optional research isolation
+                        _LOG.exception("RivaL spike watcher retrying next cycle asset=%s", asset)
             # Once per hour, inspect persisted evidence without adding API
             # requests or disturbing live predictions and market collection.
             if self.autonomous is not None:

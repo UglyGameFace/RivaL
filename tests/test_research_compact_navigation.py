@@ -29,6 +29,8 @@ def expanded_report() -> discord.Embed:
         ("Historical recovery progress", "Gate 100, KuCoin 200, Bitget 300 imported"),
         ("Mathematical model", "Background shadow evaluation; no live signals."),
         ("Current market pulse · NOT a trading signal", "8 fresh venues; +0.057% observed 5m median; no trading signal."),
+        ("Spike watch analytics", "Observed 3 spikes"),
+        ("Recent spike events", "Verified anomalies"),
         ("Automatic shadow evaluation", "9 streams, 99 evaluated"),
         ("Automatic learning engine · LIVE", "Last cycle 3 minutes ago"),
         ("Mathematical forecast readiness · LIVE", "8 eligible streams under evaluation"),
@@ -70,6 +72,10 @@ def test_overview_shows_useful_verified_summary_without_20_fields():
     ]
     assert "8/10" in result.fields[0].value
     assert "0.206%" in result.fields[2].value
+    spikes = _compact_embed(expanded_report(), screen="math", section="spikes")
+    assert [f.name for f in spikes.fields] == [
+        "Live market feeds", "Spike watch analytics", "Recent spike events",
+    ]
     accuracy = _compact_embed(expanded_report(), screen="accuracy", section="overview")
     assert "NO VERIFIED BETTING EDGE" in accuracy.fields[1].value
     assert "Issued 119" in accuracy.fields[2].value

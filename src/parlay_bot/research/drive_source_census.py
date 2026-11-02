@@ -16,12 +16,21 @@ from parlay_bot.research.publish import _drive
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
 # Match the actual first supported month in the authoritative downloaders.
 # Do not invent pre-publication OKX history for January-June 2023.
-START_MONTH = {"binance": "2021-01", "okx": "2023-07", "gate": "2023-01"}
+START_MONTH = {"binance": "2021-01", "bitget": "2021-01",
+               "okx": "2023-07", "gate": "2023-01"}
 PATTERNS = (
     (r"(BTC|ETH|SOL|XRP)USDT-5m-(20\d{2}-\d{2})--([a-f0-9]{16})\.manifest\.json", "binance", "candles_5m"),
     (r"okx-(BTC|ETH|SOL|XRP)-USDT-SWAP-USDT-5m-(20\d{2}-\d{2})--([a-f0-9]{16})\.manifest\.json", "okx", "candles_5m"),
     (r"gatebulk-futures_usdt-(BTC|ETH|SOL|XRP)_USDT-(candlesticks_1m|candlesticks_5m|candlesticks_1h|mark_prices|funding_applies|funding_updates|trades)-(20\d{2}-\d{2})--([a-f0-9]{16})\.manifest\.json", "gate", None),
     (r"gate-(BTC|ETH|SOL|XRP)_USDT-USDT-5m-(20\d{2}-\d{2})--([a-f0-9]{16})\.manifest\.json", "gate", "native_candles_5m"),
+    (r"bitget-v3-(BTC|ETH|SOL|XRP)-(market|mark|index|premium)-(20\d{2}-(?:0[1-9]|1[0-2]))--([a-f0-9]{16})\.manifest\.json", "bitget", None),
+)
+
+# These providers publish paged source evidence. A page is never a complete
+# calendar month, even when all listed pages have passed a byte readback.
+PAGE_PATTERNS = (
+    (r"dydx-v4-(BTC|ETH|SOL|XRP)-USD-funding-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", "dydx", "funding_with_oracle_price"),
+    (r"lighter-(BTC|ETH|SOL|XRP)-(funding|mark_price)-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", "lighter", None),
 )
 
 
@@ -35,6 +44,20 @@ def parse_name(name: str):
                 asset, month, sha = m.groups()
                 kind = family
             return venue, asset, kind, month, sha
+    return None
+
+
+def parse_page_name(name: str):
+    """Recognize original page/section manifests without implying full coverage."""
+    for pattern, venue, family in PAGE_PATTERNS:
+        match = re.fullmatch(pattern, name)
+        if match:
+            if family is None:
+                asset, kind, month, page, sha = match.groups()
+            else:
+                asset, month, page, sha = match.groups()
+                kind = family
+            return venue, asset, kind, month, int(page), sha
     return None
 
 
@@ -101,12 +124,23 @@ async def list_names(drive, *, max_pages: int = 20) -> list[str]:
 
 def summarize(names: list[str], *, now: datetime) -> dict:
     streams = defaultdict(lambda: defaultdict(set))
+    page_streams = defaultdict(lambda: defaultdict(set))
+    name_counts = defaultdict(int)
     ignored, outside = 0, 0
     current = now.astimezone(UTC).strftime("%Y-%m")
     for name in names:
+        name_counts[name] += 1
         key = parse_name(name)
         if key is None:
-            ignored += 1
+            page_key = parse_page_name(name)
+            if page_key is None:
+                ignored += 1
+                continue
+            venue, asset, family, month, page, sha = page_key
+            if not "2021-01" <= month < current:
+                outside += 1
+                continue
+            page_streams[(venue, asset, family, month)][page].add(sha)
             continue
         venue, asset, family, month, sha = key
         floor = START_MONTH[venue]
@@ -120,6 +154,7 @@ def summarize(names: list[str], *, now: datetime) -> dict:
         ("binance", START_MONTH["binance"], "candles_5m"),
         ("okx", START_MONTH["okx"], "candles_5m"),
         ("gate", START_MONTH["gate"], "candlesticks_5m"),
+        *(( "bitget", START_MONTH["bitget"], kind) for kind in ("market", "mark", "index", "premium")),
     ):
         required = months_from(floor, now)
         for asset in ASSETS:
@@ -127,18 +162,36 @@ def summarize(names: list[str], *, now: datetime) -> dict:
             missing = [month for month in required if month not in collected]
             conflicts = [month for month in required
                          if len(collected.get(month, ())) > 1]
+            duplicate_names = [month for month in required if any(
+                name_counts.get(name, 0) > 1
+                for name in names
+                if (parsed := parse_name(name)) is not None
+                and parsed[:4] == (venue, asset, family, month)
+            )]
             scopes.append({
                 "venue": venue, "asset": asset, "family": family,
                 "source_first_month": floor,
+                "start_month_is_attempt_floor_not_listing_proof": venue == "bitget",
                 "expected_completed_months": len(required),
                 "listed_manifest_months": len(required) - len(missing),
                 "not_listed_months": len(missing),
                 "first_not_listed": missing[:12],
                 "conflicting_months": conflicts[:12],
-                "name_inventory_complete": not missing and not conflicts,
+                "duplicate_name_months": duplicate_names[:12],
+                "name_inventory_complete": not missing and not conflicts and not duplicate_names,
                 "bytes_reverified_in_this_census": False,
                 "model_training_qualified": False,
             })
+    partial_pages = [{
+        "venue": venue, "asset": asset, "family": family, "utc_month": month,
+        "listed_page_numbers": len(pages),
+        "conflicting_page_numbers": sorted(
+            page for page, shas in pages.items() if len(shas) > 1
+        ),
+        "full_calendar_month_verified": False,
+        "bytes_reverified_in_this_census": False,
+        "model_training_qualified": False,
+    } for (venue, asset, family, month), pages in sorted(page_streams.items())]
     enrichment = [
         {"venue": v, "asset": a, "family": f, "listed_months": len(months)}
         for (v, a, f), months in sorted(streams.items())
@@ -149,8 +202,10 @@ def summarize(names: list[str], *, now: datetime) -> dict:
         "generated_at": now.astimezone(UTC).isoformat(),
         "all_manifest_objects_listed": len(names),
         "unrecognized_manifest_names": ignored,
+        "duplicate_manifest_names": sum(n - 1 for n in name_counts.values() if n > 1),
         "out_of_supported_month_range": outside,
         "month_scopes": scopes,
+        "page_level_sources_not_full_months": partial_pages,
         "other_family_name_counts": enrichment,
         "warning": "Drive metadata names only; not byte SHA revalidation, complete source data, historic listing-date proof, model admission, or after-cost profitability.",
         "all_source_families_2021_to_present_verified": False,
@@ -183,8 +238,13 @@ def main(argv: list[str] | None = None) -> int:
             "venue": r["venue"], "asset": r["asset"],
             "listed": r["listed_manifest_months"],
             "not_listed": r["not_listed_months"],
-            "has_conflict": bool(r["conflicting_months"]),
+            "has_conflict": bool(r["conflicting_months"] or r["duplicate_name_months"]),
+        } for r in report["month_scopes"] if r["family"] in ("candles_5m", "candlesticks_5m", "market")],
+        "source_family_months": [{
+            "venue": r["venue"], "asset": r["asset"], "family": r["family"],
+            "listed": r["listed_manifest_months"], "missing": r["not_listed_months"],
         } for r in report["month_scopes"]],
+        "partial_page_source_months": len(report["page_level_sources_not_full_months"]),
         "verified_byte_readbacks_in_this_census": 0,
         "live_approved": False,
     }, sort_keys=True))

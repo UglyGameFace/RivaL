@@ -97,6 +97,70 @@ async def existing_month_keys(drive) -> set[str]:
 
 
 
+
+async def existing_original_keys(drive) -> set[str]:
+    """Original ZIP + checksum name pairs, never SHA or byte acceptance.
+
+    Older RivaL normalized archives sometimes lack the provider ZIP entirely.
+    Such months must remain in the collection queue even if their candle
+    manifest is already listed. Never discard or replace old normalized files.
+    """
+    await drive._verify_folder_boundary()
+    folder = drive.folders.history
+    predicate = (
+        f"'{drive._escape_query(folder)}' in parents and trashed = false "
+        "and name contains 'USDT-5m-' "
+        "and appProperties has { key='rival_kind' and value='history' }"
+    )
+    found: dict[str, set[str]] = {}
+    seen = set()
+    page = None
+    for _ in range(100):
+        params = {
+            "q": predicate, "spaces": "drive", "pageSize": 1000,
+            "fields": "nextPageToken,files(id,name,appProperties,parents,trashed)",
+        }
+        if page:
+            params["pageToken"] = page
+        response = await drive._client.get(
+            f"{drive.DRIVE_URL}/files", params=params,
+            headers=await drive._headers(),
+        )
+        if response.status_code != 200:
+            raise HistoryImportError("Binance source-original Drive history inaccessible")
+        doc = response.json()
+        rows = doc.get("files") if isinstance(doc, dict) else None
+        if not isinstance(rows, list) or len(rows) > 1000:
+            raise HistoryImportError("invalid source-original Drive inventory")
+        for row in rows:
+            if (not isinstance(row, dict) or row.get("trashed")
+                or folder not in (row.get("parents") or [])
+                or not isinstance(row.get("id"), str)
+                or not isinstance(row.get("appProperties"), dict)
+                or row["appProperties"].get("rival_kind") != "history"):
+                raise HistoryImportError("untrusted remote Binance source archive")
+            if row["id"] in seen:
+                raise HistoryImportError("duplicate historical original object ID")
+            seen.add(row["id"])
+            name = row.get("name", "")
+            match = re.fullmatch(
+                r"((?:BTC|ETH|SOL|XRP)USDT-5m-20\d{2}-(?:0[1-9]|1[0-2]))"
+                r"\.zip(\.CHECKSUM)?",
+                name if isinstance(name, str) else "",
+            )
+            if match:
+                kind = "checksum" if match.group(2) else "zip"
+                found.setdefault(match.group(1), set()).add(kind)
+        page = doc.get("nextPageToken")
+        if page is None:
+            return {key for key, kinds in found.items()
+                    if kinds == {"zip", "checksum"}}
+        if not isinstance(page, str) or not page or len(page) > 1000:
+            raise HistoryImportError("invalid original ZIP inventory pagination")
+    raise HistoryImportError("source original Drive listing exceeds bounded pages")
+
+
+
 def prioritize_missing_source_months(
     months: list[str], assets: tuple[str, ...], available: set[str],
     *, now: datetime | None = None,
@@ -126,9 +190,12 @@ async def collect_official_binance(
         or not 1 <= max_new <= MAX_MONTHS_PER_RUN):
         raise ValueError("invalid Binance bulk archival scope")
     months = months_since_2021(clock)
-    available = await existing_month_keys(drive)
-    # Fill recent source months first, then the older missing backlog.
-    # A manifest name remains an unverified resume hint, not readback proof.
+    normalized_names = await existing_month_keys(drive)
+    original_names = await existing_original_keys(drive)
+    # A processed candle month without BOTH provider original objects is NOT
+    # complete acquisition. Re-fetch only those missing originals; publish()
+    # remains byte-idempotent for existing normalized candle manifests.
+    available = normalized_names & original_names
     work, skipped = prioritize_missing_source_months(
         months, assets, available, now=clock,
     )
@@ -208,6 +275,9 @@ async def collect_official_binance(
         "newly_published": downloaded,
         "new_months": len(downloaded),
         "remote_manifest_names_skipped_without_readback": skipped,
+        "normalized_month_names_missing_original_zip_or_checksum": len(
+            normalized_names - original_names
+        ),
         "unavailable_or_rejected": failed,
         "fully_verified_2021_to_present": False,
         "live_model_promoted": False, "forward_skill_proven": False,

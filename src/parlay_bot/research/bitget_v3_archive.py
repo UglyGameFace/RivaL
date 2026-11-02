@@ -377,8 +377,32 @@ async def collect_month(client: httpx.AsyncClient, *, asset: str, family: str,
             begin=begin, end=end, pacer=pacer,
         )
         required = (end - begin) // STEP
-        # A single missing source bar already disqualifies this whole month.
-        # Stop here rather than making ~90 more requests and discarding them.
+        # Every actual source response, including a targeted gap repair, is
+        # retained verbatim with the exact parameters and SHA256 provenance.
+        def record(raw: bytes, start: int, stop: int) -> None:
+            raw_sha.update(raw)
+            source_entries.append({
+                "request": {"endpoint": ENDPOINT, "category": "USDT-FUTURES",
+                            "symbol": asset + "USDT", "type": family,
+                            "interval": "5m", "startTime": start - 1,
+                            "endTime": stop + STEP - 1, "limit": 100},
+                "response_sha256": hashlib.sha256(raw).hexdigest(),
+                "response_base64": base64.b64encode(raw).decode("ascii"),
+            })
+        record(data, begin, end)
+        missing = [tick for tick in range(begin, end, STEP) if tick not in rows]
+        if 0 < len(missing) <= 2 and len(rows) >= required - 2:
+            for tick in missing:
+                recovered_raw, recovered = await request_page(
+                    client, asset=asset, family=family, begin=tick,
+                    end=tick + STEP, pacer=pacer,
+                )
+                record(recovered_raw, tick, tick + STEP)
+                original = recovered.get(tick)
+                if original is not None:
+                    if tick in rows and rows[tick] != original:
+                        raise HistoryImportError("Bitget repaired row conflicts with source")
+                    rows[tick] = original
         if len(rows) != required or any(tick not in rows for tick in range(begin, end, STEP)):
             raise HistoryImportError(
                 f"Bitget {asset}/{family}/{month} incomplete UTC grid in "
@@ -388,15 +412,6 @@ async def collect_month(client: httpx.AsyncClient, *, asset: str, family: str,
             if opened in seen:
                 raise HistoryImportError("duplicate cross-page Bitget candle")
             seen.add(opened)
-        raw_sha.update(data)
-        source_entries.append({
-            "request": {"endpoint": ENDPOINT, "category": "USDT-FUTURES",
-                        "symbol": asset + "USDT", "type": family,
-                        "interval": "5m", "startTime": begin - 1,
-                        "endTime": end + STEP - 1, "limit": 100},
-            "response_sha256": hashlib.sha256(data).hexdigest(),
-            "response_base64": base64.b64encode(data).decode("ascii"),
-        })
     first, last = bounds(month)
     expected = (last - first) // STEP
     if len(seen) != expected or seen != set(range(first, last, STEP)):
@@ -427,7 +442,8 @@ async def collect_month(client: httpx.AsyncClient, *, asset: str, family: str,
             "source_metadata_sha256": metadata["metadata_sha256"],
             "historical_listing_date_verified": False,
             "provider_signed_checksum": False,
-            "request_pages": len(steps), "candles": expected,
+            "request_pages": len(source_entries), "candles": expected,
+            "targeted_repair_requests": len(source_entries) - len(steps),
             "exact_utc_5m_grid_verified": True,
             "first_observed_at": datetime.now(UTC).isoformat(),
             "retrospective": True, "prospective_forecast": False,

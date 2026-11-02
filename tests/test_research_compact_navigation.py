@@ -14,6 +14,8 @@ from parlay_bot.discord_app.research_dashboard import (
     _SECTIONS,
     ResearchDashboard,
     _compact_embed,
+    _plain_training_line,
+    _plain_boosted_proof,
 )
 
 
@@ -241,3 +243,53 @@ async def test_ai_review_is_reachable_inside_math_without_old_ai_tab(monkeypatch
         assert len(shown.fields) <= 3
     finally:
         dashboard.stop()
+
+
+def test_historical_learning_is_explained_without_claiming_improvement():
+    proof = {
+        "forecasts": 100,
+        "latest_lineage_verified": True,
+        "latest_historical_seed_sha256": None,
+        "latest_online_training_updates": 1434,
+        "historically_seeded": 0,
+        "lineage_proven": 100,
+    }
+    explanation = _plain_training_line(proof, 5)
+    assert "No verified historical training used" in explanation
+    assert "1,434 new-data learning updates" in explanation
+    assert "0/100 checked predictions" in explanation
+
+    proof["latest_historical_seed_sha256"] = "verified-hash"
+    assert "Verified historical training used" in _plain_training_line(proof, 5)
+    proof["latest_lineage_verified"] = False
+    proof["lineage_unknown"] = 90
+    assert "Cannot confirm" in _plain_training_line(proof, 5)
+    proof["forecasts"] = 0
+    assert "No recorded predictions" in _plain_training_line(proof, 5)
+
+
+def test_advanced_models_show_screening_blocker_not_paper_profit():
+    proof = {
+        "portable_imported": 54,
+        "portable_screened": 0,
+        "screening_blockers": [
+            {"count": 54, "reason": "validation_brier_gain_below_0.005"},
+        ],
+        "issued": 0,
+        "settled": 0,
+        "quote_exits": 0,
+        "fresh_paper_promotions": [],
+    }
+    explanation = _plain_boosted_proof(proof)
+    assert "54" in explanation
+    assert "not better than a basic forecast in validation" in explanation
+    assert "No model qualifies for simulated testing yet" in explanation
+    assert "Real profit" in explanation
+    assert len(explanation) < 1024
+
+
+def test_research_accuracy_offers_plain_and_technical_sections():
+    labels = dict(_SECTIONS["accuracy"])
+    assert labels["lineage"] == "Is it learning from history?"
+    assert labels["technical"] == "Technical evidence"
+    assert len(_SECTIONS["accuracy"]) <= 25

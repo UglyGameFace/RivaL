@@ -21,16 +21,38 @@ from parlay_bot.research.okx_advanced_archive import (
 
 def test_auto_advanced_slot_rotates_months_and_all_native_families():
     now = datetime(2026, 11, 4, tzinfo=UTC)
-    slots = [automatic_archive_slot(now + timedelta(hours=4 * i))
+    slots = [automatic_archive_slot(now + timedelta(hours=2 * i))
              for i in range(8)]
     assert len(set(slots)) == 8
-    assert {family for _, family in slots} == {
+    # Early 2023+ months have only three families; 5000-level begins 2025-11.
+    all_families = {
+        automatic_archive_slot(now + timedelta(hours=2 * i))[1]
+        for i in range(200)
+    }
+    assert all_families == {
         "funding_rates", "trades", "orderbook_l2_400", "orderbook_l2_5000",
     }
     assert all("2023-07" <= month <= "2026-10" for month, _ in slots)
     # November 1 must not pull an October archive before its grace period.
     early, _ = automatic_archive_slot(datetime(2026, 11, 1, tzinfo=UTC))
     assert "2023-07" <= early <= "2026-09"
+
+
+def test_automatic_advanced_catalog_never_schedules_5000_level_before_launch():
+    for now in (datetime(2024, 11, 4, tzinfo=UTC),
+                datetime(2026, 11, 4, tzinfo=UTC)):
+        for step in range(200):
+            month, module = automatic_archive_slot(now + timedelta(hours=2 * step))
+            assert module != "orderbook_l2_5000" or month >= "2025-11"
+    with pytest.raises(ValueError, match="offset"):
+        automatic_archive_slot(datetime(2026, 11, 4, tzinfo=UTC), offset=12)
+
+
+def test_source_gap_candidates_are_bounded_and_disjoint():
+    clock = datetime(2026, 11, 4, tzinfo=UTC)
+    slots = [automatic_archive_slot(clock, offset=i) for i in range(12)]
+    assert len(slots) == len(set(slots))
+    assert all("2023-07" <= month <= "2026-10" for month, _ in slots)
 
 
 ASSET = "BTC"

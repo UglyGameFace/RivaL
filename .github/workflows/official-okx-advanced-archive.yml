@@ -9,8 +9,8 @@ on:
       - "src/parlay_bot/research/okx_l2_replay.py"
       - "src/parlay_bot/research/okx_auxiliary_ablation.py"
   schedule:
-    # Rotate every advanced source family and historic month every four hours.
-    - cron: "37 1,5,9,13,17,21 * * *"
+    # Rotate launch-eligible archives with twelve fallback candidates every 2h.
+    - cron: "37 */2 * * *"
   pull_request:
     paths:
       - ".github/workflows/official-okx-advanced-archive.yml"
@@ -155,33 +155,59 @@ jobs:
               MODULES, inventory_extra_modules,
           )
           from parlay_bot.research.okx_advanced_archive import (
-              automatic_archive_slot, ingest_one,
+              MAX_PROBE_SLOTS, automatic_archive_slot, ingest_one,
           )
           from parlay_bot.research.publish import _artifact, _drive
 
           async def run():
               clock = datetime.now(UTC)
-              automatic_month, automatic_module = automatic_archive_slot(clock)
-              month = os.environ["MONTH"] or automatic_month
               asset = os.environ["ASSET"]
-              module = os.environ["MODULE"] or automatic_module
+              explicit_month = os.environ["MONTH"]
+              explicit_module = os.environ["MODULE"]
+              if bool(explicit_month) != bool(explicit_module):
+                  raise HistoryImportError("Manual archive requests require month and module together")
+              candidates = (
+                  [(explicit_month, explicit_module)]
+                  if explicit_month else
+                  [automatic_archive_slot(clock, offset=i)
+                   for i in range(MAX_PROBE_SLOTS)]
+              )
               root = Path("data/okx-advanced")
               root.mkdir(parents=True, exist_ok=True)
               drive = _drive(Settings())
               try:
+                  attempts = []
+                  chosen = None
                   async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
-                      module_id = next(number for number, label in MODULES.items() if label == module)
-                      catalog = await inventory_extra_modules(
-                          client, asset=asset, month=month, module_ids=(module_id,),
-                      )
-                      (root / "inventory.json").write_text(
-                          json.dumps(catalog, sort_keys=True, indent=2) + "\n"
-                      )
-                      slot = catalog["modules"][module]
-                      if slot["status"] != "cataloged_not_downloaded" or len(slot["files"]) != 1:
-                          raise HistoryImportError(
-                              "One explicitly listed archive required; no URL invented"
+                      for candidate_month, candidate_module in candidates:
+                          module_id = next(
+                              number for number, label in MODULES.items()
+                              if label == candidate_module
                           )
+                          catalog = await inventory_extra_modules(
+                              client, asset=asset, month=candidate_month,
+                              module_ids=(module_id,),
+                          )
+                          slot = catalog["modules"][candidate_module]
+                          attempts.append({
+                              "month": candidate_month, "module": candidate_module,
+                              "status": slot["status"],
+                              "source_file_count": len(slot["files"]),
+                          })
+                          if slot["status"] == "cataloged_not_downloaded" and len(slot["files"]) == 1:
+                              chosen = (candidate_month, candidate_module, slot)
+                              break
+                      (root / "inventory.json").write_text(json.dumps({
+                          "venue": "okx", "asset": asset,
+                          "catalog_attempts": attempts,
+                          "source_selected": chosen is not None,
+                          "all_months_complete": False,
+                      }, sort_keys=True, indent=2) + "\n")
+                      if chosen is None:
+                          raise HistoryImportError(
+                              "No exact OKX source file in bounded eligible catalog slots; see inventory"
+                          )
+                      month, module, slot = chosen
                       result = await ingest_one(
                           client=client, asset=asset, month=month, module=module,
                           record=slot["files"][0], root=root,

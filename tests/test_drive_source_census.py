@@ -219,3 +219,18 @@ def test_true_gate_hourly_l2_names_are_not_promoted_to_month_complete():
     assert btc["model_training_qualified"] is False
     assert report["all_source_families_2021_to_present_verified"] is False
     assert report["unrecognized_manifest_names"] == 0
+
+
+def test_source_native_older_name_index_is_not_a_cross_venue_listing_claim():
+    months = ["2021-01", "2021-02", "2021-03"]
+    names = ["kucoin-XBTUSDTM-USDT-5m-" + m + "--" + "e" * 16 +
+             ".manifest.json" for m in months]
+    report = census.summarize(names, now=NOW)
+    matches = [r for r in report["all_completed_scope_name_hints"]
+               if r["venue"] == "kucoin" and r["asset"] == "BTC"]
+    assert len(matches) == 1
+    assert matches[0]["listed_completed_utc_months"] == months
+    assert not matches[0]["byte_readbacks_verified_in_this_census"]
+    assert not matches[0]["contract_listing_verified"]
+    assert not any(r["venue"] == "bitget"
+                   for r in report["all_completed_scope_name_hints"])

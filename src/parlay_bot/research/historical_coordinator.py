@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from parlay_bot.research.history_priority import window
-from parlay_bot.research.source_family_backlog import build_backlog
+from parlay_bot.research.source_family_backlog import build_backlog, family_for
 from parlay_bot.research.source_family_coverage import ASSETS, PERP_FAMILIES, VENUES
 
 # Publication-era / downloader attempt floors. These are NOT contract listing
@@ -128,7 +128,11 @@ def build_plan(census: dict, *, max_jobs: int = 2) -> dict:
     priority = window(now)
     all_hints: dict[tuple[str, str, str], set[str]] = {}
     for hint in census.get("all_completed_scope_name_hints", []):
-        key = (hint.get("venue"), hint.get("asset"), hint.get("family"))
+        venue, asset = hint.get("venue"), hint.get("asset")
+        family = family_for(venue, hint.get("family"))
+        if family is None:
+            continue  # Independently unclassified sources are never candle proof.
+        key = (venue, asset, family)
         listed = hint.get("listed_completed_utc_months")
         if (key[0] not in VENUES or key[1] not in ASSETS
             or key[2] not in PERP_FAMILIES or not isinstance(listed, list)

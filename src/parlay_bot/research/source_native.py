@@ -58,8 +58,8 @@ def native_manifest_provenance(manifest: dict) -> bool:
             or not isinstance(name, str)):
             return False
         match = re.fullmatch(
-            rf"bitget-{asset}USDT-USDT-5m-(20\\d{{2}}-(?:0[1-9]|1[0-2]))--"
-            r"[0-9a-f]{16}\\.ndjson", name,
+            rf"bitget-{asset}USDT-USDT-5m-(20\d{{2}}-(?:0[1-9]|1[0-2]))--"
+            r"[0-9a-f]{16}\.ndjson", name,
         )
         return bool(
             match and manifest.get("source_archive_file") ==

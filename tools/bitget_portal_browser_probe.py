@@ -9,8 +9,9 @@ import argparse
 import json
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import urlsplit, parse_qsl
+from urllib.parse import parse_qsl, urlsplit
 
+from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
 PORTAL = "https://www.bitget.com/data-download"
@@ -79,16 +80,18 @@ def inspect(*, output: Path) -> dict:
                         page.screenshot(path=str(output / f"bitget-{family}.png"))
                         page.goto(PORTAL, wait_until="domcontentloaded", timeout=40000)
                         page.wait_for_timeout(2500)
-                    except Exception as exc:
+                    except (PlaywrightError, TimeoutError, OSError, ValueError) as exc:
                         evidence["errors"].append(f"{family}: {type(exc).__name__}")
             evidence["futures_downloads_verified"] = bool(evidence["dialogs"])
-        except Exception as exc:
+        except (PlaywrightError, TimeoutError, OSError, ValueError) as exc:
             evidence["errors"].append(f"navigation: {type(exc).__name__}")
         finally:
             browser.close()
     report = output / "bitget-browser-source-evidence.json"
     report.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n")
     print(json.dumps({
+        "public_page_text": evidence.get("initial_visible_text", "")[-1600:],
+        "dialog_excerpts": [{"family": x["family"], "text": x["visible_text"][-2400:]} for x in evidence["dialogs"]],
         "status": "public_dialog_inspection_only",
         "controls": evidence.get("download_control_count", 0),
         "dialogs": [{"family": x["family"], "url": x["url"]}

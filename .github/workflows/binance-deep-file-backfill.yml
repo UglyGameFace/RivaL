@@ -17,7 +17,7 @@ on:
       - "src/parlay_bot/research/binance_deep_backfill.py"
   workflow_dispatch:
   schedule:
-    - cron: "43 */2 * * *"
+    - cron: "43 1,3,5,7,9,11,13,15,17,19,21,23 * * *"
 
 permissions:
   contents: read

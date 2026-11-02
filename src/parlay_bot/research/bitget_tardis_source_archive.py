@@ -156,14 +156,18 @@ async def obtain(client: httpx.AsyncClient, *, asset: str, month: str,
                 async with client.stream("GET", url, follow_redirects=False) as response:
                     if response.status_code == 200:
                         size = 0
-                        with location.open("wb") as out:
+                        # Preserve bytes without blocking the async HTTP loop.
+                        out = await asyncio.to_thread(location.open, "wb")
+                        try:
                             async for data in response.aiter_raw(1024 * 1024):
                                 size += len(data)
                                 if size > MAX_COMPRESSED_BYTES:
                                     raise HistoryImportError(
                                         "Tardis source exceeds archive byte budget"
                                     )
-                                out.write(data)
+                                await asyncio.to_thread(out.write, data)
+                        finally:
+                            await asyncio.to_thread(out.close)
                         if size == 0:
                             raise HistoryImportError("Tardis source file empty")
                         return location, url

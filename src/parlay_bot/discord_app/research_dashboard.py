@@ -225,7 +225,7 @@ def _plain_boosted_proof(proof: dict) -> str:
     reasons = {
         "fewer_than_six_source_months": "not enough verified historical months",
         "insufficient_purged_validation_or_holdout": "not enough independent test examples",
-        "validation_brier_gain_below_0.005": "not better than a basic forecast in validation",
+        "validation_brier_gain_below_0.005": "did not improve enough over basic forecasts in validation",
         "holdout_brier_gain_below_0.005": "not better than a basic forecast on unseen tests",
         "calibration_or_evaluation_days_below_gate": "not enough days of reliable tests",
         "reason_unrecorded": "reason not recorded",

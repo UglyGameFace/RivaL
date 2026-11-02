@@ -282,6 +282,12 @@ def build_evidence(
         market, asset=asset, venues=healthy, clock=clock,
     )
     forward_math = _prospective_math_evidence(market, asset=asset, clock=clock)
+    # Uses only persisted live observations with future-only settlement.
+    spike_analytics = (
+        market.research_spike_watcher.snapshot(asset=asset, now=clock)
+        if market.research_spike_watcher is not None else
+        {"status": "not_configured", "events_24h": None, "recent": []}
+    )
     # Stable digest: if none of the input candles changes, reuse stored analysis.
     # Disconnected/blocked provider health changes also invalidate old evidence.
     evidence = {
@@ -291,6 +297,7 @@ def build_evidence(
         "unavailable_sources": unavailable,
         "mathematical_research": mathematical,
         "prospective_math": forward_math,
+        "spike_analytics": spike_analytics,
         "historical_quality": quality,
         "cold_archive_readback": "not_performed_by_live_research",
         "coverage": {"usable_venues": len(independent), "configured_venues": len(set(venues))},

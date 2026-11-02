@@ -12,12 +12,15 @@ from parlay_bot.storage.hot import SQLiteHotStore
 def insert_forecast(
     store, *, when: datetime, venue: str, label: int, p: float,
     horizon: int = 5, asset: str = "BTC",
+    contract_override: str | None = None,
 ) -> None:
     contract, quote = (
         ("BTC", "USDC") if venue == "hyperliquid" else
         ("BTC-USD", "USD") if venue == "dydx" else
         ("BTCUSDT", "USDT")
     )
+    if contract_override is not None:
+        contract = contract_override
     before = when - timedelta(minutes=horizon)
     base = 100.
     result = 101. if label else 99.
@@ -38,7 +41,7 @@ def insert_forecast(
         )
 
 
-def test_disputed_target_is_withheld_from_all_accuracy_metrics(tmp_path):
+def test_disputed_target_retains_brier_but_not_directional_accuracy(tmp_path):
     store = SQLiteHotStore(tmp_path / "dispute.sqlite")
     market = PerpetualMarketStore(store)
     ForwardAccuracyMonitor(market).initialize()
@@ -52,12 +55,18 @@ def test_disputed_target_is_withheld_from_all_accuracy_metrics(tmp_path):
         insert_forecast(store, when=agreed, venue="dydx", label=1, p=.60)
         stats = analytics_snapshot(market, asset="BTC", now=now)["math"][5]
         assert stats["disputed_targets_7d"] == 1
-        assert stats["last_7d"]["events"] == 1
+        assert stats["last_7d"]["events"] == 2
+        assert stats["last_7d"]["brier"] == 0.06875
+        assert stats["last_7d"]["baseline"] == 0.25
+        assert stats["last_7d"]["binary_targets"] == 1
         assert stats["forward_reliability_7d"]["unique_targets"] == 1
         assert stats["cost_stress_7d"]["unique_decided_targets"] == 1
         assert stats["last_7d"]["decided_events"] == 1
         assert stats["last_7d"]["hit_rate"] == 1.
-        assert stats["target_outcome_policy"] == "exclude_disagreeing_exchange_labels"
+        assert stats["target_outcome_policy"] == (
+            "score_source_brier;binary_outcomes_only_for_direction"
+        )
+        assert stats["forward_reliability_7d"]["disputed_targets"] == 1
         assert stats["trend"] == "insufficient"
         assert stats["forward_reliability_7d"]["status"] == (
             "insufficient_independent_forward_history"
@@ -103,9 +112,69 @@ def test_disputed_prior_targets_cannot_make_accuracy_trend_improve(tmp_path):
             insert_forecast(store, when=when, venue="dydx", label=1, p=.7)
         report = analytics_snapshot(market, asset="BTC", now=now)["math"][5]
         assert report["disputed_targets_prior_7d"] == 110
-        assert report["prior_7d"]["events"] == 0
+        assert report["prior_7d"]["events"] == 110
+        assert report["prior_7d"]["days"] < 5
         assert report["last_7d"]["events"] == 110
         assert report["trend"] == "insufficient"
-        assert report["prior_7d_skill"] is None
+        assert report["prior_7d_skill"] is not None
+    finally:
+        store.close()
+
+
+
+def test_duplicate_contract_must_not_overweight_bad_second_venue(tmp_path):
+    store = SQLiteHotStore(tmp_path / "duplicate.sqlite")
+    market = PerpetualMarketStore(store)
+    ForwardAccuracyMonitor(market).initialize()
+    now = datetime(2026, 10, 28, 18, tzinfo=UTC)
+    try:
+        target = now - timedelta(days=1)
+        insert_forecast(store, when=target, venue="hyperliquid", label=1, p=.9)
+        insert_forecast(store, when=target, venue="hyperliquid", label=1, p=.9,
+                        contract_override="BTC-SECOND-PERP")
+        insert_forecast(store, when=target, venue="dydx", label=0, p=.8)
+        score = analytics_snapshot(market, asset="BTC", now=now)["math"][5]
+        # A: (0.9-1)^2 = .01; B: (0.8-0)^2=.64; mean=.325.
+        assert score["last_7d"]["events"] == 1
+        assert score["last_7d"]["brier"] == 0.325
+        assert score["last_7d"]["baseline"] == 0.25
+        assert score["disputed_targets_7d"] == 1
+        assert score["last_7d"]["hit_rate"] is None
+        assert score["cost_stress_7d"]["unique_decided_targets"] == 0
+    finally:
+        store.close()
+
+
+def test_xrp_research_stays_unproven_without_settled_forecasts(tmp_path):
+    store = SQLiteHotStore(tmp_path / "xrp.sqlite")
+    try:
+        report = analytics_snapshot(
+            PerpetualMarketStore(store), asset="XRP",
+            now=datetime(2026, 10, 28, 18, tzinfo=UTC),
+        )
+        assert report["math"][5]["last_7d"]["events"] == 0
+        assert report["math"][5]["last_7d"]["brier"] is None
+    finally:
+        store.close()
+
+
+
+def test_forecast_issued_after_target_open_is_not_prospective_accuracy(tmp_path):
+    store = SQLiteHotStore(tmp_path / "late_issue.sqlite")
+    market = PerpetualMarketStore(store)
+    ForwardAccuracyMonitor(market).initialize()
+    now = datetime(2026, 10, 28, 18, tzinfo=UTC)
+    try:
+        target = now - timedelta(days=1)
+        insert_forecast(store, when=target, venue="dydx", label=1, p=.9)
+        with store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_forward_audit SET issued_at=?
+                   WHERE venue='dydx' AND target_opened_at=?""",
+                ((target+timedelta(seconds=1)).isoformat(), target.isoformat()),
+            )
+        score = analytics_snapshot(market, asset="BTC", now=now)["math"][5]
+        assert score["last_7d"]["events"] == 0
+        assert score["last_7d"]["brier"] is None
     finally:
         store.close()

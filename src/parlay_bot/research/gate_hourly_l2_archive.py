@@ -107,6 +107,21 @@ def download(client: httpx.Client, *, asset: str, family: str,
         raise HistoryImportError("Gate historical L2 network request failed") from exc
     data = b"".join(chunks)
     metadata = inspect_gzip(data)
+    if family == "orderbooks_slice":
+        from parlay_bot.research.gate_l2_quality import inspect_snapshot_hour
+
+        try:
+            metadata["original_snapshot_quality"] = inspect_snapshot_hour(
+                data, hour=hour,
+            )
+        except HistoryImportError as exc:
+            # Preserve a genuine provider gzip even if a newer or older
+            # source format is not yet understood. Never silently qualify.
+            metadata["original_snapshot_quality"] = {
+                "source_jsonl_snapshot_schema_verified": False,
+                "reason": str(exc)[:180],
+                "model_training_eligible": False,
+            }
     metadata.update({"source_url": url,
                      "original_source_sha256": hashlib.sha256(data).hexdigest()})
     return data, metadata

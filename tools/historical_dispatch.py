@@ -37,7 +37,7 @@ def should_dispatch(runs: list[dict], *, now: datetime) -> tuple[bool, str]:
         if run.get("event") != "workflow_dispatch":
             continue
         try:
-            created = datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
+            created = datetime.fromisoformat(run["created_at"])
         except (TypeError, ValueError, KeyError):
             # An unparseable run cannot safely authorize another dispatch.
             return False, "unreadable_workflow_history"
@@ -84,7 +84,7 @@ class GitHubActions:
         args = urlencode({"branch": "main", "per_page": 30})
         doc = self.request("/actions/workflows/" + workflow + "/runs?" + args)
         if not isinstance(doc, dict) or not isinstance(doc.get("workflow_runs"), list):
-            raise RuntimeError("malformed Actions history")
+            raise TypeError("malformed Actions history")
         return doc["workflow_runs"]
 
     def dispatch(self, workflow: str, inputs: dict) -> None:

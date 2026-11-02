@@ -18,7 +18,7 @@ import httpx
 
 from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
-from parlay_bot.research.official_okx_bootstrap import ASSETS, bootstrap
+from parlay_bot.research.official_okx_bootstrap import ASSETS, FIRST, bootstrap
 from parlay_bot.research.publish import _drive
 
 # Historical candles: 20 requests / 2 seconds / public IP. 0.16 seconds
@@ -192,6 +192,7 @@ async def run_bulk(
         "failures": failures, "results": results,
         "advanced_catalog_unverified": advanced_catalog_unverified,
         "completion_scope": "okx_2023_to_present_5m_source_native_candles_only",
+        "first_source_month": FIRST,
         "complete": not failures and all(
             item["passes"][-1].get("full_2023_to_present_verified") is True
             for item in results
@@ -230,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
         "failures": report["failures"], "complete": report["complete"],
         "advanced_catalog_unverified": len(report["advanced_catalog_unverified"]),
         "completion_scope": report["completion_scope"],
+        "first_source_month": report.get("first_source_month", FIRST),
         "live_model_promoted": False,
     }, sort_keys=True))
     # Successfully recovered provider throttles are an operational warning,

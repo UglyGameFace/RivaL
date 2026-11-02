@@ -95,3 +95,24 @@ async def test_unavailable_drive_cannot_be_reported_as_complete():
             return s
     with pytest.raises(census.HistoryImportError, match="unavailable"):
         await census.list_names(Drive())
+
+
+
+def test_okx_census_uses_actual_official_first_supported_month():
+    from parlay_bot.research.official_okx_bootstrap import FIRST
+
+    assert census.START_MONTH["okx"] == FIRST == "2023-07"
+    names = [
+        "okx-BTC-USDT-SWAP-USDT-5m-2023-07--" + "a"*16 + ".manifest.json",
+        "okx-BTC-USDT-SWAP-USDT-5m-2023-06--" + "b"*16 + ".manifest.json",
+    ]
+    report = census.summarize(names, now=datetime(2023, 8, 1, tzinfo=UTC))
+    btc = next(row for row in report["month_scopes"]
+               if row["venue"] == "okx" and row["asset"] == "BTC")
+    assert btc["source_first_month"] == "2023-07"
+    assert btc["expected_completed_months"] == 1
+    assert btc["listed_manifest_months"] == 1
+    assert btc["not_listed_months"] == 0
+    assert btc["name_inventory_complete"] is True
+    assert btc["bytes_reverified_in_this_census"] is False
+    assert report["out_of_supported_month_range"] == 1

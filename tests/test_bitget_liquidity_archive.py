@@ -1,12 +1,11 @@
 """Original Bitget liquidity source contract, freshness and private Drive proof."""
 from __future__ import annotations
 
-import asyncio
+import base64
 import gzip
 import hashlib
 import json
 from datetime import UTC, datetime
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -207,7 +206,7 @@ async def test_drive_archive_original_hashes_and_verified_readback(tmp_path):
         "params": {"category": CATEGORY, "symbol": "BTCUSDT",
                    "limit": "100"},
         "response_sha256": _sha(raw),
-        "response_base64": __import__("base64").b64encode(raw).decode(),
+        "response_base64": base64.b64encode(raw).decode(),
         "metrics": validate(raw, asset="BTC",
                             family="orderbook", now_ms=NOW_MS),
     }]

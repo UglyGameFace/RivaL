@@ -87,7 +87,7 @@ def test_authenticated_status_proves_exact_deployed_upstream_commit(
     gateway, tmp_path, monkeypatch
 ):
     marker = tmp_path / "UPSTREAM_COMMIT"
-    marker.write_text("a" * 40 + "\\n")
+    marker.write_text("a" * 40 + "\n")
     handler_globals = SERVICE["GatewayHandler"].do_GET.__globals__
     with monkeypatch.context() as patch:
         patch.setitem(handler_globals, "__file__", str(tmp_path / "service.py"))

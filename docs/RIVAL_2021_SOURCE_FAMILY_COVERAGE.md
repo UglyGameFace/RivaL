@@ -81,3 +81,36 @@ forward locally verified records only. Gate's own ledger may be included as
 explicitly **reported** remote SHA claims, never misrepresented as independent
 re-download by the new job. There is no new polling loop, no new provider API,
 no new secret, and no extra exchange request from this inventory.
+
+## November 2026 independent-venue acquisition priority
+
+- Original Bitget files and previous SHA-readback receipts in private Drive
+  must never be deleted, rewritten, or represented as another venue. The
+  Bitget V3 *deep-history* workflow now makes only two lower-budget
+  unattended attempts per week (maximum 3,000 pages per asset, from the
+  **attempt** floor 2024-11). This floor is NOT listing-date proof. Explicit
+  manual dispatch still permits 2021-01 and up to 24,000 pages per asset.
+  This does not stop Bitget's distinct recent trade/liquidity collectors,
+  hosted candle and gap repair workers or independent PR development.
+- The official Binance ZIP archive workflow continues independently and now
+  processes the latest six **completed UTC months first**, then the older
+  missing source-month backlog in the same bounded run. Existing manifest
+  names are only immutable resume hints. Any newly published month must
+  independently pass official provider checksum, original candle continuity,
+  and private Drive SHA-256 readback. Live acquisition owns November 2026
+  until that calendar month actually finishes.
+- Gate already prioritizes recent candles, old gaps and original trade,
+  mark/funding enrichment under an existing bounded rate/attempt budget.
+  OKX's multi-asset five-minute and advanced archives already have separate
+  automatic paths. Do not dispatch duplicate provider polling workloads.
+- Deribit, dYdX, Hyperliquid, KuCoin, Lighter and Phemex remain governed by
+  their individual source-native collectors and authenticated listing,
+  API-retention, venue/contract and resource boundaries. Never infer an
+  instrument's actual launch date from a backfill start setting or pretend
+  unavailable, paid-only or incomplete history was collected. A 2021-to-
+  November-2026 goal does NOT make November 2026 a finished UTC month yet.
+- [Issue #188](https://github.com/UglyGameFace/RivaL/issues/188), the Drive
+  source census and original per-provider acquisition receipts remain the
+  accepted ledger. Bitget's oldest missing months are not a dependency for
+  other venues, source-specific research or prospective model qualification.
+  No archive is an automatic live-trading-model approval.

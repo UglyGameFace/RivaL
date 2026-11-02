@@ -17,7 +17,7 @@ on:
       - "src/parlay_bot/research/binance_deep_backfill.py"
   workflow_dispatch:
   schedule:
-    - cron: "43 0,6,12,18 * * *"
+    - cron: "43 2,6,10,14,18,22 * * *"
 
 permissions:
   contents: read
@@ -77,9 +77,9 @@ jobs:
               exit 1
             fi
           done
-      - name: Publish up to 24 provider-checksum monthly 5m sources from 2021
+      - name: Publish up to 32 provider-checksum monthly 5m sources from 2021
         run: |
-          python -m parlay_bot.research.binance_deep_backfill --max-new 24
+          python -m parlay_bot.research.binance_deep_backfill --max-new 32
       - name: Inventory all 2021+ source-family evidence without claiming missing data is complete
         if: always()
         shell: bash

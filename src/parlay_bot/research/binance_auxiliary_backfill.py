@@ -28,7 +28,7 @@ ASSETS = ("BTC", "ETH", "SOL", "XRP")
 FAMILIES = {
     "mark": ("markPriceKlines", "5m"),
     "index": ("indexPriceKlines", "5m"),
-    "premium": ("premiumIndexKlines", "5m"),
+    "premium": ("premiumPriceKlines", "5m"),
     "candles_1m": ("klines", "1m"),
     "candles_15m": ("klines", "15m"),
     "candles_1h": ("klines", "1h"),
@@ -209,14 +209,16 @@ async def collect(*, drive, client: httpx.AsyncClient, out_dir: Path,
         url = source_url(asset, fam, month)
         try:
             zipped = await fetch_original(client, url, cap=MAX_ZIP)
+            signed_checksum = await fetch_original(client, url + ".CHECKSUM", cap=512)
             original_digest = checksum(
-                zipped, await fetch_original(client, url + ".CHECKSUM", cap=512),
-                file_name=url.rsplit("/", 1)[-1],
+                zipped, signed_checksum, file_name=url.rsplit("/", 1)[-1],
             )
             quality = inspect_original_zip(zipped, asset=asset, family=fam, month=month)
             prefix = f"binance-aux-{asset}-{fam}-{month}--{original_digest[:16]}"
             original = out_dir / (prefix + ".zip")
             original.write_bytes(zipped)
+            checksum_file = out_dir / (prefix + ".zip.CHECKSUM")
+            checksum_file.write_bytes(signed_checksum)
             proof = out_dir / (prefix + ".manifest.json")
             proof.write_text(json.dumps({
                 "venue": "binance", "asset": asset, "family": fam,
@@ -233,6 +235,16 @@ async def collect(*, drive, client: httpx.AsyncClient, out_dir: Path,
             await drive.verify_downloaded_artifact(
                 file_id=stored.file_id, parent_id=drive.folders.history,
                 artifact=artifact,
+            )
+            checksum_artifact = _artifact(checksum_file, 1)
+            checksum_saved = await drive.ensure_history_file(
+                artifact=checksum_artifact,
+                batch_id="binance-aux-checksum-" + checksum_artifact.sha256[:24],
+                mime_type="text/plain",
+            )
+            await drive.verify_downloaded_artifact(
+                file_id=checksum_saved.file_id, parent_id=drive.folders.history,
+                artifact=checksum_artifact,
             )
             manifest_artifact = _artifact(proof, 1)
             saved = await drive.ensure_manifest_file(

@@ -1,0 +1,159 @@
+name: Bitget original historical futures trades (public 90-day API)
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/bitget-v2-public-trades.yml"
+      - "src/parlay_bot/research/bitget_v2_public_trade_archive.py"
+      - "tests/test_bitget_v2_public_trade_archive.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/bitget-v2-public-trades.yml"
+      - "src/parlay_bot/research/bitget_v2_public_trade_archive.py"
+  schedule:
+    # Continue rotating historical days without touching the candle collector.
+    - cron: "37 1,7,13,19 * * *"
+  workflow_dispatch:
+    inputs:
+      days_ago:
+        description: "UTC historical trade day (1-89 days ago only)"
+        required: true
+        type: choice
+        options: ["1","7","30","60","89"]
+        default: "89"
+      max_pages:
+        description: "Source-verified pages of up to 1000 trades per asset"
+        required: true
+        type: choice
+        options: ["1","8","32"]
+        default: "32"
+
+permissions:
+  contents: read
+
+jobs:
+  contracts:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Validate original-source public trade schema and strict pagination
+        run: |
+          python -m pip install -e ".[dev,archive]"
+          ruff check src/parlay_bot/research/bitget_v2_public_trade_archive.py tests/test_bitget_v2_public_trade_archive.py
+          pytest -q tests/test_bitget_v2_public_trade_archive.py
+      - name: Probe a real 7-day-old Bitget public trades page, no Drive writes
+        run: |
+          python -m parlay_bot.research.bitget_v2_public_trade_archive \
+            --days-ago 7 --asset BTC --max-pages 1 --probe-only
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bitget-v2-real-public-trade-probe
+          path: data/native-reports/bitget-v2-trades-07d-report.json
+          if-no-files-found: ignore
+          retention-days: 7
+
+  historical-trades:
+    if: github.event_name != 'pull_request' && vars.RIVAL_BITGET_PUBLIC_TRADES_ENABLED != 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]
+    runs-on: ubuntu-latest
+    timeout-minutes: 100
+    concurrency:
+      group: rival-bitget-v2-historical-trades-${{ matrix.asset }}
+      cancel-in-progress: false
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[archive]"
+      - name: Check authenticated private Drive configuration without printing secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          for key in RIVAL_DRIVE_ROOT_FOLDER_ID RIVAL_DRIVE_HISTORY_FOLDER_ID \
+            RIVAL_DRIVE_MANIFESTS_FOLDER_ID RIVAL_DRIVE_STAGING_FOLDER_ID \
+            RIVAL_DRIVE_OAUTH_CLIENT_ID RIVAL_DRIVE_OAUTH_CLIENT_SECRET \
+            RIVAL_DRIVE_OAUTH_REFRESH_TOKEN; do
+            if [[ -z "${!key}" ]]; then echo "::error::Missing $key"; exit 1; fi
+          done
+      - name: Select oldest recoverable UTC day, never request pre-90-day data
+        id: day
+        shell: bash
+        env:
+          REQUESTED_DAY: ${{ inputs.days_ago }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then
+            DAY="$REQUESTED_DAY"
+          elif [[ "$EVENT" == "push" ]]; then
+            DAY=89
+          else
+            # 4 scheduled runs/day; bounded rolling 89-day scan.
+            SLOT=$(( $(date -u +%s) / 21600 % 89 ))
+            DAY=$(( 89 - SLOT ))
+          fi
+          echo "day=$DAY" >> "$GITHUB_OUTPUT"
+      - name: Archive original Bitget futures public trade responses
+        shell: bash
+        env:
+          REQUESTED_PAGES: ${{ inputs.max_pages }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          LIMIT=32
+          if [[ "$EVENT" == "workflow_dispatch" ]]; then LIMIT="$REQUESTED_PAGES"; fi
+          python -m parlay_bot.research.bitget_v2_public_trade_archive \
+            --days-ago "${{ steps.day.outputs.day }}" \
+            --asset "${{ matrix.asset }}" --max-pages "$LIMIT"
+      - name: Record actual coverage and incomplete page budgets
+        if: always()
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          report = Path("data/native-reports/bitget-v2-trades-${{ steps.day.outputs.day }}d-report.json")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as out:
+              out.write("### Bitget 90-day historical public trades\n")
+              if not report.exists():
+                  out.write("No verified report; inspect API/Drive error.\n")
+              else:
+                  data = json.loads(report.read_text())
+                  for entry in data["asset_reports"]:
+                      out.write(f"- {entry['asset']}: {entry['source_trades']} original trades, "
+                                f"{entry['source_pages']} pages, pagination stop: "
+                                f"{entry['pagination_stop_reason']}, "
+                                f"Drive verified: {entry.get('drive_sha256_readback_verified', False)}\n")
+                  for issue in data["failed_assets"]:
+                      out.write(f"- {issue['asset']}: {issue['reason']}\n")
+                  out.write("This is NOT proof of complete days or 2021 market depth.\n")
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bitget-v2-trades-${{ matrix.asset }}-source-receipt
+          path: data/native-reports/bitget-v2-trades-*d-report.json
+          if-no-files-found: ignore
+          retention-days: 14

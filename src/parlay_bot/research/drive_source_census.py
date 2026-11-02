@@ -179,7 +179,7 @@ def summarize(names: list[str], *, now: datetime) -> dict:
                 if metric is not None:
                     asset, day, digest = metric.groups()
                     try:
-                        parsed_day = datetime.strptime(day, "%Y-%m-%d")
+                        datetime.strptime(day, "%Y-%m-%d")
                     except ValueError:
                         outside += 1
                         continue

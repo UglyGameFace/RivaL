@@ -124,7 +124,7 @@ def write_sidecar(raw_path: Path, manifest_path: Path) -> tuple[Path, Path]:
         "source_manifest_sha256": _digest(manifest_path.read_bytes()),
         "derived_sha256": _digest(encoded), "derived_bucket_count": len(rows),
         "observed_snapshots": sum(x["features"]["l2_snapshot_count"] for x in rows),
-        "full_utc_hour_covered": len(rows) == 12,
+        "all_twelve_five_minute_buckets_sampled": len(rows) == 12,
         "l2_sequence_continuity_verified": False,
         "original_source_availability_verified": False,
         "source_contract_multiplier_verified": False,

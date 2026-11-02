@@ -191,13 +191,15 @@ async def store(drive, *, raw: bytes, asset: str, family: str, hour: str,
             from parlay_bot.research.gate_l2_shadow_features import write_sidecar
 
             sidecar, receipt = write_sidecar(path, manifest_path)
-            for feature_path, mime in (
-                (sidecar, "application/x-ndjson"),
-                (receipt, "application/json"),
+            for feature_path, mime, suffix in (
+                (sidecar, "application/x-ndjson", "features"),
+                (receipt, "application/json", "receipt"),
             ):
                 artifact = _artifact(feature_path, 1)
                 saved = await drive.ensure_history_file(
-                    artifact=artifact, batch_id=batch, mime_type=mime,
+                    artifact=artifact,
+                    batch_id="gate-l2-" + digest[:20] + "-" + suffix,
+                    mime_type=mime,
                 )
                 await drive.verify_downloaded_artifact(
                     file_id=saved.file_id, parent_id=drive.folders.history,

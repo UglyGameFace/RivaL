@@ -46,7 +46,9 @@ def mock_client(*, remove_one: bool = False, premium: bool = False,
         assert req.url.params["type"] == ("premium" if premium else "market")
         assert req.url.params["limit"] == "100"
         begin = int(req.url.params["startTime"]) + 1
-        end = int(req.url.params["endTime"]) + 1
+        # Real Bitget source excludes the final 5m interval unless its
+        # endTime is advanced by a complete interval.
+        end = int(req.url.params["endTime"]) + 1 - 300000
         assert end > begin and (end - begin) // 300000 <= 96
         if recorder is not None:
             recorder.append((begin, end))
@@ -102,6 +104,7 @@ async def test_exact_complete_month_includes_original_verbatim_api_bytes(
     assert first_line["request"]["type"] == ("premium" if premium else "market")
     assert first_line["response_sha256"]
     assert first_line["response_base64"]
+    assert first_line["request"]["endTime"] == calls[0][1] + 300000 - 1
     assert manifest.name.endswith(".manifest.json")
 
 
@@ -222,7 +225,7 @@ async def test_public_probe_detects_missing_windows_without_drive_writes(tmp_pat
         assert req.url.host == "api.bitget.com"
         assert req.url.path == "/api/v3/market/history-candles"
         begin = int(req.url.params["startTime"]) + 1
-        end = int(req.url.params["endTime"]) + 1
+        end = int(req.url.params["endTime"]) + 1 - 300000
         month = datetime.fromtimestamp(begin / 1000, UTC).strftime("%Y-%m")
         family = req.url.params["type"]
         observed.append((month, family))
@@ -247,7 +250,7 @@ async def test_public_probe_detects_missing_windows_without_drive_writes(tmp_pat
     assert result["complete_month_claimed"] is False
     assert result["drive_bytes_verified"] is False
     assert {s["variant"] for s in result["samples"] if "variant" in s} == {
-        "start_back_one_bar", "end_forward_one_bar", "both_sides_one_bar",
+        "start_back_one_bar", "end_forward_one_bar", "legacy_unpadded_end",
     }
     assert (tmp_path / "bitget-source-probe-BTC.json").exists()
 
@@ -290,3 +293,36 @@ async def test_live_run_writes_incremental_checkpoint_before_source_failure(
     assert saved["current_source_month"] is None
     assert len(saved["unavailable"]) == 4
     assert saved["source_months_published_and_readback"] == []
+
+
+@pytest.mark.asyncio
+async def test_live_proven_exclusive_end_needs_one_5m_padding_interval():
+    from parlay_bot.research.bitget_v3_archive import request_page
+
+    first, _ = bounds("2025-06")
+    calls = []
+    def boundary_api(req: httpx.Request):
+        begin = int(req.url.params["startTime"]) + 1
+        # Official API's observed end boundary excludes one final candle.
+        returned_end = int(req.url.params["endTime"]) + 1 - 300000
+        calls.append((begin, returned_end))
+        return httpx.Response(200, json={
+            "code": "00000",
+            "data": [row(t) for t in range(begin, returned_end, 300000)],
+        })
+    client = httpx.AsyncClient(transport=httpx.MockTransport(boundary_api))
+    try:
+        _, missing = await request_page(
+            client, asset="BTC", family="market", begin=first,
+            end=first + 96 * 300000, pacer=NoWait(), end_forward_steps=0,
+        )
+        _, corrected = await request_page(
+            client, asset="BTC", family="market", begin=first,
+            end=first + 96 * 300000, pacer=NoWait(),
+        )
+    finally:
+        await client.aclose()
+    assert len(missing) == 95
+    assert len(corrected) == 96
+    assert first in corrected
+    assert first + 95 * 300000 in corrected

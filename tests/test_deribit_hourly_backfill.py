@@ -7,7 +7,10 @@ from datetime import UTC, datetime
 import pytest
 
 from parlay_bot.research.deribit_hourly_backfill import (
-    MAX_REQUESTS, hour_range, inspect_page, stable_partition,
+    MAX_REQUESTS,
+    hour_range,
+    inspect_page,
+    stable_partition,
 )
 from parlay_bot.research.free_history import HistoryImportError
 

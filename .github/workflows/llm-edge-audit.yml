@@ -30,7 +30,7 @@ jobs:
           python-version: "3.11"
       - name: Test research-vs-forward evidence boundary
         run: |
-          python -m pip install pytest
+          python -m pip install -e ".[dev]"
           pytest -q tests/test_discloud_llm_edge_audit.py
       - name: Read current PostgreSQL state without calling the LLM
         env:

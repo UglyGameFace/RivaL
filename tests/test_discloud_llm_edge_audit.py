@@ -1,7 +1,10 @@
 """Test the actual LFM3 evidence boundary, not retrospective price guesses."""
 import json
+
 import pytest
-from tools.discloud_llm_edge_audit import MODEL,MARKER,parse_receipt,evaluate
+
+from tools.discloud_llm_edge_audit import MARKER, MODEL, evaluate, parse_receipt
+
 
 def source(direction="uncertain",count=1):
     return {"asset":"BTC","direction":direction,"count":count,"latest":"2026-11-01T23:41:27+00:00"}

@@ -4,7 +4,7 @@ import base64
 import json
 import os
 from pathlib import Path
-from urllib import request, parse, error
+from urllib import error, parse, request
 
 MARKER = "RIVAL_LLM_EDGE_AUDIT="
 MODEL = "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"

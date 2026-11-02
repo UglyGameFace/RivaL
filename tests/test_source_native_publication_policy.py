@@ -8,7 +8,9 @@ from types import SimpleNamespace
 import pytest
 
 from parlay_bot.perpetuals.model_checkpoints import (
-    FEATURE_CONTRACT, TARGET_CONTRACT, canonical,
+    FEATURE_CONTRACT,
+    TARGET_CONTRACT,
+    canonical,
 )
 from parlay_bot.research import source_native_offline as native
 from tools.native_acceptance_status import render_status

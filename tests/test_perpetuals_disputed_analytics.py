@@ -156,3 +156,25 @@ def test_xrp_research_stays_unproven_without_settled_forecasts(tmp_path):
         assert report["math"][5]["last_7d"]["brier"] is None
     finally:
         store.close()
+
+
+
+def test_forecast_issued_after_target_open_is_not_prospective_accuracy(tmp_path):
+    store = SQLiteHotStore(tmp_path / "late_issue.sqlite")
+    market = PerpetualMarketStore(store)
+    ForwardAccuracyMonitor(market).initialize()
+    now = datetime(2026, 10, 28, 18, tzinfo=UTC)
+    try:
+        target = now - timedelta(days=1)
+        insert_forecast(store, when=target, venue="dydx", label=1, p=.9)
+        with store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_forward_audit SET issued_at=?
+                   WHERE venue='dydx' AND target_opened_at=?""",
+                ((target+timedelta(seconds=1)).isoformat(), target.isoformat()),
+            )
+        score = analytics_snapshot(market, asset="BTC", now=now)["math"][5]
+        assert score["last_7d"]["events"] == 0
+        assert score["last_7d"]["brier"] is None
+    finally:
+        store.close()

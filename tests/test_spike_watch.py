@@ -1,7 +1,10 @@
 """Crash recovery, cross-source spike math, and strictly future-only outcomes."""
 from __future__ import annotations
 
+import math
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 import pytest
 
@@ -177,5 +180,52 @@ def test_volume_only_spike_cannot_claim_directional_success(tmp_path):
         assert data["scored_continuations_24h"] == 0
         assert data["scored_reversals_24h"] == 0
         assert data["recent"][0]["outcome"] == "mixed_no_direction"
+    finally:
+        store.close()
+
+
+
+def test_spike_log_return_and_within_venue_volume_ratio_match_manual_math(tmp_path):
+    store, market, monitor = watcher(tmp_path)
+    try:
+        seed(market)
+        event = monitor.scan(
+            asset="BTC", venues=tuple(v[0] for v in VENUES), now=NOW,
+        )["event"]
+        # Last 5m candle: 100.25 -> 102.26. Compare prices ONLY
+        # within the same contract, then aggregate venue returns.
+        expected = 100 * math.log(102.26 / 100.25)
+        assert event["move_pct"] == pytest.approx(expected, abs=1e-6)
+        assert event["volume_ratio"] == pytest.approx(3.5)
+    finally:
+        store.close()
+
+
+def test_not_yet_observed_historical_baseline_cannot_backdate_spike(tmp_path):
+    store, market, monitor = watcher(tmp_path)
+    try:
+        seed(market)
+        with market.store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_market_candles
+                   SET first_observed_at=? WHERE venue='dydx'
+                     AND opened_at=?""",
+                ((NOW+timedelta(hours=3)).isoformat(),
+                 (NOW-timedelta(minutes=20)).isoformat()),
+            )
+        # With one future-observed baseline gone, only three venues remain.
+        # Removing another venue must force an insufficient-source state.
+        with market.store.connect() as conn:
+            conn.execute(
+                """UPDATE perp_market_candles SET first_observed_at=?
+                   WHERE venue='gate' AND opened_at=?""",
+                ((NOW+timedelta(hours=3)).isoformat(),
+                 (NOW-timedelta(minutes=20)).isoformat()),
+            )
+        report = monitor.scan(
+            asset="BTC", venues=tuple(v[0] for v in VENUES), now=NOW,
+        )
+        assert report["status"] == "insufficient_fresh_sources"
+        assert report["event"] is None
     finally:
         store.close()

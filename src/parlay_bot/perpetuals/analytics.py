@@ -88,7 +88,8 @@ def analytics_snapshot(
                    WHERE asset=? AND model_version=?
                      AND settled_at IS NOT NULL
                      AND settled_at>issued_at AND settled_at<=?
-                     AND issued_at<=? AND target_opened_at>=?
+                     AND issued_at<=? AND issued_at<target_opened_at
+                     AND target_opened_at>=?
                      AND target_opened_at<=? AND outcome_up IN (0,1)
                      AND model_brier BETWEEN 0 AND 1
                      AND baseline_brier BETWEEN 0 AND 1

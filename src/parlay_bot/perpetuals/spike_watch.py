@@ -41,6 +41,10 @@ def summarize(rows: list[dict], now: datetime) -> dict | None:
         return None
     try:
         opened = [utc(r["opened_at"]) for r in rows]
+        # Never use a revised or backfilled historical baseline whose
+        # first observation occurs after the live decision timestamp.
+        if any(utc(r["first_observed_at"]) > now for r in rows):
+            return None
         if any(b-a != timedelta(minutes=5) for a, b in itertools.pairwise(opened)):
             return None
         last = rows[-1]

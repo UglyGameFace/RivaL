@@ -194,3 +194,28 @@ def test_okx_advanced_receipts_are_visible_without_falsely_qualifying_l2():
     assert all(h["bytes_reverified_in_this_census"] is False for h in hints)
     assert all(h["full_source_month_verified"] is False for h in hints)
     assert report["all_source_families_2021_to_present_verified"] is False
+
+
+def test_true_gate_hourly_l2_names_are_not_promoted_to_month_complete():
+    names = [
+        "gate-hourly-l2-BTC-orderbooks_slice-2023042505--"
+        + "a" * 16 + ".gz.manifest.json",
+        "gate-hourly-l2-BTC-orderbooks_slice-2023042505--"
+        + "b" * 16 + ".gz.manifest.json",
+        "gate-hourly-l2-ETH-orderbooks-2023042505--"
+        + "c" * 16 + ".gz.manifest.json",
+        "gate-hourly-l2-BTC-orderbooks_slice-2023042506--"
+        + "d" * 16 + ".gz.manifest.json",
+    ]
+    report = census.summarize(names, now=NOW)
+    scopes = report["gate_hourly_l2_not_full_months"]
+    assert len(scopes) == 2
+    btc = next(s for s in scopes if s["asset"] == "BTC")
+    assert btc["utc_month"] == "2023-04"
+    assert btc["distinct_named_hours"] == 2
+    assert btc["hour_sha_conflicts"] == ["2023042505"]
+    assert btc["bytes_reverified_in_this_census"] is False
+    assert btc["full_month_source_coverage_verified"] is False
+    assert btc["model_training_qualified"] is False
+    assert report["all_source_families_2021_to_present_verified"] is False
+    assert report["unrecognized_manifest_names"] == 0

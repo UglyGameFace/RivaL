@@ -36,6 +36,13 @@ OKX_AUX_RECEIPT = re.compile(
     r"(20\d{2}-(?:0[1-9]|1[0-2]))\.(?:zip|tar\.gz)\.receipt\.json"
 )
 
+# Each Gate L2 receipt denotes ONE original hourly file, not a month of
+# historical depth or quote availability. Keep this distinct from 5m candles.
+GATE_L2_HOURLY_MANIFEST = re.compile(
+    r"gate-hourly-l2-(BTC|ETH|SOL|XRP)-(orderbooks|orderbooks_slice)-"
+    r"(20[0-9]{8})--([a-f0-9]{16})\.gz\.manifest\.json"
+)
+
 PAGE_PATTERNS = (
     (r"dydx-v4-(BTC|ETH|SOL|XRP)-USD-funding-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", "dydx", "funding_with_oracle_price"),
     (r"lighter-(BTC|ETH|SOL|XRP)-(funding|mark_price)-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", "lighter", None),
@@ -135,6 +142,7 @@ def summarize(names: list[str], *, now: datetime) -> dict:
     page_streams = defaultdict(lambda: defaultdict(set))
     name_counts = defaultdict(int)
     okx_aux = defaultdict(set)
+    gate_l2_hours = defaultdict(lambda: defaultdict(set))
     ignored, outside = 0, 0
     current = now.astimezone(UTC).strftime("%Y-%m")
     for name in names:
@@ -143,6 +151,15 @@ def summarize(names: list[str], *, now: datetime) -> dict:
         if key is None:
             page_key = parse_page_name(name)
             if page_key is None:
+                gate_l2 = GATE_L2_HOURLY_MANIFEST.fullmatch(name)
+                if gate_l2 is not None:
+                    asset, family, hour, short_sha = gate_l2.groups()
+                    month = hour[:4] + "-" + hour[4:6]
+                    if "2021-08" <= month < current:
+                        gate_l2_hours[(asset, family, month)][hour].add(short_sha)
+                    else:
+                        outside += 1
+                    continue
                 auxiliary = OKX_AUX_RECEIPT.fullmatch(name)
                 if auxiliary is not None:
                     asset, month = auxiliary.groups()
@@ -225,6 +242,18 @@ def summarize(names: list[str], *, now: datetime) -> dict:
         "month_scopes": scopes,
         "page_level_sources_not_full_months": partial_pages,
         "other_family_name_counts": enrichment,
+        "gate_hourly_l2_not_full_months": [{
+            "venue": "gate", "asset": asset, "family": family,
+            "utc_month": month, "distinct_named_hours": len(hours),
+            "hour_sha_conflicts": sorted(
+                hour for hour, shas in hours.items() if len(shas) > 1
+            )[:24],
+            "full_hourly_source_coverage_verified": False,
+            "full_month_source_coverage_verified": False,
+            "bytes_reverified_in_this_census": False,
+            "historical_book_continuity_qualified": False,
+            "model_training_qualified": False,
+        } for (asset, family, month), hours in sorted(gate_l2_hours.items())],
         "okx_auxiliary_receipt_name_hints": [{
             "venue": "okx", "asset": asset, "utc_month": month,
             "distinct_original_filenames": len(filenames),
@@ -273,6 +302,9 @@ def main(argv: list[str] | None = None) -> int:
         "partial_page_source_months": len(report["page_level_sources_not_full_months"]),
         "okx_auxiliary_name_hint_month_scopes": len(
             report["okx_auxiliary_receipt_name_hints"]
+        ),
+        "gate_hourly_l2_source_month_scopes": len(
+            report["gate_hourly_l2_not_full_months"]
         ),
         "verified_byte_readbacks_in_this_census": 0,
         "live_approved": False,

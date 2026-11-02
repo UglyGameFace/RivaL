@@ -2,352 +2,139 @@
 
 **Know the line. Build the slip.**
 
-RivaL is a provider-agnostic sports-odds intelligence and parlay-analysis project. It keeps sportsbook coverage, line comparison, historical movement, jurisdiction filtering, and parlay construction behind a simple Discord experience.
+RivaL is a **Discord-first, read-only market research and prediction-evaluation bot**. It combines crypto-perpetual market observations, separate prediction-market contract research, sportsbook odds comparisons, and fictional practice accounts. Its aim is to learn from *verified* historical data and *genuinely later* outcomes, and to show **WAIT / NO CALL** when the evidence is not good enough.
 
+**RivaL does not place trades or bets.** A working collector, trained model, successful backtest, or GitHub deployment is **not** proof of profitable predictions.
 
-### Faster Discord controls and historical training provenance
+## Start in Discord
 
-The Discord response and live-market scan are separate workloads. Button
-handlers **acknowledge before external database/Discord requests**; the
-private forecast page first shows a loading screen, then updates only if
-that page is still current. Model-proof lookups have short timeouts and
-unexpected view failures open a new usable private Home menu.
+Run `/rival` to open the private, mobile-friendly Home menu.
 
-The WebSocket feeds still supply genuine market-book data and forward
-cost research. Old momentum-signal DMs and duplicate Auto-Hunt delivery
-workers were retired: market-price notices are **not prediction calls**.
-RivaL silently studies verified listed Polymarket contracts without sending
-DMs or consuming AI quota. A first contract observation is stored for
-later exact terminal payout labeling. This is not a claim of better accuracy.
-
-Historical training status: **/rival → My Results → Can I Trust Predictions?**
-shows saved/reused live weights, actual learning cycles, Polymarket outcome
-counts and the verified historical model inventory. The live v3 learner keeps
-its weights across restarts and learns each newly matured observation once.
-
-The six-month workflow now also trains the exact live 40-bar/10-feature
-contract. Three regularized logistic fits and their logit ensemble compete on
-purged chronological validation; only the selected method opens the final
-holdout. Compatible passing weights are loaded from PostgreSQL as independent
-persistent research challengers. Source-matched frozen forward predictions,
-calibration and day-blocked paired improvement govern research selection and
-rollback. Existing quote/cost gates still govern qualified trade calls. Legacy
-six-weight artifacts remain separate; the importer understands their original
-bundle without pretending those features match the current model.
-
-The historical workflow runs monthly and when research code reaches main,
-unless `RIVAL_HISTORY_MONTHLY_ENABLED=false`;
-manual `workflow_dispatch` remains available. Drive is the cold archive: its
-bounded six-hour verified import is outside prediction and Discord paths.
-Historical results never become live accuracy by declaration.
-
-**Live Polymarket:** selected 5m, 15m and verified hourly contracts have their own
-experimental AI calls. Start Auto-Track keeps one DM updating until Stop,
-including rollover. Quotes refresh about every 15 seconds independently of the
-shared free AI quota (18 requests/day). A separate book-only learner uses exact
-terminal Polymarket payout receipts and needs 100 settled contracts per source
-and timeframe before issuing local experimental model calls. It never trains
-on exchange candle labels or AI confidence. See
-[continuous calls and learning](docs/RIVAL_CONTINUOUS_LEARNING.md) for measured
-results and production acceptance limits.
-
-### One notification center, no price-change DM spam
-
-Open **/rival → Notifications**. Track a verified Polymarket market in
-**one continuously edited private DM**, or deliberately follow a separate
-exchange research forecast. **Stop All** and **/rival-stop** cancel all
-personal tracking, including old Auto-Hunt subscriptions. Existing historical
-delivery/audit rows and preferences are preserved for integrity and rollback,
-but the retired standalone Auto-Hunt notices and price-reversal DM workers
-do not run.
-
-The **Unlimited** setting previously removed the daily cap independently
-for multiple old tiers. It did **not** produce additional mathematical or AI
-predictions. Background market observation now proceeds silently.
-A contract AI/model **UP, DOWN or WAIT** may be displayed only if genuinely
-issued for the exact verified Polymarket contract; current UP/DOWN share
-asks remain market prices, never calibrated model probabilities.
-
-### Start in Discord
-
-Type **`/rival`**. The beginner menu shows:
-
-- **Crypto:** begins on verified analysis and accuracy, not a default
-  Polymarket contract. Choose **Polymarket** (exact listed Up/Down contract
-  calls and one updating DM), **Exchange Futures** (separately measured
-  exchange-model forecasts), or **Kalshi** (read-only listings; no validated
-  Kalshi-specific prediction model). Then choose coin and supported window
-  before viewing any call or opting into tracking.
-- **Sports:** available games, sportsbook prices, and research-only slips.
-- **Notifications:** see whether personal trackers are on and stop all of them.
-- **My Results:** verified forward outcomes and fake-money practice results.
-- **Practice:** simulated, non-executable trades.
-- **Help:** plain-language instructions.
-
-Use **Home** or **Back** to navigate. Technical options live in
-`/rival-tools`, not the beginner flow. No wagers or trade orders are placed.
-The public commands remain `/rival`, `/rival-signal`, `/rival-stop`,
-and the optional `/rival-tools` group.
-
-### What RivaL actually verifies
-
-RivaL collects up to 10 public perpetual-exchange five-minute candle feeds
-(BTC/ETH/SOL) and has two current best-book WebSocket integrations
-(Binance USD-M, Hyperliquid). Region blocks and provider outages mean
-configured is **not** the same as proven connected.
-The ten-source combined model is a **shadow challenger** and does not
-automatically replace the original model. Its forward predictions are scored
-only against later observed market results and compared on identical target
-times. Quote-based hypothetical returns include spread, simulated liquidity
-and conservative/severe cost assumptions, never authenticated real fills.
-
-For detail, see [profitability acceptance and source limitations](docs/RIVAL_PROFIT_PROOF.md).
-No reliable profitable edge, guaranteed wager, or real-money execution is claimed.
-
-## Current architecture
-
-```text
-SportsGameOdds         OddsPapi
- current/today       history/backfill
-      |                    |
-      +---------+----------+
-                v
-         provider adapters
-          |
-          v
- canonical normalization
-          |
-   +------+-------------------+
-   |                          |
-   v                          v
-Discloud PostgreSQL   Google Drive cold warehouse
-   |                  history / models / backups
-   |                          |
-   +------------+-------------+
-                |
-                v
-       market-consensus layer
-                |
-                v
-        parlay construction
-                |
-                v
-          Discord /rival
-```
-
-Odds are stored once per real sportsbook selection rather than duplicated per state. Jurisdiction metadata filters which books a user can actually act on.
-
-## Implemented
-
-- SportsGameOdds V2 current/today odds and player-prop feed.
-- Shared quota-aware current-board refresh instead of per-user polling.
-- OddsPapi v4 account entitlement parsing.
-- Quota-aware OddsPapi fixtures, odds, historical odds, and market-catalog access.
-- Provider-specific cooldown enforcement and billable-request reserve.
-- Canonical sportsbook selection identity.
-- Current OddsPapi board normalization.
-- Discloud PostgreSQL hot storage for fixtures/current prices, line history, user state, refresh gates, market metadata, and archive bookkeeping.
-- Meaningful-state line history with duplicate-state compaction.
-- Stale provider-state protection.
-- ZIP/state onboarding with state-only persistence.
-- Verified sportsbook filtering for the user's selected jurisdiction.
-- Private Discord `/rival` dashboard.
-- Market/outcome label catalog.
-- No-vig implied-probability normalization.
-- Multi-book median market-consensus probability.
-- Same-book parlay construction.
-- Line-aware consensus so different spreads/totals are never silently combined.
-- Lower / Balanced / Aggressive / Longshot risk modes.
-- One-leg-per-fixture correlation guard.
-- Freshness and started-fixture guards.
-- Discord `Build Parlay`, `Make Safer`, and `Boost Payout` controls.
-- Dedicated Google Drive `RivaL Data Warehouse` boundary.
-- ZSTD Parquet cold archive for closed line states.
-- SHA-256/MD5 archive integrity manifests.
-- Resumable Drive staging -> verification -> history promotion.
-- Python 3.11 CI with Ruff and pytest.
-
-## Parlay V1
-
-RivaL's first parlay engine is deliberately **market-derived**, not presented as a trained prediction model.
-
-For each market, RivaL removes the sportsbook's vig from the available outcome prices, compares the same logical outcome across eligible books, de-duplicates identical probability vectors, and uses the median no-vig probability as its market-consensus estimate.
-
-A returned parlay:
-
-- uses one sportsbook only;
-- uses active main lines only;
-- ignores stale prices;
-- ignores already-started fixtures;
-- uses at most one leg per fixture until a proper same-game correlation model exists.
-
-The Discord result explicitly labels these values as market-consensus estimates rather than guaranteed outcomes or model predictions.
-
-### XRP and 60-minute forecast research
-
-The read-only forward market catalog now includes **BTC, ETH, SOL and XRP**
-and horizons **5, 15, 60 minutes**. The extra hour means a forecast for the
-direction of the five-minute reference candle that *opens one hour after the
-source candle*, **not** an hourly candle, a one-hour average or a Polymarket
-Up/Down outcome. Four-asset data collection is the **default configuration**;
-existing deployed environment overrides may still collect only three assets.
-A venue must actually list the perpetual and produce fresh, causally
-observed candles before the model can issue a new genuine prediction. Until
-the new asset/horizon accumulates its own settled track record, it is
-research-only and displays WAIT/UNVERIFIED instead of invented accuracy.
-
-Existing private Auto-Hunt subscriptions retain their old BTC/ETH/SOL,
-5m/15m notification coverage. New XRP/60m predictions can be inspected
-from the main crypto signal screen, but expanding automatic notifications
-requires a separately authorized opt-in, not an unannounced scope change.
-
-### Automatic model qualification and alert delivery
-
-Champion promotion now requires the paired short-window model tests **and**
-21 distinct UTC days, at least 150 unique outcome windows, usable matched
-quote coverage, strict calibration and positive conservative/severe
-simulated-cost evidence. Each outcome window is counted once, not once per
-exchange. Historical market backfill never becomes a newly issued forecast.
-The qualification is a conservative **research** gate, not a guaranteed
-return or a market-specific binary win probability.
-
-The Auto-Hunt outbox stores claim, READY, SENDING, SENT and UNKNOWN state
-transitions in existing SQLite/PostgreSQL tables through additive columns.
-Only failures definitely **before** Discord message creation are eligible
-for bounded retries; timeouts during or after sending remain UNKNOWN to
-avoid unwanted duplicate notifications. Subscription ON and verified DM
-delivery are separate. No new wallet or wagering permissions are requested.
-
-### Research alerts and quoted prices
-
-A severe-cost historical simulated trading mean is **not** an expected betting
-edge. Auto-Hunt will not describe perpetual exchange quotes as actionable
-Polymarket prices. Its qualified tier remains a **research watch** until a
-verified market-specific event, calibrated win probability, executable contract
-price and applicable fees establish a separate expected value.
-
-Polymarket notices show the best displayed ask and an estimated order-book
-average for **10 shares** if enough live quoted size exists. This depth
-estimate excludes fees and latency, and it is not a guaranteed fill. Market
-availability and legal eligibility vary by jurisdiction. Alert status means
-*configured*, not that future DMs are guaranteed. The existing once-only
-claim policy intentionally does not retry ambiguous sends.
-
-XRP and one-hour forecasts are not shown yet: the active forward models are
-still built around BTC/ETH/SOL and 5m/15m future five-minute reference candle
-outcomes. A one-hour label alone would not create a validated one-hour model.
-
-## Simple RivaL Home (mobile and first-time users)
-
-Start with `/rival`; use the buttons, no manual setup commands required.
-The Home, Back, and Explain This buttons stay on every page.
-Crypto signals, personal DM alerts, fictional practice, sports picks and
-basic reliability checks are private, separately navigable flows.
-
-Advanced is optional. It explains whether recent exchange candles are
-available and whether actual future combined-model scores have improved.
-It never equates historical backtests, fictional practice wins or
-successful deployments with real-money profitability.
-
-For developers and expert users, `/rival-tools` groups the old shortcuts.
-The underlying quote, model, analysis, target, sports and database services
-remain functional; only their location in Discord's slash-command menu changed.
-
-## Discord commands
-
-| Command | Who it's for | What it does |
+| Area | What you can do | Important distinction |
 | --- | --- | --- |
-| `/rival` | Everyone | Opens the main private menu for sports, crypto, alerts, practice, results and Help |
-| `/rival-signal` | Optional shortcut | Checks a coin/timeframe and explains the directional research result or WAIT |
-| `/rival-stop` | Everyone | Immediately cancels the user's own private price/forecast alerts |
-| `/rival-tools` | Experienced users | Optional group of twenty old specialist actions, not required for normal use |
+| **Crypto** | Select Crypto Perpetuals, Polymarket, Kalshi, or independent DraftKings-related research | An exchange candle forecast is not a prediction-market contract forecast. |
+| **Sports** | Review available fixtures, eligible sportsbook quotes, and market-derived parlays | Coverage depends on configured providers, quota, freshness, and jurisdiction. |
+| **Bot Performance** | Inspect actual forward predictions, settled results, model/source evidence, and reliability | Historical fits and practice results do not count as live prediction wins. |
+| **Notifications** | Manage opted-in trackers, including a single updating Polymarket DM | Retired Auto-Hunt price-change spam is not a prediction service. |
+| **Practice** | Try simulated trades and review imaginary results | No real funds or executable orders. |
+| **Help** | See explanations and navigation | Technical diagnostics live behind specialist menus. |
 
-No real wagers or orders are submitted. Existing alert preferences,
-historical results and practice balances survive the command migration.
-Discord updates global command menus after the bot successfully syncs;
-a GitHub green check or zip upload alone doesn't prove the running Discord
-command list has changed.
+The primary commands are `/rival`, `/rival-signal`, `/rival-stop`, and the optional `/rival-tools` group. Exact available commands depend on a successful Discord command sync on the deployed bot; merged code alone does not prove they are live.
 
-[Verified quotes, heldout proof, source entitlements and paper accounting](docs/EVIDENCE_QUOTE_PAPER_GATES.md)
-and [price-target evidence and provider coverage](docs/RIVAL_PRICE_TARGETS.md)
-document the exact source/time-window rules.
+### Market paths stay separate
 
-The status is never a placed order or promise of profitable returns. The
-model's 15m horizon predicts the *future five-minute target candle*, not
-an entire 15-minute target candle; both horizons expire at that target
-candle's actual close. A stale feed or unavailable prediction reads WAIT.
+- **Crypto perpetuals:** BTC, ETH, SOL, and XRP are configured for read-only five-minute observations across ten venues. Five-, fifteen-, and sixty-minute **forecast horizons** refer to future targets based on completed five-minute candles; a 60-minute forecast is **not** an hourly-candle forecast. A venue or asset with missing current evidence produces WAIT, not invented accuracy.
+- **Polymarket:** exact listed Up/Down contracts, public book research, optional experimental contract-specific AI/model calls, and opted-in updating DM tracking. Contract quotes are **prices**, not calibrated win probabilities. Settlement requires the exact condition and an authoritative terminal receipt.
+- **Kalshi:** separate public contract discovery and prospective research. No approved Kalshi-specific model or interchangeable Polymarket signal is assumed.
+- **DraftKings:** sportsbook odds and futures belong under Sports. Independent crypto event-contract research must be labeled separately when a verified native contract or price is unavailable.
+- **Sports parlays:** eligible same-book current lines are compared using de-vigged, line-matched market consensus. This is not an independently validated winning-pick model.
 
-First-time sports users enter their ZIP or state; only the resolved two-letter
-state is persisted. Price comparisons always use the shared provider cache,
-and are rejected when stale. No message-content intent is requested.
+See [continuous contract learning](docs/RIVAL_CONTINUOUS_LEARNING.md), [price goals and contract distinctions](docs/RIVAL_PRICE_TARGETS.md), and [actual profit-proof criteria](docs/RIVAL_PROFIT_PROOF.md).
 
-Set `DISCORD_TOKEN` in Discloud secrets. `RIVAL_DEV_GUILD_ID` optionally
-limits slash-command sync to a development guild. Deployment from passing
-GitHub `main` CI can use the **official Discloud Action** when the owner has
-configured the repository secrets `DISCLOUD_TOKEN` and `DISCLOUD_APP_ID`.
-See [Discloud auto-deploy](docs/DISCLOUD_AUTODEPLOY.md) for setup and
-**required live/restart validation**. A GitHub merge alone is not a live deployment.
+## What is implemented
 
-## Perpetuals warehouse
+### Live collection and mathematical research
 
-The existing Google Drive archive originally covered **sports line changes only**.
-An independent, opt-in copy-only warehouse now supports immutable 5-minute
-perpetual candles, preserving venue, contract, actual observation timestamps
-and historical provenance. It uses the same private warehouse, ZSTD Parquet,
-verified Drive history/manifest workflow, and the existing hourly archive loop.
-The last 14 days stay hot by default; **all** hot rows remain present until
-a separate, tested restore/read-path and retention migration exist.
-It is **not live** until the bot's separate Google OAuth configuration is
-verified and `RIVAL_ARCHIVE_ENABLED` plus `RIVAL_PERP_ARCHIVE_ENABLED`
-are deliberately enabled on the deployed host. See
-`docs/GOOGLE_DRIVE_BOUNDARY.md`.
+- A shared read-only five-minute perpetual collector, with source-specific freshness checks, bounded recovery, and persistent PostgreSQL observations.
+- Ten configured venue identities: **Binance, Bitget, Deribit, dYdX, Gate, Hyperliquid, KuCoin, Lighter, OKX, and Phemex**. A configured adapter is **not** proof that every venue, instrument, or historical period is available.
+- Frozen, prospective forecasts and later source-matched settlement. The incumbent learner and independent logistic, Gaussian Naive Bayes, kNN, and screened historical/boosted challenger research use model identity and provenance rather than borrowing another exchange's records.
+- Source-balanced forward probability scoring, calibration and accuracy screens; disagreements or missing/late data remain visible rather than becoming artificial wins.
+- Lightweight [autonomous price/volume spike observations](docs/RIVAL_SPIKE_ANALYTICS.md), with immutable source evidence and future-only *research* outcomes. Spike detections are descriptive, not trade calls.
+- Paper quote/cost comparisons and conditional read-only model-family selection/rollback. Research qualification is deliberately strict; hypothetical spread, fees, slippage, and funding stress are **not authenticated real fills**.
+- Optional, separately hosted private **RivaL Intelligence** LLM gateway (LFM3 or another configured supported model) for bounded explanations of verified evidence. The mathematical decision and NO CALL rule remain authoritative; running an LLM does not train missing market history or establish predictive improvement.
 
-## Google Drive
+For mathematical admission requirements see [source-specific challenger promotion](docs/RIVAL_FAMILY_COST_PROMOTION.md). The intended research proof includes **150 genuinely future outcomes across 21 UTC days**, at least **80% matched-quote coverage**, calibrated performance against baselines and an independently positive hypothetical after-cost comparison. These are *requirements*, not results already achieved.
 
-Historical archives and future model artifacts live under one dedicated Drive root:
+### Historical collection: ambitious scope, incomplete proof
+
+The source-exact historical coordinator inventories **10 venues × 4 assets × 16 investigated perpetual data families**. Its investigated families include 1m/5m/15m/1h/4h/1d candles, individual trades, funding, mark/index/premium, open interest, positioning, liquidations, level-2 books, and options/volatility. **Being listed in that inventory does not mean a collector exists or that the source publishes the history.**
+
+- The target is each instrument's **actual, independently verified listing date through the present**, not a fabricated 2021 start for contracts that listed later.
+- Scheduled GitHub workflows and bounded Discloud recovery acquire source-specific history where supported. The coordinator routes only known source/family combinations and reports missing routes separately.
+- Binance official archive intake includes original ZIP/checksum-backed candles and additional source families such as mark, index, premium, funding, and daily open-interest/positioning where the source provides them. Other exchanges have differing, often partial source paths. Sample trade/book days do **not** certify complete historical tapes.
+- The private Google Drive warehouse retains original data, integrity manifests and research artifacts. An archive filename, a successful API call, or a local digest **alone** is not proof of full UTC coverage or remote original-byte SHA-256 readback.
+- Historical candidate models are evaluated with chronological holdouts and explicit feature/venue/contract/quote matching. Backfilled candles cannot be passed off as forecasts issued before the outcome.
+
+**Current status (November 2, 2026):** the collection and evidence infrastructure exists, but **complete 2021-to-present, all-family, all-ten-venue history is not verified**. Native listing dates, missing collector routes, original archive completeness, exact Google Drive readbacks, live model imports, and future-only superiority remain active work. No 2021 data belonging to one exchange can certify another exchange.
+
+Follow [Issue #188](https://github.com/UglyGameFace/RivaL/issues/188) for historical completeness and [`ACTIVE_TASK.md`](ACTIVE_TASK.md) for evolving implementation evidence. Avoid interpreting old fixed counts in an issue or log as the latest verified production state.
+
+## How the pieces fit together
 
 ```text
-RivaL Data Warehouse/
-├── history/
-├── manifests/
-├── models/
-├── predictions/
-├── backups/
-├── reports/
-└── staging/
+Official public exchange data     Sports & event-market providers
+               |                             |
+        venue/source adapters         contract/odds adapters
+               |                             |
+               +----------+------------------+
+                          |
+                  provenance + freshness
+                          |
+                 Discloud PostgreSQL
+                (hot state and ledgers)
+                          |
+          +---------------+----------------+
+          |                                |
+   future-only models,             verified archive/
+    quote comparisons              research workflows
+          |                                |
+   results + NO CALL                 private Google Drive
+          |                         (history / manifests /
+          |                          models / reports)
+          +---------------+----------------+
+                          |
+                 Discord /rival UI
+                          |
+              optional private LLM
+               (evidence summaries)
 ```
 
-RivaL is forbidden from enumerating or modifying Drive content outside that root. Real Drive account details and folder IDs remain private runtime configuration and are not committed.
+The Discloud bot uses **PostgreSQL** for production state. SQLite is a deliberate local/test alternative. The independent LLM service is not an alternate market database, an order router, or a substitute for mathematical verification.
 
-Closed line states are written as explicit-schema ZSTD Parquet, uploaded to `staging/`, verified by size and MD5, promoted to `history/`, then paired with a JSON manifest. Source PostgreSQL rows are marked archived only after both remote objects are verified. The latest mutable state of every market selection is never archive-eligible.
+## Setup and development
 
-See `docs/GOOGLE_DRIVE_BOUNDARY.md`.
-
-## Secrets and generated data
-
-Never commit API keys, Discord tokens, OAuth credentials, real Drive folder IDs, downloaded odds payloads, databases, or archive files.
-
-Production storage defaults to PostgreSQL. Set `RIVAL_DATABASE_URL` to the private PostgreSQL connection URL supplied for RivaL's Discloud database and keep `RIVAL_STORAGE_BACKEND=postgres`. The bot fails startup if PostgreSQL is selected without a database URL rather than silently writing to a local file.
-
-SQLite remains available only as an explicit local/test compatibility backend with `RIVAL_STORAGE_BACKEND=sqlite` and `RIVAL_DB_PATH=data/rival.sqlite`. Generated local databases remain ignored by Git.
-
-For the Discloud deployment steps and the database boundary, see `docs/DISCLOUD_POSTGRES.md`.
-
-## Development
+**Requirements:** Python 3.11+, a Discord bot token, and either a reachable PostgreSQL database or explicit local SQLite configuration. Provider APIs, Google Drive and optional AI integrations have their own credentials and quotas.
 
 ```bash
 python -m pip install -e ".[dev]"
+# Configure environment variables before starting:
+# DISCORD_TOKEN=...
+# RIVAL_STORAGE_BACKEND=postgres
+# RIVAL_DATABASE_URL=postgresql://...
+python main.py
+
+# Validate the local code:
 ruff check .
 pytest -q
 ```
 
-See `ACTIVE_TASK.md` for the exact active task, validation evidence, and next milestone.
+For an isolated **local/test** run, use `RIVAL_STORAGE_BACKEND=sqlite` and `RIVAL_DB_PATH=data/rival.sqlite` instead of a production database. Sports background polling is opt-in (`RIVAL_SPORTS_BACKGROUND_ENABLED`), and supplying an API key alone does not enable it. The standard perpetual observation loop is enabled by default, but actual connections still depend on venue availability.
 
-## Verified free historical research intake
+Optional configuration groups:
 
-A separate, bounded, checksum-verified research importer supports Binance USD-M
-monthly futures archives (multiple horizons) and historical football results/
-bookmaker odds, plus descriptive no-vig pricing benchmarks. It does not change
-live predictions or place trades. Run locally on a network-enabled research
-host and preserve artifacts inside the authorized RivaL warehouse after
-verified promotion. See [the importer guide](docs/VERIFIED_FREE_HISTORY.md).
+| Integration | Configuration and operational note |
+| --- | --- |
+| **Discord / Discloud** | `DISCORD_TOKEN`; optional `RIVAL_DEV_GUILD_ID`. The existing deployment is configured in `discloud.config` with `main.py` and Python 3.11. |
+| **Database** | `RIVAL_STORAGE_BACKEND=postgres`, `RIVAL_DATABASE_URL`. Missing production DB configuration fails startup, not silently redirected to SQLite. |
+| **Sports odds** | `RIVAL_SPORTS_BACKGROUND_ENABLED=true` plus the relevant SportsGameOdds/OddsPapi credentials. Verify quotas and configured league/book coverage. |
+| **Google Drive** | Scoped `RIVAL_DRIVE_*_FOLDER_ID` and `RIVAL_DRIVE_OAUTH_*` secrets. Bot cold archival requires the relevant archive toggles; research Actions may use their own authorized secrets. |
+| **AI / Intelligence** | `RIVAL_AI_PROVIDER` and the corresponding private provider credential, for example `RIVAL_LOCAL_AI_TOKEN` for local gateway access. Local LLM hosting is a separate service. |
+| **Polymarket** | Optional CLOB read-only credentials for relevant feeds; do not add trading-wallet keys. |
+
+Never commit tokens, database URLs, OAuth refresh tokens, private Drive folder IDs, generated market archives, or user data. RivaL is restricted to its dedicated `RivaL Data Warehouse` tree; it must not browse unrelated Drive files.
+
+## Build, deployment, and proof
+
+GitHub CI runs Ruff and pytest, including PostgreSQL-backed checks. The official Discloud release workflow is tied to a **successful `main` CI** when the repository has `DISCLOUD_TOKEN` and `DISCLOUD_APP_ID` configured. A successful upload **does not verify** Discord login, market-feed freshness, Google Drive archival, or live prediction quality.
+
+After release, verify host startup and database persistence, Discord command sync, source freshness, original archive receipts, and genuine later forecast settlements separately. Do not equate test fixtures or a completed Action with production acceptance.
+
+Further documentation:
+
+- [Discloud production PostgreSQL](docs/DISCLOUD_POSTGRES.md) and [CI → Discloud deployment](docs/DISCLOUD_AUTODEPLOY.md)
+- [Google Drive security boundary and archive format](docs/GOOGLE_DRIVE_BOUNDARY.md)
+- [Verified free historical research intake](docs/VERIFIED_FREE_HISTORY.md)
+- [Forward-only prediction and hypothetical profit verification](docs/RIVAL_PROFIT_PROOF.md)
+- [Current work, blockers and evidence](ACTIVE_TASK.md)
+
+**Bottom line:** RivaL researches, measures, remembers, and abstains. It does not promise a winning bet or execute one.

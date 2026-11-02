@@ -39,6 +39,30 @@ jobs:
           ruff check src/parlay_bot/research/bitget_v3_archive.py tests/test_bitget_v3_archive.py
           pytest -q tests/test_bitget_v3_archive.py
 
+  bitget-public-window-probe:
+    if: github.event_name == 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[archive]"
+      - name: Sample official Bitget source windows, without archive writes
+        run: python -m parlay_bot.research.bitget_v3_archive --asset "${{ matrix.asset }}" --probe-only
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bitget-public-window-probe-${{ matrix.asset }}
+          path: data/native-reports/bitget-source-probe-${{ matrix.asset }}.json
+          retention-days: 14
+          if-no-files-found: ignore
+
   bitget-overnight-to-drive:
     if: github.event_name != 'pull_request' && vars.RIVAL_BITGET_V3_ARCHIVE_ENABLED != 'false'
     strategy:

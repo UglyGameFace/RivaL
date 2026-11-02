@@ -46,7 +46,9 @@ def mock_client(*, remove_one: bool = False, premium: bool = False,
         assert req.url.params["type"] == ("premium" if premium else "market")
         assert req.url.params["limit"] == "100"
         begin = int(req.url.params["startTime"]) + 1
-        end = int(req.url.params["endTime"]) + 1
+        # Real Bitget source excludes the final 5m interval unless its
+        # endTime is advanced by a complete interval.
+        end = int(req.url.params["endTime"]) + 1 - 300000
         assert end > begin and (end - begin) // 300000 <= 96
         if recorder is not None:
             recorder.append((begin, end))
@@ -102,6 +104,7 @@ async def test_exact_complete_month_includes_original_verbatim_api_bytes(
     assert first_line["request"]["type"] == ("premium" if premium else "market")
     assert first_line["response_sha256"]
     assert first_line["response_base64"]
+    assert first_line["request"]["endTime"] == calls[0][1] + 300000 - 1
     assert manifest.name.endswith(".manifest.json")
 
 
@@ -194,3 +197,132 @@ async def test_http_451_cannot_be_retried_through_other_network_routes():
     finally:
         await client.aclose()
     assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_incomplete_first_page_stops_before_wasting_rest_of_month(tmp_path: Path):
+    requested = []
+    client = mock_client(remove_one=True, recorder=requested)
+    try:
+        with pytest.raises(HistoryImportError, match="incomplete UTC grid"):
+            await collect_month(
+                client, asset="BTC", family="market", month="2021-06",
+                root=tmp_path, pacer=NoWait(),
+                metadata={"metadata_sha256": "a" * 64},
+            )
+    finally:
+        await client.aclose()
+    assert len(requested) == 1
+    assert not list(tmp_path.glob("*.manifest.json"))
+
+
+@pytest.mark.asyncio
+async def test_public_probe_detects_missing_windows_without_drive_writes(tmp_path: Path):
+    from parlay_bot.research.bitget_v3_archive import probe_source_windows
+
+    observed = []
+    def reply(req: httpx.Request):
+        assert req.url.host == "api.bitget.com"
+        assert req.url.path == "/api/v3/market/history-candles"
+        begin = int(req.url.params["startTime"]) + 1
+        end = int(req.url.params["endTime"]) + 1 - 300000
+        month = datetime.fromtimestamp(begin / 1000, UTC).strftime("%Y-%m")
+        family = req.url.params["type"]
+        observed.append((month, family))
+        keep = [
+            row(tick, premium=family == "premium")
+            for tick in range(begin, end, 300000)
+            if not (month == "2025-06" and family == "mark" and tick == begin)
+        ]
+        return httpx.Response(200, json={"code": "00000", "data": keep})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(reply))
+    try:
+        result = await probe_source_windows(
+            client=client, asset="BTC", report_dir=tmp_path,
+            now=datetime(2026, 11, 1, tzinfo=UTC), pacer=NoWait(),
+        )
+    finally:
+        await client.aclose()
+    assert result["request_window_count"] == 27
+    assert len(observed) == 27
+    assert any(s["status"] == "incomplete_window" for s in result["samples"])
+    assert result["complete_month_claimed"] is False
+    assert result["drive_bytes_verified"] is False
+    assert {s["variant"] for s in result["samples"] if "variant" in s} == {
+        "start_back_one_bar", "end_forward_one_bar", "legacy_unpadded_end",
+    }
+    assert (tmp_path / "bitget-source-probe-BTC.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_live_run_writes_incremental_checkpoint_before_source_failure(
+    tmp_path: Path, monkeypatch,
+):
+    from parlay_bot.research import bitget_v3_archive as archive
+
+    async def existing(drive, *, asset):
+        return set()
+
+    async def symbol(client, *, asset, pacer):
+        return {"metadata_sha256": "a" * 64}
+
+    async def fail_month(client, *, asset, family, month, root, pacer, metadata):
+        report = json.loads(
+            (tmp_path / "bitget-BTC-overnight-progress.json").read_text()
+        )
+        assert report["phase"] == "collecting"
+        assert report["current_source_month"] == {"month": month, "family": family}
+        raise HistoryImportError("incomplete UTC grid")
+
+    monkeypatch.setattr(archive, "existing_manifests", existing)
+    monkeypatch.setattr(archive, "verify_symbol", symbol)
+    monkeypatch.setattr(archive, "collect_month", fail_month)
+    drive = SimpleNamespace(folders=SimpleNamespace(reports=None))
+    result = await archive.run(
+        drive=drive, client=None, root=tmp_path / "raw",
+        report_dir=tmp_path, asset="BTC", first="2021-01",
+        max_requests=400, max_months=4,
+        now=datetime(2021, 2, 1, tzinfo=UTC), pacer=NoWait(),
+    )
+    saved = json.loads(
+        (tmp_path / "bitget-BTC-overnight-progress.json").read_text()
+    )
+    assert result["phase"] == "finished"
+    assert saved["phase"] == "finished"
+    assert saved["current_source_month"] is None
+    assert len(saved["unavailable"]) == 4
+    assert saved["source_months_published_and_readback"] == []
+
+
+@pytest.mark.asyncio
+async def test_live_proven_exclusive_end_needs_one_5m_padding_interval():
+    from parlay_bot.research.bitget_v3_archive import request_page
+
+    first, _ = bounds("2025-06")
+    calls = []
+    def boundary_api(req: httpx.Request):
+        begin = int(req.url.params["startTime"]) + 1
+        # Official API's observed end boundary excludes one final candle.
+        returned_end = int(req.url.params["endTime"]) + 1 - 300000
+        calls.append((begin, returned_end))
+        return httpx.Response(200, json={
+            "code": "00000",
+            "data": [row(t) for t in range(begin, returned_end, 300000)],
+        })
+    client = httpx.AsyncClient(transport=httpx.MockTransport(boundary_api))
+    try:
+        _, missing = await request_page(
+            client, asset="BTC", family="market", begin=first,
+            end=first + 96 * 300000, pacer=NoWait(), end_forward_steps=0,
+        )
+        _, corrected = await request_page(
+            client, asset="BTC", family="market", begin=first,
+            end=first + 96 * 300000, pacer=NoWait(),
+        )
+    finally:
+        await client.aclose()
+    assert len(missing) == 95
+    assert len(corrected) == 96
+    assert first in corrected
+    assert first + 95 * 300000 in corrected

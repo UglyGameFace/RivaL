@@ -326,3 +326,59 @@ async def test_live_proven_exclusive_end_needs_one_5m_padding_interval():
     assert len(corrected) == 96
     assert first in corrected
     assert first + 95 * 300000 in corrected
+
+@pytest.mark.asyncio
+async def test_request_budget_counts_real_attempts_and_stops_before_exceeding_limit():
+    from parlay_bot.research.bitget_v3_archive import RequestBudgetPacer
+
+    pacer = RequestBudgetPacer(NoWait(), max_requests=2)
+    await pacer.wait()
+    await pacer.wait()
+    assert pacer.attempted == 2
+    with pytest.raises(HistoryImportError, match="request budget exhausted"):
+        await pacer.wait()
+    assert pacer.attempted == 2
+
+
+@pytest.mark.asyncio
+async def test_early_unavailable_months_do_not_consume_unrequested_page_budget(
+    tmp_path: Path, monkeypatch,
+):
+    from parlay_bot.research import bitget_v3_archive as archive
+
+    async def no_manifests(drive, *, asset):
+        return set()
+
+    async def verify(client, *, asset, pacer):
+        await pacer.wait()  # Count the real contract-metadata API call.
+        return {"metadata_sha256": "a" * 64}
+
+    async def unavailable(client, *, asset, family, month, root, pacer, metadata):
+        await pacer.wait()  # The first page was requested, 90 more were not.
+        raise HistoryImportError("incomplete UTC grid")
+
+    monkeypatch.setattr(archive, "existing_manifests", no_manifests)
+    monkeypatch.setattr(archive, "verify_symbol", verify)
+    monkeypatch.setattr(archive, "collect_month", unavailable)
+    result = await archive.run(
+        drive=SimpleNamespace(folders=SimpleNamespace(reports=None)),
+        client=None, root=tmp_path / "raw", report_dir=tmp_path,
+        asset="BTC", first="2021-01", max_requests=400, max_months=4,
+        now=datetime(2021, 2, 1, tzinfo=UTC), pacer=NoWait(),
+    )
+    assert result["api_requests_attempted"] == 5
+    assert result["api_request_pages_reserved"] > 5
+    assert len(result["unavailable"]) == 4
+    assert result["source_months_published_and_readback"] == []
+
+
+def test_unattended_archive_frequency_budget_and_production_dependency_contract():
+    workflow = (Path(__file__).resolve().parents[1] / ".github" / "workflows"
+                / "bitget-v3-overnight-archive.yml").read_text()
+    assert 'cron: "17 0,4,8,12,16,20 * * *"' in workflow
+    job = workflow.split("  bitget-overnight-to-drive:", 1)[1]
+    assert "MAX_REQUESTS: ${{ inputs.max_requests || '8000' }}" in job
+    assert "--first \"${{ inputs.first_month || '2021-01' }}\"" in job
+    assert 'python -m pip install -e ".[archive]"' in job
+    assert "pytest -q" not in job and "ruff check" not in job
+    assert "cancel-in-progress: false" in job

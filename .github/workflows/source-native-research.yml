@@ -78,7 +78,9 @@ jobs:
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             VENUE="${{ github.event.inputs.venue }}"
           elif [[ "${{ github.event_name }}" == "push" ]]; then
-            VENUE="bitget"
+            # The old push path repeatedly chose the hardest incomplete Bitget
+            # source even though the other venues can research independently.
+            VENUE="okx"
           else
             VENUE="$(python - <<'PY'
           from datetime import UTC, datetime
@@ -97,7 +99,24 @@ jobs:
             slot=$(( $(date -u +%s) / 86400 % 4 ))
             args+=(--asset "${assets[$slot]}")
           fi
+          # A known incomplete venue must not waste the only unattended
+          # daily training slot. Retry ONE independent, better-covered source
+          # after its real source-months-incomplete report. No blind fallback
+          # for auth, network, checksum, import or model-evaluation failures.
+          set +e
           python -m parlay_bot.research.source_native_offline "${args[@]}"
+          exit_code=$?
+          set -e
+          if (( exit_code != 0 )); then
+            report="data/native-reports/source-${VENUE}-research.json"
+            if [[ "${{ github.event_name }}" != "workflow_dispatch" && "$VENUE" != "okx" ]] &&
+                python -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); sys.exit(0 if p.is_file() and json.loads(p.read_text()).get("status") == "source_months_incomplete" else 1)' "$report"; then
+              echo "Unverified complete months blocked $VENUE; trying independent OKX research once."
+              python -m parlay_bot.research.source_native_offline --venue okx --months 6 --publish
+            else
+              exit "$exit_code"
+            fi
+          fi
       - name: Summarize verified source-native acceptance
         if: always()
         shell: bash

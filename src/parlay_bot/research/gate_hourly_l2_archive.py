@@ -19,6 +19,7 @@ from pathlib import Path
 
 import httpx
 
+from parlay_bot.archive.drive import DriveArchiveError
 from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.publish import _artifact, _drive
@@ -179,9 +180,46 @@ async def store(drive, *, raw: bytes, asset: str, family: str, hour: str,
     await drive.verify_downloaded_artifact(
         file_id=meta.file_id, parent_id=drive.folders.manifests, artifact=second,
     )
-    return {"asset": asset, "family": family, "utc_hour": hour,
-            "original_sha256": digest, "drive_sha256_readback_verified": True,
-            "l2_hourly_complete": False, "model_training_eligible": False}
+    # Historical source-native auxiliary features are stored separately.
+    # They NEVER alter the original receipt or the live candle-only model.
+    # A failed feature transform does not discard verified source originals.
+    shadow = {"shadow_features_drive_readback": False,
+              "shadow_feature_buckets": 0}
+    if (family == "orderbooks_slice" and
+        evidence.get("original_snapshot_quality", {}).get(
+            "source_jsonl_snapshot_schema_verified") is True):
+        try:
+            from parlay_bot.research.gate_l2_shadow_features import write_sidecar
+
+            sidecar, receipt = write_sidecar(path, manifest_path)
+            for feature_path, mime, suffix in (
+                (sidecar, "application/x-ndjson", "features"),
+                (receipt, "application/json", "receipt"),
+            ):
+                artifact = _artifact(feature_path, 1)
+                saved = await drive.ensure_history_file(
+                    artifact=artifact,
+                    batch_id="gate-l2-" + digest[:20] + "-" + suffix,
+                    mime_type=mime,
+                )
+                await drive.verify_downloaded_artifact(
+                    file_id=saved.file_id, parent_id=drive.folders.history,
+                    artifact=artifact,
+                )
+            shadow["shadow_features_drive_readback"] = True
+            shadow["shadow_feature_buckets"] = sum(
+                1 for _ in sidecar.open("r", encoding="utf-8")
+            )
+        except (DriveArchiveError, HistoryImportError, OSError, ValueError, TypeError) as exc:
+            shadow["shadow_feature_status"] = (
+                "original_preserved_auxiliary_blocked_" + type(exc).__name__
+            )
+    return {
+        "asset": asset, "family": family, "utc_hour": hour,
+        "original_sha256": digest, "drive_sha256_readback_verified": True,
+        "l2_hourly_complete": False, "model_training_eligible": False,
+        **shadow,
+    }
 
 
 async def collect(*, hour: str, assets: tuple[str, ...],

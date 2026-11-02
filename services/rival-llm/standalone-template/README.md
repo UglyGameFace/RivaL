@@ -10,7 +10,7 @@ Do not edit mirrored files directly. Make service changes in `RivaL/services/riv
 
 ## Release
 
-GitHub Actions on **this repository's main branch** compiles the pinned llama.cpp CPU runtime, validates the exact Discloud upload files, and deploys to the existing **RivaL-Intelligence** Discloud application. It then queries the authenticated on-host `/v1/status` and requires the source SHA, LFM3 identity, readiness, and repair telemetry. A green code build without this live acceptance is **not** a verified production update.
+GitHub Actions on **this repository's main branch** compiles the pinned llama.cpp CPU runtime, validates the exact Discloud upload files, and deploys to the existing **RivaL-Intelligence** Discloud application. It then checks the authenticated on-host `/v1/status` for the exact source SHA, LFM3 identity, readiness, and repair telemetry. A release also makes **one** synthetic, read-only `/v1/research` request with no live sources, historical claims, trades, or database writes. The response must be safely grounded, informational-only and explicitly uncertain; the private status route must reject anonymous access. These checks are mandatory for a green release.
 
 Configure two repository Actions secrets:
 
@@ -29,6 +29,6 @@ The sync runs on relevant RivaL/main changes, hourly reconciliation and manually
 
 ## Acceptance boundaries
 
-Passing Python/build validation proves the deployable package shape. A successful Discloud deploy step plus fresh authenticated SHA-matching status proves the matching service code is live and ready. Neither proves that intentional backend crash recovery has been exercised in production, that model weights have improved, or that historical market data is complete. Those require separate on-host fault tests and forward-outcome evidence.
+Passing Python/build validation proves the deployable package shape. A successful Discloud deploy step, fresh authenticated SHA-matching status, and one safely grounded synthetic inference prove that the matching service code is live, ready, and can complete a bounded private request. Neither proves that intentional backend crash recovery has been exercised in production, that model weights have improved, or that historical market data is complete. Those require separate on-host fault tests and forward-outcome evidence.
 
 The service is designed for private VLAN research only, with bounded CPU and a strictly authenticated request path.

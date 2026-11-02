@@ -1,0 +1,132 @@
+name: Gate official historical hourly L2 source proof
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/gate-hourly-l2-source.yml"
+      - "src/parlay_bot/research/gate_hourly_l2_archive.py"
+      - "tests/test_gate_hourly_l2_archive.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/gate-hourly-l2-source.yml"
+      - "src/parlay_bot/research/gate_hourly_l2_archive.py"
+  workflow_dispatch:
+    inputs:
+      hour:
+        description: Exact historical UTC hour YYYYMMDDHH, after real listing
+        type: string
+        required: true
+        default: "2023042505"
+      family:
+        description: Official hourly depth source type
+        required: true
+        type: choice
+        options: [orderbooks_slice, orderbooks]
+        default: orderbooks_slice
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-gate-original-hourly-l2-source
+  cancel-in-progress: false
+
+jobs:
+  offline-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install -e ".[dev,archive]"
+          ruff check src/parlay_bot/research/gate_hourly_l2_archive.py tests/test_gate_hourly_l2_archive.py
+          pytest -q tests/test_gate_hourly_l2_archive.py
+
+  public-source-probe:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[dev]"
+      - name: Probe documented old Gate BTC perpetual depth gzip, bounded and free
+        run: |
+          python - <<'PY'
+          import json
+          import httpx
+          from parlay_bot.research.gate_hourly_l2_archive import download
+          from parlay_bot.research.free_history import HistoryImportError
+          with httpx.Client(timeout=35, follow_redirects=False) as client:
+              try:
+                  _, info = download(
+                      client, asset="BTC", family="orderbooks_slice",
+                      hour="2023042505",
+                  )
+                  report = {
+                      "source": "official_gate_usdt_perpetual_hourly_depth",
+                      "hour": "2023042505", "status": "original_gzip_verified_locally",
+                      "sha256": info["original_source_sha256"],
+                      "compressed_bytes": info["compressed_bytes"],
+                      "expanded_bytes": info["expanded_bytes"],
+                      "l2_continuity_verified": False,
+                  }
+              except (HistoryImportError, httpx.HTTPError) as exc:
+                  report = {"status": "provider_unavailable_or_outside_budget",
+                            "source_hour": "2023042505",
+                            "reason": str(exc)[:200],
+                            "l2_continuity_verified": False}
+              print(json.dumps(report, sort_keys=True))
+          PY
+
+  private-source-sample:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[dev,archive]"
+      - name: Check existing warehouse authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in RIVAL_DRIVE_ROOT_FOLDER_ID RIVAL_DRIVE_HISTORY_FOLDER_ID \
+            RIVAL_DRIVE_MANIFESTS_FOLDER_ID RIVAL_DRIVE_STAGING_FOLDER_ID \
+            RIVAL_DRIVE_OAUTH_CLIENT_ID RIVAL_DRIVE_OAUTH_CLIENT_SECRET \
+            RIVAL_DRIVE_OAUTH_REFRESH_TOKEN; do
+            if [[ -z "${!name}" ]]; then
+              echo "::error::Gate original L2 private warehouse not configured: $name"
+              exit 1
+            fi
+          done
+      - name: Store at most four original hourly gzip samples with remote SHA readback
+        run: |
+          python -m parlay_bot.research.gate_hourly_l2_archive \
+            --hour "${{ inputs.hour || '2023042505' }}" \
+            --family "${{ inputs.family || 'orderbooks_slice' }}" \
+            --assets BTC ETH SOL XRP
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gate-l2-original-hourly-readback-receipts
+          path: data/native-reports/gate-hourly-l2-attempt.json
+          retention-days: 14
+          if-no-files-found: ignore

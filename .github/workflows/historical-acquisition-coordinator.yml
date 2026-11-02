@@ -8,6 +8,7 @@ on:
       - "src/parlay_bot/research/drive_source_census.py"
       - "src/parlay_bot/research/source_native.py"
       - "src/parlay_bot/research/source_native_offline.py"
+      - "src/parlay_bot/research/official_contract_listings.py"
       - "tools/historical_dispatch.py"
       - "tests/test_historical_coordinator.py"
   push:
@@ -18,6 +19,7 @@ on:
       - "src/parlay_bot/research/drive_source_census.py"
       - "src/parlay_bot/research/source_native.py"
       - "src/parlay_bot/research/source_native_offline.py"
+      - "src/parlay_bot/research/official_contract_listings.py"
       - "tools/historical_dispatch.py"
   schedule:
     - cron: "29 2,14 * * *"
@@ -60,11 +62,14 @@ jobs:
       - name: Read current cumulative private Drive manifest inventory
         if: github.event_name != 'pull_request'
         run: python -m parlay_bot.research.drive_source_census
+      - name: Capture official contract trading starts from Binance and OKX only
+        if: github.event_name != 'pull_request'
+        run: python -m parlay_bot.research.official_contract_listings
       - name: Generate independently scoped all-ten-venue backlog
         if: github.event_name != 'pull_request'
         run: |
           python -m parlay_bot.research.source_family_backlog
-          python -m parlay_bot.research.historical_coordinator --max-jobs 2
+          python -m parlay_bot.research.historical_coordinator --max-jobs 2 --listing-report data/native-reports/official-contract-listing-evidence.json
       - name: Dispatch bounded genuine gap workflows without duplicating active runs
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
         env:
@@ -147,5 +152,6 @@ jobs:
             data/native-reports/drive-source-family-backlog.json
             data/native-reports/historical-coordinator.json
             data/native-reports/historical-dispatch.json
+            data/native-reports/official-contract-listing-evidence.json
           retention-days: 30
           if-no-files-found: ignore

@@ -81,11 +81,17 @@ async def test_results_page_shows_actual_training_provenance_without_claiming_ac
         view._rebuild()
         embed = await view.render()
         values = {field.name: field.value for field in embed.fields}
-        proof = values["Model training actually used"]
-        assert "No issued forecasts to audit" in proof
-        assert "Training evidence is NOT a measured win rate" in proof
+        proof = values["How is RivaL learning?"]
+        assert "No recorded predictions to check yet" in proof
+        assert "Learning updates are not prediction wins" in proof
         compact = _compact_embed(embed, screen="accuracy", section="lineage")
-        assert any(f.name == "Model training actually used" for f in compact.fields)
+        assert any(f.name == "How is RivaL learning?" for f in compact.fields)
+
+        view.section = "technical"
+        detail = await view.render()
+        technical = {field.name: field.value for field in detail.fields}
+        assert "No issued forecasts to audit" in technical["Model training actually used"]
+        assert "Training evidence is NOT a measured win rate" in technical["Model training actually used"]
     finally:
         view.stop()
         store.close()

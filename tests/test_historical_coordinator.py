@@ -168,3 +168,24 @@ def test_native_publisher_checks_older_history_without_full_database_scan():
     assert newer[1] != older
     with pytest.raises(ValueError):
         publication_ranges(datetime(2026, 11, 2))
+
+
+def test_old_native_month_names_are_scoped_and_not_training_proof():
+    names = [
+        "hyperliquid-BTC-USDC-5m-" + month + "--" + "f" * 16 +
+        ".manifest.json"
+        for month in completed_range("2021-01", "2021-07")
+    ]
+    census = summarize(names, now=NOW)
+    plan = build_plan(census, max_jobs=4)
+    btc = _scope(plan, "hyperliquid", "BTC", "candles_5m")
+    eth = _scope(plan, "hyperliquid", "ETH", "candles_5m")
+    assert btc["all_history_named_months_not_reverified"] == 6
+    assert eth["all_history_named_months_not_reverified"] == 0
+    assert btc["actual_contract_listing_month"] is None
+    assert btc["verified_complete_months_from_this_census"] == 0
+    research = [r for r in plan["dispatch_candidates"]
+                if r["workflow"] == "source-native-research.yml"]
+    assert research and research[0]["inputs"] == {
+        "venue": "hyperliquid", "first_month": "2021-01", "asset": "",
+    }

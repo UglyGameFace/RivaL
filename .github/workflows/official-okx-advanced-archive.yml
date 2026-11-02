@@ -211,7 +211,7 @@ jobs:
           )
           from parlay_bot.research.okx_advanced_archive import (
               MAX_PROBE_SLOTS, automatic_archive_slot, ingest_one,
-              official_catalog_http_400,
+              official_catalog_http_400, listed_auxiliary_receipts,
           )
           from parlay_bot.research.publish import _artifact, _drive
 
@@ -232,6 +232,7 @@ jobs:
               root.mkdir(parents=True, exist_ok=True)
               drive = _drive(Settings())
               try:
+                  listed_receipts = await listed_auxiliary_receipts(drive, asset=asset)
                   attempts = []
                   chosen = None
                   async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
@@ -263,15 +264,34 @@ jobs:
                               "source_file_count": len(slot["files"]),
                           })
                           if slot["status"] == "cataloged_not_downloaded" and len(slot["files"]) == 1:
+                              filename = slot["files"][0]["filename"]
+                              if filename + ".receipt.json" in listed_receipts:
+                                  attempts[-1]["status"] = "receipt_listed_not_reverified"
+                                  continue
                               chosen = (candidate_month, candidate_module, slot)
                               break
                       (root / "inventory.json").write_text(json.dumps({
                           "venue": "okx", "asset": asset,
                           "catalog_attempts": attempts,
                           "source_selected": chosen is not None,
+                          "already_listed_not_rehashed": sum(
+                              row["status"] == "receipt_listed_not_reverified"
+                              for row in attempts
+                          ),
                           "all_months_complete": False,
                       }, sort_keys=True, indent=2) + "\n")
                       if chosen is None:
+                          if any(row["status"] == "receipt_listed_not_reverified"
+                                 for row in attempts):
+                              print(json.dumps({
+                                  "asset": asset, "status": "no_new_eligible_archive_in_bounded_probe",
+                                  "listed_receipts_not_byte_reverified": sum(
+                                      row["status"] == "receipt_listed_not_reverified"
+                                      for row in attempts
+                                  ),
+                                  "all_months_complete": False,
+                              }, sort_keys=True))
+                              return
                           raise HistoryImportError(
                               "No exact OKX source file in bounded eligible catalog slots; see inventory"
                           )

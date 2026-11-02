@@ -48,6 +48,16 @@ def safe_relative(path: str) -> Path:
     return Path(*pure.parts)
 
 
+def checked_destination(repository: Path, name: str) -> Path:
+    relative = safe_relative(name)
+    path = repository
+    for part in relative.parts:
+        path = path / part
+        if path.is_symlink():
+            raise ValueError("Managed output must not contain a symlink")
+    return path
+
+
 def managed_paths() -> dict[str, str]:
     files = {str(SERVICE / name): name for name in SERVICE_FILES}
     files.update(OTHER_FILES)
@@ -91,21 +101,26 @@ def apply(staged: Path, repository: Path) -> None:
     }
     if expected != actual:
         raise ValueError("Staged source differs from its managed-file manifest")
-    previous = repository / MANIFEST
+    previous = checked_destination(repository, MANIFEST)
     if previous.is_file():
-        for old in previous.read_text(encoding="utf-8").splitlines():
-            rel = safe_relative(old)
-            if old not in expected:
-                obsolete = repository / rel
-                if obsolete.is_symlink():
-                    raise ValueError("Managed output must not be a symlink")
-                if obsolete.is_file():
-                    obsolete.unlink()
+        old_owned = set(previous.read_text(encoding="utf-8").splitlines())
+        # An unrelated RivaL/main commit changes the upstream SHA but not this
+        # service. Do not rebuild/redeploy a multi-GB model for that event.
+        stable = expected - {STAMP}
+        if old_owned == expected and all(
+            checked_destination(repository, name).is_file()
+            and (checked_destination(repository, name).read_bytes()
+                 == (staged / safe_relative(name)).read_bytes())
+            for name in stable
+        ):
+            return
+        for old in old_owned:
+            obsolete = checked_destination(repository, old)
+            if old not in expected and obsolete.is_file():
+                obsolete.unlink()
     for name in sorted(expected):
         src = staged / safe_relative(name)
-        dst = repository / safe_relative(name)
-        if dst.is_symlink():
-            raise ValueError("Managed output must not overwrite a symlink")
+        dst = checked_destination(repository, name)
         dst.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(src, dst)
 

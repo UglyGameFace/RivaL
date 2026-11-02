@@ -93,13 +93,17 @@ def completed_range(first: str, current: str) -> list[str]:
     return result
 
 
-def candidate_training_window(row: dict, *, current: str) -> str | None:
+def candidate_training_window(row: dict, *, current: str,
+                              all_months: set[str] | None = None,
+                              rotation: int = 0) -> str | None:
     """A six-month NAME candidate only; research must verify all raw bytes."""
     if row["family"] != "candles_5m":
         return None
-    names = set(row["priority_window_named_months_not_reverified"])
+    names = set(all_months if all_months is not None else
+                row["priority_window_named_months_not_reverified"])
     floor = ATTEMPT_FLOORS.get((row["venue"], row["family"]), "2021-01")
     # Only the same venue, contract/asset and family may form the window.
+    eligible = []
     for first in sorted(names, reverse=True):
         if first < floor:
             continue
@@ -107,8 +111,8 @@ def candidate_training_window(row: dict, *, current: str) -> str | None:
         for _ in range(5):
             seq.append(_month_after(seq[-1]))
         if seq[-1] < current and all(m in names for m in seq):
-            return first
-    return None
+            eligible.append(first)
+    return eligible[rotation % len(eligible)] if eligible else None
 
 
 def build_plan(census: dict, *, max_jobs: int = 2) -> dict:
@@ -121,6 +125,19 @@ def build_plan(census: dict, *, max_jobs: int = 2) -> dict:
     now = instant.astimezone(UTC)
     current = now.strftime("%Y-%m")
     priority = window(now)
+    all_hints: dict[tuple[str, str, str], set[str]] = {}
+    for hint in census.get("all_completed_scope_name_hints", []):
+        key = (hint.get("venue"), hint.get("asset"), hint.get("family"))
+        listed = hint.get("listed_completed_utc_months")
+        if (key[0] not in VENUES or key[1] not in ASSETS
+            or key[2] not in PERP_FAMILIES or not isinstance(listed, list)
+            or len(listed) > 120 or len(set(listed)) != len(listed)
+            or any(not isinstance(m, str) or len(m) != 7
+                   or m < "2021-01" or m >= current or
+                   m[4] != "-" or m[5:] not in
+                   {f"{n:02d}" for n in range(1, 13)} for m in listed)):
+            raise ValueError("invalid independent source-month name inventory")
+        all_hints.setdefault(key, set()).update(listed)
     rows = []
     for entry in backlog["scopes"]:
         venue, asset, family = (entry[k] for k in ("venue", "asset", "family"))
@@ -139,6 +156,8 @@ def build_plan(census: dict, *, max_jobs: int = 2) -> dict:
             "sample_or_page_hint_count": entry["partial_source_page_scopes"]
                                        + entry["hourly_original_depth_hints"],
             "last_named_month": max(named) if named else None,
+            "all_history_named_months_not_reverified": len(all_hints.get(
+                (venue, asset, family), set())),
             "verified_complete_months_from_this_census": 0,
             "unverified_priority_months": len(priority.completed_months) - len(named),
             "earliest_attempt_is_listing_proof": False,
@@ -155,20 +174,29 @@ def build_plan(census: dict, *, max_jobs: int = 2) -> dict:
     # lightweight scheduler fills focused gaps, never blanket-dispatches
     # the dozen already running bulk workflows every six hours.
     candidates = []
-    training = [
-        (row["venue"], row["asset"], candidate_training_window(row, current=current))
-        for row in backlog["scopes"]
-        if row["venue"] in ("okx", "gate", "bitget")
-    ]
-    for venue, asset, first in training:
+    training = []
+    for row in backlog["scopes"]:
+        venue, asset, family = (row[k] for k in ("venue", "asset", "family"))
+        if venue == "binance" or family != "candles_5m":
+            continue
+        first = candidate_training_window(
+            row, current=current,
+            all_months=all_hints.get((venue, asset, family)),
+            rotation=now.date().toordinal(),
+        )
         if first:
-            candidates.append({
-                "workflow": "source-native-research.yml",
-                "inputs": {"venue": venue, "first_month": first,
-                           "asset": asset if venue == "bitget" else ""},
-                "reason": "six same-source manifest name hints; full SHA/grid validation still required",
-                "scope": f"{venue}/{asset}/candles_5m",
-            })
+            training.append((venue, asset, first))
+    # Rotate across independent venue/coin scopes. A single well-covered
+    # exchange can never monopolize source-native model research forever.
+    if training:
+        venue, asset, first = training[now.date().toordinal() % len(training)]
+        candidates.append({
+            "workflow": "source-native-research.yml",
+            "inputs": {"venue": venue, "first_month": first,
+                       "asset": asset if venue == "bitget" else ""},
+            "reason": "six same-source manifest names; original bytes and UTC grid must still pass",
+            "scope": f"{venue}/{asset}/candles_5m",
+        })
     # Bitget v3 is already scheduled twice/week, but its low default request
     # budget must not monopolize a whole historic queue or erase other venues.
     # Focus a daily optional dispatch only on a genuinely unlisted priority

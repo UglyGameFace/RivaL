@@ -3,9 +3,8 @@ from __future__ import annotations
 
 import gzip
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -106,7 +105,7 @@ async def test_actual_batch_retains_true_readback_and_unavailable_sources(
 ):
     async def names(_drive):
         return ["gate-hourly-l2-BTC-orderbooks-2023042505--"
-                "b" * 16 + ".gz.manifest.json"]
+                + "b" * 16 + ".gz.manifest.json"]
 
     class Drive:
         async def aclose(self):

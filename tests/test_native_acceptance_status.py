@@ -63,6 +63,19 @@ class NativeAcceptanceStatusTests(unittest.TestCase):
                 json.dumps(report), encoding="utf-8")
             self.assertEqual(latest_report(root), report)
 
+    def test_canonical_bitget_report_is_visible_to_existing_acceptance(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            report = {
+                "schema_version": "rival-native-source-research-v1",
+                "venue": "bitget", "status": "source_months_incomplete",
+                "published_models": 0,
+            }
+            (root / "source-bitget-research.json").write_text(
+                json.dumps(report), encoding="utf-8",
+            )
+            self.assertEqual(latest_report(root), report)
+
     def test_rejects_invalid_report_schema(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

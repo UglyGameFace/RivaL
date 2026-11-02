@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import calendar
 import json
 import re
 from collections import defaultdict
@@ -312,7 +313,8 @@ def summarize(names: list[str], *, now: datetime) -> dict:
                 day for day, digests in sorted(days.items())
                 if len(digests) > 1
             ][:15],
-            "all_utc_days_present_by_name": len(days) in (28, 29, 30, 31),
+                        "all_utc_days_present_by_name": len(days) == calendar.monthrange(
+                int(month[:4]), int(month[5:]))[1],
             "exact_full_calendar_month_verified": False,
             "original_zip_bytes_rehashed_in_census": False,
         } for (asset, month), days in sorted(binance_oi_days.items())],

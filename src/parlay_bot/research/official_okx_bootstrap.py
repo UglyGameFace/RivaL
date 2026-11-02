@@ -65,7 +65,7 @@ def advanced_month_bounds(month: str, module_id: int) -> tuple[datetime, datetim
     if type(module_id) is not int or module_id not in ADVANCED_FIRST:
         raise HistoryImportError("unknown OKX historical data module")
     if not isinstance(month, str) or not re.fullmatch(
-        r"20\\d{2}-(?:0[1-9]|1[0-2])", month
+        r"20\d{2}-(?:0[1-9]|1[0-2])", month
     ):
         raise HistoryImportError("invalid OKX advanced calendar month")
     if month < ADVANCED_FIRST[module_id]:
@@ -254,7 +254,7 @@ async def inventory_extra_modules(client: httpx.AsyncClient, *,
                                    module_ids: tuple[int, ...] | None = None) -> dict:
     """Discover bounded per-module official archives; do not infer listings."""
     if not isinstance(month, str) or not re.fullmatch(
-        r"20\\d{2}-(?:0[1-9]|1[0-2])", month
+        r"20\d{2}-(?:0[1-9]|1[0-2])", month
     ):
         raise HistoryImportError("invalid OKX advanced calendar month")
     if module_ids is not None and (

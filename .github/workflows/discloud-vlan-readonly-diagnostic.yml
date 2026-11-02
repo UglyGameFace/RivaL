@@ -1,4 +1,4 @@
-name: One-time RivaL native model hold reasons
+name: Verify candidate admission provenance in production
 on:
   push:
     branches: ["diagnostics/read-only-discloud-vlan-20261101"]
@@ -6,25 +6,30 @@ on:
 permissions:
   contents: read
 jobs:
-  inspect:
+  verify:
     runs-on: ubuntu-latest
     timeout-minutes: 4
     steps:
-      - name: Read latest historical model selection and paper promotion blockers
+      - name: Check actual Postgres migration historical selection and retained screening
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         run: |
           python - <<'PY'
           import json,os,base64,urllib.request,urllib.parse
-          t=os.environ['DISCLOUD_TOKEN'];app=os.environ['DISCLOUD_APP_ID']
-          script="import json,os,sys\nsys.path.insert(0,os.path.abspath(\"src\"))\nfrom parlay_bot.config import Settings\nfrom parlay_bot.storage.hot import PostgresHotStore\ns=Settings()\nr={}\nstore=PostgresHotStore(s.rival_database_url.get_secret_value())\ntry:\n with store.connect() as con:\n  queries={\n   \"selection_reasons\":\"SELECT reason,COUNT(*) AS n FROM rival_history_selection GROUP BY reason ORDER BY n DESC LIMIT 12\",\n   \"candidate_screens\":\"SELECT retrospective_screen,COUNT(*) AS n,MAX(source_months) AS max_source_months, SUM(CASE WHEN active_live=1 THEN 1 ELSE 0 END) AS live FROM rival_offline_candidates GROUP BY retrospective_screen ORDER BY n DESC LIMIT 12\",\n   \"promotion_reasons\":\"SELECT reason,COUNT(*) AS n FROM perp_model_promotion WHERE evaluated_at >= '2026-10-31' GROUP BY reason ORDER BY n DESC LIMIT 8\",\n  }\n  for k,q in queries.items():\n   try:\n    items=[dict(x) for x in con.execute(q).fetchall()]\n    for item in items:\n     if \"reason\" in item:item[\"reason\"]=str(item[\"reason\"])[:220]\n    r[k]=items\n   except Exception as e:r[k+\"_error\"]=type(e).__name__\nfinally:store.close()\nprint(\"RIVAL_MODEL_HOLDS=\"+json.dumps(r,sort_keys=True))\n"
+          token=os.environ.get('DISCLOUD_TOKEN','');app=os.environ.get('DISCLOUD_APP_ID','')
+          if not token or not app:raise SystemExit('No existing Discloud credentials')
+          script="import json,os,sys\nsys.path.insert(0,os.path.abspath(\"src\"))\nfrom parlay_bot.config import Settings\nfrom parlay_bot.research.candidate_registry import ResearchCandidateRegistry\nfrom parlay_bot.storage.hot import PostgresHotStore\ns=Settings();out={\"backend\":s.rival_storage_backend}\nif s.rival_storage_backend==\"postgres\" and s.rival_database_url is not None:\n db=PostgresHotStore(s.rival_database_url.get_secret_value())\n try:\n  reg=ResearchCandidateRegistry(db)\n  reg.initialize()\n  out[\"inventory\"]=reg.inventory_receipt()\n  out[\"btc5\"]=reg.summary(asset=\"BTC\",horizon=5,live_venues=(\"okx\",\"gate\",\"bitget\",\"binance\"))\n  out[\"xrp15\"]=reg.summary(asset=\"XRP\",horizon=15,live_venues=(\"okx\",\"gate\",\"bitget\"))\n  for name in (\"btc5\",\"xrp15\"):\n   item=out[name]\n   out[name]={\"slot_imported\":item[\"slot_imported\"],\n    \"slot_compatible\":item[\"slot_compatible\"],\n    \"slot_passed\":item[\"slot_passed\"],\n    \"active_offline_model\":item[\"active_offline_model\"],\n    \"admission_reasons\":item.get(\"admission_reasons\"),\n    \"selection_contract\":item[\"historical_selection\"][\"contract\"] if item.get(\"historical_selection\") else None,\n    \"selection_reason\":item.get(\"reason\")}\n  with db.connect() as con:\n   out[\"column_present\"]=\"admission_reason\" in db.database.column_names(con,\"rival_offline_candidates\")\n   out[\"admission_reason_summary\"]=[dict(r) for r in con.execute(\n    \"SELECT COALESCE(admission_reason,'legacy_reason_unreported') AS reason,\"\n    \" COUNT(*) AS n FROM rival_offline_candidates\"\n    \" GROUP BY COALESCE(admission_reason,'legacy_reason_unreported')\"\n    \" ORDER BY n DESC LIMIT 12\"\n    ).fetchall()]\n except Exception as exc:out[\"error_class\"]=type(exc).__name__\n finally:db.close()\nprint(\"RIVAL_MODEL_SCREEN_RELEASE=\"+json.dumps(out,sort_keys=True,default=str))\n"
           cmd="python -c 'exec(__import__(\"base64\").b64decode(\""+base64.b64encode(script.encode()).decode()+"\"))'"
-          q=urllib.request.Request('https://api.discloud.app/v2/app/'+urllib.parse.quote(app,safe='')+'/console',
-            method='PUT',data=json.dumps({'command':cmd}).encode(),headers={'api-token':t,'Content-Type':'application/json'})
-          with urllib.request.urlopen(q,timeout=65) as resp:obj=json.load(resp)
-          stdout=str(obj.get('apps',{}).get('shell',{}).get('stdout',''))
-          if 'RIVAL_MODEL_HOLDS=' not in stdout:
-           print('no result; stderr_present',bool(obj.get('apps',{}).get('shell',{}).get('stderr')));raise SystemExit(1)
-          print('Live model admission blocker groups',stdout.split('RIVAL_MODEL_HOLDS=',1)[1].splitlines()[0])
+          req=urllib.request.Request('https://api.discloud.app/v2/app/'+urllib.parse.quote(app,safe='')+'/console',
+           data=json.dumps({'command':cmd}).encode(),method='PUT',
+           headers={'api-token':token,'Content-Type':'application/json'})
+          with urllib.request.urlopen(req,timeout=80) as r:d=json.load(r)
+          stdout=str(d.get('apps',{}).get('shell',{}).get('stdout',''))
+          if 'RIVAL_MODEL_SCREEN_RELEASE=' not in stdout:
+           print('No production model screen receipt; stderr-present',bool(d.get('apps',{}).get('shell',{}).get('stderr')));raise SystemExit(1)
+          data=json.loads(stdout.split('RIVAL_MODEL_SCREEN_RELEASE=',1)[1].splitlines()[0])
+          print('Actual PostgreSQL candidate screen release',json.dumps(data,sort_keys=True))
+          if not data.get('column_present') or 'error_class' in data:
+           raise SystemExit('Production admission reason migration unverified')
           PY

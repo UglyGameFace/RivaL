@@ -107,7 +107,7 @@ def _prospective_math_evidence(market: PerpetualMarketStore, *, asset: str,
         if status not in ("supported", "insufficient", "not_improving"):
             raise ValueError("unrecognized scored forward evidence state")
         targets, days = int(report["targets"]), int(report["days"])
-        if not (0 <= targets <= 2_000_000 and 0 <= days <= 14):
+        if not (0 <= targets <= 2_000_000 and 0 <= days <= 16):
             raise ValueError("unbounded future score")
         def score(value: object) -> float | None:
             return (float(value) if type(value) in (float, int)
@@ -147,7 +147,9 @@ def _audited_history_evidence(market: PerpetualMarketStore, *, asset: str,
             if record["venue"] not in venues or record["asset"] != asset:
                 continue
             audit_clock = _stamp(record["audited_at"])
-            fresh = timedelta(0) <= clock - audit_clock <= timedelta(hours=24)
+            window_end = _stamp(record["window_end"])
+            fresh = (timedelta(0) <= clock - audit_clock <= timedelta(hours=24)
+                     and timedelta(0) <= clock - window_end <= timedelta(hours=24))
             expected = int(record["expected_bars"])
             valid = int(record["valid_bars"])
             missing = int(record["missing_bars"])

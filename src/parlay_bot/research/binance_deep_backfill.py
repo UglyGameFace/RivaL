@@ -19,7 +19,7 @@ from parlay_bot.config import Settings
 from parlay_bot.research.audit import audit_partition
 from parlay_bot.research.free_history import ASSETS, HistoryImportError, ingest_binance
 from parlay_bot.research.history_priority import ordered_months, window
-from parlay_bot.research.publish import _drive, prepare, publish
+from parlay_bot.research.publish import _artifact, _drive, prepare, publish
 
 FIRST = "2021-01"
 MAX_MONTHS_PER_RUN = 32
@@ -145,6 +145,7 @@ async def collect_official_binance(
                     artifact = await asyncio.to_thread(
                         ingest_binance, client, asset=asset,
                         interval="5m", month=month, out_dir=root,
+                        retain_original=True,
                     )
                     quality = audit_partition(artifact.manifest_path)
                     if (quality["month"] != month or quality["venue"] != "binance"
@@ -152,6 +153,31 @@ async def collect_official_binance(
                         or quality["interval_minutes"] != 5
                         or not quality["full_calendar_month_verified"]):
                         raise HistoryImportError("source-month incomplete; no publication")
+                    # Provider-original bytes are not equivalent to normalized
+                    # candle NDJSON. Both must survive private Drive readback.
+                    original = artifact.manifest_path.parent / (
+                        f"{asset}USDT-5m-{month}.zip")
+                    checksum = original.with_name(original.name + ".CHECKSUM")
+                    original_item = _artifact(original, 1)
+                    if original_item.sha256 != json.loads(
+                        artifact.manifest_path.read_text()
+                    )["source_sha256"]:
+                        raise HistoryImportError("original Binance ZIP SHA changed")
+                    for item, label in (
+                        (original_item, "original"),
+                        (_artifact(checksum, 1), "checksum"),
+                    ):
+                        remote = await drive.ensure_history_file(
+                            artifact=item,
+                            batch_id=f"binance-{label}-" + item.sha256[:24],
+                            mime_type=("application/zip" if label == "original"
+                                       else "text/plain"),
+                        )
+                        await drive.verify_downloaded_artifact(
+                            file_id=remote.file_id,
+                            parent_id=drive.folders.history, artifact=item,
+                            max_bytes=32 * 1024 * 1024,
+                        )
                     prepared = prepare(artifact.manifest_path)
                     receipt = await publish(drive, prepared)
                     if not receipt["restore_sha256_verified"]:
@@ -162,6 +188,7 @@ async def collect_official_binance(
                         "rows": artifact.records,
                         "data_sha256": prepared.history.sha256,
                         "restore_sha256_verified": True,
+                        "original_zip_and_checksum_drive_sha_readback": True,
                     })
                 except (HistoryImportError, httpx.HTTPError, OSError,
                         RuntimeError, ValueError) as exc:

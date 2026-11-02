@@ -11,6 +11,7 @@ from pathlib import Path
 
 from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.history_priority import window
 from parlay_bot.research.publish import _drive
 
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
@@ -232,8 +233,26 @@ def summarize(names: list[str], *, now: datetime) -> dict:
         for (v, a, f), months in sorted(streams.items())
         if f not in ("candles_5m", "candlesticks_5m")
     ]
+    priority = window(now)
+    selected = set(priority.completed_months)
+    # Exact source-month name hints, not SHA-256 readbacks. This separate
+    # inventory is required to avoid miscounting 2021 originals as evidence
+    # that a selected 2024-2026 month has already been recovered.
+    priority_scopes = [{
+        "venue": venue, "asset": asset, "family": family,
+        "listed_completed_utc_months": sorted(selected.intersection(months)),
+        "name_conflict_utc_months": sorted(
+            month for month, shas in months.items()
+            if month in selected and len(shas) > 1
+        ),
+        "byte_readbacks_verified_in_this_census": False,
+        "complete_source_months_qualified": False,
+    } for (venue, asset, family), months in sorted(streams.items())
+        if selected.intersection(months)]
     return {
         "schema_version": "rival-drive-source-manifest-census-v1",
+        "priority_window": priority.metadata(),
+        "priority_24_month_scope_name_hints": priority_scopes,
         "generated_at": now.astimezone(UTC).isoformat(),
         "all_manifest_objects_listed": len(names),
         "unrecognized_manifest_names": ignored,

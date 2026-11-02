@@ -111,12 +111,18 @@ async def test_lineage_page_displays_real_boosted_delivery_proof_without_new_men
         view._rebuild()
         embed = await view.render()
         fields = {field.name: str(field.value) for field in embed.fields}
-        assert "Boosted model production proof" in fields
-        proof = fields["Boosted model production proof"]
-        assert "**Imported:** 0" in proof
-        assert "No screened portable boosted artifact" in proof
-        assert "NOT VERIFIED" in proof
+        assert "Are advanced models ready?" in fields
+        proof = fields["Are advanced models ready?"]
+        assert "**Advanced models imported:** 0" in proof
+        assert "No model qualifies for simulated testing yet" in proof
+        assert "not verified" in proof
         assert len(embed.fields) <= 3
+
+        view.section = "technical"
+        detail = await view.render()
+        technical = {field.name: str(field.value) for field in detail.fields}
+        assert "No screened portable boosted artifact" in technical["Boosted model production proof"]
+        assert "NOT VERIFIED" in technical["Boosted model production proof"]
     finally:
         view.stop()
         store.close()

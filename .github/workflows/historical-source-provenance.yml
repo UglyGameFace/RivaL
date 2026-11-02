@@ -5,6 +5,7 @@ on:
     paths:
       - ".github/workflows/historical-source-provenance.yml"
       - "src/parlay_bot/research/binance_oi_metrics.py"
+      - "src/parlay_bot/archive/drive.py"
       - "src/parlay_bot/research/history_byte_audit.py"
       - "src/parlay_bot/research/official_contract_listings.py"
       - "src/parlay_bot/research/free_history.py"
@@ -17,6 +18,7 @@ on:
     paths:
       - ".github/workflows/historical-source-provenance.yml"
       - "src/parlay_bot/research/binance_oi_metrics.py"
+      - "src/parlay_bot/archive/drive.py"
       - "src/parlay_bot/research/history_byte_audit.py"
       - "src/parlay_bot/research/official_contract_listings.py"
   schedule:

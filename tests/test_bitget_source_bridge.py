@@ -13,7 +13,11 @@ import pytest
 from parlay_bot.research.audit import audit_partition
 from parlay_bot.research.bitget_source_bridge import restore_verified_bitget_market_months
 from parlay_bot.research.bitget_v3_archive import (
-    ENDPOINT, STEP, bounds, windows, write_original_responses,
+    ENDPOINT,
+    STEP,
+    bounds,
+    windows,
+    write_original_responses,
 )
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.learning import _rows

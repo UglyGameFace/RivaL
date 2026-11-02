@@ -35,6 +35,11 @@ jobs:
             echo "::error::Set DISCLOUD_TOKEN and DISCLOUD_LLM_APP_ID for the existing standalone RivaL-Intelligence app; main bot credentials are not used."
             exit 1
           fi
+      - name: Reuse previously validated pinned CPU runtime when source is unchanged
+        uses: actions/cache@v4
+        with:
+          path: runtime/bin
+          key: rival-intelligence-cpu-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('build.sh') }}
       - name: Build pinned CPU runtime on GitHub only
         env:
           RIVAL_BUILD_FROM_SOURCE: "1"

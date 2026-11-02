@@ -122,6 +122,7 @@ def test_live_spike_evidence_is_observed_before_challenger_prediction_issue():
     # forecasts before recording that candle's new spike, which left the
     # causally joined spike regime empty at every ordinary five-minute tick.
     import inspect
+
     from parlay_bot.discord_app.bot import RivalDiscordClient
 
     loop = inspect.getsource(RivalDiscordClient._perp_loop)

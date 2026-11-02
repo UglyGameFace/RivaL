@@ -13,8 +13,8 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MARKET_SYMBOLS
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence, build_evidence
-from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.local_first_research import LOCAL_MODEL, LocalFirstResearch
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore

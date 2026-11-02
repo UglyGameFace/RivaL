@@ -241,11 +241,14 @@ async def test_public_probe_detects_missing_windows_without_drive_writes(tmp_pat
         )
     finally:
         await client.aclose()
-    assert result["request_window_count"] == 24
-    assert len(observed) == 24
+    assert result["request_window_count"] == 27
+    assert len(observed) == 27
     assert any(s["status"] == "incomplete_window" for s in result["samples"])
     assert result["complete_month_claimed"] is False
     assert result["drive_bytes_verified"] is False
+    assert {s["variant"] for s in result["samples"] if "variant" in s} == {
+        "start_back_one_bar", "end_forward_one_bar", "both_sides_one_bar",
+    }
     assert (tmp_path / "bitget-source-probe-BTC.json").exists()
 
 

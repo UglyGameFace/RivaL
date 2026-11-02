@@ -7,6 +7,8 @@ on:
       - ".github/workflows/drive-source-census.yml"
       - "src/parlay_bot/research/drive_source_census.py"
       - "src/parlay_bot/research/source_family_backlog.py"
+      - "src/parlay_bot/research/history_priority.py"
+      - "tests/test_history_priority.py"
       - "tests/test_source_family_backlog.py"
       - "tests/test_drive_source_census.py"
   workflow_dispatch:
@@ -72,6 +74,17 @@ jobs:
                           f"{sum(x['partial_source_page_scopes'] for x in scopes)} | "
                           f"{sum(x['hourly_original_depth_hints'] for x in scopes)} | "
                           f"{scopes[0]['priority_lane']} |")
+          rows.append(
+              f"**First priority: {backlog['priority_window']['first_completed_utc_month']} "
+              f"through {backlog['priority_window']['last_completed_utc_month']}**, "
+              f"24 completed months; November live data is separate."
+          )
+          rows.append(
+              f"{backlog['priority_required_venue_asset_family_month_scopes']} "
+              "venue/asset/family/month requirements; "
+              f"{backlog['priority_monthly_name_slots_not_byte_verified']} "
+              "month names listed, none independently rehashed in this census."
+          )
           rows.append(f"{backlog['required_scopes']} original family requirements in artifact; "
                       "actual bytes and contract listings require separate readback.")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:

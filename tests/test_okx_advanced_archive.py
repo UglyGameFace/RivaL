@@ -58,14 +58,20 @@ def test_source_gap_candidates_are_bounded_and_disjoint():
 
 def test_only_explicit_provider_http_400_is_skippable_catalog_rejection():
     req = httpx.Request("GET", "https://www.okx.com/api/v5/public/market-data-history")
-    for status in (400, 403, 429, 500):
-        response = httpx.Response(status, request=req)
+    for status, code, expected in (
+        (400, "50016", True),
+        (400, "51000", False),
+        (403, "50016", False),
+        (429, "50016", False),
+        (500, "50016", False),
+    ):
+        response = httpx.Response(status, request=req, json={"code": code})
         try:
             raise HistoryImportError("official OKX API request failed") from (
                 httpx.HTTPStatusError("catalog request", request=req, response=response)
             )
         except HistoryImportError as exc:
-            assert official_catalog_http_400(exc) is (status == 400)
+            assert official_catalog_http_400(exc) is expected
     assert not official_catalog_http_400(HistoryImportError("untrusted archive"))
 
 

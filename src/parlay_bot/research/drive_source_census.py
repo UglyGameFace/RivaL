@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import calendar
 import json
 import re
 from collections import defaultdict
@@ -51,6 +52,11 @@ OTHER_NATIVE = re.compile(
     r"(hyperliquid|dydx|kucoin|deribit|lighter|phemex)-"
     r"([A-Za-z0-9_-]{2,64})-(USDT|USDC|USD)-5m-"
     r"(20\d{2}-(?:0[1-9]|1[0-2]))--([a-f0-9]{16})\.manifest\.json"
+)
+
+BINANCE_METRICS_DAILY = re.compile(
+    r"binance-metrics-(BTC|ETH|SOL|XRP)-(20\d{2}-(?:0[1-9]|1[0-2])-"
+    r"(?:0[1-9]|[12]\d|3[01]))--([a-f0-9]{16})\.manifest\.json"
 )
 
 PAGE_PATTERNS = (
@@ -161,6 +167,7 @@ def summarize(names: list[str], *, now: datetime) -> dict:
     name_counts = defaultdict(int)
     okx_aux = defaultdict(set)
     gate_l2_hours = defaultdict(lambda: defaultdict(set))
+    binance_oi_days = defaultdict(lambda: defaultdict(set))
     ignored, outside = 0, 0
     current = now.astimezone(UTC).strftime("%Y-%m")
     for name in names:
@@ -169,6 +176,19 @@ def summarize(names: list[str], *, now: datetime) -> dict:
         if key is None:
             page_key = parse_page_name(name)
             if page_key is None:
+                metric = BINANCE_METRICS_DAILY.fullmatch(name)
+                if metric is not None:
+                    asset, day, digest = metric.groups()
+                    try:
+                        datetime.strptime(day, "%Y-%m-%d")
+                    except ValueError:
+                        outside += 1
+                        continue
+                    if "2021-01" <= day[:7] < current:
+                        binance_oi_days[(asset, day[:7])][day].add(digest)
+                    else:
+                        outside += 1
+                    continue
                 gate_l2 = GATE_L2_HOURLY_MANIFEST.fullmatch(name)
                 if gate_l2 is not None:
                     asset, family, hour, short_sha = gate_l2.groups()
@@ -284,6 +304,20 @@ def summarize(names: list[str], *, now: datetime) -> dict:
         "month_scopes": scopes,
         "page_level_sources_not_full_months": partial_pages,
         "other_family_name_counts": enrichment,
+        "binance_daily_metrics_not_full_months": [{
+            "venue": "binance", "asset": asset,
+            "family": ["open_interest", "positioning"],
+            "utc_month": month,
+            "distinct_named_days": len(days),
+            "duplicate_or_conflicting_day_names": [
+                day for day, digests in sorted(days.items())
+                if len(digests) > 1
+            ][:15],
+                        "all_utc_days_present_by_name": len(days) == calendar.monthrange(
+                int(month[:4]), int(month[5:]))[1],
+            "exact_full_calendar_month_verified": False,
+            "original_zip_bytes_rehashed_in_census": False,
+        } for (asset, month), days in sorted(binance_oi_days.items())],
         "gate_hourly_l2_not_full_months": [{
             "venue": "gate", "asset": asset, "family": family,
             "utc_month": month, "distinct_named_hours": len(hours),

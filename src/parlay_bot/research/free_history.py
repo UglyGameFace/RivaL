@@ -286,11 +286,13 @@ def _persist(
 
 
 def ingest_binance(
-    client: httpx.Client, *, asset: str, interval: str, month: str, out_dir: Path,
+    client: httpx.Client, *, asset: str, interval: str, month: str,
+    out_dir: Path, retain_original: bool = False,
 ) -> IntakeResult:
     url = binance_archive_url(asset=asset, interval=interval, month=month)
     filename = url.rsplit("/", 1)[-1]
-    checksum = _fetch(client, url + ".CHECKSUM", limit=1024).decode("ascii").strip()
+    checksum_raw = _fetch(client, url + ".CHECKSUM", limit=1024)
+    checksum = checksum_raw.decode("ascii").strip()
     match = re.fullmatch(r"([0-9a-fA-F]{64})\s+\*?([A-Za-z0-9_.-]+)", checksum)
     if match is None or match[2] != filename:
         raise HistoryImportError("missing or mismatched Binance SHA-256 checksum")
@@ -303,6 +305,19 @@ def ingest_binance(
     last_month = rows[-1]["opened_at"][:7]
     if first_month != month or last_month != month:
         raise HistoryImportError("Binance archive contains candles outside declared month")
+    if retain_original:
+        # Retain provider-exact ZIP + checksum before publication. An original
+        # source is never reconstructable from normalized candle NDJSON.
+        folder = Path(out_dir) / "binance_um_klines"
+        folder.mkdir(parents=True, exist_ok=True)
+        for path, data in (
+            (folder / filename, payload),
+            (folder / (filename + ".CHECKSUM"), checksum_raw),
+        ):
+            if path.exists() and path.read_bytes() != data:
+                raise HistoryImportError("immutable original Binance ZIP conflict")
+            if not path.exists():
+                path.write_bytes(data)
     return _persist(
         source="binance_um_klines", key=f"{asset}USDT-{interval}-{month}",
         records=rows, raw_sha=_sha(payload), url=url, out_dir=out_dir, gaps=gaps,

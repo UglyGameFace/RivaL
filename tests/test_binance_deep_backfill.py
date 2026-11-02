@@ -1,6 +1,7 @@
 """Offline acceptance for bounded Binance 2021+ ZIP research publication."""
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -88,11 +89,35 @@ async def test_publish_only_complete_source_month_and_remote_sha_readback(tmp_pa
     async def existing(drive):
         return {"BTCUSDT-5m-2021-01"}
     monkeypatch.setattr(deep, "existing_month_keys", existing)
+    async def originals(drive):
+        return {"BTCUSDT-5m-2021-01"}
+    monkeypatch.setattr(deep, "existing_original_keys", originals)
     calls = []
-    def ingest(client, *, asset, interval, month, out_dir):
-        calls.append((asset, interval, month))
-        return SimpleNamespace(records=8928, manifest_path=Path("pretend"))
+    remote = []
+    original = b"verified provider-original zip fixture"
+    digest = hashlib.sha256(original).hexdigest()
+    def ingest(client, *, asset, interval, month, out_dir, retain_original=False):
+        calls.append((asset, interval, month, retain_original))
+        target = out_dir / "binance_um_klines"
+        target.mkdir(parents=True, exist_ok=True)
+        filename = f"{asset}USDT-5m-{month}.zip"
+        (target / filename).write_bytes(original)
+        (target / (filename + ".CHECKSUM")).write_text(
+            digest + "  " + filename + "\n")
+        manifest = target / "fixture.manifest.json"
+        manifest.write_text(json.dumps({"source_sha256": digest}))
+        return SimpleNamespace(records=8928, manifest_path=manifest)
     monkeypatch.setattr(deep, "ingest_binance", ingest)
+    class Drive:
+        folders = SimpleNamespace(history="hist")
+        async def ensure_history_file(self, *, artifact, batch_id, mime_type):
+            remote.append(("stored", artifact.sha256, batch_id))
+            return SimpleNamespace(file_id="source-" + artifact.sha256[:20])
+        async def verify_downloaded_artifact(self, *, file_id, parent_id,
+                                             artifact, max_bytes):
+            assert parent_id == "hist" and max_bytes > artifact.size_bytes
+            remote.append(("verified", artifact.sha256, file_id))
+
     monkeypatch.setattr(deep, "audit_partition", lambda p: {
         "month": "2021-02", "venue": "binance", "contract": "BTCUSDT",
         "interval_minutes": 5, "full_calendar_month_verified": True,
@@ -104,14 +129,16 @@ async def test_publish_only_complete_source_month_and_remote_sha_readback(tmp_pa
         return {"restore_sha256_verified": True}
     monkeypatch.setattr(deep, "publish", publish)
     outcome = await deep.collect_official_binance(
-        drive=object(), assets=("BTC",), max_new=1,
+        drive=Drive(), assets=("BTC",), max_new=1,
         now=datetime(2021, 3, 1, tzinfo=UTC),
         root=tmp_path / "archive", report_dir=tmp_path / "reports",
     )
-    assert calls == [("BTC", "5m", "2021-02")]
+    assert calls == [("BTC", "5m", "2021-02", True)]
+    assert len(remote) == 4
     assert outcome["new_months"] == 1
     assert outcome["remote_manifest_names_skipped_without_readback"] == 1
     assert outcome["newly_published"][0]["restore_sha256_verified"] is True
+    assert outcome["newly_published"][0]["original_zip_and_checksum_drive_sha_readback"] is True
     assert outcome["fully_verified_2021_to_present"] is False
     assert json.loads((tmp_path / "reports/binance-2021-bulk-progress.json").read_text())["live_model_promoted"] is False
 
@@ -122,6 +149,9 @@ async def test_incomplete_source_month_does_not_publish(tmp_path, monkeypatch):
     async def existing(drive):
         return set()
     monkeypatch.setattr(deep, "existing_month_keys", existing)
+    async def originals(drive):
+        return set()
+    monkeypatch.setattr(deep, "existing_original_keys", originals)
     monkeypatch.setattr(deep, "ingest_binance", lambda *a, **kw:
                         SimpleNamespace(records=8927, manifest_path=Path("pretend")))
     monkeypatch.setattr(deep, "audit_partition", lambda p: {
@@ -140,3 +170,38 @@ async def test_incomplete_source_month_does_not_publish(tmp_path, monkeypatch):
     assert result["new_months"] == 0
     assert result["unavailable_or_rejected"][0]["month"] == "2021-01"
     assert result["fully_verified_2021_to_present"] is False
+
+
+@pytest.mark.asyncio
+async def test_original_archive_resume_requires_both_zip_and_checksum():
+    calls = []
+    class Client:
+        async def get(self, url, *, params, headers):
+            calls.append(params)
+            if len(calls) == 1:
+                files = [{
+                    "id": "oldzip", "name": "BTCUSDT-5m-2021-01.zip",
+                    "parents": ["hist"], "appProperties": {"rival_kind": "history"},
+                }, {
+                    "id": "newzip", "name": "ETHUSDT-5m-2024-06.zip",
+                    "parents": ["hist"], "appProperties": {"rival_kind": "history"},
+                }]
+                return httpx.Response(200, json={"files": files, "nextPageToken": "next"})
+            return httpx.Response(200, json={"files": [{
+                "id": "oldcheck", "name": "BTCUSDT-5m-2021-01.zip.CHECKSUM",
+                "parents": ["hist"], "appProperties": {"rival_kind": "history"},
+            }]})
+    class Drive:
+        DRIVE_URL = "https://www.googleapis.com/drive/v3"
+        folders = SimpleNamespace(history="hist")
+        _client = Client()
+        async def _verify_folder_boundary(self):
+            pass
+        async def _headers(self):
+            return {}
+        @staticmethod
+        def _escape_query(value):
+            return value
+    keys = await deep.existing_original_keys(Drive())
+    assert keys == {"BTCUSDT-5m-2021-01"}
+    assert calls[1]["pageToken"] == "next"

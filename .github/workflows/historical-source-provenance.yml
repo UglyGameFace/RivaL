@@ -1,0 +1,110 @@
+name: Historical original OI and Drive byte audit
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/historical-source-provenance.yml"
+      - "src/parlay_bot/research/binance_oi_metrics.py"
+      - "src/parlay_bot/research/history_byte_audit.py"
+      - "src/parlay_bot/research/official_contract_listings.py"
+      - "src/parlay_bot/research/free_history.py"
+      - "src/parlay_bot/research/binance_deep_backfill.py"
+      - "src/parlay_bot/research/drive_source_census.py"
+      - "src/parlay_bot/research/historical_coordinator.py"
+      - "tests/test_historical_source_provenance.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/historical-source-provenance.yml"
+      - "src/parlay_bot/research/binance_oi_metrics.py"
+      - "src/parlay_bot/research/history_byte_audit.py"
+      - "src/parlay_bot/research/official_contract_listings.py"
+  schedule:
+    - cron: "47 1,7,13,19 * * *"
+  workflow_dispatch:
+    inputs:
+      max_new:
+        description: "Maximum original Binance metrics days; retains per-source bounds"
+        type: choice
+        options: ["8", "16", "24", "32"]
+        default: "24"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-original-history-provenance
+  cancel-in-progress: false
+
+jobs:
+  source-contracts:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[dev,archive]"
+      - run: |
+          ruff check src/parlay_bot/research/binance_oi_metrics.py src/parlay_bot/research/history_byte_audit.py src/parlay_bot/research/official_contract_listings.py src/parlay_bot/research/free_history.py src/parlay_bot/research/binance_deep_backfill.py src/parlay_bot/research/drive_source_census.py src/parlay_bot/research/historical_coordinator.py tests/test_historical_source_provenance.py
+          pytest -q tests/test_historical_source_provenance.py tests/test_binance_deep_backfill.py tests/test_drive_source_census.py tests/test_historical_coordinator.py
+  collect-originals:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 115
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[archive]"
+      - name: Preserve original daily OI and positioning source files
+        env:
+          REQUEST_MAX: ${{ inputs.max_new || '24' }}
+        run: python -m parlay_bot.research.binance_oi_metrics --max-new "$REQUEST_MAX"
+      - name: Verify warehouse month bytes and check provider original ZIP retention
+        run: python -m parlay_bot.research.history_byte_audit --max-attempts 4
+      - name: Summarize original-source evidence, never certify incomplete history
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          lines = ["### Original-source history evidence", "",
+                   "Daily source files are NOT full months; listing dates require official evidence."]
+          for name in ("binance-metrics-original-progress.json", "drive-original-byte-audit.json"):
+              path = Path("data/native-reports") / name
+              if not path.is_file():
+                  lines.append(f"- {name}: missing report; inspect errors.")
+                  continue
+              data = json.loads(path.read_text())
+              if name.startswith("binance"):
+                  lines.append(f"- Daily original readbacks: {len(data['readback_verified_days'])}; missing/rejected: {len(data['unavailable_or_rejected'])}")
+              else:
+                  lines.append(f"- Existing full-month SHA+grid readbacks: {data['months_calendar_byte_verified']}; original ZIPs read back: {data['original_zip_drive_sha_verified']}")
+          lines.append("No across-exchange historical completeness or model promotion certified.")
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
+              f.write("\n".join(lines) + "\n")
+          PY
+      - name: Preserve progress reports only, never private raw market files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rival-original-history-provenance
+          path: |
+            data/native-reports/binance-metrics-original-progress.json
+            data/native-reports/drive-original-byte-audit.json
+          retention-days: 30
+          if-no-files-found: ignore

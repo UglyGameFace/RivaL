@@ -47,11 +47,15 @@ ATTEMPT_FLOORS: dict[tuple[str, str], str] = {
 # The source's earliest REAL contract listing is unknown until separately proven.
 ROUTES: dict[tuple[str, str], tuple[str, str]] = {
     ("binance", "candles_5m"): ("binance-deep-file-backfill.yml", "scheduled_bulk"),
+    ("binance", "open_interest"): ("historical-source-provenance.yml", "official_daily_5m_metrics_partial"),
+    ("binance", "positioning"): ("historical-source-provenance.yml", "official_daily_5m_metrics_partial"),
+    ("bitget", "open_interest"): ("bitget-liquidity-archive.yml", "live_history_pages_not_complete"),
+    ("bitget", "liquidations"): ("bitget-liquidity-archive.yml", "recent_history_pages_not_complete"),
+    ("bitget", "orderbook_l2"): ("bitget-tardis-source-archive.yml", "sample_days_only"),
     **{("bitget", f): ("bitget-v3-overnight-archive.yml", "scheduled_bulk")
        for f in ("candles_5m", "mark", "index", "premium")},
     ("bitget", "funding"): ("bitget-liquidity-archive.yml", "scheduled_pages"),
     ("bitget", "trades"): ("bitget-tardis-source-archive.yml", "sample_days_only"),
-    ("bitget", "orderbook_l2"): ("bitget-tardis-source-archive.yml", "sample_days_only"),
     ("deribit", "trades"): ("deribit-hourly-native-backfill.yml", "hourly_chunks_only"),
     ("dydx", "funding"): ("dydx-v4-original-funding.yml", "scheduled_pages"),
     ("lighter", "funding"): ("lighter-original-auxiliary.yml", "scheduled_pages"),
@@ -116,7 +120,8 @@ def candidate_training_window(row: dict, *, current: str,
     return eligible[rotation % len(eligible)] if eligible else None
 
 
-def build_plan(census: dict, *, max_jobs: int = 2) -> dict:
+def build_plan(census: dict, *, max_jobs: int = 2,
+               listing_report: dict | None = None) -> dict:
     if not 1 <= max_jobs <= 4:
         raise ValueError("bounded dispatcher limit required")
     backlog = build_backlog(census)
@@ -143,6 +148,39 @@ def build_plan(census: dict, *, max_jobs: int = 2) -> dict:
                    {f"{n:02d}" for n in range(1, 13)} for m in listed)):
             raise ValueError("invalid independent source-month name inventory")
         all_hints.setdefault(key, set()).update(listed)
+    listing_by_instrument: dict[tuple[str, str], tuple[str, str]] = {}
+    if listing_report is not None:
+        if (listing_report.get("schema_version") !=
+            "rival-official-perpetual-listings-v1"
+            or listing_report.get("all_listing_dates_verified") is not False):
+            raise ValueError("untrusted official listing report")
+        observed_at = datetime.fromisoformat(listing_report["observed_at"])
+        if (observed_at.utcoffset() is None or observed_at > now + timedelta(minutes=5)
+            or now - observed_at > timedelta(days=7)):
+            raise ValueError("stale or future official contract metadata")
+        for item in listing_report["assets"]:
+            venue, asset = item["venue"], item["asset"]
+            if venue not in VENUES or asset not in ASSETS:
+                raise ValueError("wrong official listing identity")
+            ident = (venue, asset)
+            if ident in listing_by_instrument:
+                raise ValueError("duplicate official listing identity")
+            stamp = item.get("contract_trading_start_utc")
+            if stamp:
+                if venue not in {"binance", "okx"} or (
+                    item.get("evidence_state") != "official_contract_start_timestamp"
+                    or item.get("published_field") !=
+                    ("onboardDate" if venue == "binance" else "listTime")
+                ):
+                    raise ValueError("listing inferred from unapproved source")
+                opened = datetime.fromisoformat(stamp)
+                if opened.utcoffset() is None or opened > now:
+                    raise ValueError("untrusted official listing clock")
+                listing_by_instrument[ident] = (
+                    opened.astimezone(UTC).strftime("%Y-%m"), stamp,
+                )
+            else:
+                listing_by_instrument[ident] = ("", "")
     rows = []
     for entry in backlog["scopes"]:
         venue, asset, family = (entry[k] for k in ("venue", "asset", "family"))
@@ -150,11 +188,28 @@ def build_plan(census: dict, *, max_jobs: int = 2) -> dict:
             (venue, family), (None, "collector_not_yet_integrated"))
         attempt_floor = ATTEMPT_FLOORS.get((venue, family))
         named = entry["priority_window_named_months_not_reverified"]
+        listing = listing_by_instrument.get((venue, asset))
+        listed_month = listing[0] if listing and listing[0] else None
+        source_days = [
+            r for r in census.get("binance_daily_metrics_not_full_months", [])
+            if venue == "binance" and r.get("asset") == asset
+            and family in r.get("family", [])
+        ]
         rows.append({
             "venue": venue, "asset": asset, "family": family,
+            "original_daily_source_name_hints_not_months": sum(
+                r["distinct_named_days"] for r in source_days
+            ),
             "earliest_technical_attempt_month": attempt_floor,
-            "actual_contract_listing_month": None,
-            "contract_listing_evidence": "not_verified",
+            "actual_contract_listing_month": listed_month,
+            "contract_listing_evidence": (
+                "provider_onboard_or_list_time_snapshot" if listed_month
+                else "not_verified"),
+            "named_months_before_reported_listing": [
+                m for m in sorted(all_hints.get((venue, asset, family), set()))
+                if listed_month and m < listed_month
+            ],
+            "reported_listing_is_archive_proof": False,
             "collector": route,
             "collector_mode": route_type,
             "name_hint_month_count": len(named),
@@ -272,8 +327,14 @@ def main() -> int:
     parser.add_argument("--out", type=Path, default=Path(
         "data/native-reports/historical-coordinator.json"))
     parser.add_argument("--max-jobs", type=int, default=2)
+    parser.add_argument("--listing-report", type=Path, default=None)
     args = parser.parse_args()
-    report = build_plan(json.loads(args.census.read_text()), max_jobs=args.max_jobs)
+    listing = (json.loads(args.listing_report.read_text())
+               if args.listing_report is not None else None)
+    report = build_plan(
+        json.loads(args.census.read_text()), max_jobs=args.max_jobs,
+        listing_report=listing,
+    )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     print(json.dumps({

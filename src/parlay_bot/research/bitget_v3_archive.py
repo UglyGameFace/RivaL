@@ -24,6 +24,7 @@ import httpx
 from parlay_bot.archive.drive import DriveArchiveError
 from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.history_priority import ordered_months, window
 from parlay_bot.research.publish import _artifact, _drive
 
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
@@ -472,13 +473,14 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
     if asset not in ASSETS or not 1 <= max_requests <= 40000 or not 1 <= max_months <= 400:
         raise ValueError("invalid bounded Bitget overnight job")
     pacer = pacer or Pacer()
-    # Prioritize the latest six full months for research, then deepest history.
-    prioritized = all_months[-6:] + all_months[:-6]
+    # Last 24 completed months before the requested older source history.
+    prioritized = ordered_months(all_months, now=clock)
     job = [(month, family) for month in prioritized for family in FAMILIES]
     report = {
         "schema_version": "rival-bitget-v3-overnight-progress-v1",
         "asset": asset, "created_at": datetime.now(UTC).isoformat(),
         "source": ENDPOINT, "venue": "bitget", "source_families": list(FAMILIES),
+        "priority_window": window(clock).metadata(),
         "planned_source_months": len(job), "existing_manifest_names_only": 0,
         "source_months_published_and_readback": [], "unavailable": [],
         "api_request_pages_reserved": 0, "request_budget": max_requests,

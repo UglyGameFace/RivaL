@@ -69,3 +69,42 @@ def test_census_cannot_claim_model_approval_or_unknown_provider_existence():
     raw["all_source_families_2021_to_present_verified"] = True
     with pytest.raises(ValueError, match="untrusted"):
         build_backlog(raw)
+
+
+def test_two_year_work_queue_is_exact_per_source_month_not_2021_aggregate():
+    clock = datetime(2026, 11, 2, 13, tzinfo=UTC)
+    names = [
+        "bitget-v3-BTC-market-2024-10--"
+        + "a" * 16 + ".manifest.json",
+        "bitget-v3-BTC-market-2024-11--"
+        + "b" * 16 + ".manifest.json",
+        "bitget-v3-BTC-market-2026-10--"
+        + "c" * 16 + ".manifest.json",
+        "gate-hourly-l2-BTC-orderbooks_slice-2025" + "052505--"
+        + "d" * 16 + ".gz.manifest.json",
+    ]
+    report = build_backlog(census.summarize(names, now=clock))
+    assert report["priority_window"]["first_completed_utc_month"] == "2024-11"
+    assert report["priority_window"]["last_completed_utc_month"] == "2026-10"
+    assert report["priority_window"]["live_partial_utc_month"] == "2026-11"
+    assert report["priority_required_venue_asset_family_month_scopes"] == 15360
+    assert report["required_scopes"] == 640
+    row = next(
+        r for r in report["scopes"]
+        if (r["venue"], r["asset"], r["family"]) == ("bitget", "BTC", "candles_5m")
+    )
+    assert row["priority_window_named_months_not_reverified"] == [
+        "2024-11", "2026-10",
+    ]
+    assert row["priority_24_completed_months"] == 24
+    assert len(row["priority_window_unlisted_months_availability_unknown"]) == 22
+    assert "2024-10" not in row["priority_window_named_months_not_reverified"]
+    assert row["original_bytes_rehashed_in_this_report"] is False
+    assert row["causal_feature_import_approved"] is False
+    gate = next(
+        r for r in report["scopes"]
+        if (r["venue"], r["asset"], r["family"]) == ("gate", "BTC", "orderbook_l2")
+    )
+    assert gate["priority_window_sampled_l2_hours_months_only"] == ["2025-05"]
+    assert gate["priority_window_named_months_not_reverified"] == []
+    assert gate["full_calendar_or_sequence_continuity_verified"] is False

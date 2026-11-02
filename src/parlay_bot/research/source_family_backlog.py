@@ -8,8 +8,10 @@ from __future__ import annotations
 import argparse
 import json
 from collections import Counter
+from datetime import datetime
 from pathlib import Path
 
+from parlay_bot.research.history_priority import window
 from parlay_bot.research.source_family_coverage import (
     ASSETS,
     PERP_FAMILIES,
@@ -45,6 +47,43 @@ def build_backlog(census: dict) -> dict:
     if (census.get("schema_version") != "rival-drive-source-manifest-census-v1"
         or census.get("all_source_families_2021_to_present_verified") is not False):
         raise ValueError("cannot plan from untrusted or certified-looking census")
+    acquired = window(datetime.fromisoformat(census["generated_at"]))
+    provided = census.get("priority_window")
+    if not isinstance(provided, dict) or (
+        provided.get("completed_utc_months") != list(acquired.completed_months)
+    ):
+        raise ValueError("stale or malformed two-year source census priority")
+    within = set(acquired.completed_months)
+    exact_hints: dict[tuple[str, str, str], set[str]] = {}
+    for entry in census.get("priority_24_month_scope_name_hints", []):
+        venue, asset, original_family = (
+            entry.get("venue"), entry.get("asset"), entry.get("family")
+        )
+        if venue not in VENUES or asset not in ASSETS:
+            raise ValueError("untrusted priority source family")
+        family = family_for(venue, original_family)
+        if family is None:
+            continue
+        months = entry.get("listed_completed_utc_months")
+        if (not isinstance(months, list) or len(months) != len(set(months))
+            or any(m not in within for m in months)):
+            raise ValueError("invalid per-source priority month names")
+        exact_hints.setdefault((venue, asset, family), set()).update(months)
+    pages_by_scope: dict[tuple[str, str, str], set[str]] = {}
+    for entry in census.get("page_level_sources_not_full_months", []):
+        family = family_for(entry.get("venue"), entry.get("family"))
+        month = entry.get("utc_month")
+        if family is not None and month in within:
+            pages_by_scope.setdefault(
+                (entry["venue"], entry["asset"], family), set()
+            ).add(month)
+    hourly_by_scope: dict[tuple[str, str, str], set[str]] = {}
+    for entry in census.get("gate_hourly_l2_not_full_months", []):
+        month = entry.get("utc_month")
+        if month in within:
+            hourly_by_scope.setdefault(
+                ("gate", entry["asset"], "orderbook_l2"), set()
+            ).add(month)
     hints: dict[tuple[str, str, str], Counter] = {}
     def add(row: dict, field: str, count: int) -> None:
         venue, asset, source_family = (
@@ -96,8 +135,20 @@ def build_backlog(census: dict) -> dict:
                 # Keep Bitget from monopolizing per-venue research resources.
                 lane = ("slow_independent_bitget_recovery"
                         if venue == "bitget" else "parallel_primary_venue")
+                scoped = (venue, asset, family)
+                named = exact_hints.get(scoped, set())
+                partial = pages_by_scope.get(scoped, set())
+                hourly_months = hourly_by_scope.get(scoped, set())
                 row = {
                     "venue": venue, "asset": asset, "family": family,
+                    "priority_24_completed_months": len(acquired.completed_months),
+                    "priority_window_named_months_not_reverified": sorted(named),
+                    "priority_window_unlisted_months_availability_unknown": [
+                        month for month in acquired.completed_months
+                        if month not in named
+                    ],
+                    "priority_window_partial_source_months_only": sorted(partial),
+                    "priority_window_sampled_l2_hours_months_only": sorted(hourly_months),
                     "evidence_state": state, "priority_lane": lane,
                     "monthly_manifest_name_hints": monthly,
                     "partial_source_page_scopes": pages,
@@ -116,6 +167,14 @@ def build_backlog(census: dict) -> dict:
     return {
         "schema_version": "rival-ten-venue-family-backlog-v1",
         "source_census_generated_at": census.get("generated_at"),
+        "priority_window": acquired.metadata(),
+        "priority_required_venue_asset_family_month_scopes":
+            len(VENUES) * len(ASSETS) * len(PERP_FAMILIES)
+            * len(acquired.completed_months),
+        "priority_monthly_name_slots_not_byte_verified": sum(
+            len(row["priority_window_named_months_not_reverified"])
+            for row in rows
+        ),
         "venues": list(VENUES), "assets": list(ASSETS),
         "families": list(PERP_FAMILIES), "required_scopes": len(rows),
         "source_name_inventory_count": census.get("all_manifest_objects_listed"),
@@ -131,6 +190,7 @@ def build_backlog(census: dict) -> dict:
         "historical_sources_improve_forward_accuracy_verified": False,
         "warning": (
             "This is a manifest-name census, not an audit of raw contents. "
+            "The 24-month window is a priority, not a ban on older sources. "
             "No-name means unindexed/unknown, not unavailable. Order-book "
             "hours and pages are not contiguous months; provider-specific "
             "contract listing dates and units require independent proof."

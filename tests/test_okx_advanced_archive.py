@@ -344,3 +344,19 @@ def test_okx_old_trade_and_funding_catalog_urls_are_allowed_only_for_family():
             asset="BTC", month="2021-09", module="funding_rates",
             record={"filename": old, "source_url": url},
         )
+
+
+def test_two_year_okx_primary_lane_and_low_frequency_older_provenance():
+    from parlay_bot.research.history_priority import window
+
+    clock = datetime(2026, 11, 2, 12, tzinfo=UTC)
+    priority = set(window(clock).completed_months)
+    selected = [
+        automatic_archive_slot(clock + timedelta(hours=2 * i))
+        for i in range(24)
+    ]
+    # Only one in every 12 cycles is offered to pre-window sources.
+    primary = sum(month in priority for month, _ in selected)
+    assert primary >= 20
+    assert any(month < "2024-11" for month, _ in selected)
+    assert all(month < "2026-11" for month, _ in selected)

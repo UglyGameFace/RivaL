@@ -382,3 +382,21 @@ def test_gate_small_batch_preserves_candle_priority_and_bounds():
         now=now, max_attempts=1,
     )
     assert selected == [jobs[0]]
+
+
+def test_gate_rolling_two_year_enrichment_and_candles_precede_2023_gaps():
+    clock = datetime(2026, 11, 2, tzinfo=UTC)
+    months = [
+        "2023-04", "2024-10", "2024-11", "2024-12",
+        "2025-01", "2025-02", "2026-09", "2026-10",
+    ]
+    for kind in ("candlesticks_5m", "trades", "funding_applies", "mark_prices"):
+        jobs = [("BTC", kind, month) for month in months]
+        chosen = gate.prioritize_backfill(
+            jobs, existing={}, native=set(), months=months,
+            now=clock, max_attempts=4,
+        )
+        assert len(chosen) == 4
+        assert all(month >= "2024-11" for _, _, month in chosen)
+        assert all(job in jobs for job in chosen)
+        assert len(chosen) == len(set(chosen))

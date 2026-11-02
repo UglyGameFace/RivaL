@@ -28,13 +28,15 @@ def test_recent_months_first_while_older_backlog_and_resume_hints_survive():
     existing = {"BTCUSDT-5m-2026-10", "ETHUSDT-5m-2021-01"}
     pairs, skipped = deep.prioritize_missing_source_months(
         months, ("BTC", "ETH"), existing,
+        now=datetime(2026, 11, 2, tzinfo=UTC),
     )
     assert skipped == 2
     assert len(pairs) == len(months) * 2 - skipped
-    assert pairs[:2] == [("BTC", "2021-03"), ("ETH", "2021-03")]
-    assert pairs[-2:] == [("BTC", "2021-02"), ("ETH", "2021-02")]
-    assert ("BTC", "2021-01") in pairs
-    assert ("ETH", "2026-10") in pairs
+    assert pairs[:3] == [
+        ("ETH", "2026-10"), ("BTC", "2026-09"), ("ETH", "2026-09"),
+    ]
+    assert pairs[-1] == ("BTC", "2021-01")
+    assert ("BTC", "2021-01") in pairs  # older history kept in backlog
     assert ("BTC", "2026-10") not in pairs
 
 

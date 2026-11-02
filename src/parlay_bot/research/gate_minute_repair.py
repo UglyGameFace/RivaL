@@ -170,7 +170,8 @@ async def publish_api_gap_evidence(
     This never replaces the immutable provider gzip or certifies contract sizes.
     """
     from parlay_bot.research.gate_native import (
-        investigate_missing, preserve_gate_api_response,
+        investigate_missing,
+        preserve_gate_api_response,
     )
 
     if (asset not in ASSETS or len(original_5m_sha) != 64

@@ -172,3 +172,19 @@ string lengths, never sensitive stdout/stderr. A genuine, fresh exact LFM3
 model receipt with previously persisted source and math evidence is still the
 only success condition. Main bot source deployment is not the standalone LFM3
 service deployment; verify each separately.
+
+## CPU LFM3 bounded self-repair (PR #266)
+
+The standalone gateway checks the CPU child process and idle health every
+three seconds. It allows a 120-second legitimate model start, diagnoses
+subprocess exit separately from repeated bad health, then may restart only
+the same local binary and GGUF if their saved SHA256 byte digests still match.
+It imposes cooldowns and a three-in-30-minute circuit breaker. Altered files
+are quarantined logically (not executed or deleted); unauthenticated clients
+cannot see repair telemetry. The authenticated /v1/status endpoint reports
+repair state and count. Strictly delimited JSON-format output can be
+normalized with original evidence and grounding still enforced; arbitrary
+text and fabricated outcomes stay rejected. This is runtime and output
+contract self-repair, NOT autonomous executable-code modification or GGUF
+weight training. Separate LFM3 Discloud deployment must be verified from the
+actual new package; passing main RivaL bot deployment does not establish it.

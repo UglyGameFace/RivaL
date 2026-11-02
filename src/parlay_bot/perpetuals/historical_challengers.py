@@ -13,7 +13,9 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.learning import _sigmoid
+from parlay_bot.perpetuals.markets import asset_for_contract
 from parlay_bot.perpetuals.model_checkpoints import canonical
+from parlay_bot.perpetuals.spike_challenger import spike_context_at_issuance, spike_score_rows
 from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
 
 
@@ -48,6 +50,14 @@ class HistoricalChallengers:
             );
             CREATE INDEX IF NOT EXISTS idx_rival_history_pending
                 ON rival_history_forward(settled_at,target_opened_at);
+            CREATE TABLE IF NOT EXISTS rival_history_spike_context (
+                model_sha256 TEXT NOT NULL,venue TEXT NOT NULL,contract TEXT NOT NULL,
+                quote TEXT NOT NULL,horizon_minutes INTEGER NOT NULL,
+                reference_opened_at TEXT NOT NULL,kind TEXT NOT NULL,
+                detected_at TEXT NOT NULL,
+                PRIMARY KEY(model_sha256,venue,contract,quote,horizon_minutes,
+                            reference_opened_at)
+            );
             CREATE TABLE IF NOT EXISTS rival_history_selection (
                 venue TEXT NOT NULL,contract TEXT NOT NULL,quote TEXT NOT NULL,
                 horizon_minutes INTEGER NOT NULL,evaluated_at TEXT NOT NULL,
@@ -59,7 +69,7 @@ class HistoricalChallengers:
     def _settle(self, now):
         with self.store.connect() as conn:
             rows = conn.execute(
-                "SELECT f.*,c.close_price,c.first_observed_at FROM rival_history_forward f "
+                "SELECT f.*,c.close_price,c.first_observed_at,c.closed_at FROM rival_history_forward f "
                 "JOIN perp_market_candles c ON c.venue=f.venue AND c.contract=f.contract "
                 "AND c.quote=f.quote AND c.interval_minutes=5 AND c.opened_at=f.target_opened_at "
                 "WHERE f.settled_at IS NULL AND c.closed_at<? "
@@ -70,8 +80,13 @@ class HistoricalChallengers:
             for row in rows:
                 issued = datetime.fromisoformat(row["issued_at"])
                 close = datetime.fromisoformat(row["target_opened_at"]) + timedelta(minutes=5, milliseconds=-1)
+                observed = datetime.fromisoformat(row["first_observed_at"])
+                actual_close = datetime.fromisoformat(row["closed_at"])
+                # A late archive restoration is NOT a fresh post-issuance
+                # observation. Refuse to convert it into proof of a challenger.
                 if (issued >= close or not math.isfinite(row["close_price"])
-                    or row["close_price"] <= 0):
+                    or row["close_price"] <= 0
+                    or not timedelta(0) <= observed-actual_close <= timedelta(minutes=12)):
                     continue
                 conn.execute(
                     "UPDATE rival_history_forward SET outcome_up=?,settled_at=? WHERE "
@@ -94,6 +109,17 @@ class HistoricalChallengers:
         )
         selected, selected_sha, selected_gain = incumbent, None, 0.
         evidence = []
+        asset = asset_for_contract(last.contract)
+        # This read occurs BEFORE any new prediction is written. No future
+        # discovery can become an old model's pre-issuance spike feature.
+        active_spike = None
+        if asset is not None:
+            with self.store.connect() as conn:
+                active_spike = spike_context_at_issuance(
+                    conn, asset=asset, opened_at=last.opened_at.isoformat(),
+                    issued_at=(datetime.now(UTC) if wall_clock else now).isoformat(),
+                    venue=last.venue, contract=last.contract, quote=last.quote,
+                )
         for candidate in candidates:
             state = self.checkpoints.fit(samples, as_of=now, seed=candidate)
             probability = _sigmoid(sum(w*x for w, x in zip(state.final_weights, (1., *features))))
@@ -119,12 +145,28 @@ class HistoricalChallengers:
                             (candidate["model_sha256"], *scope, last.opened_at.isoformat(),
                              issued.isoformat(), baseline),
                         )
+                        if active_spike is not None and active_spike["detected_at"] <= issued.isoformat():
+                            conn.execute(
+                                "INSERT INTO rival_history_spike_context "
+                                "(model_sha256,venue,contract,quote,horizon_minutes,"
+                                "reference_opened_at,kind,detected_at) "
+                                "VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                                (candidate["model_sha256"], *scope,
+                                 last.opened_at.isoformat(), active_spike["kind"],
+                                 active_spike["detected_at"]),
+                            )
                 rows = conn.execute(
-                    "SELECT f.*,b.baseline_up FROM rival_history_forward f "
+                    "SELECT f.*,b.baseline_up,s.kind AS spike_kind,"
+                    "s.detected_at AS spike_detected_at FROM rival_history_forward f "
                     "JOIN rival_history_forward_baselines b ON "
                     "b.model_sha256=f.model_sha256 AND b.venue=f.venue AND b.contract=f.contract "
                     "AND b.quote=f.quote AND b.horizon_minutes=f.horizon_minutes "
                     "AND b.reference_opened_at=f.reference_opened_at AND b.issued_at=f.issued_at "
+                    "LEFT JOIN rival_history_spike_context s ON "
+                    "s.model_sha256=f.model_sha256 AND s.venue=f.venue "
+                    "AND s.contract=f.contract AND s.quote=f.quote "
+                    "AND s.horizon_minutes=f.horizon_minutes "
+                    "AND s.reference_opened_at=f.reference_opened_at "
                     "WHERE f.model_sha256=? AND f.venue=? AND f.contract=? "
                     "AND f.quote=? AND f.horizon_minutes=? AND f.outcome_up IS NOT NULL "
                     "AND f.settled_at<=? AND f.issued_at>=? AND f.issued_at<=? "
@@ -161,11 +203,40 @@ class HistoricalChallengers:
                 sum(r["outcome_up"] for r in b)/len(b)) for b in bins if b) if paired else None
             qualifies = (all(s.status == "qualified_shadow" for s in comparisons.values())
                          and ece is not None and ece <= .10)
+            # Evaluate the *same issued candidate probabilities* against
+            # real future outcomes specifically in previously observed spike
+            # regimes. Never train an event label after seeing its outcome.
+            spike_rows = spike_score_rows(paired)
+            spike_comparisons = {
+                name: score_paired_forward([
+                    (r["target_opened_at"], (r["probability_up"]-r["outcome_up"])**2,
+                     (r[column]-r["outcome_up"])**2 if column else .25)
+                    for r in spike_rows
+                ]) for name, column in (("online", "incumbent_up"),
+                                        ("base_rate", "baseline_up"),
+                                        ("coin_flip", None))
+            }
+            spike_qualified = all(
+                s.status == "qualified_shadow" for s in spike_comparisons.values()
+            )
+            # A challenger cannot opportunistically use its global score
+            # to claim competence during a detected anomalous regime.
+            if active_spike is not None:
+                qualifies = qualifies and spike_qualified
             evidence.append({"model_sha256": candidate["model_sha256"],
                              "targets": scored.targets, "days": scored.days,
                              "paired_gain": scored.paired_gain, "ece_10": ece,
                              "baselines": {k: {"status": v.status, "gain": v.paired_gain,
                                                "reason": v.reason} for k, v in comparisons.items()},
+                             "spike_research": {
+                                 "active_preissued": active_spike is not None,
+                                 "settled_targets": spike_comparisons["online"].targets,
+                                 "distinct_days": spike_comparisons["online"].days,
+                                 "paired_gain": spike_comparisons["online"].paired_gain,
+                                 "status": "qualified_shadow" if spike_qualified
+                                           else "insufficient_or_not_improving",
+                                 "admitted_without_future_spike_proof": False,
+                             },
                              "status": "selected_research" if qualifies else "not_qualified"})
             if qualifies and scored.paired_gain > selected_gain:
                 selected, selected_sha, selected_gain = state, candidate["model_sha256"], scored.paired_gain

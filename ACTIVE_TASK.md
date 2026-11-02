@@ -1,3 +1,14 @@
+## Active: continuous verified learning and LFM3 bounded self-repair (2026-11-02)
+
+- **Objective:** Consume screened source-specific models from private Drive without waiting six hours; link a real pre-issuance BTC/ETH/SOL/XRP spike to each historical challenger forecast and separately score its future accuracy; repair the CPU LFM3 runtime without confusing slow warm-up with a crash or rewriting unverified market evidence.
+- **PR:** [#266](https://github.com/UglyGameFace/RivaL/pull/266), branch `feat/rival-verified-spike-learning-llm-repair-20261102`. Builds on merged spike/math #264, main@6999643. Do not duplicate the candidate registry, live collector, source-native trainer, LFM3 or trade gate.
+- **Changes:** Drive research candidate byte SHA256, exact model feature/identity checks and retrospective admission remain authoritative; bounded scan delay becomes 15m while paging / 60m idle / 5m failed-read. New immutable pre-issued source-exact spike context in the existing historical challenger ledger; compare paired future Brier against online incumbent, contemporaneous base rate and coin flip, and require separate qualified spike shadow evidence when choosing a model during a known spike. Late historical price recovery cannot settle a challenger as live evidence.
+- **LFM3 fault repair:** Separate on-host gateway detects crashes and repeated unhealthy CPU backend, leaves 120 seconds for legitimate model warmup, restarts at most three times in 30m with cooldown after confirming original executable and GGUF SHA256 digests, and quarantines suspicious files/exhausted repair budget. Exact outer JSON fence is normalized only when the inner result passes strict grounding. No self-modifying code or unverifiable model-weight updates; existing Cloudflare fallback remains separate.
+- **Validation:** Require full CI + packaging before merge, then main release, exact live LFM3 service version, genuine persisted DB receipt, and newly observed challenger-spike evaluation records. Do not claim the separately hosted LFM3 ZIP is automatically deployed by the RivaL bot's Discloud upload; that package has an independent download/upload step.
+- **Still incomplete:** Cold original historical completeness in every venue/asset/family/month remains Issue #188. An imported model is not proof of 21 days, 150 independent future windows, 80% quote coverage or after-cost superiority; Issue #6 remains open. The observed pattern outcome is not yet a trained self-updating predictive spike-feature model across all markets. Full production LFM3 self-repair must be observed on the standalone host, not inferred from unit tests.
+
+---
+
 ## Active: all-ten-venue source-native historical provenance (2026-11-02)
 
 - **Objective:** Complete source-exact BTC/ETH/SOL/XRP original history, contract starts and per-venue/family status. Never cross-label 2021 Binance history or fabricate missing liquidity/data.

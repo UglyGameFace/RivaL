@@ -115,3 +115,16 @@ def test_challenger_settlement_rejects_late_drive_backfill(tmp_path):
         row = conn.execute("SELECT settled_at FROM rival_history_forward").fetchone()
     assert row["settled_at"] is None
     store.close()
+
+
+def test_live_spike_evidence_is_observed_before_challenger_prediction_issue():
+    # Regression for a genuine integration bug: the old cycle issued
+    # forecasts before recording that candle's new spike, which left the
+    # causally joined spike regime empty at every ordinary five-minute tick.
+    import inspect
+    from parlay_bot.discord_app.bot import RivalDiscordClient
+
+    loop = inspect.getsource(RivalDiscordClient._perp_loop)
+    assert loop.index("self.perp_collector.collect_once()") < loop.index(
+        "self.spike_watch.scan"
+    ) < loop.index("self.autonomous.cycle()")

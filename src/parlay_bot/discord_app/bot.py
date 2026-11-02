@@ -2283,21 +2283,6 @@ class RivalDiscordClient(discord.Client):
                 raise
             except Exception:  # noqa: BLE001 - collector never crashes Discord
                 _LOG.exception("RivaL perp automatic collection cycle failed")
-            # Forward evaluation is on the same UTC 5-minute cadence as
-            # market observation. It makes no exchange or Gemini API calls.
-            # Failure is isolated from both collection and Discord.
-            if self.autonomous is not None:
-                try:
-                    issued, settled, ai_issued = await self.autonomous.cycle()
-                    _LOG.info(
-                        "RivaL automatic research math_issued=%s "
-                        "math_settled=%s ai_issued=%s",
-                        issued, settled, ai_issued,
-                    )
-                except asyncio.CancelledError:
-                    raise
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL autonomous research cycle failed safely")
             # Bounded spike analytics and future-only self-evaluation: reuse
             # the existing source collector cycle and saved original bars.
             if self.spike_watch is not None and not host_memory.snapshot().pressure:
@@ -2323,6 +2308,24 @@ class RivalDiscordClient(discord.Client):
                         raise
                     except Exception:  # noqa: BLE001 - optional research isolation
                         _LOG.exception("RivaL spike watcher retrying next cycle asset=%s", asset)
+            # Spike evidence MUST be persisted before the same candle's
+            # model challenge issues, otherwise it cannot be a causal input.
+            # The normal source collector remains the only network reader.
+            # Forward evaluation is on the same UTC 5-minute cadence as
+            # market observation. It makes no exchange or Gemini API calls.
+            # Failure is isolated from both collection and Discord.
+            if self.autonomous is not None:
+                try:
+                    issued, settled, ai_issued = await self.autonomous.cycle()
+                    _LOG.info(
+                        "RivaL automatic research math_issued=%s "
+                        "math_settled=%s ai_issued=%s",
+                        issued, settled, ai_issued,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001
+                    _LOG.exception("RivaL autonomous research cycle failed safely")
             # Once per hour, inspect persisted evidence without adding API
             # requests or disturbing live predictions and market collection.
             if self.autonomous is not None:

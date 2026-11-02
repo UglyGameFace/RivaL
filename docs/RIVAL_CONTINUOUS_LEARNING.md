@@ -54,3 +54,9 @@ unless both the general and separately scored spike-regime shadow screens
 qualify. A backfilled candle first observed long after its original close
 cannot be converted into proof of forecasting ability. No trading model is
 approved merely by joining historical and live observations.
+
+Collector-cycle ordering is causal: source candles arrive first, the
+source-exact spike and recorded observation time are persisted second, and
+historical challengers issue their frozen predictions third. Recording the
+spike after candidate issuance would leave the conditional evaluation empty
+and would be a false claim of integrated autonomous learning.

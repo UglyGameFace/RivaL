@@ -32,7 +32,9 @@ class Market:
 
 
 def market_evidence(_market, *, asset, venues, horizon_minutes=5):
-    return ({"asset": asset, "sources": [{"venue": v} for v in venues]}, "a" * 64)
+    return ({"asset": asset, "analysis": "unvalidated_research",
+             "horizon_minutes": horizon_minutes,
+             "sources": [{"venue": v} for v in venues]}, "a" * 64)
 
 
 def success(model):
@@ -141,7 +143,7 @@ async def test_untrusted_invalid_local_response_does_not_fallback(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_local_failure_without_backup_circuit_breaks(monkeypatch):
+async def test_local_failure_without_backup_yields_honest_data_only_reply(monkeypatch):
     market = Market()
     monkeypatch.setattr(openrouter_research, "build_evidence", market_evidence)
 
@@ -150,10 +152,13 @@ async def test_local_failure_without_backup_circuit_breaks(monkeypatch):
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         ai = module.LocalFirstResearch(market, local_key="local-key", client=client)
-        with pytest.raises(ResearchUnavailable, match="no Cloudflare backup"):
-            await ai.ask(asset="BTC", venues=("gate",))
-    assert len(market.pauses) == 1
-    assert market.pauses[0]["seconds"] == 1800
+        opinion = await ai.ask(asset="BTC", venues=("gate",))
+        assert opinion.model == module.EVIDENCE_MODEL
+        assert opinion.direction == "uncertain"
+        assert opinion.confidence == "low"
+    assert len(market.quota) == 1
+    assert market.saved[0]["model"] == module.EVIDENCE_MODEL
+    assert market.pauses == []
 
 
 @pytest.mark.asyncio
@@ -238,3 +243,31 @@ async def test_client_rechecks_direction_if_gateway_returns_unsupported_up(monke
         assert report.confidence == "low"
         assert "Guaranteed" not in report.thesis
     assert market.saved[0]["direction"] == "uncertain"
+
+@pytest.mark.asyncio
+async def test_data_only_research_uses_own_persisted_cache_without_extra_quota(monkeypatch):
+    class Persisted(Market):
+        def cached_ai_research(self, *, model, evidence_sha256, **_args):
+            for row in self.saved:
+                if row["model"] == model and row["evidence_sha256"] == evidence_sha256:
+                    return {**row, "issued_at": row["issued_at"].isoformat()}
+            return None
+
+    market = Persisted()
+    monkeypatch.setattr(openrouter_research, "build_evidence", market_evidence)
+    seen = []
+
+    def handler(request):
+        seen.append(str(request.url))
+        return httpx.Response(503, json={"error": "model_timeout"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ai = module.LocalFirstResearch(market, local_key="local-key", client=client)
+        first = await ai.ask(asset="BTC", venues=("gate", "okx", "bitget"))
+        second = await ai.ask(asset="BTC", venues=("gate", "okx", "bitget"))
+        assert first.model == second.model == module.EVIDENCE_MODEL
+        assert second.from_cache
+        assert first.direction == second.direction == "uncertain"
+    assert len(seen) == 1
+    assert len(market.quota) == 1
+    assert len(market.saved) == 1

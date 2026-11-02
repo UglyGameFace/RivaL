@@ -386,6 +386,12 @@ class RivalDiscordClient(discord.Client):
             and settings.rival_history_recovery_enabled else None
         )
         self._history_task: asyncio.Task[None] | None = None
+        if self.perp_collector is not None:
+            # The AI researcher reads the SAME screened model registry and
+            # six-month quality auditor as RivaL's mathematical features.
+            # These are metadata readers, not model-promotion permissions.
+            self.perp_collector.market.research_candidate_registry = self.offline_registry
+            self.perp_collector.market.research_history_auditor = self.history_auditor
         self.shadow_monitor: ShadowLearningMonitor | None = (
             ShadowLearningMonitor(self.store)
             if self.perp_collector is not None and settings.rival_shadow_learning_enabled
@@ -397,6 +403,10 @@ class RivalDiscordClient(discord.Client):
             else None
         )
         self._shadow_task: asyncio.Task[None] | None = None
+        if self.perp_collector is not None:
+            # Read the already-persisted, genuinely future-settled mathematical
+            # score; RivaL's model and promotion remain authoritative.
+            self.perp_collector.market.research_forward_auditor = self.forward_audit
         # Both OPEN_ROUTER_API_KEY (the Discloud owner's variable) and
         # OPENROUTER_API_KEY (provider convention) are accepted. OpenRouter
         # has priority when configured, but there is never a paid fallback.

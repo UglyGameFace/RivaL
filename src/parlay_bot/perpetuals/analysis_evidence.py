@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import logging
 import math
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -17,6 +18,8 @@ from parlay_bot.discord_app.data_dashboard import MARKET_SYMBOLS
 from parlay_bot.perpetuals.event_intelligence import EventIntelligence
 from parlay_bot.perpetuals.history_inventory import six_months_prior
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+
+_LOG = logging.getLogger(__name__)
 
 
 class InsufficientEvidence(ValueError):
@@ -56,6 +59,124 @@ def _summary(candles: list[dict[str, Any]], size: int) -> dict[str, float] | Non
     }
 
 
+def _persisted_math_evidence(market: PerpetualMarketStore, *, asset: str,
+                             venues: tuple[str, ...]) -> dict[str, Any]:
+    """Use RivaL's real, screened research registry, never LLM-derived scores.
+
+    A missing registry means unverified, not zero candidates or a failed model.
+    This is retrospective metadata, NOT forward win-rate or approval evidence.
+    """
+    registry = market.research_candidate_registry
+    if registry is None:
+        return {"status": "not_configured", "forward_edge_verified": False}
+    try:
+        report = registry.summary(asset=asset, horizon=5, live_venues=venues)
+        latest = report.get("candidate") or {}
+        return {
+            "status": "persisted_registry",
+            "source": "postgres_rival_offline_candidates",
+            "horizon_minutes": 5,
+            "imported_this_asset_horizon": int(report["slot_imported"]),
+            "compatible": int(report["slot_compatible"]),
+            "passed_retrospective_screen": int(report["slot_passed"]),
+            "matched_live_source": int(report["slot_live_source_matched"]),
+            "selected_after_forward_comparison": bool(report["active_offline_model"]),
+            "latest_candidate_sha256": latest.get("model_sha256"),
+            "latest_candidate_holdout_brier": latest.get("holdout_brier"),
+            "latest_candidate_holdout_accuracy": latest.get("holdout_accuracy"),
+            "retrospective_only": True,
+            "forward_edge_verified": False,
+        }
+    except Exception:  # noqa: BLE001 - optional research must not stop live evidence
+        _LOG.warning("Persisted mathematical model evidence unavailable", exc_info=True)
+        return {"status": "unavailable", "forward_edge_verified": False}
+
+
+
+def _prospective_math_evidence(market: PerpetualMarketStore, *, asset: str,
+                               clock: datetime) -> dict[str, Any]:
+    """Score existing immutable future outcomes, not retrospective backtests."""
+    auditor = market.research_forward_auditor
+    if auditor is None:
+        return {"status": "not_configured", "after_cost_edge_verified": False}
+    try:
+        report = auditor.active_learning_evidence(
+            asset=asset, horizon_minutes=5, now=clock,
+        )
+        status = report.get("status")
+        if status not in ("supported", "insufficient", "not_improving"):
+            raise ValueError("unrecognized scored forward evidence state")
+        targets, days = int(report["targets"]), int(report["days"])
+        if not (0 <= targets <= 2_000_000 and 0 <= days <= 16):
+            raise ValueError("unbounded future score")
+        def score(value: object) -> float | None:
+            return (float(value) if type(value) in (float, int)
+                    and math.isfinite(value) and 0 <= value <= 1 else None)
+        return {
+            "status": status,
+            "source": "postgres_perp_forward_audit",
+            "scope": "current_adaptive_policy_14_day_matched_future_outcomes",
+            "horizon_minutes": 5,
+            "settled_targets": targets,
+            "distinct_days": days,
+            "model_brier": score(report.get("brier")),
+            "baseline_brier": score(report.get("baseline_brier")),
+            "research_comparison_only": True,
+            "frozen_model_improvement_verified": False,
+            "after_cost_edge_verified": False,
+        }
+    except Exception:  # noqa: BLE001 - optional scores never block other research
+        _LOG.warning("Persisted prospective mathematical evidence unavailable", exc_info=True)
+        return {"status": "unavailable", "after_cost_edge_verified": False}
+
+
+def _audited_history_evidence(market: PerpetualMarketStore, *, asset: str,
+                              venues: tuple[str, ...], clock: datetime) -> list[dict]:
+    """Only stored source-exact six-month audits, never Drive-name claims."""
+    auditor = market.research_history_auditor
+    if auditor is None:
+        return []
+    try:
+        records = auditor.latest(asset=asset, venues=venues)
+    except Exception:  # noqa: BLE001 - optional audit may be temporarily unavailable
+        _LOG.warning("Persisted six-month quality audit unavailable", exc_info=True)
+        return []
+    accepted = []
+    for record in records[:len(venues)]:
+        try:
+            if record["venue"] not in venues or record["asset"] != asset:
+                continue
+            audit_clock = _stamp(record["audited_at"])
+            window_end = _stamp(record["window_end"])
+            fresh = (timedelta(0) <= clock - audit_clock <= timedelta(hours=24)
+                     and timedelta(0) <= clock - window_end <= timedelta(hours=24))
+            expected = int(record["expected_bars"])
+            valid = int(record["valid_bars"])
+            missing = int(record["missing_bars"])
+            if not (expected > 0 and 0 <= valid <= expected
+                    and 0 <= missing <= expected):
+                continue
+            complete = (fresh and record["status"] == "complete"
+                        and missing == 0 and valid == expected
+                        and int(record["off_grid_bars"]) == 0
+                        and int(record["invalid_observations"]) == 0)
+            accepted.append({
+                "venue": record["venue"],
+                "status": "complete" if complete else
+                          ("stale" if not fresh else "incomplete"),
+                "audited_at": audit_clock.isoformat(),
+                "window_start": str(record["window_start"]),
+                "window_end": str(record["window_end"]),
+                "expected_bars": expected, "valid_bars": valid,
+                "missing_bars": missing,
+                "source": "postgres_perp_history_quality",
+                "cold_drive_originals_reverified_this_request": False,
+            })
+        except (KeyError, TypeError, ValueError, OverflowError):
+            continue
+    return accepted
+
+
 def build_evidence(
     market: PerpetualMarketStore, *, asset: str, venues: tuple[str, ...],
     now: datetime | None = None, freshness_minutes: int = 7,
@@ -67,7 +188,7 @@ def build_evidence(
     audited. Old gaps never become continuous features. A source can be fresh
     and still lack sufficient time-series history, which is reported.
     """
-    if (asset not in ("BTC", "ETH", "SOL")
+    if (asset not in ("BTC", "ETH", "SOL", "XRP")
         or horizon_minutes not in (5, 15, 60, 240)
         or not 5 <= freshness_minutes <= 60):
         raise ValueError("invalid analysis market")
@@ -153,6 +274,14 @@ def build_evidence(
         raise InsufficientEvidence(
             "Need at least three distinct, healthy venues with recent closed candles."
         )
+    # Source-native old data and retrospective models are separate provenances.
+    # Do not suggest that Google Drive originals were loaded by this DB query.
+    healthy = tuple(row["venue"] for row in independent)
+    mathematical = _persisted_math_evidence(market, asset=asset, venues=healthy)
+    quality = _audited_history_evidence(
+        market, asset=asset, venues=healthy, clock=clock,
+    )
+    forward_math = _prospective_math_evidence(market, asset=asset, clock=clock)
     # Stable digest: if none of the input candles changes, reuse stored analysis.
     # Disconnected/blocked provider health changes also invalidate old evidence.
     evidence = {
@@ -160,6 +289,10 @@ def build_evidence(
         "analysis": "unvalidated_research",
         "sources": independent,
         "unavailable_sources": unavailable,
+        "mathematical_research": mathematical,
+        "prospective_math": forward_math,
+        "historical_quality": quality,
+        "cold_archive_readback": "not_performed_by_live_research",
         "coverage": {"usable_venues": len(independent), "configured_venues": len(set(venues))},
         "quote_policy": "Do not directly average USD/USDT/USDC contract prices.",
         # Read-only public-event context. This is evidence for an AI review,

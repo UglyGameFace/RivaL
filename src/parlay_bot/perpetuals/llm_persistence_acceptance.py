@@ -13,9 +13,12 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MARKET_SYMBOLS
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence, build_evidence
+from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
+from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.local_first_research import LOCAL_MODEL, LocalFirstResearch
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
 from parlay_bot.storage.hot import PostgresHotStore
 
 MARKER = "RIVAL_LFM3_PERSISTENCE_RECEIPT="
@@ -72,6 +75,11 @@ def verify_once() -> dict:
     store = PostgresHotStore(settings.rival_database_url.get_secret_value())
     try:
         market = PerpetualMarketStore(store)
+        # Same production readers as the Discord app. Without these, a green
+        # acceptance receipt would not prove the mathematical data handoff.
+        market.research_candidate_registry = ResearchCandidateRegistry(store)
+        market.research_history_auditor = SixMonthQualityAudit(market)
+        market.research_forward_auditor = ForwardAccuracyMonitor(market)
         status = market.ai_request_status(
             model=QUOTA_MODEL, now=datetime.now(UTC),
             daily_max=settings.rival_openrouter_daily_max,
@@ -100,6 +108,15 @@ def verify_once() -> dict:
             report["reason"] = "insufficient_live_venues"
             return report
         report["healthy_venues"] = len(evidence["sources"])
+        report["mathematical_evidence_status"] = (
+            evidence.get("mathematical_research", {}).get("status", "unavailable")
+        )
+        report["fresh_six_month_source_audits"] = sum(
+            x.get("status") in ("complete", "incomplete")
+            for x in evidence.get("historical_quality", [])
+        )
+        report["cold_archive_readback"] = evidence.get("cold_archive_readback")
+        report["prospective_math_status"] = evidence.get("prospective_math", {}).get("status")
         report["evidence_hash_valid"] = len(digest) == 64
 
         # The request itself performs a SECOND atomic quota reservation. If a

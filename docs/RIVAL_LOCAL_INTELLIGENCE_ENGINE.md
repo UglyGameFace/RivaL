@@ -102,3 +102,55 @@ A genuine, authorized BTC research request with nine healthy sources sent ~8,164
 ### Real-workload CPU deadline refinement
 
 After deploying the first all-venue compaction, a genuine nine-source BTC gateway replay still returned HTTP 503 after 40.06 seconds. The installed service was verified to contain the compactor, and a representative nine-source brief rendered to **424 model prompt tokens** before allowing 220 generation tokens. At the measured approximately 52 ms/prompt-token and 100 ms/generation-token on the hosted CPU, a full-budget reply could exceed the 40-second upstream deadline. The reviewer now receives shorter nonpredictive instructions and a smaller labeled brief, with a **140-token completion cap** and explicit <=120/<=100 character thesis/risk targets; the full original evidence still powers source validation and SHA/persistence. Do not claim live recovery unless the full multi-venue workload returns authenticated HTTP 200 inside the unchanged 40-second gateway limit.
+
+
+## November 2: verified mathematical provenance in Intelligence requests
+
+The on-host RivaL market now exposes the **existing** screened offline model
+registry and latest persisted six-month source audits to the same cross-venue
+research evidence builder used by the private LFM3 reviewer. The evidence SHA
+covers those read-only facts alongside current venue observations and the
+existing source-native historical endpoint-price returns. XRP is accepted in
+that same evidence path. The isolated CPU gateway receives a bounded numeric
+summary, not archive files or provider instructions. The deterministic shared
+policy reports screening counts and recent completed DB audit counts without
+pretending retrospective scores establish future skill.
+
+**Evidence limitations:** historical endpoint returns alone are not
+continuous-grid proof; a stored monthly audit is not a new original-provider
+ZIP verification; model-registry import is not active live deployment; and
+neither analysis nor the isolated LLM verifies a predictive edge. The live
+request explicitly marks Drive readback as not performed. Failed/missing
+optional registry or audit readers report unavailable rather than making up
+zero coverage. Read-only implementation requires successful main CI and a
+real authenticated on-host request persisted to PostgreSQL before production
+acceptance. It does not change quota, model-promotion, NO CALL or trades.
+
+
+## Data-backed degraded answers when the CPU LLM is unavailable
+
+A failed local 502/503/504 or transport request (and an unavailable optional
+free backup) now returns a **clearly labeled** `RivaL/verified-evidence-summary-v1`
+response derived solely from the shared deterministic observation policy and
+persisted mathematical evidence. This is **not** LFM3 output, does not invent
+forecast probabilities, and has its own immutable research cache identity.
+A repeated request for the same evidence reuses the exact PostgreSQL receipt
+without spending another AI request slot. Authentication errors, malformed
+model output, invalid source evidence and global user quota denial still fail
+closed. The first attempted LFM3 request keeps the existing shared quota.
+Production acceptance for *actual LFM3 inference* still requires the real
+LFM3 model identity and successful authenticated host response.
+
+
+### Existing quantitative forward-score integration
+
+The same evidence SHA also includes `ForwardAccuracyMonitor.active_learning_evidence`
+from the already-persisted mathematical forecast audit: the number of genuine
+future-settled, aligned 5-minute targets, days and Brier score versus the actual
+baseline for the current adaptive policy. The LFM3 CPU brief receives only a
+compact source-labeled score/status. The shared deterministic policy exposes
+this as **measured prospective research**, not probability of the next outcome,
+proof of frozen historical weights, model promotion, matched executable quotes,
+or positive after-cost profitability. The source is always the existing on-host
+PostgreSQL audit, never an LLM-generated evaluation. Missing/failed audit
+queries are marked unavailable. The production receipt exposes this status.

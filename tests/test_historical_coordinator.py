@@ -12,6 +12,7 @@ from parlay_bot.research.historical_coordinator import (
     completed_range,
 )
 from parlay_bot.research.source_native_offline import select_training_months
+from parlay_bot.research.source_native import publication_ranges
 from tools.historical_dispatch import run_plan, should_dispatch
 
 NOW = datetime(2026, 11, 2, 14, tzinfo=UTC)
@@ -151,3 +152,19 @@ def test_scope_floors_not_inherited_from_other_venue():
     assert ("hyperliquid", "candles_5m") not in ATTEMPT_FLOORS
     assert ATTEMPT_FLOORS[("okx", "funding")] != ATTEMPT_FLOORS[
         ("okx", "candles_5m")]
+
+
+def test_native_publisher_checks_older_history_without_full_database_scan():
+    recent, older = publication_ranges(NOW)
+    assert recent == (
+        "2026-05-01T00:00:00+00:00", "2026-11-01T00:00:00+00:00",
+    )
+    assert "2021-01-01" <= older[0] < recent[0]
+    assert older[1] <= recent[0]
+    assert int((datetime.fromisoformat(older[1]) -
+                datetime.fromisoformat(older[0])).days) in (28, 29, 30, 31)
+    newer = publication_ranges(NOW.replace(hour=20))
+    assert newer[0] == recent
+    assert newer[1] != older
+    with pytest.raises(ValueError):
+        publication_ranges(datetime(2026, 11, 2))

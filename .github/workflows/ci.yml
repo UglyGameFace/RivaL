@@ -46,4 +46,8 @@ jobs:
       - name: Source-verification, spike causality and LFM3 repair regressions
         run: timeout 120s pytest -vv -x tests/test_private_llm_service.py tests/test_spike_challenger.py tests/test_verified_history_import_schedule.py
       - name: Test
-        run: timeout 480s pytest -q
+        run: |
+          # Diagnose a previously observed 480-second stall without silent dots.
+          # Keep exact test identity and traceback if a test stops progressing.
+          PYTHONUNBUFFERED=1 timeout -s SIGINT -k 20s 480s \
+            pytest -vv -x -o faulthandler_timeout=75

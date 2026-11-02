@@ -59,6 +59,53 @@ jobs:
           python -m pip install -e ".[dev]"
           ruff check src/parlay_bot/research/okx_advanced_archive.py src/parlay_bot/research/okx_l2_replay.py src/parlay_bot/research/okx_auxiliary_ablation.py tests/test_okx_advanced_archive.py tests/test_okx_auxiliary_ablation.py
           pytest -q tests/test_okx_advanced_archive.py tests/test_okx_auxiliary_ablation.py tests/test_official_okx_bootstrap.py
+      - name: Inspect real public OKX auxiliary catalog metadata (no archives or credentials)
+        continue-on-error: true
+        shell: bash
+        run: |
+          python - <<'PY'
+          import asyncio
+          import json
+          from datetime import datetime, timezone, timedelta
+          from urllib.parse import parse_qsl, urlparse
+
+          import httpx
+
+          from parlay_bot.research.official_okx_bootstrap import ARCHIVES, official
+
+          async def main():
+              date = datetime(2026, 9, 1, tzinfo=timezone(timedelta(hours=8)))
+              start = str(int(date.timestamp() * 1000))
+              async with httpx.AsyncClient(timeout=18, follow_redirects=False) as client:
+                  rows = await official(client, ARCHIVES, {
+                      "module": "3", "instType": "SWAP",
+                      "instFamilyList": "BTC-USDT", "dateAggrType": "monthly",
+                      "begin": start, "end": start,
+                  })
+              safe = []
+              for item in rows[:3]:
+                  for group in item.get("details", [])[:2]:
+                      for entry in group.get("groupDetails", [])[:3]:
+                          url = entry.get("url", "")
+                          filename = entry.get("filename", "")
+                          parsed = urlparse(url) if isinstance(url, str) else None
+                          safe.append({
+                              "group_family": group.get("instFamily"),
+                              "group_type": group.get("instType"),
+                              "file_name": filename[:180] if isinstance(filename, str) else None,
+                              "url_host": parsed.hostname if parsed else None,
+                              "url_path_basename": parsed.path.rsplit("/", 1)[-1][:180]
+                                  if parsed else None,
+                              "url_path_prefix": "/".join(parsed.path.split("/")[:5])
+                                  if parsed else None,
+                              "url_has_query": bool(parsed.query) if parsed else None,
+                              "url_query_keys": sorted({key for key, _ in parse_qsl(parsed.query, keep_blank_values=True)}) if parsed else [],
+                              "file_fields": sorted(entry.keys()),
+                          })
+              print(json.dumps({"records": safe, "top_level_count": len(rows)},
+                               sort_keys=True))
+          asyncio.run(main())
+          PY
 
   archive-research:
     if: github.event_name != 'pull_request'
@@ -104,7 +151,9 @@ jobs:
 
           from parlay_bot.config import Settings
           from parlay_bot.research.free_history import HistoryImportError
-          from parlay_bot.research.official_okx_bootstrap import inventory_extra_modules
+          from parlay_bot.research.official_okx_bootstrap import (
+              MODULES, inventory_extra_modules,
+          )
           from parlay_bot.research.okx_advanced_archive import (
               automatic_archive_slot, ingest_one,
           )
@@ -121,7 +170,10 @@ jobs:
               drive = _drive(Settings())
               try:
                   async with httpx.AsyncClient(timeout=60, follow_redirects=False) as client:
-                      catalog = await inventory_extra_modules(client, asset=asset, month=month)
+                      module_id = next(number for number, label in MODULES.items() if label == module)
+                      catalog = await inventory_extra_modules(
+                          client, asset=asset, month=month, module_ids=(module_id,),
+                      )
                       (root / "inventory.json").write_text(
                           json.dumps(catalog, sort_keys=True, indent=2) + "\n"
                       )

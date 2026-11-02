@@ -111,6 +111,52 @@ async def test_okx_advanced_archive_is_inventory_only():
     )
 
 
+def test_provider_versioned_okx_archive_url_is_strictly_source_bound():
+    filename = "BTC-USDT-SWAP-fundingrates-2026-09.zip"
+    url = ("https://static.okx.com/cdn/okex/traderecords/swaprates/"
+           + filename + "?v=20260901")
+    assert okx.verify_advanced_archive_catalog_url(
+        asset="BTC", month="2026-09", filename=filename, url=url,
+    ) == url
+    for hostile in (
+        url + "&redirect=https://evil.example",
+        url.replace("?v=", "?token="),
+        url.replace("static.okx.com", "fake-static.okx.com"),
+        url.replace("https://", "http://"),
+        url.replace("?v=20260901", "?v=%2Fdownload"),
+        url.replace("?v=20260901", "?v="),
+        url.replace("?v=20260901", "?v=20260901#fragment"),
+    ):
+        with pytest.raises(HistoryImportError, match="host/filename"):
+            okx.verify_advanced_archive_catalog_url(
+                asset="BTC", month="2026-09", filename=filename, url=hostile,
+            )
+
+
+@pytest.mark.asyncio
+async def test_real_catalog_version_query_preserved_in_inventory():
+    filename = "BTC-USDT-SWAP-fundingrates-2026-09.zip"
+    url = "https://static.okx.com/cdn/okex/traderecords/swaprates/" + filename + "?v=1"
+
+    def response(request):
+        assert request.url.path.endswith("/market-data-history")
+        assert request.url.params["module"] == "3"
+        return httpx.Response(200, json={"code": "0", "data": [{
+            "dateAggrType": "monthly", "details": [{
+                "instFamily": "BTC-USDT", "instType": "SWAP",
+                "groupDetails": [{"filename": filename, "url": url}],
+            }],
+        }]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(response)) as client:
+        result = await okx.inventory_extra_modules(
+            client, asset="BTC", month="2026-09", module_ids=(3,),
+        )
+    assert result["modules"]["funding_rates"]["files"] == [{
+        "filename": filename, "source_url": url,
+    }]
+
+
 @pytest.mark.asyncio
 async def test_okx_archive_redirect_is_never_trusted():
     def bad(req):

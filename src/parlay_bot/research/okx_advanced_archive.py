@@ -19,12 +19,15 @@ import zipfile
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 import httpx
 
 from parlay_bot.research.free_history import HistoryImportError
-from parlay_bot.research.official_okx_bootstrap import ASSETS, FIRST, month_bounds
+from parlay_bot.research.official_okx_bootstrap import (
+    FIRST,
+    month_bounds,
+    verify_advanced_archive_catalog_url,
+)
 from parlay_bot.research.okx_l2_replay import ArchivedBook
 
 MODULES = frozenset({"trades", "funding_rates", "orderbook_l2_400", "orderbook_l2_5000"})
@@ -68,28 +71,15 @@ def automatic_archive_slot(now: datetime | None = None) -> tuple[str, str]:
 
 
 def archive_url(*, asset: str, month: str, record: dict) -> str:
-    """Validate the entire untrusted catalog entry before network or disk I/O."""
-    if asset not in ASSETS:
-        raise HistoryImportError("unknown OKX asset")
-    month_bounds(month)
+    """Verify an exact URL issued by the public catalog, never invent a link."""
     if not isinstance(record, dict):
         raise HistoryImportError("malformed OKX catalog entry")
-    name, url = record.get("filename"), record.get("source_url")
-    if not isinstance(name, str) or not isinstance(url, str):
-        raise HistoryImportError("missing archive filename or URL")
-    parsed = urlparse(url)
-    if (parsed.scheme != "https" or parsed.hostname != "static.okx.com"
-        or parsed.port not in (None, 443) or parsed.username or parsed.password
-        or parsed.query or parsed.fragment or unquote(parsed.path) != parsed.path
-        or not parsed.path.startswith("/cdn/okex/")
-        or name != Path(name).name or ".." in name or "\\" in name
-        or not name.startswith(f"{asset}-USDT-SWAP-")
-        or not name.endswith((".zip", ".tar.gz"))
-        or not parsed.path.endswith("/" + name)
-        or (month not in name and month.replace("-", "") not in name)):
-        raise HistoryImportError("untrusted OKX archive URL or instrument/month")
-    return url
-
+    return verify_advanced_archive_catalog_url(
+        asset=asset,
+        month=month,
+        filename=record.get("filename"),
+        url=record.get("source_url"),
+    )
 
 def _positive(value: object, *, zero_allowed: bool = False) -> float:
     try:

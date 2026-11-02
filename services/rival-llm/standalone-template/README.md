@@ -23,7 +23,7 @@ Keep `RIVAL_LLM_SHARED_TOKEN` in the standalone Discloud application's private e
 
 ## Initial provisioning
 
-The authoritative RivaL repository's sync workflow can create and populate this private repository with a credential having permission to create/write repositories. Set `RIVAL_INTELLIGENCE_REPO_TOKEN` in **RivaL** Actions secrets. This is a cross-repository publish credential only, not an LLM token. Use the narrowest available repository permissions; the initial private-repo creation may require a user token with repository creation rights.
+The authoritative RivaL repository's sync workflow can create and populate this private repository with a credential having permission to create/write repositories. Set `RIVAL_INTELLIGENCE_REPO_TOKEN` in **RivaL** Actions secrets. This is a cross-repository publish credential only, not an LLM token. Use the narrowest available permissions. The publisher needs private-repository creation (if not already created), **Contents: read/write** and **Workflows: read/write** on the destination because it installs an Actions workflow file. A classic PAT requires `repo` and `workflow` scopes; a fine-grained token can be restricted to the existing target repository once it has been created.
 
 The sync runs on relevant RivaL/main changes, hourly reconciliation and manually. It does not overwrite unrelated owner-managed downstream files. Only the upstream-owned manifest paths are replaced or removed.
 

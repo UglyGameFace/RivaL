@@ -135,3 +135,27 @@ async def test_actual_batch_retains_true_readback_and_unavailable_sources(
     assert report["source_months_qualified"] == 0
     assert report["future_only_model_approval"] is False
     assert (tmp_path / "batch.json").exists()
+
+
+def test_two_year_gate_l2_primary_before_2021_source_attempts():
+    from parlay_bot.research.history_priority import window
+
+    priority = set(window(CLOCK).completed_months)
+    first, skipped = batch.select_slots(CLOCK, set(), max_attempts=12)
+    assert not skipped
+    assert all(
+        slot[2][:4] + "-" + slot[2][4:6] in priority
+        for slot in first
+    )
+    listed_priority = {
+        slot for slot in batch.candidate_slots(CLOCK)
+        if slot[2][:4] + "-" + slot[2][4:6] in priority
+    }
+    older, n_skipped = batch.select_slots(
+        CLOCK, listed_priority, max_attempts=12,
+    )
+    assert n_skipped >= len(listed_priority)
+    assert older and all(
+        slot[2][:4] + "-" + slot[2][4:6] not in priority
+        for slot in older
+    )

@@ -899,7 +899,7 @@ class ResearchDashboard(discord.ui.View):
                                 "exist; scheduled evaluation is disabled."
                             ), inline=False,
                         )
-            if self.section in ("overview", "pulse"):
+            if self.section in ("overview", "pulse") and self.market is not None:
                     # This describes *observed* cross-venue movement; no
                     # target/stop-loss/probability is invented from raw momentum.
                     try:
@@ -953,99 +953,99 @@ class ResearchDashboard(discord.ui.View):
                             )[:1024],
                             inline=False,
                         )
-                if self.section == "spikes":
+            if self.section == "spikes":
+                try:
+                    spike = await asyncio.to_thread(
+                        SpikeWatch(self.market).snapshot, asset=self.asset,
+                    )
+                    events = spike.get("events_24h")
+                    embed.add_field(
+                        name="Spike watch analytics",
+                        value=(
+                            f"Status: **{spike['status'].replace('_', ' ')}** · "
+                            f"Fresh venues: **{spike.get('fresh_venues', 0)}**.\\n"
+                            f"Last scan: **{spike.get('checked_at') or 'not yet'}**.\\n"
+                            f"Past 24h unusual events: **"
+                            f"{events if events is not None else 'unknown'}** · "
+                            f"confirmed continuations: **{spike.get('scored_continuations_24h') or 0}** "
+                            f"· reversals: **{spike.get('scored_reversals_24h') or 0}** "
+                            f"· source-unverified: **{spike.get('unverified_24h') or 0}**.\\n"
+                            "Future outcomes update automatically, never backfilled "
+                            "as live scores; no validated trade signal."
+                        )[:1024], inline=False,
+                    )
+                    lines = [
+                        f"{r['opened_at'][5:16]} UTC · {r['kind']} "
+                        f"{r['direction']} {r['move_pct']:+.2f}% · "
+                        f"{r['source_count']} venues · "
+                        f"{r['outcome'] or 'awaiting future'}"
+                        for r in spike.get("recent", [])[:3]
+                    ]
+                    embed.add_field(
+                        name="Recent spike events",
+                        value="\\n".join(lines) if lines else
+                              "No source-verified events recorded in 24h.",
+                        inline=False,
+                    )
+                except Exception:  # noqa: BLE001 - keep Discord responsive
+                    _LOG.exception("RivaL spike analytics unavailable")
+                    embed.add_field(
+                        name="Spike watch analytics",
+                        value="Verified observation ledger currently unavailable.",
+                        inline=False,
+                    )
+            if self.section == "learning":
+                if self.shadow_enabled:
                     try:
-                        spike = await asyncio.to_thread(
-                            SpikeWatch(self.market).snapshot, asset=self.asset,
+                        snapshots = await asyncio.to_thread(
+                            ShadowLearningMonitor(self.market.store).latest,
+                            asset=self.asset,
                         )
-                        events = spike.get("events_24h")
+                    except Exception:  # noqa: BLE001 - view must never crash
+                        _LOG.exception("Stored shadow evaluation read failed")
                         embed.add_field(
-                            name="Spike watch analytics",
-                            value=(
-                                f"Status: **{spike['status'].replace('_', ' ')}** · "
-                                f"Fresh venues: **{spike.get('fresh_venues', 0)}**.\\n"
-                                f"Last scan: **{spike.get('checked_at') or 'not yet'}**.\\n"
-                                f"Past 24h unusual events: **"
-                                f"{events if events is not None else 'unknown'}** · "
-                                f"confirmed continuations: **{spike.get('scored_continuations_24h') or 0}** "
-                                f"· reversals: **{spike.get('scored_reversals_24h') or 0}** "
-                                f"· source-unverified: **{spike.get('unverified_24h') or 0}**.\\n"
-                                "Future outcomes update automatically, never backfilled "
-                                "as live scores; no validated trade signal."
-                            )[:1024], inline=False,
+                            name="Automatic learning",
+                            value="Learning history unavailable; collection can continue.",
+                            inline=False,
                         )
-                        lines = [
-                            f"{r['opened_at'][5:16]} UTC · {r['kind']} "
-                            f"{r['direction']} {r['move_pct']:+.2f}% · "
-                            f"{r['source_count']} venues · "
-                            f"{r['outcome'] or 'awaiting future'}"
-                            for r in spike.get("recent", [])[:3]
+                    else:
+                        ready = [
+                            row for row in snapshots
+                            if row["evaluated"] >= MIN_EVALUATED
+                            and row["brier"] is not None
                         ]
-                        embed.add_field(
-                            name="Recent spike events",
-                            value="\\n".join(lines) if lines else
-                                  "No source-verified events recorded in 24h.",
-                            inline=False,
-                        )
-                    except Exception:  # noqa: BLE001 - keep Discord responsive
-                        _LOG.exception("RivaL spike analytics unavailable")
-                        embed.add_field(
-                            name="Spike watch analytics",
-                            value="Verified observation ledger currently unavailable.",
-                            inline=False,
-                        )
-                if self.section == "learning":
-                    if self.shadow_enabled:
-                        try:
-                            snapshots = await asyncio.to_thread(
-                                ShadowLearningMonitor(self.market.store).latest,
-                                asset=self.asset,
-                            )
-                        except Exception:  # noqa: BLE001 - view must never crash
-                            _LOG.exception("Stored shadow evaluation read failed")
+                        if ready:
+                            total = sum(int(x["evaluated"]) for x in ready)
+                            model_score = sum(
+                                float(x["brier"]) * int(x["evaluated"])
+                                for x in ready
+                            ) / total
+                            baseline_score = sum(
+                                float(x["baseline_brier"]) * int(x["evaluated"])
+                                for x in ready
+                            ) / total
                             embed.add_field(
-                                name="Automatic learning",
-                                value="Learning history unavailable; collection can continue.",
+                                name="Automatic shadow evaluation",
+                                value=(
+                                    f"**{len(ready)}** qualifying venue/horizon streams "
+                                    f"· **{total:,}** settled evaluations (may overlap).\n"
+                                    f"Mean Brier: **{model_score:.4f}** vs "
+                                    f"baseline **{baseline_score:.4f}**.\n"
+                                    "Research only: not a calibrated or deployed signal."
+                                ),
                                 inline=False,
                             )
                         else:
-                            ready = [
-                                row for row in snapshots
-                                if row["evaluated"] >= MIN_EVALUATED
-                                and row["brier"] is not None
-                            ]
-                            if ready:
-                                total = sum(int(x["evaluated"]) for x in ready)
-                                model_score = sum(
-                                    float(x["brier"]) * int(x["evaluated"])
-                                    for x in ready
-                                ) / total
-                                baseline_score = sum(
-                                    float(x["baseline_brier"]) * int(x["evaluated"])
-                                    for x in ready
-                                ) / total
-                                embed.add_field(
-                                    name="Automatic shadow evaluation",
-                                    value=(
-                                        f"**{len(ready)}** qualifying venue/horizon streams "
-                                        f"· **{total:,}** settled evaluations (may overlap).\n"
-                                        f"Mean Brier: **{model_score:.4f}** vs "
-                                        f"baseline **{baseline_score:.4f}**.\n"
-                                        "Research only: not a calibrated or deployed signal."
-                                    ),
-                                    inline=False,
-                                )
-                            else:
-                                embed.add_field(
-                                    name="Automatic shadow evaluation",
-                                    value=(
-                                        f"**{len(snapshots)}** tracked venue/horizon streams. "
-                                        f"Waiting for at least {MIN_EVALUATED} causal "
-                                        "settled evaluations per stream. Backfilled "
-                                        "candles cannot qualify as live predictions."
-                                    ),
-                                    inline=False,
-                                )
+                            embed.add_field(
+                                name="Automatic shadow evaluation",
+                                value=(
+                                    f"**{len(snapshots)}** tracked venue/horizon streams. "
+                                    f"Waiting for at least {MIN_EVALUATED} causal "
+                                    "settled evaluations per stream. Backfilled "
+                                    "candles cannot qualify as live predictions."
+                                ),
+                                inline=False,
+                            )
             embed.set_footer(
                 text="Historical backfills do not count as live forward tests."
             )

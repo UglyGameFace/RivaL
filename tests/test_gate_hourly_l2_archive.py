@@ -70,12 +70,11 @@ def test_download_preserves_exact_bytes_and_rejects_provider_failure():
     assert urls == [l2.source_url(
         asset="BTC", family="orderbooks_slice", hour=HOUR, now=CLOCK,
     )]
-    with httpx.Client(transport=httpx.MockTransport(
+    with (httpx.Client(transport=httpx.MockTransport(
         lambda request: httpx.Response(404)
-    )) as client:
-        with pytest.raises(HistoryImportError, match="HTTP 404"):
-            l2.download(client, asset="BTC", family="orderbooks",
-                        hour=HOUR, now=CLOCK)
+    )) as client, pytest.raises(HistoryImportError, match="HTTP 404")):
+        l2.download(client, asset="BTC", family="orderbooks",
+                    hour=HOUR, now=CLOCK)
 
 
 @pytest.mark.asyncio

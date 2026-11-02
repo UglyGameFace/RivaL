@@ -1,0 +1,97 @@
+name: Inspect official Bitget bulk futures download controls
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/bitget-official-portal-browser.yml"
+      - "tools/bitget_portal_browser_probe.py"
+      - "tests/test_bitget_portal_browser_probe.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-bitget-public-browser-discovery
+  cancel-in-progress: false
+
+jobs:
+  inspect-official-download-center:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install -e ".[dev]"
+          python -m pip install playwright==1.56.0
+          python -m playwright install --with-deps chromium
+      - run: |
+          ruff check tools/bitget_portal_browser_probe.py tests/test_bitget_portal_browser_probe.py
+          pytest -q tests/test_bitget_portal_browser_probe.py
+      - name: Inspect publicly documented futures download dialogs (no data transfer)
+        run: python tools/bitget_portal_browser_probe.py
+      - name: Probe independent public Bitget REST access from runner (no archive download)
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json
+          import time
+          from datetime import UTC, datetime
+          from pathlib import Path
+          import httpx
+
+          output = Path("data/native-reports/bitget-public-browser")
+          output.mkdir(parents=True, exist_ok=True)
+          endpoint = "https://api.bitget.com/api/v3/market/history-candles"
+          result = {"schema": "rival-bitget-public-rest-access-probe-v1",
+                    "source": "bitget-official-public-api", "no_login": True,
+                    "no_geoblock_bypass": True, "samples": [],
+                    "complete_history_claimed": False}
+          with httpx.Client(timeout=22, follow_redirects=False) as client:
+              for month, family in (("2021-06", "market"),
+                                    ("2023-06", "market"),
+                                    ("2025-06", "market"),
+                                    ("2025-06", "mark"),
+                                    ("2025-06", "index"),
+                                    ("2025-06", "premium")):
+                  start = int(datetime.strptime(month + "-01", "%Y-%m-%d")
+                              .replace(tzinfo=UTC).timestamp() * 1000)
+                  params = {"category": "USDT-FUTURES", "symbol": "BTCUSDT",
+                            "interval": "5m", "type": family, "limit": "3",
+                            "startTime": str(start - 1),
+                            "endTime": str(start + 3 * 300000 - 1)}
+                  item = {"month": month, "type": family}
+                  try:
+                      response = client.get(endpoint, params=params)
+                      item["http_status"] = response.status_code
+                      if response.status_code == 200 and len(response.content) < 200000:
+                          payload = response.json()
+                          if isinstance(payload, dict):
+                              item["provider_code"] = payload.get("code")
+                              rows = payload.get("data")
+                              if isinstance(rows, list) and len(rows) <= 4:
+                                  item["rows"] = len(rows)
+                                  item["timestamps"] = sorted(
+                                      [row[0] for row in rows if isinstance(row, list)
+                                       and row and isinstance(row[0], str)]
+                                  )
+                      if response.status_code in (401, 403, 451):
+                          item["region_or_access_block"] = True
+                  except (httpx.HTTPError, ValueError) as exc:
+                      item["error_type"] = type(exc).__name__
+                  result["samples"].append(item)
+                  time.sleep(0.25)
+          target = output / "bitget-public-rest-access.json"
+          target.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+          print(json.dumps(result, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bitget-official-public-browser-evidence
+          path: data/native-reports/bitget-public-browser/
+          if-no-files-found: ignore
+          retention-days: 7

@@ -199,12 +199,27 @@ def prioritize_backfill(
     recheck_count = min(len(recertify), max(1, max_attempts // 8))
     chosen = rotate_attempts(recertify, now=now, count=recheck_count)
     remaining = max_attempts - len(chosen)
-    for group in (recent_candles, old_candles, extra):
-        if remaining <= 0:
+    # Historical Drive evidence shows old missing/404 5m sources can
+    # monopolize every attempted job indefinitely. Reserve one third of the
+    # remaining source budget for independent funding, trades and mark archives
+    # when both candle gaps and enrichment are outstanding. Do not add requests:
+    # rotate existing tasks within the same configured max_attempts budget.
+    enrichment_reserve = (
+        min(len(extra), remaining // 3)
+        if extra and (recent_candles or old_candles) else 0
+    )
+    candle_budget = remaining - enrichment_reserve
+    for group in (recent_candles, old_candles):
+        if candle_budget <= 0:
             break
-        selected = rotate_attempts(group, now=now, count=remaining)
+        selected = rotate_attempts(group, now=now, count=candle_budget)
         chosen.extend(selected)
-        remaining -= len(selected)
+        candle_budget -= len(selected)
+    # Fill the remaining capacity with rotating enrichment source families,
+    # including the reserved share. When no candle gaps remain it uses all
+    # available slots instead of slowing down.
+    enrichment_budget = max_attempts - len(chosen)
+    chosen.extend(rotate_attempts(extra, now=now, count=enrichment_budget))
     return chosen
 
 

@@ -331,3 +331,54 @@ async def test_gate_source_archive_changed_upstream_cannot_replace_existing(tmp_
     assert len(outcome["unavailable_or_rejected"]) == 1
     assert "changed" in outcome["unavailable_or_rejected"][0]["reason"]
     assert not outcome["published"]
+
+
+def test_pending_candle_404_cannot_starve_gate_enrichment_forever():
+    """Real warehouse backlog has persistent 5m gaps and many untouched kinds."""
+    now = datetime(2026, 11, 1, tzinfo=UTC)
+    months = [f"2024-{n:02d}" for n in range(1, 13)]
+    work = [
+        (asset, kind, month)
+        for month in months
+        for kind in ("candlesticks_5m", "mark_prices", "funding_applies",
+                     "funding_updates", "trades")
+        for asset in ("BTC", "ETH", "SOL", "XRP")
+    ]
+    selected = gate.prioritize_backfill(
+        work, existing={}, native=set(), months=months,
+        now=now, max_attempts=40,
+    )
+    assert len(selected) == 40
+    assert len(selected) == len(set(selected))
+    assert all(task in work for task in selected)
+    assert any(kind == "candlesticks_5m" for _, kind, _ in selected)
+    assert sum(kind != "candlesticks_5m" for _, kind, _ in selected) >= 13
+
+
+def test_gate_enrichment_uses_full_budget_when_candles_are_archived():
+    now = datetime(2026, 11, 1, tzinfo=UTC)
+    months = [f"2024-{n:02d}" for n in range(1, 11)]
+    candles = [("BTC", "candlesticks_5m", month) for month in months]
+    extra = [("BTC", kind, month) for month in months
+             for kind in ("mark_prices", "funding_applies", "trades")]
+    existing = {job: "a" * 16 for job in candles}
+    selected = gate.prioritize_backfill(
+        candles + extra, existing=existing,
+        native={("BTC", m) for m in months},
+        months=months, now=now, max_attempts=24,
+    )
+    assert len(selected) == 24
+    assert all(kind != "candlesticks_5m" for _, kind, _ in selected)
+    assert len(selected) == len(set(selected))
+
+
+def test_gate_small_batch_preserves_candle_priority_and_bounds():
+    now = datetime(2026, 11, 1, tzinfo=UTC)
+    months = ["2024-01"]
+    jobs = [("BTC", "candlesticks_5m", months[0]),
+            ("BTC", "funding_applies", months[0])]
+    selected = gate.prioritize_backfill(
+        jobs, existing={}, native=set(), months=months,
+        now=now, max_attempts=1,
+    )
+    assert selected == [jobs[0]]

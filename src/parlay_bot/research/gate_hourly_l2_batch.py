@@ -18,6 +18,7 @@ import httpx
 from parlay_bot.config import Settings
 from parlay_bot.research.drive_source_census import list_names
 from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.history_priority import window
 from parlay_bot.research.gate_hourly_l2_archive import (
     ASSETS,
     FAMILIES,
@@ -95,18 +96,27 @@ def select_slots(
     slots = candidate_slots(now)
     if not slots:
         return [], 0
+    priority = set(window(now).completed_months)
+    high = [slot for slot in slots if slot[2][:4] + "-" + slot[2][4:6] in priority]
+    older = [slot for slot in slots if slot not in high]
     rotation = int(now.timestamp()) // (WINDOW_HOURS * 3600)
-    start = (rotation * max_attempts) % len(slots)
     chosen = []
     skipped = 0
-    for i in range(len(slots)):
-        slot = slots[(start + i) % len(slots)]
-        if slot in listed:
-            skipped += 1
+    # A 2021 source is not attempted ahead of an obtainable 2025/26 one.
+    # Older history remains eligible once the last 24-month sample queue
+    # has been exhausted. The existing skip list is still names, not proof.
+    for lane in (high, older):
+        if not lane:
             continue
-        chosen.append(slot)
-        if len(chosen) == max_attempts:
-            break
+        start = (rotation * max_attempts) % len(lane)
+        for i in range(len(lane)):
+            slot = lane[(start + i) % len(lane)]
+            if slot in listed:
+                skipped += 1
+                continue
+            chosen.append(slot)
+            if len(chosen) == max_attempts:
+                return chosen, skipped
     return chosen, skipped
 
 
@@ -140,6 +150,7 @@ async def collect_batch(
         status = {
             "schema_version": "rival-gate-hourly-l2-resume-v1",
             "snapshot_at_utc": now.astimezone(UTC).isoformat(),
+            "priority_window": window(now).metadata(),
             "candidate_attempts": len(slots),
             "already_listed_not_byte_reverified": skipped,
             "readbacks": [], "blocked": [],

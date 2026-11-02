@@ -14,6 +14,9 @@ from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.publish import _drive
 
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
+# Match the actual first supported month in the authoritative downloaders.
+# Do not invent pre-publication OKX history for January-June 2023.
+START_MONTH = {"binance": "2021-01", "okx": "2023-07", "gate": "2023-01"}
 PATTERNS = (
     (r"(BTC|ETH|SOL|XRP)USDT-5m-(20\d{2}-\d{2})--([a-f0-9]{16})\.manifest\.json", "binance", "candles_5m"),
     (r"okx-(BTC|ETH|SOL|XRP)-USDT-SWAP-USDT-5m-(20\d{2}-\d{2})--([a-f0-9]{16})\.manifest\.json", "okx", "candles_5m"),
@@ -106,7 +109,7 @@ def summarize(names: list[str], *, now: datetime) -> dict:
             ignored += 1
             continue
         venue, asset, family, month, sha = key
-        floor = "2021-01" if venue == "binance" else "2023-01"
+        floor = START_MONTH[venue]
         if (month < floor or month >= current or month[5:] not in
                 tuple(f"{x:02d}" for x in range(1, 13))):
             outside += 1
@@ -114,9 +117,9 @@ def summarize(names: list[str], *, now: datetime) -> dict:
         streams[(venue, asset, family)][month].add(sha)
     scopes = []
     for venue, floor, family in (
-        ("binance", "2021-01", "candles_5m"),
-        ("okx", "2023-01", "candles_5m"),
-        ("gate", "2023-01", "candlesticks_5m"),
+        ("binance", START_MONTH["binance"], "candles_5m"),
+        ("okx", START_MONTH["okx"], "candles_5m"),
+        ("gate", START_MONTH["gate"], "candlesticks_5m"),
     ):
         required = months_from(floor, now)
         for asset in ASSETS:
@@ -126,6 +129,7 @@ def summarize(names: list[str], *, now: datetime) -> dict:
                          if len(collected.get(month, ())) > 1]
             scopes.append({
                 "venue": venue, "asset": asset, "family": family,
+                "source_first_month": floor,
                 "expected_completed_months": len(required),
                 "listed_manifest_months": len(required) - len(missing),
                 "not_listed_months": len(missing),

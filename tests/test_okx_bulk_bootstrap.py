@@ -108,6 +108,7 @@ async def test_bulk_advances_all_assets_and_keeps_research_only(tmp_path, monkey
     assert len(limiters) == 1
     assert len(closed) == 4
     assert result["complete"] is True
+    assert result["first_source_month"] == "2023-07"
     assert result["live_model_promoted"] is False
     assert result["forward_model_improvement_verified"] is False
 

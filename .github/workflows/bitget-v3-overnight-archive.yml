@@ -1,0 +1,87 @@
+name: Bitget 2021+ source-exact futures archive to private Drive
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/bitget-v3-overnight-archive.yml"
+      - "src/parlay_bot/research/bitget_v3_archive.py"
+      - "tests/test_bitget_v3_archive.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/bitget-v3-overnight-archive.yml"
+      - "src/parlay_bot/research/bitget_v3_archive.py"
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      max_requests:
+        description: Maximum 5m pages budgeted per asset per run
+        type: choice
+        options: ["3000", "8000", "16000", "24000"]
+        default: "24000"
+
+permissions:
+  contents: read
+
+jobs:
+  bitget-contract-tests:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: |
+          python -m pip install -e ".[dev]"
+          ruff check src/parlay_bot/research/bitget_v3_archive.py tests/test_bitget_v3_archive.py
+          pytest -q tests/test_bitget_v3_archive.py
+
+  bitget-overnight-to-drive:
+    if: github.event_name != 'pull_request' && vars.RIVAL_BITGET_V3_ARCHIVE_ENABLED != 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    concurrency:
+      group: rival-bitget-v3-archive-${{ matrix.asset }}
+      cancel-in-progress: false
+    env:
+      MAX_REQUESTS: ${{ inputs.max_requests || '24000' }}
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[dev,archive]"
+      - name: Reject unsafe source formats before starting archive collection
+        run: |
+          ruff check src/parlay_bot/research/bitget_v3_archive.py tests/test_bitget_v3_archive.py
+          pytest -q tests/test_bitget_v3_archive.py
+      - name: Collect real Bitget market, mark, index and premium histories
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m parlay_bot.research.bitget_v3_archive \
+            --asset "${{ matrix.asset }}" --first 2021-01 \
+            --max-requests "$MAX_REQUESTS" --max-months 320
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bitget-v3-${{ matrix.asset }}-overnight-evidence
+          path: data/native-reports/bitget-${{ matrix.asset }}-overnight-progress.json
+          if-no-files-found: ignore
+          retention-days: 14

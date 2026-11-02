@@ -12,14 +12,20 @@ on:
       - ".github/workflows/bitget-v3-overnight-archive.yml"
       - "src/parlay_bot/research/bitget_v3_archive.py"
   schedule:
-    - cron: "17 3,9,15,21 * * *"
+    # Low-priority original-source recovery only. Preserve verified history;
+    # independent Binance, OKX and Gate bulk jobs keep their own schedules.
+    - cron: "17 4 * * 3,6"
   workflow_dispatch:
     inputs:
+      first_month:
+        description: "Earliest Bitget month to attempt (2021-01 manually, 2024-11 automatically)"
+        type: string
+        default: "2024-11"
       max_requests:
         description: Maximum 5m pages budgeted per asset per run
         type: choice
         options: ["3000", "8000", "16000", "24000"]
-        default: "24000"
+        default: "3000"
 
 permissions:
   contents: read
@@ -75,7 +81,7 @@ jobs:
       group: rival-bitget-v3-archive-${{ matrix.asset }}
       cancel-in-progress: false
     env:
-      MAX_REQUESTS: ${{ inputs.max_requests || '24000' }}
+      MAX_REQUESTS: ${{ inputs.max_requests || '3000' }}
       RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
       RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
       RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
@@ -100,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m parlay_bot.research.bitget_v3_archive \
-            --asset "${{ matrix.asset }}" --first 2021-01 \
+            --asset "${{ matrix.asset }}" --first "${{ inputs.first_month || '2024-11' }}" \
             --max-requests "$MAX_REQUESTS" --max-months 320
       - uses: actions/upload-artifact@v4
         if: always()

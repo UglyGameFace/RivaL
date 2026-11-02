@@ -192,7 +192,7 @@ async def verify_symbol(client: httpx.AsyncClient, *, asset: str,
              and item.get("category") == "USDT-FUTURES"
              and item.get("quoteCoin") == "USDT"
              and item.get("type") == "perpetual"] if isinstance(rows, list) else []
-    if info.get("code") != "00000" or len(match) != 1:
+    if not isinstance(info, dict) or info.get("code") != "00000" or len(match) != 1:
         raise HistoryImportError("Bitget USDT perpetual identity not verified")
     return {"symbol": asset + "USDT", "category": "USDT-FUTURES",
             "metadata_sha256": hashlib.sha256(response.content).hexdigest(),
@@ -238,15 +238,14 @@ async def existing_manifests(drive, *, asset: str) -> set[tuple[str, str]]:
             match = MANIFEST_RE.fullmatch(name) if isinstance(name, str) else None
             if not match or match.group(1) != asset:
                 continue
-            a, family, month, short = match.groups()
+            _, family, month, raw_short = match.groups()
             sha = props.get("rival_sha256")
-            if (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha)
-                or sha[:16] != short):
-                raise HistoryImportError("Bitget remote manifest hash invalid")
+            if not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+                raise HistoryImportError("Bitget remote manifest digest invalid")
             key = (family, month)
-            if key in found and found[key] != sha:
+            if key in found and found[key] != (raw_short, sha):
                 raise HistoryImportError("conflicting Bitget source month manifest")
-            found[key] = sha
+            found[key] = (raw_short, sha)
         page = info.get("nextPageToken")
         if page is None:
             return set(found)
@@ -261,7 +260,6 @@ async def collect_month(client: httpx.AsyncClient, *, asset: str, family: str,
     """Retain source request/response bytes and certify exact 5m UTC grid."""
     steps = windows(month)
     root.mkdir(parents=True, exist_ok=True)
-    raw_path = root / f"bitget-{asset}-{family}-{month}.responses.jsonl.gz"
     seen: set[int] = set()
     raw_sha = hashlib.sha256()
     with tempfile.NamedTemporaryFile(dir=root, suffix=".part", delete=False) as tmp:
@@ -366,7 +364,7 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
         "source": ENDPOINT, "venue": "bitget", "source_families": list(FAMILIES),
         "planned_source_months": len(job), "existing_manifest_names_only": 0,
         "source_months_published_and_readback": [], "unavailable": [],
-        "api_requests_completed": 0, "request_budget": max_requests,
+        "api_request_pages_reserved": 0, "request_budget": max_requests,
         "full_2021_present_coverage_proven": False, "live_models_approved": False,
     }
     root.mkdir(parents=True, exist_ok=True)
@@ -376,7 +374,7 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
             report["existing_manifest_names_only"] += 1
             continue
         needed = len(windows(month))
-        if (report["api_requests_completed"] + needed > max_requests
+        if (report["api_request_pages_reserved"] + needed > max_requests
             or len(report["source_months_published_and_readback"]) >= max_months):
             report["budget_exhausted_before_next_month"] = True
             break
@@ -404,7 +402,7 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
                 report["source_access_blocked_or_throttled"] = True
                 break
         finally:
-            report["api_requests_completed"] += needed
+            report["api_request_pages_reserved"] += needed
     path = report_dir / f"bitget-{asset}-overnight-progress.json"
     path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
     if drive.folders.reports:
@@ -457,7 +455,7 @@ def main(argv: list[str] | None = None) -> int:
         ), "remote_manifest_hints_not_reverified":
         result["existing_manifest_names_only"],
         "failed_or_missing": len(result["unavailable"]),
-        "requests_budgeted": result["api_requests_completed"],
+        "request_pages_budgeted": result["api_request_pages_reserved"],
         "readback_receipts": len(result["source_months_published_and_readback"]),
         "complete_2021_present": False,
         "source_access_blocked": result.get("source_access_blocked_or_throttled", False),

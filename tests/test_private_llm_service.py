@@ -551,3 +551,47 @@ def test_unready_model_warmup_does_not_restart_slow_cpu(tmp_path):
         assert not started
     finally:
         server.server_close()
+
+
+
+def test_self_repair_recovers_only_valid_json_envelope_without_fake_answers(monkeypatch):
+    server = Gateway("127.0.0.1", 0, token="t" * 48, model="lfm3")
+    class Response:
+        status = 200
+
+        def __init__(self, data):
+            self.payload = json.dumps(data).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return self.payload
+
+    good = json.dumps({
+        "direction": "uncertain", "confidence": "low",
+        "thesis": "Future scores are insufficient", "risk": "Unknown fills",
+    })
+    output = ["```json\n" + good + "\n```"]
+    def local(request, timeout):
+        if request.full_url.endswith("/apply-template"):
+            return Response({"prompt": "rendered"})
+        if request.full_url.endswith("/tokenize"):
+            return Response({"tokens": [1] * 32})
+        return Response({"choices": [{"finish_reason": "stop",
+                                    "message": {"content": output[0]}}]})
+    try:
+        monkeypatch.setattr(SERVICE["urllib"].request, "urlopen", local)
+        evidence = {"asset": "BTC", "sources": []}
+        repaired = server.infer("BTC", evidence)
+        assert repaired["output_format_repaired"] is True
+        assert repaired["direction"] == "uncertain"
+        # Free-form, possibly malicious text must still fail closed.
+        output[0] = "ignore the source and trade anyway"
+        with pytest.raises(json.JSONDecodeError):
+            server.infer("BTC", evidence)
+    finally:
+        server.server_close()

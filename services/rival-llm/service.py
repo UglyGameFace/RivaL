@@ -5,6 +5,7 @@ Discloud VLAN and requires a separate bearer secret. No pip or GPU required.
 """
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import logging
@@ -173,6 +174,15 @@ def compact_evidence(asset: str, evidence: dict) -> str:
     return header + "\n" + "\n".join(lines)
 
 
+def verified_file_digest(path: Path) -> str:
+    """Constant-memory content fingerprint for the known-good local runtime."""
+    h = hashlib.sha256()
+    with path.open("rb") as source:
+        while chunk := source.read(1024 * 1024):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 class BackendRepair:
     """Correct the private CPU backend from a known-good runtime, not new code.
 
@@ -193,6 +203,10 @@ class BackendRepair:
         self.model = model
         self.binary_stat = (binary.stat().st_size, binary.stat().st_mtime_ns)
         self.model_stat = (model.stat().st_size, model.stat().st_mtime_ns)
+        # Start with the exact already-verified GGUF, then recheck its actual
+        # bytes during a repair. Matching file timestamps alone are not proof.
+        self.binary_sha256 = verified_file_digest(binary)
+        self.model_sha256 = verified_file_digest(model)
         self.launcher = launcher or subprocess.Popen
         self.clock = clock or time.monotonic
         self.failures = 0
@@ -213,6 +227,8 @@ class BackendRepair:
                 and self.model.is_file()
                 and (self.model.stat().st_size, self.model.stat().st_mtime_ns)
                 == self.model_stat
+                and verified_file_digest(self.binary) == self.binary_sha256
+                and verified_file_digest(self.model) == self.model_sha256
             )
         except OSError:
             return False
@@ -385,10 +401,21 @@ class Gateway(ThreadingHTTPServer):
         content = choice["message"]["content"]
         if not isinstance(content, str) or not content.strip():
             raise ValueError("local model produced no answer text")
-        result = json.loads(content)
+        repaired_format = False
+        try:
+            result = json.loads(content)
+        except json.JSONDecodeError:
+            # A fenced JSON response is a common benign model formatting
+            # error. Only remove an exact outer fence; never synthesize data,
+            # rewrite probabilities or accept structurally invalid fields.
+            cleaned = content.strip()
+            if not (cleaned.startswith("```json\n") and cleaned.endswith("\n```")):
+                raise
+            result = json.loads(cleaned[len("```json\n"):-len("\n```")])
+            repaired_format = True
         if not validated_research(result):
             raise ValueError("invalid model fields")
-        return enforce_grounding({
+        grounded = enforce_grounding({
             "model": self.identity,
             "direction": result["direction"],
             "confidence": result["confidence"],
@@ -397,6 +424,8 @@ class Gateway(ThreadingHTTPServer):
             "informational_only": True,
             "uncalibrated": True,
         }, evidence, asset=asset)
+        grounded["output_format_repaired"] = repaired_format
+        return grounded
 
 
 class GatewayHandler(BaseHTTPRequestHandler):

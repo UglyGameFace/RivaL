@@ -994,58 +994,57 @@ class ResearchDashboard(discord.ui.View):
                         value="Verified observation ledger currently unavailable.",
                         inline=False,
                     )
-            if self.section == "learning":
-                if self.shadow_enabled:
-                    try:
-                        snapshots = await asyncio.to_thread(
-                            ShadowLearningMonitor(self.market.store).latest,
-                            asset=self.asset,
-                        )
-                    except Exception:  # noqa: BLE001 - view must never crash
-                        _LOG.exception("Stored shadow evaluation read failed")
+            if self.section == "learning" and self.shadow_enabled:
+                try:
+                    snapshots = await asyncio.to_thread(
+                        ShadowLearningMonitor(self.market.store).latest,
+                        asset=self.asset,
+                    )
+                except Exception:  # noqa: BLE001 - view must never crash
+                    _LOG.exception("Stored shadow evaluation read failed")
+                    embed.add_field(
+                        name="Automatic learning",
+                        value="Learning history unavailable; collection can continue.",
+                        inline=False,
+                    )
+                else:
+                    ready = [
+                        row for row in snapshots
+                        if row["evaluated"] >= MIN_EVALUATED
+                        and row["brier"] is not None
+                    ]
+                    if ready:
+                        total = sum(int(x["evaluated"]) for x in ready)
+                        model_score = sum(
+                            float(x["brier"]) * int(x["evaluated"])
+                            for x in ready
+                        ) / total
+                        baseline_score = sum(
+                            float(x["baseline_brier"]) * int(x["evaluated"])
+                            for x in ready
+                        ) / total
                         embed.add_field(
-                            name="Automatic learning",
-                            value="Learning history unavailable; collection can continue.",
+                            name="Automatic shadow evaluation",
+                            value=(
+                                f"**{len(ready)}** qualifying venue/horizon streams "
+                                f"· **{total:,}** settled evaluations (may overlap).\n"
+                                f"Mean Brier: **{model_score:.4f}** vs "
+                                f"baseline **{baseline_score:.4f}**.\n"
+                                "Research only: not a calibrated or deployed signal."
+                            ),
                             inline=False,
                         )
                     else:
-                        ready = [
-                            row for row in snapshots
-                            if row["evaluated"] >= MIN_EVALUATED
-                            and row["brier"] is not None
-                        ]
-                        if ready:
-                            total = sum(int(x["evaluated"]) for x in ready)
-                            model_score = sum(
-                                float(x["brier"]) * int(x["evaluated"])
-                                for x in ready
-                            ) / total
-                            baseline_score = sum(
-                                float(x["baseline_brier"]) * int(x["evaluated"])
-                                for x in ready
-                            ) / total
-                            embed.add_field(
-                                name="Automatic shadow evaluation",
-                                value=(
-                                    f"**{len(ready)}** qualifying venue/horizon streams "
-                                    f"· **{total:,}** settled evaluations (may overlap).\n"
-                                    f"Mean Brier: **{model_score:.4f}** vs "
-                                    f"baseline **{baseline_score:.4f}**.\n"
-                                    "Research only: not a calibrated or deployed signal."
-                                ),
-                                inline=False,
-                            )
-                        else:
-                            embed.add_field(
-                                name="Automatic shadow evaluation",
-                                value=(
-                                    f"**{len(snapshots)}** tracked venue/horizon streams. "
-                                    f"Waiting for at least {MIN_EVALUATED} causal "
-                                    "settled evaluations per stream. Backfilled "
-                                    "candles cannot qualify as live predictions."
-                                ),
-                                inline=False,
-                            )
+                        embed.add_field(
+                            name="Automatic shadow evaluation",
+                            value=(
+                                f"**{len(snapshots)}** tracked venue/horizon streams. "
+                                f"Waiting for at least {MIN_EVALUATED} causal "
+                                "settled evaluations per stream. Backfilled "
+                                "candles cannot qualify as live predictions."
+                            ),
+                            inline=False,
+                        )
             embed.set_footer(
                 text="Historical backfills do not count as live forward tests."
             )

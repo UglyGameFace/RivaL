@@ -34,6 +34,7 @@ FAMILIES = {
     "candles_1h": ("klines", "1h"),
     "candles_4h": ("klines", "4h"),
     "candles_1d": ("klines", "1d"),
+    "funding": ("fundingRate", None),
 }
 INTERVAL_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000,
                "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
@@ -52,22 +53,26 @@ def source_url(asset: str, family: str, month: str) -> str:
     ) or month < "2021-01":
         raise ValueError("untrusted Binance auxiliary source identity")
     dataset, interval = FAMILIES[family]
+    if family == "funding":
+        name = f"{asset}USDT-fundingRate-{month}.zip"
+        return f"{BASE}/{dataset}/{asset}USDT/{name}"
     name = f"{asset}USDT-{interval}-{month}.zip"
     return f"{BASE}/{dataset}/{asset}USDT/{interval}/{name}"
 
 
 def inspect_original_zip(raw: bytes, *, asset: str, family: str,
                          month: str) -> dict:
-    """Validate every original time slot, independently of the SHA checksum."""
+    """Validate original month data without confusing funding events with bars."""
     url = source_url(asset, family, month)
     if not 0 < len(raw) <= MAX_ZIP:
         raise HistoryImportError("Binance auxiliary source outside ZIP size limit")
     start = datetime.strptime(month, "%Y-%m").replace(tzinfo=UTC)
     end = (start.replace(year=start.year + 1, month=1) if start.month == 12
            else start.replace(month=start.month + 1))
-    step = INTERVAL_MS[FAMILIES[family][1]]
     lo, hi = int(start.timestamp() * 1000), int(end.timestamp() * 1000)
-    expected = (hi - lo) // step
+    step = (None if family == "funding"
+            else INTERVAL_MS[FAMILIES[family][1]])
+    expected = None if step is None else (hi - lo) // step
     seen: set[int] = set()
     try:
         with zipfile.ZipFile(io.BytesIO(raw)) as archive:
@@ -78,33 +83,65 @@ def inspect_original_zip(raw: bytes, *, asset: str, family: str,
                 raise HistoryImportError("Binance ZIP CSV identity or size invalid")
             with archive.open(files[0]) as source:
                 reader = csv.reader(io.TextIOWrapper(source, encoding="utf-8-sig"))
-                for fields in reader:
-                    if fields and fields[0].lower() in ("open_time", "open time"):
-                        continue
-                    if len(fields) < 5 or not fields[0].isascii() or not fields[0].isdigit():
-                        raise HistoryImportError("Binance auxiliary CSV row malformed")
-                    tick = int(fields[0])
-                    if (tick < lo or tick >= hi or (tick - lo) % step != 0
-                        or tick in seen or len(seen) >= expected):
-                        raise HistoryImportError("Binance auxiliary duplicate/off-grid row")
-                    try:
-                        op, high, low, close = [Decimal(v) for v in fields[1:5]]
-                    except InvalidOperation as exc:
-                        raise HistoryImportError("Binance auxiliary OHLC invalid") from exc
-                    if (not all(v.is_finite() for v in (op, high, low, close))
-                        or high < max(op, close) or low > min(op, close) or high < low
-                        or (family != "premium" and low <= 0)):
-                        raise HistoryImportError("Binance auxiliary OHLC invalid")
-                    seen.add(tick)
+                if family == "funding":
+                    # Funding is irregular settlement EVENT data, never an
+                    # OHLCV or guaranteed 8-hour fixed interval candle grid.
+                    header = next(reader, [])
+                    if [field.strip() for field in header] != [
+                        "calc_time", "funding_interval_hours", "last_funding_rate",
+                    ]:
+                        raise HistoryImportError("Binance funding CSV header incompatible")
+                    for fields in reader:
+                        if (len(fields) != 3 or not fields[0].isascii()
+                            or not fields[0].isdigit()):
+                            raise HistoryImportError("Binance funding event malformed")
+                        tick = int(fields[0])
+                        if tick < lo or tick >= hi or tick in seen:
+                            raise HistoryImportError("Binance funding event off-month/duplicate")
+                        try:
+                            interval = Decimal(fields[1])
+                            rate = Decimal(fields[2])
+                        except InvalidOperation as exc:
+                            raise HistoryImportError("Binance funding rate invalid") from exc
+                        if (not interval.is_finite() or not rate.is_finite()
+                            or not 0 < interval <= 24 or abs(rate) > 1):
+                            raise HistoryImportError("Binance funding event invalid range")
+                        seen.add(tick)
+                else:
+                    for fields in reader:
+                        if fields and fields[0].lower() in ("open_time", "open time"):
+                            continue
+                        if (len(fields) < 5 or not fields[0].isascii()
+                            or not fields[0].isdigit()):
+                            raise HistoryImportError("Binance auxiliary CSV row malformed")
+                        tick = int(fields[0])
+                        if (tick < lo or tick >= hi or (tick - lo) % step != 0
+                            or tick in seen or len(seen) >= expected):
+                            raise HistoryImportError("Binance auxiliary duplicate/off-grid row")
+                        try:
+                            op, high, low, close = [Decimal(v) for v in fields[1:5]]
+                        except InvalidOperation as exc:
+                            raise HistoryImportError("Binance auxiliary OHLC invalid") from exc
+                        if (not all(v.is_finite() for v in (op, high, low, close))
+                            or high < max(op, close) or low > min(op, close)
+                            or high < low or (family != "premium" and low <= 0)):
+                            raise HistoryImportError("Binance auxiliary OHLC invalid")
+                        seen.add(tick)
     except (zipfile.BadZipFile, UnicodeError, OSError, csv.Error) as exc:
         raise HistoryImportError("Binance auxiliary ZIP or CSV invalid") from exc
+    if family == "funding":
+        return {
+            "rows": len(seen), "expected_rows": None,
+            "complete_utc_grid": False, "missing_slots": None,
+            "interval_minutes": None, "source_event_timestamps_validated": True,
+            "complete_funding_settlement_history_proven": False,
+        }
     return {
         "rows": len(seen), "expected_rows": expected,
         "complete_utc_grid": len(seen) == expected,
         "missing_slots": expected - len(seen),
         "interval_minutes": step // 60_000,
     }
-
 
 async def fetch_original(client: httpx.AsyncClient, url: str, *, cap: int) -> bytes:
     if not url.startswith(BASE + "/") or "?" in url or "#" in url:

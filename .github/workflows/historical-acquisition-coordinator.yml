@@ -5,6 +5,8 @@ on:
     paths:
       - ".github/workflows/historical-acquisition-coordinator.yml"
       - "src/parlay_bot/research/historical_coordinator.py"
+      - "src/parlay_bot/research/drive_source_census.py"
+      - "src/parlay_bot/research/source_native.py"
       - "src/parlay_bot/research/source_native_offline.py"
       - "tools/historical_dispatch.py"
       - "tests/test_historical_coordinator.py"
@@ -13,6 +15,8 @@ on:
     paths:
       - ".github/workflows/historical-acquisition-coordinator.yml"
       - "src/parlay_bot/research/historical_coordinator.py"
+      - "src/parlay_bot/research/drive_source_census.py"
+      - "src/parlay_bot/research/source_native.py"
       - "src/parlay_bot/research/source_native_offline.py"
       - "tools/historical_dispatch.py"
   schedule:

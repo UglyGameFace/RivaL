@@ -79,7 +79,12 @@ def inspect_snapshot_hour(raw_gzip: bytes, *, hour: str) -> dict:
     min_bid_levels = min_ask_levels = MAX_LEVELS
     try:
         with gzip.GzipFile(fileobj=io.BytesIO(raw_gzip)) as source:
-            for line in source:
+            while True:
+                line = source.readline(MAX_LINE + 1)
+                if not line:
+                    break
+                if len(line) > MAX_LINE:
+                    raise HistoryImportError("Gate snapshot record exceeds parse budget")
                 expanded += len(line)
                 count += 1
                 if expanded > MAX_EXPANDED or count > MAX_SNAPSHOTS or len(line) > MAX_LINE:

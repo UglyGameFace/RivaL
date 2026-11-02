@@ -1,0 +1,53 @@
+name: RivaL lean historical collector runtime smoke
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/historical-runtime-smoke.yml"
+      - ".github/workflows/binance-deep-file-backfill.yml"
+      - ".github/workflows/gate-official-archive-backfill.yml"
+      - ".github/workflows/official-okx-bulk-bootstrap.yml"
+      - ".github/workflows/official-okx-advanced-archive.yml"
+      - ".github/workflows/gate-hourly-l2-source.yml"
+      - ".github/workflows/lighter-original-auxiliary.yml"
+      - ".github/workflows/deribit-hourly-native-backfill.yml"
+      - ".github/workflows/dydx-v4-original-funding.yml"
+      - ".github/workflows/bitget-v3-overnight-archive.yml"
+      - "src/parlay_bot/research/bitget_v3_archive.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lean-runtime-imports:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install only production archive dependencies
+        run: python -m pip install -e ".[archive]"
+      - name: Import each historical collector and its shared evidence code
+        shell: bash
+        run: |
+          python - <<'PY'
+          import importlib
+          modules = (
+              "parlay_bot.research.binance_deep_backfill",
+              "parlay_bot.research.gate_archive_backfill",
+              "parlay_bot.research.okx_bulk_bootstrap",
+              "parlay_bot.research.okx_advanced_archive",
+              "parlay_bot.research.gate_hourly_l2_batch",
+              "parlay_bot.research.lighter_auxiliary_archive",
+              "parlay_bot.research.deribit_hourly_backfill",
+              "parlay_bot.research.dydx_funding_archive",
+              "parlay_bot.research.bitget_v3_archive",
+              "parlay_bot.research.source_family_coverage",
+          )
+          for name in modules:
+              importlib.import_module(name)
+              print("runtime_import_ok", name)
+          PY

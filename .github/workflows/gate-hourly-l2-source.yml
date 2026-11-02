@@ -135,7 +135,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python -m pip install -e ".[dev,archive]"
+      - run: python -m pip install -e ".[archive]"
       - name: Check existing warehouse authorization
         shell: bash
         run: |

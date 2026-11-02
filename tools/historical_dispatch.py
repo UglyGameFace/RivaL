@@ -34,15 +34,22 @@ def should_dispatch(runs: list[dict], *, now: datetime) -> tuple[bool, str]:
         if run.get("status") in ("queued", "in_progress", "waiting", "requested",
                                  "pending"):
             return False, "existing_workflow_run_active"
-        if run.get("event") != "workflow_dispatch":
+        event = run.get("event")
+        if event not in ("workflow_dispatch", "schedule", "push"):
             continue
         try:
             created = datetime.fromisoformat(run["created_at"])
         except (TypeError, ValueError, KeyError):
             # An unparseable run cannot safely authorize another dispatch.
             return False, "unreadable_workflow_history"
-        if created > now.astimezone(UTC) - timedelta(hours=12):
+        if event == "workflow_dispatch" and (created > now.astimezone(UTC)
+                                             - timedelta(hours=12)):
             return False, "recent_manual_or_coordinator_dispatch"
+        if event in ("schedule", "push") and (created > now.astimezone(UTC)
+                                              - timedelta(hours=4)):
+            # Let source-native schedules do their work instead of dispatching
+            # a duplicate collector while its last receipt is still fresh.
+            return False, "recent_scheduled_or_main_source_run"
     return True, "not_running_or_recently_dispatched"
 
 

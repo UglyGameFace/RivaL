@@ -142,6 +142,25 @@ class Pacer:
         self.next_request = time.monotonic() + self.seconds
 
 
+class RequestBudgetPacer:
+    """Track actual HTTP attempts, including metadata and retried requests.
+
+    Preserve the existing provider pacing; avoid charging a whole month against
+    the job budget when its first source page is genuinely unavailable.
+    """
+
+    def __init__(self, pacer: Pacer, max_requests: int):
+        self.pacer = pacer
+        self.max_requests = max_requests
+        self.attempted = 0
+
+    async def wait(self) -> None:
+        if self.attempted >= self.max_requests:
+            raise HistoryImportError("Bitget API request budget exhausted")
+        await self.pacer.wait()
+        self.attempted += 1
+
+
 async def request_page(client: httpx.AsyncClient, *, asset: str, family: str,
                        begin: int, end: int, pacer: Pacer,
                        start_back_steps: int = 0,
@@ -472,7 +491,7 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
     all_months = months(clock, first)
     if asset not in ASSETS or not 1 <= max_requests <= 40000 or not 1 <= max_months <= 400:
         raise ValueError("invalid bounded Bitget overnight job")
-    pacer = pacer or Pacer()
+    pacer = RequestBudgetPacer(pacer or Pacer(), max_requests)
     # Last 24 completed months before the requested older source history.
     prioritized = ordered_months(all_months, now=clock)
     job = [(month, family) for month in prioritized for family in FAMILIES]
@@ -483,7 +502,8 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
         "priority_window": window(clock).metadata(),
         "planned_source_months": len(job), "existing_manifest_names_only": 0,
         "source_months_published_and_readback": [], "unavailable": [],
-        "api_request_pages_reserved": 0, "request_budget": max_requests,
+        "api_request_pages_reserved": 0, "api_requests_attempted": 0,
+        "request_budget": max_requests,
         "full_2021_present_coverage_proven": False, "live_models_approved": False,
         "phase": "inventory", "current_source_month": None,
     }
@@ -493,6 +513,7 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
     report["phase"] = "contract_metadata"
     write_checkpoint(report, report_dir=report_dir, asset=asset)
     metadata = await verify_symbol(client, asset=asset, pacer=pacer)
+    report["api_requests_attempted"] = pacer.attempted
     report["phase"] = "collecting"
     write_checkpoint(report, report_dir=report_dir, asset=asset)
     for month, family in job:
@@ -500,12 +521,13 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
             report["existing_manifest_names_only"] += 1
             continue
         needed = len(windows(month))
-        if (report["api_request_pages_reserved"] + needed > max_requests
+        if (pacer.attempted + needed > max_requests
             or len(report["source_months_published_and_readback"]) >= max_months):
             report["budget_exhausted_before_next_month"] = True
             break
-        # Budget is reserved for a whole month, including retries. A source gap
-        # aborts its month early; no missing candle is silently filled.
+        # Require enough headroom for one successful month. Charge actual
+        # requests including retries, not every unrequested page after a gap.
+        # Hard-cap the request pacer if retries use up the remaining budget.
         report["current_source_month"] = {"month": month, "family": family}
         write_checkpoint(report, report_dir=report_dir, asset=asset)
         try:
@@ -521,6 +543,9 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
             )
         except (HistoryImportError, DriveArchiveError, httpx.HTTPError,
                 RuntimeError, OSError, ValueError) as exc:
+            if "Bitget API request budget exhausted" in str(exc):
+                report["budget_exhausted_during_month"] = True
+                break
             if len(report["unavailable"]) < MAX_REPORT_ERRORS:
                 report["unavailable"].append(
                     {"month": month, "family": family, "reason": str(exc)[:180]}
@@ -531,6 +556,7 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
                 break
         finally:
             report["api_request_pages_reserved"] += needed
+            report["api_requests_attempted"] = pacer.attempted
             report["last_attempted_source_month"] = {"month": month, "family": family}
             report["current_source_month"] = None
             write_checkpoint(report, report_dir=report_dir, asset=asset)
@@ -540,6 +566,7 @@ async def run(*, drive, client: httpx.AsyncClient, root: Path,
                 "readback_receipts": len(report["source_months_published_and_readback"]),
                 "missing_or_rejected": len(report["unavailable"]),
                 "pages_budgeted": report["api_request_pages_reserved"],
+                "api_requests_attempted": pacer.attempted,
             }, sort_keys=True), flush=True)
     report["phase"] = ("blocked" if report.get("source_access_blocked_or_throttled")
                        else "finished")
@@ -619,6 +646,7 @@ def main(argv: list[str] | None = None) -> int:
         result["existing_manifest_names_only"],
         "failed_or_missing": len(result["unavailable"]),
         "request_pages_budgeted": result["api_request_pages_reserved"],
+        "api_requests_attempted": result["api_requests_attempted"],
         "readback_receipts": len(result["source_months_published_and_readback"]),
         "complete_2021_present": False,
         "source_access_blocked": result.get("source_access_blocked_or_throttled", False),

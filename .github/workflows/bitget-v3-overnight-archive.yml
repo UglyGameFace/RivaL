@@ -12,20 +12,20 @@ on:
       - ".github/workflows/bitget-v3-overnight-archive.yml"
       - "src/parlay_bot/research/bitget_v3_archive.py"
   schedule:
-    # Low-priority original-source recovery only. Preserve verified history;
-    # independent Binance, OKX and Gate bulk jobs keep their own schedules.
-    - cron: "17 4 * * 3,6"
+    # Fast unattended free-source backfill, independent of other venues.
+    # Four-hour cadence stays longer than a full 8,000-page paced asset run.
+    - cron: "17 0,4,8,12,16,20 * * *"
   workflow_dispatch:
     inputs:
       first_month:
-        description: "Earliest Bitget month to attempt (2021-01 manually, 2024-11 automatically)"
+        description: "Earliest Bitget source month to attempt (recent 24 months first)"
         type: string
-        default: "2024-11"
+        default: "2021-01"
       max_requests:
         description: Maximum 5m pages budgeted per asset per run
         type: choice
         options: ["3000", "8000", "16000", "24000"]
-        default: "3000"
+        default: "8000"
 
 permissions:
   contents: read
@@ -81,7 +81,7 @@ jobs:
       group: rival-bitget-v3-archive-${{ matrix.asset }}
       cancel-in-progress: false
     env:
-      MAX_REQUESTS: ${{ inputs.max_requests || '3000' }}
+      MAX_REQUESTS: ${{ inputs.max_requests || '8000' }}
       RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
       RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
       RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
@@ -96,17 +96,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - run: python -m pip install -e ".[dev,archive]"
-      - name: Reject unsafe source formats before starting archive collection
-        run: |
-          ruff check src/parlay_bot/research/bitget_v3_archive.py tests/test_bitget_v3_archive.py
-          pytest -q tests/test_bitget_v3_archive.py
+      # PR CI owns test/lint. A scheduled archival worker needs runtime dependencies only.
+      - run: python -m pip install -e ".[archive]"
       - name: Collect real Bitget market, mark, index and premium histories
         shell: bash
         run: |
           set -euo pipefail
           python -m parlay_bot.research.bitget_v3_archive \
-            --asset "${{ matrix.asset }}" --first "${{ inputs.first_month || '2024-11' }}" \
+            --asset "${{ matrix.asset }}" --first "${{ inputs.first_month || '2021-01' }}" \
             --max-requests "$MAX_REQUESTS" --max-months 320
       - uses: actions/upload-artifact@v4
         if: always()

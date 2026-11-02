@@ -235,7 +235,7 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install original source archive transport and existing Drive client
-        run: python -m pip install -e ".[dev,archive,ml-research]"
+        run: python -m pip install -e ".[archive]"
       - name: Require complete existing private Drive configuration
         shell: bash
         run: |

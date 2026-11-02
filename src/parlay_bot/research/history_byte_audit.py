@@ -114,8 +114,6 @@ async def verify_month(drive, *, name: str, root: Path) -> dict:
     data_sha = info.get("data_sha256")
     if not isinstance(data_sha, str) or not SHA.fullmatch(data_sha):
         raise HistoryImportError("untrusted normalized history checksum")
-    from parlay_bot.research.publish import _artifact
-
     identity = f"{info['source']}:{info['source_url']}:{data_sha}"
     batch = "external-research-v1-" + hashlib.sha256(
         identity.encode()).hexdigest()[:24]

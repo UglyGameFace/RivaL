@@ -18,6 +18,7 @@ import httpx
 from parlay_bot.config import Settings
 from parlay_bot.research.audit import audit_partition
 from parlay_bot.research.free_history import ASSETS, HistoryImportError, ingest_binance
+from parlay_bot.research.history_priority import ordered_months, window
 from parlay_bot.research.publish import _drive, prepare, publish
 
 FIRST = "2021-01"
@@ -98,22 +99,20 @@ async def existing_month_keys(drive) -> set[str]:
 
 def prioritize_missing_source_months(
     months: list[str], assets: tuple[str, ...], available: set[str],
+    *, now: datetime | None = None,
 ) -> tuple[list[tuple[str, str]], int]:
-    """Fill the most recent six completed UTC months before older gaps.
+    """First the last 24 completed months, then all older original months.
 
-    This is an acquisition ordering only: a Drive manifest name is a resume
-    hint, not independent byte readback or evidence that a contract was listed.
-    Keep every older missing source month eligible in the same run.
+    Drive manifest names remain unverified resume hints, not proof of
+    completed source-grid bytes or of the contract's actual listing.
     """
-    planned = [(asset, month) for month in months for asset in assets]
-    recent = set(months[-6:])
+    ordered = ordered_months(months, now=now)
+    planned = [(asset, month) for month in ordered for asset in assets]
     missing = [
         (asset, month) for asset, month in planned
         if f"{asset}USDT-5m-{month}" not in available
     ]
-    prioritized = [pair for pair in missing if pair[1] in recent]
-    prioritized.extend(pair for pair in missing if pair[1] not in recent)
-    return prioritized, len(planned) - len(missing)
+    return missing, len(planned) - len(missing)
 
 
 async def collect_official_binance(
@@ -130,7 +129,9 @@ async def collect_official_binance(
     available = await existing_month_keys(drive)
     # Fill recent source months first, then the older missing backlog.
     # A manifest name remains an unverified resume hint, not readback proof.
-    work, skipped = prioritize_missing_source_months(months, assets, available)
+    work, skipped = prioritize_missing_source_months(
+        months, assets, available, now=clock,
+    )
     downloaded, failed = [], []
     root.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
@@ -175,7 +176,8 @@ async def collect_official_binance(
         "earliest_requested_month": FIRST,
         "latest_complete_month": months[-1] if months else None,
         "planned_asset_months": len(work) + skipped,
-        "prioritization": "recent_six_completed_months_then_older_missing",
+        "prioritization": "recent_six_then_remaining_24_months_then_older_missing",
+        "priority_window": window(clock).metadata(),
         "newly_published": downloaded,
         "new_months": len(downloaded),
         "remote_manifest_names_skipped_without_readback": skipped,

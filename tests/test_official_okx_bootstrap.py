@@ -274,3 +274,65 @@ async def test_okx_keeps_verified_month_when_another_month_and_optional_sources_
         tmp_path / "reports" / "okx-extra-inventory-BTC-2026-09.json"
     ).read_text(encoding="utf-8")
     assert '"status": "unverified_catalog"' in inventory_report
+
+
+@pytest.mark.asyncio
+async def test_okx_429_then_original_catalog_recovers_without_route_bypass(monkeypatch):
+    calls = []
+    sleeps = []
+
+    async def no_wait(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(okx.asyncio, "sleep", no_wait)
+
+    def serve(req):
+        calls.append(req)
+        if len(calls) == 1:
+            return httpx.Response(429, headers={"Retry-After": "1"})
+        return httpx.Response(200, json={"code": "0", "data": []})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(serve)) as client:
+        assert await okx.official(client, okx.ARCHIVES, {"module": "3"}) == []
+    assert len(calls) == 2
+    assert all(req.url.host == "www.okx.com" for req in calls)
+    assert sleeps == [2]
+
+
+@pytest.mark.asyncio
+async def test_okx_repeated_429_is_bounded_and_classified(monkeypatch):
+    async def no_wait(delay):
+        return None
+
+    monkeypatch.setattr(okx.asyncio, "sleep", no_wait)
+    count = 0
+
+    def throttle(req):
+        nonlocal count
+        count += 1
+        return httpx.Response(429)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(throttle)) as client:
+        with pytest.raises(HistoryImportError, match="HTTP 429 retry exhausted"):
+            await okx.official(client, okx.ARCHIVES, {"module": "3"})
+    assert count == 4
+
+
+@pytest.mark.asyncio
+async def test_okx_json_rate_limit_code_recovers(monkeypatch):
+    async def no_wait(delay):
+        return None
+
+    monkeypatch.setattr(okx.asyncio, "sleep", no_wait)
+    count = 0
+
+    def rate(req):
+        nonlocal count
+        count += 1
+        return httpx.Response(200, json={
+            "code": "50011" if count == 1 else "0", "data": [],
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(rate)) as client:
+        assert await okx.official(client, okx.ARCHIVES, {"module": "3"}) == []
+    assert count == 2

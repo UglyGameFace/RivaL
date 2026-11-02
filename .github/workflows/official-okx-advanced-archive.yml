@@ -140,12 +140,22 @@ jobs:
                           data = response.json()
                       except ValueError:
                           data = {}
+                      samples = []
+                      for item in data.get("data", [])[:2] if isinstance(data.get("data"), list) else []:
+                          for group in item.get("details", [])[:2]:
+                              for entry in group.get("groupDetails", [])[:2]:
+                                  samples.append({
+                                      "filename": str(entry.get("filename", ""))[:180],
+                                      "sizeMB": str(entry.get("sizeMB", ""))[:30],
+                                      "dateTs": str(entry.get("dateTs", ""))[:30],
+                                  })
                       results.append({
                           "probe": label, "http_status": response.status_code,
                           "provider_code": str(data.get("code", ""))[:20],
                           "provider_message": str(data.get("msg", ""))[:180],
                           "catalog_records": len(data.get("data", []))
                               if isinstance(data.get("data"), list) else None,
+                          "source_file_samples": samples,
                       })
               print(json.dumps({"status": "source_metadata_only_no_download",
                                 "results": results}, sort_keys=True))

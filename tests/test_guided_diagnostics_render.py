@@ -40,7 +40,7 @@ async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) ->
 
         ForwardAccuracyMonitor(market).run_once()
         recorded = await home.render()
-        after = _fields(recorded)["📡 System status"]
+        after = _fields(recorded)["📡 Are market feeds and predictions running?"]
         assert "Prediction checks:" in after
         assert "0 predictions recorded" in after
         assert "No check recorded" not in after
@@ -122,7 +122,7 @@ async def test_feed_read_failure_does_not_hide_recorded_cycle(tmp_path, monkeypa
     monkeypatch.setattr(market, "feed_health", broken_feed)
     try:
         embed = await home.render()
-        status = _fields(embed)["📡 System status"]
+        status = _fields(embed)["📡 Are market feeds and predictions running?"]
         assert "Live price feeds:** Cannot check right now" in status
         assert "Prediction checks:" in status
         assert "0 predictions recorded" in status

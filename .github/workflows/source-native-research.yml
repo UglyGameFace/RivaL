@@ -23,6 +23,8 @@ on:
       - ".github/workflows/source-native-research.yml"
       - "src/parlay_bot/research/source_native.py"
       - "src/parlay_bot/research/source_native_offline.py"
+      - "src/parlay_bot/research/bitget_source_bridge.py"
+      - "tests/test_bitget_source_bridge.py"
       - "tools/native_acceptance_status.py"
       - "tests/test_native_acceptance_status.py"
   schedule:
@@ -75,6 +77,8 @@ jobs:
           done
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
             VENUE="${{ github.event.inputs.venue }}"
+          elif [[ "${{ github.event_name }}" == "push" ]]; then
+            VENUE="bitget"
           else
             VENUE="$(python - <<'PY'
           from datetime import UTC, datetime
@@ -85,8 +89,15 @@ jobs:
           )"
           fi
           echo "Researching actual warehouse source: $VENUE"
-          python -m parlay_bot.research.source_native_offline \
-            --venue "$VENUE" --months 6 --publish
+          args=(--venue "$VENUE" --months 6 --publish)
+          if [[ "$VENUE" == "bitget" ]]; then
+            # Bounded one-asset job; daily venue rotation keeps the other
+            # sources scheduled. This is OFFLINE ONLY.
+            assets=(BTC ETH SOL XRP)
+            slot=$(( $(date -u +%s) / 86400 % 4 ))
+            args+=(--asset "${assets[$slot]}")
+          fi
+          python -m parlay_bot.research.source_native_offline "${args[@]}"
       - name: Summarize verified source-native acceptance
         if: always()
         shell: bash

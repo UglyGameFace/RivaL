@@ -579,7 +579,14 @@ class ForwardAccuracyMonitor:
                         metrics["insufficient_causal_labels"] += 1
                         continue
                     tested = self.market.live_model_checkpoints.fit(samples, as_of=stamp)
-                    tested = self.market.historical_challengers.choose(
+                    # Historical challengers are *shadow research* until a
+                    # separate, model-SHA-specific prospective + quote/cost
+                    # promotion gate authorizes serving. In particular,
+                    # choose()'s shorter research screen must never replace
+                    # the incumbent in the authoritative perp_forward_audit
+                    # stream that drives fusion and user-facing signals.
+                    # Still issue/settle immutable challenger shadow rows.
+                    self.market.historical_challengers.choose(
                         samples, features, last, horizon=horizon, now=stamp,
                         incumbent=tested, wall_clock=now is None,
                     )

@@ -338,3 +338,62 @@ async def test_detailed_accuracy_survives_incomplete_paired_scores(tmp_path):
         if view is not None:
             view.stop()
         store.close()
+
+def test_unpromoted_historical_challenger_cannot_change_authoritative_forecast(
+    tmp_path, monkeypatch,
+):
+    """Research selection, even if erroneous, must never change live inputs.
+
+    Future-only challenger rows may be issued and evaluated, but the
+    authoritative source stream consumed by fusion/signals must retain the
+    actual causal incumbent and its immutable training-lineage fingerprint.
+    """
+    from types import SimpleNamespace
+
+    from parlay_bot.perpetuals.historical_challengers import HistoricalChallengers
+
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+
+    def run(label):
+        store = SQLiteHotStore(tmp_path / f"{label}.sqlite")
+        market = PerpetualMarketStore(store)
+        try:
+            seed(market, now=now)
+            monitor = ForwardAccuracyMonitor(market)
+            assert monitor.run_once(now=now)[0] == 3
+            with store.connect() as conn:
+                issued = [
+                    tuple(row) for row in conn.execute(
+                        "SELECT horizon_minutes, probability_up, training_evaluated "
+                        "FROM perp_forward_audit ORDER BY horizon_minutes"
+                    ).fetchall()
+                ]
+                lineage = [
+                    tuple(row) for row in conn.execute(
+                        "SELECT horizon_minutes, weights_sha256, historical_seed_sha256 "
+                        "FROM rival_forward_model_lineage ORDER BY horizon_minutes"
+                    ).fetchall()
+                ]
+            return issued, lineage
+        finally:
+            store.close()
+
+    expected_issued, expected_lineage = run("incumbent")
+    calls = []
+
+    def fake_research_selection(self, samples, features, last, **kwargs):
+        calls.append(kwargs["horizon"])
+        # Simulate a challenger improperly selected on an insufficient
+        # seven-day shadow gate, claiming wildly different model weights.
+        return SimpleNamespace(
+            final_weights=(25.0,) * 11, evaluated=999_999,
+            historical_seed_sha256="f" * 64,
+        )
+
+    monkeypatch.setattr(HistoricalChallengers, "choose", fake_research_selection)
+    actual_issued, actual_lineage = run("unapproved-shadow")
+    assert sorted(calls) == [5, 15, 60]
+    assert actual_issued == expected_issued
+    assert actual_lineage == expected_lineage
+    assert all(row[2] is None for row in actual_lineage)
+

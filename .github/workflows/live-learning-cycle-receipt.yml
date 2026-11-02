@@ -1,0 +1,65 @@
+name: RivaL live learning cycle receipt
+
+on:
+  workflow_run:
+    workflows: ["RivaL Production Release"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: rival-live-learning-cycle-receipt
+  cancel-in-progress: false
+
+jobs:
+  read-only-host-proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require current successful main deployment
+        id: gate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ github.event.workflow_run.id }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          RELEASE_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RELEASE_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          RELEASE_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "workflow_run" ]]; then
+            main_sha="$(gh api "repos/$GITHUB_REPOSITORY/commits/main" --jq '.sha')"
+            if [[ "$RELEASE_CONCLUSION" != "success" ||
+                  "$RELEASE_BRANCH" != "main" ||
+                  "$RELEASE_REPO" != "$GITHUB_REPOSITORY" ||
+                  "$RELEASE_SHA" != "$main_sha" ]]; then
+              echo "::notice::Not the current successful main release; no host claim."
+              echo "check=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            deploys="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RELEASE_ID/jobs" --jq '[.jobs[].steps[]? | select(.name == "Deploy tested RivaL app without replacing its host environment" and .conclusion == "success")] | length')"
+            if [[ "$deploys" != "1" ]]; then
+              echo "::notice::Release did not actually upload to Discloud."
+              echo "check=false" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+          echo "check=true" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.check == 'true'
+        with:
+          ref: main
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.check == 'true'
+        with:
+          python-version: '3.11'
+      - name: Read actual live PostgreSQL learning and forecast receipts
+        if: steps.gate.outputs.check == 'true'
+        env:
+          DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+          DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+        run: python tools/discloud_learning_cycle_receipt.py

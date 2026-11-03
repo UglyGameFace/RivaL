@@ -97,7 +97,8 @@ class HistoricalChallengers:
                      row["horizon_minutes"], row["reference_opened_at"]),
                 )
 
-    def choose(self, samples, features, last, *, horizon, now, incumbent, wall_clock=False):
+    def choose(self, samples, features, last, *, horizon, now, incumbent, wall_clock=False,
+               shadow_candidates=None):
         """Return a screened research model; absent/failed proof returns incumbent."""
         self.initialize()
         if self._settled_at is None or now-self._settled_at >= timedelta(minutes=5):
@@ -127,6 +128,19 @@ class HistoricalChallengers:
             target = last.opened_at + timedelta(minutes=horizon)
             weight_sha = hashlib.sha256(canonical(state.final_weights).encode()).hexdigest()
             issued = datetime.now(UTC) if wall_clock else now
+            # A screened historic model can also compete on genuinely future,
+            # source-matched bids/asks without changing incumbent forecasts.
+            if (shadow_candidates is not None
+                    and issued < target + timedelta(minutes=5, milliseconds=-1)):
+                shadow_candidates.append({
+                    "identity": candidate["identity"],
+                    "horizon_minutes": horizon,
+                    "model_sha256": candidate["model_sha256"],
+                    "imported_at": candidate["imported_at"],
+                    "evaluation_completed_through": candidate["evaluation_completed_through"],
+                    "probability_up": probability,
+                    "training_sha256": weight_sha,
+                })
             with self.store.connect() as conn:
                 if issued < target+timedelta(minutes=5, milliseconds=-1):
                     inserted = conn.execute(

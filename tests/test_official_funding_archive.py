@@ -176,6 +176,6 @@ def test_coordinator_sees_two_new_funding_routes_but_never_fake_months():
             assert row["collector"] == "official-public-funding.yml"
             assert row["verified_complete_months_from_this_census"] == 0
             assert row["actual_contract_listing_month"] is None
-    assert report["collector_routes_integrated"] == 188
-    assert report["collection_routes_missing"] == 452
+    assert report["collector_routes_integrated"] == 224
+    assert report["collection_routes_missing"] == 416
     assert report["all_history_complete"] is False

@@ -19,6 +19,8 @@ from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.research.boosted_portable import predict_portable
 
 FAMILIES = ("gaussian_nb_v1", "knn21_v1")
+# Per-artifact challenger families (one name per trained model file).
+CHALLENGER_PREFIXES = ("boosted_", "historical_", "pooled_")
 MIN_TRAIN = 80
 MAX_TRAIN = 480
 
@@ -319,7 +321,7 @@ class ShadowModelCompetition:
         results = {}
         all_families = list(FAMILIES) + sorted({
             str(row['family']) for row in rows
-            if str(row['family']).startswith(('boosted_', 'historical_'))
+            if str(row['family']).startswith(CHALLENGER_PREFIXES)
         })
         for family in all_families:
             scoped = {}

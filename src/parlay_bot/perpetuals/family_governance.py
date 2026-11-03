@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.perpetuals.calibration_validation import unique_window_calibration
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
-from parlay_bot.perpetuals.model_competition import FAMILIES
+from parlay_bot.perpetuals.model_competition import CHALLENGER_PREFIXES, FAMILIES
 
 MIN_WINDOWS = 150
 MIN_DAYS = 21
@@ -104,7 +104,7 @@ class FamilyPromotion:
         # source-specific future records, never as one pooled model family.
         observed_families = sorted({
             str(row["family"]) for row in forecasts
-            if str(row["family"]).startswith(("boosted_", "historical_"))
+            if str(row["family"]).startswith(CHALLENGER_PREFIXES)
             and len(str(row["family"])) <= 64
         })
         for family in list(FAMILIES) + observed_families:
@@ -317,6 +317,15 @@ class FamilyPromotion:
         selected = str(row["selected_family"])
         if selected in FAMILIES:
             return selected
+        if selected.startswith("pooled_"):
+            # Serves only while it is still the active pooled model for this
+            # horizon; a newer nightly model must earn its own promotion.
+            from parlay_bot.perpetuals.pooled_model import PooledModelSet
+            try:
+                active = PooledModelSet(self.store).active(horizon, now=stamp)
+            except Exception:  # noqa: BLE001 - fail closed to the incumbent
+                return None
+            return selected if active and active.get("_family") == selected else None
         if selected.startswith("historical_"):
             # A paper winner cannot serve after its screened source-specific
             # historical artifact disappears or becomes incompatible.

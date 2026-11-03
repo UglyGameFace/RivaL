@@ -113,3 +113,19 @@ def test_post_policy_posts_on_start_confirmed_change_and_daily():
     assert policy.should_post(blip, NOW + timedelta(minutes=10))     # confirmed
     policy.posted(blip, NOW + timedelta(minutes=10))
     assert policy.should_post(blip, NOW + timedelta(hours=34, minutes=11))  # daily
+
+
+def test_prediction_health_alerts_change_the_card_signature():
+    from datetime import UTC, datetime
+
+    from parlay_bot.discord_app.status_card import StatusFacts, assess, build_embed
+
+    now = datetime(2026, 11, 3, tzinfo=UTC)
+    calm = StatusFacts(now=now, boot_at=now, ready=True, incidents=[], research=[])
+    alert = StatusFacts(now=now, boot_at=now, ready=True, incidents=[],
+                        research=[("pooled:stale", "⚠️ stale")])
+    assert assess(calm)[0] == "healthy"
+    severity, signature = assess(alert)
+    assert severity == "degraded" and "research:pooled:stale" in signature
+    embed = build_embed(alert)[0]
+    assert any(f.name == "Prediction health" and "stale" in f.value for f in embed.fields)

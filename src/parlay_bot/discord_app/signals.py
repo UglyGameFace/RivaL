@@ -38,7 +38,7 @@ from parlay_bot.perpetuals.live_quotes import (
 )
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
-from parlay_bot.perpetuals.model_competition import FAMILIES
+from parlay_bot.perpetuals.model_competition import CHALLENGER_PREFIXES, FAMILIES
 from parlay_bot.perpetuals.promotion import multi_summary, promoted_engine
 from parlay_bot.perpetuals.readiness import _source_identity
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
@@ -105,7 +105,7 @@ def _venue_proof(
     now: datetime, model_version: str | None = None,
 ) -> dict:
     if model_version in FAMILIES or (model_version or "").startswith(
-        ("historical_", "boosted_")
+        CHALLENGER_PREFIXES
     ):
         contract, quote = _source_identity(venue, asset)
         return FamilyPromotion(market.store).venue_summary(

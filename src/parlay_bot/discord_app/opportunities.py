@@ -19,7 +19,7 @@ from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
 from parlay_bot.perpetuals.markets import HORIZONS
-from parlay_bot.perpetuals.model_competition import FAMILIES
+from parlay_bot.perpetuals.model_competition import CHALLENGER_PREFIXES, FAMILIES
 from parlay_bot.perpetuals.readiness import _source_identity
 
 ASSETS = RESEARCH_ASSETS
@@ -93,7 +93,7 @@ def recent_watches(
                 family = str(choice["selected_family"])
                 checked = _utc(str(choice["evaluated_at"]))
                 if (family in FAMILIES or family.startswith(
-                    ("boosted_", "historical_")
+                    CHALLENGER_PREFIXES
                 )) and timedelta(0) <= instant-checked <= timedelta(hours=48):
                     key = (choice["venue"],choice["contract"],choice["quote"],
                            int(choice["horizon_minutes"]))

@@ -10,7 +10,7 @@ import math
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.live_quotes import BookQuote, PerpReferenceBook
-from parlay_bot.perpetuals.model_competition import FAMILIES
+from parlay_bot.perpetuals.model_competition import CHALLENGER_PREFIXES, FAMILIES
 from parlay_bot.perpetuals.profit_proof import (
     ENTRY_GRACE,
     EXIT_GRACE,
@@ -153,7 +153,7 @@ class FamilyQuoteShadow:
             for row in issued:
                 if (row["family"] not in FAMILIES
                         and not (str(row["family"]).startswith(
-                            ("boosted_", "historical_")
+                            CHALLENGER_PREFIXES
                         ) and len(str(row["family"])) <= 64)):
                     continue
                 at=datetime.fromisoformat(row["issued_at"])

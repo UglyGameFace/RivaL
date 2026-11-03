@@ -27,7 +27,8 @@ class StubGemini:
     def __init__(self):
         self.requests = 0
 
-    async def ask(self, *, asset, venues):
+    async def ask(self, *, asset, venues, busy_retry=False):
+        assert busy_retry is True  # background issuance survives a busy gateway
         self.requests += 1
         assert asset in ("BTC", "ETH", "SOL")
         assert venues == ("hyperliquid", "dydx", "bitget")

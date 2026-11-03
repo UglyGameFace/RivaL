@@ -54,7 +54,9 @@ async def _ask(market: PerpetualMarketStore, settings: Settings):
     )
     try:
         started = time.monotonic()
-        result = await ai.ask(asset="BTC", venues=tuple(MARKET_SYMBOLS))
+        result = await ai.ask(
+            asset="BTC", venues=tuple(MARKET_SYMBOLS), busy_retry=True,
+        )
         return result, round(time.monotonic() - started, 2)
     finally:
         await ai.aclose()

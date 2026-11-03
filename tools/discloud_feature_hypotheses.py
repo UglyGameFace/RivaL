@@ -29,12 +29,13 @@ try:
         store = PostgresHotStore(settings.rival_database_url.get_secret_value())
         try:
             proposals = recent_hypotheses(store, venue=__VENUE__)
+            health = hypothesis_attempt_status(store)
         finally:
             store.close()
         out = {'status':'verified','proposals':proposals,
                'source':'live_postgresql_llm_hypotheses',
                'health':{
-                   **hypothesis_attempt_status(store),
+                   **health,
                    'enabled':settings.rival_llm_hypotheses_enabled,
                    'provider':settings.rival_ai_provider,
                    'local_token_configured':settings.rival_local_ai_token is not None

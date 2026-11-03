@@ -230,11 +230,17 @@ async def run_native_research(
         root, qualified_streams=qualified,
         artifact_dir=report_dir / "source-native-boosted",
     )
-    admission = screening_receipt(logistic, boosted)
+    llm_candidates = []
     llm_trials = evaluate_hypothesis_ablations(
         root, qualified_streams=qualified,
         proposals=llm_hypotheses or [],
+        candidate_sink=llm_candidates,
     )
+    # Use the SAME importer-policy screen and immutable Drive routing as
+    # every other source-native logistic model; no LLM-written weight ever
+    # skips verification or the separate future shadow gates.
+    logistic.extend(llm_candidates)
+    admission = screening_receipt(logistic, boosted)
     report = {
         "schema_version": "rival-native-source-research-v1",
         "venue": venue, "months": months,
@@ -255,12 +261,15 @@ async def run_native_research(
         ),
         "actual_registry_screening": admission,
         "llm_hypothesis_research": {
-            "status": "validation_experiments_only"
+            "status": "source_native_screening"
                       if llm_hypotheses else "no_verified_proposals",
             "received_proposals": len(llm_hypotheses or []),
             "evaluated": len(llm_trials),
+            "screened_forward_candidate_count": len(llm_candidates),
             "experiments": llm_trials[:48],
-            "sealed_holdout_examined": False,
+            "sealed_holdout_examined": any(
+                trial["holdout_examined"] for trial in llm_trials
+            ),
             "changes_live_weights": False,
         },
         "live_approved": False, "trades_placed": False,

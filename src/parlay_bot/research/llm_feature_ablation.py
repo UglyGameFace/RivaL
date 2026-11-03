@@ -9,6 +9,9 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+
+from parlay_bot.perpetuals.model_checkpoints import FEATURE_CONTRACT, TARGET_CONTRACT, canonical
+from parlay_bot.research.candidate_registry import verified_candidate
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.markets import HORIZONS
@@ -86,12 +89,15 @@ def _asset_for_contract(contract: str) -> str | None:
     return None
 
 
-def evaluate_hypothesis_ablations(root, *, qualified_streams, proposals):
+def evaluate_hypothesis_ablations(root, *, qualified_streams, proposals, candidate_sink=None):
     """Score separate pretrained masks against the SAME existing baseline.
 
     Only the training partition updates model coefficients. The purged
     validation period measures the LLM-suggested fixed mask. The sealed
-    holdout is never examined, and no artifact is placed in the import feed.
+    holdout is never examined in validation-only mode. When a separate
+    candidate sink is supplied, only masks that first beat the ordinary
+    logistic model on purged validation may open the sealed test. Passing
+    both still means *research only*, never promoted weights or a trade.
     """
     selected = {item["asset"]: item for item in proposals}
     if not selected:
@@ -118,7 +124,7 @@ def evaluate_hypothesis_ablations(root, *, qualified_streams, proposals):
                 active=MASKS[suggestion["hypothesis"]],
             )
             alternate = _score(validation, weights, rate)
-            trials.append({
+            trial = {
                 "asset": asset, "venue": identity["venue"],
                 "contract": identity["contract"], "quote": identity["quote"],
                 "horizon_minutes": horizon,
@@ -137,5 +143,81 @@ def evaluate_hypothesis_ablations(root, *, qualified_streams, proposals):
                 "candidate_imported": False,
                 "forward_edge_verified": False,
                 "after_cost_edge_verified": False,
+            }
+            trials.append(trial)
+            if candidate_sink is None:
+                continue
+            # Open the sealed holdout only AFTER a single, preselected
+            # feature mask passes validation vs BOTH the smoothed historical
+            # class prior and ordinary full-feature logistic. Never search
+            # the holdout for a more favorable LLM hypothesis.
+            valid = (
+                len(provenance["months"]) >= 6
+                and alternate["count"] >= 100
+                and alternate["days"] >= 7
+                and alternate["brier_gain"] > .005
+                and alternate["ece_10"] <= .10
+                and baseline["brier"] - alternate["brier"] > .005
+            )
+            trial["passed_purged_validation"] = bool(valid)
+            if not valid:
+                trial["retrospective_candidate_status"] = "validation_rejected"
+                continue
+            holdout_scores = _score(_sealed_test, weights, rate)
+            ordinary_holdout = _score(_sealed_test, base_weights, base_rate)
+            trial["holdout_examined"] = True
+            trial["holdout_brier_delta"] = (
+                ordinary_holdout["brier"] - holdout_scores["brier"]
+            )
+            if trial["holdout_brier_delta"] <= .005:
+                trial["retrospective_candidate_status"] = "ordinary_holdout_not_beaten"
+                continue
+            spec = {
+                "model": "offline-live-contract-logistic-v3",
+                "method": "lfm3-hypothesis-" + suggestion["hypothesis"],
+                "identity": identity,
+                "horizon_minutes": horizon,
+                "feature_contract": FEATURE_CONTRACT,
+                "target_contract": TARGET_CONTRACT,
+                "weights": [round(w, 12) for w in weights],
+                "train_base_rate": rate,
+                "training_count": len(train),
+                "training_cutoff": max(s[1] for s in train).isoformat(),
+                "validation_cutoff": _sealed_test[0][0].isoformat(),
+                "evaluation_completed_through": max(
+                    s[1] for s in _sealed_test
+                ).isoformat(),
+                "source_sha256_by_month": provenance["source_sha256_by_month"],
+                "lfm3_proposal_sha256": suggestion["record_sha256"],
+                "lfm3_model": MODEL,
+            }
+            artifact = {
+                "research_only": True, "live_model_promoted": False,
+                "model_sha256": hashlib.sha256(
+                    canonical(spec).encode()
+                ).hexdigest(),
+                "model_spec": spec,
+                "validation": alternate,
+                "out_of_sample_test": holdout_scores,
+            }
+            admission = verified_candidate(canonical(artifact).encode())
+            trial["retrospective_candidate_status"] = (
+                "screened_for_future_shadow"
+                if admission["retrospective_screen"] == "passed"
+                else admission["admission_reason"]
+            )
+            if admission["retrospective_screen"] != "passed":
+                continue
+            # Only screened research artifacts can reach the existing
+            # import folder and prospectively compete. No auto-promotion.
+            candidate_sink.append({
+                **artifact, "schema_version": "rival-live-compatible-research-v3",
+                "research_candidate_passed": True,
+                "compared_on_validation": [{
+                    "method": spec["method"],
+                    "scores": alternate,
+                    "training_count": len(train),
+                }],
+                "prospective_accuracy": None,
             })
     return trials

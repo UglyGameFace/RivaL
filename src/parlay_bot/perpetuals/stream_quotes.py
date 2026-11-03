@@ -30,6 +30,10 @@ BINANCE_WS = "wss://fstream.binance.com/market/stream?streams=" + "/".join(
 )
 VENUES = ("hyperliquid", "binance")
 RECONNECT_CAP_SECONDS = 60.0
+# Liquidity-only Binance feeds (issue #295), on Binance's documented routes:
+# partial depth is a /public stream, aggregate trades a /market stream.
+BINANCE_DEPTH_WS = "wss://fstream.binance.com/public/stream?streams="
+BINANCE_TRADES_WS = "wss://fstream.binance.com/market/stream?streams="
 
 
 def parse_stream_message(
@@ -98,6 +102,9 @@ class StreamingBookHub:
         self._connected: dict[str, bool] = dict.fromkeys(VENUES, False)
         self._reconnects: dict[str, int] = dict.fromkeys(VENUES, 0)
         self._accepted: dict[str, int] = dict.fromkeys(VENUES, 0)
+        # Optional 5-minute liquidity recorder; attach before start().
+        self.recorder = None
+        self._liquidity_frames = 0
 
     def snapshot(self, venue: str, asset: str, *, now: datetime | None = None
                  ) -> BookQuote | PerpReferenceBook | None:
@@ -133,6 +140,9 @@ class StreamingBookHub:
         received_at: datetime | None = None,
     ) -> bool:
         now = received_at or datetime.now(UTC)
+        if self.recorder is not None and venue == "hyperliquid":
+            # Same socket carries l2Book and trades; the recorder takes both.
+            self.recorder.ingest(venue, message)
         try:
             quote = parse_stream_message(venue, message, received_at=now)
         except QuoteUnavailable:
@@ -171,6 +181,11 @@ class StreamingBookHub:
                                 "method": "subscribe",
                                 "subscription": {"type": "l2Book", "coin": asset},
                             }))
+                            if self.recorder is not None:
+                                await socket.send(json.dumps({
+                                    "method": "subscribe",
+                                    "subscription": {"type": "trades", "coin": asset},
+                                }))
                     async for message in socket:
                         self.accept(venue, message)
             except asyncio.CancelledError:
@@ -198,6 +213,42 @@ class StreamingBookHub:
                 + random.uniform(0, 1)
             )
 
+    async def _run_liquidity(self, name: str, url: str) -> None:
+        """Binance depth/trade socket feeding only the liquidity recorder.
+
+        Separate from the quote socket so a liquidity-feed fault can never
+        interrupt the order-book quotes used for forecasts and cost proof.
+        """
+        attempts = 0
+        while True:
+            backoff_override = 0.0
+            try:
+                async with websockets.connect(
+                    url, open_timeout=10, close_timeout=5,
+                    ping_interval=20, ping_timeout=20,
+                    max_size=1_048_576, max_queue=64,
+                ) as socket:
+                    attempts = 0
+                    async for message in socket:
+                        if self.recorder is not None:
+                            self.recorder.ingest("binance", message)
+                            self._liquidity_frames += 1
+            except asyncio.CancelledError:
+                raise
+            except websockets.exceptions.InvalidStatus as exc:
+                status = getattr(exc.response, "status_code", None)
+                backoff_override = (3600.0 if status in (401, 403, 418, 451)
+                                    else 300.0 if status == 429 else 0.0)
+                _LOG.warning("RivaL %s liquidity stream handshake HTTP %s", name, status)
+            except (OSError, TimeoutError, websockets.exceptions.WebSocketException,
+                    ValueError):
+                _LOG.warning("RivaL %s liquidity stream disconnected; retrying", name)
+            attempts += 1
+            await asyncio.sleep(
+                max(backoff_override, min(RECONNECT_CAP_SECONDS, 2 ** min(attempts, 5)))
+                + random.uniform(0, 1)
+            )
+
     def start(self) -> None:
         if self._tasks:
             return
@@ -205,6 +256,17 @@ class StreamingBookHub:
             self._tasks.append(asyncio.create_task(
                 self._run(venue), name=f"rival-{venue}-book-stream",
             ))
+        if self.recorder is not None:
+            symbols = [ASSETS[asset].lower() for asset in self.assets]
+            for name, url in (
+                ("binance-depth", BINANCE_DEPTH_WS
+                 + "/".join(f"{s}@depth20@500ms" for s in symbols)),
+                ("binance-trades", BINANCE_TRADES_WS
+                 + "/".join(f"{s}@aggTrade" for s in symbols)),
+            ):
+                self._tasks.append(asyncio.create_task(
+                    self._run_liquidity(name, url), name=f"rival-{name}-liquidity",
+                ))
 
     async def aclose(self) -> None:
         tasks, self._tasks = self._tasks, []

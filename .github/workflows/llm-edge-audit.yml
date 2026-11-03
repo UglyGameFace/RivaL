@@ -34,12 +34,15 @@ jobs:
           python -m pip install -e ".[dev]"
           pytest -q tests/test_discloud_llm_edge_audit.py
       - name: Read current PostgreSQL state without calling the LLM
+        # PRs verify the evidence-boundary tests; only main/manual/scheduled runs
+        # contact live Discloud/PostgreSQL for production evidence.
+        if: github.event_name != 'pull_request'
         env:
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         run: python tools/discloud_llm_edge_audit.py
       - name: Publish factual edge readiness
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         run: |
           if [[ -f data/llm-edge-audit.json ]]; then
             echo "## LFM3: research is not future trading proof" >> "$GITHUB_STEP_SUMMARY"
@@ -48,7 +51,7 @@ jobs:
             echo '~~~' >> "$GITHUB_STEP_SUMMARY"
           fi
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         with:
           name: rival-llm-real-edge-readiness
           path: data/llm-edge-audit.json

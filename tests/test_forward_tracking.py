@@ -119,7 +119,7 @@ def test_pending_missing_lineage_and_invalid_outcomes_never_complete(learning_st
             """UPDATE perp_forward_audit SET settled_at=?,outcome_up=1,
                       model_brier=.09,baseline_brier=.25
                WHERE venue='hyperliquid' AND reference_opened_at=?""",
-            ((START+timedelta(minutes=130)).isoformat(),
+            ((START+timedelta(minutes=130, seconds=20)).isoformat(),
              (START+timedelta(minutes=120)).isoformat()),
         )
     completed = tracker.report(owner_id=7, asset="BTC", venue="hyperliquid",

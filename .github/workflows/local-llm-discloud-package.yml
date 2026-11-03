@@ -116,3 +116,40 @@ jobs:
           python -c "import main; assert callable(main.main)"
           test -x runtime/bin/llama-server
           test ! -e rival-llm-discloud.zip
+
+  # Issue #268: prove the shipped supervisor recovers a crashed backend.
+  # Real package binary + SHA-verified LFM3 weights, on this isolated runner
+  # only; nothing here touches the production Discloud host.
+  repair-drill:
+    runs-on: ubuntu-22.04
+    needs: package
+    timeout-minutes: 25
+    env:
+      RIVAL_LLM_MODEL_DIR: ${{ github.workspace }}/.rival-models
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Download the exact package that Discloud receives
+        uses: actions/download-artifact@v4
+        with:
+          name: RIVAL-LLM-UPLOAD-THIS-ZIP
+          path: discloud-download
+      - name: Restore cached LFM3 weights (SHA re-verified on use)
+        uses: actions/cache@v4
+        with:
+          path: .rival-models
+          key: rival-lfm3-gguf-LFM3-1.7B-Q4_K_M-v1
+      - name: Kill the llama.cpp backend and require supervised recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd discloud-download && bash build.sh)
+          python services/rival-llm/repair_drill.py --app-dir discloud-download \
+            | tee "$RUNNER_TEMP/repair-drill.json"
+          python - "$RUNNER_TEMP/repair-drill.json" <<'PY'
+          import json, sys
+          receipt = json.loads(open(sys.argv[1]).read().strip().splitlines()[-1])
+          print(f"::notice::LFM3 crash drill passed: recovered in {receipt['recovery_seconds']}s, repair_count={receipt['repair_count']}")
+          PY

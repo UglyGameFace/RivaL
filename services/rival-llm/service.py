@@ -759,6 +759,22 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.server.busy.release()
 
 
+def backend_command(
+    binary: Path, model_path: Path, context_tokens: int,
+) -> tuple[list[str], dict[str, str]]:
+    """The exact loopback llama.cpp command used in production and the drill."""
+    command = [
+        str(binary), "--model", str(model_path),
+        "--host", "127.0.0.1", "--port", "8766",
+        "--ctx-size", str(context_tokens), "--threads", "2", "--parallel", "1",
+        "--batch-size", "128", "--n-gpu-layers", "0",
+        "--jinja", "--reasoning-budget", "0",
+    ]
+    env = os.environ.copy()
+    env["LD_LIBRARY_PATH"] = str(binary.parent) + ":" + env.get("LD_LIBRARY_PATH", "")
+    return command, env
+
+
 def launch_server():
     profile = os.getenv("RIVAL_LLM_PROFILE", "lfm3")
     if profile not in MODEL_CATALOG:
@@ -772,15 +788,7 @@ def launch_server():
     repo, filename = MODEL_CATALOG[profile]
     model_path = ensure_model(repo=repo, filename=filename, profile=profile)
     context_tokens = runtime_context_tokens()
-    command = [
-        str(binary), "--model", str(model_path),
-        "--host", "127.0.0.1", "--port", "8766",
-        "--ctx-size", str(context_tokens), "--threads", "2", "--parallel", "1",
-        "--batch-size", "128", "--n-gpu-layers", "0",
-        "--jinja", "--reasoning-budget", "0",
-    ]
-    env = os.environ.copy()
-    env["LD_LIBRARY_PATH"] = str(binary.parent) + ":" + env.get("LD_LIBRARY_PATH", "")
+    command, env = backend_command(binary, model_path, context_tokens)
     process = subprocess.Popen(command, env=env)
     gateway = Gateway(
         "0.0.0.0", int(os.getenv("RIVAL_LLM_PORT", "8765")),

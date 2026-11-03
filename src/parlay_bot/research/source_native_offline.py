@@ -21,11 +21,11 @@ from parlay_bot.research.batch import complete_months
 from parlay_bot.research.boosted_models import evaluate_directory as evaluate_boosters
 from parlay_bot.research.candidate_registry import verified_candidate
 from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.live_training import evaluate_directory as evaluate_logistic
 from parlay_bot.research.llm_feature_ablation import (
     evaluate_hypothesis_ablations,
     verify_proposals,
 )
-from parlay_bot.research.live_training import evaluate_directory as evaluate_logistic
 from parlay_bot.research.production import _report
 from parlay_bot.research.publish import _artifact, _drive
 from parlay_bot.research.source_native import SOURCE, VENUES, restore_verified_source_months

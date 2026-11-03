@@ -135,3 +135,24 @@ def test_improvement_result_is_reused_after_a_slow_first_run(monkeypatch):
     assert calls == [("BTC", 5)]
     home_module._cached_benefit(market, "ETH", 5)
     assert len(calls) == 2
+
+
+def test_summary_counts_predictions_issued_after_their_window_opened(tmp_path):
+    store = SQLiteHotStore(tmp_path / "late.sqlite")
+    market = PerpetualMarketStore(store)
+    monitor = ForwardAccuracyMonitor(market)
+    try:
+        monitor.initialize()
+        now = datetime.now(UTC).replace(microsecond=0)
+        with store.connect() as conn:
+            _insert(conn, venue="hyperliquid", issued=now - timedelta(minutes=30))
+            conn.execute(
+                "UPDATE perp_forward_audit SET issued_at=? WHERE venue='hyperliquid'",
+                ((now - timedelta(minutes=24)).isoformat(),),  # target opened at -25
+            )
+            _insert(conn, venue="dydx", issued=now - timedelta(minutes=30))
+        score = monitor.summary(asset="BTC", now=now)["last_7d"][5]
+        assert score["issued"] == 2
+        assert score["issued_late"] == 1
+    finally:
+        store.close()

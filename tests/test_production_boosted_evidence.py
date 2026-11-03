@@ -113,7 +113,7 @@ async def test_lineage_page_displays_real_boosted_delivery_proof_without_new_men
         fields = {field.name: str(field.value) for field in embed.fields}
         assert "Are advanced models ready?" in fields
         proof = fields["Are advanced models ready?"]
-        assert "**Advanced models imported:** 0" in proof
+        assert "**Advanced models built from history so far:** 0" in proof
         assert "No model qualifies for simulated testing yet" in proof
         # The screen states plainly that real after-cost profit is unproven.
         assert "Real profit after fees, funding and slippage is unverified." in proof

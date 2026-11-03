@@ -14,6 +14,7 @@ from parlay_bot.discord_app.research_dashboard import (
     _SECTIONS,
     ResearchDashboard,
     _compact_embed,
+    _history_headline,
     _plain_boosted_proof,
     _plain_training_line,
 )
@@ -39,7 +40,7 @@ def expanded_report() -> discord.Embed:
         ("Why this exchange is or isn't ready", "hyperliquid needs live history"),
         ("Forward 5-minute evaluation", "Issued 119, settled 114, baseline pending"),
         ("Forward 15-minute evaluation", "Issued 4, settled 0"),
-        ("Tonight's research verdict", "NO VERIFIED BETTING EDGE."),
+        ("Research verdict", "NO VERIFIED BETTING EDGE."),
         ("Math 5m · independent UTC windows", "Brier 0.2537 vs baseline 0.2559"),
         ("Math 15m · independent UTC windows", "No settled samples"),
         ("Gemini · independent forward outcomes", "0 Gemini decisions settled"),
@@ -255,12 +256,13 @@ def test_historical_learning_is_explained_without_claiming_improvement():
         "lineage_proven": 100,
     }
     explanation = _plain_training_line(proof, 5)
-    assert "No verified historical training used" in explanation
-    assert "1,434 new-data learning updates" in explanation
-    assert "0/100 recorded forecasts have verified historical-seed lineage" in explanation
+    assert "live data only" in explanation
+    assert "1,434 live updates so far" in explanation
+    assert "history used in 0 of the last 100 predictions" in explanation
+    assert "Is it learning from history? No." in _history_headline([proof])
 
     proof["latest_historical_seed_sha256"] = "verified-hash"
-    assert "Verified historical training used" in _plain_training_line(proof, 5)
+    assert "verified historical model" in _plain_training_line(proof, 5)
     proof["latest_lineage_verified"] = False
     proof["lineage_unknown"] = 90
     assert "Cannot confirm" in _plain_training_line(proof, 5)
@@ -281,7 +283,7 @@ def test_advanced_models_show_screening_blocker_not_paper_profit():
         "fresh_paper_promotions": [],
     }
     explanation = _plain_boosted_proof(proof)
-    assert "**Advanced models imported:** 54" in explanation
+    assert "**Advanced models built from history so far:** 54" in explanation
     assert "**Passed screening:** 0" in explanation
     assert "**Advanced-model forecasts (30d):** 0 logged" in explanation
     assert "Main model: see Results for separate forward records." in explanation

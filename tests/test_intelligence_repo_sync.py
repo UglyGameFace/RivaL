@@ -239,7 +239,9 @@ def test_live_probe_rejects_anonymous_status_and_unsupported_inference(
     monkeypatch.setattr(urllib.request, "urlopen", public_status)
     with pytest.raises(RuntimeError, match="anonymous"):
         exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})  # noqa: S102
-    assert not capsys.readouterr().out
+    stages = capsys.readouterr().out.splitlines()
+    assert stages[-1] == VERIFY["STAGE_MARKER"] + "auth_not_rejected"
+    assert all(line.startswith(VERIFY["STAGE_MARKER"]) for line in stages)
 
     def unsafe_model(req, timeout):
         if req.full_url.endswith("/v1/status"):
@@ -251,7 +253,9 @@ def test_live_probe_rejects_anonymous_status_and_unsupported_inference(
     monkeypatch.setattr(urllib.request, "urlopen", unsafe_model)
     with pytest.raises(RuntimeError, match="safely grounded"):
         exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})  # noqa: S102
-    assert not capsys.readouterr().out
+    stages = capsys.readouterr().out.splitlines()
+    assert stages[-1] == VERIFY["STAGE_MARKER"] + "research_rejected"
+    assert all(line.startswith(VERIFY["STAGE_MARKER"]) for line in stages)
 
 
 def test_standalone_live_console_timeout_covers_two_sequential_cpu_requests(

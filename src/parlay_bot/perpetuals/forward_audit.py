@@ -1028,9 +1028,10 @@ class ForwardAccuracyMonitor:
                            SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 THEN baseline_brier ELSE 0 END) AS baseline_sum,
                            COUNT(DISTINCT CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 THEN venue END) AS venues
                     FROM perp_forward_audit
-                    WHERE asset=? AND issued_at>=? AND issued_at<=?
+                    WHERE asset=? AND model_version=?
+                      AND issued_at>=? AND issued_at<=?
                    GROUP BY horizon_minutes, cohort""",
-                (start, asset, prior, stamp.isoformat()),
+                (start, asset, MODEL, prior, stamp.isoformat()),
             ).fetchall()
 
         def empty() -> dict:

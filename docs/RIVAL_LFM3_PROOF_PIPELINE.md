@@ -90,10 +90,12 @@ eligible for use. These are **paper-only** qualifications.
 
 Historical seed counts on the main incumbent continue to read zero until
 that incumbent genuinely uses a verified seed. Historical challenger predictions
-are not retroactively represented as incumbent predictions. No real fills,
-orders, altered historical research scores or automatic incumbent replacement
-are implied. Serving a qualified historical challenger as the primary versioned
-signal requires separate end-to-end proof and routing.
+are not retroactively represented as incumbent predictions. No real fills or orders are implied. A genuinely future-qualified model can
+replace only the matching **read-only** venue/horizon watch under its own
+version string, with exact artifact revalidation at watch time; losing, expired
+or missing-artifact candidates fall back to the unmodified incumbent. Existing
+calibration, 21-day and after-cost requirements continue to decide eligibility.
+No artifact is qualified by this change alone.
 
 ## 4. Operational acceptance
 

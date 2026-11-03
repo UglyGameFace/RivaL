@@ -58,7 +58,8 @@ and anyone with authorized Drive permissions can still access their copies.
 
 The four-times-daily GitHub workflow `kucoin-uta-v2-originals.yml` selects
 one historical family per run, rotates source months and original page windows,
-and retains recent OI separately via manual `family=open_interest`. Manual
+and separately runs a daily automatic short-retention OI job so the seven-day
+history is preserved without manual action. Manual
 runs can specify a completed UTC month for candles. This is independently
 rate-bounded and never stops the main bot, its live 5-minute collector or
 other exchanges' source collectors.

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 GOALS = (25, 50, 100, 150, 300, 500)
 MODEL = "prospective-logistic-persistent-v3"
@@ -99,8 +99,8 @@ class ForwardTracking:
             existing = self._current(conn, owner_id=owner_id, asset=asset,
                                      venue=venue, horizon=horizon)
             if existing is not None:
-                issued = len(self._batch(conn, existing))
-                if issued < int(existing["target_count"]):
+                current = self._evaluate(existing, self._batch(conn, existing), stamp)
+                if not current["complete"]:
                     return {"status": "already_tracking",
                             "session_id": existing["session_id"],
                             "target": int(existing["target_count"])}
@@ -167,8 +167,7 @@ class ForwardTracking:
                 close = datetime.fromisoformat(str(record["target_opened_at"]))
                 if (issued.utcoffset() is None or close.utcoffset() is None
                         or issued <= datetime.fromisoformat(session["started_at"])
-                        or issued >= close.replace(tzinfo=close.tzinfo) +
-                          __import__("datetime").timedelta(minutes=5)
+                        or issued >= close + timedelta(minutes=5)
                         or str(record["target_opened_at"]) in seen):
                     raise ValueError("invalid or duplicated future prediction")
                 seen.add(str(record["target_opened_at"]))
@@ -182,7 +181,7 @@ class ForwardTracking:
                 loss = float(record["model_brier"])
                 reference = float(record["baseline_brier"])
                 if (settled.utcoffset() is None or settled > now or
-                        settled <= close + __import__("datetime").timedelta(minutes=5)
+                        settled <= close + timedelta(minutes=5)
                         or y not in (0, 1) or not all(
                             math.isfinite(v) and 0 <= v <= 1
                             for v in (p, b, loss, reference)

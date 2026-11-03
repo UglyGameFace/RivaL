@@ -662,6 +662,7 @@ def test_hypothesis_output_rejects_unbounded_features_and_synthetic_trades():
     })
     assert set(SERVICE["HYPOTHESES"]) == {
         "trend_only", "momentum_only", "volatility_only", "volume_only",
+        "feature_subset_v2",
     }
 
 

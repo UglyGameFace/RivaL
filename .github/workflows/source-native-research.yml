@@ -214,7 +214,9 @@ jobs:
                   "Private LFM3 feature research: "
                   f"{llm.get('status', 'not_checked')}; "
                   f"{llm.get('received_proposals', 0)} proposals; "
-                  f"{llm.get('evaluated', 0)} chronological validation tests"
+                  f"{llm.get('evaluated', 0)} chronological validation tests; "
+                  f"{llm.get('screened_forward_candidate_count', 0)} eligible "
+                  "source-native challenger artifacts (not future approvals)"
               )
               for trial in llm.get("experiments", [])[:18]:
                   lines.append(

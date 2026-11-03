@@ -21,6 +21,12 @@ SCORE_THRESHOLD = .56
 MAX_ROWS = 60
 
 
+def supports_quote_source(venue: str, currency: str) -> bool:
+    """Only sources with genuine on-host bid/ask observation support."""
+    return ((venue == "hyperliquid" and currency == "USDC")
+            or (venue == "binance" and currency == "USDT"))
+
+
 def identity(quote):
     if isinstance(quote, PerpReferenceBook) and quote.venue == "hyperliquid":
         return "hyperliquid", quote.asset, "USDC"

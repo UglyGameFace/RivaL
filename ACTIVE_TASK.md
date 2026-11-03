@@ -1,3 +1,12 @@
+## In progress: unattended source-matched 21-day forward proof (2026-11-03)
+
+- **Post-merge baseline:** #284 merged `main@b56d2cb`; main CI, main bot Discloud release, and independent `RivaL-Intelligence` release were launched. This stage must verify both exact on-host versions before asserting deployment, and must never infer 21-day predictive skill from a successful workflow.
+- **Root cause confirmed:** `ForwardAccuracyMonitor.run_once` evaluated only `selection[stamp.hour % len(selection)]` at the top of an hour, and changed horizon only after `len(selection)` hours. With up to 40 source streams, this starved the 15m/60m 21-day proof rows and repeatedly selected venues without a matching bid/ask observer; published evaluations become stale after 48 hours. **Fix on branch `fix/prospective-proof-fair-scheduling-20261103`:** deterministically rotate all 5m/15m/60m scopes with genuine observed bid/ask support (currently hyperliquid/USDC and binance/USDT), one small DB review per hour. Preserve all other venues for training and forward outcome collection, but do not fabricate missing quotes for them.
+- **Acceptance:** Review every static eligible quoted scope at least once per 48 hours, stable under stream reorder; skip unsupported/no quotes honestly; correct CI including SQLite/Postgres; verify newly merged main release, host receipts and 21-day real source-matched Brier/quote/cost evidence. **No model promotion or profitable edge claimed in this change.**
+- **Required independent 21-day proof:** >=150 unique prospective targets over >=21 UTC days, >=80% genuinely matching bid/ask quotes, candidate superiority over incumbent and chance baselines, plus conservative AND severe positive day-block-stressed after-cost paper edge. Continue 5-minute collection, 30-day evaluators and original-source resumable acquisition. Keep issues #6, #151, #188, #268 open until their own evidence is met.
+
+---
+
 ## Active: RivaL Intelligence bounded combinatorial feature research (2026-11-03 UTC)
 
 - **Objective:** Advance beyond LFM3's original four fixed feature masks without introducing invented indicators, untrusted model weights or uncontrolled candidate sweeps. Grounded in merged PR #282 and its first **real** main-bot→PostgreSQL→source-native success.

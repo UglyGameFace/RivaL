@@ -39,6 +39,11 @@ ATTEMPT_FLOORS: dict[tuple[str, str], str] = {
     ("lighter", "mark"): "2021-01",
     ("hyperliquid", "funding"): "2023-01",  # attempt floor, not launch proof
     ("kucoin", "funding"): "2021-01",  # attempt floor, not launch proof
+    **{("kucoin", f): "2025-01" for f in (
+        "candles_1m", "candles_15m", "candles_1h", "candles_4h",
+        "mark", "index", "premium")},
+    ("kucoin", "candles_1d"): "2021-01",  # historical attempt, not listing
+    ("kucoin", "open_interest"): "2025-12",  # short 7-70 day retention
     ("phemex", "funding"): "2021-01",  # attempt floor, not launch proof
     ("deribit", "funding"): "2021-01",  # attempt floor, not launch proof
     ("okx", "candles_1m"): "2023-07",
@@ -70,6 +75,11 @@ ROUTES: dict[tuple[str, str], tuple[str, str]] = {
     ("lighter", "mark"): ("lighter-original-auxiliary.yml", "scheduled_pages"),
     ("hyperliquid", "funding"): ("official-public-funding.yml", "scheduled_original_pages"),
     ("kucoin", "funding"): ("official-public-funding.yml", "scheduled_original_pages"),
+    **{("kucoin", f): ("kucoin-uta-v2-originals.yml", "scheduled_original_pages")
+       for f in ("candles_1m", "candles_15m", "candles_1h",
+                 "candles_4h", "candles_1d", "mark", "index", "premium")},
+    ("kucoin", "open_interest"): (
+        "kucoin-uta-v2-originals.yml", "recent_retention_only_7d_70d"),
     ("phemex", "funding"): ("official-public-funding.yml", "scheduled_original_pages"),
     ("deribit", "funding"): ("official-public-funding.yml", "scheduled_original_pages"),
     ("gate", "orderbook_l2"): ("gate-hourly-l2-source.yml", "sample_hours_only"),

@@ -88,8 +88,39 @@ def parse_name(name: str):
     return None
 
 
+# KuCoin UTA V2 original pages are partial source evidence, never full months.
+KUCOIN_UTA_PAGES = re.compile(
+    r"kucoin-uta-v2-(BTC|ETH|SOL|XRP)-"
+    r"(candles_1m|candles_15m|candles_1h|candles_4h|candles_1d|mark|index|premium|open_interest)-"
+    r"(1min|15min|1hour|4hour|1day)-(20\d{6}T\d{6})-"
+    r"([a-f0-9]{16})\.manifest\.json"
+)
+KUCOIN_INTERVALS = {
+    "candles_1m": "1min", "candles_15m": "15min",
+    "candles_1h": "1hour", "candles_4h": "4hour",
+    "candles_1d": "1day", "mark": "1hour", "index": "1hour",
+    "premium": "1hour",
+}
+
+
 def parse_page_name(name: str):
     """Recognize original page/section manifests without implying full coverage."""
+    uta = KUCOIN_UTA_PAGES.fullmatch(name)
+    if uta:
+        asset, family, interval, stamp, digest = uta.groups()
+        if interval not in (
+            ("1hour", "1day") if family == "open_interest"
+            else (KUCOIN_INTERVALS[family],)
+        ):
+            return None
+        try:
+            datetime.strptime(stamp, "%Y%m%dT%H%M%S")  # noqa: DTZ007
+        except ValueError:
+            return None
+        return (
+            "kucoin", asset, family, stamp[:4] + "-" + stamp[4:6],
+            int(stamp[6:8] + stamp[9:]), digest,
+        )
     for pattern, venue, family in PAGE_PATTERNS:
         match = re.fullmatch(pattern, name)
         if match:

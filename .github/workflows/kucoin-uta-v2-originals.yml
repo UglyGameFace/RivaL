@@ -1,0 +1,98 @@
+name: KuCoin UTA V2 private multifamily original-source backfill
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/kucoin-uta-v2-originals.yml"
+      - "src/parlay_bot/research/kucoin_uta_originals.py"
+      - "src/parlay_bot/research/historical_coordinator.py"
+      - "src/parlay_bot/research/drive_source_census.py"
+      - "tests/test_kucoin_uta_originals.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/kucoin-uta-v2-originals.yml"
+      - "src/parlay_bot/research/kucoin_uta_originals.py"
+  schedule:
+    - cron: "23 1,7,13,19 * * *"
+    - cron: "29 8 * * *"  # OI short retention requires its own daily cadence
+  workflow_dispatch:
+    inputs:
+      family:
+        description: "One independent source family to backfill"
+        type: choice
+        options:
+          - auto
+          - candles_1m
+          - candles_15m
+          - candles_1h
+          - candles_4h
+          - candles_1d
+          - mark
+          - index
+          - premium
+          - open_interest
+        default: auto
+      month:
+        description: "Completed UTC month for candles (YYYY-MM); OI must use auto"
+        type: string
+        default: auto
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-kucoin-uta-v2-original-acquisition
+  cancel-in-progress: false
+
+jobs:
+  regression:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[dev,archive]"
+      - run: |
+          ruff check src/parlay_bot/research/kucoin_uta_originals.py tests/test_kucoin_uta_originals.py src/parlay_bot/research/historical_coordinator.py src/parlay_bot/research/drive_source_census.py
+          pytest -q tests/test_kucoin_uta_originals.py tests/test_drive_source_census.py tests/test_historical_coordinator.py tests/test_official_funding_archive.py
+
+  archive:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install source-only private archive clients
+        run: python -m pip install -e ".[archive]"
+      - name: Acquire source originals using bounded public market API
+        env:
+          TARGET_FAMILY: ${{ github.event_name == 'workflow_dispatch' && inputs.family || (github.event.schedule == '29 8 * * *' && 'open_interest' || 'auto') }}
+          TARGET_MONTH: ${{ github.event_name == 'workflow_dispatch' && inputs.month || 'auto' }}
+        run: |
+          python -m parlay_bot.research.kucoin_uta_originals \
+            --family "$TARGET_FAMILY" --month "$TARGET_MONTH" --limit 48
+      - name: Publish metadata-only progress, never downloadable raw source bytes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kucoin-uta-v2-source-progress
+          path: data/native-reports/kucoin-uta-v2-*-progress.json
+          retention-days: 14
+          if-no-files-found: ignore

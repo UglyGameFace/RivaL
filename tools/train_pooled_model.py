@@ -25,8 +25,8 @@ from parlay_bot.config import Settings
 from parlay_bot.perpetuals.pooled_features import ASSETS, FEATURE_VERSION, FEATURE_VERSION_V2
 from parlay_bot.perpetuals.pooled_model import family, model_sha256
 from parlay_bot.research.pooled_training import frame_context, frame_features, train_horizon
-from parlay_bot.research.training_warehouse import TrainingWarehouse
 from parlay_bot.research.publish import _artifact, _drive
+from parlay_bot.research.training_warehouse import TrainingWarehouse
 
 
 async def load(cache: Path, last_month: str, *, use_warehouse: bool) -> tuple[dict, dict]:

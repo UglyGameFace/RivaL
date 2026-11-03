@@ -214,7 +214,7 @@ def test_context_inputs_match_training_inputs():
 def test_funding_counts_only_after_it_is_known():
     from parlay_bot.perpetuals.pooled_features import context_vector
 
-    bundle, _, closes = _context()
+    bundle, _, _ = _context()
     settle = bundle["funding"][5][0]  # 40 h in (past the 420-bar window), at :00.007
     at_settle = settle.replace(microsecond=0)
     before = context_vector(bundle, at_settle)[-1]

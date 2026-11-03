@@ -11,12 +11,20 @@ on:
     paths:
       - ".github/workflows/binance-original-auxiliary.yml"
       - "src/parlay_bot/research/binance_auxiliary_backfill.py"
+  # Runs continue themselves while backlog remains; the schedule only
+  # restarts a chain GitHub dropped.
   schedule:
-    - cron: "41 0,4,8,12,16,20 * * *"
+    - cron: "41 4,10,16,22 * * *"
   workflow_dispatch:
+    inputs:
+      chain:
+        description: "Continuation number (set automatically; leave 0)"
+        required: false
+        default: "0"
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: rival-binance-original-auxiliary
@@ -57,8 +65,35 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install -e ".[archive]"
-      - name: Preserve official original ZIP and signed checksum with SHA readback
-        run: python -m parlay_bot.research.binance_auxiliary_backfill --max-new 24 --max-attempts 48
+      - name: Preserve official original ZIP and signed checksum with SHA readback (45-minute budget)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m parlay_bot.research.binance_auxiliary_backfill \
+            --max-new 5000 --max-attempts 10000 --time-budget-seconds 2700 \
+            | tee "$RUNNER_TEMP/collector-summary.json"
+      - name: Continue while backlog remains (self-dispatch, bounded chain)
+        if: success() && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHAIN: ${{ inputs.chain || '0' }}
+        run: |
+          set -euo pipefail
+          summary="$(tail -n 1 "$RUNNER_TEMP/collector-summary.json")"
+          read -r backlog progress reason < <(python -c '
+          import json, sys
+          s = json.loads(sys.argv[1])
+          print(s.get("backlog_remaining", 0), s.get("verified", 0), s.get("stopped_reason", "unknown"))
+          ' "$summary")
+          echo "backlog=$backlog progress=$progress reason=$reason chain=$CHAIN"
+          # Chain only while the last run made progress and stopped on its own
+          # time budget; a throttle, storage guard or empty backlog ends it.
+          if [[ "$backlog" -gt 0 && "$progress" -gt 0 && "$CHAIN" -lt 40 \
+                && ( "$reason" == "time_budget_reached" || "$reason" == "run_limit_reached" ) ]]; then
+            gh workflow run "binance-original-auxiliary.yml" --repo "$GITHUB_REPOSITORY" --ref main -f chain="$((CHAIN + 1))"
+            echo "::notice::Queued continuation $((CHAIN + 1)) with $backlog item(s) left"
+          fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:

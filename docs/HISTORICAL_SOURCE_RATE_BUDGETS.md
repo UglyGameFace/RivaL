@@ -73,3 +73,29 @@ archive work; other venues need source-family month-by-month evidence.
 Training compatibility and future-only performance remain independent gates.
 Track actual new archives, rejected attempts, valid complete months, exact
 instrument start dates and model admissions before calling any family done.
+
+## Time-budgeted, self-continuing Binance archive runs (2026-11-03)
+
+Binance's official monthly archives at data.binance.vision are static files,
+not the weighted REST API, so the two Binance archive collectors are bounded
+by **time and storage** rather than a small file count:
+
+- Each run works for up to **45 minutes**, sequentially, with at least
+  0.25 s between archive requests, and keeps every existing checksum, UTC-grid
+  and Drive readback check.
+- A run that stops on its time budget with work left and progress made
+  **dispatches the next run itself** (at most 40 links per chain). Scheduled
+  runs every 6 hours only restart a chain GitHub dropped; the coordinator also
+  lists the two Binance core collectors first while months are missing.
+- Collection stops before the Drive account passes **90% full**. An
+  unreadable quota does not block collection.
+- The month floor is **2019-09**, the first Binance USD-M perpetual month.
+  Later-listed contracts return 404 for earlier months; those are reported as
+  unavailable and never filled.
+- Premium index klines are fetched from Binance's real dataset name,
+  `premiumIndexKlines`. The previous `premiumPriceKlines` path returned 404,
+  so no premium month had been collected before this change.
+
+GitHub dropped most cron runs in practice (5 of 24 expected Binance candle
+runs and 1 of 12 auxiliary runs in the 48 hours to 2026-11-03), which is why
+continuation no longer depends on the schedule.

@@ -13,13 +13,15 @@ import pytest
 from parlay_bot.research import binance_deep_backfill as deep
 
 
-def test_plan_starts_at_january_2021_and_excludes_current_month():
-    assert deep.months_since_2021(
-        datetime(2021, 3, 19, tzinfo=UTC),
-    ) == ["2021-01", "2021-02"]
-    assert deep.months_since_2021(datetime(2021, 1, 1, tzinfo=UTC)) == []
+def test_plan_starts_at_first_binance_perpetual_month_and_excludes_current():
+    assert deep.FIRST == "2019-09"
+    assert deep.archive_months(
+        datetime(2019, 11, 19, tzinfo=UTC),
+    ) == ["2019-09", "2019-10"]
+    assert deep.archive_months(datetime(2019, 9, 1, tzinfo=UTC)) == []
+    assert deep.archive_months(datetime(2021, 1, 5, tzinfo=UTC))[-1] == "2020-12"
     with pytest.raises(ValueError):
-        deep.months_since_2021(datetime(2021, 1, 1))
+        deep.archive_months(datetime(2021, 1, 1))
 
 
 
@@ -85,7 +87,7 @@ async def test_drive_binance_month_inventory_paginates_and_filters(tmp_path):
 
 @pytest.mark.asyncio
 async def test_publish_only_complete_source_month_and_remote_sha_readback(tmp_path, monkeypatch):
-    monkeypatch.setattr(deep, "months_since_2021", lambda now: ["2021-01", "2021-02"])
+    monkeypatch.setattr(deep, "archive_months", lambda now: ["2021-01", "2021-02"])
     async def existing(drive):
         return {"BTCUSDT-5m-2021-01"}
     monkeypatch.setattr(deep, "existing_month_keys", existing)
@@ -145,7 +147,7 @@ async def test_publish_only_complete_source_month_and_remote_sha_readback(tmp_pa
 
 @pytest.mark.asyncio
 async def test_incomplete_source_month_does_not_publish(tmp_path, monkeypatch):
-    monkeypatch.setattr(deep, "months_since_2021", lambda now: ["2021-01"])
+    monkeypatch.setattr(deep, "archive_months", lambda now: ["2021-01"])
     async def existing(drive):
         return set()
     monkeypatch.setattr(deep, "existing_month_keys", existing)
@@ -205,3 +207,46 @@ async def test_original_archive_resume_requires_both_zip_and_checksum():
     keys = await deep.existing_original_keys(Drive())
     assert keys == {"BTCUSDT-5m-2021-01"}
     assert calls[1]["pageToken"] == "next"
+
+
+@pytest.mark.asyncio
+async def test_time_budget_stops_cleanly_and_reports_backlog(tmp_path, monkeypatch):
+    monkeypatch.setattr(deep, "archive_months", lambda now: ["2021-01", "2021-02"])
+
+    async def none(drive):
+        return set()
+
+    monkeypatch.setattr(deep, "existing_month_keys", none)
+    monkeypatch.setattr(deep, "existing_original_keys", none)
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError("no download after the time budget expired")
+
+    monkeypatch.setattr(deep, "ingest_binance", unexpected)
+    expired = SimpleNamespace(expired=lambda: True)
+    result = await deep.collect_official_binance(
+        drive=object(), assets=("BTC", "ETH"), max_new=100, budget=expired,
+        now=datetime(2021, 3, 1, tzinfo=UTC),
+        root=tmp_path / "archive", report_dir=tmp_path / "reports",
+    )
+    assert result["stopped_reason"] == "time_budget_reached"
+    assert result["new_months"] == 0
+    assert result["backlog_remaining"] == 4
+
+
+@pytest.mark.asyncio
+async def test_drive_storage_guard_reads_quota():
+    from parlay_bot.research.run_budget import drive_has_room
+
+    class Drive:
+        def __init__(self, quota):
+            self.quota = quota
+
+        async def storage_quota(self):
+            return self.quota
+
+    assert await drive_has_room(Drive((100, 1000)))
+    assert not await drive_has_room(Drive((950, 1000)))
+    assert await drive_has_room(Drive((10**15, None)))  # unlimited plan
+    assert await drive_has_room(Drive(None))  # unreadable: fail open
+    assert await drive_has_room(object())

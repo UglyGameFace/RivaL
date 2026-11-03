@@ -54,7 +54,7 @@ def test_2021_calendar_excludes_open_month():
     assert months("2021-01", "2021-03") == ["2021-01", "2021-02", "2021-03"]
     assert last_completed_month(NOW) == "2026-10"
     with pytest.raises(ValueError):
-        months("2020-12", "2021-01")
+        months("2019-08", "2019-09")
     with pytest.raises(ValueError):
         write_ledger(roots=[], first="2021-01", through="2026-11",
                      out_dir=None, now=NOW)

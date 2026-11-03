@@ -148,10 +148,15 @@ def test_dispatch_is_bounded_and_refuses_to_autorun_unknown_workflows():
         def dispatch(self, workflow, inputs):
             self.called.append((workflow, inputs))
     plan = build_plan(summarize([], now=NOW))
+    # Missing Binance core archives (issue #295) are listed first.
+    assert [t["workflow"] for t in plan["dispatch_candidates"][:2]] == [
+        "binance-deep-file-backfill.yml", "binance-original-auxiliary.yml",
+    ]
     client = Fake()
     report = run_plan(plan, client, now=NOW)
-    assert 0 < report["dispatched"] <= 2
-    assert len(client.called) <= 2
+    assert 0 < report["dispatched"] <= 3
+    assert len(client.called) <= 3
+    assert client.called[0] == ("binance-deep-file-backfill.yml", {})
     assert not report["overall_history_complete"]
     plan["dispatch_candidates"] = [{
         "workflow": "ci.yml", "inputs": {}, "scope": "not-authorized",
@@ -241,6 +246,26 @@ def test_coordinator_prefers_one_auto_recovery_before_optional_sampling():
     plan = build_plan(summarize([], now=NOW))
     client = Fake()
     report = run_plan(plan, client, now=NOW)
-    assert 0 <= report["dispatched"] <= 2
-    assert sum(x == {} for _, x in client.called) <= 1
-    assert len(client.called) <= 2
+    assert 0 <= report["dispatched"] <= 3
+    recovered = [w for w, _ in client.called
+                 if w not in ("binance-deep-file-backfill.yml",
+                              "binance-original-auxiliary.yml")
+                 and _ == {}]
+    assert len(recovered) <= 1
+    assert len(client.called) <= 3
+
+
+def test_core_binance_collectors_not_requested_once_archive_months_named():
+    from parlay_bot.research.historical_coordinator import CORE_BINANCE_COLLECTORS
+    from parlay_bot.research.history_priority import EARLIEST_ARCHIVE_MONTH
+
+    months = completed_range(EARLIEST_ARCHIVE_MONTH, "2026-11")
+    names = [f"{asset}USDT-5m-{month}--" + "a" * 16 + ".manifest.json"
+             for asset in ("BTC", "ETH", "SOL", "XRP") for month in months]
+    plan = build_plan(summarize(names, now=NOW))
+    workflows = [t["workflow"] for t in plan["dispatch_candidates"]]
+    assert "binance-deep-file-backfill.yml" not in workflows
+    assert "binance-original-auxiliary.yml" in workflows
+    assert set(CORE_BINANCE_COLLECTORS) == {
+        "binance-deep-file-backfill.yml", "binance-original-auxiliary.yml",
+    }

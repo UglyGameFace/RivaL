@@ -21,21 +21,28 @@ import httpx
 
 from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
-from parlay_bot.research.history_priority import ordered_months
+from parlay_bot.research.history_priority import EARLIEST_ARCHIVE_MONTH, ordered_months
 from parlay_bot.research.publish import _artifact, _drive
+from parlay_bot.research.run_budget import Pacer, RunBudget, drive_has_room
 
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
+# Model inputs first (mark, index, premium, funding), then other intervals.
+# Binance's dataset is "premiumIndexKlines"; the former "premiumPriceKlines"
+# path does not exist, so premium was never collected before this fix.
 FAMILIES = {
     "mark": ("markPriceKlines", "5m"),
     "index": ("indexPriceKlines", "5m"),
-    "premium": ("premiumPriceKlines", "5m"),
+    "premium": ("premiumIndexKlines", "5m"),
+    "funding": ("fundingRate", None),
     "candles_1m": ("klines", "1m"),
     "candles_15m": ("klines", "15m"),
     "candles_1h": ("klines", "1h"),
     "candles_4h": ("klines", "4h"),
     "candles_1d": ("klines", "1d"),
-    "funding": ("fundingRate", None),
 }
+MAX_NEW_PER_RUN = 5000
+MAX_ATTEMPTS_PER_RUN = 10000
+DRIVE_ROOM_CHECK_EVERY = 25
 INTERVAL_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000,
                "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
 BASE = "https://data.binance.vision/data/futures/um/monthly"
@@ -50,7 +57,7 @@ MANIFEST = re.compile(
 def source_url(asset: str, family: str, month: str) -> str:
     if asset not in ASSETS or family not in FAMILIES or not re.fullmatch(
         r"20\d{2}-(?:0[1-9]|1[0-2])", month,
-    ) or month < "2021-01":
+    ) or month < EARLIEST_ARCHIVE_MONTH:
         raise ValueError("untrusted Binance auxiliary source identity")
     dataset, interval = FAMILIES[family]
     if family == "funding":
@@ -223,29 +230,42 @@ async def existing(drive) -> set[tuple[str, str, str]]:
 
 async def collect(*, drive, client: httpx.AsyncClient, out_dir: Path,
                   now: datetime | None = None, max_new: int = 24,
-                  max_attempts: int = 48) -> dict:
-    if not 1 <= max_new <= 48 or not 1 <= max_attempts <= 100:
+                  max_attempts: int = 48, budget: RunBudget | None = None,
+                  pacer: Pacer | None = None) -> dict:
+    if (not 1 <= max_new <= MAX_NEW_PER_RUN
+            or not 1 <= max_attempts <= MAX_ATTEMPTS_PER_RUN):
         raise ValueError("bounded Binance auxiliary archive limits required")
     clock = (now or datetime.now(UTC)).astimezone(UTC)
     y, m = clock.year, clock.month
     end = y * 12 + m - 1
+    first_year, first_month = map(int, EARLIEST_ARCHIVE_MONTH.split("-"))
     months = [f"{yr:04d}-{mo + 1:02d}" for yr, mo in
-              (divmod(n, 12) for n in range(2021 * 12, end))]
+              (divmod(n, 12) for n in range(first_year * 12 + first_month - 1, end))]
     listed = await existing(drive)
+    # Recent months first (ordered_months), model-input families first within
+    # a month. Pre-listing months return 404 and are reported, never filled.
     tasks = [(asset, fam, month) for month in ordered_months(months, now=clock)
              for fam in FAMILIES for asset in ASSETS
              if (asset, fam, month) not in listed]
-    # Bounded rotation prevents unknown pre-listing files from starving newer
-    # original archives forever. Every retry remains source-specific.
-    offset = (int(clock.timestamp()) // (4 * 3600)) % len(tasks) if tasks else 0
-    tasks = tasks[offset:] + tasks[:offset]
+    pacer = pacer or Pacer()
     report = {"schema_version": "rival-binance-original-aux-v1",
               "created_at": clock.isoformat(), "attempted": 0, "verified": [],
-              "unavailable_unconfirmed": [], "model_live_approved": False}
+              "unavailable_unconfirmed": [], "model_live_approved": False,
+              "stopped_reason": "backlog_empty"}
     out_dir.mkdir(parents=True, exist_ok=True)
     for asset, fam, month in tasks:
         if report["attempted"] >= max_attempts or len(report["verified"]) >= max_new:
+            report["stopped_reason"] = "run_limit_reached"
             break
+        if budget is not None and budget.expired():
+            report["stopped_reason"] = "time_budget_reached"
+            break
+        if (report["verified"]
+                and len(report["verified"]) % DRIVE_ROOM_CHECK_EVERY == 0
+                and not await drive_has_room(drive)):
+            report["stopped_reason"] = "drive_storage_guard"
+            break
+        await pacer.wait()
         report["attempted"] += 1
         url = source_url(asset, fam, month)
         try:
@@ -307,6 +327,7 @@ async def collect(*, drive, client: httpx.AsyncClient, out_dir: Path,
                 "asset": asset, "family": fam, "month": month,
                 "reason": str(exc)[:160],
             })
+    report["backlog_remaining"] = max(0, len(tasks) - report["attempted"])
     report_path = out_dir / "binance-auxiliary-progress.json"
     report_path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
     artifact = _artifact(report_path, 1)
@@ -321,14 +342,20 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--max-new", type=int, default=24)
     parser.add_argument("--max-attempts", type=int, default=48)
+    parser.add_argument("--time-budget-seconds", type=int, default=0,
+                        help="stop after this many seconds (0 = no time limit)")
     args = parser.parse_args()
+    budget = RunBudget(args.time_budget_seconds) if args.time_budget_seconds else None
     async def worker() -> dict:
         drive = _drive(Settings())
         try:
+            if not await drive_has_room(drive):
+                raise HistoryImportError("Drive storage guard: account above 90% full")
             async with httpx.AsyncClient(timeout=50, follow_redirects=False) as client:
                 return await collect(
                     drive=drive, client=client, out_dir=Path("data/binance-aux"),
                     max_new=args.max_new, max_attempts=args.max_attempts,
+                    budget=budget,
                 )
         finally:
             await drive.aclose()
@@ -336,6 +363,8 @@ def main() -> int:
     print(json.dumps({
         "attempted": result["attempted"], "verified": len(result["verified"]),
         "unavailable_unconfirmed": len(result["unavailable_unconfirmed"]),
+        "backlog_remaining": result["backlog_remaining"],
+        "stopped_reason": result["stopped_reason"],
         "history_complete": False,
     }, sort_keys=True))
 

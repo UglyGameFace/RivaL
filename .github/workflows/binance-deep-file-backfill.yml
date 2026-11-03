@@ -18,11 +18,19 @@ on:
       - "src/parlay_bot/research/binance_deep_backfill.py"
       - "src/parlay_bot/archive/drive.py"
   workflow_dispatch:
+    inputs:
+      chain:
+        description: "Continuation number (set automatically; leave 0)"
+        required: false
+        default: "0"
+  # Runs continue themselves while backlog remains; the schedule only
+  # restarts a chain GitHub dropped.
   schedule:
-    - cron: "43 1,3,5,7,9,11,13,15,17,19,21,23 * * *"
+    - cron: "43 1,7,13,19 * * *"
 
 permissions:
   contents: read
+  actions: write
 
 concurrency:
   group: rival-binance-2021-monthly-archive
@@ -79,9 +87,35 @@ jobs:
               exit 1
             fi
           done
-      - name: Publish up to 32 provider-checksum monthly 5m sources from 2021
+      - name: Publish provider-checksum monthly 5m sources for a 45-minute budget
+        shell: bash
         run: |
-          python -m parlay_bot.research.binance_deep_backfill --max-new 32
+          set -euo pipefail
+          python -m parlay_bot.research.binance_deep_backfill \
+            --max-new 5000 --time-budget-seconds 2700 \
+            | tee "$RUNNER_TEMP/collector-summary.json"
+      - name: Continue while backlog remains (self-dispatch, bounded chain)
+        if: success() && github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHAIN: ${{ inputs.chain || '0' }}
+        run: |
+          set -euo pipefail
+          summary="$(tail -n 1 "$RUNNER_TEMP/collector-summary.json")"
+          read -r backlog progress reason < <(python -c '
+          import json, sys
+          s = json.loads(sys.argv[1])
+          print(s.get("backlog_remaining", 0), s.get("new_months", 0), s.get("stopped_reason", "unknown"))
+          ' "$summary")
+          echo "backlog=$backlog progress=$progress reason=$reason chain=$CHAIN"
+          # Chain only while the last run made progress and stopped on its own
+          # time budget; a throttle, storage guard or empty backlog ends it.
+          if [[ "$backlog" -gt 0 && "$progress" -gt 0 && "$CHAIN" -lt 40 \
+                && ( "$reason" == "time_budget_reached" || "$reason" == "max_new_reached" ) ]]; then
+            gh workflow run "binance-deep-file-backfill.yml" --repo "$GITHUB_REPOSITORY" --ref main -f chain="$((CHAIN + 1))"
+            echo "::notice::Queued continuation $((CHAIN + 1)) with $backlog item(s) left"
+          fi
       - name: Inventory all 2021+ source-family evidence without claiming missing data is complete
         if: always()
         shell: bash

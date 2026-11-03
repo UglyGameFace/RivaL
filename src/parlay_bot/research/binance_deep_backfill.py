@@ -18,20 +18,30 @@ import httpx
 from parlay_bot.config import Settings
 from parlay_bot.research.audit import audit_partition
 from parlay_bot.research.free_history import ASSETS, HistoryImportError, ingest_binance
-from parlay_bot.research.history_priority import ordered_months, window
+from parlay_bot.research.history_priority import (
+    EARLIEST_ARCHIVE_MONTH,
+    ordered_months,
+    window,
+)
 from parlay_bot.research.publish import _artifact, _drive, prepare, publish
+from parlay_bot.research.run_budget import Pacer, RunBudget, drive_has_room
 
-FIRST = "2021-01"
-MAX_MONTHS_PER_RUN = 32
+FIRST = EARLIEST_ARCHIVE_MONTH
+# A run is bounded by its time budget; this only guards against a runaway
+# argument. 4 assets x ~90 months fits well inside it.
+MAX_MONTHS_PER_RUN = 5000
 MAX_LIST_PAGES = 15
+DRIVE_ROOM_CHECK_EVERY = 25
 
 
-def months_since_2021(now: datetime) -> list[str]:
+def archive_months(now: datetime) -> list[str]:
+    """Completed months from the earliest official archive month to now."""
     if now.utcoffset() is None:
         raise ValueError("historical archive calendar must be timezone-aware")
     clock = now.astimezone(UTC)
     end_index = clock.year * 12 + clock.month - 1
-    floor = 2021 * 12
+    first_year, first_month = map(int, FIRST.split("-"))
+    floor = first_year * 12 + first_month - 1
     return [
         f"{year:04d}-{month + 1:02d}"
         for year, month in (
@@ -182,14 +192,15 @@ def prioritize_missing_source_months(
 async def collect_official_binance(
     *, drive, root: Path, report_dir: Path, now: datetime | None = None,
     assets: tuple[str, ...] = ("BTC", "ETH", "SOL", "XRP"),
-    max_new: int = 24,
+    max_new: int = 24, budget: RunBudget | None = None,
+    pacer: Pacer | None = None,
 ) -> dict:
     clock = now or datetime.now(UTC)
     if (not assets or len(assets) != len(set(assets))
         or any(asset not in ASSETS for asset in assets)
         or not 1 <= max_new <= MAX_MONTHS_PER_RUN):
         raise ValueError("invalid Binance bulk archival scope")
-    months = months_since_2021(clock)
+    months = archive_months(clock)
     normalized_names = await existing_month_keys(drive)
     original_names = await existing_original_keys(drive)
     # A processed candle month without BOTH provider original objects is NOT
@@ -200,6 +211,8 @@ async def collect_official_binance(
         months, assets, available, now=clock,
     )
     downloaded, failed = [], []
+    stopped = "backlog_empty"
+    pacer = pacer or Pacer()
     root.mkdir(parents=True, exist_ok=True)
     report_dir.mkdir(parents=True, exist_ok=True)
     async with asyncio.timeout(9000):
@@ -207,7 +220,16 @@ async def collect_official_binance(
             for asset, month in work:
                 key = f"{asset}USDT-5m-{month}"
                 if len(downloaded) >= max_new:
+                    stopped = "max_new_reached"
                     break
+                if budget is not None and budget.expired():
+                    stopped = "time_budget_reached"
+                    break
+                if (downloaded and len(downloaded) % DRIVE_ROOM_CHECK_EVERY == 0
+                        and not await drive_has_room(drive)):
+                    stopped = "drive_storage_guard"
+                    break
+                await pacer.wait()
                 try:
                     artifact = await asyncio.to_thread(
                         ingest_binance, client, asset=asset,
@@ -268,6 +290,8 @@ async def collect_official_binance(
         "created_at": datetime.now(UTC).isoformat(),
         "source": "binance", "asset_scope": list(assets),
         "earliest_requested_month": FIRST,
+        "stopped_reason": stopped,
+        "backlog_remaining": max(0, len(work) - len(downloaded) - len(failed)),
         "latest_complete_month": months[-1] if months else None,
         "planned_asset_months": len(work) + skipped,
         "prioritization": "recent_six_then_remaining_24_months_then_older_missing",
@@ -292,16 +316,22 @@ async def collect_official_binance(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Binance official archive deep backfill")
     parser.add_argument("--max-new", type=int, default=24)
+    parser.add_argument("--time-budget-seconds", type=int, default=0,
+                        help="stop after this many seconds (0 = no time limit)")
     parser.add_argument("--root", type=Path, default=Path("data/binance-deep"))
     parser.add_argument("--report-dir", type=Path, default=Path("data/native-reports"))
     args = parser.parse_args(argv)
     try:
         drive = _drive(Settings())
+        budget = (RunBudget(args.time_budget_seconds)
+                  if args.time_budget_seconds else None)
         async def worker():
             try:
+                if not await drive_has_room(drive):
+                    raise HistoryImportError("Drive storage guard: account above 90% full")
                 return await collect_official_binance(
                     drive=drive, root=args.root, report_dir=args.report_dir,
-                    max_new=args.max_new,
+                    max_new=args.max_new, budget=budget,
                 )
             finally:
                 await drive.aclose()
@@ -313,6 +343,8 @@ def main(argv: list[str] | None = None) -> int:
         "new_months": receipt["new_months"],
         "skipped_without_readback": receipt["remote_manifest_names_skipped_without_readback"],
         "rejected": len(receipt["unavailable_or_rejected"]),
+        "backlog_remaining": receipt["backlog_remaining"],
+        "stopped_reason": receipt["stopped_reason"],
         "full_2021_coverage_proven": False,
     }, sort_keys=True))
     return 0

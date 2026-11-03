@@ -35,7 +35,15 @@ def _zip(month="2026-02", missing=None):
 def test_original_binance_aux_archive_urls_and_source_integrity():
     url = source_url("BTC", "candles_1h", "2026-02")
     assert url.endswith("/klines/BTCUSDT/1h/BTCUSDT-1h-2026-02.zip")
-    assert "/premiumPriceKlines/" in source_url("ETH", "premium", "2026-02")
+    # Binance publishes premium index klines as "premiumIndexKlines".
+    assert source_url("ETH", "premium", "2026-02").endswith(
+        "/premiumIndexKlines/ETHUSDT/5m/ETHUSDT-5m-2026-02.zip")
+    assert "/premiumPriceKlines/" not in source_url("ETH", "premium", "2026-02")
+    # Pre-2021 official months are requested; nothing before 2019-09.
+    assert source_url("BTC", "funding", "2019-09").endswith(
+        "/fundingRate/BTCUSDT/BTCUSDT-fundingRate-2019-09.zip")
+    with pytest.raises(ValueError):
+        source_url("BTC", "funding", "2019-08")
     raw = _zip()
     digest = hashlib.sha256(raw).hexdigest()
     assert checksum(raw, (digest + "  BTCUSDT-1h-2026-02.zip").encode(),

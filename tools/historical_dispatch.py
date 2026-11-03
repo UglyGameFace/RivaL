@@ -18,8 +18,11 @@ ALLOWED_WORKFLOWS = {
     "source-native-research.yml": {"venue", "first_month", "asset"},
     "bitget-v3-overnight-archive.yml": {"first_month", "max_requests"},
     "deribit-hourly-native-backfill.yml": {"day", "hour"},
+    # Self-continuing Binance core collectors (issue #295); no inputs.
+    "binance-deep-file-backfill.yml": set(),
+    "binance-original-auxiliary.yml": set(),
 }
-MAX_DISPATCH = 2
+MAX_DISPATCH = 3
 # Only existing read-only acquisition workflows with workflow_dispatch support.
 # Production is hosted from main, and recovery never promotes models or trades.
 RECOVERY_WORKFLOWS = (

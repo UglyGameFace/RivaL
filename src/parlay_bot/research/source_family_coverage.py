@@ -17,6 +17,7 @@ from pathlib import Path
 
 from parlay_bot.research.audit import audit_partition
 from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.history_priority import EARLIEST_ARCHIVE_MONTH
 from parlay_bot.research.publish import prepare
 
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
@@ -65,8 +66,8 @@ def _month(value: str) -> int:
 
 def months(first: str, through: str) -> list[str]:
     start, end = _month(first), _month(through)
-    if start < _month("2021-01") or end < start or end - start > 120:
-        raise ValueError("only bounded complete months since 2021 are supported")
+    if start < _month(EARLIEST_ARCHIVE_MONTH) or end < start or end - start > 120:
+        raise ValueError("only bounded complete months since 2019-09 are supported")
     return [f"{divmod(i, 12)[0]:04d}-{divmod(i, 12)[1] + 1:02d}"
             for i in range(start, end + 1)]
 

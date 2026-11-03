@@ -492,3 +492,49 @@ def test_v2_source_native_fitter_uses_exact_predeclared_subset(monkeypatch):
     assert fitted == [None, (0, 2, 5, 8)] * 3
     assert all(not x["holdout_examined"] and not x["passed_purged_validation"]
                and x["feature_indices"] == [0, 2, 5, 8] for x in trials)
+
+
+def test_legacy_hypothesis_rows_read_before_additive_schema_migration(tmp_path):
+    """New read-only relay must not require a postrelease LFM3 write first."""
+    store = SQLiteHotStore(tmp_path / "legacy-hypothesis.sqlite")
+    stamp = datetime(2026, 11, 2, tzinfo=UTC)
+    record = {"asset": "BTC", "slot_utc": stamp.isoformat(),
+              "model": MODEL, "evidence_sha256": "a" * 64,
+              "hypothesis": "trend_only", "venues": ["okx"]}
+    digest = hashlib.sha256(
+        json.dumps(record, sort_keys=True, separators=(",", ":")).encode(),
+    ).hexdigest()
+    try:
+        with store.connect() as conn:
+            conn.execute(
+                """CREATE TABLE rival_llm_feature_hypotheses (
+                   asset TEXT NOT NULL,slot_utc TEXT NOT NULL,
+                   attempted_at TEXT NOT NULL,evidence_sha256 TEXT,
+                   model TEXT,hypothesis TEXT,rationale TEXT,
+                   falsification TEXT,source_venues_json TEXT,
+                   record_sha256 TEXT,status TEXT NOT NULL,
+                   attempt_count INTEGER NOT NULL DEFAULT 1,
+                   PRIMARY KEY(asset,slot_utc))"""
+            )
+            conn.execute(
+                """INSERT INTO rival_llm_feature_hypotheses
+                   (asset,slot_utc,attempted_at,evidence_sha256,model,
+                    hypothesis,source_venues_json,record_sha256,status)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
+                ("BTC",stamp.isoformat(),stamp.isoformat(),"a" * 64,
+                 MODEL,"trend_only",'["okx"]',digest,"proposed"),
+            )
+        assert recent_hypotheses(store, venue="okx", now=stamp) == [
+            {**record, "record_sha256": digest},
+        ]
+        lab = FeatureHypothesisLab(store, None, venues=("okx",))
+        lab.initialize()
+        with store.connect() as conn:
+            assert "feature_indices_json" in store.database.column_names(
+                conn, "rival_llm_feature_hypotheses",
+            )
+        assert recent_hypotheses(store, venue="okx", now=stamp) == [
+            {**record, "record_sha256": digest},
+        ]
+    finally:
+        store.close()

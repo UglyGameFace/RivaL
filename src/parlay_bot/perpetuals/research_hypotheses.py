@@ -206,9 +206,7 @@ def recent_hypotheses(store, *, venue: str, now: datetime | None = None) -> list
     current = (now or datetime.now(UTC)).astimezone(UTC)
     with store.connect() as conn:
         rows = conn.execute(
-            """SELECT asset,slot_utc,model,hypothesis,evidence_sha256,
-                      source_venues_json,feature_indices_json,record_sha256
-               FROM rival_llm_feature_hypotheses
+            """SELECT * FROM rival_llm_feature_hypotheses
                WHERE status='proposed' AND attempted_at>=?
                ORDER BY attempted_at DESC LIMIT 96""",
             ((current - timedelta(days=7)).isoformat(),),
@@ -230,12 +228,18 @@ def recent_hypotheses(store, *, venue: str, now: datetime | None = None) -> list
                 "evidence_sha256": row["evidence_sha256"],
                 "hypothesis": mode, "venues": venues,
             }
+            # A relay may read a legacy host before the next scheduled
+            # LFM3 attempt migrates its table. Do not mutate on a read.
+            indices_json = (row["feature_indices_json"]
+                            if "feature_indices_json" in row.keys() else None)
             if mode == "feature_subset_v2":
-                indices = json.loads(row["feature_indices_json"])
+                if not isinstance(indices_json, str):
+                    continue
+                indices = json.loads(indices_json)
                 if not valid_feature_indices(indices):
                     continue
                 record["feature_indices"] = indices
-            elif row["feature_indices_json"] is not None:
+            elif indices_json is not None:
                 continue
             digest = hashlib.sha256(
                 json.dumps(record, sort_keys=True, separators=(",", ":")).encode()

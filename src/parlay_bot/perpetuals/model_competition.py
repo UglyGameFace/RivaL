@@ -200,8 +200,9 @@ class ShadowModelCompetition:
                  utc(reference_opened_at).isoformat(),utc(issued_at).isoformat(),
                  utc(target_opened_at).isoformat(),probability,
                  incumbent_up,baseline_up,
-                  (len(eligible) if family not in eligible_boosters
-                   and family not in eligible_history else 0),
+                  (int(eligible_history[family]["training_count"])
+                   if family in eligible_history else
+                   len(eligible) if family not in eligible_boosters else 0),
                   (eligible_history[family]["training_sha256"]
                    if family in eligible_history else
                    eligible_boosters[family]["model_sha256"]

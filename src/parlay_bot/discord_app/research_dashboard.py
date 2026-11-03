@@ -265,13 +265,13 @@ def _plain_boosted_proof(proof: dict, *, incumbent: dict | None = None) -> str:
                 pass
     return (
         f"**Advanced models imported:** {int(proof['portable_imported']):,}. "
-        f"**Passed screening:** {int(proof['portable_screened']):,}.\\n"
-        f"**What's holding them back:** {failures}.\\n"
+        f"**Passed screening:** {int(proof['portable_screened']):,}.\n"
+        f"**What's holding them back:** {failures}.\n"
         f"**Advanced-model forecasts (30d):** {int(proof['issued']):,} logged; "
         f"{int(proof['settled']):,} settled; "
-        f"{int(proof['quote_exits']):,} matched exit quotes.\\n"
-        f"{incumbent_line}\\n"
-        f"**Ready for practice-only tests:** {paper}. {verdict}\\n"
+        f"{int(proof['quote_exits']):,} matched exit quotes.\n"
+        f"{incumbent_line}\n"
+        f"**Ready for practice-only tests:** {paper}. {verdict}\n"
         "Real profit after fees, funding and slippage is unverified."
     )
 
@@ -1240,14 +1240,24 @@ class ResearchDashboard(discord.ui.View):
                              else "")
                         if blockers else "Screening blockers: none recorded"
                     )
+                    incumbent_proof = None
+                    if self.section == "lineage":
+                        try:
+                            incumbent_proof = await asyncio.to_thread(
+                                ForwardAccuracyMonitor(self.market).summary,
+                                asset=self.asset,
+                            )
+                        except Exception:  # noqa: BLE001 - baseline read is independent
+                            _LOG.exception("RivaL main model forward counters unavailable")
                     embed.add_field(
                         name=("Are advanced models ready?" if self.section == "lineage"
                               else "Boosted model production proof"),
-                        value=(_plain_boosted_proof(live_proof) if self.section == "lineage" else (
+                        value=(_plain_boosted_proof(live_proof, incumbent=incumbent_proof)
+                               if self.section == "lineage" else (
                             f"**Imported:** {live_proof['portable_imported']} portable trees, "
-                            f"**{live_proof['portable_screened']}** screened.\n"
+                            f"**{live_proof['portable_screened']}** passed screening.\n"
                             f"{explanation}\n"
-                            f"**Last 30 days:** {live_proof['issued']} immutable "
+                            f"**Advanced-model only, last 30d:** {live_proof['issued']} "
                             f"forecasts, {live_proof['settled']} future settlements, "
                             f"{live_proof['quote_exits']} matched exit book quotes.\n"
                             f"**Most recent source:** {scope_label}. "

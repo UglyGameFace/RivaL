@@ -72,6 +72,47 @@ def _fit(samples, *, l2, rate=.0125, epochs=4, active=None):
     return weights, base
 
 
+
+def _fit_adagrad(samples, *, l2: float, rate: float = .09,
+                 epochs: int = 3):
+    """Conservative adaptive-gradient alternative to fixed-rate logit SGD.
+
+    Each coefficient has a decreasing step size. All gradients, the smoothed
+    prior, and model parameters come solely from the training segment.
+    No validation or sealed-test sample is used to update weights.
+    """
+    if not samples or not 0 <= l2 <= .1 or not 0 < rate <= .25 or not 1 <= epochs <= 5:
+        raise ValueError("invalid adaptive historical fit parameters")
+    base = (sum(sample[3] for sample in samples) + 5) / (len(samples) + 10)
+    weights = [math.log(base / (1 - base)), *([0.] * 10)]
+    accumulator = [1.] * len(weights)
+    for _ in range(epochs):
+        for _, _, features, label in samples:
+            inputs = (1., *features)
+            probability = _sigmoid(sum(w * v for w, v in zip(weights, inputs)))
+            error = label - probability
+            for i, value in enumerate(inputs):
+                gradient = error * value - (l2 * weights[i] if i else 0.)
+                accumulator[i] += gradient * gradient
+                weights[i] += rate * gradient / math.sqrt(accumulator[i])
+    if not all(math.isfinite(weight) for weight in weights):
+        raise ValueError("non-finite adaptive historical model")
+    return weights, base
+
+
+def _shrink_logit(weights, *, base: float, fraction: float):
+    """Shrink learned log-odds toward the TRAINING prior, not held-out labels.
+
+    Keeping the eleven original coefficients makes the candidate compatible
+    with the exact production feature and probability inference contract.
+    """
+    if len(weights) != 11 or not 0 < base < 1 or not 0 < fraction <= 1:
+        raise ValueError("invalid probability shrinkage")
+    intercept = math.log(base / (1 - base))
+    return [intercept + fraction * (weights[0] - intercept),
+            *(fraction * value for value in weights[1:])]
+
+
 def _score(samples, weights, base):
     return _metrics([(_sigmoid(sum(w*v for w, v in zip(weights, (1., *s[2])))),
                       s[3], s[0].date().isoformat()) for s in samples], base)
@@ -120,9 +161,9 @@ def evaluate_compatible(manifests, *, horizon, prepared=None):
     for l2 in (0., .001, .01):
         weights, base = _fit(train, l2=l2)
         compared.append((f"logistic-l2-{l2:g}", weights, base,
-                         _score(validation, weights, base)))
-    # Small prespecified family; all choices are made on the SAME purged
-    # validation period. Never tune to the final test period.
+                         _score(validation, weights, base), len(train)))
+    # The original baseline families stay available and cannot regress
+    # selection: new options only win if the PURGED validation Brier improves.
     for method, options in (
         ("slow-conservative-logit", {"l2": .005, "rate": .006, "epochs": 3}),
         ("fast-regularized-logit", {"l2": .003, "rate": .018, "epochs": 4}),
@@ -131,13 +172,40 @@ def evaluate_compatible(manifests, *, horizon, prepared=None):
     ):
         weights, base = _fit(train, **options)
         compared.append((method, weights, base,
-                         _score(validation, weights, base)))
-    # Ensemble ONLY the full-feature L2 family. A sparse model should not
-    # quietly overwrite its inactive feature weights through averaging.
+                         _score(validation, weights, base), len(train)))
+    # Average full-feature regularized models, not sparse trend models.
     pooled = [sum(v[1][i] for v in compared[:3])/3 for i in range(11)]
     compared.append(("regularized-logit-ensemble", pooled, compared[0][2],
-                     _score(validation, pooled, compared[0][2])))
-    method, weights, base, validation_scores = min(compared, key=lambda v: v[3]["brier"])
+                     _score(validation, pooled, compared[0][2]), len(train)))
+    # Fixed, pre-declared low-complexity probability and optimization variants.
+    # Shrinking towards the training prior can reduce noisy 5m log-odds
+    # without adding runtime parameters, paid calls, or new data dependencies.
+    reference = compared[1]
+    for fraction in (.25, .5, .75):
+        conservative = _shrink_logit(
+            reference[1], base=reference[2], fraction=fraction,
+        )
+        compared.append((
+            f"training-prior-shrink-{fraction:g}", conservative, reference[2],
+            _score(validation, conservative, reference[2]), len(train),
+        ))
+    for l2 in (.001, .01):
+        weights, base = _fit_adagrad(train, l2=l2)
+        compared.append((
+            f"adaptive-logit-l2-{l2:g}", weights, base,
+            _score(validation, weights, base), len(train),
+        ))
+    # Adaptation to a more recent *training-only* market regime. Never
+    # replace validation with recent labels or use the final test to select.
+    recent = train[-max(300, int(.7 * len(train))):]
+    recent_weights, recent_base = _fit_adagrad(recent, l2=.005)
+    compared.append((
+        "recent-training-adaptive-logit", recent_weights, recent_base,
+        _score(validation, recent_weights, recent_base), len(recent),
+    ))
+    method, weights, base, validation_scores, training_count = min(
+        compared, key=lambda candidate: (candidate[3]["brier"], candidate[0]),
+    )
     # The test has never been consulted to choose a method or its weights.
     test_scores = _score(test, weights, base)
     spec = {
@@ -145,7 +213,8 @@ def evaluate_compatible(manifests, *, horizon, prepared=None):
         "identity": identity, "horizon_minutes": horizon,
         "feature_contract": FEATURE_CONTRACT, "target_contract": TARGET_CONTRACT,
         "weights": [round(w, 12) for w in weights], "train_base_rate": base,
-        "training_count": len(train), "training_cutoff": max(s[1] for s in train).isoformat(),
+        "training_count": training_count,
+        "training_cutoff": max(sample[1] for sample in train).isoformat(),
         "validation_cutoff": test_start.isoformat(),
         "evaluation_completed_through": max(s[1] for s in test).isoformat(),
         "source_sha256_by_month": provenance["source_sha256_by_month"],

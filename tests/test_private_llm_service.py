@@ -881,7 +881,7 @@ def test_explain_mode_reviews_model_calls_and_returns_only_stances(monkeypatch):
         user = sent[-1][1]["messages"][1]["content"]
         assert "model_live_5m:p_up=0.570,venues_up=7/9,record=0.524/n=8000" in user
         assert sent[-1][1]["response_format"]["type"] == "json_schema"
-        assert sent[-1][1]["max_tokens"] == 200
+        assert sent[-1][1]["max_tokens"] == 160
         try:
             server.infer("BTC", {"sources": [{"venue": "okx"}]}, mode="explain")
             raise AssertionError("explain without model calls must fail")

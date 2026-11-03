@@ -1,3 +1,11 @@
+## Active: retire external AI providers and use unmetered private LFM3 (2026-11-02)
+
+- Owner direction: RivaL Intelligence is the **only** AI inference provider. Retire Gemini, OpenRouter and Cloudflare AI fallback routes, external key/config selection and shared daily token/request quotas for local AI. Legacy stored observations and research provenance must remain immutable.
+- Extend existing PR #280 rather than opening an overlapping change. Private LFM3 research and feature-hypothesis calls use host-side CPU serialization and bounded timeouts, never third-party API quota reservations. Keep separate mathematical model validation and future-only profitability gates.
+- Acceptance: Ruff, full test suite, PostgreSQL-backed tests, safe local-only provider-selection tests, then main CI + Discloud release + authenticated live gateway test. A green PR is not a live deployment or an accurate forecast.
+
+---
+
 ## Active: private RivaL Intelligence model-research integration (2026-11-03 UTC)
 
 - **Objective:** Use the existing isolated LFM3 1.7B model to propose testable feature hypotheses for all four crypto assets, measure their deterministic out-of-sample research impact, and preserve the independent forward/after-cost promotion gate. No paid provider, API-key rewrite, live-model replacement, or unauthorized bet.

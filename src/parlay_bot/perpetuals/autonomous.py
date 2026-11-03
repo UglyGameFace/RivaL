@@ -17,12 +17,12 @@ from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence, build_
 from parlay_bot.perpetuals.event_intelligence import EventIntelligence
 from parlay_bot.perpetuals.forward_audit import MODEL as FORWARD_MODEL
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
-from parlay_bot.perpetuals.gemini_research import GeminiResearch, ResearchUnavailable
+from parlay_bot.perpetuals.ai_types import ResearchUnavailable
+from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS, HORIZONS
 from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
-from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 
 _LOG = logging.getLogger(__name__)
 SLOT_HOURS = 4
@@ -43,7 +43,7 @@ class AutonomousResearch:
 
     def __init__(
         self, market: PerpetualMarketStore,
-        *, ai: GeminiResearch | OpenRouterResearch | None, venues: tuple[str, ...],
+        *, ai: LocalFirstResearch | None, venues: tuple[str, ...],
         assets: tuple[str, ...] = ASSETS,
         auto_ai: bool = True,
     ) -> None:
@@ -284,7 +284,7 @@ class AutonomousResearch:
         ):
             if in_slot:
                 _LOG.info(
-                    "RivaL auto Gemini slot blocked reason=%s",
+                    "RivaL retired auto AI slot blocked reason=%s",
                     "auto_ai_disabled" if not self.auto_ai else "ai_unavailable",
                 )
             return 0
@@ -304,11 +304,11 @@ class AutonomousResearch:
                         successes += 1
                 except (InsufficientEvidence, ResearchUnavailable, ValueError) as exc:
                     _LOG.info(
-                        "RivaL optional auto Gemini skipped asset=%s reason=%s",
+                        "RivaL optional legacy AI skipped asset=%s reason=%s",
                         asset, type(exc).__name__,
                     )
                 except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL auto Gemini audit failed asset=%s", asset)
+                    _LOG.exception("RivaL legacy AI audit failed asset=%s", asset)
         return successes
 
     def review_model(self, *, now: datetime | None = None) -> int:

@@ -12,7 +12,6 @@ from parlay_bot.discord_app.opportunities import crypto_desk_embed
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
-from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.forward_tracking import (
     GOALS,
@@ -20,13 +19,12 @@ from parlay_bot.perpetuals.forward_tracking import (
     TrackingUnavailable,
     tracking_text,
 )
-from parlay_bot.perpetuals.gemini_research import AiResearch, ResearchUnavailable
+from parlay_bot.perpetuals.ai_types import AiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
-from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 from parlay_bot.perpetuals.proof_progress import proof_progress, proof_progress_text
 from parlay_bot.perpetuals.readiness import explain_venue_readiness, forecast_readiness
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
@@ -73,14 +71,14 @@ _SECTIONS = {
     ),
     "ai": (
         ("overview", "Overview"),
-        ("limits", "Request limits"),
+        ("limits", "Intelligence status"),
         ("analysis", "AI assessment"),
     ),
 }
 _FIELD_GROUPS = {
     "math": {
         "ai": ("AI research · UNCALIBRATED", "Analysis status",
-               "Private local AI & Cloudflare backup", "AI provider & request limits"),
+               "Private LFM3 Intelligence", "Intelligence status"),
         "pulse": ("Current market pulse",),
         "spikes": ("Spike watch analytics", "Recent spike events"),
         "history": ("Source-native training readiness", "Historical gap audit"),
@@ -105,8 +103,7 @@ _FIELD_GROUPS = {
         "method": ("How accuracy is audited",),
     },
     "ai": {
-        "limits": ("Private local AI & Cloudflare backup", "Cloudflare AI model & request limits",
-                   "OpenRouter free model & request limits", "AI provider & request limits"),
+        "limits": ("Private LFM3 Intelligence", "Intelligence status"),
         "analysis": ("AI research · UNCALIBRATED", "Analysis status"),
     },
 }
@@ -481,63 +478,10 @@ class _AskButton(discord.ui.Button["ResearchDashboard"]):
         )
 
 
-class _ModelListButton(discord.ui.Button["ResearchDashboard"]):
-    def __init__(self, *, enabled: bool) -> None:
-        super().__init__(
-            label="Check models", emoji="🔍",
-            style=discord.ButtonStyle.secondary,
-            custom_id="rival:research:models", row=2,
-            disabled=not enabled,
-        )
-
-    async def callback(self, interaction: discord.Interaction) -> None:
-        dashboard = self.view
-        assert dashboard is not None
-        await interaction.response.defer()
-        try:
-            if dashboard.ai is None:
-                raise ResearchUnavailable("AI review is not configured.")
-            names = await dashboard.ai.list_advertised_models()
-            configured = (
-                names[0]
-                if isinstance(dashboard.ai, OpenRouterResearch) and names
-                else dashboard.ai.model
-            )
-            listed = configured in names
-            other = [name for name in names if name != configured]
-            # Short, mobile-friendly, relevant alternatives only.
-            options = ", ".join(other[:5]) or "None listed"
-            dashboard.message = (
-                f"**Selected for analysis:** `{configured}`\n"
-                + (
-                    "✅ **Listed for text generation** with this API key.\n"
-                    if listed else
-                    "⚠️ **Not advertised for text generation** in the "
-                    "complete model catalog returned to this API key.\n"
-                )
-                + f"**Other text models (newest first):** {options[:430]}\n"
-                + (
-                    f"+{len(other) - 5} more text models available.\n"
-                    if len(other) > 5 else ""
-                )
-                + "This is a model catalog, not a quality ranking or a "
-                "successful API generation test."
-            )
-        except ResearchUnavailable as exc:
-            dashboard.message = str(exc)
-        except Exception:  # noqa: BLE001
-            _LOG.exception("RivaL AI model inspection failed")
-            dashboard.message = "Model lookup failed. No API key disclosed."
-        dashboard._rebuild()
-        await interaction.edit_original_response(
-            embed=await dashboard.render(), view=dashboard,
-        )
-
-
 class ResearchDashboard(discord.ui.View):
     def __init__(
         self, *, owner_id: int, market: PerpetualMarketStore | None,
-        ai: LocalFirstResearch | CloudflareResearch | OpenRouterResearch | None,
+        ai: LocalFirstResearch | None,
         venues: tuple[str, ...],
         shadow_enabled: bool = False,
         target_service: DirectionTargetService | None = None,
@@ -601,10 +545,6 @@ class ResearchDashboard(discord.ui.View):
         if self.screen == "ai" or (self.screen == "math" and self.section == "ai"):
             enabled = self.market is not None and self.ai is not None and self.ai.available
             self.add_item(_AskButton(enabled))
-            # Local LFM3 exposes a fixed, audited model ID; an external
-            # catalog picker adds no useful choice in the mobile workflow.
-            if not isinstance(self.ai, LocalFirstResearch):
-                self.add_item(_ModelListButton(enabled=enabled))
 
     def _history_inventory_cached(self) -> dict:
         """Historical totals cached for 2 minutes, NEVER live feed status."""
@@ -1860,76 +1800,31 @@ class ResearchDashboard(discord.ui.View):
                 "features. Unavailable sources are excluded and disclosed."
             ), inline=False,
         )
-        if self.ai is not None and self.ai.available:
+        if self.ai is not None:
             try:
-                quota = await self.ai.request_status()
-                reasons = {
-                    "provider_error_pause": (
-                        "A previous free AI provider error caused a pause"
-                        if isinstance(self.ai, OpenRouterResearch)
-                        else "A previous AI provider error caused a pause"
-                    ),
-                    "minimum_spacing": "RivaL's minimum interval between AI requests",
-                    "daily_budget_exhausted": "RivaL's daily safety limit is reached",
-                }
-                model = discord.utils.escape_markdown(quota["model"])
-                if quota["ready"]:
-                    state = "**Available for a new request**"
-                else:
-                    state = " · ".join(
-                        reasons.get(reason, "Temporary pause")
-                        for reason in quota["reasons"]
-                    )
-                    retry = quota["retry_at"]
-                    if retry is not None:
-                        state += (
-                            "\nNext permitted request: "
-                            + discord.utils.format_dt(retry, style="f")
-                            + " ("
-                            + discord.utils.format_dt(retry, style="R")
-                            + ")"
-                        )
+                state = await self.ai.request_status()
+                configured = bool(state["ready"])
                 embed.add_field(
-                    name=(
-                        "Private local AI & Cloudflare backup"
-                        if isinstance(self.ai, LocalFirstResearch)
-                        else "Cloudflare AI model & request limits"
-                        if isinstance(self.ai, CloudflareResearch)
-                        else "OpenRouter free model & request limits"
-                        if isinstance(self.ai, OpenRouterResearch)
-                        else "AI provider & request limits"
-                    ),
+                    name="Private LFM3 Intelligence",
                     value=(
-                        f"Model: **{model}**\n"
-                        f"RivaL usage: **{quota['requests_today']}/"
-                        f"{quota['rival_daily_limit']}** requests today "
+                        f"Model: **{discord.utils.escape_markdown(state['model'])}**\n"
                         + (
-                            "(local 18/day; Cloudflare has a separate emergency cap)\n"
-                            if isinstance(self.ai, LocalFirstResearch)
-                            else "(separate from the Cloudflare Worker daily cap)\n"
-                            if isinstance(self.ai, CloudflareResearch)
-                            else "(not OpenRouter's account-wide limit)\n"
-                            if isinstance(self.ai, OpenRouterResearch)
-                            else "(external provider limits may also apply)\n"
+                            "Configured for on-demand inference. **No paid tokens, "
+                            "daily AI budget, cooldown, or external fallback.**\n"
+                            "The inference service queues/limits CPU work. "
+                            "Live host readiness is not checked on this screen."
+                            if configured else
+                            "Private RIVAL_LOCAL_AI_TOKEN is not configured. "
+                            "AI research is unavailable; mathematical learning continues."
                         )
-                        + f"{state}"
                     )[:1024],
                     inline=False,
                 )
-            except Exception:  # noqa: BLE001 - no secrets in UI
-                _LOG.warning("RivaL AI quota status read unavailable")
+            except Exception:  # noqa: BLE001
+                _LOG.warning("RivaL private Intelligence status unavailable")
                 embed.add_field(
-                    name=(
-                        "Private local AI & Cloudflare backup"
-                        if isinstance(self.ai, LocalFirstResearch)
-                        else "Cloudflare AI model & request limits"
-                        if isinstance(self.ai, CloudflareResearch)
-                        else "OpenRouter free model & request limits"
-                        if isinstance(self.ai, OpenRouterResearch)
-                        else "AI provider & request limits"
-                    ),
-                    value="The stored request budget could not be read. "
-                          "No provider request was made to check it.",
+                    name="Intelligence status",
+                    value="Local AI configuration could not be read. No inference requested.",
                     inline=False,
                 )
         if self.opinion is not None and self.opinion.asset == self.asset:

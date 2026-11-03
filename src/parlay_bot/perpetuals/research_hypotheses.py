@@ -14,7 +14,7 @@ import re
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
-from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
+from parlay_bot.perpetuals.ai_types import ResearchUnavailable
 
 _LOG = logging.getLogger(__name__)
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
@@ -41,7 +41,7 @@ def validate_proposal(data: object) -> bool:
 
 
 class FeatureHypothesisLab:
-    """Persistent, quota-limited LFM3 experiments independent of issuance."""
+    """Persistent, CPU-bounded LFM3 experiments independent of issuance."""
 
     def __init__(self, store, ai, *, venues: tuple[str, ...]):
         self.store, self.ai, self.venues = store, ai, venues

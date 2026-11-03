@@ -11,7 +11,7 @@ import pytest
 import parlay_bot.perpetuals.autonomous as autonomous_module
 from parlay_bot.perpetuals.analytics import _bucket, analytics_snapshot
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
-from parlay_bot.perpetuals.gemini_research import AiResearch
+from parlay_bot.perpetuals.ai_types import AiResearch
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore
 

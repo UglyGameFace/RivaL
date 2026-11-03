@@ -18,9 +18,12 @@ HOST_SCRIPT = """import json, sys
 sys.path.insert(0, 'src')
 from parlay_bot.config import Settings
 from parlay_bot.storage.hot import PostgresHotStore
-from parlay_bot.perpetuals.research_hypotheses import recent_hypotheses
+from parlay_bot.perpetuals.research_hypotheses import (
+    recent_hypotheses, hypothesis_attempt_status,
+)
 settings = Settings()
-out = {'status':'unverified','proposals':[]}
+out = {'status':'unverified','proposals':[], 'health':{'status':'unavailable'}}
+
 try:
     if settings.rival_storage_backend == 'postgres' and settings.rival_database_url:
         store = PostgresHotStore(settings.rival_database_url.get_secret_value())
@@ -29,7 +32,13 @@ try:
         finally:
             store.close()
         out = {'status':'verified','proposals':proposals,
-               'source':'live_postgresql_llm_hypotheses'}
+               'source':'live_postgresql_llm_hypotheses',
+               'health':{
+                   **hypothesis_attempt_status(store),
+                   'enabled':settings.rival_llm_hypotheses_enabled,
+                   'provider':settings.rival_ai_provider,
+                   'local_token_configured':settings.rival_local_ai_token is not None
+               }}
 except Exception:
     pass
 print('RIVAL_LLM_FEATURE_PROPOSALS=' + json.dumps(out, separators=(',', ':')))
@@ -85,8 +94,14 @@ def main(argv=None) -> int:
             result = {"status": "unverified", "proposals": []}
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, sort_keys=True), encoding="utf-8")
+    health = result.get("health") or {}
     print("RivaL bounded LFM3 proposals: status="
-          + result["status"] + " count=" + str(len(result["proposals"])))
+          + result["status"] + " count=" + str(len(result["proposals"]))
+          + " worker_health=" + str(health.get("status", "unavailable"))
+          + " recent=" + ",".join(
+              str(row.get("asset", "?")) + ":" + str(row.get("status", "?"))
+              for row in health.get("latest_by_asset", [])[:4]
+          ))
     # The baseline model run is independent; missing AI evidence never
     # blocks it or invents a successful LLM experiment.
     return 0

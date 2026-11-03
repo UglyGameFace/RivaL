@@ -64,9 +64,17 @@ class FeatureHypothesisLab:
                   source_venues_json TEXT,
                   record_sha256 TEXT,
                   status TEXT NOT NULL,
+                  attempt_count INTEGER NOT NULL DEFAULT 1,
                   PRIMARY KEY(asset,slot_utc)
                 )"""
             )
+            if "attempt_count" not in self.store.database.column_names(
+                conn, "rival_llm_feature_hypotheses",
+            ):
+                conn.execute(
+                    "ALTER TABLE rival_llm_feature_hypotheses "
+                    "ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1"
+                )
         self._initialized = True
 
     async def run_once(self, *, now: datetime | None = None) -> dict:
@@ -87,7 +95,23 @@ class FeatureHypothesisLab:
                 (asset, slot.isoformat(), stamp.isoformat(), "attempted"),
             )
         if claimed.rowcount != 1:
-            return {"status": "already_attempted", "asset": asset}
+            # A temporary LFM3 outage or unavailable market source should
+            # not lose a whole six-hour slot. Reclaim atomically at most twice,
+            # no sooner than twenty minutes after the previous attempt.
+            cutoff = (stamp - timedelta(minutes=20)).isoformat()
+            with self.store.connect() as conn:
+                retry = conn.execute(
+                    """UPDATE rival_llm_feature_hypotheses
+                       SET attempted_at=?,status='attempted',
+                           attempt_count=attempt_count+1
+                       WHERE asset=? AND slot_utc=? AND attempt_count<3
+                         AND attempted_at<=?
+                         AND status IN ('attempted','unavailable',
+                                        'local_research_not_configured')""",
+                    (stamp.isoformat(), asset, slot.isoformat(), cutoff),
+                )
+            if retry.rowcount != 1:
+                return {"status": "already_attempted", "asset": asset}
         if self.ai is None or not self.ai.available:
             status = "local_research_not_configured"
             result = None
@@ -188,3 +212,36 @@ def recent_hypotheses(store, *, venue: str, now: datetime | None = None) -> list
         except (KeyError, ValueError, TypeError):
             continue
     return results
+
+
+def hypothesis_attempt_status(store, *, now: datetime | None = None) -> dict:
+    """Small read-only host diagnostic; never disclose prompts or credentials."""
+    stamp = now or datetime.now(UTC)
+    if stamp.utcoffset() is None:
+        raise ValueError("UTC research status clock required")
+    try:
+        with store.connect() as conn:
+            rows = conn.execute(
+                """SELECT asset,slot_utc,attempted_at,status,attempt_count
+                   FROM rival_llm_feature_hypotheses
+                   WHERE attempted_at>=?
+                   ORDER BY attempted_at DESC LIMIT 32""",
+                ((stamp.astimezone(UTC)-timedelta(days=2)).isoformat(),),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - legacy hosts may not have the table
+        return {"status": "unavailable", "latest_by_asset": []}
+    seen, latest = set(), []
+    for row in rows:
+        if row["asset"] not in ASSETS or row["asset"] in seen:
+            continue
+        seen.add(row["asset"])
+        latest.append({
+            "asset": row["asset"], "slot_utc": str(row["slot_utc"]),
+            "status": str(row["status"]),
+            "attempt_count": int(row["attempt_count"]),
+            "attempted_at": str(row["attempted_at"]),
+        })
+    return {
+        "status": "recorded" if latest else "no_recent_attempts",
+        "latest_by_asset": latest,
+    }

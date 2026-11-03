@@ -13,6 +13,7 @@ from parlay_bot.perpetuals.research_hypotheses import (
     ASSETS,
     FeatureHypothesisLab,
     recent_hypotheses,
+    hypothesis_attempt_status,
     validate_proposal,
 )
 from parlay_bot.research import llm_feature_ablation as ablation
@@ -180,3 +181,61 @@ def test_relay_never_reads_host_without_discloud_credentials(tmp_path, monkeypat
     assert json.loads(path.read_text()) == {
         "status": "unverified", "proposals": [],
     }
+
+
+@pytest.mark.asyncio
+async def test_transient_llm_outage_retries_with_bounded_slot_budget(tmp_path):
+    store = SQLiteHotStore(tmp_path / "bounded-retry.sqlite")
+    class Flaky:
+        available = True
+        calls = 0
+
+        async def propose_feature_hypothesis(self, *, asset, venues):
+            self.calls += 1
+            if self.calls < 3:
+                from parlay_bot.perpetuals.ai_types import ResearchUnavailable
+                raise ResearchUnavailable("temporary local CPU saturation")
+            return proposal(asset)
+
+    lab = FeatureHypothesisLab(store, Flaky(), venues=("okx",))
+    begin = datetime(2026, 11, 2, 7, 1, tzinfo=UTC)
+    try:
+        assert (await lab.run_once(now=begin))["status"] == "unavailable"
+        assert (await lab.run_once(now=begin+timedelta(minutes=19)))["status"] == "already_attempted"
+        assert (await lab.run_once(now=begin+timedelta(minutes=20)))["status"] == "unavailable"
+        assert (await lab.run_once(now=begin+timedelta(minutes=40)))["status"] == "proposed"
+        assert (await lab.run_once(now=begin+timedelta(minutes=60)))["status"] == "already_attempted"
+        info = hypothesis_attempt_status(
+            store, now=begin+timedelta(minutes=60),
+        )
+        assert info["status"] == "recorded"
+        assert info["latest_by_asset"][0]["asset"] == "ETH"
+        assert info["latest_by_asset"][0]["attempt_count"] == 3
+        assert info["latest_by_asset"][0]["status"] == "proposed"
+        assert lab.ai.calls == 3
+        with store.connect() as conn:
+            assert conn.execute(
+                "SELECT COUNT(*) AS n FROM rival_llm_feature_hypotheses"
+            ).fetchone()["n"] == 1
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_slot_can_recover_after_configuration(tmp_path):
+    store = SQLiteHotStore(tmp_path / "recover-config.sqlite")
+    class Config:
+        available = False
+        async def propose_feature_hypothesis(self, *, asset, venues):
+            return proposal(asset)
+
+    provider = Config()
+    lab = FeatureHypothesisLab(store, provider, venues=("okx",))
+    start = datetime(2026, 11, 2, 12, 5, tzinfo=UTC)
+    try:
+        assert (await lab.run_once(now=start))["status"] == "local_research_not_configured"
+        provider.available = True
+        assert (await lab.run_once(now=start+timedelta(minutes=20)))["status"] == "proposed"
+        assert (await lab.run_once(now=start+timedelta(minutes=40)))["status"] == "already_attempted"
+    finally:
+        store.close()

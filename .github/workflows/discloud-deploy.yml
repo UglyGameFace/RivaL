@@ -3,6 +3,12 @@ on:
   workflow_run:
     workflows: ["CI"]
     types: [completed]
+concurrency:
+  # Serialize Discloud uploads. Superseded main commits are skipped when their
+  # turn starts, rather than racing the live container during rapid merges.
+  group: rival-production-release-main
+  cancel-in-progress: false
+
 permissions:
   contents: read
 jobs:
@@ -20,7 +26,10 @@ jobs:
           SOURCE_BRANCH: ${{ github.event.workflow_run.head_branch }}
           SOURCE_EVENT: ${{ github.event.workflow_run.event }}
           SOURCE_REPO: ${{ github.event.workflow_run.head_repository.full_name }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           if [[ ( "$SOURCE_EVENT" != "push" && "$SOURCE_EVENT" != "workflow_dispatch" ) || "$SOURCE_BRANCH" != "main" || "$SOURCE_REPO" != "$GITHUB_REPOSITORY" ]]; then
             echo "::notice::Not a verified first-party main push or manually dispatched main CI; deployment skipped."
             echo "ready=false" >> "$GITHUB_OUTPUT"
@@ -28,7 +37,15 @@ jobs:
             echo "::warning::RivaL Discloud deployment not configured. Add DISCLOUD_TOKEN and DISCLOUD_APP_ID repository secrets."
             echo "ready=false" >> "$GITHUB_OUTPUT"
           else
-            echo "ready=true" >> "$GITHUB_OUTPUT"
+            # The tested commit must still be current main. No stale rollback
+            # releases, and no concurrent Discloud stop/recreate operations.
+            CURRENT_MAIN_SHA="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+            if [[ "$SOURCE_SHA" != "$CURRENT_MAIN_SHA" ]]; then
+              echo "::notice::Superseded main CI commit; skipping stale Discloud deployment."
+              echo "ready=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "ready=true" >> "$GITHUB_OUTPUT"
+            fi
           fi
 
       - name: Checkout the exact passing commit

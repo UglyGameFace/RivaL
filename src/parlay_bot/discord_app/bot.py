@@ -168,6 +168,7 @@ class RivalDiscordClient(discord.Client):
         self.problem_log = error_log.install()
         self._status_task: asyncio.Task[None] | None = None
         self._benefit_task: asyncio.Task[None] | None = None
+        self._intelligence_task: asyncio.Task[None] | None = None
         self._status_policy = StatusPostPolicy()
         self.liquidity_last_bucket: str | None = None
         self.tree = app_commands.CommandTree(self)
@@ -1888,6 +1889,12 @@ class RivalDiscordClient(discord.Client):
                 self._benefit_task = asyncio.create_task(
                     self._benefit_loop(), name="rival-performance-refresh",
                 )
+            if (self._intelligence_task is None
+                    and isinstance(self.intelligence_research, LocalFirstResearch)
+                    and self.intelligence_research.available):
+                self._intelligence_task = asyncio.create_task(
+                    self._intelligence_loop(), name="rival-intelligence-review",
+                )
 
         if (
             (self.history_auditor is not None
@@ -2443,6 +2450,56 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001 - never bring Discord down
                 _LOG.exception("RivaL streaming forward scoring temporarily unavailable")
             await asyncio.sleep(self.settings.rival_stream_shadow_seconds)
+
+    async def _intelligence_loop(self) -> None:
+        """RivaL Intelligence reviews the models' calls every 5-minute slot.
+
+        One coin per slot (rotating), 2.5 minutes after the slot opens so the
+        models' forecasts for it already exist. Each stance is stored against
+        that slot's forecasts and graded later.
+        """
+        from parlay_bot.perpetuals.ai_types import ResearchUnavailable
+        from parlay_bot.perpetuals.intelligence import IntelligenceLedger, model_calls
+
+        await self.wait_until_ready()
+        ledger = IntelligenceLedger(self.store)
+        assets = tuple(a for a in self.perp_collector.assets
+                       if a in ("BTC", "ETH", "SOL", "XRP"))
+        turn = 0
+        while not self.is_closed():
+            now = datetime.now(UTC)
+            slot = now.replace(second=0, microsecond=0, minute=now.minute // 5 * 5)
+            target = slot + timedelta(seconds=150)
+            if target <= now:
+                target += timedelta(minutes=5)
+            await asyncio.sleep((target - now).total_seconds())
+            if host_memory.snapshot().pressure or not assets:
+                continue
+            asset = assets[turn % len(assets)]
+            turn += 1
+            try:
+                calls = await asyncio.to_thread(
+                    model_calls, self.perp_collector.market, asset=asset,
+                )
+                review = await self.intelligence_research.explain_models(
+                    asset=asset, venues=tuple(self.perp_collector.providers), calls=calls,
+                )
+                saved = await asyncio.to_thread(
+                    ledger.record, asset=asset, calls=calls, review=review,
+                    model=str(review.get("model")), issued_at=datetime.now(UTC),
+                )
+                _LOG.info("RivaL Intelligence reviewed %s saved=%d", asset, saved)
+            except asyncio.CancelledError:
+                raise
+            except ResearchUnavailable as exc:
+                if "needs the review update" in str(exc):
+                    _LOG.warning("RivaL Intelligence service lacks the model-review "
+                                 "endpoint; upload the latest LLM package")
+                    await asyncio.sleep(3600)
+                else:
+                    _LOG.info("RivaL Intelligence review skipped %s: %s", asset, exc)
+            except Exception:  # noqa: BLE001 - optional reviewer never breaks the bot
+                _LOG.exception("RivaL Intelligence review failed %s", asset)
 
     async def _benefit_loop(self) -> None:
         """Keep Bot Performance's slow "Is accuracy improving?" answer ready.
@@ -3093,7 +3150,7 @@ class RivalDiscordClient(discord.Client):
         "_target_task", "_sports_results_task", "_sports_task",
         "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
         "_hypothesis_task", "_candidate_task", "_archive_task",
-        "_heartbeat_task", "_status_task", "_benefit_task",
+        "_heartbeat_task", "_status_task", "_benefit_task", "_intelligence_task",
     )
 
     async def close(self) -> None:

@@ -398,6 +398,17 @@ def warm_benefit_cache(market: object) -> int:
     return done
 
 
+def _intelligence_status(market: object, asset: str, horizon: int) -> dict | None:
+    """RivaL Intelligence's graded reviews of the models (None if never run)."""
+    from parlay_bot.perpetuals.intelligence import IntelligenceLedger
+
+    ledger = IntelligenceLedger(market.store)
+    latest = ledger.latest(asset=asset)
+    if latest is None:
+        return None
+    return {"latest": latest, "report": ledger.report(asset=asset, horizon=horizon)}
+
+
 def _cycle_coverage(market: object) -> dict | None:
     """How many of the last 24 hours' 5-minute prediction cycles really ran."""
     since = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
@@ -1452,6 +1463,11 @@ class GuidedHome(discord.ui.View):
                         _cached_benefit, self.market, self.coin, self.horizon,
                     ), timeout=PERFORMANCE_READ_SECONDS,
                 )
+                readers["intelligence"] = asyncio.wait_for(
+                    asyncio.to_thread(
+                        _intelligence_status, self.market, self.coin, self.horizon,
+                    ), timeout=PERFORMANCE_READ_SECONDS,
+                )
                 readers["coverage"] = asyncio.wait_for(
                     asyncio.to_thread(_cycle_coverage, self.market), timeout=PERFORMANCE_READ_SECONDS,
                 )
@@ -1659,9 +1675,37 @@ class GuidedHome(discord.ui.View):
                 )
             else:
                 lineage_text = "**Used verified historical training:** Cannot confirm for recent predictions"
+            intelligence = reports.get("intelligence")
+            if isinstance(intelligence, dict):
+                rep_ = intelligence["report"]
+                latest = intelligence["latest"]
+                stance, direction = latest["stances"].get(self.horizon, ("—", "none"))
+                followed = (
+                    f"followed {rep_['followed']} calls ({rep_['followed_hit_rate']:.0%} right)"
+                    if rep_["followed"] and rep_["followed_hit_rate"] is not None
+                    else f"followed {rep_['followed']} calls (none graded yet)"
+                )
+                abstained = (
+                    f"abstained {rep_['abstained']} (model was right "
+                    f"{rep_['model_hit_when_abstained']:.0%} of those)"
+                    if rep_["abstained"] and rep_["model_hit_when_abstained"] is not None
+                    else f"abstained {rep_['abstained']}"
+                )
+                now_call = (f"{direction.upper()}" if stance == "follow" and direction != "none"
+                            else "no call")
+                intel_text = (
+                    f"\n**RivaL Intelligence (reviews the models):** now {now_call} for "
+                    f"{self.horizon} min; last 7 days {followed}, {abstained}.\n"
+                    f"_{latest['thesis'][:200]}_"
+                )
+            elif isinstance(intelligence, Exception):
+                intel_text = "\n**RivaL Intelligence:** cannot check right now"
+            else:
+                intel_text = ("\n**RivaL Intelligence:** no model reviews recorded yet"
+                              if "intelligence" in reports else "")
             embed.add_field(
                 name="🧠 Is RivaL actually learning?",
-                value=f"{engine_text}\n{trend_text}\n{lineage_text}",
+                value=f"{engine_text}\n{trend_text}\n{lineage_text}{intel_text}"[:1024],
                 inline=False,
             )
 

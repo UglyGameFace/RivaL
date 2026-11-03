@@ -834,3 +834,58 @@ def test_backend_command_is_loopback_and_shared_with_repair_drill(tmp_path):
     drill = (ROOT / "repair_drill.py").read_text()
     assert "service.backend_command(" in drill
     assert "service.BackendRepair(" in drill
+
+
+def test_explain_mode_reviews_model_calls_and_returns_only_stances(monkeypatch):
+    server = Gateway("127.0.0.1", 0, token="t" * 48, model="lfm3")
+    sent = []
+
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, data):
+            self.data = json.dumps(data).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return self.data
+
+    def fake_urlopen(request, timeout):
+        path = request.full_url.rsplit("/", 1)[-1]
+        sent.append((path, json.loads(request.data)))
+        if path == "apply-template":
+            return FakeResponse({"prompt": "rendered"})
+        if path == "tokenize":
+            return FakeResponse({"tokens": [1] * 200})
+        return FakeResponse({"choices": [{"message": {"content": json.dumps({
+            "stance_5m": "follow", "stance_15m": "abstain", "stance_60m": "abstain",
+            "thesis": "5m call agrees on 7 of 9 exchanges; 15m is split.",
+            "risk": "Edge is small; 60m record is weak.",
+        })}}]})
+
+    evidence = {"sources": [{"venue": "okx"}], "model_calls": {
+        "5": {"live": {"p_up": 0.57, "venues": 9, "venues_up": 7,
+                       "record": {"hit_rate": 0.524, "graded": 8000, "beats_basic": False}}},
+        "15": {"live": {"p_up": 0.5, "venues": 9, "venues_up": 4, "record": {}}},
+    }}
+    try:
+        monkeypatch.setattr(SERVICE["urllib"].request, "urlopen", fake_urlopen)
+        result = server.infer("BTC", evidence, mode="explain")
+        assert result["stance_5m"] == "follow" and result["stance_15m"] == "abstain"
+        assert "direction" not in result  # RivaL derives direction from its models
+        user = sent[-1][1]["messages"][1]["content"]
+        assert "model_live_5m:p_up=0.570,venues_up=7/9,record=0.524/n=8000" in user
+        assert sent[-1][1]["response_format"]["type"] == "json_schema"
+        assert sent[-1][1]["max_tokens"] == 200
+        try:
+            server.infer("BTC", {"sources": [{"venue": "okx"}]}, mode="explain")
+            raise AssertionError("explain without model calls must fail")
+        except ValueError:
+            pass
+    finally:
+        server.server_close()

@@ -203,6 +203,67 @@ class LocalFirstResearch:
                 evidence_sha256=digest,
             )
 
+    async def explain_models(self, *, asset: str, venues: tuple[str, ...],
+                             calls: dict) -> dict:
+        """RivaL Intelligence reviews the prediction models' current calls.
+
+        Returns per-timeframe 'follow'/'abstain' stances plus a short
+        explanation. Raises ResearchUnavailable when the private model is not
+        configured, busy or does not support the review endpoint yet.
+        """
+        if not self.available:
+            raise ResearchUnavailable("Private RivaL Intelligence token not configured.")
+        if not calls:
+            raise ResearchUnavailable("No current model calls to review.")
+        async with self._lock:
+            evidence, _digest = await asyncio.to_thread(
+                build_evidence, self.market, asset=asset, venues=venues,
+                horizon_minutes=5,
+            )
+            evidence = {**evidence, "model_calls": calls}
+            if len(json.dumps(evidence, sort_keys=True, separators=(",", ":"),
+                              default=str).encode("utf-8")) > MAX_LOCAL_EVIDENCE_BYTES:
+                raise ResearchUnavailable("Model review evidence too large.")
+            headers = {"Authorization": f"Bearer {self._key}",
+                       "Content-Type": "application/json"}
+            payload = json.loads(json.dumps({"asset": asset, "evidence": evidence},
+                                            default=str))
+            base = (f"http://{self._peer_ip}:8765" if self._peer_ip
+                    else LOCAL_ENDPOINT.rsplit("/v1/", 1)[0])
+            try:
+                response = await self._client.post(
+                    base + "/v1/explain", headers=headers, json=payload,
+                    follow_redirects=False)
+            except (httpx.ConnectError, httpx.ConnectTimeout):
+                self._peer_ip = None
+                peer = await asyncio.to_thread(discover_private_llm, self._key)
+                if peer is None:
+                    raise ResearchUnavailable("Private RivaL Intelligence unreachable.") from None
+                self._peer_ip = peer
+                response = await self._client.post(
+                    f"http://{peer}:8765/v1/explain", headers=headers, json=payload,
+                    follow_redirects=False)
+            except httpx.RequestError as exc:
+                raise ResearchUnavailable("Private RivaL Intelligence network error.") from exc
+            if response.status_code == 404:
+                raise ResearchUnavailable("RivaL Intelligence service needs the review update.")
+            if response.status_code == 429:
+                raise LocalBusy("RivaL Intelligence busy.")
+            if response.status_code != 200:
+                raise ResearchUnavailable(
+                    f"RivaL Intelligence review failed (HTTP {response.status_code}).")
+            data = response.json()
+            if not (isinstance(data, dict) and data.get("model") == LOCAL_MODEL
+                    and data.get("mode") == "explain"
+                    and all(data.get(f"stance_{h}m") in ("follow", "abstain")
+                            for h in (5, 15, 60))
+                    and isinstance(data.get("thesis"), str)
+                    and 0 < len(data["thesis"].strip()) <= 240
+                    and isinstance(data.get("risk"), str)
+                    and 0 < len(data["risk"].strip()) <= 160):
+                raise ResearchUnavailable("RivaL Intelligence returned an invalid review.")
+            return data
+
     async def propose_feature_hypothesis(
         self, *, asset: str, venues: tuple[str, ...],
         busy_retry: bool = True,

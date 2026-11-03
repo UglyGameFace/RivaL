@@ -14,6 +14,12 @@ from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.forward_tracking import (
+    GOALS,
+    ForwardTracking,
+    TrackingUnavailable,
+    tracking_text,
+)
 from parlay_bot.perpetuals.gemini_research import AiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
@@ -53,6 +59,7 @@ _SECTIONS = {
         ("engine", "Is the engine running?"),
         ("readiness", "Can RivaL predict yet?"),
         ("progress", "Is any model proven better?"),
+        ("tracker", "Track next predictions"),
         ("lineage", "Is it learning from history?"),
         ("venue", "Which exchange is blocked?"),
         ("five", "5-minute predictions"),
@@ -85,6 +92,7 @@ _FIELD_GROUPS = {
         "engine": ("Automatic learning engine", "Forward issue audit"),
         "readiness": ("Mathematical forecast readiness",),
         "progress": ("Future model proof",),
+        "tracker": ("Prediction tracking",),
         "lineage": ("How is RivaL learning?", "Are advanced models ready?"),
         "technical": ("Model training actually used", "Boosted model production proof"),
         "venue": ("Why this exchange",),
@@ -295,6 +303,74 @@ class _VenueSelect(discord.ui.Select["ResearchDashboard"]):
         dashboard = self.view
         assert dashboard is not None
         dashboard.selected_venue = self.values[0]
+        await dashboard.redraw(interaction)
+
+
+class _TrackStartSelect(discord.ui.Select["ResearchDashboard"]):
+    """Explicit opt-in cohorts that survive Discord navigation and bot restarts."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            placeholder="Start tracking the NEXT predictions",
+            custom_id="rival:research:track-start",
+            row=4,
+            options=[
+                discord.SelectOption(
+                    label=f"Next {goal} forecasts · {horizon} minutes",
+                    value=f"{horizon}:{goal}",
+                )
+                for horizon in (5, 15, 60) for goal in GOALS
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        await interaction.response.defer()
+        if dashboard.market is None or not dashboard.selected_venue:
+            dashboard.message = "No saved exchange feed available for tracking."
+        else:
+            horizon, target = map(int, self.values[0].split(":"))
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        ForwardTracking(dashboard.market.store).start,
+                        owner_id=dashboard.owner_id, asset=dashboard.asset,
+                        venue=dashboard.selected_venue,
+                        horizon=horizon, target=target,
+                    ),
+                    timeout=8,
+                )
+                dashboard.message = (
+                    f"Tracking next {result['target']} predictions "
+                    f"({horizon}m) from {dashboard.selected_venue}."
+                    if result["status"] == "started" else
+                    "A previous tracking session is still active for this "
+                    "exchange and timeframe. It will not be reset."
+                )
+            except TrackingUnavailable as exc:
+                dashboard.message = str(exc)
+            except Exception:  # noqa: BLE001 - preserve original Discord controls
+                _LOG.exception("Could not start RivaL future-tracking session")
+                dashboard.message = (
+                    "Could not record this session. No historical predictions "
+                    "were counted or tracked retroactively."
+                )
+        await dashboard.redraw(interaction, acknowledged=True)
+
+
+class _TrackVenueButton(discord.ui.Button["ResearchDashboard"]):
+    def __init__(self):
+        super().__init__(
+            label="Choose exchange", emoji="🔎",
+            custom_id="rival:research:track-venue",
+            style=discord.ButtonStyle.secondary, row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        dashboard.section = "progress"
         await dashboard.redraw(interaction)
 
 
@@ -512,6 +588,9 @@ class ResearchDashboard(discord.ui.View):
         self.add_item(_AssetSelect(self.asset))
         self.add_item(_RefreshButton())
         self.add_item(_SectionSelect(self.screen, self.section))
+        if self.screen == "accuracy" and self.section == "tracker":
+            self.add_item(_TrackStartSelect())
+            self.add_item(_TrackVenueButton())
         if self.screen == "opportunities" and self.target_service is not None:
             self.add_item(_QuickTargetButton())
         if (((self.screen == "accuracy" and self.section == "venue")
@@ -1064,6 +1143,30 @@ class ResearchDashboard(discord.ui.View):
                         )
             embed.set_footer(
                 text="Historical backfills do not count as live forward tests."
+            )
+            return embed
+
+        if self.screen == "accuracy" and self.section == "tracker":
+            if self.market is None:
+                text = "Database unavailable. No tracking can be checked."
+            elif not self.selected_venue:
+                text = "Choose a configured exchange before tracking."
+            else:
+                try:
+                    result = await asyncio.to_thread(
+                        ForwardTracking(self.market.store).report,
+                        owner_id=self.owner_id, asset=self.asset,
+                        venue=self.selected_venue,
+                    )
+                    text = tracking_text(result)
+                except Exception:  # noqa: BLE001 - do not invent past forecasts
+                    _LOG.exception("RivaL forward-tracking report unavailable")
+                    text = "Could not read tracking records; no results inferred."
+            if self.message:
+                text = (f"{self.message}\n\n{text}")[:1024]
+            embed.add_field(name="Prediction tracking", value=text, inline=False)
+            embed.set_footer(
+                text=f"Next predictions only · {self.selected_venue} · No real P&L"
             )
             return embed
 
@@ -1920,9 +2023,12 @@ class ResearchDashboard(discord.ui.View):
                 fresh.screen, fresh.section,
             )
 
-    async def redraw(self, interaction: discord.Interaction) -> None:
+    async def redraw(
+        self, interaction: discord.Interaction, *, acknowledged: bool = False,
+    ) -> None:
         # Discord needs acknowledgment before any database or model queries.
-        await interaction.response.defer()
+        if not acknowledged:
+            await interaction.response.defer()
         if not isinstance(interaction, discord.Interaction):
             # Lightweight test interactions still exercise the entire renderer.
             self._rebuild()

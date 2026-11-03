@@ -50,8 +50,9 @@ jobs:
           else
             echo "issue261_open=false" >> "$GITHUB_OUTPUT"
           fi
-          if [[ "$original_state" != "open" && "$integration_state" != "open" ]]; then
-            echo "::notice::Both genuine acceptance issues already proven. No AI request."
+          if [[ "$GITHUB_EVENT_NAME" == "schedule" &&
+                "$original_state" != "open" && "$integration_state" != "open" ]]; then
+            echo "::notice::Scheduled acceptance already resolved. New releases still require a receipt."
             echo "pending=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -75,8 +76,8 @@ jobs:
               exit 0
             fi
           fi
-          # Scheduled/manual checks are still subject to production quota and
-          # never clear any persisted circuit breaker or require extra AI work.
+          # Inference is local and CPU-bounded, not subject to the retired API quota.
+          # Current deployed releases always require a real LFM3 host receipt.
           echo "pending=true" >> "$GITHUB_OUTPUT"
       - uses: actions/checkout@v4
         if: steps.gate.outputs.pending == 'true'

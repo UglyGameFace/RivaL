@@ -116,6 +116,7 @@ def test_host_receipt_workflow_waits_for_actual_deployment():
     workflow = (ROOT / ".github" / "workflows" /
                 "llm-persistence-acceptance.yml").read_text(encoding="utf-8")
     assert 'workflows: ["RivaL Production Release"]' in workflow
+    assert 'if [[ "$GITHUB_EVENT_NAME" == "schedule" &&' in workflow
     assert "types: [completed]" in workflow
     assert 'RELEASE_SHA" != "$main_sha"' in workflow
     assert 'RELEASE_CONCLUSION" != "success"' in workflow

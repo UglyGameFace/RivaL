@@ -619,30 +619,6 @@ class ForwardAccuracyMonitor:
                 path_ready = True
             except Exception:  # noqa: BLE001 - optional schema must fail open for incumbent
                 _LOG.exception("RivaL optional path research schema unavailable")
-        settled = self._settle(stamp)
-        # Causal shadow forecasts settle only against already-verified matching
-        # incumbent outcomes. No new provider calls, Discord messages or fills.
-        try:
-            ShadowModelCompetition(self.store).settle(now=stamp)
-        except Exception:  # noqa: BLE001 - shadow research never blocks the live learner
-            _LOG.exception("RivaL multi-model shadow settlement unavailable")
-        if path_ready:
-            try:
-                path_results = ProspectivePathLedger(self.store).settle(now=stamp)
-                if any(path_results.values()):
-                    _LOG.info("RivaL path outcomes verified %s", path_results)
-            except Exception:  # noqa: BLE001 - research cannot block forecasts
-                _LOG.exception("RivaL source-matched path settlement unavailable")
-        if stamp.minute < 5:
-            try:
-                reconciled = self.reconcile_stale_settlements(stamp)
-                if reconciled:
-                    _LOG.info(
-                        "RivaL stale settlement reconciliation settled=%d",
-                        reconciled,
-                    )
-            except Exception:  # noqa: BLE001 - background repair never blocks issuance
-                _LOG.exception("RivaL stale settlement reconciliation failed")
         issued = 0
         metrics = {
             "discovered_streams": 0, "selected_streams": 0,
@@ -650,7 +626,7 @@ class ForwardAccuracyMonitor:
             "invalid_data": 0, "insufficient_causal_labels": 0,
             "insufficient_training": 0, "target_expired": 0,
             "duplicate_forecasts": 0, "issued_forecasts": 0,
-            "settled_forecasts": settled,
+            "settled_forecasts": 0,
         }
         # Reuse the same bounded, freshness-checked stream selection as
         # existing offline evaluation, without external HTTP requests.
@@ -878,6 +854,35 @@ class ForwardAccuracyMonitor:
                         _LOG.exception(
                             "RivaL source-specific family gate unavailable"
                         )
+        # Grade older forecasts only AFTER issuing this slot's forecasts.
+        # Settlement used to run first and pushed issuance a median 85 s
+        # (up to 5 min) into the target window, so many forecasts expired.
+        # Issuance reads candles, not settlements, so nothing it uses changes.
+        settled = self._settle(stamp)
+        # Causal shadow forecasts settle only against already-verified matching
+        # incumbent outcomes. No new provider calls, Discord messages or fills.
+        try:
+            ShadowModelCompetition(self.store).settle(now=stamp)
+        except Exception:  # noqa: BLE001 - shadow research never blocks the live learner
+            _LOG.exception("RivaL multi-model shadow settlement unavailable")
+        if path_ready:
+            try:
+                path_results = ProspectivePathLedger(self.store).settle(now=stamp)
+                if any(path_results.values()):
+                    _LOG.info("RivaL path outcomes verified %s", path_results)
+            except Exception:  # noqa: BLE001 - research cannot block forecasts
+                _LOG.exception("RivaL source-matched path settlement unavailable")
+        if stamp.minute < 5:
+            try:
+                reconciled = self.reconcile_stale_settlements(stamp)
+                if reconciled:
+                    _LOG.info(
+                        "RivaL stale settlement reconciliation settled=%d",
+                        reconciled,
+                    )
+            except Exception:  # noqa: BLE001 - background repair never blocks issuance
+                _LOG.exception("RivaL stale settlement reconciliation failed")
+        metrics["settled_forecasts"] = settled
         self._record_cycle(stamp, metrics)
         # The table alone does not explain a bare menu: log the gate
         # breakdown so the next empty-signal report names its cause.

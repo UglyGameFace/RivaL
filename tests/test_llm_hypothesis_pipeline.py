@@ -239,3 +239,140 @@ async def test_unconfigured_slot_can_recover_after_configuration(tmp_path):
         assert (await lab.run_once(now=start+timedelta(minutes=40)))["status"] == "already_attempted"
     finally:
         store.close()
+
+
+def test_llm_mask_qualifies_only_after_purged_validation_and_sealed_test(monkeypatch):
+    """One LFM3 mask can create a hash-screened *shadow* candidate, never a win."""
+    from parlay_bot.research import llm_feature_ablation as mod
+    from parlay_bot.research.candidate_registry import verified_candidate
+    from parlay_bot.perpetuals.model_checkpoints import canonical
+
+    months = [f"2026-{month:02d}" for month in range(5, 11)]
+    identity = {
+        "venue": "okx", "contract": "BTC-USDT-SWAP", "quote": "USDT",
+        "interval_minutes": 5,
+    }
+    provenance = {
+        "months": months,
+        "source_sha256_by_month": {month: "a"*64 for month in months},
+    }
+    monkeypatch.setattr(
+        mod, "qualified_manifest_groups",
+        lambda root, *, qualified_streams: [["verified-source"]],
+    )
+    monkeypatch.setattr(
+        mod, "assemble", lambda paths: (identity, [{"source": 1}], provenance),
+    )
+    monkeypatch.setattr(mod, "historical_features", lambda rows, identity: {})
+    stamp = datetime(2026, 5, 1, tzinfo=UTC)
+    def sample(days):
+        date = stamp + timedelta(days=days)
+        return (date, date+timedelta(minutes=5), (.1,)*10, 1)
+    train = [sample(1)] * 310
+    validation = [sample(130)] * 120
+    holdout = [sample(150)] * 120
+    monkeypatch.setattr(
+        mod, "compatible_partitions",
+        lambda rows, vectors, *, horizon, identity: (train, validation, holdout),
+    )
+    def fit(rows, *, l2, rate=.0125, epochs=4, active=None):
+        return ([.1 if active is None else .2]*11, .5)
+    monkeypatch.setattr(mod, "_fit", fit)
+    def score(rows, weights, base):
+        brier = .18 if weights[0] == .2 else .23
+        return {
+            "count": len(rows), "days": 21, "brier": brier,
+            "baseline_brier": .25, "brier_gain": .25-brier,
+            "accuracy": .7, "ece_10": .02,
+        }
+    monkeypatch.setattr(mod, "_score", score)
+    proposal_row = {
+        "asset": "BTC", "slot_utc": "2026-11-02T00:00:00+00:00",
+        "model": MODEL, "evidence_sha256": "f"*64,
+        "hypothesis": "volatility_only", "venues": ["okx"],
+    }
+    proposal_row["record_sha256"] = hashlib.sha256(json.dumps(
+        proposal_row, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
+    candidates = []
+    trials = mod.evaluate_hypothesis_ablations(
+        None, qualified_streams=set(), proposals=[proposal_row],
+        candidate_sink=candidates,
+    )
+    assert len(trials) == len(candidates) == 3
+    assert all(t["passed_purged_validation"] and t["holdout_examined"]
+               and t["retrospective_candidate_status"] ==
+                   "screened_for_future_shadow" for t in trials)
+    for model in candidates:
+        assert model["research_candidate_passed"]
+        assert not model["live_model_promoted"]
+        assert model["model_spec"]["method"] == "lfm3-hypothesis-volatility_only"
+        assert model["model_spec"]["lfm3_proposal_sha256"] == proposal_row["record_sha256"]
+        assert verified_candidate(
+            canonical({
+                "research_only": model["research_only"],
+                "live_model_promoted": model["live_model_promoted"],
+                "model_sha256": model["model_sha256"],
+                "model_spec": model["model_spec"],
+                "validation": model["validation"],
+                "out_of_sample_test": model["out_of_sample_test"],
+            }).encode(),
+        )["retrospective_screen"] == "passed"
+
+
+def test_weak_llm_mask_never_touches_sealed_holdout(monkeypatch):
+    """A feature mask losing to ordinary logit stays validation-only."""
+    from parlay_bot.research import llm_feature_ablation as mod
+
+    monkeypatch.setattr(
+        mod, "qualified_manifest_groups",
+        lambda root, *, qualified_streams: [["one"]],
+    )
+    monkeypatch.setattr(
+        mod, "assemble", lambda paths: (
+            {"venue": "okx", "contract": "BTC-USDT-SWAP", "quote": "USDT",
+             "interval_minutes": 5}, [{"source": 1}],
+            {"months": [f"2026-{m:02d}" for m in range(5, 11)]},
+        ),
+    )
+    monkeypatch.setattr(mod, "historical_features", lambda rows, identity: {})
+    now = datetime(2026, 7, 1, tzinfo=UTC)
+    record = (now, now+timedelta(minutes=5), (.1,)*10, 1)
+    class Sealed:
+        def __iter__(self):
+            raise AssertionError("sealed outcomes consulted before validation")
+        def __getitem__(self, index):
+            raise AssertionError("sealed outcomes indexed before validation")
+    monkeypatch.setattr(
+        mod, "compatible_partitions",
+        lambda rows, vectors, *, horizon, identity: (
+            [record]*310, [record]*120, Sealed(),
+        ),
+    )
+    monkeypatch.setattr(
+        mod, "_fit", lambda rows, *, l2, rate=.0125, epochs=4, active=None:
+            ([.1 if active is None else .2]*11, .5),
+    )
+    monkeypatch.setattr(
+        mod, "_score", lambda rows, weights, base: {
+            "count": 120, "days": 21,
+            "brier": .20 if weights[0] == .1 else .24,
+            "baseline_brier": .25, "brier_gain": .01,
+            "accuracy": .6, "ece_10": .03,
+        },
+    )
+    proposal_row = {
+        "asset": "BTC", "slot_utc": "2026-11-02T00:00:00+00:00",
+        "model": MODEL, "evidence_sha256": "f"*64,
+        "hypothesis": "volume_only", "venues": ["okx"],
+    }
+    candidates = []
+    trials = mod.evaluate_hypothesis_ablations(
+        None, qualified_streams=set(), proposals=[proposal_row],
+        candidate_sink=candidates,
+    )
+    assert len(trials) == 3
+    assert not candidates
+    assert all(t["holdout_examined"] is False for t in trials)
+    assert all(t["retrospective_candidate_status"] == "validation_rejected"
+               for t in trials)

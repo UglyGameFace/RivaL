@@ -1,3 +1,13 @@
+## Active: improve source-native forecast probabilities without weakening proof (2026-11-02)
+
+- **Objective:** Move beyond functioning historical training to genuine chronological validation improvement for source-matched OKX BTC/ETH/SOL/XRP logistic models. Preserve frozen holdout, original source identities, importer validation and prospective after-cost gates.
+- **Evidence:** Last real OKX training evaluated 48 candidates (12 logistic, 36 portable boosted) from six verified source-native months May-Oct 2026. **0/48** passed >0.005 Brier validation gain. Best reported logistic validation gain was approximately +0.00356 (XRP 60m), below the gate, and its holdout gain was negative. Do not confuse research improvement with a verified trading edge.
+- **PR:** [#277](https://github.com/UglyGameFace/RivaL/pull/277) adds CPU-only adaptive-gradient logistic fits, conservative training-prior logit shrinkage and a 70%-recent-training option, while preserving all seven existing candidates and the live 10-feature / 11-coefficient inference contract. Selection uses *purged validation only*; final test is read once after selection. Report real training sample count and all candidate validation scores.
+- **Validation:** CI + historical research workflow checks, retrospective same-history exploratory scoring, exact original-source archive acceptance. The May-Oct retrospective set's aggregate scores were already seen and cannot constitute fresh independent proof. No imported challenger or incumbent promotion without source-native new-period and future prospective comparisons.
+- **Production:** Research only in GitHub Actions. Do not modify live incumbent weights, orders, quotas, Discloud bot configuration, or the separately deployed LFM3 Intelligence app. Continue issue #6 and historical coverage issue #188. Coordinate independent open PR #276 (performance proof UX), do not overwrite its files.
+
+---
+
 ## Active: prevent unqualified historical model imports and expose actual skill gaps (2026-11-02)
 
 - **Live finding:** [OKX source-native run #41544709789](https://github.com/UglyGameFace/RivaL/actions/runs/41544709789) verified May–October 2026 as six full source-native months for BTC, ETH, SOL and XRP (24 original manifests). It evaluated **48** models (12 logistic + 36 boosted), **0 passed** the exact importer screen; all 48 failed `validation_brier_gain_below_0.005`. This proves the historical data reached real model research, not that any model learned a tradable edge.

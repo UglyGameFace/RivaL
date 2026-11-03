@@ -86,9 +86,19 @@ def model_sha256(doc: dict) -> str:
     return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def recipe(doc: dict) -> dict:
+    """What is being evaluated: inputs, horizon and fixed training settings."""
+    return {k: doc.get(k) for k in ("schema", "family", "feature_version", "features",
+                                    "horizon_minutes", "params")}
+
+
 def family(doc: dict) -> str:
-    """Stable challenger name for the shadow ledger: one per trained model."""
-    return f"pooled_{doc['horizon_minutes']}m_{model_sha256(doc)[:12]}"
+    """Challenger name for the shadow ledger: one per RECIPE, so nightly
+    retrains on one more day of data keep a single, growing live record.
+    The exact trained model stays traceable through model_sha256."""
+    digest = hashlib.sha256(json.dumps(recipe(doc), sort_keys=True,
+                                       separators=(",", ":")).encode()).hexdigest()
+    return f"pooled_{doc['horizon_minutes']}m_{digest[:12]}"
 
 
 def usable(doc: dict, *, now: datetime | None = None) -> bool:

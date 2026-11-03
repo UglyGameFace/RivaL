@@ -263,3 +263,18 @@ def test_warehouse_names_reuse_existing_collector_files():
     assert daily == ("rival-src__daily__metrics__XRPUSDT__XRPUSDT-metrics-2024-03-01.zip",)
     with pytest.raises(ValueError):
         warehouse_names("https://example.com/evil.zip")
+
+
+def test_nightly_retrains_keep_one_live_record_per_recipe():
+    from parlay_bot.perpetuals.pooled_features import FEATURE_VERSION, FEATURE_VERSION_V2
+    from parlay_bot.perpetuals.pooled_model import family, model_sha256
+
+    base = {"schema": "rival-pooled-model-v1", "family": "lightgbm", "horizon_minutes": 5,
+            "feature_version": FEATURE_VERSION, "features": list(FEATURES),
+            "params": {"n_estimators": 400}, "trees": [[[0.1]]],
+            "trained_through": "2026-11-01"}
+    tomorrow = {**base, "trees": [[[0.2]]], "trained_through": "2026-11-02"}
+    assert family(base) == family(tomorrow)
+    assert model_sha256(base) != model_sha256(tomorrow)
+    assert family({**base, "feature_version": FEATURE_VERSION_V2}) != family(base)
+    assert family({**base, "horizon_minutes": 15}) != family(base)

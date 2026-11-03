@@ -12,14 +12,14 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from parlay_bot.research.history_priority import window
+from parlay_bot.research.history_priority import EARLIEST_ARCHIVE_MONTH, window
 from parlay_bot.research.source_family_backlog import build_backlog, family_for
 from parlay_bot.research.source_family_coverage import ASSETS, PERP_FAMILIES, VENUES
 
 # Publication-era / downloader attempt floors. These are NOT contract listing
 # dates. A coin can be listed later, or older source data may be discoverable.
 ATTEMPT_FLOORS: dict[tuple[str, str], str] = {
-    ("binance", "candles_5m"): "2021-01",
+    ("binance", "candles_5m"): EARLIEST_ARCHIVE_MONTH,
     ("bitget", "candles_5m"): "2024-11",
     ("bitget", "mark"): "2024-11",
     ("bitget", "index"): "2024-11",
@@ -76,6 +76,11 @@ ROUTES: dict[tuple[str, str], tuple[str, str]] = {
        for venue in ("hyperliquid", "kucoin", "phemex", "dydx",
                      "deribit", "lighter")},
 }
+# Issue #295 Tier 1 Binance inputs, keyed by the workflow that collects them.
+CORE_BINANCE_COLLECTORS = {
+    "binance-deep-file-backfill.yml": ("candles_5m",),
+    "binance-original-auxiliary.yml": ("mark", "index", "premium", "funding"),
+}
 SOURCE_CAPABILITIES = {
     "orderbook_l2": "Original snapshots/deltas need independent sequence proof",
     "trades": "Sampled source days/hours are not a continuous trade tape",
@@ -91,7 +96,7 @@ def _month_after(month: str) -> str:
 
 def completed_range(first: str, current: str) -> list[str]:
     """Completed UTC months only. Unknown listings are NOT excluded."""
-    if first < "2021-01" or first >= current:
+    if first < EARLIEST_ARCHIVE_MONTH or first >= current:
         return []
     result = []
     month = first
@@ -114,7 +119,7 @@ def candidate_training_window(row: dict, *, current: str,
     # Never reject it without letting the exact-byte importer audit it.
     eligible = []
     for first in sorted(names, reverse=True):
-        if first < "2021-01":
+        if first < EARLIEST_ARCHIVE_MONTH:
             continue
         seq = [first]
         for _ in range(5):
@@ -147,7 +152,7 @@ def build_plan(census: dict, *, max_jobs: int = 2,
             or key[2] not in PERP_FAMILIES or not isinstance(listed, list)
             or len(listed) > 120 or len(set(listed)) != len(listed)
             or any(not isinstance(m, str) or len(m) != 7
-                   or m < "2021-01" or m >= current or
+                   or m < EARLIEST_ARCHIVE_MONTH or m >= current or
                    m[4] != "-" or m[5:] not in
                    {f"{n:02d}" for n in range(1, 13)} for m in listed)):
             raise ValueError("invalid independent source-month name inventory")
@@ -299,6 +304,24 @@ def build_plan(census: dict, *, max_jobs: int = 2,
         "reason": "independent original Deribit trade hour, never 2021 coverage for other venues",
         "scope": "deribit/BTC-ETH/trades/hourly_sample",
     })
+    # Model-critical Binance archives (issue #295) come first and are never
+    # rotated away. Their workflows continue themselves; this only restarts
+    # a chain GitHub dropped while months are still missing.
+    core = []
+    for workflow, families in CORE_BINANCE_COLLECTORS.items():
+        lagging = [
+            r for r in rows
+            if r["venue"] == "binance" and r["family"] in families
+            and r["all_history_named_months_not_reverified"] < len(completed_range(
+                r["actual_contract_listing_month"] or EARLIEST_ARCHIVE_MONTH, current))
+        ]
+        if lagging:
+            core.append({
+                "workflow": workflow, "inputs": {},
+                "reason": (f"{len(lagging)} Binance core scope(s) below their "
+                           "official archive month count"),
+                "scope": "binance/BTC-ETH-SOL-XRP/" + "-".join(families),
+            })
     # Keep total GH Actions burden within a bounded request budget.
     distinct = []
     seen = set()
@@ -308,7 +331,9 @@ def build_plan(census: dict, *, max_jobs: int = 2,
             seen.add(task["workflow"])
     # Fair rotation so a permanently incomplete venue cannot starve others.
     offset = (now.date().toordinal() % len(distinct)) if distinct else 0
-    selected = (distinct[offset:] + distinct[:offset])[:max_jobs]
+    # Core collectors are listed ahead of, and in addition to, the rotated
+    # optional jobs; the dispatcher's own cap still bounds what is sent.
+    selected = core + (distinct[offset:] + distinct[:offset])[:max_jobs]
     return {
         "schema_version": "rival-historical-coordinator-v1",
         "snapshot_utc": now.isoformat(),

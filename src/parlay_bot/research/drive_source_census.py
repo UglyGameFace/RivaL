@@ -12,13 +12,13 @@ from pathlib import Path
 
 from parlay_bot.config import Settings
 from parlay_bot.research.free_history import HistoryImportError
-from parlay_bot.research.history_priority import window
+from parlay_bot.research.history_priority import EARLIEST_ARCHIVE_MONTH, window
 from parlay_bot.research.publish import _drive
 
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
 # Match the actual first supported month in the authoritative downloaders.
 # Do not invent pre-publication OKX history for January-June 2023.
-START_MONTH = {"binance": "2021-01", "bitget": "2021-01",
+START_MONTH = {"binance": EARLIEST_ARCHIVE_MONTH, "bitget": "2021-01",
                "okx": "2023-07", "gate": "2023-01"}
 PATTERNS = (
     (r"binance-aux-(BTC|ETH|SOL|XRP)-(mark|index|premium|funding|candles_1m|candles_15m|candles_1h|candles_4h|candles_1d)-(20\d{2}-(?:0[1-9]|1[0-2]))--([a-f0-9]{16})\.manifest\.json", "binance", None),

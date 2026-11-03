@@ -112,6 +112,32 @@ class GoogleDriveArchiveClient:
     async def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {await self._access_token()}"}
 
+    async def storage_quota(self) -> tuple[int, int | None] | None:
+        """Account storage as (used bytes, limit bytes or None if unlimited).
+
+        Returns None when Drive does not report it, so callers can fail open
+        on an unreadable quota but still stop before a known-full account.
+        """
+        try:
+            response = await self._client.get(
+                f"{self.DRIVE_URL}/about",
+                params={"fields": "storageQuota(limit,usage)"},
+                headers=await self._headers(),
+            )
+        except httpx.HTTPError:
+            return None
+        if response.status_code != 200:
+            return None
+        try:
+            quota = response.json().get("storageQuota") or {}
+            used = int(quota["usage"])
+            limit = int(quota["limit"]) if quota.get("limit") else None
+        except (AttributeError, KeyError, TypeError, ValueError):
+            return None
+        if used < 0 or (limit is not None and limit <= 0):
+            return None
+        return used, limit
+
     @staticmethod
     def _escape_query(value: str) -> str:
         return value.replace("\\", "\\\\").replace("'", "\\'")

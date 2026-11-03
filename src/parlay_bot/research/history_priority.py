@@ -10,6 +10,10 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 COMPLETE_MONTHS = 24
+# Earliest month any supported official archive can hold: Binance USD-M
+# BTCUSDT perpetual trading began September 2019. Later-listed contracts
+# return 404 for earlier months and are recorded as unavailable, never filled.
+EARLIEST_ARCHIVE_MONTH = "2019-09"
 FAST_RECENT_MONTHS = 6
 
 
@@ -77,7 +81,7 @@ def ordered_months(
     if len(set(available)) != len(available):
         raise ValueError("duplicate source month in priority input")
     if any(not isinstance(m, str) or len(m) != 7 or m[4] != "-"
-           or m < "2021-01" or m >= w.live_partial_month
+           or m < EARLIEST_ARCHIVE_MONTH or m >= w.live_partial_month
            or m[5:] not in {f"{i:02d}" for i in range(1, 13)}
            for m in available):
         raise ValueError("source months must be completed YYYY-MM archive months")

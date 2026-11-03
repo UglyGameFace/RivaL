@@ -58,10 +58,8 @@ def recent_watches(
     # (asset,horizon_minutes,issued_at) index. Avoid an OR/NULL predicate,
     # which may force a scan across unrelated timeframes under load.
     horizon_filter = " AND horizon_minutes=?" if horizon_minutes is not None else ""
-    # Only the live model's forecasts: retired shadow versions also live in
-    # this table, and the scores shown beside a watch are the live model's.
     params = (
-        asset, LIVE_MODEL, *((horizon_minutes,) if horizon_minutes is not None else ()),
+        asset, *((horizon_minutes,) if horizon_minutes is not None else ()),
         instant.isoformat(), (instant - timedelta(minutes=20)).isoformat(),
     )
     with market.store.connect() as connection:
@@ -70,7 +68,7 @@ def recent_watches(
                       model_version,issued_at,target_opened_at,
                       reference_close,probability_up,training_evaluated
                FROM perp_forward_audit
-               WHERE asset=? AND model_version=? AND settled_at IS NULL"""
+               WHERE asset=? AND settled_at IS NULL"""
             + horizon_filter
             + """ AND issued_at<=? AND issued_at>=?
                 ORDER BY issued_at DESC LIMIT 40""",
@@ -374,8 +372,13 @@ def crypto_desk_embed(
             inline=False,
         )
     for watch in watches:
+        # Scores below belong to the live model only; say so when a watch
+        # comes from a different (unproven) model version.
+        other = (f" • model {str(watch.get('model_version'))[:28]} (no track record)"
+                 if watch.get("model_version") not in (None, LIVE_MODEL) else "")
         embed.add_field(
-            name=f"👀 {watch['direction']} watch • {watch['horizon_minutes']}m • {watch['venue']}",
+            name=(f"👀 {watch['direction']} watch • {watch['horizon_minutes']}m • "
+                  f"{watch['venue']}{other}")[:256],
             value=(
                 f"Last completed candle: **{_cash(watch['price'])}** "
                 f"({discord.utils.format_dt(watch['price_observed_at'], style='R')})\n"

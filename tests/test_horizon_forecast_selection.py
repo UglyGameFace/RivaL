@@ -14,7 +14,6 @@ from types import SimpleNamespace
 import pytest
 
 from parlay_bot.discord_app import opportunities, targeting
-from parlay_bot.perpetuals.forward_audit import MODEL as LIVE_MODEL
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.multi_exchange import MODEL as MULTI_MODEL
 from parlay_bot.perpetuals.readiness import _source_identity
@@ -65,7 +64,7 @@ def test_selected_horizon_not_starved_by_40_newer_other_horizon_rows(
             "issued_at,target_opened_at,reference_close,probability_up,"
             "training_evaluated,settled_at) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,NULL)",
-            (venue, contract, quote, asset, horizon, LIVE_MODEL,
+            (venue, contract, quote, asset, horizon, "model-v1",
              issued.isoformat(),
              (stamp+timedelta(minutes=5)).isoformat(), 2500.0,
              probability, 600),

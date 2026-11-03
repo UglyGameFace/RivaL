@@ -1,0 +1,94 @@
+name: Official four-venue funding-history originals
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/official-public-funding.yml"
+      - "src/parlay_bot/research/official_funding_archive.py"
+      - "src/parlay_bot/research/drive_source_census.py"
+      - "src/parlay_bot/research/historical_coordinator.py"
+      - "tests/test_official_funding_archive.py"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/official-public-funding.yml"
+      - "src/parlay_bot/research/official_funding_archive.py"
+  schedule:
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+    inputs:
+      venue:
+        description: "Official funding source"
+        type: choice
+        options: [hyperliquid, kucoin, phemex, deribit]
+        default: hyperliquid
+      month:
+        description: "Completed UTC month YYYY-MM, or auto"
+        type: string
+        default: auto
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install -e ".[dev,archive]"
+      - run: |
+          ruff check src/parlay_bot/research/official_funding_archive.py tests/test_official_funding_archive.py
+          pytest -q tests/test_official_funding_archive.py tests/test_drive_source_census.py tests/test_historical_coordinator.py
+
+  collect:
+    if: github.event_name != 'pull_request'
+    strategy:
+      fail-fast: false
+      matrix:
+        venue: [hyperliquid, kucoin, phemex, deribit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    concurrency:
+      group: rival-official-funding-${{ matrix.venue }}
+      cancel-in-progress: false
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install existing verified research publisher
+        run: python -m pip install -e ".[archive]"
+      - name: Retrieve, checksum and read back official original funding parts
+        env:
+          TARGET_MONTH: ${{ github.event_name == 'workflow_dispatch' && inputs.month || 'auto' }}
+          TARGET_VENUE: ${{ github.event_name == 'workflow_dispatch' && inputs.venue || '' }}
+        shell: bash
+        run: |
+          if [[ -n "$TARGET_VENUE" && "$TARGET_VENUE" != "${{ matrix.venue }}" ]]; then
+            echo "Manual run selected other venue; no request"
+            exit 0
+          fi
+          python -m parlay_bot.research.official_funding_archive --venue "${{ matrix.venue }}" --month "$TARGET_MONTH"
+      - name: Retain provenance report without exporting raw private originals
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: official-funding-${{ matrix.venue }}-receipt
+          path: data/native-reports/official-public-funding.json
+          retention-days: 30
+          if-no-files-found: ignore

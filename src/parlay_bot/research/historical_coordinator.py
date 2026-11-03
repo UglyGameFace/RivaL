@@ -37,6 +37,10 @@ ATTEMPT_FLOORS: dict[tuple[str, str], str] = {
     ("gate", "orderbook_l2"): "2021-08",  # hourly samples, not complete L2
     ("lighter", "funding"): "2021-01",  # exploratory; no listing proof
     ("lighter", "mark"): "2021-01",
+    ("hyperliquid", "funding"): "2023-01",  # attempt floor, not launch proof
+    ("kucoin", "funding"): "2021-01",  # attempt floor, not launch proof
+    ("phemex", "funding"): "2021-01",  # attempt floor, not launch proof
+    ("deribit", "funding"): "2021-01",  # attempt floor, not launch proof
     ("okx", "candles_1m"): "2023-07",
     ("okx", "candles_5m"): "2023-07",
     ("okx", "trades"): "2021-09",
@@ -64,6 +68,10 @@ ROUTES: dict[tuple[str, str], tuple[str, str]] = {
     ("dydx", "funding"): ("dydx-v4-original-funding.yml", "scheduled_pages"),
     ("lighter", "funding"): ("lighter-original-auxiliary.yml", "scheduled_pages"),
     ("lighter", "mark"): ("lighter-original-auxiliary.yml", "scheduled_pages"),
+    ("hyperliquid", "funding"): ("official-public-funding.yml", "scheduled_original_pages"),
+    ("kucoin", "funding"): ("official-public-funding.yml", "scheduled_original_pages"),
+    ("phemex", "funding"): ("official-public-funding.yml", "scheduled_original_pages"),
+    ("deribit", "funding"): ("official-public-funding.yml", "scheduled_original_pages"),
     ("gate", "orderbook_l2"): ("gate-hourly-l2-source.yml", "sample_hours_only"),
     **{("gate", f): ("gate-official-archive-backfill.yml", "scheduled_bulk")
        for f in ("candles_1m", "candles_5m", "candles_1h",

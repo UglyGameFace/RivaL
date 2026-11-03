@@ -43,7 +43,13 @@ def interpret_status(payload: object, app_id: str) -> str:
 def api_json(url: str, *, token: str, method: str = "GET",
              payload: dict | None = None) -> object:
     data = (json.dumps(payload).encode("utf-8") if payload is not None else None)
-    headers = {"Accept": "application/json", "User-Agent": USER_AGENT}
+    github = url.startswith("https://api.github.com/")
+    headers = {
+        "Accept": "application/vnd.github+json" if github else "application/json",
+        "User-Agent": USER_AGENT,
+    }
+    if github:
+        headers["X-GitHub-Api-Version"] = "2022-11-28"
     if token:
         headers["Authorization" if url.startswith("https://api.github.com/")
                 else "api-token"] = (
@@ -81,6 +87,11 @@ def api_json(url: str, *, token: str, method: str = "GET",
                 continue
             raise StatusUnverified(f"{provider} API connection unverified") from exc
         except (ValueError, UnicodeError) as exc:
+            # A successful HTTP status can still contain truncated/non-JSON
+            # provider bytes. Retry read-only GETs, never incident writes.
+            if method == "GET" and attempt < attempts - 1:
+                time.sleep(attempt + 1)
+                continue
             raise StatusUnverified(f"{provider} API response malformed") from exc
     raise AssertionError("unreachable")
 

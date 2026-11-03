@@ -1,19 +1,10 @@
 name: RivaL cumulative warehouse source-month census
 
+# The historical acquisition coordinator already runs both the source census
+# and family backlog on its own schedule, then publishes its ten-venue report.
+# Keep this standalone, detailed census available for manual diagnostics only.
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/drive-source-census.yml"
-      - "src/parlay_bot/research/drive_source_census.py"
-      - "src/parlay_bot/research/source_family_backlog.py"
-      - "src/parlay_bot/research/history_priority.py"
-      - "tests/test_history_priority.py"
-      - "tests/test_source_family_backlog.py"
-      - "tests/test_drive_source_census.py"
   workflow_dispatch:
-  schedule:
-    - cron: "17 23 * * *"
 
 permissions:
   contents: read

@@ -2,8 +2,9 @@ name: RivaL independent Discloud uptime
 
 on:
   schedule:
-    # GitHub-owned check, outside Discloud. GitHub schedules are best-effort.
-    - cron: "7,17,27,37,47,57 * * * *"
+    # Hourly fallback to external Healthchecks; keep an independent manual check.
+    # GitHub schedules are best-effort and do not prove process uptime.
+    - cron: "7 * * * *"
   workflow_dispatch:
 
 permissions:

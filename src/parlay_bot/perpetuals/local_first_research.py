@@ -1,11 +1,10 @@
-"""Local LFM3 research first, optional existing free Cloudflare Worker as backup.
+"""Private RivaL Intelligence LFM3: local-only, cached, CPU serialized.
 
-Reuses verified evidence and persistent research caching, but never treats
-privately hosted LFM3 calls as metered external-provider requests.
-The optional Cloudflare fallback retains its own external free-tier quota.
-Neither model may alter scores, positions or promotions.
+No third-party AI transport, free-tier quota, token budget or daily cooldown.
 """
 from __future__ import annotations
+
+from datetime import UTC, datetime
 
 import asyncio
 import json
@@ -13,16 +12,14 @@ import logging
 
 import httpx
 
-from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
 from parlay_bot.perpetuals.evidence_policy import enforce as enforce_grounding
-from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
+from parlay_bot.perpetuals.ai_types import AiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.local_llm_discovery import discover_private_llm
-from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
+from parlay_bot.perpetuals.analysis_evidence import build_evidence
 
 _LOG = logging.getLogger(__name__)
 LOCAL_MODEL = "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
 EVIDENCE_MODEL = "RivaL/verified-evidence-summary-v1"
-CLOUD_MODEL = "@cf/meta/llama-3.2-3b-instruct"
 LOCAL_ENDPOINT = "http://rival-llm:8765/v1/research"
 MAX_LOCAL_EVIDENCE_BYTES = 24_000
 
@@ -42,56 +39,39 @@ def validated(reply: object, expected: str) -> bool:
     )
 
 
-class LocalFirstResearch(OpenRouterResearch):
+class LocalFirstResearch:
     """Private AI requests use bounded concurrency, not daily paid-API caps."""
 
     def __init__(
         self, market, *, local_key: str | None,
-        cloudflare_key: str | None = None, daily_max: int = 18,
-        cooldown_seconds: int = 3600, client: httpx.AsyncClient | None = None,
+        client: httpx.AsyncClient | None = None,
     ) -> None:
-        super().__init__(
-            market, api_key=local_key, daily_max=daily_max,
-            cooldown_seconds=cooldown_seconds,
-            client=client or httpx.AsyncClient(
-                timeout=httpx.Timeout(52), follow_redirects=False,
-            ),
-        )
-        # super() sees the explicit client; this class closes its own client.
-        self._owned_client = client is None
+        self.market = market
+        self._key = local_key
         self.model = LOCAL_MODEL
-        # Cache data-only degradation by its honest model identity, never LFM3.
-        self._extra_cache_models = (EVIDENCE_MODEL,)
-        self._peer_ip: str | None = None
-        self._backup = (
-            CloudflareResearch(
-                market, api_key=cloudflare_key, daily_max=daily_max,
-                cooldown_seconds=cooldown_seconds, client=self._client,
-            )
-            if cloudflare_key else None
+        self._lock = asyncio.Lock()
+        self._client = client or httpx.AsyncClient(
+            timeout=httpx.Timeout(52), follow_redirects=False,
         )
+        self._owned_client = client is None
+        self._peer_ip: str | None = None
 
-    async def _reserve_request(
-        self, *, now, requester_id: int | None,
-    ) -> bool:
-        # There is no monetary/request quota on the owner's private CPU.
-        # Parent ask() still serializes per client with the asyncio lock;
-        # LFM3 itself enforces a one-inference semaphore and request timeout.
-        # Do not write to the third-party perp_ai_quota ledger.
-        return True
+    @property
+    def available(self) -> bool:
+        return bool(self._key)
+
+    async def aclose(self) -> None:
+        if self._owned_client:
+            await self._client.aclose()
 
     async def request_status(self) -> dict:
-        # Reporting a fictitious 18/day local cap misrepresents ownership.
-        # This is an *admission policy*, not a live health probe.
+        """Configuration status only: does not claim the host is currently healthy."""
         return {
             "model": LOCAL_MODEL,
             "ready": self.available,
             "reasons": () if self.available else ("not_configured",),
-            "retry_at": None,
-            "requests_today": None,
-            "rival_daily_limit": None,
             "unmetered_local": True,
-            "backup_external_quota": self._backup is not None,
+            "runtime_verified": False,
         }
 
     async def list_advertised_models(self) -> tuple[str, ...]:
@@ -99,13 +79,58 @@ class LocalFirstResearch(OpenRouterResearch):
             raise ResearchUnavailable("Private local LLM token is not configured.")
         # Fixed only after operator deploys matching local model; not a
         # diagnostic claim that the app is currently running.
-        return (LOCAL_MODEL, CLOUD_MODEL) if self._backup else (LOCAL_MODEL,)
+        return (LOCAL_MODEL,)
 
     async def review_contract(self, evidence: dict) -> dict:
         raise ResearchUnavailable(
             "Local LLM cannot verify Polymarket oracle settlements. "
             "Contract-specific research requires authoritative contract evidence."
         )
+
+    async def ask(self, *, asset: str, venues: tuple[str, ...],
+                  requester_id: int | None = None) -> AiResearch:
+        if not self.available:
+            raise ResearchUnavailable("Private RivaL Intelligence token not configured.")
+        async with self._lock:
+            evidence, digest = await asyncio.to_thread(
+                build_evidence, self.market, asset=asset, venues=venues,
+                horizon_minutes=5,
+            )
+            for candidate in (LOCAL_MODEL, EVIDENCE_MODEL):
+                cached = await asyncio.to_thread(
+                    self.market.cached_ai_research, asset=asset,
+                    model=candidate, evidence_sha256=digest,
+                )
+                if cached is not None:
+                    return AiResearch(
+                        asset=asset, model=candidate,
+                        generated_at=datetime.fromisoformat(cached["issued_at"]),
+                        direction=cached["direction"], confidence=cached["confidence"],
+                        thesis=cached["thesis"], risk=cached["risk"],
+                        source_count=int(cached["source_count"]),
+                        evidence_sha256=digest, from_cache=True,
+                    )
+            now = datetime.now(UTC)
+            result = await self._complete(evidence=evidence)
+            served = result["served_model"]
+            direction, confidence = result["direction"], result["confidence"]
+            thesis, risk = result["thesis"], result["risk"]
+            thesis = thesis.strip()[:400]
+            risk = risk.strip()[:250]
+            await asyncio.to_thread(
+                self.market.save_ai_research,
+                asset=asset, model=served, evidence_sha256=digest,
+                issued_at=now, direction=direction, confidence=confidence,
+                thesis=thesis, risk=risk,
+                source_count=len(evidence["sources"]),
+            )
+            return AiResearch(
+                asset=asset, model=served, generated_at=now,
+                direction=direction, confidence=confidence,
+                thesis=thesis, risk=risk,
+                source_count=len(evidence["sources"]),
+                evidence_sha256=digest,
+            )
 
     async def propose_feature_hypothesis(
         self, *, asset: str, venues: tuple[str, ...],
@@ -118,10 +143,6 @@ class LocalFirstResearch(OpenRouterResearch):
         if not self.available:
             raise ResearchUnavailable("Private RivaL Intelligence token unavailable")
         async with self._lock:
-            from datetime import UTC, datetime
-
-            from parlay_bot.perpetuals.analysis_evidence import build_evidence
-
             evidence, digest = await asyncio.to_thread(
                 build_evidence, self.market, asset=asset, venues=venues,
                 horizon_minutes=5,
@@ -178,17 +199,9 @@ class LocalFirstResearch(OpenRouterResearch):
                 "research_only": True,
             }
 
-    async def _complete(
-        self, *, selected: str, evidence: dict, instruction: str,
-        now, fallbacks: tuple[str, ...] = (),
-    ) -> dict:
-        if selected != LOCAL_MODEL or fallbacks not in ((), (CLOUD_MODEL,)):
-            raise ResearchUnavailable("Unapproved local/backup AI model route")
+    async def _complete(self, *, evidence: dict) -> dict:
         if len(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode("utf-8")) > MAX_LOCAL_EVIDENCE_BYTES:
             raise ResearchUnavailable("Verified evidence too large for local inference.")
-        # The private LFM3 request is unmetered. External Cloudflare fallback
-        # is separately budgeted only if a local transport/502-504 failure
-        # actually requires it, never for the normal local request.
         try:
             headers = {"Authorization": f"Bearer {self._key}",
                        "Content-Type": "application/json"}
@@ -242,30 +255,9 @@ class LocalFirstResearch(OpenRouterResearch):
             _LOG.warning("Local AI response invalid class=%s", type(exc).__name__)
             raise ResearchUnavailable(
                 "Local model produced invalid research; not sending malformed data "
-                "to any fallback."
+                "to another provider."
             ) from exc
 
-        if self._backup is not None and fallbacks == (CLOUD_MODEL,):
-            # An external provider *does* have a genuine free-tier allowance.
-            # Reserve only when actually sending an external request.
-            external_allowed = await asyncio.to_thread(
-                self.market.reserve_ai_request,
-                model=self._backup.model,
-                now=now,
-                daily_max=self._backup.daily_max,
-                cooldown_seconds=self._backup.cooldown_seconds,
-            )
-            if external_allowed:
-                _LOG.warning("Using explicitly configured, budgeted Cloudflare backup")
-                try:
-                    return await self._backup._complete(
-                        selected=CLOUD_MODEL, evidence=evidence,
-                        instruction=instruction, now=now, fallbacks=(),
-                    )
-                except ResearchUnavailable:
-                    _LOG.warning("Cloudflare unavailable; returning verified facts")
-            else:
-                _LOG.info("Cloudflare free-tier backup unavailable under its own cap")
         # A CPU timeout must not masquerade as an LFM3 answer. Only the same
         # prevalidated, hashed source evidence can produce this free, read-only
         # deterministic fallback, with its OWN model identity and cache key.

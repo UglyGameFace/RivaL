@@ -257,7 +257,7 @@ def test_live_probe_rejects_anonymous_status_and_unsupported_inference(
 def test_standalone_live_console_timeout_covers_two_sequential_cpu_requests(
     monkeypatch,
 ):
-    """Host script can spend 2 x 38s on model inference before returning."""
+    """Host script can spend 2 x 55s on model inference before returning."""
     receipt = {
         "source_sha": SHA,
         "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
@@ -307,8 +307,8 @@ def test_live_probe_exposes_only_allowlisted_failure_stages(monkeypatch):
     def fake_urlopen(_req, timeout):
         assert timeout >= 130
         return Response({"apps": {"shell": {
-            "stdout": marker + "status_ready\\n" + secret
-                      + "\\n" + marker + "hypothesis_requested",
+            "stdout": marker + "status_ready\n" + secret
+                      + "\n" + marker + "hypothesis_requested",
             "stderr": secret,
         }}})
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)

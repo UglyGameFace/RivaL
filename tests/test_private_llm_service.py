@@ -821,3 +821,16 @@ def test_ordinary_research_still_uses_original_unconstrained_json_mode(monkeypat
         assert calls[-1]["response_format"] == {"type": "json_object"}
     finally:
         server.server_close()
+
+
+def test_backend_command_is_loopback_and_shared_with_repair_drill(tmp_path):
+    binary = tmp_path / "bin" / "llama-server"
+    command, env = SERVICE["backend_command"](binary, tmp_path / "m.gguf", 4096)
+    assert command[0] == str(binary)
+    assert command[command.index("--host") + 1] == "127.0.0.1"
+    assert command[command.index("--port") + 1] == "8766"
+    assert command[command.index("--ctx-size") + 1] == "4096"
+    assert env["LD_LIBRARY_PATH"].startswith(str(binary.parent) + ":")
+    drill = (ROOT / "repair_drill.py").read_text()
+    assert "service.backend_command(" in drill
+    assert "service.BackendRepair(" in drill

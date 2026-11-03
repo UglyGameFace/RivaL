@@ -61,7 +61,7 @@ jobs:
           (cd "$RUNNER_TEMP/intelligence-upload" && zip -q -r "$RUNNER_TEMP/intelligence-validated.zip" .)
           python validate_package.py "$RUNNER_TEMP/intelligence-validated.zip"
       - name: Deploy verified standalone LFM3 to its own Discloud application
-        uses: discloud/deploy-action@v1
+        uses: discloud/deploy-action@fae7024653d941a19daa2b6f56d2ae208e008c54  # v1 (pinned: holds DISCLOUD_TOKEN)
         with:
           token: ${{ secrets.DISCLOUD_TOKEN }}
           app_id: ${{ secrets.DISCLOUD_LLM_APP_ID }}

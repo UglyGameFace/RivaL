@@ -55,7 +55,7 @@ jobs:
 
       - name: Deploy tested RivaL app without replacing its host environment
         if: steps.access.outputs.ready == 'true'
-        uses: discloud/deploy-action@v1
+        uses: discloud/deploy-action@fae7024653d941a19daa2b6f56d2ae208e008c54  # v1 (pinned: holds DISCLOUD_TOKEN)
         with:
           token: ${{ secrets.DISCLOUD_TOKEN }}
           app_id: ${{ secrets.DISCLOUD_APP_ID }}

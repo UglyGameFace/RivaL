@@ -457,7 +457,7 @@ class DirectionTargetService:
         self, user: discord.abc.User, *, asset: str,
         horizon_minutes: int, target_price: float | None = None,
     ) -> tuple[bool, str]:
-        """Only a direct /rival-target interaction opts a user into DMs."""
+        """Only a direct /rival-tools target interaction opts a user into DMs."""
         if asset not in ASSETS or horizon_minutes not in HORIZONS:
             raise ValueError("invalid target")
         async with self.lock:
@@ -529,7 +529,7 @@ class DirectionTargetService:
                 message = await channel.fetch_message(int(existing.message_id))
                 await message.edit(embed=discord.Embed(
                     title="RivaL • Target stopped",
-                    description="Monitoring is off. Use /rival-target to watch again.",
+                    description="Monitoring is off. Use /rival-tools target to watch again.",
                     color=discord.Color.light_grey(),
                 ))
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):

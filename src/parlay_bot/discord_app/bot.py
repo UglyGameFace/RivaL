@@ -22,6 +22,7 @@ from parlay_bot.discord_app.alert_control import stop_all_notifications
 from parlay_bot.discord_app.auto_hunt import AutoHuntActions, AutoHuntService, AutoHuntStore
 from parlay_bot.discord_app.cdna_public import CDNAPersonalReader
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
+from parlay_bot.discord_app.heartbeat import HealthchecksHeartbeat
 from parlay_bot.discord_app.home import (
     GuidedHome,
     build_stale_guided_menu_views,
@@ -33,6 +34,7 @@ from parlay_bot.discord_app.opportunities import (
     crypto_desk_embed,
     sportsbook_desk_embed,
 )
+from parlay_bot.discord_app.owner_gate import OwnerGate, install_owner_gate
 from parlay_bot.discord_app.polymarket_live_board import (
     LivePolymarketBoardService,
     LivePolymarketBoardStore,
@@ -173,6 +175,15 @@ class RivalDiscordClient(discord.Client):
             "RivaL operational storage initialized (backend=%s)",
             self.store.database.backend,
         )
+        # Private bot: every command, button and modal is owner-only.
+        self.owner_gate = OwnerGate(self, settings.rival_owner_user_ids)
+        self.heartbeat: HealthchecksHeartbeat | None = (
+            HealthchecksHeartbeat(
+                settings.rival_healthchecks_ping_url.get_secret_value(), self.store,
+            )
+            if settings.rival_healthchecks_ping_url is not None else None
+        )
+        self._heartbeat_task: asyncio.Task[None] | None = None
         self.registry = JurisdictionRegistry(verified_us_sportsbooks())
         self.zip_resolver = ZipStateResolver()
         self.location_service = LocationOnboardingService(
@@ -1003,7 +1014,7 @@ class RivalDiscordClient(discord.Client):
             )
             embed.add_field(name="Latest refresh attempt", value=self.sports_refresh_status, inline=False)
             embed.set_footer(
-                text="Use /rival-quote and /rival-sport-proof for separate market/model evidence"
+                text="Use /rival-tools quote and /rival-tools sport-proof for separate market/model evidence"
             )
             await interaction.edit_original_response(embed=embed)
 
@@ -1388,7 +1399,7 @@ class RivalDiscordClient(discord.Client):
                 )
                 if target is None or target.price_goal is None:
                     await interaction.edit_original_response(
-                        content="No saved exact-price target. Use /rival-target with target_price."
+                        content="No saved exact-price target. Use /rival-tools target with target_price."
                     )
                     return
                 market = self.perp_collector.market if self.perp_collector else None
@@ -1712,6 +1723,7 @@ class RivalDiscordClient(discord.Client):
         ):
             self.add_view(stale_view)
         self.add_view(AutoHuntActions())
+        install_owner_gate(self.tree, self.owner_gate)
         _LOG.info("RivaL guided, research, data and hunt recovery views registered")
         await asyncio.to_thread(self.auto_hunt.store.initialize)
         await asyncio.to_thread(self.polymarket_board.store.initialize)
@@ -1876,6 +1888,22 @@ class RivalDiscordClient(discord.Client):
             )
         except Exception:  # noqa: BLE001 - monitoring must not stop trading-free research
             _LOG.exception("RivaL host watchdog could not initialize")
+        if self.heartbeat is not None and self._heartbeat_task is None:
+            self._heartbeat_task = asyncio.create_task(
+                self._heartbeat_loop(), name="rival-healthchecks-heartbeat",
+            )
+        elif self.heartbeat is None:
+            _LOG.info("RivaL Healthchecks.io heartbeat not configured")
+
+    async def _heartbeat_loop(self) -> None:
+        """Healthchecks.io pings start only once Discord is actually ready."""
+        assert self.heartbeat is not None
+        await self.wait_until_ready()
+        _LOG.info("RivaL Healthchecks.io heartbeat started")
+        try:
+            await self.heartbeat.run(self.is_closed)
+        finally:
+            await self.heartbeat.aclose()
 
     async def on_ready(self) -> None:
         self.discord_ready_at = datetime.now(UTC)

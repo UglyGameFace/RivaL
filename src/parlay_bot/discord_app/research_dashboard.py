@@ -435,7 +435,7 @@ class _QuickTargetButton(discord.ui.Button["ResearchDashboard"]):
             )
         except Exception:  # noqa: BLE001 - never expose internal errors
             _LOG.exception("RivaL 5m target follow failed")
-            ok, message = False, "Could not start monitoring. Try /rival-target."
+            ok, message = False, "Could not start monitoring. Try /rival-tools target."
         await interaction.followup.send(
             ("✅ " if ok else "⛔ ") + message, ephemeral=True,
         )
@@ -511,7 +511,7 @@ class ResearchDashboard(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
-                "Open your own private research panel with /rival-research.",
+                "Open your own private research panel with /rival-tools research.",
                 ephemeral=True,
             )
             return False

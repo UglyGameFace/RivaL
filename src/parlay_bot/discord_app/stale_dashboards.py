@@ -93,8 +93,8 @@ class StaleDashboardView(discord.ui.View):
             await interaction.edit_original_response(
                 content=(
                     "That old panel could not be refreshed. Open "
-                    + ("/rival-research" if self.scope == "research"
-                       else "/rival-data")
+                    + ("/rival-tools research" if self.scope == "research"
+                       else "/rival-tools data")
                     + " for a new private panel."
                 ),
                 embed=None,

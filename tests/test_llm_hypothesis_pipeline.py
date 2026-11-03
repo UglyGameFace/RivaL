@@ -366,6 +366,9 @@ def test_weak_llm_mask_never_touches_sealed_holdout(monkeypatch):
         "model": MODEL, "evidence_sha256": "f"*64,
         "hypothesis": "volume_only", "venues": ["okx"],
     }
+    proposal_row["record_sha256"] = hashlib.sha256(json.dumps(
+        proposal_row, sort_keys=True, separators=(",", ":"),
+    ).encode()).hexdigest()
     candidates = []
     trials = mod.evaluate_hypothesis_ablations(
         None, qualified_streams=set(), proposals=[proposal_row],

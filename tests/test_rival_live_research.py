@@ -68,7 +68,7 @@ def test_research_three_tabs_and_nested_ai_review_keep_refresh():
         dashboard.stop()
 
 @pytest.mark.asyncio
-async def test_live_health_is_not_cached_but_history_is_cached_until_refresh(
+async def test_live_health_is_fresh_without_invalidating_history_on_every_live_refresh(
     tmp_path, monkeypatch,
 ):
     import parlay_bot.discord_app.research_dashboard as module
@@ -117,12 +117,17 @@ async def test_live_health_is_not_cached_but_history_is_cached_until_refresh(
         assert interaction.response.deferred
         assert button.view is None  # old control detached on redraw
         assert interaction.view is dashboard
-        assert len(calls) == 2
+        assert len(calls) == 1  # Live refresh does not run a six-month aggregation.
         assert "2/2" in next(
             f.value for f in interaction.embed.fields
             if f.name == "Live market feeds"
         )
         assert interaction.embed.timestamp is not None
+        # A deliberate history refresh still invalidates historical aggregates.
+        dashboard.section = "history"
+        dashboard._rebuild()
+        await controls(dashboard)["rival:research:refresh"].callback(Interaction())
+        assert len(calls) == 2
     finally:
         dashboard.stop()
         store.close()

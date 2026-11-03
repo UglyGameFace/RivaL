@@ -16,16 +16,33 @@ from pathlib import Path
 from urllib import error, parse, request
 
 MARKER = "RIVAL_INTELLIGENCE_RELEASE_RECEIPT="
+STAGE_MARKER = "RIVAL_INTELLIGENCE_RELEASE_STAGE="
+SAFE_STAGES = frozenset({
+    "boot", "status_requested", "status_unavailable", "status_not_ready",
+    "status_ready", "auth_checked", "auth_not_rejected",
+    "research_requested", "research_http_error", "research_rejected",
+    "research_verified", "hypothesis_requested", "hypothesis_http_error",
+    "hypothesis_rejected", "hypothesis_verified",
+})
+
 HOST_CHECK = """import json, os, urllib.error, urllib.request
+print("RIVAL_INTELLIGENCE_RELEASE_STAGE=boot", flush=True)
 port = int(os.environ.get("RIVAL_LLM_PORT", "8765"))
 token = os.environ["RIVAL_LLM_SHARED_TOKEN"]
 root = "http://127.0.0.1:%d" % port
 headers = {"Authorization": "Bearer " + token}
 req = urllib.request.Request(root + "/v1/status", headers=headers)
-with urllib.request.urlopen(req, timeout=8) as response:
-    data = json.loads(response.read(5000))
+print("RIVAL_INTELLIGENCE_RELEASE_STAGE=status_requested", flush=True)
+try:
+    with urllib.request.urlopen(req, timeout=8) as response:
+        data = json.loads(response.read(5000))
+except (urllib.error.URLError, TimeoutError):
+    print("RIVAL_INTELLIGENCE_RELEASE_STAGE=status_unavailable", flush=True)
+    raise
 if not data.get("ready"):
+    print("RIVAL_INTELLIGENCE_RELEASE_STAGE=status_not_ready", flush=True)
     raise RuntimeError("private model not ready")
+print("RIVAL_INTELLIGENCE_RELEASE_STAGE=status_ready", flush=True)
 try:
     urllib.request.urlopen(urllib.request.Request(root + "/v1/status"), timeout=8)
 except urllib.error.HTTPError as exc:
@@ -33,7 +50,9 @@ except urllib.error.HTTPError as exc:
 else:
     auth_rejected = False
 if not auth_rejected:
+    print("RIVAL_INTELLIGENCE_RELEASE_STAGE=auth_not_rejected", flush=True)
     raise RuntimeError("private status permits anonymous access")
+print("RIVAL_INTELLIGENCE_RELEASE_STAGE=auth_checked", flush=True)
 # One synthetic, read-only request: no historical claims, external APIs,
 # database writes, market orders, real quotes or user evidence.
 probe = {"asset": "BTC", "evidence": {
@@ -42,8 +61,13 @@ probe = {"asset": "BTC", "evidence": {
 req = urllib.request.Request(
     root + "/v1/research", data=json.dumps(probe).encode("utf-8"),
     headers={**headers, "Content-Type": "application/json"}, method="POST")
-with urllib.request.urlopen(req, timeout=38) as response:
-    result = json.loads(response.read(5000))
+print("RIVAL_INTELLIGENCE_RELEASE_STAGE=research_requested", flush=True)
+try:
+    with urllib.request.urlopen(req, timeout=55) as response:
+        result = json.loads(response.read(5000))
+except urllib.error.HTTPError:
+    print("RIVAL_INTELLIGENCE_RELEASE_STAGE=research_http_error", flush=True)
+    raise
 smoke_ok = (result.get("model") == data.get("model")
     and result.get("direction") == "uncertain"
     and result.get("confidence") == "low"
@@ -52,13 +76,20 @@ smoke_ok = (result.get("model") == data.get("model")
     and result.get("informational_only") is True
     and result.get("uncalibrated") is True)
 if not smoke_ok:
+    print("RIVAL_INTELLIGENCE_RELEASE_STAGE=research_rejected", flush=True)
     raise RuntimeError("synthetic research was not safely grounded")
+print("RIVAL_INTELLIGENCE_RELEASE_STAGE=research_verified", flush=True)
 # Exercise the new real LFM3 research-to-feature path without predictions.
 req = urllib.request.Request(
     root + "/v1/hypothesis", data=json.dumps(probe).encode("utf-8"),
     headers={**headers, "Content-Type": "application/json"}, method="POST")
-with urllib.request.urlopen(req, timeout=38) as response:
-    hypothesis = json.loads(response.read(5000))
+print("RIVAL_INTELLIGENCE_RELEASE_STAGE=hypothesis_requested", flush=True)
+try:
+    with urllib.request.urlopen(req, timeout=55) as response:
+        hypothesis = json.loads(response.read(5000))
+except urllib.error.HTTPError:
+    print("RIVAL_INTELLIGENCE_RELEASE_STAGE=hypothesis_http_error", flush=True)
+    raise
 indices = hypothesis.get("feature_indices")
 choice = hypothesis.get("hypothesis")
 feature_selection_valid = (
@@ -80,7 +111,9 @@ hypothesis_ok = (
     and 5 <= len(str(hypothesis.get("falsification", ""))) <= 120
 )
 if not hypothesis_ok:
+    print("RIVAL_INTELLIGENCE_RELEASE_STAGE=hypothesis_rejected", flush=True)
     raise RuntimeError("private LFM3 feature hypothesis rejected")
+print("RIVAL_INTELLIGENCE_RELEASE_STAGE=hypothesis_verified", flush=True)
 # Only report low-cardinality verification facts; no model prose or tokens.
 data["hypothesis_smoke_ok"] = True
 data["research_smoke_ok"] = True
@@ -117,7 +150,19 @@ def parse_receipt(stdout: str, expected_sha: str) -> dict | None:
     return None
 
 
-def check_host(token: str, app_id: str, expected_sha: str) -> dict | None:
+def stage_reason(stdout: str, *, stderr_present: bool = False) -> str:
+    """Return only a fixed stage name; never expose shell output or errors."""
+    stage = "host_stage_absent"
+    for line in stdout.splitlines():
+        if not line.startswith(STAGE_MARKER):
+            continue
+        candidate = line[len(STAGE_MARKER):].strip()
+        if candidate in SAFE_STAGES:
+            stage = candidate
+    return stage + ("_stderr" if stderr_present else "")
+
+
+def check_host(token: str, app_id: str, expected_sha: str) -> tuple[dict | None, str]:
     # A single-line shell argument is reliable across Discloud console relays.
     payload = base64.b64encode(HOST_CHECK.encode("utf-8")).decode("ascii")
     program = f"import base64;exec(base64.b64decode({payload!r}))"
@@ -129,16 +174,20 @@ def check_host(token: str, app_id: str, expected_sha: str) -> dict | None:
         method="PUT",
         headers={"api-token": token, "Content-Type": "application/json"},
     )
-    # The host probe performs TWO sequential authenticated CPU inference
-    # calls, each with a 38s bound, plus status/auth checks. A 45s outer
-    # console timeout killed valid slow responses before they could finish.
-    with request.urlopen(req, timeout=110) as response:
+    # The gateway may spend up to 40s on EACH CPU request. The two host
+    # smoke calls are allowed 55s each and do not run concurrently.
+    with request.urlopen(req, timeout=145) as response:
         data = json.load(response)
     apps = data.get("apps") if isinstance(data, dict) else None
     shell = apps.get("shell") if isinstance(apps, dict) else None
     if not isinstance(shell, dict):
-        return None
-    return parse_receipt(str(shell.get("stdout", "")), expected_sha)
+        return None, "console_shell_missing"
+    stdout = str(shell.get("stdout", ""))
+    receipt = parse_receipt(stdout, expected_sha)
+    return (
+        (receipt, "verified") if receipt else
+        (None, stage_reason(stdout, stderr_present=bool(shell.get("stderr"))))
+    )
 
 
 def main() -> int:
@@ -157,7 +206,7 @@ def main() -> int:
     for attempt in range(1, 8):
         reason = "no_matching_ready_host_receipt"
         try:
-            receipt = check_host(token, app_id, sha)
+            receipt, reason = check_host(token, app_id, sha)
         except (OSError, error.URLError, ValueError, KeyError, TimeoutError, TypeError) as exc:
             # Class only: shell output can contain credentials or private
             # model data, so never print the raw API or inference response.

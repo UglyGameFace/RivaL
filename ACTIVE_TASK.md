@@ -1,3 +1,12 @@
+## In progress: standalone LFM3 live host acceptance retry (2026-11-03 UTC)
+
+- **Merged baseline:** PR #285 -> `main@410adb12`, exact CI success, Discloud bot release success, and fresh Postgres learner and proof receipt verified. Live ETH/hyperliquid 5m: 579 unique future outcomes, 4 distinct days, 454/478 quotes (94.98%) with no proven baseline or after-cost superiority. The scheduled daily host checker is present on main, first scheduled occurrence still pending.
+- **Remaining blocker:** Standalone Intelligence synced to `RivaL-Intelligence@db23a250`, Discloud upload succeeded but 7 exact-host smoke verifications failed ([run 41571491428](https://github.com/UglyGameFace/RivaL-Intelligence/actions/runs/41571491428)). They all returned a blank/invalid structured receipt after ~38 seconds, while the HTTP verifier merely printed `no_matching_ready_host_receipt`. The on-host probes both use `timeout=38` even though the actual llama backend has a **40-second** deadline. This timeout inversion can mask the genuine inference failure and the host stage.
+- **Root investigation correction:** Set each authenticated CPU request to a bounded 55s (higher than the 40s backend deadline), outer authenticated Discloud console to 145s, and emit an allowlisted sequence of verification stages (readiness, auth, research, hypothesis). Disclose ONLY stage identifier and optional stderr-presence flag, not real stderr, token, raw model output, prices or prompts. If the new receipt still fails, the exact failing stage tells us what to repair next. No production prediction policy changed.
+- **Next proof:** Green full CI on exact PR SHA, merge & mirror to Intelligence main, standalone release **verified on-host** (two authenticated inference modes, correct SHA, safe grounding, auth rejection) and new main bot handoff if at least three genuine fresh BTC venues available. `insufficient_live_venues` is a legitimate auto-retry condition; do not fabricate evidence to overcome it. Keep the 150-outcome, 21-day, 80%-coverage and positive after-cost guardrails intact.
+
+---
+
 ## In progress: unattended source-matched 21-day forward proof (2026-11-03)
 
 - **Post-merge baseline:** #284 merged `main@b56d2cb`; main CI, main bot Discloud release, and independent `RivaL-Intelligence` release were launched. This stage must verify both exact on-host versions before asserting deployment, and must never infer 21-day predictive skill from a successful workflow.

@@ -140,30 +140,45 @@ def validate_page(raw: bytes, *, venue: str, asset: str,
         payload = json.loads(raw)
         if venue == "hyperliquid":
             rows = payload
-        else:
+        elif venue == "kucoin":
             if not isinstance(payload, dict) or payload.get("code") != "200000":
                 raise HistoryImportError("KuCoin funding endpoint rejected request")
             rows = payload["data"]
+        elif venue == "phemex":
+            if not isinstance(payload, dict) or payload.get("code") != 0:
+                raise HistoryImportError("Phemex funding endpoint rejected request")
+            rows = payload["data"]["rows"]
+        else:
+            if (not isinstance(payload, dict) or payload.get("jsonrpc") != "2.0"
+                or payload.get("error")):
+                raise HistoryImportError("Deribit funding endpoint rejected request")
+            rows = payload["result"]
     except (ValueError, TypeError, KeyError) as exc:
         raise HistoryImportError("malformed original funding JSON") from exc
     # Exact cap must fail closed: provider may have truncated the requested
     # interval; never mislabel the result as a complete UTC window.
-    if not isinstance(rows, list) or len(rows) >= MAX_RECORDS:
+    cap = 100 if venue == "phemex" else MAX_RECORDS
+    if not isinstance(rows, list) or len(rows) >= cap:
         raise HistoryImportError("funding response invalid or provider-capped")
     seen = set()
     for row in rows:
         if not isinstance(row, dict):
             raise HistoryImportError("funding record is not an object")
-        symbol = row.get("coin") if venue == "hyperliquid" else row.get("symbol")
-        if symbol != (asset if venue == "hyperliquid" else KUCOIN_SYMBOLS[asset]):
-            raise HistoryImportError("mismatched official funding contract")
-        stamp = row.get("time") if venue == "hyperliquid" else row.get("timepoint")
+        if venue != "deribit":
+            symbol = row.get("coin") if venue == "hyperliquid" else row.get("symbol")
+            if symbol != contract_for(venue, asset):
+                raise HistoryImportError("mismatched official funding contract")
+        # Deribit result rows omit instrument_name: the retained original
+        # exact-contract HTTP request URL provides its independent identity.
+        field = {"hyperliquid": "time", "kucoin": "timepoint",
+                 "phemex": "fundingTime", "deribit": "timestamp"}[venue]
+        stamp = row.get(field)
         if type(stamp) is not int or not _ms(start) <= stamp < _ms(end):
             raise HistoryImportError("funding timestamp outside exact UTC window")
         if stamp in seen:
             raise HistoryImportError("duplicate original funding observation")
         seen.add(stamp)
-        _finite_rate(row.get("fundingRate"))
+        _finite_rate(row.get("interest_8h" if venue == "deribit" else "fundingRate"))
         if venue == "hyperliquid" and row.get("premium") is not None:
             _finite_rate(row["premium"])
     return sorted(seen)
@@ -206,7 +221,7 @@ async def archive_page(drive, *, root: Path, venue: str, asset: str,
         "schema_version": "rival-official-public-funding-page-v1",
         "venue": venue, "asset": asset, "family": "funding",
         "source_endpoint": URLS[venue], "source_url": source_url,
-        "contract": asset if venue == "hyperliquid" else KUCOIN_SYMBOLS[asset],
+        "contract": contract_for(venue, asset),
         "utc_month": month, "part": part,
         "start_utc": start.isoformat(), "end_exclusive_utc": end.isoformat(),
         "original_filename": original.name, "original_sha256": digest,

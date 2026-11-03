@@ -173,6 +173,22 @@ class OpenRouterResearch:
             cooldown_seconds=self.cooldown_seconds,
         )
 
+    async def _reserve_request(
+        self, *, now: datetime, requester_id: int | None,
+    ) -> bool:
+        """External providers require a persisted free-tier request budget.
+
+        Private, self-hosted providers override this hook instead of
+        inheriting third-party quota accounting and artificial cooldowns.
+        """
+        return await asyncio.to_thread(
+            self.market.reserve_ai_request,
+            model=self.model, now=now,
+            daily_max=self.daily_max, cooldown_seconds=self.cooldown_seconds,
+            **({"requester_id": requester_id}
+               if requester_id is not None else {}),
+        )
+
     async def ask(self, *, asset: str, venues: tuple[str, ...],
                   requester_id: int | None = None) -> AiResearch:
         if not self.available:
@@ -208,12 +224,8 @@ class OpenRouterResearch:
                         evidence_sha256=digest, from_cache=True,
                     )
             now = datetime.now(UTC)
-            permitted = await asyncio.to_thread(
-                self.market.reserve_ai_request,
-                model=self.model, now=now,
-                daily_max=self.daily_max,
-                cooldown_seconds=self.cooldown_seconds,
-                **({"requester_id": requester_id} if requester_id is not None else {}),
+            permitted = await self._reserve_request(
+                now=now, requester_id=requester_id,
             )
             if not permitted:
                 raise ResearchUnavailable(

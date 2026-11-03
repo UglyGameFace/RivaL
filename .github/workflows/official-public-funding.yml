@@ -1,4 +1,4 @@
-name: Official Hyperliquid and KuCoin funding-history originals
+name: Official four-venue funding-history originals
 
 on:
   pull_request:
@@ -20,7 +20,7 @@ on:
       venue:
         description: "Official funding source"
         type: choice
-        options: [hyperliquid, kucoin]
+        options: [hyperliquid, kucoin, phemex, deribit]
         default: hyperliquid
       month:
         description: "Completed UTC month YYYY-MM, or auto"
@@ -50,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        venue: [hyperliquid, kucoin]
+        venue: [hyperliquid, kucoin, phemex, deribit]
     runs-on: ubuntu-latest
     timeout-minutes: 25
     concurrency:

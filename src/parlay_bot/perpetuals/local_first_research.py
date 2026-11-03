@@ -7,6 +7,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import random
+import re
 from datetime import UTC, datetime
 
 import httpx
@@ -21,6 +23,67 @@ LOCAL_MODEL = "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
 EVIDENCE_MODEL = "RivaL/verified-evidence-summary-v1"
 LOCAL_ENDPOINT = "http://rival-llm:8765/v1/research"
 MAX_LOCAL_EVIDENCE_BYTES = 24_000
+# Background callers wait for the single-slot CPU gateway instead of losing
+# their slot to one busy reply. Delays are jittered +/-20% and slept OUTSIDE
+# the request lock so an interactive ask can still go first.
+BUSY_RETRY_DELAYS: tuple[float, ...] = (5.0, 15.0, 45.0)
+# Gateway failure kinds worth another attempt; others (token_limit,
+# invalid_json, ...) repeat deterministically on the same evidence.
+TRANSIENT_FAILURE_KINDS = frozenset({"backend_timeout", "backend_unreachable"})
+_SAFE_CODE = re.compile(r"[a-z][a-z0-9_]{0,47}")
+
+
+class LocalBusy(ResearchUnavailable):
+    """The private gateway is busy or briefly unavailable; safe to retry later."""
+
+
+def failure_detail(response: httpx.Response) -> str:
+    """Status plus the gateway's allowlisted error codes; never body prose."""
+    error = kind = "none"
+    try:
+        body = response.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        for key in ("error", "failure_kind"):
+            value = body.get(key)
+            if isinstance(value, str) and _SAFE_CODE.fullmatch(value):
+                if key == "error":
+                    error = value
+                else:
+                    kind = value
+    return f"status={response.status_code} error={error} failure_kind={kind}"
+
+
+def _transient(response: httpx.Response) -> bool:
+    if response.status_code == 429:
+        return True
+    if response.status_code != 503:
+        return False
+    try:
+        body = response.json()
+    except ValueError:
+        return False
+    return isinstance(body, dict) and (
+        body.get("error") == "local_model_unavailable"
+        or body.get("failure_kind") in TRANSIENT_FAILURE_KINDS
+    )
+
+
+async def _with_busy_retry(attempt, *, retry: bool, label: str):
+    """Run attempt(); on LocalBusy, sleep and retry when allowed."""
+    delays = BUSY_RETRY_DELAYS if retry else ()
+    for index in range(len(delays) + 1):
+        try:
+            return await attempt()
+        except LocalBusy:
+            if index >= len(delays):
+                raise
+            delay = delays[index] * random.uniform(0.8, 1.2)
+            _LOG.info("Private %s busy; retry %d/%d in %.1fs",
+                      label, index + 1, len(delays), delay)
+            await asyncio.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 def validated(reply: object, expected: str) -> bool:
@@ -87,9 +150,18 @@ class LocalFirstResearch:
         )
 
     async def ask(self, *, asset: str, venues: tuple[str, ...],
-                  requester_id: int | None = None) -> AiResearch:
+                  requester_id: int | None = None,
+                  busy_retry: bool = False) -> AiResearch:
+        """Research one asset. Interactive clicks never wait on retries;
+        background callers pass busy_retry=True to survive a busy gateway."""
         if not self.available:
             raise ResearchUnavailable("Private RivaL Intelligence token not configured.")
+        return await _with_busy_retry(
+            lambda: self._ask_once(asset=asset, venues=venues),
+            retry=busy_retry, label="research",
+        )
+
+    async def _ask_once(self, *, asset: str, venues: tuple[str, ...]) -> AiResearch:
         async with self._lock:
             evidence, digest = await asyncio.to_thread(
                 build_evidence, self.market, asset=asset, venues=venues,
@@ -133,14 +205,22 @@ class LocalFirstResearch:
 
     async def propose_feature_hypothesis(
         self, *, asset: str, venues: tuple[str, ...],
+        busy_retry: bool = True,
     ) -> dict:
         """Use the private CPU under the existing lock, without API quotas.
 
         Suggestions cannot write weights or scores. They are recorded separately
         and must compete against a no-LLM baseline on chronological source data.
+        Background-only, so a busy or briefly unavailable gateway is retried.
         """
         if not self.available:
             raise ResearchUnavailable("Private RivaL Intelligence token unavailable")
+        return await _with_busy_retry(
+            lambda: self._propose_once(asset=asset, venues=venues),
+            retry=busy_retry, label="hypothesis",
+        )
+
+    async def _propose_once(self, *, asset: str, venues: tuple[str, ...]) -> dict:
         async with self._lock:
             evidence, digest = await asyncio.to_thread(
                 build_evidence, self.market, asset=asset, venues=venues,
@@ -172,9 +252,18 @@ class LocalFirstResearch:
                         f"http://{peer}:8765/v1/hypothesis", headers=headers,
                         json=request, follow_redirects=False,
                     )
-                response.raise_for_status()
+                if response.status_code != 200:
+                    detail = failure_detail(response)
+                    _LOG.warning("Private hypothesis research rejected %s", detail)
+                    error = LocalBusy if _transient(response) else ResearchUnavailable
+                    raise error(
+                        f"Private hypothesis endpoint unavailable ({detail}); "
+                        "no model weights changed"
+                    )
                 hypothesis = response.json()
-            except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
+            except (httpx.RequestError, ValueError) as exc:
+                if isinstance(exc, ResearchUnavailable):
+                    raise
                 _LOG.warning("Private hypothesis research unavailable %s",
                              type(exc).__name__)
                 raise ResearchUnavailable(
@@ -245,12 +334,14 @@ class LocalFirstResearch:
         except httpx.HTTPStatusError as exc:
             # An authentication error, malformed client request, or BUSY is
             # not permission to spend a second provider's capacity.
+            detail = failure_detail(exc.response)
             if exc.response.status_code not in (502, 503, 504):
-                _LOG.warning("Local AI rejected request HTTP %s", exc.response.status_code)
-                raise ResearchUnavailable(
+                _LOG.warning("Local AI rejected request %s", detail)
+                error = LocalBusy if exc.response.status_code == 429 else ResearchUnavailable
+                raise error(
                     f"Local AI rejected research (HTTP {exc.response.status_code})."
                 ) from exc
-            _LOG.warning("Local inference unavailable HTTP %s", exc.response.status_code)
+            _LOG.warning("Local inference unavailable %s", detail)
         except httpx.RequestError:
             _LOG.warning("Private local AI network unavailable")
         except (ValueError, KeyError, TypeError, IndexError) as exc:

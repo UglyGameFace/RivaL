@@ -231,7 +231,7 @@ class AutonomousResearch:
             self._claim_slot, asset=asset, model=self.ai.model, now=now,
         ):
             return False
-        result = await self.ai.ask(asset=asset, venues=self.venues)
+        result = await self.ai.ask(asset=asset, venues=self.venues, busy_retry=True)
         # Reject cache-only or delayed results that would be issued after
         # the intended target candle. No retrospective paper predictions.
         issued = datetime.now(UTC)

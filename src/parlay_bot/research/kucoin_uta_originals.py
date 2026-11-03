@@ -126,14 +126,14 @@ def validate_klines(raw: bytes, *, family: str, asset: str,
         raise HistoryImportError("untrusted KuCoin candle source")
     try:
         value = json.loads(raw)
-        if value["code"] != "200000":
-            raise HistoryImportError("KuCoin rejected candle query")
         doc = value["data"]
-        if doc["tradeType"] != "FUTURES" or doc["symbol"] != CONTRACTS[asset]:
-            raise HistoryImportError("wrong original KuCoin contract/product")
         rows = doc["list"]
     except (TypeError, KeyError, ValueError) as exc:
         raise HistoryImportError("malformed KuCoin UTA candle response") from exc
+    if value.get("code") != "200000":
+        raise HistoryImportError("KuCoin rejected candle query")
+    if doc.get("tradeType") != "FUTURES" or doc.get("symbol") != CONTRACTS[asset]:
+        raise HistoryImportError("wrong original KuCoin contract/product")
     if not isinstance(rows, list) or len(rows) >= MAX_CANDLES:
         raise HistoryImportError("KuCoin original candle page truncated/invalid")
     period = KLINES[family][2]
@@ -187,11 +187,11 @@ def validate_oi(raw: bytes, *, start: datetime, end: datetime) -> list[int]:
         raise HistoryImportError("invalid KuCoin original OI response")
     try:
         doc = json.loads(raw)
-        if doc["code"] != "200000":
-            raise HistoryImportError("KuCoin OI request rejected")
         rows = doc["data"]
     except (TypeError, KeyError, ValueError) as exc:
         raise HistoryImportError("KuCoin OI response changed") from exc
+    if doc.get("code") != "200000":
+        raise HistoryImportError("KuCoin OI request rejected")
     if not isinstance(rows, list) or len(rows) >= MAX_OI_ROWS:
         raise HistoryImportError("KuCoin OI page capped/untrusted")
     times = set()

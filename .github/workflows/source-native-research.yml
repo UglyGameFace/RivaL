@@ -116,7 +116,7 @@ jobs:
           # Discloud PostgreSQL bot, never from GitHub branch text or a guess.
           # Missing/disabled local AI leaves ordinary ML training intact.
           proposal_file="data/native-reports/llm-proposals-${VENUE}.json"
-          python tools/discloud_feature_hypotheses.py --venue "$VENUE" \\
+          python tools/discloud_feature_hypotheses.py --venue "$VENUE" \
             --output "$proposal_file"
           args+=(--llm-hypotheses-file "$proposal_file")
           if [[ -n "$SELECTED_FIRST_MONTH" ]]; then
@@ -147,9 +147,9 @@ jobs:
                 python -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); sys.exit(0 if p.is_file() and json.loads(p.read_text()).get("status") == "source_months_incomplete" else 1)' "$report"; then
               echo "Unverified complete months blocked $VENUE; trying independent OKX research once."
               proposal_file="data/native-reports/llm-proposals-okx.json"
-              python tools/discloud_feature_hypotheses.py --venue okx \\
+              python tools/discloud_feature_hypotheses.py --venue okx \
                 --output "$proposal_file"
-              python -m parlay_bot.research.source_native_offline --venue okx --months 6 --publish \\
+              python -m parlay_bot.research.source_native_offline --venue okx --months 6 --publish \
                 --llm-hypotheses-file "$proposal_file"
             else
               exit "$exit_code"

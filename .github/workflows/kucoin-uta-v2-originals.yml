@@ -15,6 +15,7 @@ on:
       - "src/parlay_bot/research/kucoin_uta_originals.py"
   schedule:
     - cron: "23 1,7,13,19 * * *"
+    - cron: "29 8 * * *"  # OI short retention requires its own daily cadence
   workflow_dispatch:
     inputs:
       family:
@@ -82,7 +83,7 @@ jobs:
         run: python -m pip install -e ".[archive]"
       - name: Acquire source originals using bounded public market API
         env:
-          TARGET_FAMILY: ${{ github.event_name == 'workflow_dispatch' && inputs.family || 'auto' }}
+          TARGET_FAMILY: ${{ github.event_name == 'workflow_dispatch' && inputs.family || (github.event.schedule == '29 8 * * *' && 'open_interest' || 'auto') }}
           TARGET_MONTH: ${{ github.event_name == 'workflow_dispatch' && inputs.month || 'auto' }}
         run: |
           python -m parlay_bot.research.kucoin_uta_originals \
@@ -92,6 +93,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: kucoin-uta-v2-source-progress
-          path: data/native-reports/kucoin-uta-v2-progress.json
+          path: data/native-reports/kucoin-uta-v2-*-progress.json
           retention-days: 14
           if-no-files-found: ignore

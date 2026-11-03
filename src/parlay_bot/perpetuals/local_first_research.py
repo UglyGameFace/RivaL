@@ -1,7 +1,9 @@
 """Local LFM3 research first, optional existing free Cloudflare Worker as backup.
 
-Inherits the already-authoritative user quota, cache and evidence assembly from
-OpenRouterResearch. Neither model may alter scores, positions or promotions.
+Reuses verified evidence and persistent research caching, but never treats
+privately hosted LFM3 calls as metered external-provider requests.
+The optional Cloudflare fallback retains its own external free-tier quota.
+Neither model may alter scores, positions or promotions.
 """
 from __future__ import annotations
 
@@ -41,7 +43,7 @@ def validated(reply: object, expected: str) -> bool:
 
 
 class LocalFirstResearch(OpenRouterResearch):
-    """Only caller-chosen AI research, with one shared PostgreSQL quota slot."""
+    """Private AI requests use bounded concurrency, not daily paid-API caps."""
 
     def __init__(
         self, market, *, local_key: str | None,
@@ -57,7 +59,7 @@ class LocalFirstResearch(OpenRouterResearch):
         )
         # super() sees the explicit client; this class closes its own client.
         self._owned_client = client is None
-        self.model = "rival-local-cloudflare-shared-budget"
+        self.model = LOCAL_MODEL
         # Cache data-only degradation by its honest model identity, never LFM3.
         self._extra_cache_models = (EVIDENCE_MODEL,)
         self._peer_ip: str | None = None
@@ -68,6 +70,29 @@ class LocalFirstResearch(OpenRouterResearch):
             )
             if cloudflare_key else None
         )
+
+    async def _reserve_request(
+        self, *, now, requester_id: int | None,
+    ) -> bool:
+        # There is no monetary/request quota on the owner's private CPU.
+        # Parent ask() still serializes per client with the asyncio lock;
+        # LFM3 itself enforces a one-inference semaphore and request timeout.
+        # Do not write to the third-party perp_ai_quota ledger.
+        return True
+
+    async def request_status(self) -> dict:
+        # Reporting a fictitious 18/day local cap misrepresents ownership.
+        # This is an *admission policy*, not a live health probe.
+        return {
+            "model": LOCAL_MODEL,
+            "ready": self.available,
+            "reasons": () if self.available else ("not_configured",),
+            "retry_at": None,
+            "requests_today": None,
+            "rival_daily_limit": None,
+            "unmetered_local": True,
+            "backup_external_quota": self._backup is not None,
+        }
 
     async def list_advertised_models(self) -> tuple[str, ...]:
         if not self.available:
@@ -85,7 +110,7 @@ class LocalFirstResearch(OpenRouterResearch):
     async def propose_feature_hypothesis(
         self, *, asset: str, venues: tuple[str, ...],
     ) -> dict:
-        """Spend one existing shared quota slot on a bounded research question.
+        """Use the private CPU under the existing lock, without API quotas.
 
         Suggestions cannot write weights or scores. They are recorded separately
         and must compete against a no-LLM baseline on chronological source data.
@@ -105,13 +130,6 @@ class LocalFirstResearch(OpenRouterResearch):
                     > MAX_LOCAL_EVIDENCE_BYTES):
                 raise ResearchUnavailable("Verified feature evidence is oversized")
             now = datetime.now(UTC)
-            reserved = await asyncio.to_thread(
-                self.market.reserve_ai_request,
-                model=self.model, now=now, daily_max=self.daily_max,
-                cooldown_seconds=self.cooldown_seconds,
-            )
-            if not reserved:
-                raise ResearchUnavailable("Shared AI research quota or cooldown reached")
             headers = {
                 "Authorization": f"Bearer {self._key}",
                 "Content-Type": "application/json",
@@ -168,8 +186,9 @@ class LocalFirstResearch(OpenRouterResearch):
             raise ResearchUnavailable("Unapproved local/backup AI model route")
         if len(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode("utf-8")) > MAX_LOCAL_EVIDENCE_BYTES:
             raise ResearchUnavailable("Verified evidence too large for local inference.")
-        # The original OpenRouterResearch.ask() has already reserved ONE shared,
-        # user-fair, persisted request for this entire local-then-backup attempt.
+        # The private LFM3 request is unmetered. External Cloudflare fallback
+        # is separately budgeted only if a local transport/502-504 failure
+        # actually requires it, never for the normal local request.
         try:
             headers = {"Authorization": f"Bearer {self._key}",
                        "Content-Type": "application/json"}
@@ -227,15 +246,26 @@ class LocalFirstResearch(OpenRouterResearch):
             ) from exc
 
         if self._backup is not None and fallbacks == (CLOUD_MODEL,):
-            # Existing optional free backup keeps priority when configured.
-            _LOG.warning("Using explicit Cloudflare research fallback")
-            try:
-                return await self._backup._complete(
-                    selected=CLOUD_MODEL, evidence=evidence, instruction=instruction,
-                    now=now, fallbacks=(),
-                )
-            except ResearchUnavailable:
-                _LOG.warning("Cloudflare unavailable; returning local verified facts")
+            # An external provider *does* have a genuine free-tier allowance.
+            # Reserve only when actually sending an external request.
+            external_allowed = await asyncio.to_thread(
+                self.market.reserve_ai_request,
+                model=self._backup.model,
+                now=now,
+                daily_max=self._backup.daily_max,
+                cooldown_seconds=self._backup.cooldown_seconds,
+            )
+            if external_allowed:
+                _LOG.warning("Using explicitly configured, budgeted Cloudflare backup")
+                try:
+                    return await self._backup._complete(
+                        selected=CLOUD_MODEL, evidence=evidence,
+                        instruction=instruction, now=now, fallbacks=(),
+                    )
+                except ResearchUnavailable:
+                    _LOG.warning("Cloudflare unavailable; returning verified facts")
+            else:
+                _LOG.info("Cloudflare free-tier backup unavailable under its own cap")
         # A CPU timeout must not masquerade as an LFM3 answer. Only the same
         # prevalidated, hashed source evidence can produce this free, read-only
         # deterministic fallback, with its OWN model identity and cache key.

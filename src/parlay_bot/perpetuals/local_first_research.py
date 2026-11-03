@@ -250,8 +250,16 @@ class LocalFirstResearch:
             if response.status_code == 429:
                 raise LocalBusy("RivaL Intelligence busy.")
             if response.status_code != 200:
+                # The gateway returns a bounded failure_kind code (never model
+                # text): surface it so a failing review explains itself.
+                kind = "unknown"
+                try:
+                    body = response.json()
+                    kind = str(body.get("failure_kind") or body.get("error") or "unknown")[:40]
+                except ValueError:
+                    pass
                 raise ResearchUnavailable(
-                    f"RivaL Intelligence review failed (HTTP {response.status_code}).")
+                    f"RivaL Intelligence review failed (HTTP {response.status_code}, {kind}).")
             data = response.json()
             if not (isinstance(data, dict) and data.get("model") == LOCAL_MODEL
                     and data.get("mode") == "explain"

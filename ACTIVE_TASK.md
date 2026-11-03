@@ -1,3 +1,14 @@
+## Active: private RivaL Intelligence model-research integration (2026-11-03 UTC)
+
+- **Objective:** Use the existing isolated LFM3 1.7B model to propose testable feature hypotheses for all four crypto assets, measure their deterministic out-of-sample research impact, and preserve the independent forward/after-cost promotion gate. No paid provider, API-key rewrite, live-model replacement, or unauthorized bet.
+- **PR:** [#280](https://github.com/UglyGameFace/RivaL/pull/280) branch `feat/llm-guided-source-native-challenger-research-20261102`. Adds private authenticated `/v1/hypothesis` endpoint with four fixed feature families and strict JSON schema, a quota-accounted Postgres-backed daily four-asset experiment scheduler, read-only bounded Discloud console proposal retrieval, and original-venue chronological **training/validation-only** masked-logistic comparisons. The same endpoint is checked by the standalone Intelligence release.
+- **Source truth:** All proposals require real source-evidence SHA256, immutable proposal SHA, selected asset, verified exchange scope and timestamp. An unknown model, missing host token, stale or forged proposal cannot enter training. No LFM-generated probabilities, prices, weights, model-import candidates, sealed holdout results or trading orders.
+- **Activation:** Bot feature requires `RIVAL_AI_PROVIDER=local` and `RIVAL_LOCAL_AI_TOKEN` matching the dedicated LFM3 service `RIVAL_LLM_SHARED_TOKEN`; source-native GitHub requires existing main bot `DISCLOUD_TOKEN` and `DISCLOUD_APP_ID` to read on-host saved proposals. Source-native training still runs if no AI evidence exists, reporting zero tests. Observe actual live receipts after merge; do not assume live host variables from code.
+- **Validation:** Full CI, llama.cpp standalone source/package acceptance, source integrity tests, real main Discloud release, Intelligence mirror/release and authenticated synthetic `/v1/hypothesis` smoke receipt. Then observe first *actual* post-issuance proposal in Postgres and measured no-LLM baseline comparisons in GitHub research. These cannot be proven before their run or future outcomes exist.
+- **Not done merely by code:** Scientific benefit on never-seen outcomes, screened model admission, 150 distinct future outcomes, 21 days, 80% quote coverage, positive stressed after-cost performance, and independently verified promotion/rollback. Keep issue #6 open. No fictitious improvement across all assets.
+
+---
+
 ## Active: improve source-native forecast probabilities without weakening proof (2026-11-02)
 
 - **Objective:** Move beyond functioning historical training to genuine chronological validation improvement for source-matched OKX BTC/ETH/SOL/XRP logistic models. Preserve frozen holdout, original source identities, importer validation and prospective after-cost gates.

@@ -14,7 +14,6 @@ from parlay_bot.perpetuals.forward_tracking import (
 )
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
-
 START = datetime(2026, 11, 2, 18, tzinfo=UTC)
 
 

@@ -155,20 +155,22 @@ async def test_open_live_menu_updates_continuously_then_yields_to_navigation(tmp
 
 
 @pytest.mark.asyncio
-async def test_contract_ai_wiring_survives_disabled_exchange_collection(tmp_path):
+async def test_local_only_wiring_survives_disabled_exchange_collection(tmp_path):
     bot = RivalDiscordClient(Settings(
         _env_file=None, rival_storage_backend="sqlite", discord_token=None,
         rival_db_path=str(tmp_path / "polymarket-only.sqlite"),
-        rival_perp_collection_enabled=False, open_router_api_key="test-key",
+        rival_perp_collection_enabled=False,
+        rival_local_ai_token="local-test-token",
+        open_router_api_key="retired-ignored-token",
     ))
     try:
         assert bot.perp_collector is None
-        assert bot.polymarket_research.ai is bot.gemini_research
-        assert bot.polymarket_research.ai.available
+        assert bot.intelligence_research is not None
+        assert bot.intelligence_research.available
+        assert bot.polymarket_research.ai is None
         assert bot.polymarket_board.research is bot.polymarket_research
         assert bot.auto_hunt.contract_research is bot.polymarket_research
     finally:
-        await bot.gemini_research.aclose()
         await _close(bot)
 
 

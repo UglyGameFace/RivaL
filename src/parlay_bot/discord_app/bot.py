@@ -170,6 +170,7 @@ class RivalDiscordClient(discord.Client):
         self._status_task: asyncio.Task[None] | None = None
         self._benefit_task: asyncio.Task[None] | None = None
         self._intelligence_task: asyncio.Task[None] | None = None
+        self._context_task: asyncio.Task[None] | None = None
         self._status_policy = StatusPostPolicy()
         self.liquidity_last_bucket: str | None = None
         self.tree = app_commands.CommandTree(self)
@@ -1895,6 +1896,10 @@ class RivalDiscordClient(discord.Client):
                 self._benefit_task = asyncio.create_task(
                     self._benefit_loop(), name="rival-performance-refresh",
                 )
+            if self._context_task is None:
+                self._context_task = asyncio.create_task(
+                    self._context_loop(), name="rival-binance-context",
+                )
             if (self._intelligence_task is None
                     and isinstance(self.intelligence_research, LocalFirstResearch)
                     and self.intelligence_research.available):
@@ -2037,6 +2042,24 @@ class RivalDiscordClient(discord.Client):
             problem_totals=self.problem_log.totals(),
             research=research,
         )
+
+    async def _context_loop(self) -> None:
+        """Keep live Binance context (flow, premium, funding) for the models."""
+        from parlay_bot.perpetuals.binance_context import BinanceContextFeed
+
+        feed = BinanceContextFeed()
+        self.perp_collector.market.binance_context = feed
+        try:
+            while not self.is_closed():
+                try:
+                    await asyncio.wait_for(feed.refresh(), timeout=25)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - optional model inputs only
+                    _LOG.warning("Binance context refresh timed out or failed")
+                await asyncio.sleep(30)
+        finally:
+            await feed.aclose()
 
     async def _status_loop(self) -> None:
         """Post the status card on start, on confirmed change, and daily."""
@@ -2510,8 +2533,10 @@ class RivalDiscordClient(discord.Client):
                 calls = await asyncio.to_thread(
                     model_calls, self.perp_collector.market, asset=asset,
                 )
+                feed = getattr(self.perp_collector.market, "binance_context", None)
                 review = await self.intelligence_research.explain_models(
                     asset=asset, venues=tuple(self.perp_collector.providers), calls=calls,
+                    market_context=feed.numbers(asset) if feed else None,
                 )
                 saved = await asyncio.to_thread(
                     ledger.record, asset=asset, calls=calls, review=review,
@@ -3196,7 +3221,7 @@ class RivalDiscordClient(discord.Client):
         "_liquidity_task",
         "_target_task", "_sports_results_task", "_sports_task",
         "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
-        "_hypothesis_task", "_candidate_task", "_archive_task",
+        "_hypothesis_task", "_candidate_task", "_archive_task", "_context_task",
         "_heartbeat_task", "_status_task", "_benefit_task", "_intelligence_task",
     )
 

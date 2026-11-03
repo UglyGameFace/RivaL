@@ -1,0 +1,162 @@
+"""Warehouse-first source files for model training (private Google Drive).
+
+Every official Binance file training needs is read from the RivaL Drive
+warehouse when present. A file not yet in the warehouse is downloaded from
+the official source once, verified against Binance's published SHA256
+checksum when Binance publishes one, and saved into the warehouse, so the warehouse converges to the
+complete training set. Training never depends on an unverified byte.
+"""
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import logging
+import re
+from pathlib import Path
+
+_LOG = logging.getLogger(__name__)
+OFFICIAL = "https://data.binance.vision/data/futures/um/"
+PREFIX = "rival-src__"
+# Names already used by the existing warehouse collectors.
+_KLINES = re.compile(r"monthly/klines/(\w+USDT)/5m/(\1-5m-20\d\d-\d\d\.zip)")
+_AUX = re.compile(r"monthly/(premiumIndexKlines|fundingRate)/([A-Z]+)USDT/(?:5m/)?"
+                  r"\2USDT-(?:5m|fundingRate)-(20\d\d-\d\d)\.zip")
+_AUX_FAMILY = {"premiumIndexKlines": "premium", "fundingRate": "funding"}
+
+
+def warehouse_names(url: str) -> tuple[str, ...]:
+    """Acceptable warehouse names for an official URL, preferred first."""
+    if not url.startswith(OFFICIAL):
+        raise ValueError("not an official Binance futures data URL")
+    path = url[len(OFFICIAL):]
+    if not re.fullmatch(r"[A-Za-z0-9_./-]{10,200}", path) or ".." in path:
+        raise ValueError("untrusted source path")
+    names = [PREFIX + path.replace("/", "__")]
+    if match := _KLINES.fullmatch(path):
+        names.insert(0, match.group(2))
+    elif match := _AUX.fullmatch(path):
+        names.insert(0, f"binance-aux-{match.group(2)}-{_AUX_FAMILY[match.group(1)]}-"
+                        f"{match.group(3)}--")  # followed by a digest prefix
+    return tuple(names)
+
+
+class TrainingWarehouse:
+    def __init__(self, drive, cache: Path, *, max_uploads: int = 1500) -> None:
+        self.drive = drive
+        self.cache = cache
+        self.max_uploads = max_uploads
+        self.index: dict[str, tuple[str, str, int]] = {}
+        self.stats = {"from_warehouse": 0, "official_saved": 0, "official_not_saved": 0,
+                      "missing_at_source": 0, "save_failed": 0}
+        self._upload_lock = asyncio.Semaphore(4)
+
+    async def load_index(self) -> None:
+        """One bounded listing per naming family in the warehouse history folder."""
+        drive = self.drive
+        await drive._verify_folder_boundary()
+        folder = drive.folders.history
+        for token in ("USDT-5m-", "binance-aux-", PREFIX):
+            page = None
+            for _ in range(200):
+                params = {
+                    "q": (f"'{drive._escape_query(folder)}' in parents and trashed = false "
+                          f"and name contains '{token}'"),
+                    "spaces": "drive", "pageSize": 1000,
+                    "fields": "nextPageToken,files(id,name,size,md5Checksum,parents)",
+                }
+                if page:
+                    params["pageToken"] = page
+                response = await drive._client.get(f"{drive.DRIVE_URL}/files", params=params,
+                                                   headers=await drive._headers())
+                response.raise_for_status()
+                doc = response.json()
+                for row in doc.get("files") or ():
+                    if folder in (row.get("parents") or ()) and row.get("md5Checksum"):
+                        self.index[str(row["name"])] = (
+                            str(row["id"]), str(row["md5Checksum"]), int(row.get("size") or 0))
+                page = doc.get("nextPageToken")
+                if not page:
+                    break
+        _LOG.info("warehouse index: %d files", len(self.index))
+
+    def _lookup(self, url: str):
+        """(zip entry, checksum entry or None) for the first stored name."""
+        for name in warehouse_names(url):
+            if name.endswith("--"):  # digest-suffixed auxiliary original
+                hits = sorted(k for k in self.index
+                              if k.startswith(name) and k.endswith(".zip"))
+                if hits:
+                    return self.index[hits[0]], self.index.get(hits[0] + ".CHECKSUM")
+            elif name in self.index:
+                return self.index[name], self.index.get(name + ".CHECKSUM")
+        return None
+
+    async def _download(self, file_id: str, md5: str) -> bytes:
+        drive = self.drive
+        response = await drive._client.get(f"{drive.DRIVE_URL}/files/{file_id}",
+                                           params={"alt": "media"},
+                                           headers=await drive._headers())
+        response.raise_for_status()
+        raw = response.content
+        if hashlib.md5(raw, usedforsecurity=False).hexdigest() != md5:
+            raise ValueError("warehouse bytes failed integrity check")
+        return raw
+
+    async def _save(self, url: str, raw: bytes) -> None:
+        from parlay_bot.research.publish import _artifact
+
+        name = warehouse_names(url)[-1]
+        if self.stats["official_saved"] >= self.max_uploads:
+            self.stats["official_not_saved"] += 1
+            return
+        self.stats["official_saved"] += 1  # reserve before awaiting
+        path = self.cache / "upload" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        try:
+            async with self._upload_lock:
+                await self.drive.ensure_history_file(
+                    artifact=_artifact(path, 1),
+                    batch_id="src-" + hashlib.sha256(name.encode()).hexdigest()[:40],
+                    mime_type="application/zip",
+                )
+        except Exception:  # noqa: BLE001 - training continues on verified bytes
+            self.stats["official_saved"] -= 1
+            self.stats["save_failed"] += 1
+            _LOG.warning("could not save %s to the warehouse", name)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def fetcher(self, official_fetch):
+        """A drop-in for feature_signal_experiment.fetch (warehouse first)."""
+        async def fetch(client, url, cache, sem):
+            local = cache / hashlib.sha1(url.encode()).hexdigest()
+            if local.exists():
+                raw = local.read_bytes() or None
+                if raw is not None and self._lookup(url) is None:
+                    await self._save(url, raw)  # cached official bytes -> warehouse
+                return raw
+            hit = self._lookup(url)
+            if hit is not None:
+                try:
+                    (file_id, md5, _), checksum = hit
+                    async with sem:
+                        raw = await self._download(file_id, md5)
+                        if checksum is not None:
+                            # Binance's own published SHA256 for this file.
+                            expected = (await self._download(checksum[0], checksum[1])
+                                        ).decode().split()[0].lower()
+                            if hashlib.sha256(raw).hexdigest() != expected:
+                                raise ValueError("warehouse file differs from Binance's")
+                    local.write_bytes(raw)
+                    self.stats["from_warehouse"] += 1
+                    return raw
+                except Exception:  # noqa: BLE001 - fall back to the official original
+                    _LOG.warning("warehouse read failed for %s; using official file", url)
+            raw = await official_fetch(client, url, cache, sem)  # checksum-verified
+            if raw is None:
+                self.stats["missing_at_source"] += 1
+                return None
+            await self._save(url, raw)
+            return raw
+        return fetch

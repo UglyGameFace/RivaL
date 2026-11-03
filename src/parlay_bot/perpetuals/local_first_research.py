@@ -206,7 +206,7 @@ class LocalFirstResearch:
             )
 
     async def explain_models(self, *, asset: str, venues: tuple[str, ...],
-                             calls: dict) -> dict:
+                             calls: dict, market_context: dict | None = None) -> dict:
         """RivaL Intelligence reviews the prediction models' current calls.
 
         Returns per-timeframe 'follow'/'abstain' stances plus a short
@@ -223,6 +223,8 @@ class LocalFirstResearch:
                 horizon_minutes=5,
             )
             evidence = {**evidence, "model_calls": calls}
+            if market_context:
+                evidence["market_context"] = market_context
             if len(json.dumps(evidence, sort_keys=True, separators=(",", ":"),
                               default=str).encode("utf-8")) > MAX_LOCAL_EVIDENCE_BYTES:
                 raise ResearchUnavailable("Model review evidence too large.")

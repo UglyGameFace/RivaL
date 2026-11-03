@@ -26,7 +26,7 @@ from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.perpetuals.model_checkpoints import LiveModelCheckpoints
 from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
 from parlay_bot.perpetuals.path_forward import ProspectivePathLedger
-from parlay_bot.perpetuals.pooled_features import live_vector
+from parlay_bot.perpetuals.pooled_features import model_vector
 from parlay_bot.perpetuals.pooled_model import PooledModelSet
 from parlay_bot.perpetuals.pooled_model import probability as pooled_probability
 from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
@@ -166,7 +166,8 @@ class ForwardAccuracyMonitor:
         return current
 
     @staticmethod
-    def _pooled_calls(pooled_set, horizon: int, vector) -> list[dict]:
+    def _pooled_calls(pooled_set, horizon: int, vectors) -> list[dict]:
+        vector = (vectors or {}).get(horizon)
         if pooled_set is None or vector is None:
             return []
         doc = pooled_set.active(horizon)
@@ -709,7 +710,16 @@ class ForwardAccuracyMonitor:
                                 ))
                             btc_rows = btc_cache[venue]
                         if coin is not None:
-                            pooled_vector = live_vector(candles, asset=coin, btc_candles=btc_rows)
+                            context = getattr(self.market, "binance_context", None)
+                            # Per horizon: each active model gets the inputs
+                            # its own version was trained on.
+                            pooled_vector = {
+                                h: model_vector(
+                                    doc, candles, asset=coin, btc_candles=btc_rows,
+                                    context=context.bundle(coin) if context else None)
+                                for h in HORIZONS
+                                if (doc := pooled_set.active(h)) is not None
+                            }
                     except Exception:  # noqa: BLE001 - optional challenger only
                         _LOG.exception("RivaL pooled model inputs unavailable")
                 for horizon in HORIZONS:

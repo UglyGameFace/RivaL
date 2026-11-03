@@ -161,3 +161,105 @@ def test_pooled_prediction_enters_shadow_ledger(tmp_path):
             .58, "f" * 64, 99)
     finally:
         store.close()
+
+
+def _context(n=700, seed=11, start=datetime(2026, 3, 1, tzinfo=UTC), funding_every=96):
+    """Synthetic Binance context in both the live bundle and training-frame shapes."""
+    from parlay_bot.research.pooled_training import funding_at_bars
+
+    rng = np.random.default_rng(seed)
+    closes = [start + timedelta(minutes=5 * (i + 1)) for i in range(n)]
+    volume = rng.uniform(10, 100, n)
+    volume[50] = 0.0  # zero-volume bar
+    taker = volume * rng.uniform(0.2, 0.8, n)
+    trades = rng.integers(0, 400, n).astype(float)
+    premium = rng.normal(0, 3e-4, n)
+    premium_map = {t: float(p) for t, p in zip(closes, premium)}
+    del premium_map[closes[n - 100]]  # one missing premium bar
+    funding_times = [start + timedelta(hours=8 * i, milliseconds=7) for i in range(n // 96 + 2)]
+    rates = rng.normal(1e-4, 5e-5, len(funding_times))
+    bundle = {
+        "klines": [(t, float(v), float(b), float(c))
+                   for t, v, b, c in zip(closes, volume, taker, trades)],
+        "premium": premium_map,
+        "funding": list(zip(funding_times, (float(r) for r in rates))),
+    }
+    index = pd.DatetimeIndex(closes)
+    k = pd.DataFrame({"volume": volume, "taker_buy_volume": taker, "count": trades,
+                      "prem": [premium_map.get(t, np.nan) for t in closes]}, index=index)
+    k["fund"] = funding_at_bars(index, pd.DataFrame({
+        "time": pd.DatetimeIndex(funding_times), "rate": rates}))
+    return bundle, k, closes
+
+
+def test_context_inputs_match_training_inputs():
+    from parlay_bot.perpetuals.pooled_features import CONTEXT_FEATURES, context_vector
+    from parlay_bot.research.pooled_training import frame_context
+
+    bundle, k, closes = _context()
+    trained = frame_context(k)
+    checked = 0
+    for end in (WINDOW, 480, len(closes) - 100, len(closes) - 50, len(closes)):
+        live = context_vector(bundle, closes[end - 1])
+        for name, got in zip(CONTEXT_FEATURES, live, strict=True):
+            want = float(trained.iloc[end - 1][name])
+            if math.isnan(want):
+                assert math.isnan(got), (name, end)
+            else:
+                checked += 1
+                assert got == pytest.approx(want, rel=1e-5, abs=1e-6), (name, end)
+    assert checked > 30
+
+
+def test_funding_counts_only_after_it_is_known():
+    from parlay_bot.perpetuals.pooled_features import context_vector
+
+    bundle, _, closes = _context()
+    settle = bundle["funding"][5][0]  # 40 h in (past the 420-bar window), at :00.007
+    at_settle = settle.replace(microsecond=0)
+    before = context_vector(bundle, at_settle)[-1]
+    after = context_vector(bundle, at_settle + timedelta(minutes=5))[-1]
+    assert before == pytest.approx(bundle["funding"][4][1] * 1e4, rel=1e-5)
+    assert after == pytest.approx(bundle["funding"][5][1] * 1e4, rel=1e-5)
+
+
+def test_v2_models_never_predict_without_context():
+    from parlay_bot.perpetuals.pooled_features import FEATURE_VERSION_V2, model_vector
+
+    coin = bars(seed=5)
+    v2 = {"feature_version": FEATURE_VERSION_V2}
+    assert model_vector(v2, coin, asset="BTC", context=None) is None
+    assert len(model_vector({"feature_version": "x"}, coin, asset="BTC")) == len(FEATURES)
+
+
+def test_v2_document_validates_with_wider_inputs():
+    from parlay_bot.perpetuals.pooled_features import FEATURE_VERSION_V2, FEATURES_V2
+
+    last = len(FEATURES_V2) - 1
+    doc = {"schema": "rival-pooled-model-v1", "feature_version": FEATURE_VERSION_V2,
+           "features": list(FEATURES_V2), "horizon_minutes": 15,
+           "trees": [[[last, 0.0, 1, 2, 1, 2], [0.4], [-0.4]]]}
+    validate(doc)
+    vector = [0.0] * len(FEATURES_V2)
+    vector[last] = 1.0
+    assert raw_score(doc, vector) == -0.4
+    with pytest.raises(ValueError):
+        probability(doc, [0.0] * len(FEATURES))
+
+
+def test_warehouse_names_reuse_existing_collector_files():
+    from parlay_bot.research.training_warehouse import OFFICIAL, warehouse_names
+
+    assert warehouse_names(OFFICIAL + "monthly/klines/BTCUSDT/5m/BTCUSDT-5m-2024-01.zip")[0] \
+        == "BTCUSDT-5m-2024-01.zip"
+    assert warehouse_names(
+        OFFICIAL + "monthly/premiumIndexKlines/ETHUSDT/5m/ETHUSDT-5m-2024-02.zip")[0] \
+        == "binance-aux-ETH-premium-2024-02--"
+    assert warehouse_names(
+        OFFICIAL + "monthly/fundingRate/SOLUSDT/SOLUSDT-fundingRate-2023-05.zip")[0] \
+        == "binance-aux-SOL-funding-2023-05--"
+    daily = warehouse_names(
+        OFFICIAL + "daily/metrics/XRPUSDT/XRPUSDT-metrics-2024-03-01.zip")
+    assert daily == ("rival-src__daily__metrics__XRPUSDT__XRPUSDT-metrics-2024-03-01.zip",)
+    with pytest.raises(ValueError):
+        warehouse_names("https://example.com/evil.zip")

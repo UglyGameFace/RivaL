@@ -13,7 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.features import persisted_candles
 from parlay_bot.perpetuals.markets import asset_for_contract
-from parlay_bot.perpetuals.pooled_features import WINDOW, bar_close, live_vector
+from parlay_bot.perpetuals.pooled_features import WINDOW, bar_close, model_vector
 from parlay_bot.perpetuals.pooled_model import probability
 
 _LOG = logging.getLogger(__name__)
@@ -62,6 +62,8 @@ class PolymarketPooledForecaster:
         if not start <= clock < start + timedelta(minutes=5):
             return None
         streams, btc = self._streams(asset, start - timedelta(minutes=15))
+        feed = getattr(self.market, "binance_context", None)
+        context = feed.bundle(asset) if feed else None
         probabilities = []
         for venue, source in sorted(streams.items()):
             try:
@@ -71,7 +73,8 @@ class PolymarketPooledForecaster:
                 btc_bars = None
                 if asset != "BTC" and venue in btc:
                     btc_bars = self._bars(venue, btc[venue], start, clock, 30)
-                vector = live_vector(bars, asset=asset, btc_candles=btc_bars)
+                vector = model_vector(doc, bars, asset=asset, btc_candles=btc_bars,
+                                      context=context)
                 if vector is not None:
                     probabilities.append(probability(doc, vector))
             except Exception:  # noqa: BLE001 - one venue never blocks the others

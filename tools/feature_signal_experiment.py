@@ -41,7 +41,7 @@ HORIZONS = (5, 15, 60)
 TRAIN_END = pd.Timestamp("2025-01-01", tz="UTC")
 TEST_START = pd.Timestamp("2026-01-01", tz="UTC")
 FIRST_MONTH = "2020-01"
-METRICS_FROM = date(2023, 1, 1)
+METRICS_FROM = date(2021, 12, 1)  # Binance metrics archive start
 
 
 def months(first: str, last: str) -> list[str]:
@@ -96,7 +96,9 @@ KLINE = ["open_time", "open", "high", "low", "close", "volume", "close_time",
          "quote_volume", "count", "taker_buy_volume", "taker_buy_quote_volume"]
 
 
-async def load_asset(client, asset: str, last_month: str, cache: Path, sem) -> pd.DataFrame:
+async def load_asset(client, asset: str, last_month: str, cache: Path, sem,
+                     fetcher=None) -> pd.DataFrame:
+    get = fetcher or fetch
     sym = f"{asset}USDT"
     ms = months(FIRST_MONTH, last_month)
     kl_urls = [f"{BASE}/monthly/klines/{sym}/5m/{sym}-5m-{m}.zip" for m in ms]
@@ -109,7 +111,7 @@ async def load_asset(client, asset: str, last_month: str, cache: Path, sem) -> p
         days.append(d)
         d += timedelta(days=1)
     me_urls = [f"{BASE}/daily/metrics/{sym}/{sym}-metrics-{x.isoformat()}.zip" for x in days]
-    raws = await asyncio.gather(*(fetch(client, u, cache, sem)
+    raws = await asyncio.gather(*(get(client, u, cache, sem)
                                   for u in kl_urls + pr_urls + fu_urls + me_urls))
     n1, n2, n3 = len(kl_urls), len(kl_urls) + len(pr_urls), len(kl_urls) + len(pr_urls) + len(fu_urls)
     kl = [read_zip_csv(r, KLINE) for r in raws[:n1] if r]
@@ -141,7 +143,9 @@ async def load_asset(client, asset: str, last_month: str, cache: Path, sem) -> p
         f["calc_time"] = pd.to_numeric(f["calc_time"], errors="coerce")
         f["fund"] = pd.to_numeric(f["last_funding_rate"], errors="coerce")
         f = f.dropna(subset=["calc_time"]).sort_values("calc_time")
-        f["known"] = pd.to_datetime(f["calc_time"].astype("int64"), unit="ms", utc=True)
+        # Same rule as live (pooled_features.funding_known_at).
+        f["known"] = (pd.to_datetime(f["calc_time"].astype("int64"), unit="ms", utc=True)
+                      .dt.floor("min") + pd.Timedelta(minutes=1))
         k = pd.merge_asof(k.reset_index().sort_values("t"), f[["known", "fund"]].sort_values("known"),
                           left_on="t", right_on="known", direction="backward").set_index("t")
     else:

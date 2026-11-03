@@ -17,6 +17,27 @@ Only the authenticated private gateway is contacted. A busy 429 or invalid respo
 
 Existing PostgreSQL quota rows, old provider-specific research and historic forecast receipts are preserved for audit. The new local provider never reserves external quota slots or re-labels old results. Mathematical predictions, source-native historical data admission, contract-oracle settlement and prospective after-cost evidence remain authoritative; an LLM explanation is not a calibrated profitable signal. Polymarket-specific local contract AI is not implemented and no unrelated exchange candle output is substituted.
 
+
+## Task-specific local inference profiles
+
+The normal `/v1/research` endpoint stays brief at **140 generation / 4096 total context tokens**, while `/v1/hypothesis` remains **136 / 4096**. Neither uses any paid-token accounting or daily usage quota.
+
+An explicitly requested `/v1/extended-research` call uses **384 generation / 6144 total context tokens**. It summarizes the same source-bound evidence with additional 4h observations and bounded historical bar counts, and proposes a short list of *unproven research checks*. Its suggestions cannot change trading decisions, forecast confidence, source qualification, model weights, or promotion gates. Both modes use the real deployed tokenizer to reject overfull prompts; no source evidence is silently truncated. The gateway still handles only one inference at a time.
+
+**Production opt-in:** `RIVAL_LLM_CONTEXT_TOKENS=4096` (default) boots the existing lightweight llama.cpp configuration and rejects extended calls with HTTP 422. Set `RIVAL_LLM_CONTEXT_TOKENS=6144` **only after measuring memory headroom and latency on the actual Discloud host**. This controls the *real* `--ctx-size` of the backend and the gateway's matching extended-research admission. Only 4096 and 6144 are valid to prevent arbitrary RAM expansion. No external AI provider is used. Extended calls allow up to 90 seconds of CPU inference (plus transport overhead), so they are deliberately separate from low-latency Discord interactions.
+
+**Benchmark each profile** using the existing synthetic, non-trading cases against a private deployed service. The benchmark measures response validity, evidence fidelity, future-direction abstention, failure rate, and p50/p95/max request latency. It cannot prove model accuracy or estimate peak RAM from network timings; measure Discloud RSS/peak process memory during the run before enabling extended mode.
+
+```bash
+cd services/rival-llm
+python benchmark.py --profile research --repetitions 3 --output /tmp/rival-brief.json
+# After explicitly enabling 6144 tokens on a test/canary host:
+python benchmark.py --profile extended --repetitions 3 --output /tmp/rival-extended.json
+python benchmark.py --compare-with /tmp/rival-brief.json --output /tmp/rival-extended.json
+```
+
+Do not enable extended research by default for Discord, or auto-promote this profile/model based on synthetic benchmark scores. First require no response-schema regressions, no safety/grounding regressions, acceptable host memory headroom and latency, plus successful authenticated LFM3 canary requests. Existing production `/v1/research` callers require no changes. Actual Discloud benchmark and deployment validation have not been performed by this code change.
+
 ## Acceptance
 
 Ruff plus full PostgreSQL-backed pytest must pass; tests should prove more than 18 distinct local requests without quota writes, no external fallback, caching, evidence validation, local CPU admission, safe failures and private gateway authentication. After merge, require a green main build, deployed Discloud bot, authenticated standalone LFM3 health/research smoke and a new persisted hypothesis receipt before claiming full production operation.

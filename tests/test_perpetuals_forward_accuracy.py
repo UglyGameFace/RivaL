@@ -397,3 +397,44 @@ def test_unpromoted_historical_challenger_cannot_change_authoritative_forecast(
     assert actual_lineage == expected_lineage
     assert all(row[2] is None for row in actual_lineage)
 
+
+
+def test_headline_summary_excludes_other_historical_model_versions(tmp_path):
+    """Current score must not borrow old model wins or losses."""
+    from parlay_bot.perpetuals.forward_audit import MODEL
+
+    store = SQLiteHotStore(tmp_path / "forward-model-scope.sqlite")
+    market = PerpetualMarketStore(store)
+    monitor = ForwardAccuracyMonitor(market)
+    now = datetime.now(UTC)
+    try:
+        monitor.initialize()
+        with store.connect() as conn:
+            for i, version in enumerate((MODEL, "retired-legacy-model-v1")):
+                reference = now - timedelta(minutes=35 + 15*i)
+                target = reference + timedelta(minutes=5)
+                issued = reference + timedelta(minutes=4)
+                settled = target + timedelta(minutes=6)
+                p = .8 if i == 0 else .1
+                y = 1
+                conn.execute(
+                    """INSERT INTO perp_forward_audit
+                       (venue,contract,quote,asset,horizon_minutes,model_version,
+                        reference_opened_at,reference_close,issued_at,target_opened_at,
+                        probability_up,baseline_up,training_evaluated,settled_at,
+                        outcome_up,realized_close,model_brier,baseline_brier)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("hyperliquid", "BTC", "USDC", "BTC", 5, version,
+                     reference.isoformat(), 100, issued.isoformat(),
+                     target.isoformat(), p, .5, 30, settled.isoformat(),
+                     y, 102, (p-y)**2, .25),
+                )
+        report = monitor.summary(asset="BTC", now=now)
+        recent = report["last_7d"][5]
+        assert report["model"] == MODEL
+        assert recent["issued"] == recent["settled"] == recent["scored"] == 1
+        assert recent["correct"] == 1
+        assert recent["brier"] == pytest.approx(.04)
+        assert recent["baseline_brier"] == pytest.approx(.25)
+    finally:
+        store.close()

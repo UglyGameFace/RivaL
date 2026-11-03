@@ -67,9 +67,11 @@ async def test_scorecard_is_short_source_specific_and_skips_heavy_training(tmp_p
 
     home.training_status = heavy_training
     monkeypatch.setattr(home_module, "_performance_exchange", lambda *_: _score())
-    monkeypatch.setattr(home_module, "_performance_learning", lambda *_: {
-        "benefit": {"status": "insufficient", "targets": 198, "days": 2},
-        "lineage": {"lineage_proven": 10, "historically_seeded": 0},
+    monkeypatch.setattr(home_module, "_performance_benefit", lambda *_: {
+        "status": "insufficient", "targets": 198, "days": 2,
+    })
+    monkeypatch.setattr(home_module, "_performance_lineage", lambda *_: {
+        "lineage_proven": 10, "historically_seeded": 0,
     })
     monkeypatch.setattr(home_module, "_performance_cycles", lambda *_: {
         "forecast": {
@@ -93,8 +95,13 @@ async def test_scorecard_is_short_source_specific_and_skips_heavy_training(tmp_p
         ]
         assert "Profitable predictions: not proven yet" in panel.description
         assert "Not better than a basic prediction" in fields["📈 How accurate are BTC exchange predictions?"]
+        assert "Probability error (Brier):** RivaL 0.310 vs basic forecast 0.240" in (
+            fields["📈 How accurate are BTC exchange predictions?"]
+        )
+        assert "incumbent model only" in fields["📈 How accurate are BTC exchange predictions?"]
         assert "6/7 comparable results" in fields["📈 How accurate are BTC exchange predictions?"]
         assert "Not better than market prices" in fields["🎯 How accurate are Polymarket predictions?"]
+        assert "Probability error (Brier)" in fields["🎯 How accurate are Polymarket predictions?"]
         assert "Past results learned from:** 402 (not live predictions)" in fields["🎯 How accurate are Polymarket predictions?"]
         assert "Not enough future results to tell yet" in fields["🧠 Is RivaL actually learning?"]
         assert "Used verified historical training:** 0/10 recent predictions" in fields["🧠 Is RivaL actually learning?"]
@@ -111,8 +118,10 @@ async def test_slow_or_broken_learning_cannot_hide_exchange_or_cycle(tmp_path, m
     bot, home = _make_home(tmp_path)
     now = datetime.now(UTC)
     monkeypatch.setattr(home_module, "_performance_exchange", lambda *_: _score())
-    monkeypatch.setattr(home_module, "_performance_learning", lambda *_:
+    monkeypatch.setattr(home_module, "_performance_benefit", lambda *_:
                         (_ for _ in ()).throw(RuntimeError("learning read failure")))
+    monkeypatch.setattr(home_module, "_performance_lineage", lambda *_:
+                        (_ for _ in ()).throw(RuntimeError("lineage read failure")))
     monkeypatch.setattr(home_module, "_performance_cycles", lambda *_: {
         "forecast": {"status": "recorded", "checked_at": now, "issued": 7, "expired": 0},
         "learning": {"status": "unavailable"},
@@ -243,3 +252,28 @@ def test_empty_cycle_tables_are_absent_not_misreported_as_healthy():
     market = SimpleNamespace(store=_MappingRowStore(learning=None, forecast=None))
     result = home_module._performance_cycles(market)
     assert result == {"forecast": None, "learning": None}
+
+
+@pytest.mark.asyncio
+async def test_timed_out_improvement_still_shows_training_lineage(tmp_path, monkeypatch):
+    bot, home = _make_home(tmp_path)
+    now = datetime.now(UTC)
+    monkeypatch.setattr(home_module, "_performance_exchange", lambda *_: _score())
+    monkeypatch.setattr(home_module, "_performance_benefit", lambda *_:
+                        (_ for _ in ()).throw(TimeoutError("independent score unavailable")))
+    monkeypatch.setattr(home_module, "_performance_lineage", lambda *_: {
+        "lineage_proven": 100, "historically_seeded": 0,
+    })
+    monkeypatch.setattr(home_module, "_performance_cycles", lambda *_: {
+        "learning": {"status": "recorded", "checked_at": now,
+                     "math_ok": True, "model_review_ok": True, "issued": 108, "settled": 85},
+        "forecast": {"status": "recorded", "checked_at": now,
+                     "issued": 108, "expired": 0},
+    })
+    try:
+        field = _fields(await home.render())["🧠 Is RivaL actually learning?"]
+        assert "Cannot check right now" in field
+        assert "0/100 recent predictions" in field
+        assert "all coins/timeframes" in field
+    finally:
+        await _close(bot, home)

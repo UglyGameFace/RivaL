@@ -279,23 +279,18 @@ def _performance_exchange(market: object, asset: str) -> dict:
     return ForwardAccuracyMonitor(market).summary(asset=asset)
 
 
-def _performance_learning(market: object, asset: str, horizon: int) -> dict:
-    """Separate 14-day improvement check; failure cannot hide the scorecard."""
-    monitor = ForwardAccuracyMonitor(market)
-    result: dict = {}
-    try:
-        result["benefit"] = monitor.active_learning_evidence(
-            asset=asset, horizon_minutes=horizon,
-        )
-    except Exception:  # noqa: BLE001 - independent forward comparison
-        _LOG.exception("Performance forward learning comparison unavailable")
-    try:
-        result["lineage"] = monitor.learning_lineage_summary(
-            asset=asset, horizon_minutes=horizon,
-        )
-    except Exception:  # noqa: BLE001 - provenance failure cannot hide comparisons
-        _LOG.exception("Performance issuance lineage unavailable")
-    return result
+def _performance_benefit(market: object, asset: str, horizon: int) -> dict:
+    """Score improvement independently of the faster historical-lineage query."""
+    return ForwardAccuracyMonitor(market).active_learning_evidence(
+        asset=asset, horizon_minutes=horizon,
+    )
+
+
+def _performance_lineage(market: object, asset: str, horizon: int) -> dict:
+    """Report verified training provenance even when trend scoring times out."""
+    return ForwardAccuracyMonitor(market).learning_lineage_summary(
+        asset=asset, horizon_minutes=horizon,
+    )
 
 
 def _latest_learning_cycle(market: object) -> dict | None:
@@ -1322,9 +1317,14 @@ class GuidedHome(discord.ui.View):
                     asyncio.to_thread(_performance_exchange, self.market, self.coin),
                     timeout=4.0,
                 )
-                readers["comparison"] = asyncio.wait_for(
+                readers["benefit"] = asyncio.wait_for(
                     asyncio.to_thread(
-                        _performance_learning, self.market, self.coin, self.horizon,
+                        _performance_benefit, self.market, self.coin, self.horizon,
+                    ), timeout=4.0,
+                )
+                readers["lineage"] = asyncio.wait_for(
+                    asyncio.to_thread(
+                        _performance_lineage, self.market, self.coin, self.horizon,
                     ), timeout=4.0,
                 )
                 readers["cycles"] = asyncio.wait_for(
@@ -1373,7 +1373,9 @@ class GuidedHome(discord.ui.View):
                     verdict = ("Better in these tests, but not approved for trading"
                                if brier < baseline else "Not better than a basic prediction")
                     scoring = (f"**Against a basic prediction:** {verdict}. "
-                               f"Error score {brier:.3f} vs {baseline:.3f} (lower is better).")
+                               f"**Probability error (Brier):** RivaL {brier:.3f} vs "
+                               f"basic forecast {baseline:.3f}. Lower is better; "
+                               "this is not a software failure or money lost.")
                 else:
                     scoring = "Cannot fairly compare with a basic prediction yet"
                 paired = (
@@ -1382,7 +1384,9 @@ class GuidedHome(discord.ui.View):
                 )
                 exchange_text = (
                     f"**Correct direction:** {accuracy}\n{scoring}\n"
-                    f"**Results checked:** {settled:,} of {issued:,} recorded predictions{paired} (7 days)"
+                    f"**Results checked:** {settled:,} of {issued:,} recorded "
+                    f"predictions{paired} (last 7 days, all collecting exchanges, "
+                    "selected timeframe and incumbent model only)"
                 )
             embed.add_field(name=f"📈 How accurate are {self.coin} exchange predictions?", value=exchange_text, inline=False)
 
@@ -1406,7 +1410,9 @@ class GuidedHome(discord.ui.View):
                     poly_text = (
                         f"**Real-time predictions checked:** {resolved:,} (last {window} days)\n"
                         f"**Compared with market prices:** {outcome}. "
-                        f"Error score {model_error:.3f} vs {market_error:.3f} (lower is better)."
+                        f"**Probability error (Brier):** RivaL {model_error:.3f} vs "
+                        f"market prices {market_error:.3f}. Lower is better; "
+                        "this is not money lost."
                     )
                 else:
                     poly_text = (f"**Real-time predictions checked:** {resolved:,} "
@@ -1431,11 +1437,11 @@ class GuidedHome(discord.ui.View):
                     state = "Running"
                 engine_text = (
                     f"**Is learning running?** {state} (last checked {age} min ago; "
-                    f"{heart['issued']} predictions logged, {heart['settled']} results checked)"
+                    f"{heart['issued']} predictions logged, {heart['settled']} results checked; "
+                    "all coins/timeframes, latest cycle)"
                 )
-            comparison = reports.get("comparison")
-            benefit = comparison.get("benefit") if isinstance(comparison, dict) else None
-            lineage = comparison.get("lineage") if isinstance(comparison, dict) else None
+            benefit = reports.get("benefit")
+            lineage = reports.get("lineage")
             if isinstance(benefit, dict):
                 reason = {
                     "supported": "Possibly improving, not yet approved",
@@ -1498,7 +1504,7 @@ class GuidedHome(discord.ui.View):
                 age = int((now - cycle["checked_at"].astimezone(UTC)).total_seconds() // 60)
                 status = "fresh" if 0 <= age <= 10 else "stale/invalid time"
                 cycle_text = (f"**Prediction checks:** Last ran {age} min ago ({status}); "
-                              f"{cycle['issued']} predictions recorded")
+                              f"{cycle['issued']} predictions recorded (all coins/timeframes, latest cycle)")
             embed.add_field(
                 name="📡 Are market feeds and predictions running?", value=f"{feeds_text}\n{cycle_text}", inline=False,
             )

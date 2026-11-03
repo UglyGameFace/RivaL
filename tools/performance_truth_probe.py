@@ -217,6 +217,26 @@ def probe() -> dict:
         out["benefit_second_run_seconds"] = _timed(
             lambda: monitor.active_learning_evidence(asset="BTC", horizon_minutes=5))[0]
         try:
+            with store.connect() as conn:
+                out["polymarket_hourly"] = [
+                    {k: (v if isinstance(v, (int, float, str)) or v is None else str(v))
+                     for k, v in dict(r).items()}
+                    for r in conn.execute("""
+                        SELECT v.horizon AS h, COUNT(*) AS observed,
+                               SUM(CASE WHEN v.expires_at<? THEN 1 ELSE 0 END) AS expired,
+                               SUM(CASE WHEN o.slug IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
+                               SUM(CASE WHEN a.slug IS NOT NULL THEN 1 ELSE 0 END) AS attempted,
+                               SUM(CASE WHEN v.observed_at<v.expires_at THEN 1 ELSE 0 END)
+                                   AS observed_before_expiry,
+                               MIN(v.slug) AS sample_slug, MAX(v.resolution_source) AS source
+                        FROM rival_polymarket_observations v
+                        LEFT JOIN rival_polymarket_ai_outcomes o ON o.slug=v.slug
+                        LEFT JOIN rival_polymarket_resolution_attempts a ON a.slug=v.slug
+                        WHERE v.asset='BTC' GROUP BY v.horizon""",
+                        (datetime.now(UTC).isoformat(),)).fetchall()]
+        except Exception as exc:  # noqa: BLE001
+            out["polymarket_hourly_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        try:
             import httpx
 
             from parlay_bot.perpetuals.history_recovery import contiguous_forward_next

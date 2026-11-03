@@ -224,9 +224,9 @@ def _plain_training_line(proof: dict, horizon: int) -> str:
     """One plain line per timeframe; training activity is not a prediction win."""
     label = f"**{horizon}-min:**"
     if not proof["forecasts"]:
-        return f"{label} no predictions in the last 7 days to check."
+        return f"{label} No recorded predictions to check yet (last 7 days)."
     if not proof["latest_lineage_verified"]:
-        return (f"{label} cannot confirm how the latest prediction was trained "
+        return (f"{label} Cannot confirm how the latest prediction was trained "
                 f"(no training record on {proof['lineage_unknown']} of "
                 f"{proof['forecasts']} recent predictions).")
     seeded, proven = int(proof["historically_seeded"]), int(proof["lineage_proven"])

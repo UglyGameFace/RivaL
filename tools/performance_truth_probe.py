@@ -170,6 +170,26 @@ def probe() -> dict:
                                             if isinstance(vv, (int, float, str))}
           except Exception as exc:  # noqa: BLE001
             out["spec_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        for name, sql in (
+            ("pooled_models", ("SELECT family, horizon_minutes, trained_through, gates_passed, "
+                               "imported_at FROM rival_pooled_models "
+                               "ORDER BY imported_at DESC LIMIT 6")),
+            ("pooled_predictions", ("SELECT family, COUNT(*) AS issued, "
+                                    "SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END) "
+                                    "AS graded, MIN(issued_at) AS first, MAX(issued_at) AS last "
+                                    "FROM rival_model_shadow_forecasts "
+                                    "WHERE family LIKE 'pooled_%' GROUP BY family")),
+            ("intelligence_calls", ("SELECT asset, horizon_minutes, stance, direction, "
+                                    "issued_at, thesis FROM rival_intelligence_calls "
+                                    "ORDER BY issued_at DESC LIMIT 8")),
+        ):
+            with store.connect() as conn:
+                try:
+                    out[name] = [{k: (v if isinstance(v, (int, float, str)) or v is None
+                                      else str(v)) for k, v in dict(r).items()}
+                                 for r in conn.execute(sql).fetchall()]
+                except Exception as exc:  # noqa: BLE001 - tables appear on first use
+                    out[name] = f"{type(exc).__name__}: {str(exc)[:120]}"
         with store.connect() as conn:
           try:
             out["labels_by_venue"] = [

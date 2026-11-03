@@ -271,3 +271,71 @@ async def test_data_only_research_uses_own_persisted_cache_without_extra_quota(m
     assert len(seen) == 1
     assert len(market.quota) == 1
     assert len(market.saved) == 1
+
+
+@pytest.mark.asyncio
+async def test_local_hypothesis_uses_one_real_private_request_and_shared_quota(monkeypatch):
+    from parlay_bot.perpetuals import analysis_evidence
+    monkeypatch.setattr(analysis_evidence, "build_evidence", market_evidence)
+    market = Market()
+    seen = []
+
+    def handler(request):
+        seen.append(request)
+        assert request.url.host == "rival-llm"
+        assert request.url.path == "/v1/hypothesis"
+        assert request.headers["Authorization"] == "Bearer local-key"
+        assert json.loads(request.content)["asset"] == "XRP"
+        return httpx.Response(200, json={
+            "model": module.LOCAL_MODEL,
+            "hypothesis": "volume_only",
+            "rationale": "Compare native volume features",
+            "falsification": "Reject worse validation Brier",
+            "research_only": True, "retrospective_screen": "not_tested",
+            "live_model_promoted": False, "prediction": None,
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ai = module.LocalFirstResearch(
+            market, local_key="local-key", cloudflare_key="backup-key",
+            client=client,
+        )
+        proposed = await ai.propose_feature_hypothesis(
+            asset="XRP", venues=("okx", "gate"),
+        )
+        assert proposed["model"] == module.LOCAL_MODEL
+        assert proposed["hypothesis"] == "volume_only"
+        assert proposed["evidence_sha256"] == "a" * 64
+        assert proposed["venues"] == ["gate", "okx"]
+        assert proposed["research_only"]
+    assert len(seen) == 1
+    assert len(market.quota) == 1
+    assert market.quota[0]["daily_max"] == 18
+    assert not market.saved
+
+
+@pytest.mark.asyncio
+async def test_unavailable_hypothesis_never_calls_cloudflare_or_invents_proposals(
+    monkeypatch,
+):
+    from parlay_bot.perpetuals import analysis_evidence
+    monkeypatch.setattr(analysis_evidence, "build_evidence", market_evidence)
+    market = Market()
+    requested = []
+
+    def handler(request):
+        requested.append(request.url.host)
+        return httpx.Response(503, json={"error": "offline"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ai = module.LocalFirstResearch(
+            market, local_key="local-key", cloudflare_key="backup-key",
+            client=client,
+        )
+        with pytest.raises(ResearchUnavailable, match="hypothesis endpoint unavailable"):
+            await ai.propose_feature_hypothesis(
+                asset="BTC", venues=("okx",),
+            )
+    assert requested == ["rival-llm"]
+    assert len(market.quota) == 1
+    assert market.saved == []

@@ -256,10 +256,17 @@ def _plain_boosted_proof(proof: dict, *, incumbent: dict | None = None) -> str:
                 rows = [recent[h] for h in (5, 15, 60)]
                 main_issued = sum(int(row["issued"]) for row in rows)
                 main_settled = sum(int(row["settled"]) for row in rows)
+                coin = f"{incumbent['asset']}, " if incumbent.get("asset") else ""
+                firsts = [row.get("first_issued") for row in rows if row.get("first_issued")]
+                since = ""
+                if firsts:
+                    first = datetime.fromisoformat(str(min(firsts)))
+                    if first.tzinfo is not None and datetime.now(UTC) - first < timedelta(days=6, hours=12):
+                        since = f", live since {first:%b %d}"
                 if min(main_issued, main_settled) >= 0 and main_settled <= main_issued:
                     incumbent_line = (
-                        f"**Main model (7d):** {main_issued:,} forward records, "
-                        f"{main_settled:,} outcomes checked."
+                        f"**Main model ({coin}all timeframes, 7d{since}):** "
+                        f"{main_issued:,} predictions, {main_settled:,} graded."
                     )
             except (KeyError, TypeError, ValueError, OverflowError):
                 pass
@@ -749,10 +756,7 @@ class ResearchDashboard(discord.ui.View):
                 name="🟢 Live collection status",
                 value=(
                     f"**{live}/{configured}** exchanges have recent {self.asset} prices.\n"
-                    f"**Last update check:** {stamp}. "
-                    f"**Newest finished price update:** {bar}.\n"
-                    "Exchange prices refresh about every 5 minutes, "
-                    "not continuously."
+                    f"**Checked:** {stamp} · **newest 5-min candle:** {bar}"
                 ), inline=False,
             )
         except Exception:  # noqa: BLE001 - collection may be down

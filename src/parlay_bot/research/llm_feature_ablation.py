@@ -16,7 +16,10 @@ from parlay_bot.perpetuals.research_hypotheses import ASSETS, HYPOTHESES, MODEL
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.learning import assemble
 from parlay_bot.research.live_training import (
-    _fit, _score, compatible_partitions, historical_features,
+    _fit,
+    _score,
+    compatible_partitions,
+    historical_features,
     qualified_manifest_groups,
 )
 
@@ -43,7 +46,7 @@ def verify_proposals(receipt: object, *, venue: str, now=None) -> list[dict]:
     accepted, seen = [], set()
     for row in rows:
         if not isinstance(row, dict):
-            raise ValueError("invalid AI hypothesis record")
+            raise TypeError("invalid AI hypothesis record")
         asset, hypothesis = row.get("asset"), row.get("hypothesis")
         venues = row.get("venues")
         if (asset not in ASSETS or hypothesis not in HYPOTHESES

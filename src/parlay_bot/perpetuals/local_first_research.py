@@ -23,6 +23,8 @@ LOCAL_MODEL = "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
 EVIDENCE_MODEL = "RivaL/verified-evidence-summary-v1"
 LOCAL_ENDPOINT = "http://rival-llm:8765/v1/research"
 MAX_LOCAL_EVIDENCE_BYTES = 24_000
+# The gateway allows model reviews 90 s of CPU; wait slightly longer.
+EXPLAIN_TIMEOUT = 100.0
 # Background callers wait for the single-slot CPU gateway instead of losing
 # their slot to one busy reply. Delays are jittered +/-20% and slept OUTSIDE
 # the request lock so an interactive ask can still go first.
@@ -233,7 +235,7 @@ class LocalFirstResearch:
             try:
                 response = await self._client.post(
                     base + "/v1/explain", headers=headers, json=payload,
-                    follow_redirects=False)
+                    follow_redirects=False, timeout=EXPLAIN_TIMEOUT)
             except (httpx.ConnectError, httpx.ConnectTimeout):
                 self._peer_ip = None
                 peer = await asyncio.to_thread(discover_private_llm, self._key)
@@ -242,7 +244,7 @@ class LocalFirstResearch:
                 self._peer_ip = peer
                 response = await self._client.post(
                     f"http://{peer}:8765/v1/explain", headers=headers, json=payload,
-                    follow_redirects=False)
+                    follow_redirects=False, timeout=EXPLAIN_TIMEOUT)
             except httpx.RequestError as exc:
                 raise ResearchUnavailable("Private RivaL Intelligence network error.") from exc
             if response.status_code == 404:

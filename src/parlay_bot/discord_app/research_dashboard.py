@@ -21,6 +21,7 @@ from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
+from parlay_bot.perpetuals.proof_progress import proof_progress, proof_progress_text
 from parlay_bot.perpetuals.readiness import explain_venue_readiness, forecast_readiness
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
 from parlay_bot.perpetuals.spike_watch import SpikeWatch
@@ -51,6 +52,7 @@ _SECTIONS = {
         ("overview", "At a glance"),
         ("engine", "Is the engine running?"),
         ("readiness", "Can RivaL predict yet?"),
+        ("progress", "Is any model proven better?"),
         ("lineage", "Is it learning from history?"),
         ("venue", "Which exchange is blocked?"),
         ("five", "5-minute predictions"),
@@ -82,6 +84,7 @@ _FIELD_GROUPS = {
     "accuracy": {
         "engine": ("Automatic learning engine", "Forward issue audit"),
         "readiness": ("Mathematical forecast readiness",),
+        "progress": ("Future model proof",),
         "lineage": ("How is RivaL learning?", "Are advanced models ready?"),
         "technical": ("Model training actually used", "Boosted model production proof"),
         "venue": ("Why this exchange",),
@@ -512,7 +515,8 @@ class ResearchDashboard(discord.ui.View):
         if self.screen == "opportunities" and self.target_service is not None:
             self.add_item(_QuickTargetButton())
         if (((self.screen == "accuracy" and self.section == "venue")
-             or (self.screen == "math" and self.section == "history"))
+             or (self.screen == "math" and self.section == "history")
+              or (self.screen == "accuracy" and self.section == "progress"))
                 and self.venues):
             self.add_item(_VenueSelect(self.venues, self.selected_venue))
         if self.screen == "ai" or (self.screen == "math" and self.section == "ai"):
@@ -1060,6 +1064,25 @@ class ResearchDashboard(discord.ui.View):
                         )
             embed.set_footer(
                 text="Historical backfills do not count as live forward tests."
+            )
+            return embed
+
+        if self.screen == "accuracy" and self.section == "progress":
+            if self.market is None:
+                value = "Database unavailable. No model proof can be checked."
+            else:
+                try:
+                    current = await asyncio.to_thread(
+                        proof_progress, self.market.store, asset=self.asset,
+                        venue=self.selected_venue,
+                    )
+                    value = proof_progress_text(current)
+                except Exception:  # noqa: BLE001 - optional evidence fails closed
+                    _LOG.exception("RivaL model proof progress read unavailable")
+                    value = "Proof could not be checked. No qualification is assumed."
+            embed.add_field(name="Future model proof", value=value, inline=False)
+            embed.set_footer(
+                text="Per-exchange future scores · No real fills or trading approval"
             )
             return embed
 

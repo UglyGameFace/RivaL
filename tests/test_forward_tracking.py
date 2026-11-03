@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from parlay_bot.discord_app.research_dashboard import ResearchDashboard, _SECTIONS
+from parlay_bot.discord_app.research_dashboard import _SECTIONS, ResearchDashboard
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.forward_tracking import (
     ForwardTracking,

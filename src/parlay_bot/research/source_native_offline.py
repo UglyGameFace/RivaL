@@ -21,6 +21,10 @@ from parlay_bot.research.batch import complete_months
 from parlay_bot.research.boosted_models import evaluate_directory as evaluate_boosters
 from parlay_bot.research.candidate_registry import verified_candidate
 from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.llm_feature_ablation import (
+    evaluate_hypothesis_ablations,
+    verify_proposals,
+)
 from parlay_bot.research.live_training import evaluate_directory as evaluate_logistic
 from parlay_bot.research.production import _report
 from parlay_bot.research.publish import _artifact, _drive
@@ -139,6 +143,7 @@ def screening_receipt(logistic: list[dict], boosted: list[dict]) -> dict:
 async def run_native_research(
     *, drive, venue: str, months: list[str], root: Path,
     report_dir: Path, publish: bool, asset: str | None = None,
+    llm_hypotheses: list[dict] | None = None,
 ) -> dict:
     """Research-only. A successful run is NOT forward accuracy or profitability."""
     if venue not in VENUES or len(months) != 6:
@@ -226,6 +231,10 @@ async def run_native_research(
         artifact_dir=report_dir / "source-native-boosted",
     )
     admission = screening_receipt(logistic, boosted)
+    llm_trials = evaluate_hypothesis_ablations(
+        root, qualified_streams=qualified,
+        proposals=llm_hypotheses or [],
+    )
     report = {
         "schema_version": "rival-native-source-research-v1",
         "venue": venue, "months": months,
@@ -245,6 +254,15 @@ async def run_native_research(
             for group in boosted for x in group.get("portable_candidates", [])
         ),
         "actual_registry_screening": admission,
+        "llm_hypothesis_research": {
+            "status": "validation_experiments_only"
+                      if llm_hypotheses else "no_verified_proposals",
+            "received_proposals": len(llm_hypotheses or []),
+            "evaluated": len(llm_trials),
+            "experiments": llm_trials[:48],
+            "sealed_holdout_examined": False,
+            "changes_live_weights": False,
+        },
         "live_approved": False, "trades_placed": False,
         "real_fills_verified": False, "after_cost_gain_verified": False,
     }
@@ -320,7 +338,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=Path("data/native-research"))
     parser.add_argument("--report-dir", type=Path, default=Path("data/native-reports"))
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--llm-hypotheses-file", type=Path, default=None)
     args = parser.parse_args(argv)
+    llm_hypotheses = []
+    if args.llm_hypotheses_file is not None:
+        try:
+            receipt = json.loads(
+                args.llm_hypotheses_file.read_text(encoding="utf-8")
+            )
+            llm_hypotheses = verify_proposals(
+                receipt, venue=args.venue, now=datetime.now(UTC),
+            )
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            parser.exit(
+                2, f"Unverified LFM3 research input: {type(exc).__name__}\\n",
+            )
     drive = _drive(Settings())
 
     async def worker():
@@ -330,6 +362,7 @@ def main(argv: list[str] | None = None) -> int:
                 months=select_training_months(now=datetime.now(UTC), first_month=args.first_month),
                 root=args.root, report_dir=args.report_dir,
                 publish=args.publish, asset=args.asset,
+                llm_hypotheses=llm_hypotheses,
             )
         finally:
             await drive.aclose()

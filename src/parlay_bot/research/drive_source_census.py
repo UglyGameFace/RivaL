@@ -61,6 +61,7 @@ BINANCE_METRICS_DAILY = re.compile(
 )
 
 PAGE_PATTERNS = (
+    (r"(hyperliquid|kucoin)-(BTC|ETH|SOL|XRP)-funding-(20\\d{2}-(?:0[1-9]|1[0-2]))-(\\d{2})-([a-f0-9]{16})\\.manifest\\.json", None, "official_funding"),
     (r"dydx-v4-(BTC|ETH|SOL|XRP)-USD-funding-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", "dydx", "funding_with_oracle_price"),
     (r"lighter-(BTC|ETH|SOL|XRP)-(funding|mark_price)-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", "lighter", None),
 )
@@ -92,6 +93,9 @@ def parse_page_name(name: str):
     for pattern, venue, family in PAGE_PATTERNS:
         match = re.fullmatch(pattern, name)
         if match:
+            if family == "official_funding":
+                original_venue, asset, month, page, sha = match.groups()
+                return original_venue, asset, "funding", month, int(page), sha
             if family is None:
                 asset, kind, month, page, sha = match.groups()
             else:

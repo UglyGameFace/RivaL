@@ -184,6 +184,6 @@ def test_daily_forward_proof_receipt_runs_without_manual_deployment():
         / ".github/workflows/live-learning-cycle-receipt.yml"
     ).read_text(encoding="utf-8")
     assert 'cron: "17 10 * * *"' in workflow
-    assert "github.event_name" in workflow
+    assert '"$GITHUB_EVENT_NAME" == "workflow_run"' in workflow
     assert "if: steps.gate.outputs.check == 'true'" in workflow
     assert "python tools/discloud_learning_cycle_receipt.py" in workflow

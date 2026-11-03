@@ -33,6 +33,10 @@ from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
 
 _LOG = logging.getLogger(__name__)
 MODEL = "prospective-logistic-persistent-v3"
+# A forecast can settle once its 5-minute target candle has closed; still
+# unsettled an hour after that means a missing candle or a stalled settler.
+SETTLEMENT_DUE_AFTER = timedelta(minutes=5)
+SETTLEMENT_OVERDUE_AFTER = timedelta(minutes=65)
 HORIZONS = RESEARCH_HORIZONS
 MIN_PREVIOUS_EVALUATED = 20
 MAX_STREAMS_PER_CYCLE = 40
@@ -1051,12 +1055,17 @@ class ForwardAccuracyMonitor:
         stamp = utc(now or datetime.now(UTC))
         start = (stamp - timedelta(days=7)).isoformat()
         prior = (stamp - timedelta(days=14)).isoformat()
+        due_cut = (stamp - SETTLEMENT_DUE_AFTER).isoformat()
+        overdue_cut = (stamp - SETTLEMENT_OVERDUE_AFTER).isoformat()
         self.initialize()
         with self.store.connect() as conn:
             rows = conn.execute(
                 """SELECT horizon_minutes,
                            CASE WHEN issued_at>=? THEN 'recent' ELSE 'prior' END AS cohort,
                            COUNT(*) AS issued,
+                           SUM(CASE WHEN target_opened_at<=? THEN 1 ELSE 0 END) AS due,
+                           SUM(CASE WHEN settled_at IS NULL AND target_opened_at<=? THEN 1 ELSE 0 END) AS overdue,
+                           COUNT(DISTINCT CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 THEN target_opened_at END) AS windows,
                            SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END) AS settled,
                            SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 THEN 1 ELSE 0 END) AS scored,
                            SUM(CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 AND probability_up<>0.5 THEN 1 ELSE 0 END) AS decided,
@@ -1071,12 +1080,13 @@ class ForwardAccuracyMonitor:
                     WHERE asset=? AND model_version=?
                       AND issued_at>=? AND issued_at<=?
                    GROUP BY horizon_minutes, cohort""",
-                (start, asset, MODEL, prior, stamp.isoformat()),
+                (start, due_cut, overdue_cut, asset, MODEL, prior, stamp.isoformat()),
             ).fetchall()
 
         def empty() -> dict:
             return {
-                "issued": 0, "settled": 0, "scored": 0, "decided": 0, "correct": 0,
+                "issued": 0, "due": 0, "overdue": 0, "windows": 0,
+                "settled": 0, "scored": 0, "decided": 0, "correct": 0,
                 "hit_rate": None, "brier": None, "baseline_brier": None,
                 "venues": 0, "model_beats_baseline": None,
             }
@@ -1096,7 +1106,9 @@ class ForwardAccuracyMonitor:
             brier = float(row["model_sum"]) / n if n else None
             baseline = float(row["baseline_sum"]) / n if n else None
             cohorts[cohort][horizon] = {
-                "issued": int(row["issued"]), "settled": settled,
+                "issued": int(row["issued"]), "due": int(row["due"] or 0),
+                "overdue": int(row["overdue"] or 0), "windows": int(row["windows"] or 0),
+                "settled": settled,
                 "scored": n, "decided": decided, "correct": int(row["correct"] or 0),
                 "hit_rate": int(row["correct"] or 0) / decided if decided else None,
                 "brier": brier, "baseline_brier": baseline,
@@ -1129,6 +1141,8 @@ class ForwardAccuracyMonitor:
             raise ValueError("invalid horizon")
         if model_version is not None and not model_version.strip():
             raise ValueError("invalid model version")
+        # Never mix retired model versions into one venue's hit rate.
+        model_version = model_version or MODEL
         stamp = utc(now or datetime.now(UTC))
         start = (stamp - timedelta(days=7)).isoformat()
         version_clause = " AND model_version=?" if model_version is not None else ""

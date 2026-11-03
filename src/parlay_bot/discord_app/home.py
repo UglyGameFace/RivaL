@@ -289,6 +289,51 @@ def _performance_exchange(market: object, asset: str) -> dict:
     return ForwardAccuracyMonitor(market).summary(asset=asset)
 
 
+def score_consistency_problems(part: dict) -> list[str]:
+    """Return every way a score summary contradicts itself (empty = consistent).
+
+    Each count is a subset of the one before it, so a larger child count
+    means a query or settlement bug, never a real result. The page shows a
+    warning and logs an ERROR (which reaches the status card) instead of
+    silently presenting impossible numbers.
+    """
+    def count(key: str, default: int = 0) -> int:
+        try:
+            return int(part.get(key, default) or 0)
+        except (TypeError, ValueError):
+            return -1
+
+    issued, settled = count("issued"), count("settled")
+    scored = count("scored", settled)
+    decided, correct = count("decided"), count("correct")
+    problems = [f"{name} is negative" for name, value in (
+        ("issued", issued), ("settled", settled), ("scored", scored),
+        ("decided", decided), ("correct", correct),
+    ) if value < 0]
+    chain = (("settled", settled, "issued", issued), ("scored", scored, "settled", settled),
+             ("decided", decided, "scored", scored), ("correct", correct, "decided", decided))
+    problems += [f"{a} {x:,} > {b} {y:,}" for a, x, b, y in chain if x > y >= 0]
+    if "due" in part:
+        due, overdue = count("due"), count("overdue")
+        if due > issued:
+            problems.append(f"due {due:,} > issued {issued:,}")
+        if overdue > max(0, due - settled):
+            problems.append(f"overdue {overdue:,} > unsettled due {max(0, due - settled):,}")
+        if settled > due >= 0:
+            problems.append(f"settled {settled:,} > due {due:,} (settled before the result existed)")
+    hit = part.get("hit_rate")
+    if isinstance(hit, (int, float)):
+        if not 0 <= hit <= 1:
+            problems.append(f"hit rate {hit} outside 0-1")
+        elif decided > 0 and abs(hit - correct / decided) > 0.001:
+            problems.append(f"hit rate {hit:.3f} != {correct}/{decided}")
+    for key in ("brier", "baseline_brier"):
+        value = part.get(key)
+        if isinstance(value, (int, float)) and not 0 <= value <= 1:
+            problems.append(f"{key} {value} outside 0-1")
+    return problems
+
+
 def _performance_benefit(market: object, asset: str, horizon: int) -> dict:
     """Score improvement independently of the faster historical-lineage query."""
     return ForwardAccuracyMonitor(market).active_learning_evidence(
@@ -1392,11 +1437,36 @@ class GuidedHome(discord.ui.View):
                     f" · {scored:,}/{settled:,} comparable results"
                     if scored != settled else ""
                 )
+                pending = ""
+                if "due" in part:
+                    due = int(part.get("due") or 0)
+                    overdue = int(part.get("overdue") or 0)
+                    waiting = max(0, issued - due)
+                    pending = (f" · {waiting:,} not due yet" if waiting else "") + (
+                        f"\n⚠️ **{overdue:,} past due with no result** (target candle "
+                        "missing or settlement behind)" if overdue else
+                        "\n✅ No results overdue"
+                    )
+                venues = int(part.get("venues") or 0)
+                windows = int(part.get("windows") or 0)
+                scope = (
+                    f"{venues} exchange{'s' if venues != 1 else ''} × "
+                    f"{windows:,} time windows, so each window counts once per exchange"
+                    if venues and windows else "all collecting exchanges"
+                )
+                problems = score_consistency_problems(part)
+                if problems:
+                    _LOG.error("Performance consistency check failed for %s %s min: %s",
+                               self.coin, self.horizon, "; ".join(problems))
                 exchange_text = (
                     f"**Correct direction:** {accuracy}\n{scoring}\n"
                     f"**Results checked:** {settled:,} of {issued:,} recorded "
-                    f"predictions{paired} (last 7 days, all collecting exchanges, "
-                    "selected timeframe and incumbent model only)"
+                    f"predictions{paired}{pending}\n"
+                    f"Scope: last 7 days, {scope}; selected timeframe and incumbent "
+                    "model only"
+                    + ("\n⚠️ **Consistency check failed:** "
+                       + "; ".join(problems)[:300]
+                       + ". Treat these numbers as unreliable." if problems else "")
                 )
             embed.add_field(name=f"📈 How accurate are {self.coin} exchange predictions?", value=exchange_text, inline=False)
 
@@ -1446,9 +1516,10 @@ class GuidedHome(discord.ui.View):
                 else:
                     state = "Running"
                 engine_text = (
-                    f"**Is learning running?** {state} (last checked {age} min ago; "
-                    f"{heart['issued']} predictions logged, {heart['settled']} results checked; "
-                    "all coins/timeframes, latest cycle)"
+                    f"**Is learning running?** {state} (last cycle {age} min ago, "
+                    "runs every 15 min; that cycle: "
+                    f"{heart['issued']} predictions logged, {heart['settled']} results checked "
+                    "across all coins/timeframes, research model)"
                 )
             benefit = reports.get("benefit")
             lineage = reports.get("lineage")
@@ -1461,15 +1532,20 @@ class GuidedHome(discord.ui.View):
                 trend_text = (
                     f"**Is accuracy improving?** {reason} "
                     f"({int(benefit.get('targets') or 0)} results / "
-                    f"{int(benefit.get('days') or 0)} days checked)"
+                    f"{int(benefit.get('days') or 0)} days checked; current model, "
+                    "last 14 days, one result per time window)"
                 )
             else:
                 trend_text = "**Is accuracy improving?** Cannot check right now; improvement unproven"
             if isinstance(lineage, dict) and lineage.get("lineage_proven"):
+                sample = int(lineage.get("forecasts") or lineage["lineage_proven"])
+                unknown = int(lineage.get("lineage_unknown") or 0)
                 lineage_text = (
                     f"**Used verified historical training:** "
                     f"{lineage['historically_seeded']}/{lineage['lineage_proven']} recent predictions"
-                    "\nHistorical challengers are evaluated separately."
+                    f" (latest {sample:,} in 7 days"
+                    + (f"; {unknown:,} without a training record" if unknown else "")
+                    + ")\nHistorical challengers are evaluated separately."
                 )
             else:
                 lineage_text = "**Used verified historical training:** Cannot confirm for recent predictions"
@@ -1485,10 +1561,11 @@ class GuidedHome(discord.ui.View):
             if not isinstance(feeds, (list, tuple)):
                 feeds_text = "**Live price feeds:** Cannot check right now"
             else:
-                fresh = set()
+                fresh, listed = set(), set()
                 for row in feeds:
                     if row.get("asset") != self.coin or row.get("venue") not in self.venues:
                         continue
+                    listed.add(row["venue"])
                     try:
                         last_success = datetime.fromisoformat(str(row["last_success_at"]))
                         last_candle = datetime.fromisoformat(str(row["last_candle_close"]))
@@ -1500,8 +1577,13 @@ class GuidedHome(discord.ui.View):
                             fresh.add(row["venue"])
                     except (ValueError, TypeError, OverflowError):
                         continue
+                # Count only exchanges that actually collect this coin; with no
+                # rows at all every configured exchange is missing, not fine.
+                expected = listed or set(self.venues)
+                stale = sorted(expected - fresh)
                 feeds_text = (
-                    f"**Live price feeds:** {len(fresh)}/{len(self.venues)} up to date"
+                    f"**Live price feeds:** {len(fresh)}/{len(expected)} up to date"
+                    + (f" (behind: {', '.join(stale)[:200]})" if stale else "")
                     if self.venues else "**Live price feeds:** Not configured"
                 )
             cycle = cycles.get("forecast") if isinstance(cycles, dict) else None
@@ -1515,13 +1597,16 @@ class GuidedHome(discord.ui.View):
                 age = int((now - cycle["checked_at"].astimezone(UTC)).total_seconds() // 60)
                 status = "fresh" if 0 <= age <= 10 else "stale/invalid time"
                 cycle_text = (f"**Prediction checks:** Last ran {age} min ago ({status}); "
-                              f"{cycle['issued']} predictions recorded (all coins/timeframes, latest cycle)")
+                              f"{cycle['issued']} predictions recorded (all coins/timeframes, latest cycle"
+                              + (f"; {cycle['expired']} skipped as too late" if cycle.get("expired")
+                                 else "") + ")")
             embed.add_field(
                 name="📡 Are market feeds and predictions running?", value=f"{feeds_text}\n{cycle_text}", inline=False,
             )
             embed.timestamp = now
             embed.set_footer(
-                text="Live data snapshot · More proof in Results / Technical evidence · NO CALL"
+                text="Live data snapshot · Private research, no orders · "
+                     "More proof in Results / Technical evidence"
             )
         elif p == "help":
             embed = discord.Embed(
@@ -1545,7 +1630,8 @@ class GuidedHome(discord.ui.View):
         if self.note:
             embed.add_field(name="What Happened", value=self.note[:1000],
                             inline=False)
-        embed.set_footer(text="Private research • No orders or guaranteed accuracy")
+        if p != "performance":  # Performance sets its own footer above
+            embed.set_footer(text="Private research • No orders or guaranteed accuracy")
         return embed
 
     def _display_generation(self) -> GuidedHome:

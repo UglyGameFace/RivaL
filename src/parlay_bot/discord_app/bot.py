@@ -167,6 +167,7 @@ class RivalDiscordClient(discord.Client):
         # Warning/error digest for the status card (RAM only, redacted).
         self.problem_log = error_log.install()
         self._status_task: asyncio.Task[None] | None = None
+        self._benefit_task: asyncio.Task[None] | None = None
         self._status_policy = StatusPostPolicy()
         self.liquidity_last_bucket: str | None = None
         self.tree = app_commands.CommandTree(self)
@@ -1883,6 +1884,10 @@ class RivalDiscordClient(discord.Client):
             self._perp_task = asyncio.create_task(
                 self._perp_loop(), name="rival-perp-auto-collector"
             )
+            if self._benefit_task is None:
+                self._benefit_task = asyncio.create_task(
+                    self._benefit_loop(), name="rival-performance-refresh",
+                )
 
         if (
             (self.history_auditor is not None
@@ -2439,12 +2444,27 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL streaming forward scoring temporarily unavailable")
             await asyncio.sleep(self.settings.rival_stream_shadow_seconds)
 
+    async def _benefit_loop(self) -> None:
+        """Keep Bot Performance's slow "Is accuracy improving?" answer ready.
+
+        Runs on its own task, mid-slot, so its ~1 minute of queries never
+        delays the 5-minute collection and forecast cycle.
+        """
+        await self.wait_until_ready()
+        await asyncio.sleep(150)  # start between forecast cycles
+        while not self.is_closed():
+            if self.perp_collector is not None and not host_memory.snapshot().pressure:
+                try:
+                    await asyncio.to_thread(warm_benefit_cache, self.perp_collector.market)
+                except Exception:  # noqa: BLE001 - optional page context
+                    _LOG.exception("RivaL improvement-check refresh failed")
+            await asyncio.sleep(30 * 60)
+
     async def _perp_loop(self) -> None:
         await self.wait_until_ready()
         assert self.perp_collector is not None
         _LOG.info("RivaL perp automatic collector RUNNING")
         last_integrity_hour: int | None = None
-        last_benefit_warm = -1e9
         while not self.is_closed():
             # Stage timings: a cycle longer than 5 minutes skips the next
             # boundary and late forecasts expire, so record where time goes.
@@ -2502,18 +2522,6 @@ class RivalDiscordClient(discord.Client):
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL autonomous research cycle failed safely")
             stages["forecast"], mark = time.monotonic() - mark, time.monotonic()
-            # Keep Bot Performance's slow "Is accuracy improving?" answer
-            # ready so the page never times out waiting for it.
-            if (self.autonomous is not None
-                    and time.monotonic() - last_benefit_warm >= 30 * 60
-                    and not host_memory.snapshot().pressure):
-                try:
-                    await asyncio.to_thread(
-                        warm_benefit_cache, self.perp_collector.market,
-                    )
-                except Exception:  # noqa: BLE001 - optional page context
-                    _LOG.exception("RivaL improvement-check refresh failed")
-                last_benefit_warm = time.monotonic()
             # Once per hour, inspect persisted evidence without adding API
             # requests or disturbing live predictions and market collection.
             if self.autonomous is not None:
@@ -3085,7 +3093,7 @@ class RivalDiscordClient(discord.Client):
         "_target_task", "_sports_results_task", "_sports_task",
         "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
         "_hypothesis_task", "_candidate_task", "_archive_task",
-        "_heartbeat_task", "_status_task",
+        "_heartbeat_task", "_status_task", "_benefit_task",
     )
 
     async def close(self) -> None:

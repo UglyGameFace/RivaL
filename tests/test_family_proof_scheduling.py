@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import pytest
 
-from parlay_bot.perpetuals.forward_audit import select_family_proof_scope
 from parlay_bot.perpetuals.family_quotes import supports_quote_source
+from parlay_bot.perpetuals.forward_audit import select_family_proof_scope
 
 
 def _streams():

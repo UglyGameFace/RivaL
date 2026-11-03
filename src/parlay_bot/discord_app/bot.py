@@ -2044,10 +2044,14 @@ class RivalDiscordClient(discord.Client):
                     self._status_policy.posted(signature, facts.now)
             except asyncio.CancelledError:
                 raise
-            except (discord.Forbidden, discord.NotFound):
+            except (discord.Forbidden, discord.NotFound) as exc:
                 _LOG.warning(
-                    "RivaL status channel %s unavailable: check the ID and that the "
-                    "bot can view and send messages there", channel_id)
+                    "RivaL status channel %s unavailable (%s, Discord code %s): %s",
+                    channel_id, type(exc).__name__, getattr(exc, "code", "?"),
+                    "the ID is not a text channel the bot can see (copy it from the "
+                    "channel itself, in a server the bot has joined)"
+                    if isinstance(exc, discord.NotFound) or getattr(exc, "code", 0) == 50001
+                    else "the bot needs View Channel, Send Messages and Embed Links there")
                 channel = None
                 await asyncio.sleep(600)
                 continue

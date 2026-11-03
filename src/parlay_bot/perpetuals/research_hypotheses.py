@@ -230,8 +230,7 @@ def recent_hypotheses(store, *, venue: str, now: datetime | None = None) -> list
             }
             # A relay may read a legacy host before the next scheduled
             # LFM3 attempt migrates its table. Do not mutate on a read.
-            indices_json = (row["feature_indices_json"]
-                            if "feature_indices_json" in row.keys() else None)
+            indices_json = dict(row).get("feature_indices_json")
             if mode == "feature_subset_v2":
                 if not isinstance(indices_json, str):
                     continue

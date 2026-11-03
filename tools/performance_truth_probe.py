@@ -271,7 +271,7 @@ def probe() -> dict:
             async def dry_run():
                 worker = BitgetHistoryRecovery(real, assets=("BTC",))
                 worker._advance = fake_advance
-                worker.market = SimpleNamespace(ingest=fake_ingest, store=store)
+                worker.market = SimpleNamespace(ingest=fake_ingest, store=store, initialize=lambda: None)
                 try:
                     captured["returned"] = await worker.fetch_asset("BTC")
                 except Exception as exc:  # noqa: BLE001

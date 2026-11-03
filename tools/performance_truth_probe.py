@@ -117,7 +117,7 @@ def probe() -> dict:
                  for k, v in dict(r).items()}
                 for r in conn.execute("""
                     SELECT c.asset, c.horizon_minutes AS h,
-                           COALESCE(c.admission_reason,'?') AS reason,
+                           COALESCE(c.admission_reason,'none') AS reason,
                            COUNT(*) AS n, MIN(c.source_months) AS min_months,
                            MAX(c.source_months) AS max_months,
                            MIN(c.holdout_brier) AS best_holdout_brier,
@@ -126,7 +126,7 @@ def probe() -> dict:
                            MAX(SUBSTR(c.first_imported_at,1,10)) AS last_day,
                            COUNT(DISTINCT c.data_version) AS data_versions
                     FROM rival_offline_candidates c
-                    GROUP BY c.asset, c.horizon_minutes, COALESCE(c.admission_reason,'?')
+                    GROUP BY c.asset, c.horizon_minutes, COALESCE(c.admission_reason,'none')
                     ORDER BY c.asset, c.horizon_minutes""").fetchall()]
           except Exception as exc:  # noqa: BLE001
             out["offline_candidates_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"

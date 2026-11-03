@@ -1459,6 +1459,7 @@ class GuidedHome(discord.ui.View):
                 lineage_text = (
                     f"**Used verified historical training:** "
                     f"{lineage['historically_seeded']}/{lineage['lineage_proven']} recent predictions"
+                    "\nHistorical challengers are evaluated separately."
                 )
             else:
                 lineage_text = "**Used verified historical training:** Cannot confirm for recent predictions"

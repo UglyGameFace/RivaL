@@ -34,6 +34,8 @@ on:
       - "src/parlay_bot/research/source_native.py"
       - "src/parlay_bot/research/source_native_offline.py"
       - "src/parlay_bot/research/live_training.py"
+      - "src/parlay_bot/research/llm_feature_ablation.py"
+      - "tools/discloud_feature_hypotheses.py"
       - "src/parlay_bot/research/boosted_models.py"
       - "src/parlay_bot/research/boosted_portable.py"
       - "src/parlay_bot/research/candidate_registry.py"
@@ -70,6 +72,8 @@ jobs:
       RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
       RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
       RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+      DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+      DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -108,6 +112,13 @@ jobs:
           fi
           echo "Researching actual warehouse source: $VENUE"
           args=(--venue "$VENUE" --months 6 --publish)
+          # Read private post-issuance LFM3 feature proposals from the real
+          # Discloud PostgreSQL bot, never from GitHub branch text or a guess.
+          # Missing/disabled local AI leaves ordinary ML training intact.
+          proposal_file="data/native-reports/llm-proposals-${VENUE}.json"
+          python tools/discloud_feature_hypotheses.py --venue "$VENUE" \\
+            --output "$proposal_file"
+          args+=(--llm-hypotheses-file "$proposal_file")
           if [[ -n "$SELECTED_FIRST_MONTH" ]]; then
             args+=(--first-month "$SELECTED_FIRST_MONTH")
           fi
@@ -135,7 +146,11 @@ jobs:
             if [[ "${{ github.event_name }}" != "workflow_dispatch" && "$VENUE" != "okx" ]] &&
                 python -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); sys.exit(0 if p.is_file() and json.loads(p.read_text()).get("status") == "source_months_incomplete" else 1)' "$report"; then
               echo "Unverified complete months blocked $VENUE; trying independent OKX research once."
-              python -m parlay_bot.research.source_native_offline --venue okx --months 6 --publish
+              proposal_file="data/native-reports/llm-proposals-okx.json"
+              python tools/discloud_feature_hypotheses.py --venue okx \\
+                --output "$proposal_file"
+              python -m parlay_bot.research.source_native_offline --venue okx --months 6 --publish \\
+                --llm-hypotheses-file "$proposal_file"
             else
               exit "$exit_code"
             fi
@@ -193,6 +208,21 @@ jobs:
                   lines.append(
                       "Retrospective passes are NOT live promotion, "
                       "future accuracy, or after-cost trading proof."
+                  )
+              llm = data.get("llm_hypothesis_research") or {}
+              lines.append(
+                  "Private LFM3 feature research: "
+                  f"{llm.get('status', 'not_checked')}; "
+                  f"{llm.get('received_proposals', 0)} proposals; "
+                  f"{llm.get('evaluated', 0)} chronological validation tests"
+              )
+              for trial in llm.get("experiments", [])[:18]:
+                  lines.append(
+                      f"- {trial['asset']} {trial['horizon_minutes']}m "
+                      f"{trial['venue']} {trial['hypothesis']}: "
+                      f"validation Brier improvement vs ordinary logit "
+                      f"{trial['validation_brier_delta']:+.6f}; "
+                      "holdout NOT viewed, model NOT imported"
                   )
               for stream in data.get("source_scopes", [])[:24]:
                   if "missing_or_incomplete_months" not in stream:

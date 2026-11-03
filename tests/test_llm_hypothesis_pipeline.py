@@ -12,8 +12,8 @@ import pytest
 from parlay_bot.perpetuals.research_hypotheses import (
     ASSETS,
     FeatureHypothesisLab,
-    recent_hypotheses,
     hypothesis_attempt_status,
+    recent_hypotheses,
     validate_proposal,
 )
 from parlay_bot.research import llm_feature_ablation as ablation
@@ -243,9 +243,9 @@ async def test_unconfigured_slot_can_recover_after_configuration(tmp_path):
 
 def test_llm_mask_qualifies_only_after_purged_validation_and_sealed_test(monkeypatch):
     """One LFM3 mask can create a hash-screened *shadow* candidate, never a win."""
+    from parlay_bot.perpetuals.model_checkpoints import canonical
     from parlay_bot.research import llm_feature_ablation as mod
     from parlay_bot.research.candidate_registry import verified_candidate
-    from parlay_bot.perpetuals.model_checkpoints import canonical
 
     months = [f"2026-{month:02d}" for month in range(5, 11)]
     identity = {

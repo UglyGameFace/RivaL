@@ -6,10 +6,8 @@ on:
   workflow_run:
     workflows: ["RivaL Production Release"]
     types: [completed]
-  schedule:
-    # Until issue #261 is actually proven, retry only through ordinary quota
-    # and cooldown accounting. Skip once verified.
-    - cron: "51 * * * *"
+  # Only check after a successfully uploaded release, or on an explicit manual request.
+  # The historical proof issues are closed; hourly probes just contend with the local LLM.
   workflow_dispatch:
 
 permissions:

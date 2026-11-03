@@ -64,8 +64,8 @@ def research_alerts(store, *, now: datetime | None = None,
             alerts.append(("pooled:none", "⚠️ No six-year model imported yet"))
         elif stamp - trained > MODEL_STALE_AFTER:
             alerts.append(("pooled:stale",
-                           f"⚠️ Six-year model data is {_ago(stamp - trained)} old: "
-                           "nightly training failed or missed its accuracy gates"))
+                           (f"⚠️ Six-year model data is {_ago(stamp - trained)} old: "
+                            "nightly training failed or missed its accuracy gates")))
     except Exception:  # noqa: BLE001 - table appears after the first import
         alerts.append(("pooled:none", "⚠️ No six-year model imported yet"))
 
@@ -86,8 +86,8 @@ def research_alerts(store, *, now: datetime | None = None,
             if int(row["n"]) >= DECAY_MIN_GRADED and float(row["m"]) > float(row["b"]):
                 horizon = int(row["horizon_minutes"])
                 alerts.append((f"decay:{horizon}m",
-                               f"⚠️ {horizon}-min six-year model scored worse than the "
-                               f"plain up-rate over the last 3 days ({int(row['n'])} graded)"))
+                               (f"⚠️ {horizon}-min six-year model scored worse than the "
+                                f"plain up-rate over the last 3 days ({int(row['n'])} graded)")))
     except Exception:  # noqa: BLE001
         _LOG.warning("Research alert: challenger table unreadable")
 

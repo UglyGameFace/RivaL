@@ -124,7 +124,7 @@ class ShadowModelCompetition:
 
     def issue(self, conn, *, samples, features, now, venue, contract, quote,
               asset, horizon, reference_opened_at, target_opened_at, issued_at,
-              incumbent_up, baseline_up, boosters=()):
+              incumbent_up, baseline_up, boosters=(), historical_candidates=()):
         """Call only inside the incumbent forecast's *successful* transaction."""
         predictions = shadow_predictions(samples, features, as_of=now)
         # Exact-source historical boosters enter the SAME immutable future
@@ -144,6 +144,34 @@ class ShadowModelCompetition:
             predictions[family] = predict_portable(
                 item["portable_model"], features, trusted=True,
             )
+        # Only screened, source-exact historical logistic challengers enter
+        # real forward shadow scoring. Never retrofit old predictions.
+        eligible_history = {}
+        for item in historical_candidates:
+            try:
+                model_sha = item["model_sha256"]
+                weight_sha = item["training_sha256"]
+                identity = item["identity"]
+                probability = float(item["probability_up"])
+                if (not isinstance(model_sha, str) or len(model_sha) != 64
+                    or not all(c in "0123456789abcdef" for c in model_sha)
+                    or not isinstance(weight_sha, str) or len(weight_sha) != 64
+                    or not all(c in "0123456789abcdef" for c in weight_sha)
+                    or tuple(identity[k] for k in ("venue", "contract", "quote"))
+                       != (venue, contract, quote)
+                    or item["horizon_minutes"] != horizon
+                    or utc(datetime.fromisoformat(item["imported_at"])) > utc(issued_at)
+                    or utc(datetime.fromisoformat(item["evaluation_completed_through"]))
+                       >= utc(issued_at)
+                    or not math.isfinite(probability) or not 0 < probability < 1):
+                    continue
+                family = f"historical_{model_sha[:48]}"
+                if family in predictions:
+                    continue
+                predictions[family] = probability
+                eligible_history[family] = item
+            except (KeyError, ValueError, TypeError, OverflowError):
+                continue
         if not predictions:
             return 0
         # Training provenance is persisted at issuance, never reconstructed
@@ -172,9 +200,12 @@ class ShadowModelCompetition:
                  utc(reference_opened_at).isoformat(),utc(issued_at).isoformat(),
                  utc(target_opened_at).isoformat(),probability,
                  incumbent_up,baseline_up,
-                  (len(eligible) if family not in eligible_boosters else 0),
-                  (fingerprint if family not in eligible_boosters
-                   else eligible_boosters[family]["model_sha256"])),
+                  (len(eligible) if family not in eligible_boosters
+                   and family not in eligible_history else 0),
+                  (eligible_history[family]["training_sha256"]
+                   if family in eligible_history else
+                   eligible_boosters[family]["model_sha256"]
+                   if family in eligible_boosters else fingerprint)),
             )
             saved += int(row.rowcount == 1)
         return saved
@@ -269,7 +300,7 @@ class ShadowModelCompetition:
         results = {}
         all_families = list(FAMILIES) + sorted({
             str(row['family']) for row in rows
-            if str(row['family']).startswith('boosted_')
+            if str(row['family']).startswith(('boosted_', 'historical_'))
         })
         for family in all_families:
             scoped = {}

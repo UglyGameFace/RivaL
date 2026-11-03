@@ -113,7 +113,7 @@ def proof_progress(store, *, asset: str, venue: str,
             current = timedelta(0) <= age <= FRESH_FOR
             evidence = json.loads(record["evidence_json"])
             if not isinstance(evidence, dict):
-                raise ValueError("invalid evidence document")
+                raise TypeError("invalid evidence document")
             selected_name = str(record["selected_family"] or "")
             candidates = [
                 _candidate_summary(

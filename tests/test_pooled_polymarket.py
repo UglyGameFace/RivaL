@@ -21,16 +21,15 @@ CONTRACTS = {"okx": ("BTC-USDT-SWAP", "USDT"), "gate": ("BTC_USDT", "USDT"),
 
 def seed(market, *, bars=WINDOW + 10):
     for venue, (contract, quote) in CONTRACTS.items():
-        candles = []
         for i in range(bars):
             opened = START - timedelta(minutes=5 * (bars - i))
+            observed = opened + timedelta(minutes=5, seconds=10)
             price = 100 + math.sin(i / 7) + i * 0.01
-            candles.append(MarketCandle(
+            candle = MarketCandle(
                 venue, contract, quote, 5, opened,
-                opened + timedelta(minutes=5, milliseconds=-1),
-                opened + timedelta(minutes=5, seconds=10),
-                price, price + .2, price - .2, price + .05, 10.0 + i % 3, 20))
-        market.ingest(MarketBatch((), tuple(candles), 5, START + timedelta(seconds=10)))
+                opened + timedelta(minutes=5, milliseconds=-1), observed,
+                price, price + .2, price - .2, price + .05, 10.0 + i % 3, 20)
+            market.ingest(MarketBatch((), (candle,), 5, observed))
 
 
 def model(store):

@@ -151,7 +151,9 @@ class PooledModelSet:
                    (family,horizon_minutes,model_sha256,trained_through,gates_passed,
                     imported_at,drive_file_id,document)
                    VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                (family(doc), doc["horizon_minutes"], model_sha256(doc),
+                # Row key: one per trained file (the recipe name repeats nightly).
+                (f"pooled_{doc['horizon_minutes']}m_{model_sha256(doc)[:12]}",
+                 doc["horizon_minutes"], model_sha256(doc),
                  str(doc["trained_through"]), int(doc.get("gates_passed") is True),
                  datetime.now(UTC).isoformat(), file_id, payload.decode()),
             )

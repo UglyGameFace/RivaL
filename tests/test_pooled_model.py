@@ -130,6 +130,15 @@ def test_registry_serves_newest_passing_model_only(tmp_path):
         assert active["_family"].startswith("pooled_5m_") and len(active["_sha256"]) == 64
         assert models.active(15) is None
         assert models.import_document("c", newer) == 0  # idempotent
+        # A nightly retrain of the same recipe is stored and served, same name.
+        retrain = _doc(through="2026-11-01T23:55:00+00:00")
+        retrain["trees"] = [[[0, 0.0, 1, 2, 1, 2], [0.3], [-0.3]]]
+        assert models.import_document("d", _json.dumps(retrain).encode()) == 1
+        models._loaded_at = None
+        served = models.active(5)
+        assert served["trained_through"] == "2026-11-01T23:55:00+00:00"
+        assert served["_family"] == active["_family"]
+        assert served["_sha256"] != active["_sha256"]
     finally:
         store.close()
 

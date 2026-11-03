@@ -11,8 +11,8 @@ import pytest
 
 from parlay_bot.research import official_funding_archive as funding
 from parlay_bot.research.drive_source_census import parse_page_name, summarize
-from parlay_bot.research.historical_coordinator import build_plan
 from parlay_bot.research.free_history import HistoryImportError
+from parlay_bot.research.historical_coordinator import build_plan
 
 
 def test_months_and_source_scopes_are_independent():
@@ -29,7 +29,7 @@ def test_months_and_source_scopes_are_independent():
 
 
 def test_official_queries_are_contract_exact():
-    start, end = funding.month_bounds(
+    start, _end = funding.month_bounds(
         "kucoin", "2026-10", now=datetime(2026, 11, 1, tzinfo=UTC))
     method, url, kwargs = funding.request_spec(
         "kucoin", "BTC", start, start + timedelta(days=4))
@@ -97,7 +97,8 @@ def test_valid_original_responses_and_bounded_values(venue):
 async def test_official_http_source_and_immutable_drive_sha(tmp_path, monkeypatch):
     class Drive:
         folders = SimpleNamespace(history="history", manifests="manifests")
-        saved = []
+        def __init__(self):
+            self.saved = []
         async def ensure_history_file(self, *, artifact, batch_id, mime_type):
             self.saved.append(("source", artifact, batch_id))
             return SimpleNamespace(file_id="raw")

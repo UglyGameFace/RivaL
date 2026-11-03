@@ -77,6 +77,8 @@ class Settings(BaseSettings):
     # Healthchecks.io ping URL (https://hc-ping.com/<uuid>). Pinged every
     # minute after a database check; silence or /fail raises the alert.
     rival_healthchecks_ping_url: SecretStr | None = Field(default=None)
+    # Operator channel for the RivaL status card (posts on change + daily).
+    rival_status_channel_id: int | None = Field(default=None)
 
     # Official licensed Polymarket PolyBolt Chainlink TWAP (NOT free CLOB book).
     # Three CLOB credentials are used ONLY for the read-only live WS auth.

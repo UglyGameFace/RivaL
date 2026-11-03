@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Callable
+from datetime import UTC, datetime
 
 import httpx
 
@@ -29,6 +30,11 @@ class HealthchecksHeartbeat:
         self.interval_seconds = interval_seconds
         self._client = client or httpx.AsyncClient(timeout=httpx.Timeout(10))
         self._owned_client = client is None
+        # Read by the Discord status card; never includes the URL.
+        self.last_success_at: datetime | None = None
+        self.last_problem_at: datetime | None = None
+        self.last_problem: str | None = None
+        self.consecutive_problems = 0
 
     def _database_ok(self) -> None:
         with self._store.connect() as conn:
@@ -36,12 +42,14 @@ class HealthchecksHeartbeat:
 
     async def beat_once(self) -> bool:
         """Ping success when the database answers within 10 s, else /fail."""
+        problem = None
         try:
             await asyncio.wait_for(asyncio.to_thread(self._database_ok), timeout=10)
             healthy = True
         except Exception as exc:  # noqa: BLE001 - any failure is reported, not raised
             _LOG.warning("RivaL heartbeat database check failed %s", type(exc).__name__)
             healthy = False
+            problem = f"database check failed ({type(exc).__name__})"
         target = self._url if healthy else self._url + "/fail"
         try:
             response = await self._client.post(
@@ -51,6 +59,17 @@ class HealthchecksHeartbeat:
         except httpx.HTTPError as exc:
             # Never log the URL: its UUID is the check's only credential.
             _LOG.warning("RivaL heartbeat ping failed %s", type(exc).__name__)
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            problem = problem or (
+                f"ping not delivered (HTTP {status})" if status
+                else f"ping not delivered ({type(exc).__name__})")
+        now = datetime.now(UTC)
+        if problem is None:
+            self.last_success_at = now
+            self.consecutive_problems = 0
+        else:
+            self.last_problem_at, self.last_problem = now, problem
+            self.consecutive_problems += 1
         return healthy
 
     async def run(self, is_closed: Callable[[], bool]) -> None:

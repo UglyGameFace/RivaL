@@ -17,6 +17,7 @@ from parlay_bot.collectors.current import CurrentBoardCollector
 from parlay_bot.collectors.oddspapi_current import OddsPapiCurrentCollector
 from parlay_bot.collectors.the_odds_api import TheOddsApiCollector
 from parlay_bot.config import Settings
+from parlay_bot.discord_app import error_log
 from parlay_bot.discord_app.alert_control import stop_all_notifications
 from parlay_bot.discord_app.auto_hunt import AutoHuntActions, AutoHuntService, AutoHuntStore
 from parlay_bot.discord_app.cdna_public import CDNAPersonalReader
@@ -44,6 +45,7 @@ from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.discord_app.signals import signal_embed
 from parlay_bot.discord_app.sports_discovery import sports_discovery_embed
 from parlay_bot.discord_app.stale_dashboards import build_stale_dashboard_views
+from parlay_bot.discord_app.status_card import StatusFacts, StatusPostPolicy, build_embed
 from parlay_bot.discord_app.stream_proof import stream_proof_embed
 from parlay_bot.discord_app.targeting import DirectionTargetService, DirectionTargetStore
 from parlay_bot.discord_app.views import LocationView, OnboardingView
@@ -160,6 +162,12 @@ class RivalDiscordClient(discord.Client):
         intents.guilds = True
         super().__init__(intents=intents)
         self.settings = settings
+        self._boot_at = datetime.now(UTC)
+        # Warning/error digest for the status card (RAM only, redacted).
+        self.problem_log = error_log.install()
+        self._status_task: asyncio.Task[None] | None = None
+        self._status_policy = StatusPostPolicy()
+        self.liquidity_last_bucket: str | None = None
         self.tree = app_commands.CommandTree(self)
         self.tree.on_error = self._on_app_command_error
 
@@ -1936,6 +1944,97 @@ class RivalDiscordClient(discord.Client):
             )
         elif self.heartbeat is None:
             _LOG.info("RivaL Healthchecks.io heartbeat not configured")
+        if self.settings.rival_status_channel_id and self._status_task is None:
+            self._status_task = asyncio.create_task(
+                self._status_loop(), name="rival-status-card",
+            )
+
+    def _worker_states(self, now: datetime) -> list[dict]:
+        states = []
+        for attr in self._WORKER_TASK_ATTRS + ("_heartbeat_task",):
+            if attr in ("_health_task", "_sports_manual_task"):
+                continue
+            task = getattr(self, attr, None)
+            name = (task.get_name() if task is not None
+                    else attr.strip("_").removesuffix("_task"))
+            states.append({
+                "name": name,
+                "state": ("disabled" if task is None
+                          else "stopped" if task.done() else "running"),
+                "restarts_last_hour": sum(
+                    1 for t in self._health_restarts.get(attr, [])
+                    if now - t < timedelta(hours=1)),
+            })
+        return states
+
+    async def _status_facts(self) -> StatusFacts:
+        """Real runtime state only; a slow source is reported, not guessed."""
+        now = datetime.now(UTC)
+        incidents = feeds = None
+        try:
+            snapshot = await asyncio.wait_for(
+                asyncio.to_thread(self.health_monitor.snapshot), timeout=10)
+            incidents = snapshot["issues"]
+        except Exception:  # noqa: BLE001 - shown as unreadable on the card
+            _LOG.warning("RivaL status card could not read watchdog incidents")
+        if self.perp_collector is not None:
+            try:
+                feeds = await asyncio.wait_for(
+                    asyncio.to_thread(self.perp_collector.market.feed_health), timeout=10)
+            except Exception:  # noqa: BLE001
+                _LOG.warning("RivaL status card could not read feed health")
+        heartbeat = None
+        if self.heartbeat is not None:
+            heartbeat = {
+                "last_success_at": self.heartbeat.last_success_at,
+                "last_problem_at": self.heartbeat.last_problem_at,
+                "last_problem": self.heartbeat.last_problem,
+                "consecutive_problems": self.heartbeat.consecutive_problems,
+            }
+        memory = host_memory.snapshot()
+        return StatusFacts(
+            now=now, boot_at=self._boot_at,
+            ready=self.is_ready() and self.discord_ready_at is not None,
+            heartbeat=heartbeat, workers=self._worker_states(now),
+            incidents=incidents, feeds=feeds,
+            streams=self.live_stream.health(now=now) if self.live_stream else None,
+            liquidity_last_bucket=self.liquidity_last_bucket,
+            memory={
+                "rss_mb": (memory.rss_bytes // (1024 * 1024)
+                           if memory.rss_bytes is not None else "?"),
+                "limit_mb": memory.limit_bytes // (1024 * 1024),
+                "pressure": memory.pressure, "oom_kills": memory.oom_kills,
+            },
+            problems=self.problem_log.recent(),
+            problem_totals=self.problem_log.totals(),
+        )
+
+    async def _status_loop(self) -> None:
+        """Post the status card on start, on confirmed change, and daily."""
+        await self.wait_until_ready()
+        channel_id = self.settings.rival_status_channel_id
+        channel = None
+        while not self.is_closed():
+            try:
+                if channel is None:
+                    channel = await self.fetch_channel(channel_id)
+                facts = await self._status_facts()
+                embed, _, signature = build_embed(facts)
+                if self._status_policy.should_post(signature, facts.now):
+                    await channel.send(embed=embed)
+                    self._status_policy.posted(signature, facts.now)
+            except asyncio.CancelledError:
+                raise
+            except (discord.Forbidden, discord.NotFound):
+                _LOG.warning(
+                    "RivaL status channel %s unavailable: check the ID and that the "
+                    "bot can view and send messages there", channel_id)
+                channel = None
+                await asyncio.sleep(600)
+                continue
+            except Exception:  # noqa: BLE001 - the card must never affect the bot
+                _LOG.exception("RivaL status card update failed; retrying")
+            await asyncio.sleep(120)
 
     async def _heartbeat_loop(self) -> None:
         """Healthchecks.io pings start only once Discord is actually ready."""
@@ -2273,6 +2372,7 @@ class RivalDiscordClient(discord.Client):
                     written_since_log += await asyncio.to_thread(
                         self.liquidity_store.insert, rows,
                     )
+                    self.liquidity_last_bucket = max(r["bucket_start"] for r in rows)
                 if time.monotonic() - last_log >= 3600:
                     _LOG.info(
                         "RivaL liquidity record rows_written=%d rejected_frames=%d",
@@ -2957,6 +3057,7 @@ class RivalDiscordClient(discord.Client):
         "_target_task", "_sports_results_task", "_sports_task",
         "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
         "_hypothesis_task", "_candidate_task", "_archive_task",
+        "_heartbeat_task", "_status_task",
     )
 
     async def close(self) -> None:

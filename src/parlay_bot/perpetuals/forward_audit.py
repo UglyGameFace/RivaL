@@ -26,6 +26,9 @@ from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.perpetuals.model_checkpoints import LiveModelCheckpoints
 from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
 from parlay_bot.perpetuals.path_forward import ProspectivePathLedger
+from parlay_bot.perpetuals.pooled_features import live_vector
+from parlay_bot.perpetuals.pooled_model import PooledModelSet
+from parlay_bot.perpetuals.pooled_model import probability as pooled_probability
 from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
@@ -148,6 +151,34 @@ class ForwardAccuracyMonitor:
             ShadowModelCompetition(self.store).initialize()
             self._withdraw_no_trade_labels()
             self.market._forward_schema_ready = True
+
+    def _pooled_models(self):
+        """The bot-wide pooled model set (None if its table is unavailable)."""
+        current = getattr(self.market, "pooled_models", None)
+        if current is None:
+            try:
+                current = PooledModelSet(self.store)
+                current.initialize()
+                self.market.pooled_models = current
+            except Exception:  # noqa: BLE001 - optional challenger only
+                _LOG.exception("RivaL pooled model registry unavailable")
+                return None
+        return current
+
+    @staticmethod
+    def _pooled_calls(pooled_set, horizon: int, vector) -> list[dict]:
+        if pooled_set is None or vector is None:
+            return []
+        doc = pooled_set.active(horizon)
+        if doc is None:
+            return []
+        try:
+            return [{"family": doc["_family"], "probability": pooled_probability(doc, vector),
+                     "model_sha256": doc["_sha256"],
+                     "training_rows": int(doc.get("training_rows") or 0)}]
+        except (ValueError, KeyError, TypeError, OverflowError):
+            _LOG.warning("RivaL pooled model prediction failed %s min", horizon)
+            return []
 
     def _withdraw_no_trade_labels(self) -> None:
         """Correct outcomes graded from candles that had no trades.
@@ -640,6 +671,11 @@ class ForwardAccuracyMonitor:
             eligible, slot=int(stamp.timestamp() // 300),
         )
         metrics["selected_streams"] = len(selection)
+        # Pooled multi-year challenger: needs each venue's BTC stream for its
+        # BTC-lead inputs. Read each venue's BTC candles at most once.
+        pooled_set = self._pooled_models()
+        btc_streams = {v: (c, q) for v, c, q in eligible if asset_for_contract(c) == "BTC"}
+        btc_cache: dict[str, list] = {}
         for venue, contract, quote in selection:
             try:
                 rows = self.market.recent_candles(
@@ -659,6 +695,23 @@ class ForwardAccuracyMonitor:
                     metrics["stale_last_candle"] += 1
                     continue
                 features = _features(candles)
+                pooled_vector = None
+                if pooled_set is not None and any(pooled_set.active(h) for h in HORIZONS):
+                    try:
+                        coin = asset_for_contract(contract)
+                        btc_rows = None
+                        source = btc_streams.get(venue)
+                        if coin != "BTC" and source is not None:
+                            if venue not in btc_cache:
+                                btc_cache[venue] = persisted_candles(self.market.recent_candles(
+                                    venue=venue, contract=source[0], quote=source[1],
+                                    interval_minutes=5, count=30, as_of=stamp,
+                                ))
+                            btc_rows = btc_cache[venue]
+                        if coin is not None:
+                            pooled_vector = live_vector(candles, asset=coin, btc_candles=btc_rows)
+                    except Exception:  # noqa: BLE001 - optional challenger only
+                        _LOG.exception("RivaL pooled model inputs unavailable")
                 for horizon in HORIZONS:
                     samples = live_examples(candles, horizon_minutes=horizon)
                     if len(samples) < MIN_PREVIOUS_EVALUATED + 20:
@@ -792,6 +845,7 @@ class ForwardAccuracyMonitor:
                                     incumbent_up=probability, baseline_up=baseline,
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
+                                    pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger
                                 conn.execute("ROLLBACK TO SAVEPOINT rival_shadow_prediction")

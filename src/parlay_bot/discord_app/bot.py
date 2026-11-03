@@ -84,6 +84,7 @@ from parlay_bot.perpetuals.paper_ledger import PaperLedger
 from parlay_bot.perpetuals.phemex_history_recovery import PhemexHistoryRecovery
 from parlay_bot.perpetuals.polybolt_twap import PolyBoltTWAP
 from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
+from parlay_bot.perpetuals.pooled_model import PooledModelSet
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
 from parlay_bot.perpetuals.research_hypotheses import FeatureHypothesisLab
@@ -2451,6 +2452,15 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL streaming forward scoring temporarily unavailable")
             await asyncio.sleep(self.settings.rival_stream_shadow_seconds)
 
+    def _pooled_model_set(self):
+        """The same pooled model set the forecast cycle serves from."""
+        if self.perp_collector is None:
+            return None
+        market = self.perp_collector.market
+        if getattr(market, "pooled_models", None) is None:
+            market.pooled_models = PooledModelSet(self.store)
+        return market.pooled_models
+
     async def _intelligence_loop(self) -> None:
         """RivaL Intelligence reviews the models' calls every 5-minute slot.
 
@@ -2808,6 +2818,18 @@ class RivalDiscordClient(discord.Client):
                     )
                     pages += 1
                     for file_id, payload in items:
+                        if PooledModelSet.is_pooled_document(payload):
+                            try:
+                                pooled = self._pooled_model_set()
+                                if pooled is not None:
+                                    added = await asyncio.to_thread(
+                                        pooled.import_document, file_id, payload,
+                                    )
+                                    if added:
+                                        _LOG.info("RivaL imported pooled model %s", file_id)
+                            except (ValueError, UnicodeError):
+                                _LOG.warning("RivaL pooled model failed verification")
+                            continue
                         try:
                             imported = await asyncio.to_thread(
                                 self.offline_registry.import_document,

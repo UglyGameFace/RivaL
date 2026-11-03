@@ -398,6 +398,34 @@ def warm_benefit_cache(market: object) -> int:
     return done
 
 
+def _pooled_record(market: object, asset: str, horizon: int) -> dict:
+    """Live graded record of the pooled multi-year challenger (7 days)."""
+    since = (datetime.now(UTC) - timedelta(days=7)).isoformat()
+    with market.store.connect() as conn:
+        try:
+            row = conn.execute(
+                """SELECT COUNT(*) AS issued,
+                          SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END) AS graded,
+                          SUM(CASE WHEN settled_at IS NOT NULL AND probability_up<>0.5 AND
+                                ((probability_up>0.5 AND outcome_up=1) OR
+                                 (probability_up<0.5 AND outcome_up=0)) THEN 1 ELSE 0 END) AS hits,
+                          SUM(CASE WHEN settled_at IS NOT NULL AND probability_up<>0.5
+                                   THEN 1 ELSE 0 END) AS decided,
+                          AVG(model_brier) AS model_brier,
+                          AVG(incumbent_brier) AS incumbent_brier,
+                          AVG(baseline_brier) AS baseline_brier,
+                          MIN(issued_at) AS first_issued
+                   FROM rival_model_shadow_forecasts
+                   WHERE asset=? AND horizon_minutes=? AND family LIKE 'pooled_%'
+                     AND issued_at>=?""",
+                (asset, horizon, since),
+            ).fetchone()
+        except Exception:  # noqa: BLE001 - table appears after first challenger issue
+            return {"issued": 0}
+    return {k: row[k] for k in ("issued", "graded", "hits", "decided", "model_brier",
+                                 "incumbent_brier", "baseline_brier", "first_issued")}
+
+
 def _intelligence_status(market: object, asset: str, horizon: int) -> dict | None:
     """RivaL Intelligence's graded reviews of the models (None if never run)."""
     from parlay_bot.perpetuals.intelligence import IntelligenceLedger
@@ -1463,6 +1491,10 @@ class GuidedHome(discord.ui.View):
                         _cached_benefit, self.market, self.coin, self.horizon,
                     ), timeout=PERFORMANCE_READ_SECONDS,
                 )
+                readers["pooled"] = asyncio.wait_for(
+                    asyncio.to_thread(_pooled_record, self.market, self.coin, self.horizon),
+                    timeout=PERFORMANCE_READ_SECONDS,
+                )
                 readers["intelligence"] = asyncio.wait_for(
                     asyncio.to_thread(
                         _intelligence_status, self.market, self.coin, self.horizon,
@@ -1547,7 +1579,7 @@ class GuidedHome(discord.ui.View):
                 windows = int(part.get("windows") or 0)
                 scope = (
                     f"{venues} exchange{'s' if venues != 1 else ''} × "
-                    f"{windows:,} time windows, so each window counts once per exchange"
+                    f"{windows:,} windows"
                     if venues and windows else "all collecting exchanges"
                 )
                 period = "last 7 days"
@@ -1561,10 +1593,9 @@ class GuidedHome(discord.ui.View):
                     pass
                 late = int(part.get("issued_late") or 0)
                 timing = (
-                    f"\n⚠️ **{late:,} of {issued:,} were made after their "
-                    f"{self.horizon}-minute window had already started** (about 1–2 "
-                    "minutes in, using only data from before it). A fair test of the "
-                    "model, but not a call you could act on at the window's opening price."
+                    f"\n⚠️ **{late:,} of {issued:,} made after their {self.horizon}-min "
+                    "window started** (from earlier data only): a fair model test, not a "
+                    "call at the opening price."
                     if late else
                     "\nEach prediction is measured from the last closed 5-minute candle "
                     "and is issued about 1–2 minutes after it closes."
@@ -1577,12 +1608,26 @@ class GuidedHome(discord.ui.View):
                     f"**Correct direction:** {accuracy}\n{scoring}\n"
                     f"**Results checked:** {settled:,} of {issued:,} recorded "
                     f"predictions{paired}{pending}{timing}\n"
-                    f"Scope: {period}, {scope}; selected timeframe and incumbent "
-                    "model only"
+                    f"Scope: {period}, {scope}; incumbent model only"
                     + ("\n⚠️ **Consistency check failed:** "
                        + "; ".join(problems)[:300]
                        + ". Treat these numbers as unreliable." if problems else "")
                 )
+            pooled = reports.get("pooled")
+            if isinstance(pooled, dict) and int(pooled.get("issued") or 0):
+                graded, decided = int(pooled["graded"] or 0), int(pooled["decided"] or 0)
+                if decided and pooled["model_brier"] is not None:
+                    hits = int(pooled["hits"] or 0)
+                    exchange_text += (
+                        f"\n**New 6-year model (live test):** {hits:,} of {decided:,} right "
+                        f"({hits / decided:.1%}) · Brier {float(pooled['model_brier']):.3f} vs "
+                        f"current model {float(pooled['incumbent_brier']):.3f} vs basic "
+                        f"{float(pooled['baseline_brier']):.3f} (same predictions, last 7 days)"
+                    )
+                else:
+                    exchange_text += (f"\n**New 6-year model (live test):** "
+                                      f"{int(pooled['issued']):,} predictions made, "
+                                      f"{graded:,} graded so far")
             embed.add_field(name=f"📈 How accurate are {self.coin} exchange predictions?", value=exchange_text[:1024], inline=False)
 
             # 2. Contract-native comparisons; historical labels are NOT model wins.

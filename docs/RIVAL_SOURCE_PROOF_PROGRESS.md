@@ -44,3 +44,33 @@ regression tests. Follow up after deploy by inspecting the record timestamps,
 live 5m/15m outcomes and source-specific evaluation counts in the connected
 Discloud PostgreSQL database. Source-specific paper proof is not a substitute
 for independent actual-execution records.
+
+## Opt-in tracking of the next X future predictions
+
+Choose **Detailed Research → Results → Track next predictions**. The
+**Choose exchange** control takes you to the exact-source proof page, where
+you select the source and return. The last-selected source is preserved in
+the private menu. Start a cohort of the **next 25, 50, 100, 150, 300 or
+500** predictions for **5m, 15m or 60m**, provided that source already has
+an actual forward-forecast stream.
+
+A new session is persisted in PostgreSQL (and works with the SQLite test
+store), keyed by the Discord owner's ID, asset, source and timeframe.
+The session freezes the existing instrument, model version, start timestamp
+and planned sample count. Only the **first X issued strictly after the start**
+are eligible. The score always includes pending, invalid and losing records
+rather than selecting only successful outcomes. Old sessions cannot be reset
+while incomplete. Subsequent sessions are permitted only after a previous
+session has fully settled with verified model provenance.
+
+The progress screen shows issued, settled, correct direction, Brier loss versus
+the contemporaneous basic forecast, and missing evidence. When all X
+precommitted predictions have settled, it also compares the earlier and
+later halves by their *relative Brier improvement over the contemporaneous
+baseline*. A positive later-half comparison is descriptive, not a causal
+proof that training made a model better. It cannot auto-promote a model.
+
+This cohort feature does **not** replace the separate 150-future-outcome,
+21-calendar-day, 80%-quote-coverage and positive stressed-paper-after-cost
+qualification gates. It never constructs simulated fills from historical
+candles or labels simulated profits as authenticated real-money gains.

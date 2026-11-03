@@ -114,3 +114,24 @@ def test_hit_rate_must_match_its_counts():
         "issued": 10, "settled": 10, "decided": 10, "correct": 5, "hit_rate": .9,
     })
     assert any("hit rate" in p for p in problems)
+
+
+def test_improvement_result_is_reused_after_a_slow_first_run(monkeypatch):
+    from types import SimpleNamespace
+
+    from parlay_bot.discord_app import home as home_module
+
+    calls = []
+
+    def slow(_market, asset, horizon):
+        calls.append((asset, horizon))
+        return {"status": "insufficient", "targets": 957, "days": 4}
+
+    monkeypatch.setattr(home_module, "_performance_benefit", slow)
+    market = SimpleNamespace()
+    first = home_module._cached_benefit(market, "BTC", 5)
+    second = home_module._cached_benefit(market, "BTC", 5)
+    assert first == second
+    assert calls == [("BTC", 5)]
+    home_module._cached_benefit(market, "ETH", 5)
+    assert len(calls) == 2

@@ -341,6 +341,45 @@ def _performance_benefit(market: object, asset: str, horizon: int) -> dict:
     )
 
 
+# The improvement query takes 3-7 s in production, longer than the page's
+# 4 s budget, and its answer moves slowly. Each run finishes on its worker
+# thread even after the page stops waiting, and the result is reused for a
+# few minutes, so the next Refresh shows it instead of "Cannot check".
+BENEFIT_CACHE_SECONDS = 600
+_BENEFIT_CACHE: dict[tuple, tuple[float, object, dict]] = {}
+
+
+def _cached_benefit(market: object, asset: str, horizon: int) -> dict:
+    key = (id(market), asset, horizon)
+    hit = _BENEFIT_CACHE.get(key)
+    if hit is not None and hit[1] is market and time.monotonic() - hit[0] < BENEFIT_CACHE_SECONDS:
+        return hit[2]
+    result = _performance_benefit(market, asset, horizon)
+    if isinstance(result, dict):
+        if len(_BENEFIT_CACHE) > 64:
+            _BENEFIT_CACHE.clear()
+        _BENEFIT_CACHE[key] = (time.monotonic(), market, result)
+    return result
+
+
+def _cycle_coverage(market: object) -> dict | None:
+    """How many of the last 24 hours' 5-minute prediction cycles really ran."""
+    since = (datetime.now(UTC) - timedelta(hours=24)).isoformat()
+    try:
+        with market.store.connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS cycles, COALESCE(SUM(target_expired), 0) AS expired, "
+                "COALESCE(SUM(issued_forecasts), 0) AS issued "
+                "FROM perp_forward_cycle_diagnostics WHERE checked_at>=?",
+                (since,),
+            ).fetchone()
+        return {"cycles": int(row["cycles"] or 0), "expired": int(row["expired"] or 0),
+                "issued": int(row["issued"] or 0)}
+    except Exception:  # noqa: BLE001 - optional context line, never blocks the page
+        _LOG.warning("Performance cycle coverage read unavailable")
+        return None
+
+
 def _performance_lineage(market: object, asset: str, horizon: int) -> dict:
     """Report verified training provenance even when trend scoring times out."""
     return ForwardAccuracyMonitor(market).learning_lineage_summary(
@@ -1374,8 +1413,11 @@ class GuidedHome(discord.ui.View):
                 )
                 readers["benefit"] = asyncio.wait_for(
                     asyncio.to_thread(
-                        _performance_benefit, self.market, self.coin, self.horizon,
+                        _cached_benefit, self.market, self.coin, self.horizon,
                     ), timeout=4.0,
+                )
+                readers["coverage"] = asyncio.wait_for(
+                    asyncio.to_thread(_cycle_coverage, self.market), timeout=4.0,
                 )
                 readers["lineage"] = asyncio.wait_for(
                     asyncio.to_thread(
@@ -1454,6 +1496,15 @@ class GuidedHome(discord.ui.View):
                     f"{windows:,} time windows, so each window counts once per exchange"
                     if venues and windows else "all collecting exchanges"
                 )
+                period = "last 7 days"
+                try:
+                    first = datetime.fromisoformat(str(part.get("first_issued")))
+                    if first.tzinfo is not None and now - first < timedelta(days=6, hours=12):
+                        days = max(1, round((now - first).total_seconds() / 86400))
+                        period = (f"since this model went live {first:%b %d} "
+                                  f"(~{days} day{'s' if days != 1 else ''})")
+                except (TypeError, ValueError):
+                    pass
                 problems = score_consistency_problems(part)
                 if problems:
                     _LOG.error("Performance consistency check failed for %s %s min: %s",
@@ -1462,7 +1513,7 @@ class GuidedHome(discord.ui.View):
                     f"**Correct direction:** {accuracy}\n{scoring}\n"
                     f"**Results checked:** {settled:,} of {issued:,} recorded "
                     f"predictions{paired}{pending}\n"
-                    f"Scope: last 7 days, {scope}; selected timeframe and incumbent "
+                    f"Scope: {period}, {scope}; selected timeframe and incumbent "
                     "model only"
                     + ("\n⚠️ **Consistency check failed:** "
                        + "; ".join(problems)[:300]
@@ -1517,9 +1568,9 @@ class GuidedHome(discord.ui.View):
                     state = "Running"
                 engine_text = (
                     f"**Is learning running?** {state} (last cycle {age} min ago, "
-                    "runs every 15 min; that cycle: "
+                    "runs every 5 min; that cycle: "
                     f"{heart['issued']} predictions logged, {heart['settled']} results checked "
-                    "across all coins/timeframes, research model)"
+                    "and learned from, all coins/timeframes)"
                 )
             benefit = reports.get("benefit")
             lineage = reports.get("lineage")
@@ -1529,12 +1580,19 @@ class GuidedHome(discord.ui.View):
                     "not_improving": "Not beating basic predictions yet",
                     "insufficient": "Not enough future results to tell yet",
                 }.get(benefit.get("status"), "Not verified")
+                days = int(benefit.get("days") or 0)
+                need = ""
+                if benefit.get("status") == "insufficient" and days < 7:
+                    need = f"; needs 7 days of results, has {days}"
                 trend_text = (
                     f"**Is accuracy improving?** {reason} "
                     f"({int(benefit.get('targets') or 0)} results / "
-                    f"{int(benefit.get('days') or 0)} days checked; current model, "
+                    f"{days} days checked{need}; current model, "
                     "last 14 days, one result per time window)"
                 )
+            elif isinstance(benefit, TimeoutError):
+                trend_text = ("**Is accuracy improving?** Cannot check right now: still "
+                              "calculating, press Refresh in a few seconds. Improvement unproven")
             else:
                 trend_text = "**Is accuracy improving?** Cannot check right now; improvement unproven"
             if isinstance(lineage, dict) and lineage.get("lineage_proven"):
@@ -1600,6 +1658,16 @@ class GuidedHome(discord.ui.View):
                               f"{cycle['issued']} predictions recorded (all coins/timeframes, latest cycle"
                               + (f"; {cycle['expired']} skipped as too late" if cycle.get("expired")
                                  else "") + ")")
+            coverage = reports.get("coverage")
+            if isinstance(coverage, dict) and coverage["cycles"]:
+                ran = min(coverage["cycles"], 288)
+                missed = coverage["expired"]
+                cycle_text += (
+                    f"\n{'✅' if ran >= 274 else '⚠️'} **Last 24 h:** {ran} of 288 "
+                    f"five-minute cycles ran ({ran / 288:.0%})"
+                    + (f"; {missed:,} predictions skipped because the cycle ran late"
+                       if missed else "")
+                )
             embed.add_field(
                 name="📡 Are market feeds and predictions running?", value=f"{feeds_text}\n{cycle_text}", inline=False,
             )

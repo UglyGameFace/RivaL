@@ -1,0 +1,44 @@
+name: RivaL performance truth audit
+
+# Read-only: runs an aggregate-count probe on the live host via the Discloud
+# console and prints the JSON. No writes, no inference, no secrets echoed.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run probe on host
+        env:
+          DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+          DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+        run: |
+          python3 - <<'PY'
+          import base64, gzip, json, os, pathlib
+          from urllib import parse, request
+          code = base64.b64encode(gzip.compress(
+              pathlib.Path("tools/performance_truth_probe.py").read_bytes())).decode()
+          cmd = ("python -c \"import base64,gzip,sys;sys.path.insert(0,'src');"
+                 f"exec(gzip.decompress(base64.b64decode('{code}')))\"")
+          req = request.Request(
+              "https://api.discloud.app/v2/app/"
+              + parse.quote(os.environ["DISCLOUD_APP_ID"], safe="") + "/console",
+              data=json.dumps({"command": cmd}).encode(),
+              headers={"api-token": os.environ["DISCLOUD_TOKEN"],
+                       "Content-Type": "application/json"}, method="PUT")
+          with request.urlopen(req, timeout=170) as response:
+              data = json.load(response)
+          shell = data.get("apps", {}).get("shell", {})
+          for line in str(shell.get("stdout", "")).splitlines():
+              if line.startswith("RIVAL_PERFORMANCE_PROBE="):
+                  print(json.dumps(json.loads(line.split("=", 1)[1]), indent=1))
+                  break
+          else:
+              print("no probe output; stderr tail:", str(shell.get("stderr", ""))[-800:])
+          PY

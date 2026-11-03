@@ -297,7 +297,7 @@ def test_advanced_models_show_screening_blocker_not_paper_profit():
         60: {"issued": 30, "settled": 18},
     }}
     with_baseline = _plain_boosted_proof(proof, incumbent=incumbent)
-    assert "**Main model (7d):** 236 forward records, 183 outcomes checked." in with_baseline
+    assert "**Main model (all timeframes, 7d):** 236 predictions, 183 graded." in with_baseline
     assert "**Advanced-model forecasts (30d):** 0 logged" in with_baseline
     assert len(with_baseline) < 1024
 

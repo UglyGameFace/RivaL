@@ -658,7 +658,7 @@ def test_hypothesis_output_rejects_unbounded_features_and_synthetic_trades():
         **valid, "entry_price": 125000,
     })
     assert not SERVICE["validated_hypothesis"]({
-        **valid, "rationale": "short",
+        **valid, "rationale": "tiny",
     })
     assert set(SERVICE["HYPOTHESES"]) == {
         "trend_only", "momentum_only", "volatility_only", "volume_only",

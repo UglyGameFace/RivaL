@@ -721,7 +721,21 @@ def test_feature_hypothesis_uses_bounded_cpu_tokens_and_true_model_json(monkeypa
         }, mode="hypothesis")
         assert result["hypothesis"] == "feature_subset_v2"
         assert result["feature_indices"] == [0, 2, 5]
-        assert calls[-1]["max_tokens"] == 96
+        assert calls[-1]["max_tokens"] == 136
+        structured = calls[-1]["response_format"]
+        assert structured["type"] == "json_schema"
+        branches = structured["json_schema"]["schema"]["anyOf"]
+        assert len(branches) == 2
+        assert branches[0]["properties"]["hypothesis"]["enum"] == list(
+            SERVICE["HYPOTHESES"][:4]
+        )
+        assert branches[1]["properties"]["hypothesis"]["enum"] == [
+            "feature_subset_v2"
+        ]
+        assert branches[1]["properties"]["feature_indices"]["minItems"] == 2
+        assert branches[1]["properties"]["feature_indices"]["maxItems"] == 8
+        assert branches[0]["additionalProperties"] is False
+        assert branches[1]["additionalProperties"] is False
         assert calls[-1]["chat_template_kwargs"] == {"enable_thinking": False}
         assert result["prediction"] is None and not result["live_model_promoted"]
     finally:
@@ -746,3 +760,64 @@ def test_gateway_503_only_adds_safe_failure_code(gateway):
     code, data = send(server)
     assert code == 503
     assert data == {"error": "inference_failed", "failure_kind": "invalid_output"}
+
+
+def test_grammar_shape_preserves_legacy_masks_and_v2_without_fabricated_features():
+    schema = SERVICE["HYPOTHESIS_RESPONSE_FORMAT"]["json_schema"]["schema"]
+    assert set(schema) == {"anyOf"}
+    assert all(part["additionalProperties"] is False for part in schema["anyOf"])
+    canonical = SERVICE["canonicalize_feature_subset"]
+    validate = SERVICE["validated_hypothesis"]
+    proposed = {
+        "hypothesis": "feature_subset_v2",
+        "rationale": "Compare causal input groups",
+        "falsification": "Reject lower future skill",
+        "feature_indices": [5, 2, 0],
+    }
+    assert canonical(proposed)["feature_indices"] == [0, 2, 5]
+    assert proposed["feature_indices"] == [5, 2, 0]
+    assert validate(canonical(proposed))
+    for bad in ([0, 0, 2], [0, 11], [0, True], [1], list(range(9))):
+        invalid = {**proposed, "feature_indices": bad}
+        assert not validate(canonical(invalid))
+    legacy = {k: v for k, v in proposed.items() if k != "feature_indices"}
+    legacy["hypothesis"] = "trend_only"
+    assert validate(canonical(legacy))
+
+
+def test_ordinary_research_still_uses_original_unconstrained_json_mode(monkeypatch):
+    server = Gateway("127.0.0.1", 0, token="t"*48, model="lfm3")
+    calls = []
+    class Response:
+        status = 200
+        def __init__(self, data):
+            self.data = json.dumps(data).encode("utf-8")
+        def __enter__(self):
+            return self
+        def __exit__(self, *_unused):
+            return False
+        def read(self, _limit):
+            return self.data
+    def fake(req, timeout):
+        if req.full_url.endswith("/apply-template"):
+            return Response({"prompt": "rendered"})
+        if req.full_url.endswith("/tokenize"):
+            return Response({"tokens": [1] * 100})
+        body = json.loads(req.data)
+        calls.append(body)
+        return Response({"choices": [{"finish_reason": "stop", "message": {
+            "content": json.dumps({
+                "direction": "uncertain", "confidence": "low",
+                "thesis": "Historical inputs unverified",
+                "risk": "No genuine future quotes",
+            }),
+        }}]})
+    try:
+        monkeypatch.setattr(SERVICE["urllib"].request, "urlopen", fake)
+        result = server.infer("BTC", {"analysis": "unvalidated_research",
+                                       "sources": []})
+        assert result["direction"] == "uncertain"
+        assert calls[-1]["max_tokens"] == 140
+        assert calls[-1]["response_format"] == {"type": "json_object"}
+    finally:
+        server.server_close()

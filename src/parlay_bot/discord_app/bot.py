@@ -68,6 +68,7 @@ from parlay_bot.perpetuals.hyperliquid_history_recovery import (
 from parlay_bot.perpetuals.kalshi_forward import KalshiForwardResearch
 from parlay_bot.perpetuals.kucoin_history_recovery import KucoinHistoryRecovery
 from parlay_bot.perpetuals.lighter_history_recovery import LighterHistoryRecovery
+from parlay_bot.perpetuals.liquidity_record import LiquidityRecorder, LiquidityStore
 from parlay_bot.perpetuals.live_quotes import (
     PublicBestQuoteClient,
     QuoteUnavailable,
@@ -487,6 +488,15 @@ class RivalDiscordClient(discord.Client):
             StreamShadowLedger(self.store) if self.live_stream is not None else None
         )
         self._stream_shadow_task: asyncio.Task[None] | None = None
+        # Issue #295: 5-minute spread/depth/trade-flow record from the same
+        # public streams. Raw ticks stay in RAM; only bucket rows are stored.
+        self.liquidity_recorder: LiquidityRecorder | None = None
+        self.liquidity_store: LiquidityStore | None = None
+        if self.live_stream is not None:
+            self.liquidity_recorder = LiquidityRecorder(assets=self.live_stream.assets)
+            self.live_stream.recorder = self.liquidity_recorder
+            self.liquidity_store = LiquidityStore(self.store)
+        self._liquidity_task: asyncio.Task[None] | None = None
         # Redundant momentum-notification delivery was retired; streaming
         # books still feed forward research and quote provenance.
         self.quote_profit = (
@@ -1845,6 +1855,10 @@ class RivalDiscordClient(discord.Client):
                 self._stream_shadow_task = asyncio.create_task(
                     self._stream_shadow_loop(), name="rival-stream-forward-cost-audit",
                 )
+            if self.liquidity_recorder is not None and self._liquidity_task is None:
+                self._liquidity_task = asyncio.create_task(
+                    self._liquidity_loop(), name="rival-liquidity-5m-record",
+                )
             _LOG.info(
                 "RivaL websocket market feeds started assets=%s venues=hyperliquid,binance",
                 ",".join(self.live_stream.assets),
@@ -2245,6 +2259,31 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001
                 _LOG.exception("RivaL sportsbook scheduler unavailable")
             await asyncio.sleep(self.settings.rival_current_refresh_seconds)
+
+    async def _liquidity_loop(self) -> None:
+        """Persist finished 5-minute liquidity buckets every 30 seconds."""
+        assert self.liquidity_recorder is not None and self.liquidity_store is not None
+        await asyncio.to_thread(self.liquidity_store.initialize)
+        written_since_log = 0
+        last_log = time.monotonic()
+        while not self.is_closed():
+            try:
+                rows = self.liquidity_recorder.drain(now=datetime.now(UTC))
+                if rows:
+                    written_since_log += await asyncio.to_thread(
+                        self.liquidity_store.insert, rows,
+                    )
+                if time.monotonic() - last_log >= 3600:
+                    _LOG.info(
+                        "RivaL liquidity record rows_written=%d rejected_frames=%d",
+                        written_since_log, self.liquidity_recorder.rejected,
+                    )
+                    written_since_log, last_log = 0, time.monotonic()
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - recording never stops quotes or Discord
+                _LOG.exception("RivaL liquidity record flush failed; retrying")
+            await asyncio.sleep(30)
 
     async def _stream_shadow_loop(self) -> None:
         """Sample fresh WS books for read-only forward cost proof, never raw ticks.
@@ -2676,6 +2715,8 @@ class RivalDiscordClient(discord.Client):
                  "rival-verified-offline-candidate-import"),
                 ("_stream_shadow_task", self._stream_shadow_loop,
                  "rival-stream-forward-cost-audit"),
+                ("_liquidity_task", self._liquidity_loop,
+                 "rival-liquidity-5m-record"),
                 ("_archive_task", self._archive_loop, "rival-cold-archive"),
                 ("_sports_results_task", self._sports_results_loop,
                  "rival-sports-final-results"),
@@ -2912,6 +2953,7 @@ class RivalDiscordClient(discord.Client):
     _WORKER_TASK_ATTRS = (
         "_health_task", "_polybolt_task", "_kalshi_research_task",
         "_poly_board_task", "_poly_research_task", "_stream_shadow_task",
+        "_liquidity_task",
         "_target_task", "_sports_results_task", "_sports_task",
         "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
         "_hypothesis_task", "_candidate_task", "_archive_task",

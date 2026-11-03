@@ -327,6 +327,7 @@ class AutonomousResearch:
                           model_brier,baseline_brier
                    FROM perp_forward_audit
                    WHERE model_version=? AND settled_at IS NOT NULL
+                     AND model_brier IS NOT NULL AND baseline_brier IS NOT NULL
                      AND issued_at>=? AND issued_at<=?
                    ORDER BY target_opened_at""",
                 (FORWARD_MODEL, (current - timedelta(days=14)).isoformat(),

@@ -120,3 +120,34 @@ def test_governance_filters_wrong_model_versions_and_uses_paired_loss(tmp_path):
         assert supervisor.review_model(now=now) == 0
     finally:
         store.close()
+
+
+def test_no_trade_settled_rows_never_crash_model_review(tmp_path):
+    """A target window with zero trades settles with no outcome or score."""
+    store = SQLiteHotStore(tmp_path / "governance-null.sqlite")
+    market = PerpetualMarketStore(store)
+    supervisor = AutonomousResearch(market, ai=None, venues=(), assets=("BTC",))
+    now = datetime(2026, 10, 28, 16, tzinfo=UTC)
+    supervisor.initialize()
+    try:
+        target = now - timedelta(hours=1)
+        with store.connect() as conn:
+            conn.execute(
+                """INSERT INTO perp_forward_audit
+                   (venue,contract,quote,asset,horizon_minutes,
+                    model_version,reference_opened_at,reference_close,
+                    issued_at,target_opened_at,probability_up,
+                    baseline_up,training_evaluated,settled_at,
+                    outcome_up,realized_close,model_brier,baseline_brier)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("dydx", "BTC-USD", "USD", "BTC", 5,
+                 "prospective-logistic-persistent-v3",
+                 (target - timedelta(minutes=5)).isoformat(), 100.,
+                 (target - timedelta(minutes=2)).isoformat(),
+                 target.isoformat(), .6, .5, 100,
+                 (target + timedelta(minutes=6)).isoformat(),
+                 None, 100., None, None),
+            )
+        supervisor.review_model(now=now)  # must not raise
+    finally:
+        store.close()

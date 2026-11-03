@@ -73,6 +73,7 @@ from parlay_bot.perpetuals.live_quotes import (
     quote_embed,
 )
 from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
+from parlay_bot.perpetuals.research_hypotheses import FeatureHypothesisLab
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
@@ -473,6 +474,19 @@ class RivalDiscordClient(discord.Client):
                     "Legacy Gemini AI provider is disabled; set "
                     "RIVAL_AI_PROVIDER=local to use private RivaL Intelligence"
                 )
+        self.hypothesis_lab: FeatureHypothesisLab | None = (
+            FeatureHypothesisLab(
+                self.store, self.gemini_research,
+                venues=tuple(self.perp_collector.providers),
+            )
+            if (settings.rival_llm_hypotheses_enabled
+                and settings.rival_ai_provider == "local"
+                and isinstance(self.gemini_research, LocalFirstResearch)
+                and self.perp_collector is not None
+                and settings.rival_storage_backend == "postgres")
+            else None
+        )
+        self._hypothesis_task: asyncio.Task[None] | None = None
         self.autonomous: AutonomousResearch | None = (
             AutonomousResearch(
                 self.perp_collector.market,
@@ -1867,6 +1881,10 @@ class RivalDiscordClient(discord.Client):
                 self._history_loop(), name="rival-perp-history-recovery"
             )
 
+        if self.hypothesis_lab is not None and self._hypothesis_task is None:
+            self._hypothesis_task = asyncio.create_task(
+                self._hypothesis_loop(), name="rival-llm-feature-research",
+            )
         if self.shadow_monitor is not None and self._shadow_task is None:
             _LOG.info(
                 "RivaL automatic shadow learning ENABLED interval=%ds "
@@ -2461,6 +2479,28 @@ class RivalDiscordClient(discord.Client):
                     except Exception:  # noqa: BLE001
                         _LOG.exception("RivaL six-month history audit failed safely")
             await asyncio.sleep(self.settings.rival_history_recovery_seconds)
+
+    async def _hypothesis_loop(self) -> None:
+        """Optional low-priority LFM3 feature ideas, no impact on live forecasts."""
+        await self.wait_until_ready()
+        await asyncio.sleep(40)
+        assert self.hypothesis_lab is not None
+        while not self.is_closed():
+            if host_memory.snapshot().pressure:
+                await asyncio.sleep(300)
+                continue
+            try:
+                result = await self.hypothesis_lab.run_once()
+                if result["status"] == "proposed":
+                    _LOG.info(
+                        "RivaL bounded AI hypothesis recorded asset=%s kind=%s",
+                        result["asset"], result["hypothesis"],
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - optional ML research only
+                _LOG.exception("RivaL independent AI feature laboratory unavailable")
+            await asyncio.sleep(300)
 
     async def _shadow_loop(self) -> None:
         await self.wait_until_ready()

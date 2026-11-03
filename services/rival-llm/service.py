@@ -60,8 +60,9 @@ HYPOTHESIS_PROMPT = (
     "Choose one subset; never enumerate variants or claim tested improvement. "
     "Do not provide a probability, direction, recommendation, live trade, "
     "feature weight, claimed accuracy or unlisted model. "
-    "Return ONLY JSON: hypothesis (exact listed name), rationale "
-    "(5-120 characters), falsification (5-120 characters). "
+    "Return ONLY JSON keys: hypothesis (exact listed name), rationale "
+    "(5-120 characters), falsification (5-120 characters), plus "
+    "feature_indices ONLY when hypothesis=feature_subset_v2. "
     "This is an untested suggestion for deterministic chronological validation."
 )
 

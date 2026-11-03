@@ -40,7 +40,7 @@ MAX_EVIDENCE_CHARS = 24_000
 CONTEXT_TOKENS = 4096
 GENERATION_TOKENS = 140
 # Strict, smaller response for a CPU-only feature suggestion, not a forecast.
-HYPOTHESIS_GENERATION_TOKENS = 96
+HYPOTHESIS_GENERATION_TOKENS = 136
 CONTEXT_SAFETY_TOKENS = 96
 
 
@@ -72,6 +72,63 @@ PROMPT = (
     "risk (max 100 characters). Past returns are not future forecasts. "
     "RivaL's mathematical model and NO CALL remain authoritative."
 )
+
+
+# The pinned llama.cpp b12024 server supports top-level anyOf JSON grammar.
+# Keep both pre-v2 and combinatorial outputs, with disjoint hypothesis enums.
+# This restricts generation rather than hoping tiny CPU LFM3 guesses the schema.
+_REASON = {"type": "string", "minLength": 5, "maxLength": 48}
+HYPOTHESIS_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "rival_source_bound_feature_hypothesis",
+        "strict": True,
+        "schema": {
+            "anyOf": [
+                {
+                    "type": "object",
+                    "properties": {
+                        "hypothesis": {"type": "string", "enum": list(HYPOTHESES[:4])},
+                        "rationale": _REASON,
+                        "falsification": _REASON,
+                    },
+                    "required": ["hypothesis", "rationale", "falsification"],
+                    "additionalProperties": False,
+                },
+                {
+                    "type": "object",
+                    "properties": {
+                        "hypothesis": {"type": "string", "enum": ["feature_subset_v2"]},
+                        "rationale": _REASON,
+                        "falsification": _REASON,
+                        "feature_indices": {
+                            "type": "array", "minItems": 2, "maxItems": 8,
+                            "items": {"type": "integer", "minimum": 0, "maximum": 9},
+                        },
+                    },
+                    "required": [
+                        "hypothesis", "rationale", "falsification", "feature_indices",
+                    ],
+                    "additionalProperties": False,
+                },
+            ],
+        },
+    },
+}
+
+
+def canonicalize_feature_subset(value: object) -> object:
+    """Sort only a genuine unique proposed set; never add or alter features."""
+    if not isinstance(value, dict) or value.get("hypothesis") != "feature_subset_v2":
+        return value
+    indices = value.get("feature_indices")
+    if not (
+        isinstance(indices, list) and 2 <= len(indices) <= 8
+        and all(type(i) is int and 0 <= i <= 9 for i in indices)
+        and len(indices) == len(set(indices))
+    ):
+        return value
+    return {**value, "feature_indices": sorted(indices)}
 
 
 def valid_feature_indices(value: object) -> bool:
@@ -434,7 +491,10 @@ class Gateway(ThreadingHTTPServer):
             "chat_template_kwargs": {"enable_thinking": False},
             "max_tokens": output_tokens,
             "stream": False,
-            "response_format": {"type": "json_object"},
+            "response_format": (
+                HYPOTHESIS_RESPONSE_FORMAT if mode == "hypothesis"
+                else {"type": "json_object"}
+            ),
         }).encode("utf-8")
         request = urllib.request.Request(
             self.backend_url + "/v1/chat/completions", data=payload,
@@ -464,6 +524,7 @@ class Gateway(ThreadingHTTPServer):
             result = json.loads(cleaned[len("```json\n"):-len("\n```")])
             repaired_format = True
         if mode == "hypothesis":
+            result = canonicalize_feature_subset(result)
             if not validated_hypothesis(result):
                 raise ValueError("invalid bounded hypothesis output")
             hypothesis = {

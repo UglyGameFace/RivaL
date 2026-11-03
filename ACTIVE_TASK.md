@@ -1,9 +1,10 @@
-## In progress: RivaL Intelligence private CPU hypothesis acceptance (2026-11-03 UTC)
+## In progress: pinned llama.cpp bounded structured hypotheses (2026-11-03 UTC)
 
-- Verified: #285 and #286 merged into main and passed CI; latest bot release and source-specific future quote proof are active. Latest receipt: ETH/Hyperliquid 5m, 579 prospective targets, 4 days, 454/478 genuine bid/ask quotes (94.98%), with no baseline or after-cost superiority.
-- Blocker: Standalone Intelligence release 41573189476 confirmed ready authenticated status and successful grounded research, but all seven hypothesis calls failed HTTP. Main-bot LFM3 production acceptance 41573473919 returned 429 busy from the same serialized CPU worker.
-- Repair: Shorten only the bounded feature-hypothesis prompt and lower that response's generation budget to 96 tokens; regular research remains unchanged. Preserve exact approved feature indices and retrospective screening, with no fabricated suggestions. Add only allowlisted timeout/token/JSON/busy failure codes to the authenticated gateway and the Discloud verifier. The actual cause of the hypothesis HTTP failure is pending a fresh live receipt.
-- Acceptance: full CI and Discloud exact-SHA two-endpoint authenticated smoke, followed by a genuine fresh three-venue main-bot PostgreSQL LFM3 receipt. Keep at least 150 distinct future events, 21 UTC days, 80% matched quotes, and positive after-cost superiority gates unchanged.
+- The latest independent standalone release 41575049053 verified a ready authenticated LFM3 model and safely grounded ordinary research but did not pass hypothesis generation: attempts 2,3,4,6 returned invalid_hypothesis and attempts 5,7 returned token_limit (attempt 1 still warming). This proves the remaining issue is hypothesis output, not connection or lack of data.
+- This fix uses the pinned b12024 llama.cpp server's documented response_format=json_schema with a top-level anyOf over two disjoint branches: four unchanged legacy masks or feature_subset_v2 with 2-8 bounded indices. Both enforce 5-48-character rationale/falsification and disallow additional keys. The final strict validator remains in place. Sorting unique indices preserves only the original LFM3-proposed set, and duplicates/out-of-range values remain rejected.
+- Raise only hypothesis generation from 96 to 136 tokens with grammar-constrained short fields. Keep ordinary grounded research at 140 tokens and the same authorization/source SHA, 40-second backend CPU budget, PostgreSQL provenance, zero external AI providers and zero live model auto-promotion.
+- Verify exact CI, standalone source mirroring, Discloud upload, two-endpoint live receipt, and a real main-bot PostgreSQL research receipt when the single CPU worker is free. Do not claim improvement until prospective >=150 distinct target windows, >=21 UTC days, >=80% matched quotes, baselines and positive after-cost stress are all proven.
+- Open PR #288 works on source-matched historical model family evaluation, not this LFM3 gateway. Keep changes isolated and avoid branch overlap.
 
 ---
 
@@ -14,6 +15,15 @@
 - **Serving:** Reuse the existing promoted-family watch path for dynamically named historical/boosted families, but recheck source-exact original-artifact eligibility before any read-only watch. Missing or demoted candidates use the untouched original logistic forecast; no market orders.
 - **Remaining:** Main bot and standalone LFM3 live acceptance, exact CI with PostgreSQL, then on-host source-matched candidate issuance/settlement/quote results. **No candidate is qualified merely by merging this code.** Keep issues #6, #151, #188, #268 open.
 - **Validation:** Unit/quote/paper-governance tests and full CI pending; production evidence not yet verified. Historical research previously returned 0/48 qualifiers.
+
+---
+
+## In progress: RivaL Intelligence private CPU hypothesis acceptance (2026-11-03 UTC)
+
+- Verified: #285 and #286 merged into main and passed CI; latest bot release and source-specific future quote proof are active. Latest receipt: ETH/Hyperliquid 5m, 579 prospective targets, 4 days, 454/478 genuine bid/ask quotes (94.98%), with no baseline or after-cost superiority.
+- Blocker: Standalone Intelligence release 41573189476 confirmed ready authenticated status and successful grounded research, but all seven hypothesis calls failed HTTP. Main-bot LFM3 production acceptance 41573473919 returned 429 busy from the same serialized CPU worker.
+- Repair: Shorten only the bounded feature-hypothesis prompt and lower that response's generation budget to 96 tokens; regular research remains unchanged. Preserve exact approved feature indices and retrospective screening, with no fabricated suggestions. Add only allowlisted timeout/token/JSON/busy failure codes to the authenticated gateway and the Discloud verifier. The actual cause of the hypothesis HTTP failure is pending a fresh live receipt.
+- Acceptance: full CI and Discloud exact-SHA two-endpoint authenticated smoke, followed by a genuine fresh three-venue main-bot PostgreSQL LFM3 receipt. Keep at least 150 distinct future events, 21 UTC days, 80% matched quotes, and positive after-cost superiority gates unchanged.
 
 ---
 

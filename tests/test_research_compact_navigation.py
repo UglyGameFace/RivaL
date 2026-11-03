@@ -257,7 +257,7 @@ def test_historical_learning_is_explained_without_claiming_improvement():
     explanation = _plain_training_line(proof, 5)
     assert "No verified historical training used" in explanation
     assert "1,434 new-data learning updates" in explanation
-    assert "0/100 checked predictions" in explanation
+    assert "0/100 recorded forecasts have verified historical-seed lineage" in explanation
 
     proof["latest_historical_seed_sha256"] = "verified-hash"
     assert "Verified historical training used" in _plain_training_line(proof, 5)
@@ -281,11 +281,25 @@ def test_advanced_models_show_screening_blocker_not_paper_profit():
         "fresh_paper_promotions": [],
     }
     explanation = _plain_boosted_proof(proof)
-    assert "54" in explanation
+    assert "**Advanced models imported:** 54" in explanation
+    assert "**Passed screening:** 0" in explanation
+    assert "**Advanced-model forecasts (30d):** 0 logged" in explanation
+    assert "Main model: see Results for separate forward records." in explanation
     assert "did not improve enough over basic forecasts in validation" in explanation
     assert "No model qualifies for simulated testing yet" in explanation
     assert "Real profit" in explanation
     assert len(explanation) < 1024
+
+    # Boosted and incumbent forecasts have different lineage and denominators.
+    incumbent = {"last_7d": {
+        5: {"issued": 125, "settled": 100},
+        15: {"issued": 81, "settled": 65},
+        60: {"issued": 30, "settled": 18},
+    }}
+    with_baseline = _plain_boosted_proof(proof, incumbent=incumbent)
+    assert "**Main model (7d):** 236 forward records, 183 outcomes checked." in with_baseline
+    assert "**Advanced-model forecasts (30d):** 0 logged" in with_baseline
+    assert len(with_baseline) < 1024
 
 
 def test_research_accuracy_offers_plain_and_technical_sections():

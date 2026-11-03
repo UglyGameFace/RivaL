@@ -224,12 +224,12 @@ def _plain_training_line(proof: dict, horizon: int) -> str:
         f"{label} {status} "
         f"{int(proof['latest_online_training_updates']):,} new-data learning updates; "
         f"{int(proof['historically_seeded'])}/{int(proof['lineage_proven'])} "
-        "checked predictions used verified history."
+        "recorded forecasts have verified historical-seed lineage (not scored outcomes)."
     )
 
 
-def _plain_boosted_proof(proof: dict) -> str:
-    """Summarize boosted model screening without implying actual returns."""
+def _plain_boosted_proof(proof: dict, *, incumbent: dict | None = None) -> str:
+    """Distinguish rejected advanced models from the active model's forecasts."""
     reasons = {
         "fewer_than_six_source_months": "not enough verified historical months",
         "insufficient_purged_validation_or_holdout": "not enough independent test examples",
@@ -248,15 +248,31 @@ def _plain_boosted_proof(proof: dict) -> str:
         "Some qualify for simulated testing, not real trades." if paper
         else "No model qualifies for simulated testing yet."
     )
+    incumbent_line = "Main model: see Results for separate forward records."
+    if incumbent is not None:
+        recent = incumbent.get("last_7d")
+        if isinstance(recent, dict):
+            try:
+                rows = [recent[h] for h in (5, 15, 60)]
+                main_issued = sum(int(row["issued"]) for row in rows)
+                main_settled = sum(int(row["settled"]) for row in rows)
+                if min(main_issued, main_settled) >= 0 and main_settled <= main_issued:
+                    incumbent_line = (
+                        f"**Main model (7d):** {main_issued:,} forward records, "
+                        f"{main_settled:,} outcomes checked."
+                    )
+            except (KeyError, TypeError, ValueError, OverflowError):
+                pass
     return (
         f"**Advanced models imported:** {int(proof['portable_imported']):,}. "
-        f"**Screened:** {int(proof['portable_screened']):,}.\n"
+        f"**Passed screening:** {int(proof['portable_screened']):,}.\n"
         f"**What's holding them back:** {failures}.\n"
-        f"**Predictions logged before outcomes (30 days):** {int(proof['issued']):,}; "
-        f"**results checked:** {int(proof['settled']):,}; "
-        f"**exit prices checked:** {int(proof['quote_exits']):,}.\n"
+        f"**Advanced-model forecasts (30d):** {int(proof['issued']):,} logged; "
+        f"{int(proof['settled']):,} settled; "
+        f"{int(proof['quote_exits']):,} matched exit quotes.\n"
+        f"{incumbent_line}\n"
         f"**Ready for practice-only tests:** {paper}. {verdict}\n"
-        "Real profit after trading fees, funding and slippage is not verified."
+        "Real profit after fees, funding and slippage is unverified."
     )
 
 
@@ -1224,14 +1240,24 @@ class ResearchDashboard(discord.ui.View):
                              else "")
                         if blockers else "Screening blockers: none recorded"
                     )
+                    incumbent_proof = None
+                    if self.section == "lineage":
+                        try:
+                            incumbent_proof = await asyncio.to_thread(
+                                ForwardAccuracyMonitor(self.market).summary,
+                                asset=self.asset,
+                            )
+                        except Exception:  # noqa: BLE001 - baseline read is independent
+                            _LOG.exception("RivaL main model forward counters unavailable")
                     embed.add_field(
                         name=("Are advanced models ready?" if self.section == "lineage"
                               else "Boosted model production proof"),
-                        value=(_plain_boosted_proof(live_proof) if self.section == "lineage" else (
+                        value=(_plain_boosted_proof(live_proof, incumbent=incumbent_proof)
+                               if self.section == "lineage" else (
                             f"**Imported:** {live_proof['portable_imported']} portable trees, "
-                            f"**{live_proof['portable_screened']}** screened.\n"
+                            f"**{live_proof['portable_screened']}** passed screening.\n"
                             f"{explanation}\n"
-                            f"**Last 30 days:** {live_proof['issued']} immutable "
+                            f"**Advanced-model only, last 30d:** {live_proof['issued']} "
                             f"forecasts, {live_proof['settled']} future settlements, "
                             f"{live_proof['quote_exits']} matched exit book quotes.\n"
                             f"**Most recent source:** {scope_label}. "

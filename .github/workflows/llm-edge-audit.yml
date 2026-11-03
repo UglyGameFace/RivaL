@@ -12,7 +12,8 @@ on:
       - "tools/discloud_llm_edge_audit.py"
   workflow_dispatch:
   schedule:
-    - cron: "23 8,20 * * *"
+    # One read-only evidence audit per day is sufficient alongside release receipts.
+    - cron: "23 8 * * *"
 permissions:
   contents: read
 concurrency:

@@ -3,6 +3,31 @@
 This pipeline uses the existing private **LFM3 1.7B**, not Gemini,
 OpenRouter or another provider. Nothing automatically places a trade.
 
+## Bounded combinatorial experiments (2026-11-03)
+
+RivaL Intelligence can now propose `feature_subset_v2` with one canonical
+2-to-8-indicator selection drawn from the **existing ten identical live/historical
+features**, in addition to the four original named masks. Feature indices map
+to recent return, cumulative return, volatility, candle range, relative volume,
+RSI, MACD, Bollinger, ATR and volume regime, in that fixed order.
+
+A proposal's index list is checked by the private LFM3 gateway, main-bot client,
+persistent PostgreSQL record, source-native relay and independent offline
+trainer. The immutable source/proposal SHA includes indices; existing
+four-mask records retain their exact original hashes. Noncanonical indices,
+duplicates, fabricated features, generated probabilities and direct weight
+writes are rejected. **Only one** subset is proposed per six-hour asset slot,
+not a hindsight search across combinations. Ordinary logistic and boosted
+specialists still compete separately. No feature-subset result can open the
+sealed holdout or enter the model import folder before its mandatory
+chronological/retrospective screens.
+
+This broadens the hypothesis-design space but **does not yet make LFM3 itself
+continually retrain its neural weights**. New experiments are reviewed and
+selected by measured results. Later model-family or indicator expansion must
+respect exact point-in-time data availability, chronological holdouts,
+competitor models and future/after-cost qualification.
+
 ## 1. A real authenticated proposal
 
 - The separate Discloud LFM3 service can choose **one** of four fixed feature

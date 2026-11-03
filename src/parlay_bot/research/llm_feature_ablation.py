@@ -13,7 +13,12 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.markets import HORIZONS
 from parlay_bot.perpetuals.model_checkpoints import FEATURE_CONTRACT, TARGET_CONTRACT, canonical
-from parlay_bot.perpetuals.research_hypotheses import ASSETS, HYPOTHESES, MODEL
+from parlay_bot.perpetuals.research_hypotheses import (
+    ASSETS,
+    HYPOTHESES,
+    MODEL,
+    valid_feature_indices,
+)
 from parlay_bot.research.candidate_registry import verified_candidate
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.learning import assemble
@@ -53,6 +58,9 @@ def verify_proposals(receipt: object, *, venue: str, now=None) -> list[dict]:
         venues = row.get("venues")
         if (asset not in ASSETS or hypothesis not in HYPOTHESES
             or asset in seen or row.get("model") != MODEL
+            or (not valid_feature_indices(row.get("feature_indices"))
+                if hypothesis == "feature_subset_v2"
+                else row.get("feature_indices") is not None)
             or not isinstance(venues, list) or venue not in venues
             or not all(isinstance(v, str) and re.fullmatch(r"[a-z0-9_-]{2,24}", v)
                        for v in venues)
@@ -70,6 +78,8 @@ def verify_proposals(receipt: object, *, venue: str, now=None) -> list[dict]:
             "model": MODEL, "evidence_sha256": row["evidence_sha256"],
             "hypothesis": hypothesis, "venues": venues,
         }
+        if hypothesis == "feature_subset_v2":
+            identity["feature_indices"] = row["feature_indices"]
         digest = hashlib.sha256(
             json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -109,6 +119,9 @@ def evaluate_hypothesis_ablations(root, *, qualified_streams, proposals, candida
         if suggestion is None or identity["venue"] not in suggestion["venues"]:
             continue
         vectors = historical_features(rows, identity)
+        active_mask = (tuple(suggestion["feature_indices"])
+                       if suggestion["hypothesis"] == "feature_subset_v2"
+                       else MASKS[suggestion["hypothesis"]])
         for horizon in HORIZONS:
             try:
                 train, validation, _sealed_test = compatible_partitions(
@@ -120,7 +133,7 @@ def evaluate_hypothesis_ablations(root, *, qualified_streams, proposals, candida
             baseline = _score(validation, base_weights, base_rate)
             weights, rate = _fit(
                 train, l2=.005, rate=.01, epochs=4,
-                active=MASKS[suggestion["hypothesis"]],
+                active=active_mask,
             )
             alternate = _score(validation, weights, rate)
             trial = {
@@ -128,6 +141,7 @@ def evaluate_hypothesis_ablations(root, *, qualified_streams, proposals, candida
                 "contract": identity["contract"], "quote": identity["quote"],
                 "horizon_minutes": horizon,
                 "hypothesis": suggestion["hypothesis"],
+                "feature_indices": list(active_mask),
                 "proposal_sha256": suggestion["record_sha256"],
                 "original_source_months": len(provenance["months"]),
                 "training_count": len(train),
@@ -190,6 +204,8 @@ def evaluate_hypothesis_ablations(root, *, qualified_streams, proposals, candida
                 "lfm3_proposal_sha256": suggestion["record_sha256"],
                 "lfm3_model": MODEL,
             }
+            if suggestion["hypothesis"] == "feature_subset_v2":
+                spec["lfm3_feature_indices"] = list(active_mask)
             artifact = {
                 "research_only": True, "live_model_promoted": False,
                 "model_sha256": hashlib.sha256(

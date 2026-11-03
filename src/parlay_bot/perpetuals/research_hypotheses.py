@@ -18,8 +18,18 @@ from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 
 _LOG = logging.getLogger(__name__)
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
-HYPOTHESES = ("trend_only", "momentum_only", "volatility_only", "volume_only")
+HYPOTHESES = ("trend_only", "momentum_only", "volatility_only", "volume_only",
+              "feature_subset_v2")
 MODEL = "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
+
+
+def valid_feature_indices(value: object) -> bool:
+    """Canonical subset with fixed live-feature positions, never LLM weights."""
+    return (
+        isinstance(value, list) and 2 <= len(value) <= 8
+        and all(type(i) is int and 0 <= i < 10 for i in value)
+        and value == sorted(set(value))
+    )
 
 
 def validate_proposal(data: object) -> bool:
@@ -32,6 +42,9 @@ def validate_proposal(data: object) -> bool:
         and data.get("live_model_promoted") is False
         and data.get("retrospective_screen") == "not_tested"
         and data.get("prediction") is None
+        and (valid_feature_indices(data.get("feature_indices"))
+             if data.get("hypothesis") == "feature_subset_v2"
+             else data.get("feature_indices") is None)
         and all(
             isinstance(data.get(key), str)
             and 5 <= len(data[key].strip()) <= 120
@@ -59,6 +72,7 @@ class FeatureHypothesisLab:
                   evidence_sha256 TEXT,
                   model TEXT,
                   hypothesis TEXT,
+                  feature_indices_json TEXT,
                   rationale TEXT,
                   falsification TEXT,
                   source_venues_json TEXT,
@@ -74,6 +88,13 @@ class FeatureHypothesisLab:
                 conn.execute(
                     "ALTER TABLE rival_llm_feature_hypotheses "
                     "ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 1"
+                )
+            if "feature_indices_json" not in self.store.database.column_names(
+                conn, "rival_llm_feature_hypotheses",
+            ):
+                conn.execute(
+                    "ALTER TABLE rival_llm_feature_hypotheses "
+                    "ADD COLUMN feature_indices_json TEXT"
                 )
         self._initialized = True
 
@@ -136,6 +157,9 @@ class FeatureHypothesisLab:
             result.get("asset") != asset
             or result.get("model") != MODEL
             or result.get("hypothesis") not in HYPOTHESES
+            or (not valid_feature_indices(result.get("feature_indices"))
+                if result.get("hypothesis") == "feature_subset_v2"
+                else result.get("feature_indices") is not None)
             or not isinstance(result.get("evidence_sha256"), str)
             or not re.fullmatch(r"[0-9a-f]{64}", result["evidence_sha256"])
             or not isinstance(result.get("venues"), list)
@@ -152,6 +176,8 @@ class FeatureHypothesisLab:
             "model": MODEL, "evidence_sha256": result["evidence_sha256"],
             "hypothesis": result["hypothesis"], "venues": result["venues"],
         }
+        if result["hypothesis"] == "feature_subset_v2":
+            record["feature_indices"] = result["feature_indices"]
         digest = hashlib.sha256(
             json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
@@ -159,10 +185,12 @@ class FeatureHypothesisLab:
             conn.execute(
                 """UPDATE rival_llm_feature_hypotheses
                    SET evidence_sha256=?, model=?, hypothesis=?,
-                       rationale=?, falsification=?, source_venues_json=?,
-                       record_sha256=?,status='proposed'
+                       feature_indices_json=?, rationale=?, falsification=?,
+                       source_venues_json=?,record_sha256=?,status='proposed'
                    WHERE asset=? AND slot_utc=? AND status='attempted'""",
                 (result["evidence_sha256"], MODEL, result["hypothesis"],
+                 json.dumps(result["feature_indices"], separators=(",", ":"))
+                 if result["hypothesis"] == "feature_subset_v2" else None,
                  result["rationale"].strip(), result["falsification"].strip(),
                  json.dumps(result["venues"], separators=(",", ":")),
                  digest, asset, slot.isoformat()),
@@ -178,9 +206,7 @@ def recent_hypotheses(store, *, venue: str, now: datetime | None = None) -> list
     current = (now or datetime.now(UTC)).astimezone(UTC)
     with store.connect() as conn:
         rows = conn.execute(
-            """SELECT asset,slot_utc,model,hypothesis,evidence_sha256,
-                      source_venues_json,record_sha256
-               FROM rival_llm_feature_hypotheses
+            """SELECT * FROM rival_llm_feature_hypotheses
                WHERE status='proposed' AND attempted_at>=?
                ORDER BY attempted_at DESC LIMIT 96""",
             ((current - timedelta(days=7)).isoformat(),),
@@ -202,6 +228,18 @@ def recent_hypotheses(store, *, venue: str, now: datetime | None = None) -> list
                 "evidence_sha256": row["evidence_sha256"],
                 "hypothesis": mode, "venues": venues,
             }
+            # A relay may read a legacy host before the next scheduled
+            # LFM3 attempt migrates its table. Do not mutate on a read.
+            indices_json = dict(row).get("feature_indices_json")
+            if mode == "feature_subset_v2":
+                if not isinstance(indices_json, str):
+                    continue
+                indices = json.loads(indices_json)
+                if not valid_feature_indices(indices):
+                    continue
+                record["feature_indices"] = indices
+            elif indices_json is not None:
+                continue
             digest = hashlib.sha256(
                 json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()

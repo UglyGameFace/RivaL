@@ -59,10 +59,19 @@ req = urllib.request.Request(
     headers={**headers, "Content-Type": "application/json"}, method="POST")
 with urllib.request.urlopen(req, timeout=38) as response:
     hypothesis = json.loads(response.read(5000))
+indices = hypothesis.get("feature_indices")
+choice = hypothesis.get("hypothesis")
+feature_selection_valid = (
+    (choice in ("trend_only", "momentum_only", "volatility_only", "volume_only")
+     and indices is None)
+    or (choice == "feature_subset_v2"
+        and isinstance(indices, list) and 2 <= len(indices) <= 8
+        and all(type(i) is int and 0 <= i < 10 for i in indices)
+        and indices == sorted(set(indices)))
+)
 hypothesis_ok = (
     hypothesis.get("model") == data.get("model")
-    and hypothesis.get("hypothesis") in (
-        "trend_only", "momentum_only", "volatility_only", "volume_only")
+    and feature_selection_valid
     and hypothesis.get("research_only") is True
     and hypothesis.get("live_model_promoted") is False
     and hypothesis.get("retrospective_screen") == "not_tested"

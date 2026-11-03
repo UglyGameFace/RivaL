@@ -47,15 +47,22 @@ class ContextBudgetExceeded(ValueError):
 
 # Finite, production-compatible feature masks; hypotheses are research
 # proposals, never instructions for model promotion or live forecasts.
-HYPOTHESES = ("trend_only", "momentum_only", "volatility_only", "volume_only")
+HYPOTHESES = ("trend_only", "momentum_only", "volatility_only", "volume_only",
+              "feature_subset_v2")
 HYPOTHESIS_PROMPT = (
     "Research experiment designer, NOT a trading predictor. "
-    "Use the verified past-evidence brief only to select ONE experimental "
-    "feature mask from trend_only, momentum_only, volatility_only, volume_only. "
+    "Use the verified past-evidence brief to choose ONE testable hypothesis: "
+    "legacy trend_only, momentum_only, volatility_only, volume_only, or "
+    "feature_subset_v2. For feature_subset_v2 ONLY, include feature_indices "
+    "as a sorted unique list of 2-8 integers between 0 and 9. Indices: "
+    "0=last-return,1=recent-return,2=volatility,3=candle-range, "
+    "4=relative-volume,5=RSI,6=MACD,7=Bollinger,8=ATR,9=volume-regime. "
+    "Choose one subset; never enumerate variants or claim tested improvement. "
     "Do not provide a probability, direction, recommendation, live trade, "
     "feature weight, claimed accuracy or unlisted model. "
-    "Return ONLY JSON: hypothesis (exact listed name), rationale "
-    "(5-120 characters), falsification (5-120 characters). "
+    "Return ONLY JSON keys: hypothesis (exact listed name), rationale "
+    "(5-120 characters), falsification (5-120 characters), plus "
+    "feature_indices ONLY when hypothesis=feature_subset_v2. "
     "This is an untested suggestion for deterministic chronological validation."
 )
 
@@ -69,17 +76,28 @@ PROMPT = (
 )
 
 
-def validated_hypothesis(value: object) -> bool:
+def valid_feature_indices(value: object) -> bool:
+    """One preregistered, reproducible subset of the ten live indicators."""
     return (
-        isinstance(value, dict)
-        and value.get("hypothesis") in HYPOTHESES
-        and all(
-            isinstance(value.get(key), str)
-            and 5 <= len(value[key].strip()) <= 120
-            for key in ("rationale", "falsification")
-        )
-        and set(value) == {"hypothesis", "rationale", "falsification"}
+        isinstance(value, list) and 2 <= len(value) <= 8
+        and all(type(i) is int and 0 <= i < 10 for i in value)
+        and value == sorted(set(value))
     )
+
+
+def validated_hypothesis(value: object) -> bool:
+    if not isinstance(value, dict) or value.get("hypothesis") not in HYPOTHESES:
+        return False
+    if not all(isinstance(value.get(k), str)
+               and 5 <= len(value[k].strip()) <= 120
+               for k in ("rationale", "falsification")):
+        return False
+    keys = {"hypothesis", "rationale", "falsification"}
+    if value["hypothesis"] == "feature_subset_v2":
+        return set(value) == keys | {"feature_indices"} and valid_feature_indices(
+            value.get("feature_indices")
+        )
+    return set(value) == keys
 
 
 def validated_research(value: object) -> bool:
@@ -446,13 +464,16 @@ class Gateway(ThreadingHTTPServer):
         if mode == "hypothesis":
             if not validated_hypothesis(result):
                 raise ValueError("invalid bounded hypothesis output")
-            return {
+            hypothesis = {
                 "model": self.identity, "hypothesis": result["hypothesis"],
                 "rationale": result["rationale"].strip(),
                 "falsification": result["falsification"].strip(),
                 "research_only": True, "retrospective_screen": "not_tested",
                 "live_model_promoted": False, "prediction": None,
             }
+            if result["hypothesis"] == "feature_subset_v2":
+                hypothesis["feature_indices"] = result["feature_indices"]
+            return hypothesis
         if not validated_research(result):
             raise ValueError("invalid model fields")
         grounded = enforce_grounding({

@@ -1592,7 +1592,11 @@ class GuidedHome(discord.ui.View):
                 else:
                     poly_text = (f"**Real-time predictions checked:** {resolved:,} "
                                  "· no fair comparison available yet")
+                observed = int(poly.get("observed_contracts") or 0)
                 poly_text += f"\n**Past results learned from:** {learned:,} (not live predictions)"
+                if observed and not learned:
+                    poly_text += (f"\n⚠️ {observed:,} contracts seen, but none of their "
+                                  "results could be read yet")
             embed.add_field(name="🎯 How accurate are Polymarket predictions?", value=poly_text, inline=False)
 
             # 3. Live worker state is distinct from statistical learning benefit.

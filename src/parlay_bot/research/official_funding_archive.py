@@ -88,6 +88,18 @@ def _ms(stamp: datetime) -> int:
     return int(stamp.timestamp() * 1000)
 
 
+def contract_for(venue: str, asset: str) -> str:
+    if venue not in VENUES or asset not in ASSETS:
+        raise HistoryImportError("untrusted historical contract")
+    if venue == "hyperliquid":
+        return asset
+    if venue == "kucoin":
+        return KUCOIN_SYMBOLS[asset]
+    if venue == "phemex":
+        return f".{asset}USDTFR8H"
+    return DERIBIT_SYMBOLS[asset]
+
+
 def request_spec(venue: str, asset: str, start: datetime, end: datetime):
     if venue not in VENUES or asset not in ASSETS or not start < end:
         raise HistoryImportError("untrusted funding query scope")
@@ -96,8 +108,16 @@ def request_spec(venue: str, asset: str, start: datetime, end: datetime):
         return "POST", URLS[venue], {"json": {
             "type": "fundingHistory", "coin": asset,
             "startTime": left, "endTime": right}}
+    if venue == "kucoin":
+        return "GET", URLS[venue], {"params": {
+            "symbol": contract_for(venue, asset), "from": left, "to": right}}
+    if venue == "phemex":
+        return "GET", URLS[venue], {"params": {
+            "symbol": contract_for(venue, asset), "start": left,
+            "end": right, "limit": 100}}
     return "GET", URLS[venue], {"params": {
-        "symbol": KUCOIN_SYMBOLS[asset], "from": left, "to": right}}
+        "instrument_name": contract_for(venue, asset),
+        "start_timestamp": left, "end_timestamp": right}}
 
 
 def _finite_rate(value: object) -> float:

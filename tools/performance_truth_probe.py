@@ -237,6 +237,21 @@ def probe() -> dict:
         except Exception as exc:  # noqa: BLE001
             out["polymarket_hourly_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         try:
+            import httpx as _httpx
+            with store.connect() as conn:
+                hourly = conn.execute(
+                    "SELECT slug, condition_id, expires_at FROM rival_polymarket_observations "
+                    "WHERE horizon=60 AND expires_at<? ORDER BY expires_at DESC LIMIT 1",
+                    (datetime.now(UTC).isoformat(),)).fetchone()
+            if hourly:
+                resp = _httpx.get("https://data-api.polymarket.com/v2/resolutions",
+                                  params={"condition": hourly["condition_id"]}, timeout=20)
+                out["polymarket_hourly_resolution"] = {
+                    "slug": hourly["slug"], "expires_at": str(hourly["expires_at"]),
+                    "http": resp.status_code, "body": resp.text[:1500]}
+        except Exception as exc:  # noqa: BLE001
+            out["polymarket_hourly_resolution_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        try:
             import asyncio
             from types import SimpleNamespace
 

@@ -129,7 +129,10 @@ def check_host(token: str, app_id: str, expected_sha: str) -> dict | None:
         method="PUT",
         headers={"api-token": token, "Content-Type": "application/json"},
     )
-    with request.urlopen(req, timeout=45) as response:
+    # The host probe performs TWO sequential authenticated CPU inference
+    # calls, each with a 38s bound, plus status/auth checks. A 45s outer
+    # console timeout killed valid slow responses before they could finish.
+    with request.urlopen(req, timeout=110) as response:
         data = json.load(response)
     apps = data.get("apps") if isinstance(data, dict) else None
     shell = apps.get("shell") if isinstance(apps, dict) else None
@@ -152,9 +155,13 @@ def main() -> int:
         print("Missing dedicated Discloud release credentials", file=sys.stderr)
         return 2
     for attempt in range(1, 8):
+        reason = "no_matching_ready_host_receipt"
         try:
             receipt = check_host(token, app_id, sha)
-        except (OSError, error.URLError, ValueError, KeyError, TimeoutError, TypeError):
+        except (OSError, error.URLError, ValueError, KeyError, TimeoutError, TypeError) as exc:
+            # Class only: shell output can contain credentials or private
+            # model data, so never print the raw API or inference response.
+            reason = type(exc).__name__
             receipt = None
         if receipt:
             print(json.dumps({
@@ -168,7 +175,11 @@ def main() -> int:
                 "repair_count": receipt["repair_count"],
             }, sort_keys=True))
             return 0
-        print(f"Live standalone LFM3 receipt not yet verified (attempt {attempt}/7)")
+        print(
+            f"Live standalone LFM3 receipt not yet verified "
+            f"(attempt {attempt}/7, reason={reason})",
+            flush=True,
+        )
         if attempt < 7:
             time.sleep(20)
     print("::error::Deployment not accepted: no fresh matching ready-host LFM3 receipt")

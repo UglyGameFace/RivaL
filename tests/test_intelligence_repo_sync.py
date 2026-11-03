@@ -252,3 +252,39 @@ def test_live_probe_rejects_anonymous_status_and_unsupported_inference(
     with pytest.raises(RuntimeError, match="safely grounded"):
         exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})  # noqa: S102
     assert not capsys.readouterr().out
+
+
+def test_standalone_live_console_timeout_covers_two_sequential_cpu_requests(
+    monkeypatch,
+):
+    """Host script can spend 2 x 38s on model inference before returning."""
+    receipt = {
+        "source_sha": SHA,
+        "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
+        "ready": True, "research_smoke_ok": True,
+        "hypothesis_smoke_ok": True, "auth_rejected": True,
+        "repair_state": "healthy", "repair_count": 0,
+    }
+    marker = VERIFY["MARKER"]
+    checked = []
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return json.dumps({"apps": {"shell": {
+                "stdout": marker + json.dumps(receipt),
+            }}}).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        checked.append(timeout)
+        assert timeout > 2 * 38, "outer timeout truncates two CPU inferences"
+        return Response()
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    assert VERIFY["check_host"]("secret", "standalone", SHA) == receipt
+    assert len(checked) == 1

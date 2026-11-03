@@ -15,6 +15,8 @@ import psycopg
 from psycopg.pq import TransactionStatus
 from psycopg.rows import dict_row
 
+from parlay_bot.storage.query_scope import current_statement_timeout_ms
+
 _LOG = logging.getLogger(__name__)
 
 BackendName = Literal["sqlite", "postgres"]
@@ -233,6 +235,16 @@ class PostgresDatabase(RelationalDatabase):
     def connect(self) -> _Connection:
         started = time.monotonic()
         raw = self._checkout()
+        limit_ms = current_statement_timeout_ms()
+        if limit_ms is not None:
+            # SET LOCAL lasts only for this borrower's transaction: commit
+            # or rollback at the end of the `with` block clears it, so the
+            # pooled connection returns to background workers unlimited.
+            try:
+                raw.execute(f"SET LOCAL statement_timeout = {int(limit_ms)}")
+            except Exception:
+                self._checkin(raw)
+                raise
         held_since = time.monotonic()
         owner = self._checkout_origin()
         borrowed = _Connection(raw, self.backend, origin=owner)

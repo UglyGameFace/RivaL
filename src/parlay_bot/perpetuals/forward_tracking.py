@@ -160,6 +160,7 @@ class ForwardTracking:
         corrupted = 0
         pending = 0
         used_history = 0
+        fingerprints = set()
         early_issued = len(batch)
         for record in batch:
             try:
@@ -190,6 +191,8 @@ class ForwardTracking:
                     raise ValueError("invalid independently settled score")
                 if not record["weights_sha256"]:
                     missing_lineage += 1
+                else:
+                    fingerprints.add(str(record["weights_sha256"]))
                 if record["historical_seed_sha256"]:
                     used_history += 1
                 scores.append((str(record["issued_at"]), p, b, y, loss, reference))
@@ -238,6 +241,7 @@ class ForwardTracking:
             "early_gain": early_gain, "later_gain": later_gain,
             "trend": trend, "complete": completed,
             "verified_historical_seed_count": used_history,
+            "weight_fingerprints": len(fingerprints),
             "real_profit_verified": False,
         }
 
@@ -258,9 +262,20 @@ def tracking_text(result: dict) -> str:
                 f"({item['hit_rate']:.1%}). Brier: {item['model_brier']:.4f} "
                 f"vs baseline {item['baseline_brier']:.4f} (lower wins)."
             )
+        if item["settled"]:
+            line += (
+                f"\nModel weight snapshots: {item['weight_fingerprints']}; "
+                f"historical seeds used: {item['verified_historical_seed_count']}/"
+                f"{item['settled']}."
+            )
         if item["invalid"] or item["unverified_lineage"]:
             line += (f"\nEvidence issues: {item['invalid']} invalid, "
                      f"{item['unverified_lineage']} missing model fingerprints.")
+        if item["complete"] and item["early_gain"] is not None and item["later_gain"] is not None:
+            line += (
+                f"\nCompared with baseline: earlier {item['early_gain']:+.4f}, "
+                f"later {item['later_gain']:+.4f} Brier gain (higher is better)."
+            )
         if item["complete"]:
             if item["trend"] == "later_period_higher_paired_gain":
                 line += ("\nLater predictions beat earlier ones RELATIVE TO "

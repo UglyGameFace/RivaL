@@ -42,55 +42,81 @@ def test_official_queries_are_contract_exact():
     assert kwargs["json"]["coin"] == "XRP"
 
 
+def source_row(venue: str, ms: int) -> dict:
+    return {
+        "hyperliquid": {"coin": "BTC", "fundingRate": "-0.0001",
+                        "premium": "0.0002", "time": ms},
+        "kucoin": {"symbol": "XBTUSDTM", "fundingRate": 0.0001,
+                   "timepoint": ms},
+        "phemex": {"symbol": ".BTCUSDTFR8H", "fundingRate": "0.0001",
+                   "fundingTime": ms, "intervalSeconds": 28800},
+        "deribit": {"timestamp": ms, "interest_1h": 0.00001,
+                    "interest_8h": 0.00008},
+    }[venue]
+
+
+def source_wrap(venue: str, rows: list[dict]):
+    return {
+        "hyperliquid": lambda: rows,
+        "kucoin": lambda: {"code": "200000", "data": rows},
+        "phemex": lambda: {"code": 0, "data": {"rows": rows}},
+        "deribit": lambda: {"jsonrpc": "2.0", "result": rows},
+    }[venue]()
+
+
 @pytest.mark.parametrize("venue", funding.VENUES)
 def test_valid_original_responses_and_bounded_values(venue):
     start = datetime(2026, 10, 1, tzinfo=UTC)
     end = start + timedelta(days=4)
     ms = funding._ms(start + timedelta(hours=1))
-    if venue == "hyperliquid":
-        record = {"coin": "BTC", "fundingRate": "-0.0001",
-                  "premium": "0.0002", "time": ms}
-        wrap = lambda row: [row]
-    else:
-        record = {"symbol": "XBTUSDTM", "fundingRate": 0.0001,
-                  "timepoint": ms}
-        wrap = lambda row: {"code": "200000", "data": [row]}
-    raw = json.dumps(wrap(record)).encode()
+    record = source_row(venue, ms)
+    raw = json.dumps(source_wrap(venue, [record])).encode()
     assert funding.validate_page(
         raw, venue=venue, asset="BTC", start=start, end=end) == [ms]
     with pytest.raises(HistoryImportError, match="duplicate"):
-        payload = [record, record] if venue == "hyperliquid" else {
-            "code": "200000", "data": [record, record]}
         funding.validate_page(
-            json.dumps(payload).encode(), venue=venue,
-            asset="BTC", start=start, end=end)
-    altered = dict(record)
-    altered["time" if venue == "hyperliquid" else "timepoint"] = funding._ms(end)
+            json.dumps(source_wrap(venue, [record, record])).encode(),
+            venue=venue, asset="BTC", start=start, end=end)
+    altered = source_row(venue, funding._ms(end))
     with pytest.raises(HistoryImportError, match="timestamp"):
         funding.validate_page(
-            json.dumps(wrap(altered)).encode(), venue=venue,
-            asset="BTC", start=start, end=end)
+            json.dumps(source_wrap(venue, [altered])).encode(),
+            venue=venue, asset="BTC", start=start, end=end)
+    if venue != "deribit":
+        altered = dict(record)
+        altered["coin" if venue == "hyperliquid" else "symbol"] = "ETH"
+        with pytest.raises(HistoryImportError, match="contract"):
+            funding.validate_page(
+                json.dumps(source_wrap(venue, [altered])).encode(),
+                venue=venue, asset="BTC", start=start, end=end)
     altered = dict(record)
-    altered["coin" if venue == "hyperliquid" else "symbol"] = "ETH"
-    with pytest.raises(HistoryImportError, match="contract"):
-        funding.validate_page(
-            json.dumps(wrap(altered)).encode(), venue=venue,
-            asset="BTC", start=start, end=end)
-    altered = dict(record)
-    altered["fundingRate"] = "NaN"
+    altered["interest_8h" if venue == "deribit" else "fundingRate"] = "NaN"
     with pytest.raises(HistoryImportError, match="magnitude"):
         funding.validate_page(
-            json.dumps(wrap(altered)).encode(), venue=venue,
-            asset="BTC", start=start, end=end)
-    if venue == "hyperliquid":
-        many = [record | {"time": ms + i} for i in range(500)]
-    else:
-        many = {"code": "200000", "data": [
-            record | {"timepoint": ms + i} for i in range(500)]}
+            json.dumps(source_wrap(venue, [altered])).encode(),
+            venue=venue, asset="BTC", start=start, end=end)
+    limit = 100 if venue == "phemex" else 500
+    key = {"hyperliquid": "time", "kucoin": "timepoint",
+           "phemex": "fundingTime", "deribit": "timestamp"}[venue]
+    many = [record | {key: ms + i} for i in range(limit)]
     with pytest.raises(HistoryImportError, match="provider-capped"):
         funding.validate_page(
-            json.dumps(many).encode(), venue=venue,
-            asset="BTC", start=start, end=end)
+            json.dumps(source_wrap(venue, many)).encode(),
+            venue=venue, asset="BTC", start=start, end=end)
+
+
+def test_public_non_kucoin_contracts_are_exact_and_unproven_listings():
+    start = datetime(2026, 10, 1, tzinfo=UTC)
+    end = start + timedelta(days=4)
+    assert funding.contract_for("phemex", "XRP") == ".XRPUSDTFR8H"
+    assert funding.contract_for("deribit", "SOL") == "SOL_USDC-PERPETUAL"
+    for venue in ("phemex", "deribit"):
+        method, url, args = funding.request_spec(venue, "BTC", start, end)
+        assert method == "GET" and url == funding.URLS[venue]
+        params = args["params"]
+        assert (params.get("symbol") or params.get("instrument_name")) == (
+            funding.contract_for(venue, "BTC"))
+        assert (params.get("end") or params.get("end_timestamp")) < funding._ms(end)
 
 
 @pytest.mark.asyncio
@@ -150,6 +176,6 @@ def test_coordinator_sees_two_new_funding_routes_but_never_fake_months():
             assert row["collector"] == "official-public-funding.yml"
             assert row["verified_complete_months_from_this_census"] == 0
             assert row["actual_contract_listing_month"] is None
-    assert report["collector_routes_integrated"] == 180
-    assert report["collection_routes_missing"] == 460
+    assert report["collector_routes_integrated"] == 188
+    assert report["collection_routes_missing"] == 452
     assert report["all_history_complete"] is False

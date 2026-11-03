@@ -53,7 +53,6 @@ from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals import host_memory
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
-from parlay_bot.perpetuals.cloudflare_research import CloudflareResearch
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
 from parlay_bot.perpetuals.deribit_history_recovery import DeribitHistoryRecovery
 from parlay_bot.perpetuals.dydx_history_recovery import DydxHistoryRecovery
@@ -75,13 +74,13 @@ from parlay_bot.perpetuals.live_quotes import (
 from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
-from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
 from parlay_bot.perpetuals.paper_ledger import PaperLedger
 from parlay_bot.perpetuals.phemex_history_recovery import PhemexHistoryRecovery
 from parlay_bot.perpetuals.polybolt_twap import PolyBoltTWAP
 from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
+from parlay_bot.perpetuals.research_hypotheses import FeatureHypothesisLab
 from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.spike_watch import SpikeWatch
@@ -423,67 +422,40 @@ class RivalDiscordClient(discord.Client):
         )
         if self.perp_collector is not None:
             self.perp_collector.market.research_spike_watcher = self.spike_watch
-        # Both OPEN_ROUTER_API_KEY (the Discloud owner's variable) and
-        # OPENROUTER_API_KEY (provider convention) are accepted. OpenRouter
-        # has priority when configured, but there is never a paid fallback.
-        free_secret = settings.open_router_api_key or settings.openrouter_api_key
-        if settings.rival_ai_provider == "disabled":
-            self.gemini_research: OpenRouterResearch | CloudflareResearch | LocalFirstResearch | None = None
-        elif settings.rival_ai_provider == "local":
-            self.gemini_research = LocalFirstResearch(
+        # Single owner-hosted LFM3 only. Legacy provider values never make
+        # external requests and are ignored to keep old Discloud envs bootable.
+        if settings.rival_ai_provider not in ("local", "disabled"):
+            _LOG.warning("Retired RIVAL_AI_PROVIDER ignored; using local LFM3 only")
+        self.intelligence_research: LocalFirstResearch | None = (
+            LocalFirstResearch(
                 self.perp_collector.market if self.perp_collector is not None
                 else PerpetualMarketStore(self.store),
-                local_key=(settings.rival_local_ai_token.get_secret_value()
-                           if settings.rival_local_ai_token is not None else None),
-                cloudflare_key=(settings.rival_cloudflare_ai_token.get_secret_value()
-                                if settings.rival_cloudflare_ai_token is not None else None),
-                daily_max=settings.rival_openrouter_daily_max,
-                cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
+                local_key=(
+                    settings.rival_local_ai_token.get_secret_value()
+                    if settings.rival_local_ai_token is not None else None
+                ),
             )
-            _LOG.info("RivaL optional AI reviewer: private Discloud local first")
-        elif settings.rival_ai_provider == "cloudflare":
-            self.gemini_research = CloudflareResearch(
-                self.perp_collector.market if self.perp_collector is not None
-                else PerpetualMarketStore(self.store),
-                api_key=(settings.rival_cloudflare_ai_token.get_secret_value()
-                         if settings.rival_cloudflare_ai_token is not None else None),
-                daily_max=settings.rival_openrouter_daily_max,
-                cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
+            if settings.rival_ai_provider != "disabled" else None
+        )
+        self.hypothesis_lab: FeatureHypothesisLab | None = (
+            FeatureHypothesisLab(
+                self.store, self.intelligence_research,
+                venues=tuple(self.perp_collector.providers),
             )
-            _LOG.info("RivaL optional AI reviewer: isolated Cloudflare Worker")
-        elif settings.rival_ai_provider == "openrouter":
-            # No paid fallback when a free coding model or the key
-            # is unavailable. Legacy Gemini mode is disabled.
-            self.gemini_research = OpenRouterResearch(
-                self.perp_collector.market if self.perp_collector is not None
-                else PerpetualMarketStore(self.store),
-                api_key=(free_secret.get_secret_value()
-                         if free_secret is not None else None),
-                daily_max=settings.rival_openrouter_daily_max,
-                cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
-            )
-            _LOG.info("RivaL optional AI reviewer: free-only OpenRouter coding")
-        else:
-            # An old RIVAL_AI_PROVIDER=gemini setting must not silently
-            # bring back Google requests after the owner retired that route.
-            # Fail closed without modifying stored historical AI outcomes.
-            self.gemini_research = None
-            if settings.rival_ai_provider == "gemini":
-                _LOG.warning(
-                    "Legacy Gemini AI provider is disabled; set "
-                    "RIVAL_AI_PROVIDER=local to use private RivaL Intelligence"
-                )
+            if (settings.rival_llm_hypotheses_enabled
+                and isinstance(self.intelligence_research, LocalFirstResearch)
+                and self.perp_collector is not None
+                and settings.rival_storage_backend == "postgres")
+            else None
+        )
+        self._hypothesis_task: asyncio.Task[None] | None = None
         self.autonomous: AutonomousResearch | None = (
             AutonomousResearch(
                 self.perp_collector.market,
-                ai=self.gemini_research,
+                ai=self.intelligence_research,
                 venues=tuple(self.perp_collector.providers),
                 assets=self.perp_collector.assets,
-                auto_ai=(
-                    settings.rival_gemini_auto_enabled
-                    and settings.rival_ai_background_opt_in
-                    and settings.rival_ai_provider == "openrouter"
-                ),
+                auto_ai=False,  # Historic AI forecast ledger remains readable.
             )
             if self.forward_audit is not None and self.perp_collector is not None
             else None
@@ -526,9 +498,7 @@ class RivalDiscordClient(discord.Client):
             alerts_enabled=False,
         )
         self.polymarket_research = PolymarketResearch(
-            self.store, ai=self.gemini_research
-            if isinstance(self.gemini_research, OpenRouterResearch)
-            and not isinstance(self.gemini_research, (CloudflareResearch, LocalFirstResearch)) else None,
+            self.store, ai=None,  # Retired external contract AI route.
         )
         self.auto_hunt.contract_research = self.polymarket_research
         def secret_value(value):
@@ -570,7 +540,7 @@ class RivalDiscordClient(discord.Client):
             return ResearchDashboard(
                 owner_id=owner_id,
                 market=collector.market if collector is not None else None,
-                ai=self.gemini_research,
+                ai=self.intelligence_research,
                 venues=tuple(collector.providers) if collector is not None else (),
                 shadow_enabled=self.shadow_monitor is not None,
                 target_service=self.direction_targets,
@@ -605,7 +575,7 @@ class RivalDiscordClient(discord.Client):
         return ResearchDashboard(
             owner_id=owner_id,
             market=collector.market if collector is not None else None,
-            ai=self.gemini_research,
+            ai=self.intelligence_research,
             venues=tuple(collector.providers) if collector is not None else (),
             shadow_enabled=self.shadow_monitor is not None,
             target_service=self.direction_targets,
@@ -741,7 +711,7 @@ class RivalDiscordClient(discord.Client):
                 embeds=[sports, crypto],
                 view=ResearchDashboard(
                     owner_id=interaction.user.id, market=crypto_market,
-                    ai=self.gemini_research,
+                    ai=self.intelligence_research,
                     venues=tuple(self.perp_collector.providers) if self.perp_collector else (),
                     shadow_enabled=self.shadow_monitor is not None,
                     target_service=self.direction_targets,
@@ -883,6 +853,7 @@ class RivalDiscordClient(discord.Client):
                 ("Sport results", self._sports_results_task),
                 ("Perpetual data", self._perp_task),
                 ("Model evaluation", self._shadow_task),
+                ("LFM3 feature lab", self._hypothesis_task),
                 ("Polymarket oracle", self._polybolt_task),
                 ("Kalshi learning", self._kalshi_research_task),
                 ("Personal alerts", self._target_task),
@@ -1867,6 +1838,10 @@ class RivalDiscordClient(discord.Client):
                 self._history_loop(), name="rival-perp-history-recovery"
             )
 
+        if self.hypothesis_lab is not None and self._hypothesis_task is None:
+            self._hypothesis_task = asyncio.create_task(
+                self._hypothesis_loop(), name="rival-llm-feature-research",
+            )
         if self.shadow_monitor is not None and self._shadow_task is None:
             _LOG.info(
                 "RivaL automatic shadow learning ENABLED interval=%ds "
@@ -2462,6 +2437,28 @@ class RivalDiscordClient(discord.Client):
                         _LOG.exception("RivaL six-month history audit failed safely")
             await asyncio.sleep(self.settings.rival_history_recovery_seconds)
 
+    async def _hypothesis_loop(self) -> None:
+        """Optional low-priority LFM3 feature ideas, no impact on live forecasts."""
+        await self.wait_until_ready()
+        await asyncio.sleep(40)
+        assert self.hypothesis_lab is not None
+        while not self.is_closed():
+            if host_memory.snapshot().pressure:
+                await asyncio.sleep(300)
+                continue
+            try:
+                result = await self.hypothesis_lab.run_once()
+                if result["status"] == "proposed":
+                    _LOG.info(
+                        "RivaL bounded AI hypothesis recorded asset=%s kind=%s",
+                        result["asset"], result["hypothesis"],
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - optional ML research only
+                _LOG.exception("RivaL independent AI feature laboratory unavailable")
+            await asyncio.sleep(300)
+
     async def _shadow_loop(self) -> None:
         await self.wait_until_ready()
         assert self.shadow_monitor is not None
@@ -2616,6 +2613,8 @@ class RivalDiscordClient(discord.Client):
             workers = (
                 ("_perp_task", self._perp_loop, "rival-perp-auto-collector"),
                 ("_shadow_task", self._shadow_loop, "rival-shadow-learning"),
+                ("_hypothesis_task", self._hypothesis_loop,
+                 "rival-llm-feature-research"),
                 ("_history_task", self._history_loop, "rival-perp-history-recovery"),
                 ("_candidate_task", self._candidate_import_loop,
                  "rival-verified-offline-candidate-import"),
@@ -2930,8 +2929,13 @@ class RivalDiscordClient(discord.Client):
             self._perp_task = None
         if self.perp_collector is not None:
             await self.perp_collector.aclose()
-        if self.gemini_research is not None:
-            await self.gemini_research.aclose()
+        if self._hypothesis_task is not None:
+            self._hypothesis_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._hypothesis_task
+            self._hypothesis_task = None
+        if self.intelligence_research is not None:
+            await self.intelligence_research.aclose()
 
         if self._candidate_task is not None:
             self._candidate_task.cancel()

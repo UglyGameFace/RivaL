@@ -1,11 +1,8 @@
-"""Quota diagnostics must reflect the same persisted rules as reservations."""
+"""Historic provider accounting remains readable for provenance audits."""
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-import pytest
-
-from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore
 
@@ -85,54 +82,6 @@ def test_day_cap_is_shown_as_next_midnight_utc(tmp_path):
         assert tomorrow["ready"]
     finally:
         store.close()
-
-
-class _QuotaAi:
-    available = True
-    model = "gemini-3.8-flash"
-
-    async def request_status(self):
-        return {
-            "model": self.model, "requests_today": 2,
-            "rival_daily_limit": 24,
-            "ready": False,
-            "reasons": ("provider_error_pause", "minimum_spacing"),
-            "retry_at": datetime(2026, 10, 28, 14, 25, tzinfo=UTC),
-        }
-
-
-@pytest.mark.asyncio
-async def test_research_menu_shows_honest_pause_and_exact_retry_time():
-    dashboard = ResearchDashboard(
-        owner_id=42, market=None, ai=_QuotaAi(),
-        venues=("hyperliquid", "dydx", "bitget"),
-    )
-    dashboard.screen = "ai"
-    dashboard.message = (
-        "RivaL temporarily paused gemini-3.8-flash analysis. "
-        "See the exact reason and retry time below."
-    )
-    dashboard.section = "limits"
-    dashboard._rebuild()
-    embed = await dashboard.render()
-    budget = next(
-        field.value for field in embed.fields
-        if field.name == "AI provider & request limits"
-    )
-    assert "gemini-3.8-flash" in budget
-    assert "2/24" in budget
-    assert "previous AI provider error" in budget
-    assert "minimum interval" in budget
-    assert "Next permitted request" in budget
-    assert "<t:" in budget
-    assert "external provider limits may also apply" in budget
-    dashboard.section = "analysis"
-    analysis_embed = await dashboard.render()
-    status = next(
-        field.value for field in analysis_embed.fields
-        if field.name == "Analysis status"
-    )
-    assert "paused" in status
 
 
 def test_midnight_resets_daily_count_but_preserves_previous_day_spacing(tmp_path):

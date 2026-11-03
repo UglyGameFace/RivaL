@@ -16,7 +16,7 @@ import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
-from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
+from parlay_bot.perpetuals.ai_types import ResearchUnavailable
 from parlay_bot.perpetuals.polymarket_learning import PolymarketOutcomeLearner
 from parlay_bot.perpetuals.polymarket_oracle import (
     OracleReference,
@@ -267,7 +267,7 @@ class PolymarketResearch:
                     self._calls[notice.slug] = saved
                 return
             if self.ai is None or not self.ai.available:
-                raise ResearchUnavailable("Free contract AI is not configured.")
+                raise ResearchUnavailable("Contract-specific LFM3 analysis is not configured.")
             now = datetime.now(UTC)
             if notice.expires - now < timedelta(seconds=45):
                 raise ResearchUnavailable("Too little time remains to issue a new AI call.")

@@ -1,7 +1,7 @@
-"""Quota-respecting, one-time local LFM3 to PostgreSQL acceptance.
+"""One-time private LFM3 inference to PostgreSQL acceptance.
 
-Run inside RivaL's already configured Discloud environment. Does not enable
-background AI, change forecasts, or circumvent the shared database quota.
+Checks an authenticated local model result and its persisted original evidence.
+It does not consume third-party credits, enable background AI or modify forecasts.
 """
 from __future__ import annotations
 
@@ -12,9 +12,9 @@ from datetime import UTC, datetime, timedelta
 
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.data_dashboard import MARKET_SYMBOLS
+from parlay_bot.perpetuals.ai_types import ResearchUnavailable
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence, build_evidence
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
-from parlay_bot.perpetuals.gemini_research import ResearchUnavailable
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.local_first_research import LOCAL_MODEL, LocalFirstResearch
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -22,7 +22,6 @@ from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
 from parlay_bot.storage.hot import PostgresHotStore
 
 MARKER = "RIVAL_LFM3_PERSISTENCE_RECEIPT="
-QUOTA_MODEL = "rival-local-cloudflare-shared-budget"
 
 
 def verified_receipt(result, row: dict | None, *, now: datetime) -> bool:
@@ -52,9 +51,6 @@ async def _ask(market: PerpetualMarketStore, settings: Settings):
     ai = LocalFirstResearch(
         market,
         local_key=settings.rival_local_ai_token.get_secret_value(),
-        cloudflare_key=None,
-        daily_max=settings.rival_openrouter_daily_max,
-        cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
     )
     try:
         started = time.monotonic()
@@ -69,7 +65,7 @@ def verify_once() -> dict:
     report: dict = {"outcome": "deferred", "provider": settings.rival_ai_provider}
     if settings.rival_storage_backend != "postgres" or settings.rival_database_url is None:
         return {"outcome": "failed", "reason": "postgres_not_configured"}
-    if settings.rival_ai_provider != "local" or settings.rival_local_ai_token is None:
+    if settings.rival_ai_provider == "disabled" or settings.rival_local_ai_token is None:
         return {"outcome": "deferred", "reason": "local_provider_not_configured"}
 
     store = PostgresHotStore(settings.rival_database_url.get_secret_value())
@@ -80,25 +76,12 @@ def verify_once() -> dict:
         market.research_candidate_registry = ResearchCandidateRegistry(store)
         market.research_history_auditor = SixMonthQualityAudit(market)
         market.research_forward_auditor = ForwardAccuracyMonitor(market)
-        status = market.ai_request_status(
-            model=QUOTA_MODEL, now=datetime.now(UTC),
-            daily_max=settings.rival_openrouter_daily_max,
-            cooldown_seconds=settings.rival_openrouter_cooldown_seconds,
-        )
-        report["quota"] = {
-            "ready": bool(status["ready"]),
-            "used": status["requests_today"],
-            "reasons": list(status["reasons"]),
-            "retry_at": str(status["retry_at"]) if status["retry_at"] else None,
-        }
+        report["inference_provider"] = "private_lfm3_only"
         with store.connect() as conn:
             report["saved_before"] = int(conn.execute(
                 "SELECT COUNT(*) AS n FROM perp_ai_research WHERE model=?",
                 (LOCAL_MODEL,),
             ).fetchone()["n"])
-        if not status["ready"]:
-            report["reason"] = "quota_or_cooldown"
-            return report
         try:
             evidence, digest = build_evidence(
                 market, asset="BTC", venues=tuple(MARKET_SYMBOLS),
@@ -119,8 +102,7 @@ def verify_once() -> dict:
         report["prospective_math_status"] = evidence.get("prospective_math", {}).get("status")
         report["evidence_hash_valid"] = len(digest) == 64
 
-        # The request itself performs a SECOND atomic quota reservation. If a
-        # simultaneous real user consumes the slot, this cannot bypass it.
+        # Private inference is CPU-serialized by the gateway, not quota-gated.
         try:
             result, elapsed = asyncio.run(_ask(market, settings))
         except ResearchUnavailable as exc:

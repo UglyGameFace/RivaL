@@ -61,29 +61,15 @@ class Settings(BaseSettings):
 
     # Low-cost local research; never auto-promotes models or places orders.
     rival_shadow_learning_enabled: bool = Field(default=True)
+    # One private, research-only feature suggestion every six hours at most.
+    # Requires the already-configured RIVAL_AI_PROVIDER=local and shared token.
+    rival_llm_hypotheses_enabled: bool = Field(default=True)
     rival_shadow_eval_seconds: int = Field(default=3600, ge=900, le=21600)
 
-    # Independent, user-triggered AI research (never called by candle worker).
-    # Legacy 'gemini' configuration is accepted to read old deployments but
-    # deliberately disabled by the bot; use 'local' for RivaL Intelligence.
-    rival_ai_provider: Literal["openrouter", "gemini", "cloudflare", "local", "disabled"] = Field(default="openrouter")
-    rival_cloudflare_ai_token: SecretStr | None = Field(default=None)
+    # Sole private RivaL Intelligence provider. Old environment strings are
+    # accepted and ignored by the bot; they never activate external providers.
+    rival_ai_provider: str = Field(default="local")
     rival_local_ai_token: SecretStr | None = Field(default=None)
-    open_router_api_key: SecretStr | None = Field(default=None)
-    openrouter_api_key: SecretStr | None = Field(default=None)
-    rival_openrouter_daily_max: int = Field(default=18, ge=1, le=18)
-    rival_openrouter_cooldown_seconds: int = Field(default=3600, ge=60, le=86400)
-    gemini_api_key: SecretStr | None = Field(default=None)
-    google_api_key: SecretStr | None = Field(default=None)
-    rival_gemini_model: str = Field(default="gemini-3.8-flash")
-    rival_gemini_daily_max: int = Field(default=24, ge=1, le=96)
-    rival_gemini_cooldown_seconds: int = Field(default=900, ge=60, le=86400)
-    # AI reviewers use a shared free allowance. No owner request should
-    # silently consume it; opt in explicitly to background LLM calls.
-    rival_gemini_auto_enabled: bool = Field(default=False)
-    # Guard against old Discloud environments still setting the legacy flag
-    # true: unattended LLM requests require a second deliberate opt-in.
-    rival_ai_background_opt_in: bool = Field(default=False)
 
     # Official licensed Polymarket PolyBolt Chainlink TWAP (NOT free CLOB book).
     # Three CLOB credentials are used ONLY for the read-only live WS auth.

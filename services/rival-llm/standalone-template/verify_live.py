@@ -53,7 +53,27 @@ smoke_ok = (result.get("model") == data.get("model")
     and result.get("uncalibrated") is True)
 if not smoke_ok:
     raise RuntimeError("synthetic research was not safely grounded")
+# Exercise the new real LFM3 research-to-feature path without predictions.
+req = urllib.request.Request(
+    root + "/v1/hypothesis", data=json.dumps(probe).encode("utf-8"),
+    headers={**headers, "Content-Type": "application/json"}, method="POST")
+with urllib.request.urlopen(req, timeout=38) as response:
+    hypothesis = json.loads(response.read(5000))
+hypothesis_ok = (
+    hypothesis.get("model") == data.get("model")
+    and hypothesis.get("hypothesis") in (
+        "trend_only", "momentum_only", "volatility_only", "volume_only")
+    and hypothesis.get("research_only") is True
+    and hypothesis.get("live_model_promoted") is False
+    and hypothesis.get("retrospective_screen") == "not_tested"
+    and hypothesis.get("prediction") is None
+    and 5 <= len(str(hypothesis.get("rationale", ""))) <= 120
+    and 5 <= len(str(hypothesis.get("falsification", ""))) <= 120
+)
+if not hypothesis_ok:
+    raise RuntimeError("private LFM3 feature hypothesis rejected")
 # Only report low-cardinality verification facts; no model prose or tokens.
+data["hypothesis_smoke_ok"] = True
 data["research_smoke_ok"] = True
 data["auth_rejected"] = auth_rejected
 print("RIVAL_INTELLIGENCE_RELEASE_RECEIPT=" + json.dumps(data, separators=(",", ":")))
@@ -77,6 +97,7 @@ def parse_receipt(stdout: str, expected_sha: str) -> dict | None:
             or receipt.get("model") != "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
             or receipt.get("ready") is not True
             or receipt.get("research_smoke_ok") is not True
+            or receipt.get("hypothesis_smoke_ok") is not True
             or receipt.get("auth_rejected") is not True
             or receipt.get("repair_state") not in ("healthy", "warming")
             or type(receipt.get("repair_count")) is not int
@@ -130,6 +151,7 @@ def main() -> int:
             print(json.dumps({
                 "verified": True,
                 "research_smoke_ok": receipt["research_smoke_ok"],
+                "hypothesis_smoke_ok": receipt["hypothesis_smoke_ok"],
                 "auth_rejected": receipt["auth_rejected"],
                 "source_sha": sha,
                 "model": receipt["model"],

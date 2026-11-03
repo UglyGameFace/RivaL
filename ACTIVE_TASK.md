@@ -1,3 +1,31 @@
+## Active: one-PR predictive-evidence integrity and local-Intelligence research (2026-11-03 UTC)
+
+- **Single PR:** #280 (extend rather than duplicate). Keep external AI providers retired, preserve authenticated bounded LFM3 feature hypotheses, source-native chronological challenger evaluation, and the existing live model until separate future evidence passes all screens.
+- **Quote integrity:** The family proof evaluator now selects the earliest issued record per exact-source family/target *before* observing whether a quote or outcome settled; later overlapping forecasts cannot inflate covered windows, quote coverage, number of trades or the after-cost day-block sample. Surface missing quote and duplicate-target counts.
+- **Minimum proof:** >=150 distinct future targets across >=21 UTC days, >=80% matched eligible quote windows, same-source matched bid/ask entry+exit, forward superiority vs incumbent/baselines, positive conservative and severe after-cost day-block bounds, healthy calibration, zero invalid evidence. Only PAPER qualification is possible; no authenticated fills or real-money edge is established.
+- **Test/prod signoff:** Run full Ruff/pytest on both SQLite and PostgreSQL, PR CI, merge/main CI, Discloud bot/standalone Intelligence live smoke, source-native Drive archive receipts, then observe persistent LFM3 proposal + validation comparisons. Collect 21 real future days: code cannot create outcomes or guarantee a winner. Preserve issues #6 and #188 until independently resolved.
+
+---
+
+## Active: retire external AI providers and use unmetered private LFM3 (2026-11-02)
+
+- Owner direction: RivaL Intelligence is the **only** AI inference provider. Retire Gemini, OpenRouter and Cloudflare AI fallback routes, external key/config selection and shared daily token/request quotas for local AI. Legacy stored observations and research provenance must remain immutable.
+- Extend existing PR #280 rather than opening an overlapping change. Private LFM3 research and feature-hypothesis calls use host-side CPU serialization and bounded timeouts, never third-party API quota reservations. Keep separate mathematical model validation and future-only profitability gates.
+- Acceptance: Ruff, full test suite, PostgreSQL-backed tests, safe local-only provider-selection tests, then main CI + Discloud release + authenticated live gateway test. A green PR is not a live deployment or an accurate forecast.
+
+---
+
+## Active: private RivaL Intelligence model-research integration (2026-11-03 UTC)
+
+- **Objective:** Use the existing isolated LFM3 1.7B model to propose testable feature hypotheses for all four crypto assets, measure their deterministic out-of-sample research impact, and preserve the independent forward/after-cost promotion gate. No paid provider, API-key rewrite, live-model replacement, or unauthorized bet.
+- **PR:** [#280](https://github.com/UglyGameFace/RivaL/pull/280) branch `feat/llm-guided-source-native-challenger-research-20261102`. Adds private authenticated `/v1/hypothesis` endpoint with four fixed feature families and strict JSON schema, a quota-accounted Postgres-backed daily four-asset experiment scheduler, read-only bounded Discloud console proposal retrieval, and original-venue chronological **training/validation-only** masked-logistic comparisons. The same endpoint is checked by the standalone Intelligence release.
+- **Source truth:** All proposals require real source-evidence SHA256, immutable proposal SHA, selected asset, verified exchange scope and timestamp. An unknown model, missing host token, stale or forged proposal cannot enter training. No LFM-generated probabilities, prices, weights, model-import candidates, sealed holdout results or trading orders.
+- **Activation:** Bot feature requires `RIVAL_AI_PROVIDER=local` and `RIVAL_LOCAL_AI_TOKEN` matching the dedicated LFM3 service `RIVAL_LLM_SHARED_TOKEN`; source-native GitHub requires existing main bot `DISCLOUD_TOKEN` and `DISCLOUD_APP_ID` to read on-host saved proposals. Source-native training still runs if no AI evidence exists, reporting zero tests. Observe actual live receipts after merge; do not assume live host variables from code.
+- **Validation:** Full CI, llama.cpp standalone source/package acceptance, source integrity tests, real main Discloud release, Intelligence mirror/release and authenticated synthetic `/v1/hypothesis` smoke receipt. Then observe first *actual* post-issuance proposal in Postgres and measured no-LLM baseline comparisons in GitHub research. These cannot be proven before their run or future outcomes exist.
+- **Not done merely by code:** Scientific benefit on never-seen outcomes, screened model admission, 150 distinct future outcomes, 21 days, 80% quote coverage, positive stressed after-cost performance, and independently verified promotion/rollback. Keep issue #6 open. No fictitious improvement across all assets.
+
+---
+
 ## Active: improve source-native forecast probabilities without weakening proof (2026-11-02)
 
 - **Objective:** Move beyond functioning historical training to genuine chronological validation improvement for source-matched OKX BTC/ETH/SOL/XRP logistic models. Preserve frozen holdout, original source identities, importer validation and prospective after-cost gates.

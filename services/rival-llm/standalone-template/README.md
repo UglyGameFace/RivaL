@@ -10,7 +10,7 @@ Do not edit mirrored files directly. Make service changes in `RivaL/services/riv
 
 ## Release
 
-GitHub Actions on **this repository's main branch** compiles the pinned llama.cpp CPU runtime, validates the exact Discloud upload files, and deploys to the existing **RivaL-Intelligence** Discloud application. It then checks the authenticated on-host `/v1/status` for the exact source SHA, LFM3 identity, readiness, and repair telemetry. A release also makes **one** synthetic, read-only `/v1/research` request with no live sources, historical claims, trades, or database writes. The response must be safely grounded, informational-only and explicitly uncertain; the private status route must reject anonymous access. These checks are mandatory for a green release.
+GitHub Actions on **this repository's main branch** compiles the pinned llama.cpp CPU runtime, validates the exact Discloud upload files, and deploys to the existing **RivaL-Intelligence** Discloud application. It then checks the authenticated on-host `/v1/status` for the exact source SHA, LFM3 identity, readiness, and repair telemetry. A release makes two synthetic, read-only requests: `/v1/research` for safe grounded explanations and `/v1/hypothesis` for a fixed-feature experimental research proposal. Neither sees real source history, places trades, writes a database, or generates a forecast probability. The response must be safely grounded, informational-only and explicitly uncertain; the private status route must reject anonymous access. These checks are mandatory for a green release.
 
 Configure two repository Actions secrets:
 
@@ -32,3 +32,25 @@ The sync runs on relevant RivaL/main changes, hourly reconciliation and manually
 Passing Python/build validation proves the deployable package shape. A successful Discloud deploy step, fresh authenticated SHA-matching status, and one safely grounded synthetic inference prove that the matching service code is live, ready, and can complete a bounded private request. Neither proves that intentional backend crash recovery has been exercised in production, that model weights have improved, or that historical market data is complete. Those require separate on-host fault tests and forward-outcome evidence.
 
 The service is designed for private VLAN research only, with bounded CPU and a strictly authenticated request path.
+
+## Bounded feature hypothesis research
+
+The private endpoint `POST /v1/hypothesis` uses the existing LFM3 CPU service,
+authenticated shared bearer token and single busy semaphore. The only accepted
+hypotheses are `trend_only`, `momentum_only`, `volatility_only`, and
+`volume_only`. Output is a short falsifiable research proposal with no price,
+probability, trading order, trained weight, promotion or claimed accuracy.
+
+On the main RivaL bot, an optional once-per-six-hour UTC feature laboratory
+rotates BTC, ETH, SOL and XRP. It requires `RIVAL_AI_PROVIDER=local`,
+`RIVAL_LOCAL_AI_TOKEN` matching the LFM3 shared token, and the existing
+`RIVAL_LLM_HYPOTHESES_ENABLED` setting (enabled by default). Its calls share the
+existing persisted daily AI budget and hourly cooldown. Proposals are stored
+in PostgreSQL with source-evidence and record SHA-256, not in forecast tables.
+
+Source-native GitHub research, when authenticated to the bot's existing Discloud
+application, reads only verified proposals and tests predeclared feature masks
+on the original exchange-specific **training and validation** partitions.
+The existing models are evaluated independently. The proposal-derived trials
+never read the sealed holdout, enter the model import folder, or promote.
+Fresh prospective comparisons and actual after-cost tests remain necessary.

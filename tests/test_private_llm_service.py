@@ -612,3 +612,54 @@ def test_self_repair_recovers_only_valid_json_envelope_without_fake_answers(monk
             server.infer("BTC", evidence)
     finally:
         server.server_close()
+
+
+def test_private_feature_hypothesis_requires_auth_and_never_claims_a_forecast(gateway):
+    server, _calls = gateway
+    observed = []
+    def infer(asset, evidence, *, mode="research"):
+        observed.append((asset, evidence, mode))
+        return {
+            "model": server.identity, "hypothesis": "volume_only",
+            "rationale": "Compare native volume features",
+            "falsification": "Reject worse forward validation",
+            "research_only": True, "retrospective_screen": "not_tested",
+            "live_model_promoted": False, "prediction": None,
+        }
+    server.infer = infer
+    assert send(server, route="/v1/hypothesis", token="wrong")[0] == 401
+    assert send(server, route="/v1/hypothesis", body={
+        "asset": "BTC", "evidence": [],
+    })[0] == 400
+    assert observed == []
+    code, reply = send(server, route="/v1/hypothesis", body={
+        "asset": "SOL", "evidence": {"analysis": "unvalidated_research",
+                                     "sources": []},
+    })
+    assert code == 200
+    assert reply["hypothesis"] == "volume_only"
+    assert reply["prediction"] is None
+    assert reply["live_model_promoted"] is False
+    assert observed == [("SOL", {
+        "analysis": "unvalidated_research", "sources": [],
+    }, "hypothesis")]
+
+
+def test_hypothesis_output_rejects_unbounded_features_and_synthetic_trades():
+    valid = {
+        "hypothesis": "trend_only", "rationale": "Test native momentum",
+        "falsification": "Reject if chronology worsens",
+    }
+    assert SERVICE["validated_hypothesis"](valid)
+    assert not SERVICE["validated_hypothesis"]({
+        **valid, "hypothesis": "guaranteed_profit",
+    })
+    assert not SERVICE["validated_hypothesis"]({
+        **valid, "entry_price": 125000,
+    })
+    assert not SERVICE["validated_hypothesis"]({
+        **valid, "rationale": "tiny",
+    })
+    assert set(SERVICE["HYPOTHESES"]) == {
+        "trend_only", "momentum_only", "volatility_only", "volume_only",
+    }

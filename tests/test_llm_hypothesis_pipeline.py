@@ -195,7 +195,7 @@ async def test_transient_llm_outage_retries_with_bounded_slot_budget(tmp_path):
             if self.calls < 3:
                 from parlay_bot.perpetuals.ai_types import ResearchUnavailable
                 raise ResearchUnavailable("temporary local CPU saturation")
-            return proposal(asset)
+            return {**proposal(asset), "venues": ["okx"]}
 
     lab = FeatureHypothesisLab(store, Flaky(), venues=("okx",))
     begin = datetime(2026, 11, 2, 7, 1, tzinfo=UTC)
@@ -227,7 +227,7 @@ async def test_unconfigured_slot_can_recover_after_configuration(tmp_path):
     class Config:
         available = False
         async def propose_feature_hypothesis(self, *, asset, venues):
-            return proposal(asset)
+            return {**proposal(asset), "venues": ["okx"]}
 
     provider = Config()
     lab = FeatureHypothesisLab(store, provider, venues=("okx",))

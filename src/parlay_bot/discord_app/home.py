@@ -1373,7 +1373,9 @@ class GuidedHome(discord.ui.View):
                     verdict = ("Better in these tests, but not approved for trading"
                                if brier < baseline else "Not better than a basic prediction")
                     scoring = (f"**Against a basic prediction:** {verdict}. "
-                               f"Error score {brier:.3f} vs {baseline:.3f} (lower is better).")
+                               f"**Probability error (Brier):** RivaL {brier:.3f} vs "
+                               f"basic forecast {baseline:.3f}. Lower is better; "
+                               "this is not a software failure or money lost.")
                 else:
                     scoring = "Cannot fairly compare with a basic prediction yet"
                 paired = (
@@ -1382,7 +1384,9 @@ class GuidedHome(discord.ui.View):
                 )
                 exchange_text = (
                     f"**Correct direction:** {accuracy}\n{scoring}\n"
-                    f"**Results checked:** {settled:,} of {issued:,} recorded predictions{paired} (7 days)"
+                    f"**Results checked:** {settled:,} of {issued:,} recorded "
+                    f"predictions{paired} (last 7 days, all collecting exchanges, "
+                    "selected timeframe and incumbent model only)"
                 )
             embed.add_field(name=f"📈 How accurate are {self.coin} exchange predictions?", value=exchange_text, inline=False)
 
@@ -1406,7 +1410,9 @@ class GuidedHome(discord.ui.View):
                     poly_text = (
                         f"**Real-time predictions checked:** {resolved:,} (last {window} days)\n"
                         f"**Compared with market prices:** {outcome}. "
-                        f"Error score {model_error:.3f} vs {market_error:.3f} (lower is better)."
+                        f"**Probability error (Brier):** RivaL {model_error:.3f} vs "
+                        f"market prices {market_error:.3f}. Lower is better; "
+                        "this is not money lost."
                     )
                 else:
                     poly_text = (f"**Real-time predictions checked:** {resolved:,} "

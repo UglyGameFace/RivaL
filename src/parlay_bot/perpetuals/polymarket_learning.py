@@ -36,6 +36,10 @@ class PolymarketOutcomeLearner:
         self.store = store
         self._lock = threading.RLock()
         self._initialized = False
+        # Optional: RivaL's pooled multi-year model (set by the bot). Its one
+        # forecast per contract is stored beside this book model's forecast.
+        self.pooled_forecaster = None
+        self._pooled_done: dict[str, float] = {}
 
     def initialize(self):
         if self._initialized:
@@ -69,6 +73,35 @@ class PolymarketOutcomeLearner:
                 );""")
             self._initialized = True
 
+    def _issue_pooled(self, notice, now):
+        """One pooled-model forecast per contract, from data up to its start."""
+        if self.pooled_forecaster is None or notice.slug in self._pooled_done:
+            return
+        self._pooled_done[notice.slug] = now.timestamp()
+        if len(self._pooled_done) > 5000:
+            cutoff = now.timestamp() - 86400
+            self._pooled_done = {k: v for k, v in self._pooled_done.items() if v > cutoff}
+        try:
+            result = self.pooled_forecaster.forecast(
+                asset=notice.asset, horizon=notice.horizon, opens_at=notice.issued, now=now,
+            )
+            if result is None:
+                return
+            market = notice.up_ask / (notice.up_ask + notice.down_ask)
+            with self.store.connect() as conn:
+                conn.execute(
+                    "INSERT INTO rival_polymarket_model_forward "
+                    "(slug,model_version,issued_at,weights_sha256,probability_up,market_baseline) "
+                    "VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING",
+                    (notice.slug, "pooled:" + result["family"], datetime.now(UTC).isoformat(),
+                     result["model_sha256"],
+                     float(result["probability"]), market),
+                )
+        except Exception:  # the book model must never depend on the pooled model
+            import logging
+            logging.getLogger(__name__).warning("Pooled Polymarket forecast unavailable",
+                                                exc_info=True)
+
     def observe(self, notice):
         """Persist one original observation, update state, issue fresh research.
 
@@ -80,6 +113,7 @@ class PolymarketOutcomeLearner:
         if not (notice.issued <= notice.quote_at <= now < notice.expires and
                 now-notice.quote_at <= timedelta(seconds=25)):
             return None
+        self._issue_pooled(notice, now)
         features = book_features(notice)
         encoded = canonical(features)
         raw_evidence = canonical({
@@ -157,6 +191,51 @@ class PolymarketOutcomeLearner:
         return {"direction": "UP" if p > .5 else "DOWN" if p < .5 else "WAIT",
                 "issued_at": issued, "model": MODEL, "evidence_sha256": evidence,
                 "training_labels": updates, "weights_sha256": weight_sha}
+
+    def pooled_summary(self, *, asset, horizon, days=7, edge=0.05):
+        """The pooled model vs the market's own price, on resolved contracts.
+
+        'value' bets: contracts where the model's UP probability differs from
+        the market's by at least `edge`; the model's side is 'bought' at the
+        market's implied price (before spread and fees) and paid 1 if right.
+        """
+        self.initialize()
+        clock = datetime.now(UTC)
+        since = (clock - timedelta(days=days)).isoformat()
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                "SELECT f.probability_up,f.market_baseline,o.direction "
+                "FROM rival_polymarket_model_forward f "
+                "JOIN rival_polymarket_observations v ON v.slug=f.slug "
+                "JOIN rival_polymarket_ai_outcomes o "
+                "ON o.slug=f.slug AND o.condition_id=v.condition_id "
+                "WHERE f.model_version LIKE 'pooled:%' AND f.issued_at>=? AND f.issued_at<=? "
+                "AND f.issued_at<v.expires_at AND o.direction IN ('UP','DOWN') "
+                "AND f.probability_up BETWEEN 0 AND 1 AND f.market_baseline BETWEEN 0 AND 1 "
+                "AND v.asset=? AND v.horizon=?",
+                (since, clock.isoformat(), asset, horizon),
+            ).fetchall()
+        n = len(rows)
+        if not n:
+            return {"contracts": 0, "score_window_days": days}
+        ys = [int(r["direction"] == "UP") for r in rows]
+        ps = [float(r["probability_up"]) for r in rows]
+        ms = [float(r["market_baseline"]) for r in rows]
+        bets = []
+        for p, m, y in zip(ps, ms, ys, strict=True):
+            if p - m >= edge:
+                bets.append(y - m)          # bought UP at m
+            elif m - p >= edge:
+                bets.append((1 - y) - (1 - m))  # bought DOWN at 1-m
+        return {
+            "contracts": n, "score_window_days": days,
+            "model_brier": sum((p - y) ** 2 for p, y in zip(ps, ys, strict=True)) / n,
+            "market_brier": sum((m - y) ** 2 for m, y in zip(ms, ys, strict=True)) / n,
+            "model_accuracy": sum((p > .5) == (y == 1) for p, y in zip(ps, ys, strict=True)) / n,
+            "value_bets": len(bets),
+            "value_bet_wins": sum(b > 0 for b in bets),
+            "value_bet_avg_return": sum(bets) / len(bets) if bets else None,
+        }
 
     def summary(self, *, asset=None, horizon=None):
         """Recent *issued* model calls; lifetime training is a separate count.

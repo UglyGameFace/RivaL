@@ -535,6 +535,11 @@ class RivalDiscordClient(discord.Client):
             self.store, ai=None,  # Retired external contract AI route.
         )
         self.auto_hunt.contract_research = self.polymarket_research
+        if self.perp_collector is not None:
+            from parlay_bot.perpetuals.polymarket_pooled import PolymarketPooledForecaster
+            self.polymarket_research.learner.pooled_forecaster = PolymarketPooledForecaster(
+                self.perp_collector.market, self._pooled_model_set(),
+            )
         def secret_value(value):
             return value.get_secret_value() if value is not None else None
         self.polybolt = PolyBoltTWAP(
@@ -3058,7 +3063,13 @@ class RivalDiscordClient(discord.Client):
     def polymarket_learning_status(self, asset: str, horizon: int) -> dict:
         """Read Polymarket contract scores without querying exchange/Drive state."""
         self.polymarket_research.initialize()
-        return self.polymarket_research.learner.summary(asset=asset, horizon=horizon)
+        learner = self.polymarket_research.learner
+        result = learner.summary(asset=asset, horizon=horizon)
+        try:
+            result["pooled"] = learner.pooled_summary(asset=asset, horizon=horizon)
+        except Exception:  # noqa: BLE001 - optional comparison line
+            _LOG.warning("Pooled Polymarket scorecard unavailable")
+        return result
 
     def training_status(self, asset: str, horizon: int) -> dict:
         """Read-only accuracy and provenance. No retroactive promotion."""

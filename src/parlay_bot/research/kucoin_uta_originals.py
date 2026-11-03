@@ -77,7 +77,7 @@ def select_month(family: str, *, now: datetime | None = None) -> str:
         raise HistoryImportError("no completed KuCoin source month")
     # Stable rotation, newest source months prioritized but older not starved.
     priority = list(reversed(options[-12:])) + options[:-12]
-    return priority[(int(clock.timestamp()) // (6 * 3600)) % len(priority)]
+    return priority[(int(clock.timestamp()) // (6 * 3600) // len(KLINES)) % len(priority)]
 
 
 def choose_family(now: datetime | None = None) -> str:
@@ -230,6 +230,35 @@ async def get_original(client: httpx.AsyncClient, *, endpoint: str,
         return bytes(raw), str(response.request.url)
 
 
+async def require_private_permissions(drive, file_ids: tuple[str, ...]) -> None:
+    """Fail closed if a source folder or original is link/domain shared."""
+    headers = await drive._headers()
+    for file_id in file_ids:
+        if not isinstance(file_id, str) or not file_id:
+            raise HistoryImportError("missing Drive file boundary")
+        response = await drive._client.get(
+            f"{drive.DRIVE_URL}/files/{file_id}/permissions",
+            params={"fields": "nextPageToken,permissions(id,type,role)",
+                    "pageSize": 100},
+            headers=headers,
+        )
+        if response.status_code != 200:
+            raise HistoryImportError("Drive privacy could not be verified")
+        try:
+            payload = response.json()
+            permissions = payload["permissions"]
+            if (not isinstance(permissions, list)
+                or len(permissions) > 100
+                or payload.get("nextPageToken")):
+                raise HistoryImportError("Drive permission inspection incomplete")
+            for item in permissions:
+                if (not isinstance(item, dict) or item.get("type") not in
+                    ("user", "group")):
+                    raise HistoryImportError("Drive source is publicly or domain shared")
+        except (TypeError, KeyError, ValueError) as exc:
+            raise HistoryImportError("malformed Drive access permissions") from exc
+
+
 async def private_original(drive, *, root: Path, asset: str, family: str,
                            label: str, start: datetime, end: datetime,
                            raw: bytes, url: str, stamps: list[int]) -> dict:
@@ -277,6 +306,7 @@ async def private_original(drive, *, root: Path, asset: str, family: str,
     await drive.verify_downloaded_artifact(
         file_id=saved_meta.file_id, parent_id=drive.folders.manifests,
         artifact=manifest_item)
+    await require_private_permissions(drive, (saved.file_id, saved_meta.file_id))
     return {"asset": asset, "family": family, "interval": label,
             "original_rows": len(stamps), "original_sha256": digest,
             "readback_verified": True}
@@ -297,6 +327,10 @@ async def collect(*, family: str, month: str = "auto", limit: int = 48,
     blocked = []
     attempts = 0
     try:
+        await drive._verify_folder_boundary()
+        await require_private_permissions(
+            drive, (drive.folders.root, drive.folders.history,
+                    drive.folders.manifests, drive.folders.staging))
         async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
             jobs = []
             if family in KLINES:
@@ -305,7 +339,7 @@ async def collect(*, family: str, month: str = "auto", limit: int = 48,
                 # Allocate pages evenly across all assets, rotate windows on
                 # successive runs instead of repeatedly scraping page zero.
                 per_asset = max(1, limit // len(ASSETS))
-                offset = (int(clock.timestamp()) // (6 * 3600) * per_asset) % len(windows)
+                offset = ((int(clock.timestamp()) // (6 * 3600) // len(KLINES)) * per_asset) % len(windows)
                 chosen = [windows[(offset + i) % len(windows)]
                           for i in range(min(per_asset, len(windows)))]
                 jobs = [(asset, interval, a, b) for asset in ASSETS

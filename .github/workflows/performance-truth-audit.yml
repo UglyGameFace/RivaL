@@ -10,6 +10,9 @@ on:
         type: choice
         options: [counts, render, logs]
         default: counts
+      since:
+        description: "counts mode: only measure issue timing from this ISO time (UTC)"
+        default: ""
       pattern:
         description: "logs mode: regex of log lines to print (only matching lines are shown)"
         default: "Bitget|dYdX"
@@ -27,6 +30,7 @@ jobs:
         env:
           MODE: ${{ inputs.mode || 'counts' }}
           PATTERN: ${{ inputs.pattern }}
+          SINCE: ${{ inputs.since }}
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         run: |
@@ -78,7 +82,10 @@ jobs:
               pathlib.Path("render.json").write_text(json.dumps(merged, indent=1))
               print(json.dumps(merged, indent=1))
           else:
-              shell = run()
+              since = os.environ.get("SINCE", "").strip()
+              if since and not __import__("re").fullmatch(r"[0-9T:+.-]{10,40}", since):
+                  raise SystemExit("invalid since")
+              shell = run(f"RIVAL_PROBE_SINCE={since} " if since else "")
               for line in str(shell.get("stdout", "")).splitlines():
                   if line.startswith("RIVAL_PERFORMANCE_PROBE="):
                       print(json.dumps(json.loads(line.split("=", 1)[1]), indent=1))

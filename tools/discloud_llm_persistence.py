@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from urllib import error, parse, request
 
 MARKER = "RIVAL_LFM3_PERSISTENCE_RECEIPT="
@@ -50,12 +51,33 @@ def integrated_receipt(report: dict) -> bool:
     )
 
 
+# Right after a deploy the bot is still restarting and has not collected
+# fresh prices yet, so the host check defers with this reason. That is not
+# a failure: wait for a few 5-minute collection cycles and ask again.
+RESTART_REASONS = frozenset({"insufficient_live_venues"})
+RESTART_WAIT_SECONDS = 120
+RESTART_ATTEMPTS = 5
+
+
 def main() -> int:
+    for attempt in range(1, RESTART_ATTEMPTS + 1):
+        code, report = _attempt()
+        if (report is None or report.get("outcome") != "deferred"
+                or report.get("reason") not in RESTART_REASONS
+                or attempt == RESTART_ATTEMPTS):
+            return code
+        print(f"Bot still warming up after restart ({report['reason']}); "
+              f"retrying in {RESTART_WAIT_SECONDS}s (attempt {attempt}/{RESTART_ATTEMPTS})")
+        time.sleep(RESTART_WAIT_SECONDS)
+    return 1
+
+
+def _attempt() -> tuple[int, dict | None]:
     token = os.environ.get("DISCLOUD_TOKEN", "")
     app_id = os.environ.get("DISCLOUD_APP_ID", "")
     if not token or not app_id:
         print("Discloud acceptance credentials unavailable")
-        return 1
+        return 1, None
     req = request.Request(
         "https://api.discloud.app/v2/app/"
         + parse.quote(app_id, safe="") + "/console",
@@ -90,7 +112,7 @@ def main() -> int:
             "shell_fields": sorted(shell)[:8] if isinstance(shell, dict) else [],
         }
         print("LFM3 host acceptance not confirmed:", json.dumps(detail, sort_keys=True))
-        return 1
+        return 1, None
 
     outcome = report["outcome"]
     # An older LFM3 receipt or cache hit is not fresh evidence that the
@@ -103,7 +125,7 @@ def main() -> int:
     if output := os.environ.get("GITHUB_OUTPUT"):
         with open(output, "a", encoding="utf-8") as stream:
             stream.write(f"outcome={outcome}\n")
-    return 0 if outcome == "verified" else 1
+    return (0 if outcome == "verified" else 1), report
 
 
 if __name__ == "__main__":

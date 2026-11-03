@@ -9,10 +9,10 @@ on:
         description: "counts = database counts; render = text of every Research page"
         type: choice
         options: [counts, render, logs]
+        default: counts
       pattern:
         description: "logs mode: regex of log lines to print (only matching lines are shown)"
         default: "Bitget|dYdX"
-        default: counts
 
 permissions:
   contents: read

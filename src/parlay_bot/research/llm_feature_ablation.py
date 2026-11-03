@@ -14,7 +14,10 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.perpetuals.markets import HORIZONS
 from parlay_bot.perpetuals.model_checkpoints import FEATURE_CONTRACT, TARGET_CONTRACT, canonical
 from parlay_bot.perpetuals.research_hypotheses import (
-    ASSETS, HYPOTHESES, MODEL, valid_feature_indices,
+    ASSETS,
+    HYPOTHESES,
+    MODEL,
+    valid_feature_indices,
 )
 from parlay_bot.research.candidate_registry import verified_candidate
 from parlay_bot.research.free_history import HistoryImportError

@@ -304,3 +304,30 @@ async def test_private_intelligence_has_no_daily_budget_or_external_catalog():
         assert "OpenRouter" not in str(fields) and "Cloudflare" not in str(fields)
     finally:
         await ai.aclose()
+
+
+@pytest.mark.asyncio
+async def test_twenty_five_unmetered_local_requests_do_not_reserve_quota(monkeypatch):
+    market = Market()
+    counter = 0
+    sent = []
+
+    def changing_evidence(_market, *, asset, venues, horizon_minutes=5):
+        nonlocal counter
+        counter += 1
+        return ({"asset": asset, "analysis": "unvalidated_research",
+                 "horizon_minutes": horizon_minutes,
+                 "sources": [{"venue": v} for v in venues]}, f"{counter:064x}")
+
+    def handler(request):
+        sent.append(request.url.host)
+        return httpx.Response(200, json=success(module.LOCAL_MODEL))
+
+    monkeypatch.setattr(module, "build_evidence", changing_evidence)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        reviewer = module.LocalFirstResearch(market, local_key="owner", client=client)
+        for _ in range(25):
+            await reviewer.ask(asset="BTC", venues=("okx",))
+    assert sent == ["rival-llm"] * 25
+    assert len(market.saved) == 25
+    assert market.quota == []

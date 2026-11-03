@@ -29,7 +29,7 @@ The primary commands are `/rival`, `/rival-signal`, `/rival-stop`, and the optio
 - **DraftKings:** sportsbook odds and futures belong under Sports. Independent crypto event-contract research must be labeled separately when a verified native contract or price is unavailable.
 - **Sports parlays:** eligible same-book current lines are compared using de-vigged, line-matched market consensus. This is not an independently validated winning-pick model.
 
-See [continuous contract learning](docs/RIVAL_CONTINUOUS_LEARNING.md), [price goals and contract distinctions](docs/RIVAL_PRICE_TARGETS.md), and [actual profit-proof criteria](docs/RIVAL_PROFIT_PROOF.md).
+See [local-only Intelligence](docs/RIVAL_INTELLIGENCE_LOCAL_ONLY.md) and [continuous contract learning](docs/RIVAL_CONTINUOUS_LEARNING.md), [price goals and contract distinctions](docs/RIVAL_PRICE_TARGETS.md), and [actual profit-proof criteria](docs/RIVAL_PROFIT_PROOF.md).
 
 ## What is implemented
 

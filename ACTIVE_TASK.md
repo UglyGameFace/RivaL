@@ -1,3 +1,12 @@
+## Active: one-PR predictive-evidence integrity and local-Intelligence research (2026-11-03 UTC)
+
+- **Single PR:** #280 (extend rather than duplicate). Keep external AI providers retired, preserve authenticated bounded LFM3 feature hypotheses, source-native chronological challenger evaluation, and the existing live model until separate future evidence passes all screens.
+- **Quote integrity:** The family proof evaluator now selects the earliest issued record per exact-source family/target *before* observing whether a quote or outcome settled; later overlapping forecasts cannot inflate covered windows, quote coverage, number of trades or the after-cost day-block sample. Surface missing quote and duplicate-target counts.
+- **Minimum proof:** >=150 distinct future targets across >=21 UTC days, >=80% matched eligible quote windows, same-source matched bid/ask entry+exit, forward superiority vs incumbent/baselines, positive conservative and severe after-cost day-block bounds, healthy calibration, zero invalid evidence. Only PAPER qualification is possible; no authenticated fills or real-money edge is established.
+- **Test/prod signoff:** Run full Ruff/pytest on both SQLite and PostgreSQL, PR CI, merge/main CI, Discloud bot/standalone Intelligence live smoke, source-native Drive archive receipts, then observe persistent LFM3 proposal + validation comparisons. Collect 21 real future days: code cannot create outcomes or guarantee a winner. Preserve issues #6 and #188 until independently resolved.
+
+---
+
 ## Active: retire external AI providers and use unmetered private LFM3 (2026-11-02)
 
 - Owner direction: RivaL Intelligence is the **only** AI inference provider. Retire Gemini, OpenRouter and Cloudflare AI fallback routes, external key/config selection and shared daily token/request quotas for local AI. Legacy stored observations and research provenance must remain immutable.

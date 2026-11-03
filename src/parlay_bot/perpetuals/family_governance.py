@@ -95,7 +95,7 @@ class FamilyPromotion:
                    WHERE s.asset=? AND s.venue=? AND s.contract=?
                     AND s.quote=? AND s.horizon_minutes=?
                     AND s.issued_at>=? AND s.issued_at<=?
-                   ORDER BY s.family,s.target_opened_at LIMIT 24000""",
+                   ORDER BY s.family,s.target_opened_at,s.issued_at,s.reference_opened_at LIMIT 24000""",
                 (asset,venue,contract,quote,horizon,
                  (stamp-LOOKBACK).isoformat(),stamp.isoformat()),
             ).fetchall()
@@ -111,6 +111,8 @@ class FamilyPromotion:
             # Models train from their own venue/horizon labels. Only uniquely
             # aligned target windows can contribute independent evidence.
             seen=set()
+            seen_targets=set()
+            duplicate_target_rows=0
             scored_pairs=[]
             scored_base=[]
             scored_coin=[]
@@ -121,6 +123,16 @@ class FamilyPromotion:
             for row in forecasts:
                 if row["family"]!=family:
                     continue
+                # A single target outcome is one independent observation,
+                # regardless of how many overlapping reference candles issued
+                # forecasts for it. Select the EARLIEST issued row before
+                # looking at settlement or quote success to avoid hindsight
+                # cherry-picking a conveniently quoted later forecast.
+                target_key=str(row["target_opened_at"])
+                if target_key in seen_targets:
+                    duplicate_target_rows+=1
+                    continue
+                seen_targets.add(target_key)
                 # A still-open future target is not corrupt evidence.
                 # Only genuinely settled observations enter the candidate
                 # score, and missing quote exits remain a denominator loss.
@@ -246,6 +258,8 @@ class FamilyPromotion:
                 "calibration_status":calibration["status"],
                 "eligible_quotes":eligible,"closed_quotes":covered,
                 "quote_coverage":coverage,"challenger_trades":trades,
+                "missing_quote_windows":max(0,eligible-covered),
+                "duplicate_target_rows":duplicate_target_rows,
                 "invalid_rows":invalid,"cost_proof":cost_proofs,
                 "real_fills_verified":False,
                 "qualification":"prospective_shadow_paper_only",

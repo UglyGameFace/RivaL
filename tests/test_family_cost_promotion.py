@@ -11,7 +11,7 @@ from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.model_competition import FAMILIES
 
 
-def _seed(store, now, *, quote_count=168, gross=350.0, venue="hyperliquid"):
+def _seed(store, now, *, quote_count=168, gross=350.0, venue="hyperliquid", horizon=5):
     market = PerpetualMarketStore(store)
     ForwardAccuracyMonitor(market).initialize()
     FamilyQuoteShadow(store).initialize()
@@ -19,7 +19,7 @@ def _seed(store, now, *, quote_count=168, gross=350.0, venue="hyperliquid"):
     with store.connect() as conn:
         for d in range(21):
             for i in range(8):
-                target = now-timedelta(days=23-d)+timedelta(minutes=5*i)
+                target = now-timedelta(days=23-d)+timedelta(minutes=horizon*i)
                 issued = target-timedelta(seconds=40)
                 reference = target-timedelta(minutes=5)
                 settled = target+timedelta(minutes=6)
@@ -32,7 +32,7 @@ def _seed(store, now, *, quote_count=168, gross=350.0, venue="hyperliquid"):
                       training_count,training_sha256,settled_at,outcome_up,
                       model_brier,incumbent_brier,baseline_brier)
                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (venue,"BTC","USDC","BTC",5,family,
+                    (venue,"BTC","USDC","BTC",horizon,family,
                      reference.isoformat(),issued.isoformat(),target.isoformat(),
                      .95,.5,.5,300,"a"*64,settled.isoformat(),1,
                      score,.25,.25),
@@ -51,7 +51,7 @@ def _seed(store, now, *, quote_count=168, gross=350.0, venue="hyperliquid"):
                       exit_at,exit_bid,exit_ask,
                       challenger_gross_bps,incumbent_gross_bps)
                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    (venue,"BTC","USDC","BTC",5,family,
+                    (venue,"BTC","USDC","BTC",horizon,family,
                      reference.isoformat(),issued.isoformat(),
                      (target+timedelta(minutes=5)).isoformat(),
                      "a"*64,.95,.5,"LONG","CASH",entry.isoformat(),
@@ -166,3 +166,65 @@ def test_quote_observation_prices_incumbent_and_family_on_same_book(learning_sto
     assert rows[0]["challenger_gross_bps"]>0
     assert rows[0]["incumbent_gross_bps"]==0
     assert rows[0]["training_sha256"]=="b"*64
+
+def test_overlapping_targets_cannot_manufacture_quote_coverage(learning_store):
+    """Later forecasts of the same outcome are not 80 independent new fills."""
+    now = datetime(2026, 10, 31, 16, tzinfo=UTC)
+    family = _seed(learning_store, now, quote_count=120, horizon=15)
+    with learning_store.connect() as conn:
+        for index in range(80):
+            d, i = divmod(index, 8)
+            target = now-timedelta(days=23-d)+timedelta(minutes=15*i)
+            # A 15m forecast can issue from more than one 5m reference bar.
+            # Later issuance has its own quote, but NOT its own outcome.
+            reference = target-timedelta(minutes=10)
+            issued = target-timedelta(seconds=20)
+            settled = target+timedelta(minutes=6)
+            conn.execute(
+                """INSERT INTO rival_model_shadow_forecasts (
+                  venue,contract,quote,asset,horizon_minutes,family,
+                  reference_opened_at,issued_at,target_opened_at,
+                  probability_up,incumbent_up,baseline_up,
+                  training_count,training_sha256,settled_at,outcome_up,
+                  model_brier,incumbent_brier,baseline_brier)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("hyperliquid","BTC","USDC","BTC",15,family,
+                 reference.isoformat(),issued.isoformat(),target.isoformat(),
+                 .95,.5,.5,300,"a"*64,settled.isoformat(),1,
+                 .0025,.25,.25),
+            )
+            entry = issued+timedelta(seconds=10)
+            exit_at = target+timedelta(minutes=5,seconds=20)
+            conn.execute(
+                """INSERT INTO rival_family_quote_shadow (
+                  venue,contract,quote,asset,horizon_minutes,family,
+                  reference_opened_at,issued_at,target_close_at,
+                  training_sha256,challenger_up,incumbent_up,
+                  challenger_side,incumbent_side,entry_at,
+                  entry_bid,entry_ask,quantity,state,
+                  exit_at,exit_bid,exit_ask,
+                  challenger_gross_bps,incumbent_gross_bps)
+                  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("hyperliquid","BTC","USDC","BTC",15,family,
+                 reference.isoformat(),issued.isoformat(),
+                 (target+timedelta(minutes=5)).isoformat(),
+                 "a"*64,.95,.5,"LONG","CASH",entry.isoformat(),
+                 100.,100.1,.25,"EXIT_QUOTED",exit_at.isoformat(),
+                 104.,104.1,350.,0.),
+            )
+    owner = FamilyPromotion(learning_store)
+    proof = owner.evaluate(
+        now=now,asset="BTC",venue="hyperliquid",contract="BTC",
+        quote="USDC",horizon=15,
+    )
+    candidate = proof["families"][family]
+    assert proof["status"] == "held"
+    assert proof["selected_family"] is None
+    assert candidate["targets"] == 168
+    assert candidate["eligible_quotes"] == 168
+    assert candidate["closed_quotes"] == 120
+    assert candidate["missing_quote_windows"] == 48
+    assert candidate["duplicate_target_rows"] == 80
+    assert candidate["quote_coverage"] == 120/168
+    assert not candidate["cost_proof"]["severe"]["qualified"]
+    assert not candidate["qualified"]

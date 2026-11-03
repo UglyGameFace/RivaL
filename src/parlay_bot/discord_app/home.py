@@ -1658,6 +1658,22 @@ class GuidedHome(discord.ui.View):
                     poly_text = (f"**Real-time predictions checked:** {resolved:,} "
                                  "· no fair comparison available yet")
                 observed = int(poly.get("observed_contracts") or 0)
+                pooled = poly.get("pooled") or {}
+                if pooled.get("contracts"):
+                    verdict = ("better" if pooled["model_brier"] < pooled["market_brier"]
+                               else "not better")
+                    poly_text += (
+                        f"\n**New 6-year model vs market prices:** {pooled['contracts']:,} "
+                        f"contracts, {verdict} (Brier {pooled['model_brier']:.3f} vs "
+                        f"{pooled['market_brier']:.3f})"
+                    )
+                    if pooled.get("value_bets"):
+                        poly_text += (
+                            f"; when it disagreed by 5+ pts: {pooled['value_bet_wins']}/"
+                            f"{pooled['value_bets']} won, "
+                            f"{pooled['value_bet_avg_return'] * 100:+.1f}¢ per $1 before "
+                            "spread and fees"
+                        )
                 poly_text += f"\n**Past results learned from:** {learned:,} (not live predictions)"
                 if observed and not learned:
                     poly_text += (f"\n⚠️ {observed:,} contracts seen, but none of their "

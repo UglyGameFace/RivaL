@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import os
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -64,6 +65,29 @@ def probe() -> dict:
                     "median": round(gaps[len(gaps) // 2], 1), "max": round(gaps[-1], 1),
                     "over_6": sum(g > 6 for g in gaps), "over_11": sum(g > 11 for g in gaps),
                 }
+            def _secs(a, b):
+                return (datetime.fromisoformat(str(b)) - datetime.fromisoformat(str(a))).total_seconds()
+
+            def _dist(values):
+                values = sorted(values)
+                if not values:
+                    return None
+                return {"n": len(values), "median": round(values[len(values) // 2]),
+                        "p90": round(values[int(len(values) * .9)]), "max": round(values[-1])}
+            timing = conn.execute(
+                "SELECT slot_utc, started_at, completed_at FROM perp_learning_cycle_health "
+                "WHERE completed_at>=? ORDER BY completed_at",
+                (os.environ.get("RIVAL_PROBE_SINCE") or day,)).fetchall()
+            out["stage_seconds"] = {
+                "slot_to_forecast_start": _dist([_secs(r["slot_utc"], r["started_at"]) for r in timing]),
+                "forecast_stage": _dist([_secs(r["started_at"], r["completed_at"]) for r in timing]),
+                "slot_to_done": _dist([_secs(r["slot_utc"], r["completed_at"]) for r in timing]),
+            }
+            diag = conn.execute(
+                "SELECT COUNT(*) AS cycles, COALESCE(SUM(target_expired),0) AS expired, "
+                "COALESCE(SUM(issued_forecasts),0) AS issued FROM perp_forward_cycle_diagnostics "
+                "WHERE checked_at>=?", (os.environ.get("RIVAL_PROBE_SINCE") or day,)).fetchone()
+            out["cycles_since"] = {k: int(diag[k]) for k in ("cycles", "expired", "issued")}
             out["learning_24h"] = _one(conn, """
                 SELECT COUNT(*) AS cycles, SUM(math_issued) AS issued,
                        SUM(math_settled) AS settled,
@@ -94,12 +118,14 @@ def probe() -> dict:
                     "SELECT model_version, COUNT(*) AS n FROM perp_forward_audit "
                     "WHERE issued_at>=? GROUP BY model_version", (week,)).fetchall()]
             out["issue_delay_seconds"] = {}
+            since = os.environ.get("RIVAL_PROBE_SINCE") or day
+            out["issue_delay_since"] = since
             for h in (5, 15, 60):
                 rows = conn.execute(
                     "SELECT issued_at, target_opened_at FROM perp_forward_audit "
-                    "WHERE asset='BTC' AND model_version=? AND horizon_minutes=? "
-                    "AND issued_at>=? ORDER BY issued_at DESC LIMIT 2000",
-                    (MODEL, h, day)).fetchall()
+                    "WHERE model_version=? AND horizon_minutes=? "
+                    "AND issued_at>=? ORDER BY issued_at DESC LIMIT 5000",
+                    (MODEL, h, since)).fetchall()
                 delays = sorted(
                     (datetime.fromisoformat(str(r["issued_at"]))
                      - datetime.fromisoformat(str(r["target_opened_at"]))).total_seconds()

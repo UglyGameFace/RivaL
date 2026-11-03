@@ -53,6 +53,16 @@ if TYPE_CHECKING:
     from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 
 _LOG = logging.getLogger(__name__)
+# The event loop keeps only weak references to tasks. Hold fire-and-forget
+# menu work here until it finishes so it cannot be garbage-collected mid-run.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn(coro, *, name: str | None = None) -> asyncio.Task:
+    task = asyncio.create_task(coro, name=name)
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
+    return task
 COINS = RESEARCH_ASSETS
 MARKET_NAMES = {
     "polymarket": "Polymarket Up/Down",
@@ -1613,7 +1623,7 @@ class GuidedHome(discord.ui.View):
                 except (TimeoutError, discord.HTTPException):
                     _LOG.warning("Fast forecast loading edit failed")
                     return
-                asyncio.create_task(
+                _spawn(
                     self._finish_forecast(interaction, revision)
                     if self.page == "forecast" else
                     self._finish_performance(interaction, revision),
@@ -1784,7 +1794,10 @@ class GuidedHome(discord.ui.View):
             # store pointing at detached items. Re-render once after a
             # short pause; the redraw lock serializes it against the
             # user's next tap, and the retry itself never retries again.
-            asyncio.create_task(self._retry_failed_render(interaction))
+            _spawn(
+                self._retry_failed_render(interaction),
+                name="rival-guided-render-retry",
+            )
 
     async def _retry_failed_render(
         self, interaction: discord.Interaction,

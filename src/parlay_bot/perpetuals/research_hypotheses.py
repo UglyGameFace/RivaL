@@ -98,6 +98,60 @@ class FeatureHypothesisLab:
                 )
         self._initialized = True
 
+    def _claim_slot(self, asset: str, slot: datetime, stamp: datetime) -> bool:
+        with self.store.connect() as conn:
+            claimed = conn.execute(
+                """INSERT INTO rival_llm_feature_hypotheses
+                   (asset,slot_utc,attempted_at,status)
+                   VALUES (?,?,?,?)
+                   ON CONFLICT DO NOTHING""",
+                (asset, slot.isoformat(), stamp.isoformat(), "attempted"),
+            )
+        if claimed.rowcount == 1:
+            return True
+        # A temporary LFM3 outage or unavailable market source should
+        # not lose a whole six-hour slot. Reclaim atomically at most twice,
+        # no sooner than twenty minutes after the previous attempt.
+        cutoff = (stamp - timedelta(minutes=20)).isoformat()
+        with self.store.connect() as conn:
+            retry = conn.execute(
+                """UPDATE rival_llm_feature_hypotheses
+                   SET attempted_at=?,status='attempted',
+                       attempt_count=attempt_count+1
+                   WHERE asset=? AND slot_utc=? AND attempt_count<3
+                     AND attempted_at<=?
+                     AND status IN ('attempted','unavailable',
+                                    'local_research_not_configured')""",
+                (stamp.isoformat(), asset, slot.isoformat(), cutoff),
+            )
+        return retry.rowcount == 1
+
+    def _mark_status(self, asset: str, slot: datetime, status: str) -> None:
+        with self.store.connect() as conn:
+            conn.execute(
+                """UPDATE rival_llm_feature_hypotheses SET status=?
+                   WHERE asset=? AND slot_utc=? AND status='attempted'""",
+                (status, asset, slot.isoformat()),
+            )
+
+    def _store_proposal(
+        self, asset: str, slot: datetime, result: dict, digest: str,
+    ) -> None:
+        with self.store.connect() as conn:
+            conn.execute(
+                """UPDATE rival_llm_feature_hypotheses
+                   SET evidence_sha256=?, model=?, hypothesis=?,
+                       feature_indices_json=?, rationale=?, falsification=?,
+                       source_venues_json=?,record_sha256=?,status='proposed'
+                   WHERE asset=? AND slot_utc=? AND status='attempted'""",
+                (result["evidence_sha256"], MODEL, result["hypothesis"],
+                 json.dumps(result["feature_indices"], separators=(",", ":"))
+                 if result["hypothesis"] == "feature_subset_v2" else None,
+                 result["rationale"].strip(), result["falsification"].strip(),
+                 json.dumps(result["venues"], separators=(",", ":")),
+                 digest, asset, slot.isoformat()),
+            )
+
     async def run_once(self, *, now: datetime | None = None) -> dict:
         stamp = now or datetime.now(UTC)
         if stamp.utcoffset() is None:
@@ -107,32 +161,10 @@ class FeatureHypothesisLab:
                              second=0, microsecond=0)
         asset = ASSETS[slot.hour // 6]
         await asyncio.to_thread(self.initialize)
-        with self.store.connect() as conn:
-            claimed = conn.execute(
-                """INSERT INTO rival_llm_feature_hypotheses
-                   (asset,slot_utc,attempted_at,status)
-                   VALUES (?,?,?,?)
-                   ON CONFLICT DO NOTHING""",
-                (asset, slot.isoformat(), stamp.isoformat(), "attempted"),
-            )
-        if claimed.rowcount != 1:
-            # A temporary LFM3 outage or unavailable market source should
-            # not lose a whole six-hour slot. Reclaim atomically at most twice,
-            # no sooner than twenty minutes after the previous attempt.
-            cutoff = (stamp - timedelta(minutes=20)).isoformat()
-            with self.store.connect() as conn:
-                retry = conn.execute(
-                    """UPDATE rival_llm_feature_hypotheses
-                       SET attempted_at=?,status='attempted',
-                           attempt_count=attempt_count+1
-                       WHERE asset=? AND slot_utc=? AND attempt_count<3
-                         AND attempted_at<=?
-                         AND status IN ('attempted','unavailable',
-                                        'local_research_not_configured')""",
-                    (stamp.isoformat(), asset, slot.isoformat(), cutoff),
-                )
-            if retry.rowcount != 1:
-                return {"status": "already_attempted", "asset": asset}
+        # Database work runs on a worker thread: a slow pool checkout must
+        # never freeze the Discord gateway heartbeat on the event loop.
+        if not await asyncio.to_thread(self._claim_slot, asset, slot, stamp):
+            return {"status": "already_attempted", "asset": asset}
         if self.ai is None or not self.ai.available:
             status = "local_research_not_configured"
             result = None
@@ -145,12 +177,7 @@ class FeatureHypothesisLab:
             except (InsufficientEvidence, ResearchUnavailable, ValueError):
                 result, status = None, "unavailable"
         if result is None:
-            with self.store.connect() as conn:
-                conn.execute(
-                    """UPDATE rival_llm_feature_hypotheses SET status=?
-                       WHERE asset=? AND slot_utc=? AND status='attempted'""",
-                    (status, asset, slot.isoformat()),
-                )
+            await asyncio.to_thread(self._mark_status, asset, slot, status)
             return {"status": status, "asset": asset}
         # All fields and the exact evidence SHA are checked before storage.
         if (
@@ -181,20 +208,9 @@ class FeatureHypothesisLab:
         digest = hashlib.sha256(
             json.dumps(record, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-        with self.store.connect() as conn:
-            conn.execute(
-                """UPDATE rival_llm_feature_hypotheses
-                   SET evidence_sha256=?, model=?, hypothesis=?,
-                       feature_indices_json=?, rationale=?, falsification=?,
-                       source_venues_json=?,record_sha256=?,status='proposed'
-                   WHERE asset=? AND slot_utc=? AND status='attempted'""",
-                (result["evidence_sha256"], MODEL, result["hypothesis"],
-                 json.dumps(result["feature_indices"], separators=(",", ":"))
-                 if result["hypothesis"] == "feature_subset_v2" else None,
-                 result["rationale"].strip(), result["falsification"].strip(),
-                 json.dumps(result["venues"], separators=(",", ":")),
-                 digest, asset, slot.isoformat()),
-            )
+        await asyncio.to_thread(
+            self._store_proposal, asset, slot, result, digest,
+        )
         _LOG.info("RivaL Intelligence suggested bounded feature experiment asset=%s",
                   asset)
         return {"status": "proposed", "asset": asset,

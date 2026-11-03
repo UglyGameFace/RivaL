@@ -43,3 +43,13 @@ asyncio_mode = "auto"
 [tool.ruff]
 target-version = "py311"
 line-length = 100
+
+[tool.ruff.lint]
+# Catch event-loop bugs (dangling tasks, blocking async patterns) and naive
+# datetimes in production code. ASYNC240 flags pathlib calls inside offline
+# research runners that do not serve Discord; revisit when they move.
+extend-select = ["ASYNC", "RUF006", "DTZ"]
+ignore = ["ASYNC240"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["ASYNC", "DTZ"]

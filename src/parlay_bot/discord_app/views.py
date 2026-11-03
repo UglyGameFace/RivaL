@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import sqlite3
 
@@ -351,7 +352,8 @@ class LocationView(RivalView):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
-        saved = self.service.get_saved(
+        saved = await asyncio.to_thread(
+            self.service.get_saved,
             platform="discord",
             user_id=str(interaction.user.id),
         )
@@ -456,7 +458,8 @@ class ParlayResultView(RivalView):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
-        saved = self.service.get_saved(
+        saved = await asyncio.to_thread(
+            self.service.get_saved,
             platform="discord",
             user_id=str(interaction.user.id),
         )

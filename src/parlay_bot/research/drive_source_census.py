@@ -92,8 +92,8 @@ def parse_name(name: str):
 KUCOIN_UTA_PAGES = re.compile(
     r"kucoin-uta-v2-(BTC|ETH|SOL|XRP)-"
     r"(candles_1m|candles_15m|candles_1h|candles_4h|candles_1d|mark|index|premium|open_interest)-"
-    r"(1min|15min|1hour|4hour|1day)-(20\\d{6}T\\d{6})-"
-    r"([a-f0-9]{16})\\.manifest\\.json"
+    r"(1min|15min|1hour|4hour|1day)-(20\d{6}T\d{6})-"
+    r"([a-f0-9]{16})\.manifest\.json"
 )
 KUCOIN_INTERVALS = {
     "candles_1m": "1min", "candles_15m": "15min",

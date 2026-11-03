@@ -1,4 +1,4 @@
-"""Original public Hyperliquid and KuCoin perpetual funding-history page archive.
+"""Original public funding-history pages from four independent perpetual exchanges.
 
 Bounded source requests. Every retained source is uploaded as original bytes with
 an immutable manifest and independently downloaded SHA-256 verification. Never
@@ -22,18 +22,22 @@ from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.publish import _artifact, _drive
 
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
-VENUES = ("hyperliquid", "kucoin")
-FIRST_ATTEMPT = {"hyperliquid": "2023-01", "kucoin": "2021-01"}
+VENUES = ("hyperliquid", "kucoin", "phemex", "deribit")
+FIRST_ATTEMPT = {"hyperliquid": "2023-01", "kucoin": "2021-01",
+                 "phemex": "2021-01", "deribit": "2021-01"}
 URLS = {
     "hyperliquid": "https://api.hyperliquid.xyz/info",
     "kucoin": "https://api-futures.kucoin.com/api/v1/contract/funding-rates",
+    "phemex": "https://api.phemex.com/api-data/public/data/funding-rate-history",
+    "deribit": "https://www.deribit.com/api/v2/public/get_funding_rate_history",
 }
 KUCOIN_SYMBOLS = {"BTC": "XBTUSDTM", "ETH": "ETHUSDTM",
                   "SOL": "SOLUSDTM", "XRP": "XRPUSDTM"}
+DERIBIT_SYMBOLS = {"BTC": "BTC-PERPETUAL", "ETH": "ETH-PERPETUAL",
+                   "SOL": "SOL_USDC-PERPETUAL", "XRP": "XRP_USDC-PERPETUAL"}
 MAX_BYTES = 2_000_000
 MAX_RECORDS = 500
 WINDOW_DAYS = 4
-RETRYABLE_STATUS = {429, 500, 502, 503, 504}
 
 
 def month_bounds(venue: str, month: str, *, now: datetime | None = None):

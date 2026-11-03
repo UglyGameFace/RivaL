@@ -104,7 +104,7 @@ class FamilyPromotion:
         # source-specific future records, never as one pooled model family.
         observed_families = sorted({
             str(row["family"]) for row in forecasts
-            if str(row["family"]).startswith("boosted_")
+            if str(row["family"]).startswith(("boosted_", "historical_"))
             and len(str(row["family"])) <= 64
         })
         for family in list(FAMILIES) + observed_families:
@@ -317,6 +317,21 @@ class FamilyPromotion:
         selected = str(row["selected_family"])
         if selected in FAMILIES:
             return selected
+        if selected.startswith("historical_"):
+            # A paper winner cannot serve after its screened source-specific
+            # historical artifact disappears or becomes incompatible.
+            from parlay_bot.research.candidate_registry import ResearchCandidateRegistry
+            try:
+                candidates = ResearchCandidateRegistry(self.store).compatible_candidates(
+                    venue=venue, contract=contract, quote=quote,
+                    horizon=horizon, now=stamp,
+                )
+            except (ValueError, TypeError, KeyError):
+                return None
+            return selected if any(
+                selected == f"historical_{candidate['model_sha256'][:48]}"
+                for candidate in candidates
+            ) else None
         if not selected.startswith("boosted_"):
             return None
         # A missing/revoked/mismatched artifact cannot keep its old paper

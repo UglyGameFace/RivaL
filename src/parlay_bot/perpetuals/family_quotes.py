@@ -152,8 +152,9 @@ class FamilyQuoteShadow:
             ).fetchall()
             for row in issued:
                 if (row["family"] not in FAMILIES
-                        and not (str(row["family"]).startswith("boosted_")
-                                 and len(str(row["family"])) <= 64)):
+                        and not (str(row["family"]).startswith(
+                            ("boosted_", "historical_")
+                        ) and len(str(row["family"])) <= 64)):
                     continue
                 at=datetime.fromisoformat(row["issued_at"])
                 target=datetime.fromisoformat(row["target_opened_at"])+timedelta(minutes=5)

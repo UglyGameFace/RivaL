@@ -13,6 +13,7 @@ import discord
 from parlay_bot.discord_app.presentation import display_book
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
+from parlay_bot.perpetuals.family_governance import FamilyPromotion
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
@@ -90,8 +91,9 @@ def recent_watches(
             for choice in promotions:
                 family = str(choice["selected_family"])
                 checked = _utc(str(choice["evaluated_at"]))
-                if (family in FAMILIES and timedelta(0) <= instant-checked
-                        <= timedelta(hours=48)):
+                if (family in FAMILIES or family.startswith(
+                    ("boosted_", "historical_")
+                )) and timedelta(0) <= instant-checked <= timedelta(hours=48):
                     key = (choice["venue"],choice["contract"],choice["quote"],
                            int(choice["horizon_minutes"]))
                     promoted[key] = family
@@ -111,6 +113,17 @@ def recent_watches(
                      x["issued_at"],x["family"]): x
                     for x in candidates
                 }
+        # Do not serve boosted/historical families simply because a promotion
+        # row exists: re-check the current artifact in the same exact source.
+        # Close the first database checkout before this separate registry read.
+        promoter = FamilyPromotion(market.store)
+        for scope, family in tuple(promoted.items()):
+            venue, contract, quote, horizon = scope
+            if promoter.selected(
+                asset=asset, venue=venue, contract=contract, quote=quote,
+                horizon=horizon, now=instant,
+            ) != family:
+                del promoted[scope]
     except Exception:  # noqa: BLE001 - optional family read fails to incumbent
         promoted = {}
         family_rows = {}

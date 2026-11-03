@@ -243,6 +243,34 @@ def probe() -> dict:
                     "SELECT slug, condition_id, expires_at FROM rival_polymarket_observations "
                     "WHERE horizon=60 AND expires_at<? ORDER BY expires_at DESC LIMIT 1",
                     (datetime.now(UTC).isoformat(),)).fetchone()
+            with store.connect() as conn:
+                many = conn.execute(
+                    "SELECT slug, asset, condition_id, expires_at FROM rival_polymarket_observations "
+                    "WHERE horizon=60 AND expires_at<? ORDER BY expires_at DESC LIMIT 12",
+                    (datetime.now(UTC).isoformat(),)).fetchall()
+            checks = []
+            for row in many:
+                body = _httpx.get("https://data-api.polymarket.com/v2/resolutions",
+                                  params={"condition": row["condition_id"]}, timeout=20).json()
+                item = (body.get("data") or [{}])[0]
+                end = datetime.fromisoformat(str(row["expires_at"]))
+                start = end - timedelta(hours=1)
+                with store.connect() as conn:
+                    c0 = conn.execute(
+                        "SELECT open_price FROM perp_market_candles WHERE venue='okx' "
+                        "AND contract=? AND interval_minutes=5 AND opened_at=?",
+                        (f"{row['asset']}-USDT-SWAP", start.isoformat())).fetchone()
+                    c1 = conn.execute(
+                        "SELECT close_price FROM perp_market_candles WHERE venue='okx' "
+                        "AND contract=? AND interval_minutes=5 AND opened_at=?",
+                        (f"{row['asset']}-USDT-SWAP", (end - timedelta(minutes=5)).isoformat()),
+                    ).fetchone()
+                move = (float(c1["close_price"]) / float(c0["open_price"]) - 1) * 10000                     if c0 and c1 else None
+                checks.append({"slug": row["slug"][-28:], "status": item.get("status"),
+                               "price": item.get("price"), "proposed": item.get("proposed_price"),
+                               "disputed": item.get("was_disputed"),
+                               "okx_move_bps": round(move, 1) if move is not None else None})
+            out["polymarket_hourly_checks"] = checks
             if hourly:
                 resp = _httpx.get("https://data-api.polymarket.com/v2/resolutions",
                                   params={"condition": hourly["condition_id"]}, timeout=20)

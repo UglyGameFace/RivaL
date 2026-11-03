@@ -897,6 +897,7 @@ class RivalDiscordClient(discord.Client):
                 ("Sport results", self._sports_results_task),
                 ("Perpetual data", self._perp_task),
                 ("Model evaluation", self._shadow_task),
+                ("LFM3 feature lab", self._hypothesis_task),
                 ("Polymarket oracle", self._polybolt_task),
                 ("Kalshi learning", self._kalshi_research_task),
                 ("Personal alerts", self._target_task),
@@ -2656,6 +2657,8 @@ class RivalDiscordClient(discord.Client):
             workers = (
                 ("_perp_task", self._perp_loop, "rival-perp-auto-collector"),
                 ("_shadow_task", self._shadow_loop, "rival-shadow-learning"),
+                ("_hypothesis_task", self._hypothesis_loop,
+                 "rival-llm-feature-research"),
                 ("_history_task", self._history_loop, "rival-perp-history-recovery"),
                 ("_candidate_task", self._candidate_import_loop,
                  "rival-verified-offline-candidate-import"),
@@ -2970,6 +2973,11 @@ class RivalDiscordClient(discord.Client):
             self._perp_task = None
         if self.perp_collector is not None:
             await self.perp_collector.aclose()
+        if self._hypothesis_task is not None:
+            self._hypothesis_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._hypothesis_task
+            self._hypothesis_task = None
         if self.gemini_research is not None:
             await self.gemini_research.aclose()
 

@@ -1,15 +1,12 @@
-"""Cross-venue Gemini caching, quota, and six-month history safety tests."""
+"""Cross-venue evidence and preserved historical accounting regression tests."""
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 
-import httpx
 import pytest
 
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence, build_evidence
-from parlay_bot.perpetuals.gemini_research import GeminiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory, six_months_prior
 from parlay_bot.perpetuals.hyperliquid import MarketBatch, MarketCandle
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -81,60 +78,6 @@ async def test_ai_evidence_consumes_all_healthy_venues_and_many_windows(tmp_path
 
 
 @pytest.mark.asyncio
-async def test_database_cached_gemini_survives_restart_and_no_extra_requests(tmp_path):
-    store = SQLiteHotStore(tmp_path / "rival.sqlite")
-    market = PerpetualMarketStore(store)
-    clock = datetime.now(UTC).replace(second=0, microsecond=0)
-    clock = clock.replace(minute=clock.minute // 5 * 5)
-    fixtures(market, now=clock)
-    requests = []
-
-    def reply(request: httpx.Request) -> httpx.Response:
-        requests.append(request)
-        assert request.method == "POST"
-        assert request.headers["x-goog-api-key"] == "not-a-real-key"
-        body = json.loads(request.content)
-        prompt = body["contents"][0]["parts"][0]["text"]
-        assert "hyperliquid" in prompt and "dydx" in prompt and "bitget" in prompt
-        assert "24h" in prompt and "15m" in prompt
-        assert "gate" in prompt  # Missing source is explicitly disclosed.
-        return httpx.Response(200, json={"candidates": [{"content": {"parts": [{
-            "text": json.dumps({
-                "direction": "uncertain", "confidence": "low",
-                "thesis": "Across-exchange momentum is mixed.",
-                "risk": "No calibrated edge and no six-month data.",
-            })
-        }]}}]})
-
-    raw = httpx.AsyncClient(transport=httpx.MockTransport(reply))
-    try:
-        first = GeminiResearch(
-            market, api_key="not-a-real-key", client=raw,
-            daily_max=1, cooldown_seconds=900,
-        )
-        result = await first.ask(
-            asset="BTC", venues=("hyperliquid", "dydx", "bitget", "gate"),
-        )
-        assert not result.from_cache
-        assert result.source_count == 3
-        second = GeminiResearch(
-            market, api_key="not-a-real-key", client=raw,
-            daily_max=1, cooldown_seconds=900,
-        )
-        cached = await second.ask(
-            asset="BTC", venues=("hyperliquid", "dydx", "bitget", "gate"),
-        )
-        assert cached.from_cache and cached.evidence_sha256 == result.evidence_sha256
-        assert len(requests) == 1
-        with store.connect() as conn:
-            assert conn.execute("SELECT COUNT(*) AS n FROM perp_ai_research").fetchone()["n"] == 1
-            assert conn.execute("SELECT used FROM perp_ai_quota").fetchone()["used"] == 1
-    finally:
-        await raw.aclose()
-        store.close()
-
-
-@pytest.mark.asyncio
 async def test_persisted_quota_rejects_requests_after_limit_and_honors_cooldown(tmp_path):
     store = SQLiteHotStore(tmp_path / "rival.sqlite")
     market = PerpetualMarketStore(store)
@@ -157,31 +100,6 @@ async def test_persisted_quota_rejects_requests_after_limit_and_honors_cooldown(
             daily_max=2, cooldown_seconds=900,
         )
     finally:
-        store.close()
-
-
-@pytest.mark.asyncio
-async def test_ai_429_pauses_requests_across_service_instances(tmp_path):
-    store = SQLiteHotStore(tmp_path / "rival.sqlite")
-    market = PerpetualMarketStore(store)
-    now = datetime.now(UTC).replace(second=0, microsecond=0)
-    now = now.replace(minute=now.minute // 5 * 5)
-    fixtures(market, now=now)
-    calls = []
-    def blocked(req):
-        calls.append(req)
-        return httpx.Response(429)
-    raw = httpx.AsyncClient(transport=httpx.MockTransport(blocked))
-    try:
-        service = GeminiResearch(market, api_key="fake", client=raw, cooldown_seconds=60)
-        with pytest.raises(ResearchUnavailable, match="HTTP 429"):
-            await service.ask(asset="BTC", venues=("hyperliquid", "dydx", "bitget"))
-        another = GeminiResearch(market, api_key="fake", client=raw, cooldown_seconds=60)
-        with pytest.raises(ResearchUnavailable, match="temporarily paused"):
-            await another.ask(asset="BTC", venues=("hyperliquid", "dydx", "bitget"))
-        assert len(calls) == 1
-    finally:
-        await raw.aclose()
         store.close()
 
 

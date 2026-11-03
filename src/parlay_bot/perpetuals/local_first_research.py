@@ -4,18 +4,17 @@ No third-party AI transport, free-tier quota, token budget or daily cooldown.
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
 import asyncio
 import json
 import logging
+from datetime import UTC, datetime
 
 import httpx
 
-from parlay_bot.perpetuals.evidence_policy import enforce as enforce_grounding
 from parlay_bot.perpetuals.ai_types import AiResearch, ResearchUnavailable
-from parlay_bot.perpetuals.local_llm_discovery import discover_private_llm
 from parlay_bot.perpetuals.analysis_evidence import build_evidence
+from parlay_bot.perpetuals.evidence_policy import enforce as enforce_grounding
+from parlay_bot.perpetuals.local_llm_discovery import discover_private_llm
 
 _LOG = logging.getLogger(__name__)
 LOCAL_MODEL = "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"

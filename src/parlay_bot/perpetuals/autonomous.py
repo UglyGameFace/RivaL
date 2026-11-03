@@ -1,9 +1,9 @@
 """Autonomous read-only dual-track forecasts, settlement, and model governance.
 
 The mathematical track runs after each five-minute collection cycle and
-relearns solely from already-released labels. Gemini runs at most once per
-asset per four-hour UTC slot, with independent persisted API budgets and no
-order placement. Every score is from a forecast stored before its outcome.
+relearns solely from already-released labels. Historic optional AI forecasts
+remain readable, while private LFM3 hypotheses use their own bounded worker.
+Every score is from a forecast stored before its outcome.
 """
 from __future__ import annotations
 

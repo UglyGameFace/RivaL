@@ -145,6 +145,42 @@ def probe() -> dict:
           except Exception as exc:  # noqa: BLE001
             out["spec_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         with store.connect() as conn:
+          try:
+            out["labels_by_venue"] = [
+                [str(r["asset"]), int(r["h"]), str(r["venue"]), int(r["n"]), int(r["ups"]),
+                 int(r["flats"]), round(float(r["abs_bps"] or 0), 2)]
+                for r in conn.execute("""
+                    SELECT asset, horizon_minutes AS h, venue, COUNT(*) AS n,
+                           SUM(outcome_up) AS ups,
+                           SUM(CASE WHEN realized_close=reference_close THEN 1 ELSE 0 END) AS flats,
+                           AVG(ABS(realized_close/reference_close-1)*10000) AS abs_bps
+                    FROM perp_forward_audit
+                    WHERE model_version=? AND settled_at IS NOT NULL AND issued_at>=?
+                      AND horizon_minutes IN (5,15)
+                    GROUP BY asset, horizon_minutes, venue
+                    ORDER BY asset, horizon_minutes, venue""", (MODEL, week)).fetchall()]
+          except Exception as exc:  # noqa: BLE001
+            out["labels_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        with store.connect() as conn:
+          try:
+            out["recovery"] = [
+                {k: (v if isinstance(v, (int, float, str)) or v is None else str(v))
+                 for k, v in dict(r).items()}
+                for r in conn.execute(
+                    "SELECT venue,asset,started_from,next_opened_at,attempted_at,"
+                    "inserted_bars,empty_windows,status,retry_after "
+                    "FROM perp_history_recovery ORDER BY venue,asset").fetchall()]
+          except Exception as exc:  # noqa: BLE001
+            out["recovery_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        with store.connect() as conn:
+          try:
+            out["polymarket_horizons"] = [
+                [str(r["asset"]), int(r["horizon"]), int(r["n"])] for r in conn.execute(
+                    "SELECT asset, horizon, COUNT(*) AS n FROM rival_polymarket_observations "
+                    "GROUP BY asset, horizon ORDER BY asset, horizon").fetchall()]
+          except Exception as exc:  # noqa: BLE001
+            out["polymarket_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        with store.connect() as conn:
             out["lineage_columns"] = [str(r["column_name"]) for r in conn.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name='perp_forward_audit'").fetchall()]

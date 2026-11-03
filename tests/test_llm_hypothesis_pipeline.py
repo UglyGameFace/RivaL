@@ -10,7 +10,10 @@ from pathlib import Path
 import pytest
 
 from parlay_bot.perpetuals.research_hypotheses import (
-    ASSETS, FeatureHypothesisLab, recent_hypotheses, validate_proposal,
+    ASSETS,
+    FeatureHypothesisLab,
+    recent_hypotheses,
+    validate_proposal,
 )
 from parlay_bot.research import llm_feature_ablation as ablation
 from parlay_bot.storage.hot import SQLiteHotStore

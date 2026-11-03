@@ -36,14 +36,19 @@ def test_gate_advanced_recovery_has_bounded_twelve_run_capacity():
     assert "vars.RIVAL_GATE_ARCHIVE_ENABLED != 'false'" in config
 
 
-def test_binance_is_staggered_and_keeps_source_integrity():
+def test_binance_is_staggered_time_budgeted_and_self_continuing():
     gate = _workflow("gate-official-archive-backfill.yml")
     binance = _workflow("binance-deep-file-backfill.yml")
     gh = _scheduled_hours(gate)
     bh = _scheduled_hours(binance)
-    assert len(bh) == len(set(bh)) == 12
+    # Four schedule slots only restart a dropped chain; each run continues
+    # itself while backlog remains (issue #295).
+    assert len(bh) == len(set(bh)) == 4
     assert not set(gh).intersection(bh)
-    assert "python -m parlay_bot.research.binance_deep_backfill --max-new 32" in binance
+    assert "--max-new 5000 --time-budget-seconds 2700" in binance
+    assert 'gh workflow run "binance-deep-file-backfill.yml"' in binance
+    assert '"$CHAIN" -lt 40' in binance
+    assert "actions: write" in binance
     assert "group: rival-binance-2021-monthly-archive" in binance
     assert "cancel-in-progress: false" in binance
     assert "vars.RIVAL_NATIVE_PUBLIC_BOOTSTRAP_ENABLED != 'false'" in binance

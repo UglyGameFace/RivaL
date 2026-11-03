@@ -77,6 +77,24 @@ competitor models and future/after-cost qualification.
   tradable edge. Real profit still requires authenticated fill evidence,
   not fabricated paper balances.
 
+### Historical logistic challengers in real source-matched forward proof
+
+The existing screened historical logistic candidates now enter the incumbent's
+immutable **future** shadow scoring transaction with their exact model-identity
+prefix and hash of the actual weights used for that forecast. Prospective
+source/venue quotes then enter the same family cost evidence system as boosted
+models. The 150 distinct future targets, 21 UTC days, 80% book-quote coverage,
+day-block calibration and both cost stresses are unchanged. A missing,
+superseded, revoked or source-incompatible original artifact cannot remain
+eligible for use. These are **paper-only** qualifications.
+
+Historical seed counts on the main incumbent continue to read zero until
+that incumbent genuinely uses a verified seed. Historical challenger predictions
+are not retroactively represented as incumbent predictions. No real fills,
+orders, altered historical research scores or automatic incumbent replacement
+are implied. Serving a qualified historical challenger as the primary versioned
+signal requires separate end-to-end proof and routing.
+
 ## 4. Operational acceptance
 
 - PR CI: Ruff, all tests with PostgreSQL, source-native and strict

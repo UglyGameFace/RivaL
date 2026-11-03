@@ -8,7 +8,10 @@ on:
       mode:
         description: "counts = database counts; render = text of every Research page"
         type: choice
-        options: [counts, render]
+        options: [counts, render, logs]
+      pattern:
+        description: "logs mode: regex of log lines to print (only matching lines are shown)"
+        default: "Bitget|dYdX"
         default: counts
 
 permissions:
@@ -23,6 +26,7 @@ jobs:
       - name: Run probe on host
         env:
           MODE: ${{ inputs.mode || 'counts' }}
+          PATTERN: ${{ inputs.pattern }}
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         run: |
@@ -44,6 +48,22 @@ jobs:
               with request.urlopen(req, timeout=500) as response:
                   data = json.load(response)
               return data.get("apps", {}).get("shell", {})
+          if os.environ["MODE"] == "logs":
+              import re
+              req = request.Request(
+                  "https://api.discloud.app/v2/app/"
+                  + parse.quote(os.environ["DISCLOUD_APP_ID"], safe="") + "/logs",
+                  headers={"api-token": os.environ["DISCLOUD_TOKEN"]})
+              with request.urlopen(req, timeout=60) as response:
+                  data = json.load(response)
+              apps = data.get("apps")
+              app = apps[0] if isinstance(apps, list) else apps or {}
+              text = str((app.get("terminal") or {}).get("big") or "")
+              wanted = re.compile(os.environ.get("PATTERN") or "Bitget")
+              secret = re.compile(r"(?i)(token|secret|password|key|postgres)")
+              lines = [l for l in text.splitlines() if wanted.search(l) and not secret.search(l)]
+              print("\n".join(lines[-200:]) or "no matching lines")
+              raise SystemExit(0)
           if os.environ["MODE"] == "render":
               merged = {}
               for asset in ("BTC", "ETH", "SOL", "XRP"):

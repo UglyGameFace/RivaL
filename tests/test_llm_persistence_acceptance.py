@@ -149,3 +149,17 @@ def test_host_console_diagnostic_never_exposes_stdout_or_stderr(monkeypatch, cap
     assert "console_object_present" in observed
     assert "private console words" not in observed
     assert "private error" not in observed
+
+
+def test_restart_deferral_is_retried_then_reported(monkeypatch):
+    reports = iter([
+        (1, {"outcome": "deferred", "reason": "insufficient_live_venues"}),
+        (0, {"outcome": "verified"}),
+    ])
+    monkeypatch.setattr(RELAY, "_attempt", lambda: next(reports))
+    monkeypatch.setattr(RELAY.time, "sleep", lambda _s: None)
+    assert RELAY.main() == 0
+
+    other = iter([(1, {"outcome": "deferred", "reason": "something_else"})])
+    monkeypatch.setattr(RELAY, "_attempt", lambda: next(other))
+    assert RELAY.main() == 1

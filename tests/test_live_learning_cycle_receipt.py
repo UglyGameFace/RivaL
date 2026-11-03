@@ -175,3 +175,15 @@ def test_host_proof_fails_closed_on_missing_and_invalid_evaluations(monkeypatch)
         }],
     })
     assert host._future_proof(object(), stamp)["qualified_paper_scopes"] == 0
+
+
+def test_daily_forward_proof_receipt_runs_without_manual_deployment():
+    """Only authenticated read-only host proof; no dummy commits to monitor."""
+    workflow = (
+        Path(__file__).resolve().parents[1]
+        / ".github/workflows/live-learning-cycle-receipt.yml"
+    ).read_text(encoding="utf-8")
+    assert 'cron: "17 10 * * *"' in workflow
+    assert "github.event_name" in workflow
+    assert "if: steps.gate.outputs.check == 'true'" in workflow
+    assert "python tools/discloud_learning_cycle_receipt.py" in workflow

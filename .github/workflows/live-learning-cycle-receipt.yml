@@ -5,6 +5,10 @@ on:
     workflows: ["RivaL Production Release"]
     types: [completed]
   workflow_dispatch:
+  schedule:
+    # Daily independent observation while 21-day future outcomes accumulate.
+    # No inference, historical replay, order placement or host DB writes.
+    - cron: "17 10 * * *"
 
 permissions:
   contents: read

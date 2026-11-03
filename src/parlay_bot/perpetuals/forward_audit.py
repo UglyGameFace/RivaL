@@ -1063,6 +1063,7 @@ class ForwardAccuracyMonitor:
                 """SELECT horizon_minutes,
                            CASE WHEN issued_at>=? THEN 'recent' ELSE 'prior' END AS cohort,
                            COUNT(*) AS issued, MIN(issued_at) AS first_issued,
+                           SUM(CASE WHEN issued_at>=target_opened_at THEN 1 ELSE 0 END) AS issued_late,
                            SUM(CASE WHEN target_opened_at<=? THEN 1 ELSE 0 END) AS due,
                            SUM(CASE WHEN settled_at IS NULL AND target_opened_at<=? THEN 1 ELSE 0 END) AS overdue,
                            COUNT(DISTINCT CASE WHEN settled_at IS NOT NULL AND outcome_up IN (0,1) AND probability_up BETWEEN 0 AND 1 AND model_brier BETWEEN 0 AND 1 AND baseline_brier BETWEEN 0 AND 1 THEN target_opened_at END) AS windows,
@@ -1085,7 +1086,8 @@ class ForwardAccuracyMonitor:
 
         def empty() -> dict:
             return {
-                "issued": 0, "first_issued": None, "due": 0, "overdue": 0, "windows": 0,
+                "issued": 0, "first_issued": None, "issued_late": 0,
+                "due": 0, "overdue": 0, "windows": 0,
                 "settled": 0, "scored": 0, "decided": 0, "correct": 0,
                 "hit_rate": None, "brier": None, "baseline_brier": None,
                 "venues": 0, "model_beats_baseline": None,
@@ -1107,6 +1109,7 @@ class ForwardAccuracyMonitor:
             baseline = float(row["baseline_sum"]) / n if n else None
             cohorts[cohort][horizon] = {
                 "issued": int(row["issued"]), "first_issued": row["first_issued"],
+                "issued_late": int(row["issued_late"] or 0),
                 "due": int(row["due"] or 0),
                 "overdue": int(row["overdue"] or 0), "windows": int(row["windows"] or 0),
                 "settled": settled,

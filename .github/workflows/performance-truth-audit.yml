@@ -4,6 +4,12 @@ name: RivaL performance truth audit
 # console and prints the JSON. No writes, no inference, no secrets echoed.
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: "counts = database counts; render = text of every Research page"
+        type: choice
+        options: [counts, render]
+        default: counts
 
 permissions:
   contents: read
@@ -11,19 +17,21 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Run probe on host
         env:
+          MODE: ${{ inputs.mode || 'counts' }}
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         run: |
           python3 - <<'PY'
           import base64, gzip, json, os, pathlib
           from urllib import parse, request
-          code = base64.b64encode(gzip.compress(
-              pathlib.Path("tools/performance_truth_probe.py").read_bytes())).decode()
+          script = ("tools/research_render_probe.py" if os.environ["MODE"] == "render"
+                    else "tools/performance_truth_probe.py")
+          code = base64.b64encode(gzip.compress(pathlib.Path(script).read_bytes())).decode()
           cmd = ("python -c \"import base64,gzip,sys;sys.path.insert(0,'src');"
                  f"exec(gzip.decompress(base64.b64decode('{code}')))\"")
           req = request.Request(
@@ -32,13 +40,23 @@ jobs:
               data=json.dumps({"command": cmd}).encode(),
               headers={"api-token": os.environ["DISCLOUD_TOKEN"],
                        "Content-Type": "application/json"}, method="PUT")
-          with request.urlopen(req, timeout=170) as response:
+          with request.urlopen(req, timeout=500) as response:
               data = json.load(response)
           shell = data.get("apps", {}).get("shell", {})
           for line in str(shell.get("stdout", "")).splitlines():
               if line.startswith("RIVAL_PERFORMANCE_PROBE="):
                   print(json.dumps(json.loads(line.split("=", 1)[1]), indent=1))
                   break
+              if line.startswith("RIVAL_RENDER_PROBE="):
+                  report = json.loads(gzip.decompress(base64.b64decode(line.split("=", 1)[1])))
+                  pathlib.Path("render.json").write_text(json.dumps(report, indent=1))
+                  print(json.dumps(report, indent=1))
+                  break
           else:
               print("no probe output; stderr tail:", str(shell.get("stderr", ""))[-800:])
           PY
+      - uses: actions/upload-artifact@v4
+        if: always() && hashFiles('render.json') != ''
+        with:
+          name: research-render
+          path: render.json

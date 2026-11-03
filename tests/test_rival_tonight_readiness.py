@@ -69,7 +69,7 @@ async def test_accuracy_tab_shows_live_per_exchange_blocker_and_no_unverified_be
         summary = await view.render()
         assert "NO VERIFIED BETTING EDGE" in next(
             x.value for x in summary.fields
-            if x.name == "Tonight's research verdict"
+            if x.name == "Research verdict"
         )
         view.section = "five"
         five = await view.render()

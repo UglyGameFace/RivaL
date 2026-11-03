@@ -93,6 +93,58 @@ def probe() -> dict:
                 [str(r["model_version"]), int(r["n"])] for r in conn.execute(
                     "SELECT model_version, COUNT(*) AS n FROM perp_forward_audit "
                     "WHERE issued_at>=? GROUP BY model_version", (week,)).fetchall()]
+            out["issue_delay_seconds"] = {}
+            for h in (5, 15, 60):
+                rows = conn.execute(
+                    "SELECT issued_at, target_opened_at FROM perp_forward_audit "
+                    "WHERE asset='BTC' AND model_version=? AND horizon_minutes=? "
+                    "AND issued_at>=? ORDER BY issued_at DESC LIMIT 2000",
+                    (MODEL, h, day)).fetchall()
+                delays = sorted(
+                    (datetime.fromisoformat(str(r["issued_at"]))
+                     - datetime.fromisoformat(str(r["target_opened_at"]))).total_seconds()
+                    for r in rows)
+                if delays:
+                    out["issue_delay_seconds"][h] = {
+                        "n": len(delays), "min": round(delays[0]),
+                        "median": round(delays[len(delays) // 2]),
+                        "p95": round(delays[int(len(delays) * .95)]), "max": round(delays[-1]),
+                        "after_target_open": sum(d > 0 for d in delays)}
+        with store.connect() as conn:
+          try:
+            out["offline_candidates"] = [
+                {k: (v if isinstance(v, (int, float, str)) or v is None else str(v))
+                 for k, v in dict(r).items()}
+                for r in conn.execute("""
+                    SELECT c.asset, c.horizon_minutes AS h,
+                           COALESCE(c.admission_reason,'none') AS reason,
+                           COUNT(*) AS n, MIN(c.source_months) AS min_months,
+                           MAX(c.source_months) AS max_months,
+                           MIN(c.holdout_brier) AS best_holdout_brier,
+                           MAX(c.holdout_accuracy) AS best_holdout_acc,
+                           MIN(SUBSTR(c.first_imported_at,1,10)) AS first_day,
+                           MAX(SUBSTR(c.first_imported_at,1,10)) AS last_day,
+                           COUNT(DISTINCT c.data_version) AS data_versions
+                    FROM rival_offline_candidates c
+                    GROUP BY c.asset, c.horizon_minutes, COALESCE(c.admission_reason,'none')
+                    ORDER BY c.asset, c.horizon_minutes""").fetchall()]
+          except Exception as exc:  # noqa: BLE001
+            out["offline_candidates_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        with store.connect() as conn:
+          try:
+            spec = conn.execute(
+                "SELECT model_spec_json FROM rival_offline_model_artifacts "
+                "WHERE model_spec_json LIKE '%portable-boosted%' LIMIT 1").fetchone()
+            if spec:
+                parsed = json.loads(spec["model_spec_json"])
+                out["spec_keys"] = sorted(parsed)[:40]
+                for k in ("validation", "holdout", "metrics", "evaluation"):
+                    if isinstance(parsed.get(k), dict):
+                        out[f"spec_{k}"] = {kk: vv for kk, vv in parsed[k].items()
+                                            if isinstance(vv, (int, float, str))}
+          except Exception as exc:  # noqa: BLE001
+            out["spec_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        with store.connect() as conn:
             out["lineage_columns"] = [str(r["column_name"]) for r in conn.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name='perp_forward_audit'").fetchall()]

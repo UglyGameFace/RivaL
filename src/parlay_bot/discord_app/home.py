@@ -1505,6 +1505,14 @@ class GuidedHome(discord.ui.View):
                                   f"(~{days} day{'s' if days != 1 else ''})")
                 except (TypeError, ValueError):
                     pass
+                late = int(part.get("issued_late") or 0)
+                timing = (
+                    f"\n⚠️ **{late:,} of {issued:,} were made after their "
+                    f"{self.horizon}-minute window had already started** (about 1–2 "
+                    "minutes in, using only data from before it). A fair test of the "
+                    "model, but not a call you could act on at the window's opening price."
+                    if late else ""
+                )
                 problems = score_consistency_problems(part)
                 if problems:
                     _LOG.error("Performance consistency check failed for %s %s min: %s",
@@ -1512,14 +1520,14 @@ class GuidedHome(discord.ui.View):
                 exchange_text = (
                     f"**Correct direction:** {accuracy}\n{scoring}\n"
                     f"**Results checked:** {settled:,} of {issued:,} recorded "
-                    f"predictions{paired}{pending}\n"
+                    f"predictions{paired}{pending}{timing}\n"
                     f"Scope: {period}, {scope}; selected timeframe and incumbent "
                     "model only"
                     + ("\n⚠️ **Consistency check failed:** "
                        + "; ".join(problems)[:300]
                        + ". Treat these numbers as unreliable." if problems else "")
                 )
-            embed.add_field(name=f"📈 How accurate are {self.coin} exchange predictions?", value=exchange_text, inline=False)
+            embed.add_field(name=f"📈 How accurate are {self.coin} exchange predictions?", value=exchange_text[:1024], inline=False)
 
             # 2. Contract-native comparisons; historical labels are NOT model wins.
             poly = reports.get("polymarket")

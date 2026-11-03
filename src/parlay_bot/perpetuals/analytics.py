@@ -125,6 +125,17 @@ def analytics_snapshot(
                ORDER BY evaluated_at DESC LIMIT 30""",
             (asset,),
         ).fetchall()
+        # Forecasts issued after their target candle opened are excluded
+        # above (not made before the window started). Count them so the
+        # page can say why a horizon shows no results instead of a bare 0.
+        late = {int(r["horizon_minutes"]): int(r["n"]) for r in conn.execute(
+            """SELECT horizon_minutes, COUNT(*) AS n FROM perp_forward_audit
+               WHERE asset=? AND model_version=? AND settled_at IS NOT NULL
+                 AND issued_at>=target_opened_at AND target_opened_at>=?
+                 AND target_opened_at<=?
+               GROUP BY horizon_minutes""",
+            (asset, FORWARD_MODEL, start_recent.isoformat(), clock.isoformat()),
+        ).fetchall()}
         pending = conn.execute(
             """SELECT COUNT(*) AS n FROM perp_forward_audit
                WHERE asset=? AND model_version=? AND settled_at IS NULL""",
@@ -243,6 +254,7 @@ def analytics_snapshot(
         "math": by_horizon,
         "model_governance": governance,
         "math_pending": int(pending["n"]),
+        "issued_after_window_opened_7d": late,
         "gemini": {
             "issued": len(recent_ai),
             "settled": len(settled),

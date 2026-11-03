@@ -130,6 +130,19 @@ class _SectionSelect(discord.ui.Select["ResearchDashboard"]):
         await dashboard.redraw(interaction)
 
 
+def _when(value) -> str:
+    """A stored ISO timestamp as a Discord relative time, never raw ISO text."""
+    if not value:
+        return "not yet"
+    try:
+        stamp = datetime.fromisoformat(str(value))
+    except ValueError:
+        return str(value)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=UTC)
+    return discord.utils.format_dt(stamp, style="R")
+
+
 def _short(value: str, limit: int = 225) -> str:
     """Trim verbose boilerplate ONLY in summaries; details retain full text."""
     compact = " ".join(value.replace("\\n", "\n").split())
@@ -181,7 +194,7 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
             add_one(("Current market pulse",), short=True)
             add_one(("Six-month history target", "History"), short=True)
         elif screen == "accuracy":
-            add_one(("Tonight's research verdict", "Accuracy tracking"), short=True)
+            add_one(("Research verdict", "Accuracy tracking"), short=True)
             add_one(("Forward 5-minute evaluation",), short=True)
         else:
             add_one(("AI research · UNCALIBRATED", "Analysis status"), short=True)
@@ -208,24 +221,36 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
 
 
 def _plain_training_line(proof: dict, horizon: int) -> str:
-    """Training activity is not a measured prediction win."""
-    label = f"**{horizon}-minute predictions:**"
+    """One plain line per timeframe; training activity is not a prediction win."""
+    label = f"**{horizon}-min:**"
     if not proof["forecasts"]:
-        return f"{label} No recorded predictions to check yet."
+        return f"{label} No recorded predictions to check yet (last 7 days)."
     if not proof["latest_lineage_verified"]:
-        return (f"{label} Cannot confirm the latest prediction's training. "
-                f"Proof missing on {proof['lineage_unknown']}/{proof['forecasts']} records.")
-    status = (
-        "Verified historical training used in the latest prediction."
-        if proof["latest_historical_seed_sha256"] else
-        "No verified historical training used in the latest prediction."
-    )
+        return (f"{label} Cannot confirm how the latest prediction was trained "
+                f"(no training record on {proof['lineage_unknown']} of "
+                f"{proof['forecasts']} recent predictions).")
+    seeded, proven = int(proof["historically_seeded"]), int(proof["lineage_proven"])
+    source = ("started from a verified historical model, then live data"
+              if proof["latest_historical_seed_sha256"] else "live data only")
     return (
-        f"{label} {status} "
-        f"{int(proof['latest_online_training_updates']):,} new-data learning updates; "
-        f"{int(proof['historically_seeded'])}/{int(proof['lineage_proven'])} "
-        "recorded forecasts have verified historical-seed lineage (not scored outcomes)."
+        f"{label} {source} · "
+        f"{int(proof['latest_online_training_updates']):,} live updates so far · "
+        f"history used in {seeded} of the last {proven} predictions."
     )
+
+
+def _history_headline(proofs: list[dict]) -> str:
+    seen = [p for p in proofs if p.get("lineage_proven")]
+    if not seen:
+        return "**Is it learning from history?** Cannot tell yet."
+    seeded = sum(int(p["historically_seeded"]) for p in seen)
+    if not seeded:
+        return ("**Is it learning from history? No.** The live model learns only from "
+                "new candles collected since it went live. Stored history is used "
+                "only by the separate models below, and none has passed its test yet.")
+    total = sum(int(p["lineage_proven"]) for p in seen)
+    return (f"**Is it learning from history? Partly:** {seeded} of the last {total} "
+            "predictions started from a verified historical model.")
 
 
 def _plain_boosted_proof(proof: dict, *, incumbent: dict | None = None) -> str:
@@ -271,7 +296,8 @@ def _plain_boosted_proof(proof: dict, *, incumbent: dict | None = None) -> str:
             except (KeyError, TypeError, ValueError, OverflowError):
                 pass
     return (
-        f"**Advanced models imported:** {int(proof['portable_imported']):,}. "
+        f"**Advanced models built from history so far:** {int(proof['portable_imported']):,} "
+        "(every training run and timeframe counted). "
         f"**Passed screening:** {int(proof['portable_screened']):,}.\n"
         f"**What's holding them back:** {failures}.\n"
         f"**Advanced-model forecasts (30d):** {int(proof['issued']):,} logged; "
@@ -934,9 +960,11 @@ class ResearchDashboard(discord.ui.View):
                         embed.add_field(
                             name="Mathematical model",
                             value=(
-                                "Online weights are evaluated in the background on "
-                                "settled historical observations. **No model is "
-                                "approved for live trading or automated signals.**"
+                                "The live model learns online from new 5-minute candles "
+                                "as each prediction is graded; stored history is used "
+                                "only by separate challenger models, none of which has "
+                                "passed screening. **No model is approved for live "
+                                "trading or automated signals.**"
                             ) if self.shadow_enabled else (
                                 "Point-in-time features and offline shadow evaluation "
                                 "exist; scheduled evaluation is disabled."
@@ -1006,13 +1034,13 @@ class ResearchDashboard(discord.ui.View):
                         name="Spike watch analytics",
                         value=(
                             f"Status: **{spike['status'].replace('_', ' ')}** · "
-                            f"Fresh venues: **{spike.get('fresh_venues', 0)}**.\\n"
-                            f"Last scan: **{spike.get('checked_at') or 'not yet'}**.\\n"
+                            f"Fresh venues: **{spike.get('fresh_venues', 0)}**.\n"
+                            f"Last scan: **{_when(spike.get('checked_at'))}**.\n"
                             f"Past 24h unusual events: **"
                             f"{events if events is not None else 'unknown'}** · "
                             f"confirmed continuations: **{spike.get('scored_continuations_24h') or 0}** "
                             f"· reversals: **{spike.get('scored_reversals_24h') or 0}** "
-                            f"· source-unverified: **{spike.get('unverified_24h') or 0}**.\\n"
+                            f"· source-unverified: **{spike.get('unverified_24h') or 0}**.\n"
                             "Future outcomes update automatically, never backfilled "
                             "as live scores; no validated trade signal."
                         )[:1024], inline=False,
@@ -1026,7 +1054,7 @@ class ResearchDashboard(discord.ui.View):
                     ]
                     embed.add_field(
                         name="Recent spike events",
-                        value="\\n".join(lines) if lines else
+                        value="\n".join(lines) if lines else
                               "No source-verified events recorded in 24h.",
                         inline=False,
                     )
@@ -1041,8 +1069,8 @@ class ResearchDashboard(discord.ui.View):
                 embed.add_field(
                     name="Mathematical model",
                     value=(
-                        "Online weights are evaluated in the background on "
-                        "settled observations. No model is approved for "
+                        "The live model learns online from new 5-minute candles "
+                        "as each prediction is graded. No model is approved for "
                         "production trading signals."
                     ) if self.shadow_enabled else (
                         "Automatic shadow evaluation is disabled; "
@@ -1082,10 +1110,14 @@ class ResearchDashboard(discord.ui.View):
                         embed.add_field(
                             name="Automatic shadow evaluation",
                             value=(
-                                f"**{len(ready)}** qualifying venue/horizon streams "
-                                f"· **{total:,}** settled evaluations (may overlap).\n"
-                                f"Mean Brier: **{model_score:.4f}** vs "
-                                f"baseline **{baseline_score:.4f}**.\n"
+                                "Background replay test on stored candles, separate "
+                                "from live predictions: "
+                                f"**{len(ready)}** exchange/timeframe streams · "
+                                f"**{total:,}** replayed results (windows overlap).\n"
+                                f"Probability error (Brier): **{model_score:.4f}** vs "
+                                f"basic forecast **{baseline_score:.4f}** — "
+                                + ("better" if model_score < baseline_score else "worse")
+                                + " than the basic forecast (lower is better).\n"
                                 "Research only: not a calibrated or deployed signal."
                             ),
                             inline=False,
@@ -1161,11 +1193,13 @@ class ResearchDashboard(discord.ui.View):
                     monitor = ForwardAccuracyMonitor(self.market)
                     rows = []
                     plain_rows = []
+                    proofs = []
                     for horizon in (5, 15, 60):
                         proof = await asyncio.to_thread(
                             monitor.learning_lineage_summary,
                             asset=self.asset, horizon_minutes=horizon,
                         )
+                        proofs.append(proof)
                         plain_rows.append(_plain_training_line(proof, horizon))
                         if not proof["forecasts"]:
                             rows.append(f"**{horizon}m:** No issued forecasts to audit.")
@@ -1194,7 +1228,8 @@ class ResearchDashboard(discord.ui.View):
                         name=("How is RivaL learning?" if self.section == "lineage"
                               else "Model training actually used"),
                         value=(
-                            ("\n".join(plain_rows) + "\nLearning updates are not prediction wins.")
+                            (_history_headline(proofs) + "\n" + "\n".join(plain_rows)
+                             + "\nLive updates are training steps, not prediction wins.")
                             if self.section == "lineage" else
                             ("\n".join(rows) + "\nTraining evidence is NOT a measured win rate. "
                              "An unapproved six-month archive does not count as live model training.")
@@ -1666,15 +1701,28 @@ class ResearchDashboard(discord.ui.View):
                     # of market collection is not a validated betting edge.
                     recent_5 = report["last_7d"][5]
                     recent_15 = report["last_7d"][15]
+                    window = "the last 7 days"
+                    try:
+                        first = min(
+                            datetime.fromisoformat(str(x)) for x in (
+                                recent_5.get("first_issued"), recent_15.get("first_issued"),
+                            ) if x
+                        )
+                        age = datetime.now(UTC) - first
+                        if first.tzinfo is not None and age < timedelta(days=6, hours=12):
+                            window = (f"the {max(1, round(age.total_seconds() / 86400))} days "
+                                      f"since this model went live ({first:%b %d})")
+                    except (TypeError, ValueError):
+                        pass
                     embed.add_field(
-                        name="Tonight's research verdict",
+                        name="Research verdict",
                         value=(
                             "**NO VERIFIED BETTING EDGE.** RivaL may observe "
                             "live prices and issue shadow predictions, but "
-                            f"only **{recent_5['settled']}** five-minute and "
-                            f"**{recent_15['settled']}** fifteen-minute "
-                            "prospective forecasts have settled in this "
-                            "seven-day window. Real fill costs, funding, "
+                            f"only **{recent_5['settled']:,}** five-minute and "
+                            f"**{recent_15['settled']:,}** fifteen-minute "
+                            "prospective forecasts have been graded in "
+                            f"{window}. Real fill costs, funding, "
                             "slippage and liquidation risk are not fully "
                             "validated. No auto-betting orders are placed. "
                             "Do not interpret a green feed or historical "
@@ -1723,12 +1771,21 @@ class ResearchDashboard(discord.ui.View):
                                 gate["status"].replace("_", " ")
                                 if gate is not None else "no review yet"
                             )
+                            late = int((details.get("issued_after_window_opened_7d") or {})
+                                       .get(horizon, 0))
+                            late_note = (
+                                f"⚠️ {late:,} graded {horizon}-minute predictions are not "
+                                "counted here: each was issued after its window had "
+                                "already started (using only data from before it).\n"
+                                if late and not recent["events"] else ""
+                            )
                             embed.add_field(
                                 name=f"Math {horizon}m · independent UTC windows",
                                 value=(
+                                    late_note +
                                     f"**{recent['events']}** forward events, "
-                                    f"**{details['math_pending']}** unresolved "
-                                    "per-exchange forecasts.\n"
+                                    f"**{details['math_pending']}** awaiting results "
+                                    "(all exchanges and timeframes).\n"
                                     f"Brier: {brier} · calibration gap: {calibration}\n"
                                     f"Baseline-adjusted 7d skill trend: **{item['trend']}** "
                                     "(100+ unique events per period; "
@@ -1761,9 +1818,15 @@ class ResearchDashboard(discord.ui.View):
                                 f"observed={part['observed_up_rate']:.2f}"
                                 for part in reliability["bins"][:5]
                             ]
+                            late = int((details.get("issued_after_window_opened_7d") or {})
+                                       .get(horizon, 0))
                             embed.add_field(
                                 name=f"Forward {horizon}m calibration",
                                 value=(
+                                    (f"⚠️ Counts only predictions made before their "
+                                     f"window opened; all {late:,} graded {horizon}-minute "
+                                     "predictions were issued after it opened.\n"
+                                     if late and not reliability["unique_targets"] else "") +
                                     f"**{reliability['unique_targets']}** independent "
                                     f"UTC target outcomes over **{reliability['days']}** "
                                     f"days; conflicting venue labels: "

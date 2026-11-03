@@ -61,6 +61,9 @@ class Settings(BaseSettings):
 
     # Low-cost local research; never auto-promotes models or places orders.
     rival_shadow_learning_enabled: bool = Field(default=True)
+    # One private, research-only feature suggestion every six hours at most.
+    # Requires the already-configured RIVAL_AI_PROVIDER=local and shared token.
+    rival_llm_hypotheses_enabled: bool = Field(default=True)
     rival_shadow_eval_seconds: int = Field(default=3600, ge=900, le=21600)
 
     # Independent, user-triggered AI research (never called by candle worker).

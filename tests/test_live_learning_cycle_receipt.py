@@ -97,3 +97,81 @@ def test_on_host_read_uses_production_reader_no_writes(monkeypatch):
     assert report["forecast"]["issued"] == 10
     assert report["learning"]["settled"] == 5
     assert store.closed
+
+
+def test_host_forward_proof_reports_one_real_exact_source_without_mixing(monkeypatch):
+    now = datetime(2026, 11, 3, 3, tzinfo=UTC)
+    from parlay_bot.perpetuals.family_quotes import SUPPORTED_QUOTE_SOURCES
+
+    assert SUPPORTED_QUOTE_SOURCES == {
+        ("hyperliquid", "USDC"), ("binance", "USDT"),
+    }
+    def candidate(*, targets, days, coverage, complete):
+        return {
+            "valid": True, "targets": targets, "days": days,
+            "eligible_quotes": 160,
+            "closed_quotes": int(160 * coverage),
+            "quote_coverage": coverage,
+            "checks": {
+                "future_outcomes": days >= 21 and targets >= 150,
+                "beats_baselines": complete,
+                "quote_coverage": coverage >= .8,
+                "after_cost_paper": complete,
+                "valid_records": True,
+            },
+        }
+
+    def fake(_store, *, asset, venue, now):
+        assert now == datetime(2026, 11, 3, 3, tzinfo=UTC)
+        if venue == "hyperliquid" and asset == "BTC":
+            return {"status": "recorded", "evaluations": [
+                {"quote": "USDC", "horizon": 5, "fresh": True,
+                 "candidate": candidate(targets=150, days=21, coverage=.75,
+                                        complete=False), "paper_qualified": False},
+            ]}
+        if venue == "binance" and asset == "XRP":
+            return {"status": "recorded", "evaluations": [
+                {"quote": "USDT", "horizon": 15, "fresh": True,
+                 "candidate": candidate(targets=165, days=22, coverage=.9,
+                                        complete=True), "paper_qualified": True},
+            ]}
+        return {"status": "no_evaluations", "evaluations": []}
+
+    monkeypatch.setattr(host, "proof_progress", fake)
+    report = host._future_proof(object(), now)
+    assert report["status"] == "recorded"
+    assert report["evaluated_scopes"] == 2
+    assert report["qualified_paper_scopes"] == 1
+    assert report["best_exact_source"] == {
+        "asset": "XRP", "venue": "binance", "quote": "USDT",
+        "horizon_minutes": 15, "fresh": True, "targets": 165,
+        "days": 22, "eligible_quotes": 160, "closed_quotes": 144,
+        "quote_coverage": .9, "qualified_paper": True,
+        "checks": {
+            "future_outcomes": True, "beats_baselines": True,
+            "quote_coverage": True, "after_cost_paper": True,
+            "valid_records": True,
+        },
+    }
+    assert report["does_not_prove_real_fills"]
+
+
+def test_host_proof_fails_closed_on_missing_and_invalid_evaluations(monkeypatch):
+    stamp = datetime(2026, 11, 3, 3, tzinfo=UTC)
+    monkeypatch.setattr(host, "proof_progress", lambda *_args, **_kwargs: {
+        "status": "no_evaluations", "evaluations": [],
+    })
+    empty = host._future_proof(object(), stamp)
+    assert empty["status"] == "no_evaluations"
+    assert empty["qualified_paper_scopes"] == 0
+    monkeypatch.setattr(host, "proof_progress", lambda *_args, **_kwargs: {
+        "status": "unavailable", "evaluations": [],
+    })
+    assert host._future_proof(object(), stamp)["status"] == "unavailable"
+    monkeypatch.setattr(host, "proof_progress", lambda *_args, **_kwargs: {
+        "status": "recorded", "evaluations": [{
+            "quote": "USDC", "horizon": 5, "fresh": False,
+            "candidate": {"valid": False}, "paper_qualified": False,
+        }],
+    })
+    assert host._future_proof(object(), stamp)["qualified_paper_scopes"] == 0

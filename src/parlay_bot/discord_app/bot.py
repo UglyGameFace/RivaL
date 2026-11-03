@@ -2446,12 +2446,17 @@ class RivalDiscordClient(discord.Client):
         last_integrity_hour: int | None = None
         last_benefit_warm = -1e9
         while not self.is_closed():
+            # Stage timings: a cycle longer than 5 minutes skips the next
+            # boundary and late forecasts expire, so record where time goes.
+            stages: dict[str, float] = {}
+            cycle_started = mark = time.monotonic()
             try:
                 await self.perp_collector.collect_once()
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - collector never crashes Discord
                 _LOG.exception("RivaL perp automatic collection cycle failed")
+            stages["collect"], mark = time.monotonic() - mark, time.monotonic()
             # Bounded spike analytics and future-only self-evaluation: reuse
             # the existing source collector cycle and saved original bars.
             if self.spike_watch is not None and not host_memory.snapshot().pressure:
@@ -2477,6 +2482,7 @@ class RivalDiscordClient(discord.Client):
                         raise
                     except Exception:  # noqa: BLE001 - optional research isolation
                         _LOG.exception("RivaL spike watcher retrying next cycle asset=%s", asset)
+            stages["spikes"], mark = time.monotonic() - mark, time.monotonic()
             # Spike evidence MUST be persisted before the same candle's
             # model challenge issues, otherwise it cannot be a causal input.
             # The normal source collector remains the only network reader.
@@ -2495,6 +2501,7 @@ class RivalDiscordClient(discord.Client):
                     raise
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL autonomous research cycle failed safely")
+            stages["forecast"], mark = time.monotonic() - mark, time.monotonic()
             # Keep Bot Performance's slow "Is accuracy improving?" answer
             # ready so the page never times out waiting for it.
             if (self.autonomous is not None
@@ -2563,6 +2570,13 @@ class RivalDiscordClient(discord.Client):
                     raise
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL quote forward accounting unavailable")
+            stages["rest"] = time.monotonic() - mark
+            total = time.monotonic() - cycle_started
+            (_LOG.warning if total > self.settings.rival_perp_collection_seconds
+             else _LOG.info)(
+                "RivaL 5-minute cycle took %.0fs (%s)", total,
+                " ".join(f"{k}={v:.0f}s" for k, v in stages.items()),
+            )
             await asyncio.sleep(
                 next_collection_delay(
                     datetime.now(UTC),

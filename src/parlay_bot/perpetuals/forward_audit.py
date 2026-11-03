@@ -1180,7 +1180,11 @@ class ForwardAccuracyMonitor:
                 "brier": brier, "baseline_brier": baseline,
                 "venues": int(row["venues"] or 0),
                 "model_beats_baseline": (
-                    brier < baseline if n >= 50 and n == settled and brier is not None
+                    # Rows settled without a gradable outcome (no trade in the
+                    # result candle) are excluded from n; they no longer
+                    # withhold the display comparison. Signal gating still
+                    # uses venue_summary's stricter rule.
+                    brier < baseline if n >= 50 and brier is not None
                     and baseline is not None else None
                 ),
             }

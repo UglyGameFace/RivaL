@@ -348,6 +348,10 @@ def _performance_benefit(market: object, asset: str, horizon: int) -> dict:
 # answer; a page request that still misses waits for any run already in
 # flight instead of starting a duplicate query.
 BENEFIT_CACHE_SECONDS = 45 * 60
+# The Performance page renders in the background with an 8 s overall budget
+# (_finish_performance), so each independent reader may use most of it.
+# Production score queries take 2-7 s under load; 4 s made them fail often.
+PERFORMANCE_READ_SECONDS = 7.0
 _BENEFIT_CACHE: dict[tuple, tuple[float, object, dict]] = {}
 _BENEFIT_INFLIGHT: dict[tuple, threading.Event] = {}
 _BENEFIT_LOCK = threading.Lock()
@@ -1441,33 +1445,33 @@ class GuidedHome(discord.ui.View):
             if self.market is not None:
                 readers["exchange"] = asyncio.wait_for(
                     asyncio.to_thread(_performance_exchange, self.market, self.coin),
-                    timeout=4.0,
+                    timeout=PERFORMANCE_READ_SECONDS,
                 )
                 readers["benefit"] = asyncio.wait_for(
                     asyncio.to_thread(
                         _cached_benefit, self.market, self.coin, self.horizon,
-                    ), timeout=4.0,
+                    ), timeout=PERFORMANCE_READ_SECONDS,
                 )
                 readers["coverage"] = asyncio.wait_for(
-                    asyncio.to_thread(_cycle_coverage, self.market), timeout=4.0,
+                    asyncio.to_thread(_cycle_coverage, self.market), timeout=PERFORMANCE_READ_SECONDS,
                 )
                 readers["lineage"] = asyncio.wait_for(
                     asyncio.to_thread(
                         _performance_lineage, self.market, self.coin, self.horizon,
-                    ), timeout=4.0,
+                    ), timeout=PERFORMANCE_READ_SECONDS,
                 )
                 readers["cycles"] = asyncio.wait_for(
-                    asyncio.to_thread(_performance_cycles, self.market), timeout=4.0,
+                    asyncio.to_thread(_performance_cycles, self.market), timeout=PERFORMANCE_READ_SECONDS,
                 )
                 if callable(getattr(self.market, "feed_health", None)):
                     readers["feeds"] = asyncio.wait_for(
-                        asyncio.to_thread(self.market.feed_health), timeout=4.0,
+                        asyncio.to_thread(self.market.feed_health), timeout=PERFORMANCE_READ_SECONDS,
                     )
             if self.polymarket_status is not None:
                 readers["polymarket"] = asyncio.wait_for(
                     asyncio.to_thread(
                         self.polymarket_status, self.coin, self.horizon,
-                    ), timeout=4.0,
+                    ), timeout=PERFORMANCE_READ_SECONDS,
                 )
             reports = dict(zip(
                 readers, await asyncio.gather(*readers.values(), return_exceptions=True),

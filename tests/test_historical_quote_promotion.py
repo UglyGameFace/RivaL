@@ -138,7 +138,8 @@ def test_qualified_historical_watch_auto_serves_only_with_current_proof(
     market.initialize()
     now = datetime(2026, 11, 1, 12, tzinfo=UTC)
     opened = now - timedelta(minutes=5)
-    observed = now - timedelta(seconds=1)
+    observed = now + timedelta(milliseconds=200)
+    issued = now + timedelta(seconds=1)
     candle = MarketCandle(
         "hyperliquid", "BTC", "USDC", 5, opened,
         now - timedelta(milliseconds=1), observed,
@@ -161,7 +162,7 @@ def test_qualified_historical_watch_auto_serves_only_with_current_proof(
              probability_up,baseline_up,training_evaluated)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             ("hyperliquid", "BTC", "USDC", "BTC", 5, MODEL,
-             opened.isoformat(), 100.5, now.isoformat(), now.isoformat(),
+             opened.isoformat(), 100.5, issued.isoformat(), now.isoformat(),
              .52, .5, 100),
         )
         conn.execute(
@@ -172,7 +173,7 @@ def test_qualified_historical_watch_auto_serves_only_with_current_proof(
              training_count,training_sha256)
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             ("hyperliquid", "BTC", "USDC", "BTC", 5, family,
-             opened.isoformat(), now.isoformat(), now.isoformat(),
+             opened.isoformat(), issued.isoformat(), now.isoformat(),
              .91, .52, .5, 510, "b" * 64),
         )
         conn.execute(

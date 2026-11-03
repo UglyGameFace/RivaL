@@ -239,7 +239,9 @@ def test_live_probe_rejects_anonymous_status_and_unsupported_inference(
     monkeypatch.setattr(urllib.request, "urlopen", public_status)
     with pytest.raises(RuntimeError, match="anonymous"):
         exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})  # noqa: S102
-    assert not capsys.readouterr().out
+    stages = capsys.readouterr().out.splitlines()
+    assert stages[-1] == VERIFY["STAGE_MARKER"] + "auth_not_rejected"
+    assert all(line.startswith(VERIFY["STAGE_MARKER"]) for line in stages)
 
     def unsafe_model(req, timeout):
         if req.full_url.endswith("/v1/status"):
@@ -251,13 +253,15 @@ def test_live_probe_rejects_anonymous_status_and_unsupported_inference(
     monkeypatch.setattr(urllib.request, "urlopen", unsafe_model)
     with pytest.raises(RuntimeError, match="safely grounded"):
         exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})  # noqa: S102
-    assert not capsys.readouterr().out
+    stages = capsys.readouterr().out.splitlines()
+    assert stages[-1] == VERIFY["STAGE_MARKER"] + "research_rejected"
+    assert all(line.startswith(VERIFY["STAGE_MARKER"]) for line in stages)
 
 
 def test_standalone_live_console_timeout_covers_two_sequential_cpu_requests(
     monkeypatch,
 ):
-    """Host script can spend 2 x 38s on model inference before returning."""
+    """Host script can spend 2 x 55s on model inference before returning."""
     receipt = {
         "source_sha": SHA,
         "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
@@ -282,9 +286,49 @@ def test_standalone_live_console_timeout_covers_two_sequential_cpu_requests(
 
     def fake_urlopen(request, timeout):
         checked.append(timeout)
-        assert timeout > 2 * 38, "outer timeout truncates two CPU inferences"
+        assert timeout > 2 * 55, "outer timeout truncates two CPU inferences"
         return Response()
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-    assert VERIFY["check_host"]("secret", "standalone", SHA) == receipt
+    got, stage = VERIFY["check_host"]("secret", "standalone", SHA)
+    assert got == receipt and stage == "verified"
     assert len(checked) == 1
+
+
+def test_live_probe_exposes_only_allowlisted_failure_stages(monkeypatch):
+    """A failed Discloud console must never log token, raw stdout or model text."""
+    marker = VERIFY["STAGE_MARKER"]
+    secret = "SECRET-MUST-NOT-LEAK"
+    class Response:
+        def __init__(self, body):
+            self.body = body
+        def __enter__(self):
+            return self
+        def __exit__(self, *_unused):
+            return False
+        def read(self):
+            return json.dumps(self.body).encode("utf-8")
+    def fake_urlopen(_req, timeout):
+        assert timeout >= 130
+        return Response({"apps": {"shell": {
+            "stdout": marker + "status_ready\n" + secret
+                      + "\n" + marker + "hypothesis_requested",
+            "stderr": secret,
+        }}})
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    receipt, reason = VERIFY["check_host"]("private-token", "app", SHA)
+    assert receipt is None and reason == "hypothesis_requested_stderr"
+    assert secret not in reason
+    assert VERIFY["stage_reason"](
+        marker + secret + "\n" + marker + "research_http_error",
+        stderr_present=False,
+    ) == "research_http_error"
+    assert VERIFY["stage_reason"](secret) == "host_stage_absent"
+
+
+def test_host_probe_uses_timeout_longer_than_gateway_cpu_deadline():
+    code = VERIFY["HOST_CHECK"]
+    assert code.count("timeout=55") == 2
+    assert "RIVAL_INTELLIGENCE_RELEASE_STAGE=research_requested" in code
+    assert "RIVAL_INTELLIGENCE_RELEASE_STAGE=hypothesis_requested" in code
+    assert "timeout=38" not in code

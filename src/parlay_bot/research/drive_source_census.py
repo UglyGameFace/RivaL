@@ -61,7 +61,7 @@ BINANCE_METRICS_DAILY = re.compile(
 )
 
 PAGE_PATTERNS = (
-    (r"(hyperliquid|kucoin)-(BTC|ETH|SOL|XRP)-funding-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", None, "official_funding"),
+    (r"(hyperliquid|kucoin|phemex|deribit)-(BTC|ETH|SOL|XRP)-funding-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", None, "official_funding"),
     (r"dydx-v4-(BTC|ETH|SOL|XRP)-USD-funding-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", "dydx", "funding_with_oracle_price"),
     (r"lighter-(BTC|ETH|SOL|XRP)-(funding|mark_price)-(20\d{2}-(?:0[1-9]|1[0-2]))-(\d{2})-([a-f0-9]{16})\.manifest\.json", "lighter", None),
 )

@@ -14,6 +14,10 @@ from parlay_bot.archive.models import ArchiveArtifact, DriveObject
 _LOG = logging.getLogger(__name__)
 
 
+TRANSIENT_UPLOAD_STATUSES = frozenset({500, 502, 503, 504})
+MAX_TRANSIENT_UPLOAD_RETRIES = 5
+
+
 class DriveArchiveError(RuntimeError):
     """RivaL cold-archive Drive operation failed safely."""
 
@@ -425,6 +429,7 @@ class GoogleDriveArchiveClient:
             raise DriveArchiveError("Drive resumable upload returned no session URL")
 
         offset = 0
+        transient_retries = 0
         final_payload: dict[str, Any] | None = None
         with artifact.path.open("rb") as handle:
             while offset < artifact.size_bytes:
@@ -459,6 +464,40 @@ class GoogleDriveArchiveClient:
                     else:
                         offset = end + 1
                     continue
+
+                if upload.status_code in TRANSIENT_UPLOAD_STATUSES:
+                    # Google's documented recovery: wait, ask the session how
+                    # many bytes it holds, and resume from there.
+                    transient_retries += 1
+                    if transient_retries > MAX_TRANSIENT_UPLOAD_RETRIES:
+                        raise DriveArchiveError(
+                            f"Drive resumable upload failed with {upload.status_code} "
+                            f"after {MAX_TRANSIENT_UPLOAD_RETRIES} retries"
+                        )
+                    await asyncio.sleep(2 ** transient_retries)
+                    status = await self._client.put(
+                        session_url, content=b"",
+                        headers={"Content-Length": "0",
+                                 "Content-Range": f"bytes */{artifact.size_bytes}"},
+                    )
+                    if status.status_code == 308:
+                        received = status.headers.get("Range")
+                        try:
+                            offset = (int(received.rsplit("-", 1)[1]) + 1
+                                      if received and "-" in received else 0)
+                        except ValueError as exc:
+                            raise DriveArchiveError(
+                                "Drive resumable upload returned invalid Range header"
+                            ) from exc
+                        continue
+                    if status.status_code in {200, 201}:
+                        upload = status
+                    elif status.status_code in TRANSIENT_UPLOAD_STATUSES:
+                        continue
+                    else:
+                        raise DriveArchiveError(
+                            f"Drive resumable upload status failed with {status.status_code}"
+                        )
 
                 if upload.status_code not in {200, 201}:
                     raise DriveArchiveError(

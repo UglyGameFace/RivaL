@@ -186,7 +186,7 @@ async def test_kucoin_history_progress_visible_in_research_menu(tmp_path):
         view._rebuild()
         fields = {field.name: field.value for field in (await view.render()).fields}
         assert "Historical recovery progress" in fields
-        assert "**KuCoin**: pending" in fields["Historical recovery progress"]
+        assert "**KuCoin**: not started yet" in fields["Historical recovery progress"]
         assert "NOT past live predictions" in fields["Historical recovery progress"]
     finally:
         await worker.aclose()

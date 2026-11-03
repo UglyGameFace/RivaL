@@ -11,7 +11,7 @@ import json
 import math
 from datetime import UTC, datetime
 
-from parlay_bot.perpetuals.pooled_features import FEATURE_VERSION, FEATURES
+from parlay_bot.perpetuals.pooled_features import FEATURE_SETS
 
 SCHEMA = "rival-pooled-model-v1"
 MAX_TREES = 1000
@@ -24,8 +24,10 @@ _ZERO = 1e-35
 def validate(doc: dict) -> dict:
     if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
         raise ValueError("not a pooled model document")
-    if doc.get("feature_version") != FEATURE_VERSION or tuple(doc.get("features", ())) != FEATURES:
+    expected = FEATURE_SETS.get(doc.get("feature_version"))
+    if expected is None or tuple(doc.get("features", ())) != expected:
         raise ValueError("pooled model built for different inputs")
+    width = len(expected)
     if doc.get("horizon_minutes") not in (5, 15, 60):
         raise ValueError("unsupported pooled model horizon")
     trees = doc.get("trees")
@@ -42,7 +44,7 @@ def validate(doc: dict) -> dict:
                     raise ValueError("invalid leaf")
                 continue
             feature, threshold, default_left, missing, left, right = node
-            if (type(feature) is not int or not 0 <= feature < len(FEATURES)
+            if (type(feature) is not int or not 0 <= feature < width
                     or not math.isfinite(threshold) or default_left not in (0, 1)
                     or missing not in (0, 1, 2)
                     or not (0 < left < len(tree) and 0 < right < len(tree))):
@@ -74,7 +76,7 @@ def raw_score(doc: dict, vector) -> float:
 
 
 def probability(doc: dict, vector) -> float:
-    if len(vector) != len(FEATURES):
+    if len(vector) != len(doc["features"]):
         raise ValueError("wrong pooled feature count")
     score = max(-50.0, min(50.0, raw_score(doc, vector)))
     return 1 / (1 + math.exp(-score))
@@ -84,9 +86,19 @@ def model_sha256(doc: dict) -> str:
     return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def recipe(doc: dict) -> dict:
+    """What is being evaluated: inputs, horizon and fixed training settings."""
+    return {k: doc.get(k) for k in ("schema", "family", "feature_version", "features",
+                                    "horizon_minutes", "params")}
+
+
 def family(doc: dict) -> str:
-    """Stable challenger name for the shadow ledger: one per trained model."""
-    return f"pooled_{doc['horizon_minutes']}m_{model_sha256(doc)[:12]}"
+    """Challenger name for the shadow ledger: one per RECIPE, so nightly
+    retrains on one more day of data keep a single, growing live record.
+    The exact trained model stays traceable through model_sha256."""
+    digest = hashlib.sha256(json.dumps(recipe(doc), sort_keys=True,
+                                       separators=(",", ":")).encode()).hexdigest()
+    return f"pooled_{doc['horizon_minutes']}m_{digest[:12]}"
 
 
 def usable(doc: dict, *, now: datetime | None = None) -> bool:
@@ -139,7 +151,9 @@ class PooledModelSet:
                    (family,horizon_minutes,model_sha256,trained_through,gates_passed,
                     imported_at,drive_file_id,document)
                    VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                (family(doc), doc["horizon_minutes"], model_sha256(doc),
+                # Row key: one per trained file (the recipe name repeats nightly).
+                (f"pooled_{doc['horizon_minutes']}m_{model_sha256(doc)[:12]}",
+                 doc["horizon_minutes"], model_sha256(doc),
                  str(doc["trained_through"]), int(doc.get("gates_passed") is True),
                  datetime.now(UTC).isoformat(), file_id, payload.decode()),
             )

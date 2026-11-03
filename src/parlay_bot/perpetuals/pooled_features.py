@@ -133,3 +133,79 @@ def live_vector(candles, *, asset: str, btc_candles=None) -> tuple[float, ...] |
                              if not math.isnan(out["btc_ret_12"]) else NAN)
     out["coin"] = float(ASSETS.index(asset))
     return tuple(_f32(out[name]) for name in FEATURES)
+
+
+# ---------------------------------------------------------------------------
+# Version 2: v1 + Binance market-wide context for the coin (buyer/seller
+# pressure, trade activity, perp premium over index, last settled funding).
+# Built from the same official Binance files the Drive warehouse stores, and
+# fetched live from the same Binance endpoints at forecast time.
+# ---------------------------------------------------------------------------
+FEATURE_VERSION_V2 = "pooled-ohlcv-btc-calendar-binance-context-v2"
+CONTEXT_FEATURES = (
+    "taker_imb", "taker_imb_12", "trades_ratio", "avg_trade_size",
+    "prem", "prem_chg_3", "prem_chg_12", "prem_z", "fund",
+)
+FEATURES_V2 = FEATURES + CONTEXT_FEATURES
+FEATURE_SETS = {FEATURE_VERSION: FEATURES, FEATURE_VERSION_V2: FEATURES_V2}
+
+
+def funding_known_at(funding_time: datetime) -> datetime:
+    """A settled funding rate counts as known one minute after its minute."""
+    return funding_time.replace(second=0, microsecond=0) + timedelta(minutes=1)
+
+
+def _div(a: float, b: float) -> float:
+    return a / b if b and math.isfinite(a) and math.isfinite(b) else NAN
+
+
+def context_vector(bundle: dict | None, close_at: datetime) -> tuple[float, ...]:
+    """Context inputs at bar close `close_at` (all NaN when unavailable).
+
+    bundle: {"klines": [(close_at, volume, taker_buy_volume, trades)],
+             "premium": {close_at: premium_close}, "funding": [(time, rate)]}
+    """
+    blank = tuple(NAN for _ in CONTEXT_FEATURES)
+    if not bundle:
+        return blank
+    bars = [b for b in bundle.get("klines", ()) if b[0] <= close_at]
+    if len(bars) < WINDOW or bars[-1][0] != close_at:
+        return blank
+    bars = bars[-WINDOW:]
+    if any(b[0] - a[0] != timedelta(minutes=5) for a, b in itertools.pairwise(bars)):
+        return blank
+    v = [float(b[1]) for b in bars]
+    tb = [float(b[2]) for b in bars]
+    n = [float(b[3]) for b in bars]
+    out: dict[str, float] = {}
+    out["taker_imb"] = _div(tb[-1], v[-1]) - 0.5
+    out["taker_imb_12"] = _div(sum(tb[-12:]), sum(v[-12:])) - 0.5
+    out["trades_ratio"] = math.log((n[-1] + 1) / (sum(n[-288:]) / 288 + 1))
+    size = _div(v[-1], n[-1])
+    typical = _div(sum(v[-288:]), sum(n[-288:]))
+    out["avg_trade_size"] = math.log(size / typical) if size > 0 and typical > 0 else NAN
+    premium = bundle.get("premium") or {}
+    p = [premium.get(b[0], NAN) for b in bars]
+    out["prem"] = p[-1] * 1e4
+    out["prem_chg_3"] = (p[-1] - p[-4]) * 1e4
+    out["prem_chg_12"] = (p[-1] - p[-13]) * 1e4
+    std = _std(p[-288:], 1)
+    out["prem_z"] = (p[-1] - sum(p[-288:]) / 288) / std if std and not math.isnan(std) else NAN
+    known = [rate for when, rate in bundle.get("funding", ())
+             if funding_known_at(when) <= close_at]
+    out["fund"] = known[-1] * 1e4 if known else NAN
+    return tuple(_f32(out[name]) for name in CONTEXT_FEATURES)
+
+
+def model_vector(doc: dict, candles, *, asset: str, btc_candles=None,
+                 context: dict | None = None) -> tuple[float, ...] | None:
+    """The vector a given model document expects (v1 or v2)."""
+    base = live_vector(candles, asset=asset, btc_candles=btc_candles)
+    if base is None:
+        return None
+    if doc.get("feature_version") != FEATURE_VERSION_V2:
+        return base
+    extra = context_vector(context, bar_close(candles[-1]))
+    if all(math.isnan(x) for x in extra):
+        return None  # a v2 model never predicts without its context inputs
+    return base + extra

@@ -15,7 +15,14 @@ from __future__ import annotations
 import math
 from datetime import UTC, datetime
 
-from parlay_bot.perpetuals.pooled_features import ASSETS, FEATURE_VERSION, FEATURES, WINDOW
+from parlay_bot.perpetuals.pooled_features import (
+    ASSETS,
+    CONTEXT_FEATURES,
+    FEATURE_SETS,
+    FEATURE_VERSION,
+    FEATURES,
+    WINDOW,
+)
 from parlay_bot.perpetuals.pooled_model import SCHEMA, probability, validate
 
 PARAMS = {"n_estimators": 400, "learning_rate": 0.02, "num_leaves": 31, "max_depth": 6,
@@ -77,6 +84,49 @@ def frame_features(k, btc, asset: str):
     broken = gap.astype(int).rolling(WINDOW - 1, min_periods=1).sum() > 0
     f.loc[broken.to_numpy()] = np.nan
     return f
+
+
+def frame_context(k):
+    """pandas twin of pooled_features.context_vector over a whole history.
+
+    k: Binance 5m frame indexed by bar CLOSE time with volume,
+    taker_buy_volume, count, prem (premium close at that bar, NaN if absent)
+    and fund (last settled funding known at that bar, see funding_known_at).
+    """
+    import numpy as np
+    import pandas as pd
+
+    v, tb, n, p = k["volume"], k["taker_buy_volume"], k["count"], k["prem"]
+    f = pd.DataFrame(index=k.index)
+    f["taker_imb"] = tb / v.replace(0, np.nan) - 0.5
+    f["taker_imb_12"] = tb.rolling(12).sum() / v.rolling(12).sum() - 0.5
+    f["trades_ratio"] = np.log((n + 1) / (n.rolling(288).mean() + 1))
+    f["avg_trade_size"] = np.log((v / n.replace(0, np.nan))
+                                 / (v.rolling(288).sum() / n.rolling(288).sum()))
+    f["prem"] = p * 1e4
+    f["prem_chg_3"] = (p - p.shift(3)) * 1e4
+    f["prem_chg_12"] = (p - p.shift(12)) * 1e4
+    f["prem_z"] = (p - p.rolling(288).mean()) / p.rolling(288).std()
+    f["fund"] = k["fund"] * 1e4
+    f = f[list(CONTEXT_FEATURES)].replace([np.inf, -np.inf], np.nan).astype("float32")
+    gap = k.index.to_series().diff() != pd.Timedelta(minutes=5)
+    broken = gap.astype(int).rolling(WINDOW - 1, min_periods=1).sum() > 0
+    f.loc[broken.to_numpy()] = np.nan
+    return f
+
+
+def funding_at_bars(index, funding):
+    """Last settled funding rate known at each bar close (merge_asof backward).
+
+    funding: DataFrame with 'time' (UTC datetime) and 'rate'."""
+    import pandas as pd
+
+    known = funding.assign(
+        known=funding["time"].dt.floor("min") + pd.Timedelta(minutes=1)
+    ).sort_values("known")[["known", "rate"]]
+    bars = pd.DataFrame({"t": index}).sort_values("t")
+    merged = pd.merge_asof(bars, known, left_on="t", right_on="known", direction="backward")
+    return pd.Series(merged["rate"].to_numpy(), index=merged["t"]).reindex(index)
 
 
 def labels(k, horizon: int):
@@ -145,7 +195,8 @@ def metrics(p, y, base: float, index) -> dict:
     }
 
 
-def train_horizon(frames: dict, horizon: int, *, train_end, test_start, trained_through) -> dict:
+def train_horizon(frames: dict, horizon: int, *, train_end, test_start, trained_through,
+                  feature_version: str = FEATURE_VERSION) -> dict:
     """frames: asset -> (candles DataFrame, features DataFrame)."""
     import lightgbm as lgb
     import numpy as np
@@ -161,7 +212,7 @@ def train_horizon(frames: dict, horizon: int, *, train_end, test_start, trained_
     train = data[data.index < train_end - purge]
     val = data[(data.index >= train_end) & (data.index < test_start - purge)]
     test = data[data.index >= test_start]
-    cols = list(FEATURES)
+    cols = list(FEATURE_SETS[feature_version])
     model = lgb.LGBMClassifier(**PARAMS).fit(train[cols], train["y"])
     base = float(train["y"].mean())
     evaluation = {
@@ -177,7 +228,7 @@ def train_horizon(frames: dict, horizon: int, *, train_end, test_start, trained_
     # Refit on everything with the SAME fixed settings for the live model.
     final = lgb.LGBMClassifier(**PARAMS).fit(data[cols], data["y"])
     doc = {
-        "schema": SCHEMA, "feature_version": FEATURE_VERSION, "features": list(FEATURES),
+        "schema": SCHEMA, "feature_version": feature_version, "features": cols,
         "horizon_minutes": horizon, "family": "lightgbm",
         "params": PARAMS, "gates": GATES, "gates_passed": bool(passed),
         "trained_from": str(data.index.min()), "trained_through": str(trained_through),

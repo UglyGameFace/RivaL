@@ -1,9 +1,11 @@
 """Nightly: train RivaL's pooled multi-year model and publish it to Drive.
 
-Research runner only (GitHub Actions). Downloads checksum-verified Binance
-originals (the same files RivaL archives), trains one model per horizon on
-every coin together, and publishes each model JSON to the private Drive
-models folder. The bot imports only models whose gates passed, runs them as
+Research runner only (GitHub Actions). Reads every source file from the
+private Drive warehouse first; a file the warehouse lacks is downloaded once
+from Binance, checksum-verified and saved into the warehouse. Two input
+versions are trained per horizon (price-only v1; v2 adds Binance flow,
+premium and funding); the better one on the VALIDATION year is published,
+provided it also passes every test gate. The bot imports only models whose gates passed, runs them as
 live challengers, and grades them on real future outcomes.
 """
 from __future__ import annotations
@@ -20,19 +22,32 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import feature_signal_experiment as source
 
 from parlay_bot.config import Settings
-from parlay_bot.perpetuals.pooled_features import ASSETS
+from parlay_bot.perpetuals.pooled_features import ASSETS, FEATURE_VERSION, FEATURE_VERSION_V2
 from parlay_bot.perpetuals.pooled_model import family, model_sha256
-from parlay_bot.research.pooled_training import frame_features, train_horizon
+from parlay_bot.research.pooled_training import frame_context, frame_features, train_horizon
 from parlay_bot.research.publish import _artifact, _drive
+from parlay_bot.research.training_warehouse import TrainingWarehouse
 
 
-async def load(cache: Path, last_month: str) -> dict:
+async def load(cache: Path, last_month: str, *, use_warehouse: bool) -> tuple[dict, dict]:
     import httpx
 
     sem = asyncio.Semaphore(16)
-    async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        return {asset: await source.load_asset(client, asset, last_month, cache, sem)
-                for asset in ASSETS}
+    drive = _drive(Settings()) if use_warehouse else None
+    warehouse = None
+    try:
+        if drive is not None:
+            warehouse = TrainingWarehouse(drive, cache)
+            await warehouse.load_index()
+        fetcher = warehouse.fetcher(source.fetch) if warehouse else None
+        async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
+            raw = {asset: await source.load_asset(client, asset, last_month, cache, sem,
+                                                  fetcher=fetcher)
+                   for asset in ASSETS}
+        return raw, (warehouse.stats if warehouse else {"warehouse": "not used"})
+    finally:
+        if drive is not None:
+            await drive.aclose()
 
 
 async def publish(paths: list[Path]) -> list[str]:
@@ -59,14 +74,21 @@ def main() -> int:
     parser.add_argument("--last-month", required=True)
     parser.add_argument("--out", type=Path, default=Path("pooled-models"))
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--no-warehouse", action="store_true",
+                        help="read Binance directly instead of the Drive warehouse")
     args = parser.parse_args()
     args.cache.mkdir(parents=True, exist_ok=True)
-    raw = asyncio.run(load(args.cache, args.last_month))
+    raw, warehouse_stats = asyncio.run(load(args.cache, args.last_month,
+                                            use_warehouse=not args.no_warehouse))
+    print("WAREHOUSE=" + json.dumps(warehouse_stats), flush=True)
     frames = {}
     for asset in ASSETS:
-        k = raw[asset][["open", "high", "low", "close", "volume"]].astype(float)
+        full = raw[asset]
+        k = full[["open", "high", "low", "close", "volume"]].astype(float)
         btc = raw["BTC"][["close"]].astype(float)
-        frames[asset] = (k, frame_features(k, btc, asset))
+        context = frame_context(full[["volume", "taker_buy_volume", "count", "prem",
+                                      "fund"]].astype(float))
+        frames[asset] = (k, pd.concat([frame_features(k, btc, asset), context], axis=1))
         print(f"features {asset}: {len(k):,} bars", flush=True)
     trained_through = max(k.index.max() for k, _ in frames.values())
     # Evaluate on the most recent ~10 months, validate on the year before.
@@ -75,13 +97,25 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     summary, published = {}, []
     for horizon in (5, 15, 60):
-        doc = train_horizon(frames, horizon, train_end=train_end, test_start=test_start,
-                            trained_through=trained_through)
+        candidates = [train_horizon(frames, horizon, train_end=train_end,
+                                    test_start=test_start, trained_through=trained_through,
+                                    feature_version=version)
+                      for version in (FEATURE_VERSION, FEATURE_VERSION_V2)]
+        for c in candidates:
+            print(json.dumps({f"{horizon}m/{c['feature_version']}": {
+                "gates_passed": c["gates_passed"],
+                "validation_gain": c["evaluation"]["validation"]["brier_gain"],
+                "test_gain": c["evaluation"]["test"]["brier_gain"]}}), flush=True)
+        # Choose on validation only; the test year stays an untouched check.
+        passing = [c for c in candidates if c["gates_passed"]] or candidates
+        doc = max(passing, key=lambda c: (c["evaluation"]["validation"]["brier_gain"],
+                                          c["feature_version"] == FEATURE_VERSION))
         path = args.out / f"pooled-{horizon}m-{datetime.now(UTC):%Y%m%d}-{model_sha256(doc)[:12]}.json"
         path.write_text(json.dumps(doc, sort_keys=True, separators=(",", ":")))
         size = path.stat().st_size
         summary[f"{horizon}m"] = {
-            "family": family(doc), "gates_passed": doc["gates_passed"], "bytes": size,
+            "family": family(doc), "feature_version": doc["feature_version"],
+            "gates_passed": doc["gates_passed"], "bytes": size,
             "validation": doc["evaluation"]["validation"], "test": doc["evaluation"]["test"],
             "portable_max_error": doc["portable_max_error"],
         }
@@ -93,6 +127,7 @@ def main() -> int:
         print(f"published {len(ids)} model(s) to Drive", flush=True)
     elif not published:
         print("no model passed its gates; nothing published", flush=True)
+    summary["warehouse"] = warehouse_stats
     print("TRAINING_SUMMARY=" + json.dumps(summary, default=str))
     return 0
 

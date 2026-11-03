@@ -1,3 +1,13 @@
+## Active: LFM3 hypothesis → screened challenger → genuine future proof (2026-11-03 UTC)
+
+- **Workstream:** One cohesive PR based on merged `main@87724ad`. PR #280 unified the local LFM3 model; PR #281 repaired the false-green postrelease acceptance. Neither is open. Preserve #277 historical fitting, #278 future tracking and #279 truthful accuracy reporting; no changes to their files.
+- **Root gap:** Live OKX source-native research returned `verified count=0` LFM3 proposals; the historical LFM3 feature-ablation path never produced screened candidates eligible for independent future shadow tracking. No evidence of higher accuracy or profitability.
+- **Changes:** Bound failed/unconfigured/stalled six-hour LFM3 proposal slots to at most three total attempts at >=20-minute intervals. Report host configuration and latest attempt *statuses* without tokens or source evidence. For each independently source-verified LFM3-selected feature mask, require superiority to ordinary logistic on purged chronological validation before opening a sealed holdout; then require same-source holdout improvement and existing exact importer Brier/calibration gates before a candidate can enter Drive's model-import feed. Unqualified models stay research-only. The existing forward challenger path, NO CALL, quote-cost qualification and unchanged incumbent govern any future acceptance.
+- **Validation:** Full SQLite/PostgreSQL tests, Ruff, PR CI and historical source workflow; then merged main CI, Discloud release, standalone Intelligence authenticated hypothesis smoke, persisted PostgreSQL LFM3 attempts, verified original Drive receipts and independently observed future results. A passing regression does not prove edge.
+- **Empirical limits:** Only independent future outcomes >=150 targets across >=21 UTC days with >=80% matched quotes plus positive conservative/severe after-cost and baseline superiority can qualify paper research. **Real-money fills and live trading profits are not claimed**. Keep #6, #151, #188 and #268 open until their own proof.
+
+---
+
 ## Active: one-PR predictive-evidence integrity and local-Intelligence research (2026-11-03 UTC)
 
 - **Single PR:** #280 (extend rather than duplicate). Keep external AI providers retired, preserve authenticated bounded LFM3 feature hypotheses, source-native chronological challenger evaluation, and the existing live model until separate future evidence passes all screens.

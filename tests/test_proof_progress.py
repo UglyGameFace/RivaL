@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from parlay_bot.discord_app.research_dashboard import ResearchDashboard, _SECTIONS
+from parlay_bot.discord_app.research_dashboard import _SECTIONS, ResearchDashboard
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.proof_progress import proof_progress, proof_progress_text

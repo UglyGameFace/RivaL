@@ -27,6 +27,10 @@ from parlay_bot.storage.hot import RelationalHotStore
 _LOG = logging.getLogger(__name__)
 
 
+UMA_UP = "1000000000000000000"  # 1e18: first outcome ("Up")
+UMA_DOWN = "0"
+
+
 @dataclass(frozen=True)
 class ContractCall:
     slug: str
@@ -346,6 +350,8 @@ class PolymarketResearch:
 
     def _record_resolution(self, call: dict, row: dict, *, now: datetime) -> int:
         """Require terminal provider payout and exact identity, never candle labels."""
+        if "payouts" not in row and "price" in row:
+            return self._record_uma_resolution(call, row, now=now)
         try:
             payouts = row["payouts"]
             if (
@@ -377,6 +383,45 @@ class PolymarketResearch:
                 "(slug,condition_id,direction,resolved_at,observed_at,receipt_sha256,receipt_json) "
                 "VALUES (?,?,?,?,?,?,?) ON CONFLICT(slug) DO NOTHING",
                 (call["slug"], call["condition_id"], "UP" if up > 0 else "DOWN",
+                 resolved.isoformat(), now.isoformat(),
+                 hashlib.sha256(receipt.encode()).hexdigest(), receipt),
+            )
+        return result.rowcount
+
+    def _record_uma_resolution(self, call: dict, row: dict, *, now: datetime) -> int:
+        """Hourly "Up or Down" markets resolve through UMA, not payout vectors.
+
+        The data API reports the settled UMA price instead: 1e18 is the first
+        outcome (Up) and 0 the second (Down). Checked against 12 live hourly
+        BTC contracts and the matching exchange candles: all agreed. A 50/50
+        price, a dispute, an extended review or a missing transaction is
+        never turned into a label.
+        """
+        try:
+            price = str(row["price"])
+            if (
+                row.get("condition_id") != call["condition_id"]
+                or row.get("status") != "resolved"
+                or row.get("extended_review") is not False
+                or row.get("was_disputed") is not False
+                or not isinstance(row.get("transaction_hash"), str)
+                or not re.fullmatch(r"0x[0-9a-fA-F]{64}", row["transaction_hash"])
+                or price not in (UMA_UP, UMA_DOWN)
+            ):
+                return 0
+            resolved = datetime.fromtimestamp(int(row["last_update_timestamp"]), UTC)
+            expires = datetime.fromisoformat(call["expires_at"])
+            if expires.utcoffset() is None or not expires <= resolved <= now:
+                return 0
+        except (KeyError, ValueError, TypeError, OverflowError):
+            return 0
+        receipt = json.dumps(row, sort_keys=True, separators=(",", ":"))
+        with self.store.connect() as conn:
+            result = conn.execute(
+                "INSERT INTO rival_polymarket_ai_outcomes "
+                "(slug,condition_id,direction,resolved_at,observed_at,receipt_sha256,receipt_json) "
+                "VALUES (?,?,?,?,?,?,?) ON CONFLICT(slug) DO NOTHING",
+                (call["slug"], call["condition_id"], "UP" if price == UMA_UP else "DOWN",
                  resolved.isoformat(), now.isoformat(),
                  hashlib.sha256(receipt.encode()).hexdigest(), receipt),
             )

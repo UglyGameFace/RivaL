@@ -23,6 +23,16 @@ SAFE_STAGES = frozenset({
     "research_requested", "research_http_error", "research_rejected",
     "research_verified", "hypothesis_requested", "hypothesis_http_error",
     "hypothesis_rejected", "hypothesis_verified",
+    "hypothesis_http_429_busy", "hypothesis_http_422_context_budget",
+    "hypothesis_http_503_backend_timeout",
+    "hypothesis_http_503_backend_unavailable",
+    "hypothesis_http_503_backend_http",
+    "hypothesis_http_503_invalid_json",
+    "hypothesis_http_503_invalid_hypothesis",
+    "hypothesis_http_503_invalid_output",
+    "hypothesis_http_503_malformed_backend_response",
+    "hypothesis_http_503_token_limit",
+    "hypothesis_http_503_unclassified",
 })
 
 HOST_CHECK = """import json, os, urllib.error, urllib.request
@@ -87,8 +97,30 @@ print("RIVAL_INTELLIGENCE_RELEASE_STAGE=hypothesis_requested", flush=True)
 try:
     with urllib.request.urlopen(req, timeout=55) as response:
         hypothesis = json.loads(response.read(5000))
-except urllib.error.HTTPError:
-    print("RIVAL_INTELLIGENCE_RELEASE_STAGE=hypothesis_http_error", flush=True)
+except urllib.error.HTTPError as exc:
+    # Only fixed HTTP statuses and approved classes; no private model body.
+    if exc.code == 429:
+        label = "hypothesis_http_429_busy"
+    elif exc.code == 422:
+        label = "hypothesis_http_422_context_budget"
+    elif exc.code == 503:
+        kind = "unclassified"
+        try:
+            body = json.loads(exc.read(1000))
+            if isinstance(body, dict) and body.get("error") == "inference_failed":
+                proposed = body.get("failure_kind")
+                if isinstance(proposed, str) and proposed in {
+                    "backend_timeout", "backend_unavailable", "backend_http",
+                    "invalid_json", "invalid_hypothesis", "invalid_output",
+                    "malformed_backend_response", "token_limit",
+                }:
+                    kind = proposed
+        except (OSError, ValueError):
+            pass
+        label = "hypothesis_http_503_" + kind
+    else:
+        label = "hypothesis_http_error"
+    print("RIVAL_INTELLIGENCE_RELEASE_STAGE=" + label, flush=True)
     raise
 indices = hypothesis.get("feature_indices")
 choice = hypothesis.get("hypothesis")

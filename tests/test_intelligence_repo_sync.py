@@ -332,3 +332,47 @@ def test_host_probe_uses_timeout_longer_than_gateway_cpu_deadline():
     assert "RIVAL_INTELLIGENCE_RELEASE_STAGE=research_requested" in code
     assert "RIVAL_INTELLIGENCE_RELEASE_STAGE=hypothesis_requested" in code
     assert "timeout=38" not in code
+
+
+def test_host_reports_exact_hypothesis_http_class_without_private_body(
+    monkeypatch, capsys,
+):
+    from io import BytesIO
+    monkeypatch.setenv("RIVAL_LLM_SHARED_TOKEN", "t" * 48)
+    model = "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
+    class Response:
+        def __init__(self, payload):
+            self.payload = json.dumps(payload).encode("utf-8")
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self, _limit):
+            return self.payload
+
+    def fake_urlopen(req, timeout):
+        if req.full_url.endswith("/v1/status"):
+            if not req.get_header("Authorization"):
+                raise urllib.error.HTTPError(req.full_url, 401, "auth", None, None)
+            return Response({"ready": True, "model": model, "source_sha": SHA})
+        if req.full_url.endswith("/v1/research"):
+            return Response({
+                "model": model, "direction": "uncertain",
+                "confidence": "low", "grounding_status": "insufficient_evidence",
+                "grounded_by": "deterministic_historical_evidence_policy",
+                "informational_only": True, "uncalibrated": True,
+            })
+        assert req.full_url.endswith("/v1/hypothesis")
+        body = json.dumps({
+            "error": "inference_failed", "failure_kind": "backend_timeout",
+            "private_payload": "NEVER_LOG_THIS",
+        }).encode("utf-8")
+        raise urllib.error.HTTPError(req.full_url, 503, "fake", {}, BytesIO(body))
+
+    monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+    with pytest.raises(urllib.error.HTTPError):
+        exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})  # noqa: S102
+    report = capsys.readouterr().out
+    assert "NEVER_LOG_THIS" not in report
+    assert VERIFY["stage_reason"](report) == "hypothesis_http_503_backend_timeout"
+    assert all(line.startswith(VERIFY["STAGE_MARKER"]) for line in report.splitlines())

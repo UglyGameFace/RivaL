@@ -153,3 +153,23 @@ async def test_tracking_controls_are_available_without_triggering_sessions(learn
             "status"] == "not_started"
     finally:
         panel.stop()
+
+
+@pytest.mark.asyncio
+async def test_bot_performance_has_direct_tracking_shortcut(tmp_path):
+    from tests.test_guided_home import _client, _home
+
+    bot = _client(tmp_path)
+    home = _home(bot)
+    home.research_factory = lambda _owner: object()
+    home.navigate("performance")
+    home._buttons()
+    try:
+        labels = {child.label for child in home.children if hasattr(child, "label")}
+        assert "Track Next Predictions" in labels
+        assert "Detailed Research" in labels
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()

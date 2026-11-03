@@ -93,6 +93,25 @@ def probe() -> dict:
                 [str(r["model_version"]), int(r["n"])] for r in conn.execute(
                     "SELECT model_version, COUNT(*) AS n FROM perp_forward_audit "
                     "WHERE issued_at>=? GROUP BY model_version", (week,)).fetchall()]
+            out["issue_delay_seconds"] = {}
+            for h in (5, 15, 60):
+                rows = conn.execute(
+                    "SELECT issued_at, target_opened_at FROM perp_forward_audit "
+                    "WHERE asset='BTC' AND model_version=? AND horizon_minutes=? "
+                    "AND issued_at>=? ORDER BY issued_at DESC LIMIT 2000",
+                    (MODEL, h, day)).fetchall()
+                delays = sorted(
+                    (datetime.fromisoformat(str(r["issued_at"]))
+                     - datetime.fromisoformat(str(r["target_opened_at"]))).total_seconds()
+                    for r in rows)
+                if delays:
+                    out["issue_delay_seconds"][h] = {
+                        "n": len(delays), "min": round(delays[0]),
+                        "median": round(delays[len(delays) // 2]),
+                        "p95": round(delays[int(len(delays) * .95)]), "max": round(delays[-1]),
+                        "after_target_open": sum(d > 0 for d in delays)}
+        with store.connect() as conn:
+          try:
             out["offline_candidates"] = [
                 {k: (v if isinstance(v, (int, float, str)) or v is None else str(v))
                  for k, v in dict(r).items()}
@@ -109,6 +128,10 @@ def probe() -> dict:
                     FROM rival_offline_candidates c
                     GROUP BY c.asset, c.horizon_minutes, COALESCE(c.admission_reason,'?')
                     ORDER BY c.asset, c.horizon_minutes""").fetchall()]
+          except Exception as exc:  # noqa: BLE001
+            out["offline_candidates_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        with store.connect() as conn:
+          try:
             spec = conn.execute(
                 "SELECT model_spec_json FROM rival_offline_model_artifacts "
                 "WHERE model_spec_json LIKE '%portable-boosted%' LIMIT 1").fetchone()
@@ -119,6 +142,9 @@ def probe() -> dict:
                     if isinstance(parsed.get(k), dict):
                         out[f"spec_{k}"] = {kk: vv for kk, vv in parsed[k].items()
                                             if isinstance(vv, (int, float, str))}
+          except Exception as exc:  # noqa: BLE001
+            out["spec_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        with store.connect() as conn:
             out["lineage_columns"] = [str(r["column_name"]) for r in conn.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name='perp_forward_audit'").fetchall()]

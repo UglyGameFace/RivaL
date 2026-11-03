@@ -73,7 +73,6 @@ from parlay_bot.perpetuals.live_quotes import (
     quote_embed,
 )
 from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
-from parlay_bot.perpetuals.research_hypotheses import FeatureHypothesisLab
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.okx_history_recovery import OkxHistoryRecovery
 from parlay_bot.perpetuals.openrouter_research import OpenRouterResearch
@@ -83,6 +82,7 @@ from parlay_bot.perpetuals.polybolt_twap import PolyBoltTWAP
 from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
+from parlay_bot.perpetuals.research_hypotheses import FeatureHypothesisLab
 from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.spike_watch import SpikeWatch

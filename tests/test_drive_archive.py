@@ -167,3 +167,56 @@ def test_drive_folder_boundary_rejects_duplicate_folder_ids() -> None:
             manifests="manifests",
             staging="staging",
         )
+
+
+@pytest.mark.asyncio
+async def test_resumable_upload_recovers_from_transient_503(tmp_path, monkeypatch) -> None:
+    from parlay_bot.archive import drive as drive_module
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(drive_module.asyncio, "sleep", no_sleep)
+    payload = b"zip-bytes-for-retry"
+    path = tmp_path / "BTCUSDT-1h-2024-08.zip"
+    path.write_bytes(payload)
+    artifact = ArchiveArtifact(
+        path=path, file_name=path.name, size_bytes=len(payload),
+        sha256=hashlib.sha256(payload).hexdigest(),
+        md5=hashlib.md5(payload, usedforsecurity=False).hexdigest(), row_count=1,
+    )
+    puts: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "oauth2.googleapis.com":
+            return httpx.Response(200, json={"access_token": "a", "expires_in": 3600})
+        if request.method == "GET" and request.url.path == "/drive/v3/files":
+            return httpx.Response(200, json={"files": []})
+        if request.method == "POST":
+            return httpx.Response(200, headers={"Location": "https://upload.example/s"})
+        if request.method == "PUT":
+            puts.append(request.headers["content-range"])
+            if len(puts) == 1:
+                return httpx.Response(503)
+            if request.headers["content-range"] == f"bytes */{len(payload)}":
+                return httpx.Response(308)  # nothing persisted yet
+            return httpx.Response(200, json={
+                "id": "f1", "name": path.name, "size": str(len(payload)),
+                "md5Checksum": artifact.md5, "parents": ["staging-id"],
+            })
+        raise AssertionError(f"unexpected {request.method} {request.url}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = GoogleDriveArchiveClient(
+            client_id="c", client_secret="s", refresh_token="r",
+            folders=DriveArchiveFolders(root="root-id", history="history-id",
+                                        manifests="manifests-id", staging="staging-id"),
+            client=http, chunk_size_bytes=256 * 1024,
+        )
+        stored = await client._upload_resumable(
+            artifact=artifact, parent_id="staging-id", batch_id="b",
+            kind="history", mime_type="application/zip",
+        )
+    assert stored.file_id == "f1"
+    full = f"bytes 0-{len(payload) - 1}/{len(payload)}"
+    assert puts == [full, f"bytes */{len(payload)}", full]

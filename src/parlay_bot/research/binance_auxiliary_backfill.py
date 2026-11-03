@@ -322,7 +322,10 @@ async def collect(*, drive, client: httpx.AsyncClient, out_dir: Path,
                 "asset": asset, "family": fam, "month": month,
                 "original_provider_zip_drive_sha_verified": True, **quality,
             })
-        except (HistoryImportError, httpx.HTTPError, OSError, ValueError) as exc:
+        except (HistoryImportError, httpx.HTTPError, OSError, ValueError,
+                RuntimeError) as exc:
+            # RuntimeError covers DriveArchiveError: one failed upload is
+            # recorded and retried next run, never the end of the whole run.
             report["unavailable_unconfirmed"].append({
                 "asset": asset, "family": fam, "month": month,
                 "reason": str(exc)[:160],

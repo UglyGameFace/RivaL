@@ -331,3 +331,118 @@ async def test_twenty_five_unmetered_local_requests_do_not_reserve_quota(monkeyp
     assert sent == ["rival-llm"] * 25
     assert len(market.saved) == 25
     assert market.quota == []
+
+
+def _hypothesis_reply():
+    return {
+        "model": module.LOCAL_MODEL,
+        "hypothesis": "volume_only",
+        "rationale": "Compare native volume features",
+        "falsification": "Reject worse validation Brier",
+        "research_only": True, "retrospective_screen": "not_tested",
+        "live_model_promoted": False, "prediction": None,
+    }
+
+
+def test_failure_detail_keeps_only_allowlisted_codes():
+    response = httpx.Response(503, json={
+        "error": "inference_failed", "failure_kind": "token_limit",
+    })
+    assert module.failure_detail(response) == (
+        "status=503 error=inference_failed failure_kind=token_limit"
+    )
+    hostile = httpx.Response(503, json={
+        "error": "Bearer sk-secret leaked", "failure_kind": ["x"],
+    })
+    assert module.failure_detail(hostile) == "status=503 error=none failure_kind=none"
+    assert module.failure_detail(httpx.Response(502, text="<html>")) == (
+        "status=502 error=none failure_kind=none"
+    )
+
+
+@pytest.mark.asyncio
+async def test_hypothesis_logs_gateway_failure_kind(monkeypatch, caplog):
+    monkeypatch.setattr(module, "build_evidence", market_evidence)
+
+    def handler(request):
+        return httpx.Response(503, json={
+            "error": "inference_failed", "failure_kind": "token_limit",
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ai = module.LocalFirstResearch(Market(), local_key="local-key", client=client)
+        with (
+            caplog.at_level("WARNING", logger=module.__name__),
+            pytest.raises(ResearchUnavailable) as raised,
+        ):
+            await ai.propose_feature_hypothesis(asset="BTC", venues=("okx",))
+    # token_limit repeats deterministically: reported, never retried.
+    assert not isinstance(raised.value, module.LocalBusy)
+    assert "failure_kind=token_limit" in caplog.text
+    assert "failure_kind=token_limit" in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_hypothesis_retries_busy_gateway_then_succeeds(monkeypatch):
+    monkeypatch.setattr(module, "build_evidence", market_evidence)
+    monkeypatch.setattr(module, "BUSY_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    replies = [
+        httpx.Response(429, json={"error": "inference_busy"}),
+        httpx.Response(503, json={"error": "inference_failed",
+                                  "failure_kind": "backend_timeout"}),
+        httpx.Response(200, json=_hypothesis_reply()),
+    ]
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        return replies[len(seen) - 1]
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ai = module.LocalFirstResearch(Market(), local_key="local-key", client=client)
+        proposed = await ai.propose_feature_hypothesis(asset="XRP", venues=("okx",))
+        # The lock is released between attempts and after success.
+        assert not ai._lock.locked()
+    assert proposed["hypothesis"] == "volume_only"
+    assert seen == ["/v1/hypothesis"] * 3
+
+
+@pytest.mark.asyncio
+async def test_hypothesis_busy_retries_are_bounded(monkeypatch):
+    monkeypatch.setattr(module, "build_evidence", market_evidence)
+    monkeypatch.setattr(module, "BUSY_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        return httpx.Response(429, json={"error": "inference_busy"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ai = module.LocalFirstResearch(Market(), local_key="local-key", client=client)
+        with pytest.raises(module.LocalBusy):
+            await ai.propose_feature_hypothesis(asset="BTC", venues=("okx",))
+    assert len(seen) == 4  # first try plus three retries
+
+
+@pytest.mark.asyncio
+async def test_interactive_ask_never_waits_but_background_ask_retries(monkeypatch):
+    monkeypatch.setattr(module, "build_evidence", market_evidence)
+    monkeypatch.setattr(module, "BUSY_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    market = Market()
+    seen = []
+
+    def handler(request):
+        seen.append(request.url.path)
+        if len(seen) in (1, 2):
+            return httpx.Response(429, json={"error": "inference_busy"})
+        return httpx.Response(200, json=success(module.LOCAL_MODEL))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ai = module.LocalFirstResearch(market, local_key="local-key", client=client)
+        with pytest.raises(module.LocalBusy, match="Local AI rejected"):
+            await ai.ask(asset="ETH", venues=("okx",))
+        assert len(seen) == 1
+        opinion = await ai.ask(asset="ETH", venues=("okx",), busy_retry=True)
+    assert opinion.model == module.LOCAL_MODEL
+    assert len(seen) == 3
+    assert len(market.saved) == 1

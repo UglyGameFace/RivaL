@@ -104,7 +104,9 @@ def _venue_proof(
     market: PerpetualMarketStore, *, asset: str, horizon: int, venue: str,
     now: datetime, model_version: str | None = None,
 ) -> dict:
-    if model_version in FAMILIES:
+    if model_version in FAMILIES or (model_version or "").startswith(
+        ("historical_", "boosted_")
+    ):
         contract, quote = _source_identity(venue, asset)
         return FamilyPromotion(market.store).venue_summary(
             asset=asset, venue=venue, contract=contract, quote=quote,

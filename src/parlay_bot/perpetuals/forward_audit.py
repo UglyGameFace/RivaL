@@ -630,9 +630,11 @@ class ForwardAccuracyMonitor:
                     # the incumbent in the authoritative perp_forward_audit
                     # stream that drives fusion and user-facing signals.
                     # Still issue/settle immutable challenger shadow rows.
+                    historical_shadows = []
                     self.market.historical_challengers.choose(
                         samples, features, last, horizon=horizon, now=stamp,
                         incumbent=tested, wall_clock=now is None,
+                        shadow_candidates=historical_shadows,
                     )
                     if tested.evaluated < MIN_PREVIOUS_EVALUATED:
                         metrics["insufficient_training"] += 1
@@ -747,6 +749,7 @@ class ForwardAccuracyMonitor:
                                     target_opened_at=target_open, issued_at=issued_at,
                                     incumbent_up=probability, baseline_up=baseline,
                                     boosters=boosters,
+                                    historical_candidates=historical_shadows,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger
                                 conn.execute("ROLLBACK TO SAVEPOINT rival_shadow_prediction")

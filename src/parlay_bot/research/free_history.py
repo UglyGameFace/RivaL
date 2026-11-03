@@ -189,7 +189,7 @@ def _football_rows(payload: bytes, league: str, season: str) -> tuple[list[dict[
             raise HistoryImportError("unknown football full-time result")
         try:
             when = next(
-                datetime.strptime(record["Date"].strip(), fmt).date()
+                datetime.strptime(record["Date"].strip(), fmt).date()  # noqa: DTZ007 - date only
                 for fmt in ("%d/%m/%Y", "%d/%m/%y", "%d/%m/%Y %H:%M")
                 if _date_matches(record["Date"].strip(), fmt)
             )
@@ -232,7 +232,7 @@ def _football_rows(payload: bytes, league: str, season: str) -> tuple[list[dict[
 
 def _date_matches(value: str, fmt: str) -> bool:
     try:
-        datetime.strptime(value, fmt)
+        datetime.strptime(value, fmt)  # noqa: DTZ007 - format check only
         return True
     except ValueError:
         return False

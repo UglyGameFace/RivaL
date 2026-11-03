@@ -61,7 +61,10 @@ def score(case: dict, reply: dict) -> dict:
     }
 
 
-def execute(endpoint: str, token: str, case: dict, *, timeout: float = 55) -> tuple[dict, float]:
+def execute(endpoint: str, token: str, case: dict, *, timeout: float = 55,
+            profile: str = "research") -> tuple[dict, float]:
+    if profile not in ("research", "extended"):
+        raise ValueError("Unknown research profile")
     # Synthetic timestamps are generated at invocation time, so the
     # historical-trend contract can be evaluated without treating years-old
     # benchmark fixtures as fresh production market data.
@@ -76,7 +79,8 @@ def execute(endpoint: str, token: str, case: dict, *, timeout: float = 55) -> tu
         "asset": case["asset"], "evidence": evidence,
     }).encode("utf-8")
     request = urllib.request.Request(
-        endpoint.rstrip("/") + "/v1/research",
+        endpoint.rstrip("/") + ("/v1/extended-research" if profile == "extended"
+                                else "/v1/research"),
         data=payload, method="POST",
         headers={"Authorization": "Bearer " + token,
                  "Content-Type": "application/json"},
@@ -87,14 +91,20 @@ def execute(endpoint: str, token: str, case: dict, *, timeout: float = 55) -> tu
     return data, round(time.perf_counter() - started, 3)
 
 
-def run(endpoint: str, token: str, cases: list[dict], repetitions: int) -> dict:
+def run(endpoint: str, token: str, cases: list[dict], repetitions: int,
+        *, profile: str = "research") -> dict:
     if not 1 <= repetitions <= 5:
         raise ValueError("repetitions outside safe local-only bounds")
+    if profile not in ("research", "extended"):
+        raise ValueError("Unknown research profile")
     results = []
     for case in cases:
         for rep in range(repetitions):
             try:
-                answer, duration = execute(endpoint, token, case)
+                answer, duration = execute(
+                    endpoint, token, case,
+                    profile=profile, timeout=110 if profile == "extended" else 55,
+                )
                 quality = score(case, answer)
                 results.append({
                     "case": case["id"], "repetition": rep,
@@ -112,6 +122,8 @@ def run(endpoint: str, token: str, cases: list[dict], repetitions: int) -> dict:
     durations = [item["seconds"] for item in results if "seconds" in item]
     return {
         "kind": "synthetic_read_only_research_benchmark",
+        "profile": profile,
+        "benchmark_scope": "quality_latency_and_failures_not_peak_host_ram",
         "not_trading_accuracy": True,
         "models_observed": sorted({r["model"] for r in results if r.get("model")}),
         "cases": len(cases), "repetitions": repetitions,
@@ -125,6 +137,11 @@ def run(endpoint: str, token: str, cases: list[dict], repetitions: int) -> dict:
         "positive_negative_cases": sum(c.get("expected_observed_trend") in ("up", "down") for c in cases),
         "mean_quality": round(statistics.mean(r["score"] for r in results), 4),
         "latency_p50_seconds": round(statistics.median(durations), 3) if durations else None,
+        "latency_p95_seconds": (
+            round(sorted(durations)[max(0, (len(durations) * 95 + 99) // 100 - 1)], 3)
+            if durations else None
+        ),
+        "failure_rate": round((len(results) - len(durations)) / len(results), 4),
         "latency_max_seconds": max(durations) if durations else None,
         "results": results,
     }
@@ -137,10 +154,16 @@ def compare(a: dict, b: dict) -> dict:
         "kind": "synthetic_research_quality_comparison",
         "not_trading_accuracy": True,
         "candidate_a": a["models_observed"],
+        "profile_a": a.get("profile", "research"),
+        "profile_b": b.get("profile", "research"),
         "candidate_b": b["models_observed"],
         "quality_delta_b_minus_a": round(b["mean_quality"] - a["mean_quality"], 4),
         "median_latency_a_seconds": a["latency_p50_seconds"],
         "median_latency_b_seconds": b["latency_p50_seconds"],
+        "p95_latency_a_seconds": a.get("latency_p95_seconds"),
+        "p95_latency_b_seconds": b.get("latency_p95_seconds"),
+        "failure_rate_a": a.get("failure_rate"),
+        "failure_rate_b": b.get("failure_rate"),
         "winner": "not_automatically_selected",
         "requires_cpu_peak_ram_and_independent_review": True,
     }
@@ -153,6 +176,8 @@ def main() -> None:
     parser.add_argument("--cases", type=Path,
                         default=Path(__file__).with_name("benchmark_cases.json"))
     parser.add_argument("--repetitions", type=int, default=2)
+    parser.add_argument("--profile", choices=("research", "extended"),
+                        default="research")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--compare-with", type=Path)
     args = parser.parse_args()
@@ -175,7 +200,8 @@ def main() -> None:
     cases = json.loads(args.cases.read_text())
     if not isinstance(cases, list) or not cases:
         parser.error("Benchmark cases are missing")
-    report = run(args.endpoint, token, cases, args.repetitions)
+    report = run(args.endpoint, token, cases, args.repetitions,
+                 profile=args.profile)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps({key: val for key, val in report.items() if key != "results"}, indent=2))

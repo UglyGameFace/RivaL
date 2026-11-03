@@ -1,7 +1,11 @@
 name: CI
 
 on:
+  # The PR already tests each branch commit. Restrict push CI to main so
+  # simultaneous push+PR check runs cannot cancel each other and mark a
+  # successful PR unstable. Production release still gates on main CI.
   push:
+    branches: [main]
   pull_request:
   workflow_dispatch:  # Owner can retest and redeploy current main without dummy commits.
 

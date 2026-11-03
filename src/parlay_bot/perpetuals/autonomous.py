@@ -209,7 +209,7 @@ class AutonomousResearch:
         if self.ai is None or not self.ai.available:
             return False
         now = _utc(now)
-        self.initialize()
+        await asyncio.to_thread(self.initialize)
         evidence, digest = await asyncio.to_thread(
             build_evidence, self.market, asset=asset, venues=self.venues, now=now,
         )
@@ -231,7 +231,7 @@ class AutonomousResearch:
             self._claim_slot, asset=asset, model=self.ai.model, now=now,
         ):
             return False
-        result = await self.ai.ask(asset=asset, venues=self.venues)
+        result = await self.ai.ask(asset=asset, venues=self.venues, busy_retry=True)
         # Reject cache-only or delayed results that would be issued after
         # the intended target candle. No retrospective paper predictions.
         issued = datetime.now(UTC)

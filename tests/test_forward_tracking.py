@@ -129,7 +129,8 @@ def test_pending_missing_lineage_and_invalid_outcomes_never_complete(learning_st
     assert not completed["complete"]
 
 
-def test_tracking_controls_are_available_without_triggering_sessions(learning_store):
+@pytest.mark.asyncio
+async def test_tracking_controls_are_available_without_triggering_sessions(learning_store):
     tracker = _monitor(learning_store)
     panel = ResearchDashboard(owner_id=42, market=PerpetualMarketStore(learning_store),
                               ai=None, venues=("hyperliquid",))
@@ -144,7 +145,11 @@ def test_tracking_controls_are_available_without_triggering_sessions(learning_st
         assert tracker.report(owner_id=42, asset="BTC", venue="hyperliquid")[
             "status"] == "not_started"
         # Merely opening a page must never create a new experiment.
-        rendered = pytest.importorskip("asyncio")
-        _ = rendered
+        result = await panel.render()
+        fields = {field.name: field.value for field in result.fields}
+        assert "Prediction tracking" in fields
+        assert "No tracking session yet" in fields["Prediction tracking"]
+        assert tracker.report(owner_id=42, asset="BTC", venue="hyperliquid")[
+            "status"] == "not_started"
     finally:
         panel.stop()

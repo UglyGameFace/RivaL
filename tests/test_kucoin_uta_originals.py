@@ -14,7 +14,6 @@ from parlay_bot.research.drive_source_census import parse_page_name, summarize
 from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.historical_coordinator import build_plan
 
-
 NOW = datetime(2026, 11, 3, tzinfo=UTC)
 
 
@@ -36,7 +35,7 @@ def test_kucoin_v2_attempt_floors_and_independent_product_identity():
 
 def test_source_query_exact_and_no_200_row_overfetch():
     first, end = k.bounds("2026-10", "candles_1m", now=NOW)
-    page = list(k.split_month(first, end, 60))[0]
+    page = next(k.split_month(first, end, 60))
     assert (page[1] - page[0]).total_seconds() == 180 * 60
     params = k.kline_params("candles_15m", "BTC", first,
                             first + timedelta(hours=45))

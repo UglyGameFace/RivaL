@@ -408,7 +408,7 @@ async def test_v2_feature_subset_is_immutable_and_receipt_sha_covers_indices(tmp
 
         async def propose_feature_hypothesis(self, *, asset, venues):
             return {**proposal(asset, mode="feature_subset_v2"),
-                    "feature_indices": [0, 2, 5, 8]}
+                    "venues": ["okx"], "feature_indices": [0, 2, 5, 8]}
 
     lab = FeatureHypothesisLab(store, AI(), venues=("okx",))
     stamp = datetime(2026, 11, 2, 1, 10, tzinfo=UTC)

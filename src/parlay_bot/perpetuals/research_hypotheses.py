@@ -13,8 +13,8 @@ import logging
 import re
 from datetime import UTC, datetime, timedelta
 
-from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.ai_types import ResearchUnavailable
+from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 
 _LOG = logging.getLogger(__name__)
 ASSETS = ("BTC", "ETH", "SOL", "XRP")

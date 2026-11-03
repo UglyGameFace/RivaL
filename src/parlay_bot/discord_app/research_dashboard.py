@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 import discord
 
 from parlay_bot.discord_app.opportunities import crypto_desk_embed
+from parlay_bot.perpetuals.ai_types import AiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.analytics import analytics_snapshot
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
@@ -19,7 +20,6 @@ from parlay_bot.perpetuals.forward_tracking import (
     TrackingUnavailable,
     tracking_text,
 )
-from parlay_bot.perpetuals.ai_types import AiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.local_first_research import LocalFirstResearch

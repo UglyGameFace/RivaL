@@ -21,6 +21,17 @@ SCORE_THRESHOLD = .56
 MAX_ROWS = 60
 
 
+SUPPORTED_QUOTE_SOURCES = frozenset({
+    ("hyperliquid", "USDC"),
+    ("binance", "USDT"),
+})
+
+
+def supports_quote_source(venue: str, currency: str) -> bool:
+    """Only sources with genuine on-host bid/ask observation support."""
+    return (venue, currency) in SUPPORTED_QUOTE_SOURCES
+
+
 def identity(quote):
     if isinstance(quote, PerpReferenceBook) and quote.venue == "hyperliquid":
         return "hyperliquid", quote.asset, "USDC"

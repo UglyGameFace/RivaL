@@ -11,6 +11,8 @@ from types import SimpleNamespace
 
 from parlay_bot.config import Settings
 from parlay_bot.discord_app.home import _performance_cycles
+from parlay_bot.perpetuals.family_quotes import SUPPORTED_QUOTE_SOURCES
+from parlay_bot.perpetuals.proof_progress import proof_progress
 from parlay_bot.storage.hot import PostgresHotStore
 
 MARKER = "RIVAL_LEARNING_CYCLE_RECEIPT="
@@ -36,6 +38,67 @@ def _status(value, now: datetime) -> dict:
     return result
 
 
+def _future_proof(store, now: datetime) -> dict:
+    """Read only the authoritative source-specific 21-day paper proof rows.
+
+    No SQL writes, model inference, synthetic quote fills or invented results.
+    A missing, stale or invalid family evaluation never counts as qualified.
+    """
+    try:
+        snapshots = []
+        unavailable = 0
+        for venue, currency in sorted(SUPPORTED_QUOTE_SOURCES):
+            for asset in ("BTC", "ETH", "SOL", "XRP"):
+                result = proof_progress(store, asset=asset, venue=venue, now=now)
+                unavailable += int(result["status"] == "unavailable")
+                for item in result["evaluations"]:
+                    candidate = item["candidate"]
+                    if candidate is None or not candidate.get("valid"):
+                        continue
+                    if item["quote"] != currency:
+                        continue
+                    snapshots.append({
+                        "asset": asset, "venue": venue, "quote": currency,
+                        "horizon_minutes": item["horizon"],
+                        "fresh": item["fresh"],
+                        "targets": candidate["targets"],
+                        "days": candidate["days"],
+                        "eligible_quotes": candidate["eligible_quotes"],
+                        "closed_quotes": candidate["closed_quotes"],
+                        "quote_coverage": candidate["quote_coverage"],
+                        "qualified_paper": item["paper_qualified"],
+                        "checks": candidate["checks"],
+                    })
+        if snapshots:
+            # Report an actual single exact-source candidate, never mix the
+            # best days of one venue with the quotes of another candidate.
+            best = max(snapshots, key=lambda r: (
+                int(r["qualified_paper"]), int(r["fresh"]),
+                r["days"], r["targets"], r["closed_quotes"], r["venue"],
+                r["asset"], r["horizon_minutes"],
+            ))
+            return {
+                "status": "recorded",
+                "evaluated_scopes": len(snapshots),
+                "fresh_scopes": sum(r["fresh"] for r in snapshots),
+                "qualified_paper_scopes": sum(r["qualified_paper"] for r in snapshots),
+                "best_exact_source": best,
+                "does_not_prove_real_fills": True,
+            }
+        return {
+            "status": "unavailable" if unavailable else "no_evaluations",
+            "evaluated_scopes": 0, "fresh_scopes": 0,
+            "qualified_paper_scopes": 0, "best_exact_source": None,
+            "does_not_prove_real_fills": True,
+        }
+    except Exception:  # noqa: BLE001 - optional research cannot mask a fresh heartbeat
+        return {
+            "status": "unavailable", "evaluated_scopes": 0,
+            "fresh_scopes": 0, "qualified_paper_scopes": 0,
+            "best_exact_source": None, "does_not_prove_real_fills": True,
+        }
+
+
 def read_receipt() -> dict:
     settings = Settings()
     if settings.rival_storage_backend != "postgres" or settings.rival_database_url is None:
@@ -56,6 +119,7 @@ def read_receipt() -> dict:
             "outcome": "verified" if both_fresh else "unverified",
             "forecast": forecast,
             "learning": learning,
+            "forward_proof": _future_proof(store, now),
             "does_not_prove_prediction_edge": True,
         }
     finally:

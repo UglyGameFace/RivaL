@@ -83,6 +83,33 @@ def select_live_streams(
     return selected
 
 
+def select_family_proof_scope(
+    eligible: list[tuple[str, str, str]], *, hour_slot: int,
+) -> tuple[str, str, str, int] | None:
+    """Rotate every quote-observable venue/asset/horizon within 48 hours.
+
+    Only original source-matched bid/ask snapshots can satisfy the after-cost
+    proof. The old hour % all_streams selection spent most proof evaluations
+    on venues without a quote observer, then changed horizon only after a
+    complete stream rotation (often >48 hours). Build a stable, deterministic
+    source-specific rotation instead. Never invent missing quotes or promote
+    a candidate without independent future and cost validation.
+    """
+    if hour_slot < 0:
+        raise ValueError("invalid UTC proof-evaluation slot")
+    # Delayed import avoids circular initialization: family_quotes references
+    # profit_proof, which itself imports the authoritative forward model.
+    from parlay_bot.perpetuals.family_quotes import supports_quote_source
+
+    scopes = sorted({
+        (venue, contract, currency, horizon)
+        for venue, contract, currency in eligible
+        if supports_quote_source(venue, currency)
+        for horizon in HORIZONS
+    })
+    return scopes[hour_slot % len(scopes)] if scopes else None
+
+
 class ForwardAccuracyMonitor:
     """Issue, settle and score immutable prospective research only."""
 
@@ -751,27 +778,37 @@ class ForwardAccuracyMonitor:
                 )
                 continue
         metrics["issued_forecasts"] = issued
-        # Hourly, bounded model-family governance uses ONLY already
-        # settled, source-exact forecasts and matched quote results. It
-        # cannot alter the incumbent forecast or send an unqualified call.
-        if stamp.minute < 5 and selection:
-            venue, contract, currency = selection[stamp.hour % len(selection)]
-            asset = asset_for_contract(contract)
-            if asset is not None:
-                horizon = (5, 15, 60)[(stamp.hour // max(1, len(selection))) % 3]
-                try:
-                    family_status = FamilyPromotion(self.store).evaluate(
-                        asset=asset, venue=venue, contract=contract,
-                        quote=currency, horizon=horizon, now=stamp,
-                    )
-                    _LOG.info(
-                        "RivaL family promotion gate venue=%s asset=%s horizon=%s "
-                        "status=%s family=%s",
-                        venue, asset, horizon, family_status["status"],
-                        family_status["selected_family"] or "none",
-                    )
-                except Exception:  # noqa: BLE001 - optional shadow governance
-                    _LOG.exception("RivaL source-specific family gate unavailable")
+        # One bounded, fair source-specific proof review per hour, including
+        # all three horizons. Other venues remain in immutable forward research
+        # but cannot earn after-cost proof without a real matching quote feed.
+        if stamp.minute < 5:
+            proof_scope = select_family_proof_scope(
+                selection, hour_slot=int(stamp.timestamp() // 3600),
+            )
+            if proof_scope is None:
+                _LOG.info(
+                    "RivaL after-cost proof deferred: no supported source "
+                    "with observable matched bid/ask quotes"
+                )
+            else:
+                venue, contract, currency, horizon = proof_scope
+                asset = asset_for_contract(contract)
+                if asset is not None:
+                    try:
+                        family_status = FamilyPromotion(self.store).evaluate(
+                            asset=asset, venue=venue, contract=contract,
+                            quote=currency, horizon=horizon, now=stamp,
+                        )
+                        _LOG.info(
+                            "RivaL family promotion gate venue=%s asset=%s horizon=%s "
+                            "status=%s family=%s",
+                            venue, asset, horizon, family_status["status"],
+                            family_status["selected_family"] or "none",
+                        )
+                    except Exception:  # noqa: BLE001 - optional shadow governance
+                        _LOG.exception(
+                            "RivaL source-specific family gate unavailable"
+                        )
         self._record_cycle(stamp, metrics)
         # The table alone does not explain a bare menu: log the gate
         # breakdown so the next empty-signal report names its cause.

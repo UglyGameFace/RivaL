@@ -7,6 +7,15 @@
 
 ---
 
+## In progress: source-exact historical logistic candidate quote qualification
+
+- **Root:** Historical logistic challengers issued forecasts and ran a shorter separate research screen, but were not inserted into the 21-day source-exact family quote/cost ledger. Thus they could never meet the stronger paper eligibility rules via that path. The main unseeded logistic incumbent accurately reports 0/100, not an archive count.
+- **Change:** Preserve the current live model. Send only imported, retrospectively screened same-source logistic challenger forecasts (with immutable model identity and actual trained weight hash) into the incumbent's forward shadow transaction; reuse matched market bids/asks and existing unchanged 150-target, 21-day, 80%-coverage and two after-cost stress gates. Reject missing/stale/wrong-market candidates and revoke paper eligibility if the original artifact disappears.
+- **Remaining:** Main bot and standalone LFM3 live acceptance, exact CI with PostgreSQL, then on-host source-matched candidate issuance/settlement/quote results. **No candidate is qualified merely by merging this code.** Serving historical winners instead of the incumbent remains a separate versioned change after genuine after-cost proof. Keep issues #6, #151, #188, #268 open.
+- **Validation:** Unit/quote/paper-governance tests and full CI pending; production evidence not yet verified. Historical research previously returned 0/48 qualifiers.
+
+---
+
 ## In progress: standalone LFM3 live host acceptance retry (2026-11-03 UTC)
 
 - **Merged baseline:** PR #285 -> `main@410adb12`, exact CI success, Discloud bot release success, and fresh Postgres learner and proof receipt verified. Live ETH/hyperliquid 5m: 579 unique future outcomes, 4 distinct days, 454/478 quotes (94.98%) with no proven baseline or after-cost superiority. The scheduled daily host checker is present on main, first scheduled occurrence still pending.

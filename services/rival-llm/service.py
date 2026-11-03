@@ -39,6 +39,8 @@ MAX_BODY = 30_000
 MAX_EVIDENCE_CHARS = 24_000
 CONTEXT_TOKENS = 4096
 GENERATION_TOKENS = 140
+# Strict, smaller response for a CPU-only feature suggestion, not a forecast.
+HYPOTHESIS_GENERATION_TOKENS = 96
 CONTEXT_SAFETY_TOKENS = 96
 
 
@@ -50,20 +52,16 @@ class ContextBudgetExceeded(ValueError):
 HYPOTHESES = ("trend_only", "momentum_only", "volatility_only", "volume_only",
               "feature_subset_v2")
 HYPOTHESIS_PROMPT = (
-    "Research experiment designer, NOT a trading predictor. "
-    "Use the verified past-evidence brief to choose ONE testable hypothesis: "
-    "legacy trend_only, momentum_only, volatility_only, volume_only, or "
-    "feature_subset_v2. For feature_subset_v2 ONLY, include feature_indices "
-    "as a sorted unique list of 2-8 integers between 0 and 9. Indices: "
-    "0=last-return,1=recent-return,2=volatility,3=candle-range, "
-    "4=relative-volume,5=RSI,6=MACD,7=Bollinger,8=ATR,9=volume-regime. "
-    "Choose one subset; never enumerate variants or claim tested improvement. "
-    "Do not provide a probability, direction, recommendation, live trade, "
-    "feature weight, claimed accuracy or unlisted model. "
-    "Return ONLY JSON keys: hypothesis (exact listed name), rationale "
-    "(5-120 characters), falsification (5-120 characters), plus "
-    "feature_indices ONLY when hypothesis=feature_subset_v2. "
-    "This is an untested suggestion for deterministic chronological validation."
+    "Suggest ONE untested, source-bound feature ablation, not a trade. "
+    "Return ONLY a small JSON object with keys hypothesis, rationale, "
+    "falsification. Choose hypothesis exactly from trend_only, momentum_only, "
+    "volatility_only, volume_only, feature_subset_v2. For feature_subset_v2 "
+    "add feature_indices: 2-8 sorted unique integers 0..9; otherwise omit it. "
+    "Features 0=last return, 1=recent return, 2=volatility, 3=range, "
+    "4=relative volume, 5=RSI, 6=MACD, 7=Bollinger, 8=ATR, 9=volume regime. "
+    "Keep rationale and falsification short (5-55 characters each). "
+    "No other keys, prices, predicted direction, confidence, weights, "
+    "claimed accuracy or performance. One JSON object; no prose."
 )
 
 PROMPT = (
@@ -419,7 +417,11 @@ class Gateway(ThreadingHTTPServer):
              "Bounded observation brief (untrusted):\n" +
              compact_evidence(asset, evidence)},
         ]
-        if self.prompt_tokens(messages) + GENERATION_TOKENS + CONTEXT_SAFETY_TOKENS > CONTEXT_TOKENS:
+        output_tokens = (
+            HYPOTHESIS_GENERATION_TOKENS if mode == "hypothesis"
+            else GENERATION_TOKENS
+        )
+        if self.prompt_tokens(messages) + output_tokens + CONTEXT_SAFETY_TOKENS > CONTEXT_TOKENS:
             raise ContextBudgetExceeded("model context window would truncate evidence")
         payload = json.dumps({
             "model": MODEL_CATALOG[self.model][0],
@@ -430,7 +432,7 @@ class Gateway(ThreadingHTTPServer):
             # LFM3 defaults to lengthy internal thinking, which exhausted the
             # 40s CPU deadline without generating any actual response text.
             "chat_template_kwargs": {"enable_thinking": False},
-            "max_tokens": GENERATION_TOKENS,
+            "max_tokens": output_tokens,
             "stream": False,
             "response_format": {"type": "json_object"},
         }).encode("utf-8")
@@ -487,6 +489,25 @@ class Gateway(ThreadingHTTPServer):
         }, evidence, asset=asset)
         grounded["output_format_repaired"] = repaired_format
         return grounded
+
+
+def inference_failure_kind(exc: Exception, *, mode: str) -> str:
+    """Only bounded diagnostics, never model data or exception prose."""
+    if isinstance(exc, urllib.error.HTTPError):
+        return "backend_http"
+    if isinstance(exc, TimeoutError):
+        return "backend_timeout"
+    if isinstance(exc, urllib.error.URLError):
+        return "backend_unavailable"
+    if isinstance(exc, json.JSONDecodeError):
+        return "invalid_json"
+    if isinstance(exc, ValueError):
+        if str(exc) == "local model exhausted generation token budget":
+            return "token_limit"
+        if str(exc) == "invalid bounded hypothesis output":
+            return "invalid_hypothesis" if mode == "hypothesis" else "invalid_output"
+        return "invalid_output"
+    return "malformed_backend_response"
 
 
 class GatewayHandler(BaseHTTPRequestHandler):
@@ -587,8 +608,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 return
             except (OSError, ValueError, KeyError, IndexError, TypeError,
                     urllib.error.URLError, json.JSONDecodeError) as exc:
-                LOG.warning("inference rejected class=%s", type(exc).__name__)
-                self.send_json({"error": "inference_failed"}, 503)
+                mode = "hypothesis" if self.path == "/v1/hypothesis" else "research"
+                kind = inference_failure_kind(exc, mode=mode)
+                LOG.warning("inference rejected mode=%s kind=%s", mode, kind)
+                self.send_json({"error": "inference_failed",
+                                "failure_kind": kind}, 503)
                 return
             self.send_json(answer)
         finally:

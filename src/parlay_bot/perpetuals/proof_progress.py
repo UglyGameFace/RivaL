@@ -36,14 +36,18 @@ def _candidate_summary(name: str, row: dict, *, selected: bool) -> dict:
         closed = int(row["closed_quotes"])
         trades = int(row["challenger_trades"])
         invalid = int(row["invalid_rows"])
+        missing = int(row.get("missing_quote_windows", eligible - closed))
+        duplicate_targets = int(row.get("duplicate_target_rows", 0))
         coverage = _finite(row["quote_coverage"])
         severe = row["cost_proof"]["severe"]
         conservative = row["cost_proof"]["conservative"]
         gain = _finite(row["forward_gain"])
         calibrated = row["calibration_status"] == "research_screen_passed"
-        if (min(targets, days, eligible, closed, trades, invalid) < 0
+        if (min(targets, days, eligible, closed, trades, invalid,
+                missing, duplicate_targets) < 0
                 or coverage is None or not 0 <= coverage <= 1
                 or eligible < closed or closed < trades
+                or missing != eligible - closed
                 or abs(coverage - (closed / eligible if eligible else 0)) > 1e-7
                 or not isinstance(row["qualified"], bool)):
             raise ValueError("invalid saved proof counters")
@@ -71,6 +75,8 @@ def _candidate_summary(name: str, row: dict, *, selected: bool) -> dict:
         "name": name, "valid": True, "targets": targets, "days": days,
         "eligible_quotes": eligible, "closed_quotes": closed,
         "quote_coverage": coverage, "trades": trades, "gain": gain,
+        "missing_quote_windows": missing,
+        "duplicate_target_rows": duplicate_targets,
         "severe_lower_bps": _finite(severe["candidate_net_lower_bps"]),
         "checks": checks, "qualified_paper": qualified,
     }
@@ -184,6 +190,8 @@ def proof_progress_text(proof: dict) -> str:
             f"days: {candidate['days']}/{MIN_DAYS}. "
             f"Matched book quotes: {candidate['closed_quotes']}/"
             f"{candidate['eligible_quotes']} ({coverage:.0%}, need {MIN_COVERAGE:.0%}).\n"
+            f"Missing matched quotes: {candidate['missing_quote_windows']}; "
+            f"overlapping targets ignored: {candidate['duplicate_target_rows']}.\n"
             f"Decision: {evidence['reason'][:170]}"
         )
     return ("\n".join(lines) + "\nPaper cost tests use assumed fees/slippage/funding; "

@@ -120,3 +120,40 @@ async def test_progress_is_a_lightweight_navigable_results_section(learning_stor
         assert len(fields["Future model proof"]) <= 1024
     finally:
         panel.stop()
+
+def test_quote_gap_and_overlap_evidence_is_visible_and_fail_closed(learning_store):
+    now = datetime(2026, 11, 2, 16, tzinfo=UTC)
+    _seed(learning_store, now, quote_count=110)
+    FamilyPromotion(learning_store).evaluate(
+        now=now, contract="BTC", quote="USDC", horizon=5, **_scope(),
+    )
+    with learning_store.connect() as conn:
+        saved = conn.execute(
+            "SELECT evidence_json FROM rival_family_promotion"
+        ).fetchone()
+        data = json.loads(saved["evidence_json"])
+        name = next(iter(data))
+        assert data[name]["missing_quote_windows"] == 58
+        data[name]["duplicate_target_rows"] = 3
+        conn.execute(
+            "UPDATE rival_family_promotion SET evidence_json=?",
+            (json.dumps(data),),
+        )
+    progress = proof_progress(learning_store, now=now, **_scope())
+    candidate = progress["evaluations"][0]["candidate"]
+    assert candidate["valid"]
+    assert candidate["missing_quote_windows"] == 58
+    assert candidate["duplicate_target_rows"] == 3
+    text = proof_progress_text(progress)
+    assert "Missing matched quotes: 58" in text
+    assert "overlapping targets ignored: 3" in text
+    # A corrupt persisted summary is never silently shown as qualified.
+    data[name]["missing_quote_windows"] = 0
+    with learning_store.connect() as conn:
+        conn.execute(
+            "UPDATE rival_family_promotion SET evidence_json=?",
+            (json.dumps(data),),
+        )
+    invalid = proof_progress(learning_store, now=now, **_scope())
+    assert not invalid["evaluations"][0]["candidate"]["valid"]
+    assert not invalid["evaluations"][0]["paper_qualified"]

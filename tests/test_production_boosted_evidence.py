@@ -20,7 +20,7 @@ def test_boosted_production_canary_fails_closed_before_delivery(learning_store):
     assert evidence["portable_screened"] == 0
     assert evidence["issued"] == evidence["settled"] == evidence["quote_exits"] == 0
     assert evidence["fresh_paper_promotions"] == []
-    assert "No screened portable boosted artifact" in evidence["status_reason"]
+    assert "None of the models built from history has passed screening" in evidence["status_reason"]
     assert evidence["actual_fills_verified"] is False
     assert evidence["actual_fees_funding_slippage_verified"] is False
     with pytest.raises(ValueError):
@@ -122,7 +122,7 @@ async def test_lineage_page_displays_real_boosted_delivery_proof_without_new_men
         view.section = "technical"
         detail = await view.render()
         technical = {field.name: str(field.value) for field in detail.fields}
-        assert "No screened portable boosted artifact" in technical["Boosted model production proof"]
+        assert "None of the models built from history has passed screening" in technical["Boosted model production proof"]
         assert "NOT VERIFIED" in technical["Boosted model production proof"]
     finally:
         view.stop()

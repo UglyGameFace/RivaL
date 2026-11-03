@@ -287,3 +287,30 @@ async def test_background_polymarket_board_never_uses_free_ai_budget(hot):
     assert call is not None
     reviewer.review_contract.assert_awaited_once()
     await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_hourly_uma_resolution_is_read_from_settled_price(hot):
+    """Hourly Up/Down markets report a UMA price, not a payout vector."""
+    service = PolymarketResearch(hot, ai=ai())
+    current = notice()
+    service.observe(current, request_ai=True)
+    call = await service.wait(current.slug)
+    source_call = {"slug": call.slug, "condition_id": CONDITION,
+                   "expires_at": call.expires.isoformat()}
+    now = call.expires + timedelta(minutes=5)
+    row = {"condition_id": CONDITION, "status": "resolved", "extended_review": False,
+           "was_disputed": False, "transaction_hash": "0x" + "c" * 64,
+           "price": "1000000000000000000", "proposed_price": "1000000000000000000",
+           "last_update_timestamp": str(int((call.expires + timedelta(minutes=1)).timestamp()))}
+    assert service._record_resolution(source_call, {**row, "price": "500000000000000000"},
+                                      now=now) == 0
+    assert service._record_resolution(source_call, {**row, "was_disputed": True}, now=now) == 0
+    early = str(int((call.expires - timedelta(minutes=1)).timestamp()))
+    assert service._record_resolution(source_call, {**row, "last_update_timestamp": early},
+                                      now=now) == 0
+    assert service._record_resolution(source_call, row, now=now) == 1
+    with hot.connect() as conn:
+        saved = conn.execute("SELECT * FROM rival_polymarket_ai_outcomes").fetchone()
+    assert saved["direction"] == "UP"
+    await service.aclose()

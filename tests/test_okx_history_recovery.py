@@ -160,7 +160,7 @@ async def test_okx_progress_on_private_research_menu(tmp_path):
         view._rebuild()
         fields = {x.name: x.value for x in (await view.render()).fields}
         assert "Historical recovery progress" in fields
-        assert "**OKX**: pending" in fields["Historical recovery progress"]
+        assert "**OKX**: not started yet" in fields["Historical recovery progress"]
         assert "Backfills are NOT past live predictions" in fields[
             "Historical recovery progress"
         ]

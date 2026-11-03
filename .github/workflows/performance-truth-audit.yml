@@ -8,8 +8,11 @@ on:
       mode:
         description: "counts = database counts; render = text of every Research page"
         type: choice
-        options: [counts, render]
+        options: [counts, render, logs]
         default: counts
+      pattern:
+        description: "logs mode: regex of log lines to print (only matching lines are shown)"
+        default: "Bitget|dYdX"
 
 permissions:
   contents: read
@@ -17,12 +20,13 @@ permissions:
 jobs:
   probe:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
       - name: Run probe on host
         env:
           MODE: ${{ inputs.mode || 'counts' }}
+          PATTERN: ${{ inputs.pattern }}
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
         run: |
@@ -32,28 +36,55 @@ jobs:
           script = ("tools/research_render_probe.py" if os.environ["MODE"] == "render"
                     else "tools/performance_truth_probe.py")
           code = base64.b64encode(gzip.compress(pathlib.Path(script).read_bytes())).decode()
-          cmd = ("python -c \"import base64,gzip,sys;sys.path.insert(0,'src');"
-                 f"exec(gzip.decompress(base64.b64decode('{code}')))\"")
-          req = request.Request(
-              "https://api.discloud.app/v2/app/"
-              + parse.quote(os.environ["DISCLOUD_APP_ID"], safe="") + "/console",
-              data=json.dumps({"command": cmd}).encode(),
-              headers={"api-token": os.environ["DISCLOUD_TOKEN"],
-                       "Content-Type": "application/json"}, method="PUT")
-          with request.urlopen(req, timeout=500) as response:
-              data = json.load(response)
-          shell = data.get("apps", {}).get("shell", {})
-          for line in str(shell.get("stdout", "")).splitlines():
-              if line.startswith("RIVAL_PERFORMANCE_PROBE="):
-                  print(json.dumps(json.loads(line.split("=", 1)[1]), indent=1))
-                  break
-              if line.startswith("RIVAL_RENDER_PROBE="):
-                  report = json.loads(gzip.decompress(base64.b64decode(line.split("=", 1)[1])))
-                  pathlib.Path("render.json").write_text(json.dumps(report, indent=1))
-                  print(json.dumps(report, indent=1))
-                  break
+          def run(prefix=""):
+              cmd = (prefix + "python -c \"import base64,gzip,sys;sys.path.insert(0,'src');"
+                     f"exec(gzip.decompress(base64.b64decode('{code}')))\"")
+              req = request.Request(
+                  "https://api.discloud.app/v2/app/"
+                  + parse.quote(os.environ["DISCLOUD_APP_ID"], safe="") + "/console",
+                  data=json.dumps({"command": cmd}).encode(),
+                  headers={"api-token": os.environ["DISCLOUD_TOKEN"],
+                           "Content-Type": "application/json"}, method="PUT")
+              with request.urlopen(req, timeout=500) as response:
+                  data = json.load(response)
+              return data.get("apps", {}).get("shell", {})
+          if os.environ["MODE"] == "logs":
+              import re
+              req = request.Request(
+                  "https://api.discloud.app/v2/app/"
+                  + parse.quote(os.environ["DISCLOUD_APP_ID"], safe="") + "/logs",
+                  headers={"api-token": os.environ["DISCLOUD_TOKEN"]})
+              with request.urlopen(req, timeout=60) as response:
+                  data = json.load(response)
+              apps = data.get("apps")
+              app = apps[0] if isinstance(apps, list) else apps or {}
+              text = str((app.get("terminal") or {}).get("big") or "")
+              wanted = re.compile(os.environ.get("PATTERN") or "Bitget")
+              secret = re.compile(r"(?i)(token|secret|password|key|postgres)")
+              lines = [l for l in text.splitlines() if wanted.search(l) and not secret.search(l)]
+              print("\n".join(lines[-200:]) or "no matching lines")
+              raise SystemExit(0)
+          if os.environ["MODE"] == "render":
+              merged = {}
+              for asset in ("BTC", "ETH", "SOL", "XRP"):
+                  shell = run(f"RIVAL_PROBE_ASSETS={asset} ")
+                  for line in str(shell.get("stdout", "")).splitlines():
+                      if line.startswith("RIVAL_RENDER_PROBE="):
+                          merged.update(json.loads(gzip.decompress(
+                              base64.b64decode(line.split("=", 1)[1]))))
+                          break
+                  else:
+                      merged[f"error/{asset}"] = str(shell.get("stderr", ""))[-800:]
+              pathlib.Path("render.json").write_text(json.dumps(merged, indent=1))
+              print(json.dumps(merged, indent=1))
           else:
-              print("no probe output; stderr tail:", str(shell.get("stderr", ""))[-800:])
+              shell = run()
+              for line in str(shell.get("stdout", "")).splitlines():
+                  if line.startswith("RIVAL_PERFORMANCE_PROBE="):
+                      print(json.dumps(json.loads(line.split("=", 1)[1]), indent=1))
+                      break
+              else:
+                  print("no probe output; stderr tail:", str(shell.get("stderr", ""))[-800:])
           PY
       - uses: actions/upload-artifact@v4
         if: always() && hashFiles('render.json') != ''

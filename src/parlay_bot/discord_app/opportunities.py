@@ -14,6 +14,7 @@ from parlay_bot.discord_app.presentation import display_book
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
+from parlay_bot.perpetuals.forward_audit import MODEL as LIVE_MODEL
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
@@ -371,15 +372,20 @@ def crypto_desk_embed(
             inline=False,
         )
     for watch in watches:
+        # Scores below belong to the live model only; say so when a watch
+        # comes from a different (unproven) model version.
+        other = (f" • model {str(watch.get('model_version'))[:28]} (no track record)"
+                 if watch.get("model_version") not in (None, LIVE_MODEL) else "")
         embed.add_field(
-            name=f"👀 {watch['direction']} watch • {watch['horizon_minutes']}m • {watch['venue']}",
+            name=(f"👀 {watch['direction']} watch • {watch['horizon_minutes']}m • "
+                  f"{watch['venue']}{other}")[:256],
             value=(
                 f"Last completed candle: **{_cash(watch['price'])}** "
                 f"({discord.utils.format_dt(watch['price_observed_at'], style='R')})\n"
                 f"Raw model probability for {watch['direction']}: **{watch['direction_probability']:.1%}** "
                 "(not profit-calibrated)\n"
                 f"Issued {discord.utils.format_dt(watch['issued'], style='R')} · "
-                f"Target {discord.utils.format_dt(watch['target'], style='R')}\n"
+                f"Result known {discord.utils.format_dt(watch['target'] + timedelta(minutes=5), style='R')}\n"
                 "**Action: WATCH, not an approved entry.**"
             ),
             inline=False,
@@ -387,20 +393,27 @@ def crypto_desk_embed(
     if proof:
         try:
             report = ForwardAccuracyMonitor(market).summary(asset=asset, now=stamp)
-            for horizon in (5, 15):
+            for horizon in (5, 15, 60):
                 info = report["last_7d"][horizon]
                 decided = info["settled"]
                 edge = info["model_beats_baseline"]
-                verdict = ("Beating baseline" if edge is True
-                           else "Not beating baseline" if edge is False
+                verdict = ("Beating the basic forecast" if edge is True
+                           else "Not beating the basic forecast" if edge is False
                            else "Not enough independent proof")
+                period = "Last 7 days"
+                try:
+                    first = datetime.fromisoformat(str(info.get("first_issued")))
+                    if first.tzinfo is not None and stamp - first < timedelta(days=6, hours=12):
+                        period = f"Since {first:%b %d} (model went live)"
+                except (TypeError, ValueError):
+                    pass
                 embed.add_field(
-                    name=f"Past seven days • {horizon}m",
+                    name=f"{period} • {horizon}m • live model",
                     value=(
-                        f"Settled predictions: **{decided}** · "
+                        f"Graded predictions: **{decided:,}** · "
                         f"Hit rate: **{info['hit_rate']:.1%}** "
                         if info["hit_rate"] is not None else
-                        f"Settled predictions: **{decided}** · No reliable hit rate"
+                        f"Graded predictions: **{decided:,}** · No reliable hit rate"
                     ) + f"\n**{verdict}**. Overlapping events and costs not yet cleared.",
                     inline=False,
                 )

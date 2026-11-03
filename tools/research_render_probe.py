@@ -9,13 +9,52 @@ import asyncio
 import base64
 import gzip
 import json
+import os
 
 MARKER = "RIVAL_RENDER_PROBE="
 SKIP = {("math", "ai"), ("accuracy", "tracker")}
 
 
+def _dump(embed) -> dict:
+    return {"title": embed.title, "description": embed.description,
+            "fields": [[f.name, f.value] for f in embed.fields],
+            "footer": embed.footer.text if embed.footer else None}
+
+
+async def _render_home(out, store, market, venues, assets) -> None:
+    """The Bot Performance page exactly as GuidedHome renders it."""
+    from types import SimpleNamespace
+
+    from parlay_bot.discord_app.home import GuidedHome
+    from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
+
+    poly = PolymarketResearch(store, ai=None)
+    poly.initialize()
+    dummy = SimpleNamespace()
+    for asset in assets:
+        for horizon in (5, 15, 60):
+            home = GuidedHome(
+                owner_id=1, location=dummy, builder=dummy, collector=None,
+                market=market, targets=dummy, paper=dummy, quotes=dummy, profit=None,
+                venues=venues,
+                polymarket_status=lambda a, h: poly.learner.summary(asset=a, horizon=h),
+            )
+            home.coin, home.horizon = asset, horizon
+            home.navigate("performance")
+            key = f"performance/{asset}/{horizon}"
+            try:
+                out[key] = _dump(await asyncio.wait_for(home.render(), timeout=60))
+                # Second render: the improvement check is cached after a slow first run.
+                out[key + "/second"] = _dump(await asyncio.wait_for(home.render(), timeout=60))
+            except Exception as exc:  # noqa: BLE001
+                out[key] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+            finally:
+                home.stop()
+
+
 async def _render_all() -> dict:
     from parlay_bot.config import Settings
+    from parlay_bot.discord_app.opportunities import crypto_desk_embed
     from parlay_bot.discord_app.research_dashboard import _SECTIONS, ResearchDashboard
     from parlay_bot.perpetuals.market_store import PerpetualMarketStore
     from parlay_bot.storage.hot import PostgresHotStore
@@ -30,24 +69,27 @@ async def _render_all() -> dict:
                 "SELECT DISTINCT venue FROM perp_forward_audit WHERE issued_at>=?",
                 ("2026-11-01",)).fetchall()}))
         out["venues"] = venues
-        assets = ("BTC", "ETH", "SOL", "XRP")
-        for screen in ("accuracy", "math", "opportunities"):
+        assets = tuple(a for a in os.environ.get("RIVAL_PROBE_ASSETS", "BTC").split(",") if a)
+        await _render_home(out, store, market, venues, assets)
+        for asset in assets:
+            for proof in (False, True):
+                try:
+                    embed = crypto_desk_embed(market, asset=asset, proof=proof)
+                    out[f"desk/{'proof' if proof else 'watch'}/{asset}"] = _dump(embed)
+                except Exception as exc:  # noqa: BLE001
+                    out[f"desk/{proof}/{asset}"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+        for screen in ("accuracy", "math"):
             for section, _label in _SECTIONS[screen]:
                 if (screen, section) in SKIP:
                     continue
-                for asset in assets if (screen, section) in (
-                        ("accuracy", "lineage"), ("accuracy", "overview")) else ("BTC",):
+                for asset in assets:
                     view = ResearchDashboard(owner_id=1, market=market, ai=None,
                                              venues=venues, shadow_enabled=True)
                     view.asset, view.screen, view.section = asset, screen, section
                     key = f"{screen}/{section}/{asset}"
                     try:
-                        embed = await asyncio.wait_for(view._render_full(), timeout=60)
-                        out[key] = {
-                            "title": embed.title, "description": embed.description,
-                            "fields": [[f.name, f.value] for f in embed.fields],
-                            "footer": embed.footer.text if embed.footer else None,
-                        }
+                        embed = await asyncio.wait_for(view.render(), timeout=60)
+                        out[key] = _dump(embed)
                     except Exception as exc:  # noqa: BLE001
                         out[key] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
                     finally:

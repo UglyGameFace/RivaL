@@ -156,3 +156,51 @@ def test_summary_counts_predictions_issued_after_their_window_opened(tmp_path):
         assert score["issued_late"] == 1
     finally:
         store.close()
+
+
+def test_concurrent_improvement_requests_share_one_query(monkeypatch):
+    import threading
+    import time as _time
+    from types import SimpleNamespace
+
+    from parlay_bot.discord_app import home as home_module
+
+    calls = []
+
+    def slow(_market, asset, horizon):
+        calls.append(asset)
+        _time.sleep(0.3)
+        return {"status": "insufficient", "targets": 1, "days": 1}
+
+    monkeypatch.setattr(home_module, "_performance_benefit", slow)
+    market = SimpleNamespace()
+    results = []
+    threads = [threading.Thread(
+        target=lambda: results.append(home_module._cached_benefit(market, "SOL", 15)))
+        for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert len(calls) == 1
+    assert len(results) == 3
+
+
+def test_recovery_lines_are_plain():
+    from parlay_bot.discord_app.research_dashboard import _recovery_line
+
+    now = datetime(2026, 11, 3, 18, tzinfo=UTC)
+    base = {"inserted_bars": 100, "started_from": "2026-04-01T00:00:00+00:00"}
+    assert "✅ done" in _recovery_line(
+        {**base, "venue": "kucoin", "status": "progress",
+         "next_opened_at": "2026-11-03T14:00:00+00:00"}, now=now)
+    assert "filled up to Jun 08" in _recovery_line(
+        {**base, "venue": "bitget", "status": "progress",
+         "next_opened_at": "2026-06-08T01:30:00+00:00"}, now=now)
+    assert "only serves recent candles" in _recovery_line(
+        {**base, "venue": "gate", "status": "source_recent_limit",
+         "next_opened_at": "2026-04-01T00:00:00+00:00"}, now=now)
+    assert "filled back to May 01" in _recovery_line(
+        {**base, "venue": "okx", "status": "progress",
+         "started_from": "2026-10-28T19:45:00+00:00",
+         "next_opened_at": "2026-05-01T00:00:00+00:00"}, now=now)

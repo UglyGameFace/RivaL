@@ -10,6 +10,7 @@ revisits them under the same prospective guards.
 """
 from __future__ import annotations
 
+import dataclasses
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.features import live_examples
@@ -172,3 +173,75 @@ def test_training_labels_flat_target_as_not_up():
     last = samples[-1]
     assert last.issued_at == candles[118].observed_at
     assert last.label_up == 0
+
+
+def test_no_trade_target_candle_is_settled_but_not_graded(tmp_path):
+    """A zero-trade candle repeats the old price; it is not a NOT-UP result."""
+    now = START + timedelta(hours=2)
+    store = SQLiteHotStore(tmp_path / "notrade.sqlite")
+    market = PerpetualMarketStore(store)
+    monitor = ForwardAccuracyMonitor(market)
+    target = START + timedelta(minutes=60)
+    try:
+        market.initialize()
+        monitor.initialize()
+        with store.connect() as conn:
+            insert_candle(conn, opened=target, close=100.0,
+                          observed=target + timedelta(minutes=6))
+            conn.execute("UPDATE perp_market_candles SET trades=0")
+            insert_forecast(conn, target=target, issued=target - timedelta(minutes=30),
+                            reference_close=100.0)
+        assert monitor._settle(now) == 1
+        row = settled_row(store)
+        assert row["settled_at"] is not None
+        assert row["outcome_up"] is None
+        score = monitor.summary(asset="BTC", now=now)["last_7d"][5]
+        assert (score["settled"], score["scored"]) == (1, 0)
+    finally:
+        store.close()
+
+
+def test_startup_withdraws_old_labels_graded_from_no_trade_candles(tmp_path):
+    store = SQLiteHotStore(tmp_path / "withdraw.sqlite")
+    market = PerpetualMarketStore(store)
+    target = START + timedelta(minutes=60)
+    try:
+        ForwardAccuracyMonitor(market).initialize()
+        with store.connect() as conn:
+            insert_candle(conn, opened=target, close=100.0,
+                          observed=target + timedelta(minutes=6))
+            conn.execute("UPDATE perp_market_candles SET trades=0")
+            insert_forecast(conn, target=target, issued=target - timedelta(minutes=30),
+                            reference_close=100.0)
+            conn.execute(
+                "UPDATE perp_forward_audit SET settled_at=?, outcome_up=0, "
+                "realized_close=100.0, model_brier=.49, baseline_brier=.25",
+                ((target + timedelta(minutes=7)).isoformat(),),
+            )
+        fresh = PerpetualMarketStore(store)  # a new process start
+        ForwardAccuracyMonitor(fresh).initialize()
+        row = settled_row(store)
+        assert row["settled_at"] is not None
+        assert row["outcome_up"] is None
+    finally:
+        store.close()
+
+
+def test_training_skips_targets_without_trades():
+    start = START
+    bars = []
+    for i in range(80):
+        opened = start + timedelta(minutes=5 * i)
+        closed = opened + timedelta(minutes=5) - timedelta(milliseconds=1)
+        price = 100 + (i % 7) / 3
+        bars.append(MarketCandle(
+            "dydx", "XRP-USD", "USD", 5, opened, closed,
+            closed + timedelta(seconds=30), price, price + 1, price - 1, price,
+            10.0, 0 if i % 2 else 5,
+        ))
+    examples = live_examples(bars, horizon_minutes=5)
+    traded = live_examples(
+        [dataclasses.replace(b, trades=5) for b in bars], horizon_minutes=5,
+    )
+    assert examples
+    assert len(examples) < len(traded)

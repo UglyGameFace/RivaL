@@ -130,6 +130,45 @@ class _SectionSelect(discord.ui.Select["ResearchDashboard"]):
         await dashboard.redraw(interaction)
 
 
+_VENUE_NAMES = {
+    "bitget": "Bitget", "deribit": "Deribit", "dydx": "dYdX", "gate": "Gate",
+    "hyperliquid": "Hyperliquid", "kucoin": "KuCoin", "lighter": "Lighter",
+    "okx": "OKX", "phemex": "Phemex",
+}
+
+
+def _recovery_line(row: dict, *, now: datetime | None = None) -> str:
+    """One plain backfill status per exchange, without internal codes."""
+    name = _VENUE_NAMES.get(str(row["venue"]), str(row["venue"]))
+    clock = now or datetime.now(UTC)
+    imported = int(row.get("inserted_bars") or 0)
+    status = str(row.get("status") or "")
+    try:
+        cursor = datetime.fromisoformat(str(row["next_opened_at"]))
+        start = datetime.fromisoformat(str(row["started_from"]))
+    except (KeyError, TypeError, ValueError):
+        return f"**{name}**: {imported:,} old candles saved"
+    backward = start > cursor  # OKX walks back from where it started
+    if status == "pending" and not imported:
+        return f"**{name}**: not started yet"
+    if status in ("caught_up", "gaps_pending", "gap_repair") or (
+            not backward and clock - cursor <= timedelta(hours=6)):
+        state = "✅ done" + (" (re-checking a few gaps)" if status == "gaps_pending" else "")
+    elif status == "source_recent_limit":
+        state = "⛔ this exchange's API only serves recent candles"
+    elif status == "upstream_empty":
+        state = "⛔ the exchange returned no older candles"
+    elif status == "blocked":
+        state = "⛔ blocked by the exchange (will retry)"
+    elif status == "retry":
+        state = "⚠️ last attempt failed, retrying"
+    elif backward:
+        state = f"⏳ filled back to {cursor:%b %d}"
+    else:
+        state = f"⏳ filled up to {cursor:%b %d}"
+    return f"**{name}**: {state} · {imported:,} old candles saved"
+
+
 def _when(value) -> str:
     """A stored ISO timestamp as a Discord relative time, never raw ISO text."""
     if not value:
@@ -676,6 +715,22 @@ class ResearchDashboard(discord.ui.View):
                 return None
         return dict(row) if row is not None else None
 
+    def _all_history_progress(self) -> list[dict]:
+        """Every exchange's backfill state for this coin (one DB query)."""
+        if self.market is None:
+            return []
+        with self.market.store.connect() as conn:
+            try:
+                rows = conn.execute(
+                    """SELECT venue,status,inserted_bars,started_from,next_opened_at,
+                              empty_windows,attempted_at
+                       FROM perp_history_recovery WHERE asset=? ORDER BY venue""",
+                    (self.asset,),
+                ).fetchall()
+            except Exception:  # noqa: BLE001 - schema upgrade pending
+                return []
+        return [dict(row) for row in rows]
+
     def _bitget_history_progress(self) -> dict | None:
         """One DB query, no Bitget API request or stale embedded cache."""
         if self.market is None:
@@ -928,20 +983,12 @@ class ResearchDashboard(discord.ui.View):
                                             "These are NOT live forward tests."
                                         )[:1024], inline=False,
                                     )
-                                okx = await asyncio.to_thread(
-                                    self._okx_history_progress,
-                                )
-                                progress = (
-                                    ("Gate", recovery), ("KuCoin", kucoin),
-                                    ("Bitget", bitget), ("OKX", okx),
-                                )
-                                lines = [
-                                    (
-                                        f"**{name}**: {row['status']} · "
-                                        f"{int(row['inserted_bars']):,} imported · "
-                                        f"cursor {str(row['next_opened_at'])[:16]} UTC"
-                                    ) if row is not None else f"**{name}**: not started"
-                                    for name, row in progress
+                                del bitget  # every venue is listed below
+                                rows = await asyncio.to_thread(self._all_history_progress)
+                                seen = {str(row["venue"]) for row in rows}
+                                lines = [_recovery_line(row) for row in rows] + [
+                                    f"**{_VENUE_NAMES.get(v, v)}**: not started"
+                                    for v in self.venues if v not in seen
                                 ]
                                 embed.add_field(
                                     name="Historical recovery progress",
@@ -1293,7 +1340,7 @@ class ResearchDashboard(discord.ui.View):
                               else "Boosted model production proof"),
                         value=(_plain_boosted_proof(live_proof, incumbent=incumbent_proof)
                                if self.section == "lineage" else (
-                            f"**Imported:** {live_proof['portable_imported']} portable trees, "
+                            f"**Built from history:** {live_proof['portable_imported']} models, "
                             f"**{live_proof['portable_screened']}** passed screening.\n"
                             f"{explanation}\n"
                             f"**Advanced-model only, last 30d:** {live_proof['issued']} "
@@ -1648,8 +1695,8 @@ class ResearchDashboard(discord.ui.View):
                                 if stats["hit_rate"] is not None else "unavailable"
                             )
                             value = (
-                                f"Issued: **{stats['issued']}**, settled: "
-                                f"**{n}** across {stats['venues']} venues.\n"
+                                f"Issued: **{stats['issued']:,}**, settled: "
+                                f"**{n:,}** across {stats['venues']} exchanges.\n"
                                 f"Directional hit rate: **{hit}**.\n"
                                 + (
                                     f"Brier loss: **{stats['brier']:.4f}** vs "

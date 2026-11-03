@@ -170,6 +170,9 @@ def proof_progress(store, *, asset: str, venue: str,
     }
 
 
+_QUOTED_VENUES = frozenset({"hyperliquid", "binance"})
+
+
 def proof_progress_text(proof: dict) -> str:
     """Discord-safe summary; never imply execution profits."""
     if not proof["evaluations"]:
@@ -193,6 +196,10 @@ def proof_progress_text(proof: dict) -> str:
             f"Missing matched quotes: {candidate['missing_quote_windows']}; "
             f"overlapping targets ignored: {candidate['duplicate_target_rows']}.\n"
             f"Decision: {evidence['reason'][:170]}"
+            + ("" if evidence["venue"] in _QUOTED_VENUES else
+               f"\n⚠️ RivaL only records live bid/ask prices on Hyperliquid and "
+               f"Binance, so a {evidence['venue']} model cannot reach the quote "
+               "requirement. Pick Hyperliquid to see one that can.")
         )
     return ("\n".join(lines) + "\nPaper cost tests use assumed fees/slippage/funding; "
             "real fills and real profitability are NOT verified.")[:1024]

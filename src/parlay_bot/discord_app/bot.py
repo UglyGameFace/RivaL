@@ -2010,6 +2010,15 @@ class RivalDiscordClient(discord.Client):
                 "last_problem": self.heartbeat.last_problem,
                 "consecutive_problems": self.heartbeat.consecutive_problems,
             }
+        research = None
+        try:
+            from parlay_bot.discord_app.research_alerts import research_alerts
+            research = await asyncio.wait_for(asyncio.to_thread(
+                research_alerts, self.store,
+                intelligence_enabled=getattr(self, "_intelligence_task", None) is not None,
+            ), timeout=15)
+        except Exception:  # noqa: BLE001
+            _LOG.warning("RivaL status card could not check prediction health")
         memory = host_memory.snapshot()
         return StatusFacts(
             now=now, boot_at=self._boot_at,
@@ -2026,6 +2035,7 @@ class RivalDiscordClient(discord.Client):
             },
             problems=self.problem_log.recent(),
             problem_totals=self.problem_log.totals(),
+            research=research,
         )
 
     async def _status_loop(self) -> None:
@@ -2044,10 +2054,14 @@ class RivalDiscordClient(discord.Client):
                     self._status_policy.posted(signature, facts.now)
             except asyncio.CancelledError:
                 raise
-            except (discord.Forbidden, discord.NotFound):
+            except (discord.Forbidden, discord.NotFound) as exc:
                 _LOG.warning(
-                    "RivaL status channel %s unavailable: check the ID and that the "
-                    "bot can view and send messages there", channel_id)
+                    "RivaL status channel %s unavailable (%s, Discord code %s): %s",
+                    channel_id, type(exc).__name__, getattr(exc, "code", "?"),
+                    "the ID is not a text channel the bot can see (copy it from the "
+                    "channel itself, in a server the bot has joined)"
+                    if isinstance(exc, discord.NotFound) or getattr(exc, "code", 0) == 50001
+                    else "the bot needs View Channel, Send Messages and Embed Links there")
                 channel = None
                 await asyncio.sleep(600)
                 continue

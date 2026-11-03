@@ -36,6 +36,8 @@ class StatusFacts:
     memory: dict | None = None
     problems: list = field(default_factory=list)  # error_log.ProblemGroup
     problem_totals: dict = field(default_factory=dict)
+    # Prediction health: [(stable key, text)]; None = not checked.
+    research: list | None = None
 
 
 def _ago(when: datetime | None, now: datetime) -> str:
@@ -108,6 +110,7 @@ def assess(facts: StatusFacts) -> tuple[str, tuple[str, ...]]:
             keys.append("liquidity:stale")
     if facts.memory and facts.memory.get("pressure"):
         keys.append("memory:pressure")
+    keys.extend(f"research:{key}" for key, _ in facts.research or ())
     severity = "down" if down else ("degraded" if keys else "healthy")
     return severity, tuple(sorted(keys))
 
@@ -187,6 +190,14 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
             f"{'✅' if last and now - last <= STALE_LIQUIDITY_AFTER else '⚠️'} "
             f"Liquidity record: newest saved 5-min bucket began {_ago(last, now)}")
         embed.add_field(name="Live streams", value=_clip(stream_lines), inline=False)
+
+    if facts.research is not None:
+        embed.add_field(
+            name="Prediction health",
+            value=_clip([text for _, text in facts.research])
+            or "✅ Forecasts flowing, six-year model fresh, accuracy above the "
+               "up-rate, RivaL Intelligence reviewing",
+            inline=False)
 
     if facts.memory:
         memory = facts.memory

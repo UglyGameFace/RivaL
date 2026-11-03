@@ -175,6 +175,8 @@ class ForwardTracking:
                 if record["settled_at"] is None:
                     pending += 1
                     continue
+                if record["outcome_up"] is None and record["model_brier"] is None:
+                    continue  # no trades in the target window: nothing to grade
                 settled = datetime.fromisoformat(str(record["settled_at"]))
                 y = int(record["outcome_up"])
                 p = float(record["probability_up"])

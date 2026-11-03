@@ -152,6 +152,7 @@ class MultiExchangeResearch:
                           COUNT(*) AS n,SUM(model_brier) AS loss
                    FROM perp_forward_audit
                    WHERE model_version=? AND settled_at IS NOT NULL
+                     AND model_brier IS NOT NULL
                      AND settled_at<? AND issued_at>=?
                    GROUP BY asset,venue,horizon_minutes""",
                 (SOURCE_MODEL, stamp.isoformat(),

@@ -163,6 +163,23 @@ def probe() -> dict:
             out["labels_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         with store.connect() as conn:
           try:
+            out["candle_trades"] = [
+                [str(r["venue"]), str(r["contract"]), int(r["n"]), int(r["zero_trades"]),
+                 int(r["unknown_trades"]), int(r["flat"]), int(r["flat_zero"])]
+                for r in conn.execute("""
+                    SELECT venue, contract, COUNT(*) AS n,
+                           SUM(CASE WHEN trades=0 THEN 1 ELSE 0 END) AS zero_trades,
+                           SUM(CASE WHEN trades<0 THEN 1 ELSE 0 END) AS unknown_trades,
+                           SUM(CASE WHEN open_price=close_price THEN 1 ELSE 0 END) AS flat,
+                           SUM(CASE WHEN open_price=close_price AND trades=0 THEN 1 ELSE 0 END)
+                               AS flat_zero
+                    FROM perp_market_candles
+                    WHERE interval_minutes=5 AND opened_at>=? AND venue IN ('dydx','hyperliquid','okx')
+                    GROUP BY venue, contract ORDER BY venue, contract""", (day,)).fetchall()]
+          except Exception as exc:  # noqa: BLE001
+            out["candle_trades_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        with store.connect() as conn:
+          try:
             out["recovery"] = [
                 {k: (v if isinstance(v, (int, float, str)) or v is None else str(v))
                  for k, v in dict(r).items()}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -342,24 +343,55 @@ def _performance_benefit(market: object, asset: str, horizon: int) -> dict:
 
 
 # The improvement query takes 3-7 s in production, longer than the page's
-# 4 s budget, and its answer moves slowly. Each run finishes on its worker
-# thread even after the page stops waiting, and the result is reused for a
-# few minutes, so the next Refresh shows it instead of "Cannot check".
-BENEFIT_CACHE_SECONDS = 600
+# 4 s budget, and its answer moves slowly. The bot refreshes every coin and
+# timeframe in the background (warm_benefit_cache) so the page reads a ready
+# answer; a page request that still misses waits for any run already in
+# flight instead of starting a duplicate query.
+BENEFIT_CACHE_SECONDS = 45 * 60
 _BENEFIT_CACHE: dict[tuple, tuple[float, object, dict]] = {}
+_BENEFIT_INFLIGHT: dict[tuple, threading.Event] = {}
+_BENEFIT_LOCK = threading.Lock()
 
 
-def _cached_benefit(market: object, asset: str, horizon: int) -> dict:
+def _cached_benefit(market: object, asset: str, horizon: int, *, refresh: bool = False) -> dict:
     key = (id(market), asset, horizon)
-    hit = _BENEFIT_CACHE.get(key)
-    if hit is not None and hit[1] is market and time.monotonic() - hit[0] < BENEFIT_CACHE_SECONDS:
-        return hit[2]
-    result = _performance_benefit(market, asset, horizon)
-    if isinstance(result, dict):
-        if len(_BENEFIT_CACHE) > 64:
-            _BENEFIT_CACHE.clear()
-        _BENEFIT_CACHE[key] = (time.monotonic(), market, result)
-    return result
+    while True:
+        with _BENEFIT_LOCK:
+            hit = _BENEFIT_CACHE.get(key)
+            if (not refresh and hit is not None and hit[1] is market
+                    and time.monotonic() - hit[0] < BENEFIT_CACHE_SECONDS):
+                return hit[2]
+            running = _BENEFIT_INFLIGHT.get(key)
+            if running is None:
+                running = _BENEFIT_INFLIGHT[key] = threading.Event()
+                break
+        running.wait(timeout=30)
+        refresh = False  # the other run's result is fresh enough
+    try:
+        result = _performance_benefit(market, asset, horizon)
+        if isinstance(result, dict):
+            with _BENEFIT_LOCK:
+                if len(_BENEFIT_CACHE) > 64:
+                    _BENEFIT_CACHE.clear()
+                _BENEFIT_CACHE[key] = (time.monotonic(), market, result)
+        return result
+    finally:
+        with _BENEFIT_LOCK:
+            _BENEFIT_INFLIGHT.pop(key, None)
+        running.set()
+
+
+def warm_benefit_cache(market: object) -> int:
+    """Background refresh of every coin/timeframe improvement check."""
+    done = 0
+    for asset in ("BTC", "ETH", "SOL", "XRP"):
+        for horizon in (5, 15, 60):
+            try:
+                _cached_benefit(market, asset, horizon, refresh=True)
+                done += 1
+            except Exception:  # noqa: BLE001 - optional page context only
+                _LOG.warning("Improvement check refresh failed %s %s min", asset, horizon)
+    return done
 
 
 def _cycle_coverage(market: object) -> dict | None:
@@ -1511,7 +1543,9 @@ class GuidedHome(discord.ui.View):
                     f"{self.horizon}-minute window had already started** (about 1–2 "
                     "minutes in, using only data from before it). A fair test of the "
                     "model, but not a call you could act on at the window's opening price."
-                    if late else ""
+                    if late else
+                    "\nEach prediction is measured from the last closed 5-minute candle "
+                    "and is issued about 1–2 minutes after it closes."
                 )
                 problems = score_consistency_problems(part)
                 if problems:

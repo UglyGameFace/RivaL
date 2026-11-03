@@ -14,6 +14,7 @@ from parlay_bot.discord_app.presentation import display_book
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
+from parlay_bot.perpetuals.forward_audit import MODEL as LIVE_MODEL
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
@@ -57,8 +58,10 @@ def recent_watches(
     # (asset,horizon_minutes,issued_at) index. Avoid an OR/NULL predicate,
     # which may force a scan across unrelated timeframes under load.
     horizon_filter = " AND horizon_minutes=?" if horizon_minutes is not None else ""
+    # Only the live model's forecasts: retired shadow versions also live in
+    # this table, and the scores shown beside a watch are the live model's.
     params = (
-        asset, *((horizon_minutes,) if horizon_minutes is not None else ()),
+        asset, LIVE_MODEL, *((horizon_minutes,) if horizon_minutes is not None else ()),
         instant.isoformat(), (instant - timedelta(minutes=20)).isoformat(),
     )
     with market.store.connect() as connection:
@@ -67,7 +70,7 @@ def recent_watches(
                       model_version,issued_at,target_opened_at,
                       reference_close,probability_up,training_evaluated
                FROM perp_forward_audit
-               WHERE asset=? AND settled_at IS NULL"""
+               WHERE asset=? AND model_version=? AND settled_at IS NULL"""
             + horizon_filter
             + """ AND issued_at<=? AND issued_at>=?
                 ORDER BY issued_at DESC LIMIT 40""",
@@ -379,7 +382,7 @@ def crypto_desk_embed(
                 f"Raw model probability for {watch['direction']}: **{watch['direction_probability']:.1%}** "
                 "(not profit-calibrated)\n"
                 f"Issued {discord.utils.format_dt(watch['issued'], style='R')} · "
-                f"Target {discord.utils.format_dt(watch['target'], style='R')}\n"
+                f"Result known {discord.utils.format_dt(watch['target'] + timedelta(minutes=5), style='R')}\n"
                 "**Action: WATCH, not an approved entry.**"
             ),
             inline=False,
@@ -387,20 +390,27 @@ def crypto_desk_embed(
     if proof:
         try:
             report = ForwardAccuracyMonitor(market).summary(asset=asset, now=stamp)
-            for horizon in (5, 15):
+            for horizon in (5, 15, 60):
                 info = report["last_7d"][horizon]
                 decided = info["settled"]
                 edge = info["model_beats_baseline"]
-                verdict = ("Beating baseline" if edge is True
-                           else "Not beating baseline" if edge is False
+                verdict = ("Beating the basic forecast" if edge is True
+                           else "Not beating the basic forecast" if edge is False
                            else "Not enough independent proof")
+                period = "Last 7 days"
+                try:
+                    first = datetime.fromisoformat(str(info.get("first_issued")))
+                    if first.tzinfo is not None and stamp - first < timedelta(days=6, hours=12):
+                        period = f"Since {first:%b %d} (model went live)"
+                except (TypeError, ValueError):
+                    pass
                 embed.add_field(
-                    name=f"Past seven days • {horizon}m",
+                    name=f"{period} • {horizon}m • live model",
                     value=(
-                        f"Settled predictions: **{decided}** · "
+                        f"Graded predictions: **{decided:,}** · "
                         f"Hit rate: **{info['hit_rate']:.1%}** "
                         if info["hit_rate"] is not None else
-                        f"Settled predictions: **{decided}** · No reliable hit rate"
+                        f"Graded predictions: **{decided:,}** · No reliable hit rate"
                     ) + f"\n**{verdict}**. Overlapping events and costs not yet cleared.",
                     inline=False,
                 )

@@ -27,6 +27,7 @@ from parlay_bot.discord_app.home import (
     GuidedHome,
     build_stale_guided_menu_views,
     install_view_dispatch_logging,
+    warm_benefit_cache,
 )
 from parlay_bot.discord_app.interaction_scope import install_interaction_scope
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
@@ -2443,6 +2444,7 @@ class RivalDiscordClient(discord.Client):
         assert self.perp_collector is not None
         _LOG.info("RivaL perp automatic collector RUNNING")
         last_integrity_hour: int | None = None
+        last_benefit_warm = -1e9
         while not self.is_closed():
             try:
                 await self.perp_collector.collect_once()
@@ -2493,6 +2495,18 @@ class RivalDiscordClient(discord.Client):
                     raise
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL autonomous research cycle failed safely")
+            # Keep Bot Performance's slow "Is accuracy improving?" answer
+            # ready so the page never times out waiting for it.
+            if (self.autonomous is not None
+                    and time.monotonic() - last_benefit_warm >= 30 * 60
+                    and not host_memory.snapshot().pressure):
+                try:
+                    await asyncio.to_thread(
+                        warm_benefit_cache, self.perp_collector.market,
+                    )
+                except Exception:  # noqa: BLE001 - optional page context
+                    _LOG.exception("RivaL improvement-check refresh failed")
+                last_benefit_warm = time.monotonic()
             # Once per hour, inspect persisted evidence without adding API
             # requests or disturbing live predictions and market collection.
             if self.autonomous is not None:

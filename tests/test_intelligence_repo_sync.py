@@ -126,6 +126,7 @@ def test_live_acceptance_requires_exact_ready_model_source_and_repair_fields():
         "model": "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
         "ready": True,
         "research_smoke_ok": True,
+        "hypothesis_smoke_ok": True,
         "auth_rejected": True,
         "repair_state": "healthy",
         "repair_count": 1,
@@ -138,6 +139,7 @@ def test_live_acceptance_requires_exact_ready_model_source_and_repair_fields():
         {"model": "fake"},
         {"ready": False},
         {"research_smoke_ok": False},
+        {"hypothesis_smoke_ok": False},
         {"auth_rejected": False},
         {"repair_state": "quarantined"},
         {"repair_count": -1},
@@ -165,6 +167,13 @@ def test_live_probe_executes_one_authenticated_grounded_synthetic_inference(
         "grounded_by": "deterministic_historical_evidence_policy",
         "informational_only": True, "uncalibrated": True,
     }
+    hypothesis = {
+        "model": status["model"], "hypothesis": "momentum_only",
+        "rationale": "Try verified trend indicators only",
+        "falsification": "Reject degraded chronological validation",
+        "research_only": True, "live_model_promoted": False,
+        "retrospective_screen": "not_tested", "prediction": None,
+    }
 
     class Response:
         def __init__(self, payload):
@@ -185,21 +194,25 @@ def test_live_probe_executes_one_authenticated_grounded_synthetic_inference(
             if not req.get_header("Authorization"):
                 raise urllib.error.HTTPError(req.full_url, 401, "no auth", None, None)
             return Response(status)
-        assert req.full_url.endswith("/v1/research")
+        assert (req.full_url.endswith("/v1/research")
+                or req.full_url.endswith("/v1/hypothesis"))
         assert req.get_header("Authorization") == "Bearer " + "t" * 48
         payload = json.loads(req.data)
         assert payload == {"asset": "BTC", "evidence": {
             "asset": "BTC", "analysis": "unvalidated_research",
             "horizon_minutes": 5, "sources": [],
         }}
-        return Response(research)
+        return Response(
+            hypothesis if req.full_url.endswith("/v1/hypothesis") else research
+        )
 
     monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
     # This is fixed, repo-owned Python host probe code, never user input.
     exec(VERIFY["HOST_CHECK"], {"__name__": "__main__"})  # noqa: S102
     stdout = capsys.readouterr().out
     assert VERIFY["parse_receipt"](stdout, SHA)["research_smoke_ok"] is True
-    assert len(urls) == 3
+    assert VERIFY["parse_receipt"](stdout, SHA)["hypothesis_smoke_ok"] is True
+    assert len(urls) == 4
     assert "t" * 48 not in stdout
 
 

@@ -334,7 +334,7 @@ async def collect(*, family: str, month: str = "auto", limit: int = 48,
         async with httpx.AsyncClient(timeout=30, follow_redirects=False) as client:
             jobs = []
             if family in KLINES:
-                kind, interval, seconds = KLINES[family]
+                _kind, interval, seconds = KLINES[family]
                 windows = list(split_month(begin, end, seconds))
                 # Allocate pages evenly across all assets, rotate windows on
                 # successive runs instead of repeatedly scraping page zero.

@@ -74,10 +74,12 @@ def main() -> int:
     parser.add_argument("--last-month", required=True)
     parser.add_argument("--out", type=Path, default=Path("pooled-models"))
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--no-warehouse", action="store_true",
+                        help="read Binance directly instead of the Drive warehouse")
     args = parser.parse_args()
     args.cache.mkdir(parents=True, exist_ok=True)
     raw, warehouse_stats = asyncio.run(load(args.cache, args.last_month,
-                                            use_warehouse=args.publish))
+                                            use_warehouse=not args.no_warehouse))
     print("WAREHOUSE=" + json.dumps(warehouse_stats), flush=True)
     frames = {}
     for asset in ASSETS:

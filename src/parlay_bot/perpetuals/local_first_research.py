@@ -82,6 +82,84 @@ class LocalFirstResearch(OpenRouterResearch):
             "Contract-specific research requires authoritative contract evidence."
         )
 
+    async def propose_feature_hypothesis(
+        self, *, asset: str, venues: tuple[str, ...],
+    ) -> dict:
+        """Spend one existing shared quota slot on a bounded research question.
+
+        Suggestions cannot write weights or scores. They are recorded separately
+        and must compete against a no-LLM baseline on chronological source data.
+        """
+        if not self.available:
+            raise ResearchUnavailable("Private RivaL Intelligence token unavailable")
+        async with self._lock:
+            from datetime import UTC, datetime
+
+            from parlay_bot.perpetuals.analysis_evidence import build_evidence
+
+            evidence, digest = await asyncio.to_thread(
+                build_evidence, self.market, asset=asset, venues=venues,
+                horizon_minutes=5,
+            )
+            if (len(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode())
+                    > MAX_LOCAL_EVIDENCE_BYTES):
+                raise ResearchUnavailable("Verified feature evidence is oversized")
+            now = datetime.now(UTC)
+            reserved = await asyncio.to_thread(
+                self.market.reserve_ai_request,
+                model=self.model, now=now, daily_max=self.daily_max,
+                cooldown_seconds=self.cooldown_seconds,
+            )
+            if not reserved:
+                raise ResearchUnavailable("Shared AI research quota or cooldown reached")
+            headers = {
+                "Authorization": f"Bearer {self._key}",
+                "Content-Type": "application/json",
+            }
+            request = {"asset": asset, "evidence": evidence}
+            endpoint = (f"http://{self._peer_ip}:8765/v1/hypothesis"
+                        if self._peer_ip else "http://rival-llm:8765/v1/hypothesis")
+            try:
+                try:
+                    response = await self._client.post(
+                        endpoint, headers=headers, json=request, follow_redirects=False,
+                    )
+                except (httpx.ConnectError, httpx.ConnectTimeout):
+                    self._peer_ip = None
+                    peer = await asyncio.to_thread(discover_private_llm, self._key)
+                    if peer is None:
+                        raise
+                    self._peer_ip = peer
+                    response = await self._client.post(
+                        f"http://{peer}:8765/v1/hypothesis", headers=headers,
+                        json=request, follow_redirects=False,
+                    )
+                response.raise_for_status()
+                hypothesis = response.json()
+            except (httpx.RequestError, httpx.HTTPStatusError, ValueError) as exc:
+                _LOG.warning("Private hypothesis research unavailable %s",
+                             type(exc).__name__)
+                raise ResearchUnavailable(
+                    "Private hypothesis endpoint unavailable; no model weights changed"
+                ) from exc
+            from parlay_bot.perpetuals.research_hypotheses import validate_proposal
+
+            if not validate_proposal(hypothesis):
+                raise ResearchUnavailable("Untrusted feature hypothesis rejected")
+            return {
+                "asset": asset, "evidence_sha256": digest,
+                "observed_at": now.isoformat(),
+                "venues": sorted({
+                    str(row.get("venue")) for row in evidence.get("sources", [])
+                    if isinstance(row, dict) and row.get("venue") in venues
+                }),
+                "model": hypothesis["model"],
+                "hypothesis": hypothesis["hypothesis"],
+                "rationale": hypothesis["rationale"],
+                "falsification": hypothesis["falsification"],
+                "research_only": True,
+            }
+
     async def _complete(
         self, *, selected: str, evidence: dict, instruction: str,
         now, fallbacks: tuple[str, ...] = (),

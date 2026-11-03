@@ -215,6 +215,10 @@ def live_examples(
                 [x.volume_base for x in extended],
             ),
         )
+        # A target candle with zero trades only repeats the previous price
+        # (thin dYdX markets); it is not an observed move, so no label.
+        if target.trades == 0:
+            continue
         # UP is a strict price increase. A flat target is NOT UP, not a
         # dropped sample: settlement labels ties the same way, so train
         # and serve stay consistent instead of drifting apart.

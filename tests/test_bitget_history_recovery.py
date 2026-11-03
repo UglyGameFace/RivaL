@@ -170,7 +170,7 @@ async def test_bitget_history_page_bounds_and_compact_progress(tmp_path):
                     field.value for field in embed.fields
                     if field.name == "Historical recovery progress"
                 )
-                assert "**Bitget**: pending" in detail
+                assert "**Bitget**: not started yet" in detail
                 assert "**Gate**: not started" in detail
                 assert "**KuCoin**: not started" in detail
                 assert "NOT past live predictions" in detail

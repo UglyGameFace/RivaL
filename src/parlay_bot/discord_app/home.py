@@ -1508,7 +1508,9 @@ class GuidedHome(discord.ui.View):
                 else:
                     scoring = "Cannot fairly compare with a basic prediction yet"
                 paired = (
-                    f" · {scored:,}/{settled:,} comparable results"
+                    f" · {scored:,}/{settled:,} comparable results "
+                    f"({settled - scored:,} could not be graded, mostly because the "
+                    "exchange had no trades in the result candle)"
                     if scored != settled else ""
                 )
                 pending = ""

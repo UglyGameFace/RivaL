@@ -35,6 +35,14 @@ _LOG = logging.getLogger(__name__)
 MODEL = "prospective-logistic-persistent-v3"
 # A forecast can settle once its 5-minute target candle has closed; still
 # unsettled an hour after that means a missing candle or a stalled settler.
+def no_trade_outcome(row) -> bool:
+    """True when the target candle recorded zero trades (unknown is -1)."""
+    try:
+        return int(row["outcome_trades"]) == 0
+    except (KeyError, TypeError, ValueError, IndexError):
+        return False
+
+
 SETTLEMENT_DUE_AFTER = timedelta(minutes=5)
 SETTLEMENT_OVERDUE_AFTER = timedelta(minutes=65)
 HORIZONS = RESEARCH_HORIZONS
@@ -138,7 +146,38 @@ class ForwardAccuracyMonitor:
             self.market.historical_challengers.initialize()
             self._initialize_schema()
             ShadowModelCompetition(self.store).initialize()
+            self._withdraw_no_trade_labels()
             self.market._forward_schema_ready = True
+
+    def _withdraw_no_trade_labels(self) -> None:
+        """Correct outcomes graded from candles that had no trades.
+
+        Earlier settlement scored a zero-trade target candle (the previous
+        price repeated) as NOT UP. Those labels are withdrawn: the row stays
+        settled with its observed close, but is no longer counted as a
+        comparable result. Idempotent; only touches flat, zero-trade targets.
+        """
+        try:
+            with self.store.connect() as conn:
+                result = conn.execute(
+                    """UPDATE perp_forward_audit
+                       SET outcome_up=NULL, model_brier=NULL, baseline_brier=NULL
+                       WHERE settled_at IS NOT NULL AND outcome_up IS NOT NULL
+                         AND realized_close=reference_close
+                         AND EXISTS (
+                           SELECT 1 FROM perp_market_candles AS c
+                           WHERE c.venue=perp_forward_audit.venue
+                             AND c.contract=perp_forward_audit.contract
+                             AND c.quote=perp_forward_audit.quote
+                             AND c.interval_minutes=5
+                             AND c.opened_at=perp_forward_audit.target_opened_at
+                             AND c.trades=0)"""
+                )
+                if result.rowcount:
+                    _LOG.warning("RivaL withdrew %d forecast results graded from "
+                                 "no-trade candles", result.rowcount)
+        except Exception:  # noqa: BLE001 - correction must never block startup
+            _LOG.exception("RivaL no-trade outcome correction unavailable")
 
     def _initialize_schema(self) -> None:
         self.market.initialize()
@@ -437,9 +476,28 @@ class ForwardAccuracyMonitor:
                 # known completed target unresolved corrupts the issued
                 # versus resolved accounting, and training labels ties
                 # the same way so train and serve stay consistent.
-                label = int(value > previous)
                 p = float(pred["probability_up"])
                 b = float(pred["baseline_up"])
+                if no_trade_outcome(pred):
+                    # No trade happened in the target candle, so its "close"
+                    # is just the previous price repeated (dYdX does this on
+                    # thin markets). Grade it as settled but not comparable
+                    # instead of counting a fake NOT-UP result.
+                    with self.store.connect() as conn:
+                        result = conn.execute(
+                            """UPDATE perp_forward_audit
+                               SET settled_at=?, outcome_up=NULL, realized_close=?,
+                                   model_brier=NULL, baseline_brier=NULL
+                               WHERE venue=? AND contract=? AND quote=?
+                                 AND horizon_minutes=? AND model_version=?
+                                 AND reference_opened_at=? AND settled_at IS NULL""",
+                            (now.isoformat(), value, pred["venue"], pred["contract"],
+                             pred["quote"], pred["horizon_minutes"],
+                             pred["model_version"], pred["reference_opened_at"]),
+                        )
+                        resolved += int(result.rowcount == 1)
+                    continue
+                label = int(value > previous)
                 with self.store.connect() as conn:
                     result = conn.execute(
                         """UPDATE perp_forward_audit
@@ -473,7 +531,8 @@ class ForwardAccuracyMonitor:
                           f.probability_up,f.baseline_up,
                           c.close_price AS outcome_close,
                           c.first_observed_at AS outcome_observed_at,
-                          c.closed_at AS outcome_closed_at
+                          c.closed_at AS outcome_closed_at,
+                          c.trades AS outcome_trades
                    FROM perp_forward_audit AS f
                    JOIN perp_market_candles AS c
                      ON c.venue=f.venue AND c.contract=f.contract
@@ -521,7 +580,8 @@ class ForwardAccuracyMonitor:
                           f.probability_up,f.baseline_up,
                           c.close_price AS outcome_close,
                           c.first_observed_at AS outcome_observed_at,
-                          c.closed_at AS outcome_closed_at
+                          c.closed_at AS outcome_closed_at,
+                          c.trades AS outcome_trades
                    FROM perp_forward_audit AS f
                    JOIN perp_market_candles AS c
                      ON c.venue=f.venue AND c.contract=f.contract
@@ -617,7 +677,9 @@ class ForwardAccuracyMonitor:
                 last = candles[-1]
                 if not timedelta(0) <= stamp - utc(last.observed_at) <= timedelta(
                     minutes=10
-                ):
+                ) or last.trades == 0:
+                    # A candle with no trades repeats the previous price; a
+                    # forecast "from" it would start from a stale price.
                     metrics["stale_last_candle"] += 1
                     continue
                 features = _features(candles)
@@ -1013,7 +1075,7 @@ class ForwardAccuracyMonitor:
         qualified = int(imported["screened"] or 0)
         # Note: paper promotion is not authenticated real-money cost proof.
         if not qualified:
-            reason = "No screened portable boosted artifact imported into this bot database"
+            reason = "None of the models built from history has passed screening"
         elif not issued:
             reason = "Imported trees await source-matched genuine future forecasts"
         elif not settled:

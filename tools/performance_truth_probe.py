@@ -216,6 +216,32 @@ def probe() -> dict:
         # separate a cold first query from a consistently slow one.
         out["benefit_second_run_seconds"] = _timed(
             lambda: monitor.active_learning_evidence(asset="BTC", horizon_minutes=5))[0]
+        try:
+            import httpx
+
+            from parlay_bot.perpetuals.history_recovery import contiguous_forward_next
+            cursor = datetime(2026, 6, 8, 1, 30, tzinfo=UTC)
+            until = cursor + timedelta(minutes=500)
+            resp = httpx.get(
+                "https://api.bitget.com/api/v3/market/history-candles",
+                params={"category": "USDT-FUTURES", "symbol": "BTCUSDT", "interval": "5m",
+                        "type": "market",
+                        "startTime": str(int(cursor.timestamp() * 1000) - 1),
+                        "endTime": str(int(until.timestamp() * 1000) - 1),
+                        "limit": "100"}, timeout=20)
+            body = resp.json()
+            rows = body.get("data") or []
+            stamps = [datetime.fromtimestamp(int(r[0]) / 1000, UTC) for r in rows]
+            out["bitget_page"] = {
+                "http": resp.status_code, "code": body.get("code"), "msg": body.get("msg"),
+                "rows": len(rows),
+                "first": stamps[0].isoformat() if stamps else None,
+                "last": stamps[-1].isoformat() if stamps else None,
+                "in_window": sum(cursor <= t < until for t in stamps),
+                "next_cursor": contiguous_forward_next(cursor, until, stamps).isoformat(),
+            }
+        except Exception as exc:  # noqa: BLE001
+            out["bitget_page_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
     finally:
         store.close()
     return out

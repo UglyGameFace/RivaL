@@ -27,6 +27,7 @@ from parlay_bot.discord_app.home import (
     build_stale_guided_menu_views,
     install_view_dispatch_logging,
 )
+from parlay_bot.discord_app.interaction_scope import install_interaction_scope
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.multi_proof import multi_proof_embed
 from parlay_bot.discord_app.opportunities import (
@@ -1702,6 +1703,8 @@ class RivalDiscordClient(discord.Client):
 
     async def setup_hook(self) -> None:
         install_view_dispatch_logging(self)
+        # Discord-triggered queries get a 15 s PostgreSQL limit; workers don't.
+        install_interaction_scope(self.tree)
         # Persistent fallback for guided menus that outlived their live view
         # (15-minute timeout or bot restart). Without this, taps on those
         # menus are silently discarded and the menu looks dead.

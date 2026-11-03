@@ -54,6 +54,7 @@ class PerpetualMarketStore:
         self._forward_schema_ready = False
         self.live_model_checkpoints = None
         self.historical_challengers = None
+        self.pooled_models = None  # set by ForwardAccuracyMonitor or the bot
         # Optional, read-only evidence dependencies installed by the bot.
         self.research_candidate_registry = None
         self.research_history_auditor = None

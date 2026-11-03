@@ -1,0 +1,57 @@
+name: RivaL pooled model nightly training
+
+# Trains RivaL's pooled multi-year model (every coin, Binance 2020-now) and
+# publishes models that pass their gates to the private Drive models folder.
+# The bot runs them only as graded live challengers.
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish passing models to Drive"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-pooled-model-training
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: binance-cache
+          key: binance-original-archive-v1-${{ github.run_id }}
+          restore-keys: binance-original-archive-v1-
+      - name: Install
+        run: python -m pip install -e ".[ml-research]" "pandas>=2.2" "numpy>=1.26"
+      - name: Train (last complete month)
+        run: |
+          last_month="$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)"
+          publish_flag=""
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ inputs.publish }}" == "true" ]]; then
+            publish_flag="--publish"
+          fi
+          python tools/train_pooled_model.py --cache binance-cache \
+            --last-month "$last_month" --out pooled-models $publish_flag

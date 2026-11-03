@@ -227,7 +227,10 @@ def evaluate_compatible(manifests, *, horizon, prepared=None):
             "model_sha256": hashlib.sha256(canonical(spec).encode()).hexdigest(),
             "model_spec": spec, "validation": validation_scores,
             "out_of_sample_test": test_scores, "research_candidate_passed": passed,
-            "compared_on_validation": [{"method": x[0], "scores": x[3]} for x in compared],
+            "compared_on_validation": [
+                {"method": x[0], "scores": x[3], "training_count": x[4]}
+                for x in compared
+            ],
             "live_model_promoted": False, "prospective_accuracy": None}
 
 

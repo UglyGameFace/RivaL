@@ -61,7 +61,13 @@ def api_json(url: str, *, token: str, method: str = "GET",
             with request.urlopen(req, timeout=12) as response:
                 if response.status not in (200, 201):
                     raise StatusUnverified(f"{provider} API returned HTTP {response.status}")
-                return json.loads(response.read(64_000).decode("utf-8"))
+                # GitHub issue/search JSON can exceed 64 KiB. Never parse a
+                # truncated response as an incident or as service downtime.
+                # Fail closed on unreasonably large provider responses instead.
+                raw = response.read(2_000_001)
+                if len(raw) > 2_000_000:
+                    raise StatusUnverified(f"{provider} API response too large")
+                return json.loads(raw.decode("utf-8"))
         except error.HTTPError as exc:
             if method == "GET" and exc.code in (429, 500, 502, 503, 504) and attempt < attempts - 1:
                 time.sleep(attempt + 1)
@@ -100,25 +106,31 @@ def synchronize_incident(status: str, *, repository: str, token: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository):
         raise StatusUnverified("repository identity unavailable")
     endpoint = "https://api.github.com/repos/" + repository + "/issues"
-    # The repository has long-lived research issues. Search every issue page
-    # instead of just the newest hundred, or an old closed uptime incident
-    # could be missed and duplicated.
-    candidates = []
-    for page in range(1, 11):
-        existing = api_json(
-            endpoint + f"?state=all&per_page=100&page={page}", token=token,
-        )
-        if not isinstance(existing, list):
-            raise StatusUnverified("GitHub issue status unverified")
-        candidates.extend(
-            item for item in existing if isinstance(item, dict)
-            and item.get("title") == DISCORD_APP_STATE_ISSUE
-            and "pull_request" not in item
-        )
-        if len(existing) < 100:
-            break
-    else:
-        raise StatusUnverified("uptime issue search exceeded safe page limit")
+    # Search the uptime title on GitHub rather than downloading every issue
+    # (a single 100-item issues page can be hundreds of KiB). A partial or
+    # oversized search is unverified, never permission to open a duplicate.
+    query = parse.urlencode({
+        "q": f'repo:{repository} is:issue in:title "RivaL Discloud application offline"',
+        "per_page": "100",
+    })
+    existing = api_json(
+        "https://api.github.com/search/issues?" + query, token=token,
+    )
+    if (
+        not isinstance(existing, dict)
+        or existing.get("incomplete_results") is not False
+        or type(existing.get("total_count")) is not int
+        or not isinstance(existing.get("items"), list)
+        or existing["total_count"] > 100
+        or len(existing["items"]) != existing["total_count"]
+    ):
+        raise StatusUnverified("GitHub uptime incident search unverified")
+    candidates = [
+        item for item in existing["items"]
+        if isinstance(item, dict)
+        and item.get("title") == DISCORD_APP_STATE_ISSUE
+        and "pull_request" not in item
+    ]
     if len(candidates) > 1:
         raise StatusUnverified("duplicate uptime issues require reconciliation")
     issue = candidates[0] if candidates else None

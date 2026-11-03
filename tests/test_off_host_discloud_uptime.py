@@ -60,8 +60,16 @@ def test_github_incident_opens_once_and_closes_on_recovery(monkeypatch):
     def fake_json(url, *, token, method="GET", payload=None):
         assert token == "gh-token"
         if method == "GET":
-            assert "?state=all&per_page=100&page=1" in url
-            return issues.copy()
+            from urllib.parse import parse_qs, urlsplit
+
+            assert urlsplit(url).path == "/search/issues"
+            query = parse_qs(urlsplit(url).query)
+            assert query["per_page"] == ["100"]
+            assert "repo:UglyGameFace/RivaL is:issue in:title" in query["q"][0]
+            return {
+                "total_count": len(issues), "incomplete_results": False,
+                "items": issues.copy(),
+            }
         writes.append((url, method, payload))
         if method == "POST" and url.endswith("/issues"):
             issues.append({"number": 99, "title": m.DISCORD_APP_STATE_ISSUE,
@@ -82,10 +90,14 @@ def test_github_incident_opens_once_and_closes_on_recovery(monkeypatch):
 
 
 def test_github_incident_fails_closed_when_history_is_ambiguous(monkeypatch):
-    monkeypatch.setattr(m, "api_json", lambda *a, **kw: [
-        {"number": 1, "state": "open", "title": m.DISCORD_APP_STATE_ISSUE},
-        {"number": 2, "state": "closed", "title": m.DISCORD_APP_STATE_ISSUE},
-    ])
+    monkeypatch.setattr(m, "api_json", lambda *a, **kw: {
+        "total_count": 2,
+        "incomplete_results": False,
+        "items": [
+            {"number": 1, "state": "open", "title": m.DISCORD_APP_STATE_ISSUE},
+            {"number": 2, "state": "closed", "title": m.DISCORD_APP_STATE_ISSUE},
+        ],
+    })
     with pytest.raises(m.StatusUnverified, match="duplicate"):
         m.synchronize_incident("OFFLINE", repository="UglyGameFace/RivaL", token="gh")
 
@@ -145,3 +157,68 @@ def test_incident_mutation_never_retries_after_ambiguous_network_failure(monkeyp
         m.api_json("https://api.github.com/repos/UglyGameFace/RivaL/issues",
                    token="secret-token", method="POST", payload={"title": "incident"})
     assert calls == ["POST"]
+
+
+def test_large_complete_github_json_is_not_truncated(monkeypatch):
+    import json
+
+    value = {"items": [{"title": "research", "body": "x" * 110_000}]}
+    body = json.dumps(value).encode("utf-8")
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, limit):
+            assert limit > len(body)
+            return body
+
+    monkeypatch.setattr(m.request, "urlopen", lambda req, timeout: Response())
+    response = m.api_json(
+        "https://api.github.com/search/issues?q=uptime", token="token",
+    )
+    assert response == value
+
+
+@pytest.mark.parametrize("response", [
+    {"total_count": 0, "incomplete_results": True, "items": []},
+    {"total_count": 1, "incomplete_results": False, "items": []},
+    {"total_count": 101, "incomplete_results": False, "items": []},
+    {"total_count": 0, "incomplete_results": False, "items": "bad"},
+])
+def test_partial_github_search_never_creates_incident(response, monkeypatch):
+    calls = []
+
+    def fake_api(url, *, token, method="GET", payload=None):
+        calls.append(method)
+        return response
+
+    monkeypatch.setattr(m, "api_json", fake_api)
+    with pytest.raises(m.StatusUnverified, match="search unverified"):
+        m.synchronize_incident(
+            "OFFLINE", repository="UglyGameFace/RivaL", token="token",
+        )
+    assert calls == ["GET"]
+
+
+def test_oversized_github_json_fails_without_incident(monkeypatch):
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self, limit):
+            return b"x" * limit
+
+    monkeypatch.setattr(m.request, "urlopen", lambda req, timeout: Response())
+    with pytest.raises(m.StatusUnverified, match="response too large"):
+        m.api_json("https://api.github.com/search/issues", token="token")

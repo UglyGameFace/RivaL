@@ -663,3 +663,21 @@ def test_hypothesis_output_rejects_unbounded_features_and_synthetic_trades():
     assert set(SERVICE["HYPOTHESES"]) == {
         "trend_only", "momentum_only", "volatility_only", "volume_only",
     }
+
+
+def test_v2_hypothesis_contract_rejects_unapproved_feature_search():
+    v = {"hypothesis": "feature_subset_v2",
+         "rationale": "Explore joint momentum and volatility evidence",
+         "falsification": "Reject if purged validation fails",
+         "feature_indices": [0, 2, 5, 8]}
+    assert SERVICE["validated_hypothesis"](v)
+    assert not SERVICE["validated_hypothesis"]({**v, "feature_indices": [8, 0, 2, 5]})
+    assert not SERVICE["validated_hypothesis"]({**v, "feature_indices": [0, 2, 2]})
+    assert not SERVICE["validated_hypothesis"]({**v, "feature_indices": [True, 2]})
+    assert not SERVICE["validated_hypothesis"]({**v, "feature_indices": [0, 10]})
+    assert not SERVICE["validated_hypothesis"]({**v, "weights": [1.0] * 11})
+    assert not SERVICE["validated_hypothesis"]({
+        **v, "hypothesis": "trend_only"})
+    legacy = {key: v[key] for key in ("rationale", "falsification")}
+    assert SERVICE["validated_hypothesis"]({
+        **legacy, "hypothesis": "trend_only"})

@@ -1,3 +1,13 @@
+## Active: RivaL Intelligence bounded combinatorial feature research (2026-11-03 UTC)
+
+- **Objective:** Advance beyond LFM3's original four fixed feature masks without introducing invented indicators, untrusted model weights or uncontrolled candidate sweeps. Grounded in merged PR #282 and its first **real** main-bot→PostgreSQL→source-native success.
+- **Production evidence prior to this change:** Main CI and deployment succeeded on `52b2afe`; LFM3 persisted acceptance `41566632046` reported saved_before=4, saved_after=5. Source-native run `41566260789` received **one** authentic BTC `trend_only` proposal, ran 3 verified OKX historical horizons, rejected all (validation gain -0.000040, +0.001263, +0.001070 against full-feature logistic, below +0.005). Historical models: 0/48 passed. Fresh learning receipt `41566632093` is not proof of predictive edge.
+- **Implementation:** Branch `feat/intelligence-bounded-feature-subsets-20261103` introduces canonical 2-8 of the 10 existing live causal features, atomic/migratable PostgreSQL persistence, source SHA-bound immutable proposal digest and strict gateway/client/relay/offline verification. Legacy 4-mask rows retain their original digests. Extend tests for malicious/malformed masks, immutable SHA, exact fitter subset, unopened holdout and historical compatibility. Existing boosted and regularized logistic specialists continue independently.
+- **Integration/acceptance:** PR CI and PostgreSQL tests, source-native smoke, merge/main CI, sync separate private Intelligence repo, successful authenticated Discloud release, actual v2 proposal receipt and SHA-matched 6-month retrospective research report. Keep all gating unchanged: one experiment/asset per 6h, no promotion without 150 future targets/21 UTC days/80% quotes and positive conservative/severe after-cost proof, NO CALL otherwise. The provider's LFM3 neural weights do not autonomously retrain; evaluation is external and objective.
+- **Open:** Live v2 proposal and future performance not yet verified; issue #6, #151, #188 and #268 remain open. Historical rejected models are retained as immutable research, never imported as live contenders.
+
+---
+
 ## Active: LFM3 hypothesis → screened challenger → genuine future proof (2026-11-03 UTC)
 
 - **Workstream:** One cohesive PR based on merged `main@87724ad`. PR #280 unified the local LFM3 model; PR #281 repaired the false-green postrelease acceptance. Neither is open. Preserve #277 historical fitting, #278 future tracking and #279 truthful accuracy reporting; no changes to their files.

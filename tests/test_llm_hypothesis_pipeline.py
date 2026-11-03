@@ -379,3 +379,116 @@ def test_weak_llm_mask_never_touches_sealed_holdout(monkeypatch):
     assert all(t["holdout_examined"] is False for t in trials)
     assert all(t["retrospective_candidate_status"] == "validation_rejected"
                for t in trials)
+
+
+
+@pytest.mark.parametrize("indices", [
+    [], [0], [0, 0], [1, 0], [0, 1, 2, 3, 4, 5, 6, 7, 8],
+    [False, 2], ["0", 2], [-1, 2], [0, 10], [2, 2, 3],
+])
+def test_v2_feature_indices_reject_invalid_or_noncanonical_masks(indices):
+    from parlay_bot.perpetuals.research_hypotheses import valid_feature_indices
+
+    assert not valid_feature_indices(indices)
+    row = {**service_proposal(), "hypothesis": "feature_subset_v2",
+           "feature_indices": indices}
+    assert not validate_proposal(row)
+
+
+@pytest.mark.asyncio
+async def test_v2_feature_subset_is_immutable_and_receipt_sha_covers_indices(tmp_path):
+    from parlay_bot.perpetuals.research_hypotheses import valid_feature_indices
+
+    assert valid_feature_indices([0, 2, 5, 8])
+    assert not valid_feature_indices((0, 2, 5, 8))
+    store = SQLiteHotStore(tmp_path / "v2-feature-subset.sqlite")
+
+    class AI:
+        available = True
+
+        async def propose_feature_hypothesis(self, *, asset, venues):
+            return {**proposal(asset, mode="feature_subset_v2"),
+                    "feature_indices": [0, 2, 5, 8]}
+
+    lab = FeatureHypothesisLab(store, AI(), venues=("okx",))
+    stamp = datetime(2026, 11, 2, 1, 10, tzinfo=UTC)
+    try:
+        assert (await lab.run_once(now=stamp))["status"] == "proposed"
+        assert (await lab.run_once(now=stamp))["status"] == "already_attempted"
+        saved = recent_hypotheses(store, venue="okx", now=stamp)
+        assert len(saved) == 1
+        assert saved[0]["feature_indices"] == [0, 2, 5, 8]
+        receipt = {"status": "verified", "source": "live_postgresql_llm_hypotheses",
+                   "proposals": saved}
+        assert ablation.verify_proposals(receipt, venue="okx", now=stamp) == saved
+        altered = [{**saved[0], "feature_indices": [0, 2, 5, 9]}]
+        with pytest.raises(ValueError, match="digest mismatch"):
+            ablation.verify_proposals(
+                {**receipt, "proposals": altered}, venue="okx", now=stamp,
+            )
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE rival_llm_feature_hypotheses SET feature_indices_json=? "
+                "WHERE asset=?", (json.dumps([0, 2, 5, 9]), "BTC"),
+            )
+        assert recent_hypotheses(store, venue="okx", now=stamp) == []
+    finally:
+        store.close()
+
+
+def test_v2_source_native_fitter_uses_exact_predeclared_subset(monkeypatch):
+    from parlay_bot.research import llm_feature_ablation as mod
+
+    monkeypatch.setattr(
+        mod, "qualified_manifest_groups",
+        lambda root, *, qualified_streams: [["source-verified"]],
+    )
+    identity = {"venue": "okx", "contract": "ETH-USDT-SWAP",
+                "quote": "USDT", "interval_minutes": 5}
+    monkeypatch.setattr(
+        mod, "assemble",
+        lambda paths: (identity, [{"verified": True}],
+                       {"months": [f"2026-{m:02d}" for m in range(5, 11)]}),
+    )
+    monkeypatch.setattr(mod, "historical_features", lambda rows, identity: {})
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    record = (now, now + timedelta(minutes=5), (.1,) * 10, 1)
+    class Sealed:
+        def __iter__(self):
+            raise AssertionError("holdout opened for a losing LFM3 subset")
+        def __getitem__(self, index):
+            raise AssertionError("holdout indexed for a losing LFM3 subset")
+    monkeypatch.setattr(
+        mod, "compatible_partitions",
+        lambda rows, vectors, *, horizon, identity: (
+            [record] * 310, [record] * 120, Sealed(),
+        ),
+    )
+    fitted = []
+    def fit(rows, *, l2, rate=.0125, epochs=4, active=None):
+        fitted.append(active)
+        return ([.2 if active is not None else .1] * 11, .5)
+    monkeypatch.setattr(mod, "_fit", fit)
+    monkeypatch.setattr(
+        mod, "_score", lambda rows, weights, rate: {
+            "count": 120, "days": 21,
+            "brier": .24 if weights[0] == .2 else .23,
+            "baseline_brier": .25, "brier_gain": .01,
+            "accuracy": .55, "ece_10": .04,
+        },
+    )
+    row = {"asset": "ETH", "slot_utc": "2026-11-02T00:00:00+00:00",
+           "model": MODEL, "evidence_sha256": "f" * 64,
+           "hypothesis": "feature_subset_v2", "feature_indices": [0, 2, 5, 8],
+           "venues": ["okx"]}
+    row["record_sha256"] = hashlib.sha256(
+        json.dumps(row, sort_keys=True, separators=(",", ":")).encode(),
+    ).hexdigest()
+    candidates = []
+    trials = mod.evaluate_hypothesis_ablations(
+        None, qualified_streams=set(), proposals=[row], candidate_sink=candidates,
+    )
+    assert len(trials) == 3 and not candidates
+    assert fitted == [None, (0, 2, 5, 8)] * 3
+    assert all(not x["holdout_examined"] and not x["passed_purged_validation"]
+               and x["feature_indices"] == [0, 2, 5, 8] for x in trials)

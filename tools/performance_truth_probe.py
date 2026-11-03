@@ -237,6 +237,37 @@ def probe() -> dict:
         except Exception as exc:  # noqa: BLE001
             out["polymarket_hourly_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
         try:
+            import asyncio
+            from types import SimpleNamespace
+
+            from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
+            from parlay_bot.perpetuals.market_store import PerpetualMarketStore as _PMS
+
+            real = _PMS(store)
+            captured: dict = {}
+
+            def fake_ingest(batch):
+                captured["ingest_rows"] = len(batch.candles)
+                return SimpleNamespace(inserted_candles=len(batch.candles), unchanged_candles=0)
+
+            def fake_advance(asset, **kw):
+                captured["advance"] = {k: str(v) for k, v in kw.items()}
+
+            async def dry_run():
+                worker = BitgetHistoryRecovery(real, assets=("BTC",))
+                worker._advance = fake_advance
+                worker.market = SimpleNamespace(ingest=fake_ingest, store=store)
+                try:
+                    captured["returned"] = await worker.fetch_asset("BTC")
+                except Exception as exc:  # noqa: BLE001
+                    captured["raised"] = f"{type(exc).__name__}: {exc}"[:300]
+                finally:
+                    await worker.aclose()
+            asyncio.run(dry_run())
+            out["bitget_dry_run"] = captured
+        except Exception as exc:  # noqa: BLE001
+            out["bitget_dry_run_error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+        try:
             import httpx
 
             from parlay_bot.perpetuals.history_recovery import contiguous_forward_next

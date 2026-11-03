@@ -184,7 +184,7 @@ class LocalFirstResearch:
 
             if not validate_proposal(hypothesis):
                 raise ResearchUnavailable("Untrusted feature hypothesis rejected")
-            return {
+            proposal = {
                 "asset": asset, "evidence_sha256": digest,
                 "observed_at": now.isoformat(),
                 "venues": sorted({
@@ -197,6 +197,9 @@ class LocalFirstResearch:
                 "falsification": hypothesis["falsification"],
                 "research_only": True,
             }
+            if hypothesis["hypothesis"] == "feature_subset_v2":
+                proposal["feature_indices"] = hypothesis["feature_indices"]
+            return proposal
 
     async def _complete(self, *, evidence: dict) -> dict:
         if len(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode("utf-8")) > MAX_LOCAL_EVIDENCE_BYTES:

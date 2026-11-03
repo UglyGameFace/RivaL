@@ -457,7 +457,7 @@ class MarketDataDashboard(discord.ui.View):
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.owner_id:
             await interaction.response.send_message(
-                "Open your own private data dashboard with /rival-data.",
+                "Open your own private data dashboard with /rival-tools data.",
                 ephemeral=True,
             )
             return False

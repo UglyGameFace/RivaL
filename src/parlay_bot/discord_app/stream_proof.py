@@ -69,8 +69,8 @@ def stream_proof_embed(report: dict) -> discord.Embed:
                 name="Why the trial cannot progress",
                 value=(
                     "No eligible issuer history for this exact coin, horizon "
-                    "and supported exchange. Check /rival-data, "
-                    "/rival-stream-status and autonomous collector health."
+                    "and supported exchange. Check /rival-tools data, "
+                    "/rival-tools stream-status and autonomous collector health."
                 ),
                 inline=False,
             )

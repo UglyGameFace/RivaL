@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     rival_ai_provider: str = Field(default="local")
     rival_local_ai_token: SecretStr | None = Field(default=None)
 
+    # Private bot: only these Discord user IDs (comma-separated) may use it.
+    # Empty = the application's owner (or team members) from Discord.
+    rival_owner_user_ids: str = Field(default="")
+    # Healthchecks.io ping URL (https://hc-ping.com/<uuid>). Pinged every
+    # minute after a database check; silence or /fail raises the alert.
+    rival_healthchecks_ping_url: SecretStr | None = Field(default=None)
+
     # Official licensed Polymarket PolyBolt Chainlink TWAP (NOT free CLOB book).
     # Three CLOB credentials are used ONLY for the read-only live WS auth.
     # Never use a private wallet key or create/place any trading orders.

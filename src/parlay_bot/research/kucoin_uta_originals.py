@@ -390,7 +390,7 @@ async def collect(*, family: str, month: str = "auto", limit: int = 48,
         "model_training_approved": False,
         "public_raw_artifacts_uploaded": False,
     }
-    report_path = Path("data/native-reports/kucoin-uta-v2-progress.json")
+    report_path = Path(f"data/native-reports/kucoin-uta-v2-{family}-progress.json")
     report_path.parent.mkdir(parents=True, exist_ok=True)
     report_path.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n")
     return report

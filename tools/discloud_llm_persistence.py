@@ -103,7 +103,7 @@ def main() -> int:
     if output := os.environ.get("GITHUB_OUTPUT"):
         with open(output, "a", encoding="utf-8") as stream:
             stream.write(f"outcome={outcome}\n")
-    return 0 if outcome != "failed" else 1
+    return 0 if outcome == "verified" else 1
 
 
 if __name__ == "__main__":

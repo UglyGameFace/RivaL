@@ -382,6 +382,34 @@ def probe() -> dict:
             }
         except Exception as exc:  # noqa: BLE001
             out["bitget_page_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        try:
+            import asyncio as _asyncio
+
+            from parlay_bot.perpetuals.intelligence import model_calls
+            from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
+            from parlay_bot.perpetuals.market_store import PerpetualMarketStore as _M
+
+            market = _M(store)
+            calls = model_calls(market, asset="BTC")
+            out["intelligence_calls_input"] = calls
+
+            async def _try():
+                research = LocalFirstResearch(
+                    market, local_key=settings.rival_local_ai_token.get_secret_value()
+                    if settings.rival_local_ai_token else None)
+                try:
+                    started = time.monotonic()
+                    review = await research.explain_models(
+                        asset="BTC", venues=("okx", "gate", "kucoin", "bitget"), calls=calls)
+                    return {"ok": True, "seconds": round(time.monotonic() - started, 1),
+                            "review": review}
+                except Exception as exc:  # noqa: BLE001
+                    return {"ok": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+                finally:
+                    await research.aclose()
+            out["intelligence_try"] = _asyncio.run(_try())
+        except Exception as exc:  # noqa: BLE001
+            out["intelligence_try"] = f"{type(exc).__name__}: {str(exc)[:200]}"
     finally:
         store.close()
     return out

@@ -251,11 +251,14 @@ def compact_evidence(asset: str, evidence: dict, *, extended: bool = False) -> s
         extra = (f",bars={bars}" if extended and type(bars) is int
                  and 0 <= bars <= 1_000_000 else "")
         lines.append(f"{venue}/{quote}:{values}{extra}")
+    window_label = (
+        "Each row venue/quote:past 5m,15m,1h,4h returns and known bar counts. "
+        if extended else "Each row venue/quote:past 5m,15m,1h return percentages. "
+    )
     header = (
         f"{asset} "
         f"{'unvalidated_history' if evidence.get('analysis') == 'unvalidated_research' else 'unverified_input'}. "
-        ("Each row venue/quote:past 5m,15m,1h,4h returns and known bar counts. "
-         if extended else "Each row venue/quote:past 5m,15m,1h return percentages. ")
+        f"{window_label}"
         "No future outcome or after-cost edge is verified. "
         "Full timestamps, longer windows, events and archives remain separately "
         "available for deterministic validation, not this CPU review."

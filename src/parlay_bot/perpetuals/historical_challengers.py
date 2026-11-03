@@ -140,6 +140,7 @@ class HistoricalChallengers:
                     "evaluation_completed_through": candidate["evaluation_completed_through"],
                     "probability_up": probability,
                     "training_sha256": weight_sha,
+                    "training_count": state.training_labels,
                 })
             with self.store.connect() as conn:
                 if issued < target+timedelta(minutes=5, milliseconds=-1):

@@ -264,7 +264,7 @@ def tracking_text(result: dict) -> str:
             )
         if item["settled"]:
             line += (
-                f"\\nModel weight snapshots: {item['weight_fingerprints']}; "
+                f"\nModel weight snapshots: {item['weight_fingerprints']}; "
                 f"historical seeds used: {item['verified_historical_seed_count']}/"
                 f"{item['settled']}."
             )
@@ -273,7 +273,7 @@ def tracking_text(result: dict) -> str:
                      f"{item['unverified_lineage']} missing model fingerprints.")
         if item["complete"] and item["early_gain"] is not None and item["later_gain"] is not None:
             line += (
-                f"\\nCompared with baseline: earlier {item['early_gain']:+.4f}, "
+                f"\nCompared with baseline: earlier {item['early_gain']:+.4f}, "
                 f"later {item['later_gain']:+.4f} Brier gain (higher is better)."
             )
         if item["complete"]:

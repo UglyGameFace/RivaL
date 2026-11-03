@@ -209,7 +209,7 @@ class AutonomousResearch:
         if self.ai is None or not self.ai.available:
             return False
         now = _utc(now)
-        self.initialize()
+        await asyncio.to_thread(self.initialize)
         evidence, digest = await asyncio.to_thread(
             build_evidence, self.market, asset=asset, venues=self.venues, now=now,
         )

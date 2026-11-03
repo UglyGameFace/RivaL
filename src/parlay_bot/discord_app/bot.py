@@ -5,7 +5,6 @@ import json
 import logging
 import os
 import time
-from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 
 import discord
@@ -158,6 +157,7 @@ class RivalDiscordClient(discord.Client):
         super().__init__(intents=intents)
         self.settings = settings
         self.tree = app_commands.CommandTree(self)
+        self.tree.on_error = self._on_app_command_error
 
         self.store = build_hot_store(settings)
         initialize_with_dns_recovery(self.store)
@@ -663,7 +663,8 @@ class RivalDiscordClient(discord.Client):
         async def rival_picks(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             await self._refresh_sports_for_pick()
-            saved = self.location_service.get_saved(
+            saved = await asyncio.to_thread(
+                self.location_service.get_saved,
                 platform="discord", user_id=str(interaction.user.id),
             )
             if saved is None:
@@ -697,7 +698,8 @@ class RivalDiscordClient(discord.Client):
             await self._refresh_sports_for_pick()
             crypto_market = self.perp_collector.market if self.perp_collector else None
             crypto = await asyncio.to_thread(crypto_desk_embed, crypto_market)
-            saved = self.location_service.get_saved(
+            saved = await asyncio.to_thread(
+                self.location_service.get_saved,
                 platform="discord", user_id=str(interaction.user.id),
             )
             if saved is None:
@@ -1694,6 +1696,29 @@ class RivalDiscordClient(discord.Client):
             )
 
         self.tree.add_command(tools_group)
+
+    async def _on_app_command_error(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ) -> None:
+        """Last-resort handler: never leave a user on "thinking..." forever."""
+        command = interaction.command.qualified_name if interaction.command else "unknown"
+        _LOG.error(
+            "RivaL slash command failed command=%s error=%s",
+            command, type(getattr(error, "original", error)).__name__,
+            exc_info=error,
+        )
+        message = "⚠️ Something went wrong with that command. Please try again."
+        try:
+            if interaction.response.is_done():
+                await interaction.edit_original_response(
+                    content=message, embed=None, view=None,
+                )
+            else:
+                await interaction.response.send_message(message, ephemeral=True)
+        except discord.HTTPException:
+            _LOG.warning("RivaL could not deliver command error notice")
 
     async def _refresh_sports_for_pick(self) -> None:
         # Use cached quotes for Discord interactions; stale selections fail
@@ -2850,114 +2875,66 @@ class RivalDiscordClient(discord.Client):
 
             await asyncio.sleep(self.settings.rival_archive_run_seconds)
 
+    # Every background worker, so shutdown cancels all of them, not a
+    # hand-maintained subset. Order: watchdog first, so it cannot restart
+    # a worker that is being stopped.
+    _WORKER_TASK_ATTRS = (
+        "_health_task", "_polybolt_task", "_kalshi_research_task",
+        "_poly_board_task", "_poly_research_task", "_stream_shadow_task",
+        "_target_task", "_sports_results_task", "_sports_task",
+        "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
+        "_hypothesis_task", "_candidate_task", "_archive_task",
+    )
+
     async def close(self) -> None:
-        if self._health_task is not None:
-            self._health_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._health_task
-            self._health_task = None
-        if self._polybolt_task is not None:
-            self._polybolt_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._polybolt_task
-            self._polybolt_task = None
-        if self._kalshi_research_task is not None:
-            self._kalshi_research_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._kalshi_research_task
-            self._kalshi_research_task = None
-        await self.kalshi_browser.aclose()
-        await self.cdna_personal.aclose()
-        if self._poly_board_task is not None:
-            self._poly_board_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._poly_board_task
-            self._poly_board_task = None
-        if self._poly_research_task is not None:
-            self._poly_research_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._poly_research_task
-            self._poly_research_task = None
-        if self.live_stream is not None:
-            await self.live_stream.aclose()
-        if self._stream_shadow_task is not None:
-            self._stream_shadow_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._stream_shadow_task
-            self._stream_shadow_task = None
-        await self.polymarket_board.aclose()
-        await self.auto_hunt.aclose()
-        await self.polymarket_research.aclose()
-        await self.public_quotes.aclose()
-        if self._target_task is not None:
-            self._target_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._target_task
-            self._target_task = None
-        if self._sports_results_task is not None:
-            self._sports_results_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._sports_results_task
-            self._sports_results_task = None
-        if self._sports_task is not None:
-            self._sports_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._sports_task
-            self._sports_task = None
-        if self._history_task is not None:
-            self._history_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._history_task
-            self._history_task = None
-        if self.history_recovery is not None:
-            await self.history_recovery.aclose()
-        if self.kucoin_history_recovery is not None:
-            await self.kucoin_history_recovery.aclose()
-        if self.bitget_history_recovery is not None:
-            await self.bitget_history_recovery.aclose()
-        if self.okx_history_recovery is not None:
-            await self.okx_history_recovery.aclose()
-        if self._shadow_task is not None:
-            self._shadow_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._shadow_task
-            self._shadow_task = None
-        if self._perp_task is not None:
-            self._perp_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._perp_task
-            self._perp_task = None
-        if self.perp_collector is not None:
-            await self.perp_collector.aclose()
-        if self._hypothesis_task is not None:
-            self._hypothesis_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._hypothesis_task
-            self._hypothesis_task = None
-        if self.intelligence_research is not None:
-            await self.intelligence_research.aclose()
+        """Stop every worker, then release every client even if one fails."""
+        tasks = []
+        for attr in self._WORKER_TASK_ATTRS:
+            task = getattr(self, attr, None)
+            if task is not None:
+                task.cancel()
+                tasks.append(task)
+            setattr(self, attr, None)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-        if self._candidate_task is not None:
-            self._candidate_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._candidate_task
-            self._candidate_task = None
-        if self._archive_task is not None:
-            self._archive_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._archive_task
-            self._archive_task = None
-
-        if self.research_drive is not None:
-            await self.research_drive.aclose()
-        if self.archive_runtime is not None:
-            await self.archive_runtime.drive.aclose()
-        if self.current_provider is not None:
-            await self.current_provider.aclose()
-        await self.zip_resolver.aclose()
-        self.store.close()
+        archive_drive = (
+            self.archive_runtime.drive if self.archive_runtime is not None else None
+        )
+        closeables = (
+            ("kalshi_browser", getattr(self, "kalshi_browser", None)),
+            ("cdna_personal", getattr(self, "cdna_personal", None)),
+            ("live_stream", getattr(self, "live_stream", None)),
+            ("polymarket_board", getattr(self, "polymarket_board", None)),
+            ("auto_hunt", getattr(self, "auto_hunt", None)),
+            ("polymarket_research", getattr(self, "polymarket_research", None)),
+            ("public_quotes", getattr(self, "public_quotes", None)),
+            ("history_recovery", getattr(self, "history_recovery", None)),
+            ("kucoin_history_recovery", getattr(self, "kucoin_history_recovery", None)),
+            ("bitget_history_recovery", getattr(self, "bitget_history_recovery", None)),
+            ("okx_history_recovery", getattr(self, "okx_history_recovery", None)),
+            ("perp_collector", getattr(self, "perp_collector", None)),
+            ("intelligence_research", getattr(self, "intelligence_research", None)),
+            ("research_drive", getattr(self, "research_drive", None)),
+            ("archive_drive", archive_drive),
+            ("current_provider", getattr(self, "current_provider", None)),
+            ("oddspapi_provider", getattr(self, "oddspapi_provider", None)),
+            ("the_odds_api_collector", getattr(self, "the_odds_api_collector", None)),
+            ("zip_resolver", getattr(self, "zip_resolver", None)),
+        )
+        for name, resource in closeables:
+            aclose = getattr(resource, "aclose", None)
+            if aclose is None:
+                continue
+            try:
+                await aclose()
+            except Exception:  # noqa: BLE001 - one failed close must not skip the rest
+                _LOG.exception("RivaL shutdown could not close %s", name)
+        try:
+            self.store.close()
+        except Exception:  # noqa: BLE001
+            _LOG.exception("RivaL shutdown could not close the database pool")
         await super().close()
-
 
 def run_discord_bot(settings: Settings | None = None) -> None:
     configured = settings or Settings()

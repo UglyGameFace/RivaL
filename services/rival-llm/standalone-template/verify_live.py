@@ -109,7 +109,7 @@ except urllib.error.HTTPError as exc:
             body = json.loads(exc.read(1000))
             if isinstance(body, dict) and body.get("error") == "inference_failed":
                 proposed = body.get("failure_kind")
-                if proposed in {
+                if isinstance(proposed, str) and proposed in {
                     "backend_timeout", "backend_unavailable", "backend_http",
                     "invalid_json", "invalid_hypothesis", "invalid_output",
                     "malformed_backend_response", "token_limit",

@@ -1,3 +1,12 @@
+## In progress: RivaL Intelligence private CPU hypothesis acceptance (2026-11-03 UTC)
+
+- Verified: #285 and #286 merged into main and passed CI; latest bot release and source-specific future quote proof are active. Latest receipt: ETH/Hyperliquid 5m, 579 prospective targets, 4 days, 454/478 genuine bid/ask quotes (94.98%), with no baseline or after-cost superiority.
+- Blocker: Standalone Intelligence release 41573189476 confirmed ready authenticated status and successful grounded research, but all seven hypothesis calls failed HTTP. Main-bot LFM3 production acceptance 41573473919 returned 429 busy from the same serialized CPU worker.
+- Repair: Shorten only the bounded feature-hypothesis prompt and lower that response's generation budget to 96 tokens; regular research remains unchanged. Preserve exact approved feature indices and retrospective screening, with no fabricated suggestions. Add only allowlisted timeout/token/JSON/busy failure codes to the authenticated gateway and the Discloud verifier. The actual cause of the hypothesis HTTP failure is pending a fresh live receipt.
+- Acceptance: full CI and Discloud exact-SHA two-endpoint authenticated smoke, followed by a genuine fresh three-venue main-bot PostgreSQL LFM3 receipt. Keep at least 150 distinct future events, 21 UTC days, 80% matched quotes, and positive after-cost superiority gates unchanged.
+
+---
+
 ## In progress: standalone LFM3 live host acceptance retry (2026-11-03 UTC)
 
 - **Merged baseline:** PR #285 -> `main@410adb12`, exact CI success, Discloud bot release success, and fresh Postgres learner and proof receipt verified. Live ETH/hyperliquid 5m: 579 unique future outcomes, 4 distinct days, 454/478 quotes (94.98%) with no proven baseline or after-cost superiority. The scheduled daily host checker is present on main, first scheduled occurrence still pending.

@@ -682,3 +682,67 @@ def test_v2_hypothesis_contract_rejects_unapproved_feature_search():
     legacy = {key: v[key] for key in ("rationale", "falsification")}
     assert SERVICE["validated_hypothesis"]({
         **legacy, "hypothesis": "trend_only"})
+
+
+def test_feature_hypothesis_uses_bounded_cpu_tokens_and_true_model_json(monkeypatch):
+    server = Gateway("127.0.0.1", 0, token="t" * 48, model="lfm3")
+    calls = []
+    class Response:
+        status = 200
+        def __init__(self, payload):
+            self.payload = json.dumps(payload).encode("utf-8")
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self, _limit):
+            return self.payload
+
+    def local(req, timeout):
+        if req.full_url.endswith("/apply-template"):
+            return Response({"prompt": "rendered"})
+        if req.full_url.endswith("/tokenize"):
+            return Response({"tokens": [1] * 55})
+        body = json.loads(req.data)
+        calls.append(body)
+        return Response({"choices": [{
+            "finish_reason": "stop",
+            "message": {"content": json.dumps({
+                "hypothesis": "feature_subset_v2",
+                "feature_indices": [0, 2, 5],
+                "rationale": "Compare returns, volatility, and RSI",
+                "falsification": "Reject inferior forward validation",
+            })},
+        }]})
+    try:
+        monkeypatch.setattr(SERVICE["urllib"].request, "urlopen", local)
+        result = server.infer("BTC", {
+            "analysis": "unvalidated_research", "sources": [],
+        }, mode="hypothesis")
+        assert result["hypothesis"] == "feature_subset_v2"
+        assert result["feature_indices"] == [0, 2, 5]
+        assert calls[-1]["max_tokens"] == 96
+        assert calls[-1]["chat_template_kwargs"] == {"enable_thinking": False}
+        assert result["prediction"] is None and not result["live_model_promoted"]
+    finally:
+        server.server_close()
+
+
+def test_safe_failure_reason_never_repeats_backend_private_text():
+    classify = SERVICE["inference_failure_kind"]
+    assert classify(TimeoutError("PRIVATE_TOKEN"), mode="hypothesis") == "backend_timeout"
+    assert classify(ValueError("PRIVATE_PROMPT"), mode="hypothesis") == "invalid_output"
+    assert classify(ValueError("local model exhausted generation token budget"),
+                    mode="hypothesis") == "token_limit"
+    assert classify(json.JSONDecodeError("PRIVATE_DATA", "content", 1),
+                    mode="hypothesis") == "invalid_json"
+
+
+def test_gateway_503_only_adds_safe_failure_code(gateway):
+    server, _calls = gateway
+    def fail(_asset, _evidence):
+        raise ValueError("PRIVATE_TOKEN_NEVER_LOG")
+    server.infer = fail
+    code, data = send(server)
+    assert code == 503
+    assert data == {"error": "inference_failed", "failure_kind": "invalid_output"}

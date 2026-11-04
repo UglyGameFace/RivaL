@@ -32,7 +32,7 @@ def kalshi_fee(price: float) -> float:
 
 def _time(value) -> datetime | None:
     try:
-        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).astimezone(UTC)
+        return datetime.fromisoformat(str(value)).astimezone(UTC)
     except (TypeError, ValueError):
         return None
 

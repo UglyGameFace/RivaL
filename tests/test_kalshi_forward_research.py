@@ -308,3 +308,46 @@ def test_legacy_summary_quote_settles_without_contaminating_shadow_weights(tmp_p
     assert weights["updates"] == 0
     assert ledger.summary(asset="BTC")["legacy_unverified_settlements"] == 1
     assert ledger.summary(asset="BTC")["trained_labels"] == 0
+
+
+def test_one_ineligible_market_does_not_abort_the_batch():
+    import asyncio
+    from datetime import UTC, datetime
+    from types import SimpleNamespace
+
+    from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
+
+    observed, settled = [], []
+
+    class Ledger:
+        def observe(self, *, asset, market, at):
+            if market.ticker == "CLOSED":
+                raise ValueError("Kalshi market close must be in the future")
+            observed.append(market.ticker)
+
+        def pending(self, *, now, limit):
+            return ["DUE"]
+
+        def mark_settlement_check(self, *, ticker, at):
+            return True
+
+        def settle(self, *, ticker, payload, checked_at):
+            settled.append(ticker)
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"market": {"ticker": "DUE"}}
+
+    class Client:
+        async def get(self, url):
+            return Response()
+
+    browser = KalshiCryptoBrowser(client=Client(), forward=Ledger())
+    snapshot = SimpleNamespace(asset="BTC", checked_at=datetime.now(UTC), markets=[
+        SimpleNamespace(ticker="CLOSED"), SimpleNamespace(ticker="OPEN")])
+    asyncio.run(browser._study(snapshot))
+    assert observed == ["OPEN"]  # the next market is still studied
+    assert settled == ["DUE"]  # and pending settlements still run

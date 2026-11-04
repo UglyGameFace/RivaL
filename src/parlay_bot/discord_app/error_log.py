@@ -61,7 +61,14 @@ class RecentProblems(logging.Handler):
             if record.exc_info and record.exc_info[0] is not None:
                 text = f"{text} [{record.exc_info[0].__name__}: {record.exc_info[1]}]"
             text = redact(text.splitlines()[0] if text else "")[:MAX_TEXT]
-            key = (record.name, record.levelname, str(record.msg)[:120])
+            template = str(record.msg)[:120]
+            # One format string can carry many different owners (e.g. every
+            # slow PostgreSQL caller). An optional problem_group keeps them
+            # apart so each owner's count is its own, not the sum of all.
+            owner = getattr(record, "problem_group", None)
+            if owner:
+                template = f"{template} [{str(owner)[:60]}]"
+            key = (record.name, record.levelname, template)
             now = self._clock()
             with self._mutex:
                 group = self._groups.pop(key, None)

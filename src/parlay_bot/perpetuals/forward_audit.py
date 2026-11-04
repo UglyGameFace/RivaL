@@ -13,6 +13,7 @@ import math
 import time
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals.calibrated_challenger import CalibratedIncumbent
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
 from parlay_bot.perpetuals.features import (
     feature_vector,
@@ -720,6 +721,13 @@ class ForwardAccuracyMonitor:
                 flow_inputs[flow.family] = flow.asset_inputs(stamp, cycle_assets)
             except Exception:  # noqa: BLE001 - optional challenger never blocks forecasts
                 _LOG.exception("RivaL %s challenger inputs unavailable", flow.family)
+        # Calibrated incumbent: refit (causally, from already-graded outcomes)
+        # at most every 30 minutes; kept on the monitor across cycles.
+        calib = self.__dict__.setdefault("_calibrated", CalibratedIncumbent(self.store))
+        try:
+            calib.refit(stamp, cycle_assets)
+        except Exception:  # noqa: BLE001 - optional challenger never blocks forecasts
+            _LOG.exception("RivaL calibrated challenger fit unavailable")
         timing["select"] += time.perf_counter() - mark
         for venue, contract, quote in selection:
             try:
@@ -915,6 +923,11 @@ class ForwardAccuracyMonitor:
                                         reference_opened_at=utc(last.opened_at),
                                         issued_at=issued_at, features=features,
                                         flow=flow_inputs[flow.family][asset])))
+                                calib_call = calib.call(asset=asset, horizon=horizon,
+                                                        incumbent_up=probability,
+                                                        baseline_up=baseline)
+                                if calib_call is not None:
+                                    flow_calls = (*flow_calls, calib_call)
                                 ShadowModelCompetition(self.store).issue(
                                     conn, samples=samples, features=features,
                                     now=stamp, venue=venue, contract=contract, quote=quote,

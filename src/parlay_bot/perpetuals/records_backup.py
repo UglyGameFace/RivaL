@@ -70,6 +70,7 @@ class RecordsBackup:
                         "SELECT day FROM rival_records_backup WHERE table_name=?",
                         (table,)).fetchall()}
             except Exception:  # noqa: BLE001 - table not created on this host
+                _LOG.debug("Records backup: %s unavailable", table)
                 continue
             if first is None:
                 continue

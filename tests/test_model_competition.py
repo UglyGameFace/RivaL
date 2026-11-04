@@ -189,12 +189,13 @@ def test_shadow_batch_preserves_duplicates_and_sqlite_parameter_limit(learning_s
 
     with hot.connect() as conn:
         recorded = RecordingConnection(conn)
-        arguments = dict(
-            samples=_samples(now=now), features=(0.25,) * 10, now=now,
-            venue="hyperliquid", contract="BTC", quote="USDC", asset="BTC",
-            horizon=5, reference_opened_at=opened, target_opened_at=target,
-            issued_at=issued, incumbent_up=0.6, baseline_up=0.45, pooled=pooled,
-        )
+        arguments = {
+            "samples": _samples(now=now), "features": (0.25,) * 10, "now": now,
+            "venue": "hyperliquid", "contract": "BTC", "quote": "USDC", "asset": "BTC",
+            "horizon": 5, "reference_opened_at": opened, "target_opened_at": target,
+            "issued_at": issued, "incumbent_up": 0.6, "baseline_up": 0.45,
+            "pooled": pooled,
+        }
         assert comp.issue(recorded, **arguments) == 54  # 52 pooled + 2 live
         assert len(writes) == 2  # 50 rows + 4, never 54 roundtrips
         assert comp.issue(recorded, **arguments) == 0

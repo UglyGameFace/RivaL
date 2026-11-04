@@ -52,3 +52,34 @@ async def test_each_completed_day_is_saved_once(tmp_path):
             "rival-records__perp_liquidity_5m__2026-11-01.ndjson.gz"
     finally:
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_read_is_retried_not_marked_empty(tmp_path, monkeypatch):
+    store = SQLiteHotStore(tmp_path / "flaky.sqlite")
+    try:
+        with store.connect() as conn:
+            conn.execute("CREATE TABLE rival_intelligence_calls (asset TEXT, issued_at TEXT)")
+            conn.execute("INSERT INTO rival_intelligence_calls VALUES "
+                         "('BTC', '2026-11-02T10:00:00+00:00')")
+        backup = RecordsBackup(store, FakeDrive(), tmp_path / "work")
+        real = backup._write
+
+        def flaky(table, *args):
+            if table == "rival_intelligence_calls":
+                raise TimeoutError("database busy")
+            return real(table, *args)
+
+        monkeypatch.setattr(backup, "_write", flaky)
+        now = datetime(2026, 11, 3, 12, tzinfo=UTC)
+        assert (await backup.run_once(now))["failed"] >= 1
+        with store.connect() as conn:
+            marked = conn.execute("SELECT COUNT(*) FROM rival_records_backup "
+                                  "WHERE table_name='rival_intelligence_calls'").fetchone()[0]
+        assert marked == 0  # retried next run, not recorded as an empty day
+        monkeypatch.setattr(backup, "_write", real)
+        drive = backup.drive
+        await backup.run_once(now)
+        assert "records-rival_intelligence_calls-2026-11-02" in drive.saved
+    finally:
+        store.close()

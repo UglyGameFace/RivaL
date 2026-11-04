@@ -112,6 +112,14 @@ class RecordsBackup:
                     del rows
         return count
 
+    def _table_exists(self, table: str) -> bool:
+        try:
+            with self.store.connect() as conn:
+                conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchall()
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
     def _mark(self, table: str, day: date, rows: int, sha256: str, file_id: str) -> None:
         with self.store.connect() as conn:
             conn.execute(
@@ -130,8 +138,11 @@ class RecordsBackup:
         try:
             try:
                 rows = await asyncio.to_thread(self._write, table, column, day, path)
-            except Exception:  # noqa: BLE001 - table absent on this host
-                rows = 0
+            except Exception as exc:  # noqa: BLE001
+                if self._table_exists(table):
+                    # A failed read is NOT an empty day: retry on the next run.
+                    raise RuntimeError(f"records read failed for {table} {day}") from exc
+                rows = 0  # table never created on this host: genuinely nothing
             if not rows:
                 await asyncio.to_thread(self._mark, table, day, 0, "", "")
                 return 0

@@ -134,7 +134,7 @@ class ShadowModelCompetition:
     def issue(self, conn, *, samples, features, now, venue, contract, quote,
               asset, horizon, reference_opened_at, target_opened_at, issued_at,
               incumbent_up, baseline_up, boosters=(), historical_candidates=(),
-              pooled=()):
+              pooled=(), challengers=()):
         """Call only inside the incumbent forecast's *successful* transaction."""
         predictions = shadow_predictions(samples, features, as_of=now)
         # Exact-source historical boosters enter the SAME immutable future
@@ -185,10 +185,11 @@ class ShadowModelCompetition:
         # RivaL's pooled multi-year models: one trained model per horizon,
         # graded on the same future outcome as every other family.
         eligible_pooled = {}
-        for item in pooled:
+        # Online challengers (e.g. flow_v1) share the pooled call shape.
+        for item in (*pooled, *challengers):
             try:
                 name, probability_up = str(item["family"]), float(item["probability"])
-                if (not name.startswith("pooled_") or len(name) > 64
+                if (not name.startswith(("pooled_", "flow_")) or len(name) > 64
                         or not math.isfinite(probability_up) or not 0 < probability_up < 1):
                     continue
                 predictions[name] = probability_up

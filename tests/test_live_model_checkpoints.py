@@ -155,3 +155,50 @@ def test_newly_matured_label_still_persists_and_survives_restart(tmp_path):
         ) == later
     finally:
         hot.close()
+
+
+def test_concurrent_checkpoint_update_never_issues_unpersisted_weights(tmp_path):
+    """A commit race must fail closed, not return weights the database lacks."""
+    from dataclasses import replace
+
+    hot = SQLiteHotStore(tmp_path / "write_race.sqlite")
+    try:
+        now = datetime.now(UTC)
+        rows = samples(now)
+        primary = module.LiveModelCheckpoints(hot)
+        primary.fit(rows, as_of=now)
+        changed = (*rows[:-1], replace(rows[-1], label_up=1 - rows[-1].label_up))
+        competitor = module.LiveModelCheckpoints(hot)
+
+        next_sample = replace(
+            rows[-1], issued_at=rows[-1].issued_at + timedelta(minutes=5),
+            label_known_at=rows[-1].label_known_at + timedelta(minutes=5),
+        )
+        expanded = (*rows, next_sample)
+        original_connect = hot.connect
+        calls = [0]
+
+        def race_connect():
+            calls[0] += 1
+            if calls[0] == 2:
+                # Between the primary digest probe and its conditional write,
+                # simulate a second process committing a corrected source row.
+                hot.connect = original_connect
+                try:
+                    competitor.fit(changed, as_of=now + timedelta(seconds=30))
+                finally:
+                    hot.connect = race_connect
+            return original_connect()
+
+        hot.connect = race_connect
+        with pytest.raises(RuntimeError, match="checkpoint changed during fit"):
+            primary.fit(expanded, as_of=now + timedelta(minutes=1))
+        hot.connect = original_connect
+        # The losing worker can retry on the next cycle from the real row.
+        expected = module.LiveModelCheckpoints(hot).fit(
+            expanded, as_of=now + timedelta(minutes=2)
+        )
+        recovered = primary.fit(expanded, as_of=now + timedelta(minutes=3))
+        assert recovered == expected
+    finally:
+        hot.close()

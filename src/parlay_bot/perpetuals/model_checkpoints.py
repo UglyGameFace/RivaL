@@ -226,8 +226,11 @@ class LiveModelCheckpoints:
                         state,
                     )
                 elif row is None or utc(datetime.fromisoformat(row["trained_at"])) <= now:
-                    # Another writer won the race. Never cache uncommitted weights.
+                    # Another writer won the race. Refuse to issue a forecast
+                    # whose learned weights were not durably checkpointed.
+                    # The next cycle reloads the winning version.
                     self._checkpoint_cache.pop(identity, None)
+                    raise RuntimeError("live checkpoint changed during fit; retry from database")
             elif identity not in self._checkpoint_cache:
                 self._cache_checkpoint(
                     identity,

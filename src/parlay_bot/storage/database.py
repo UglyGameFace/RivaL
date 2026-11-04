@@ -46,8 +46,9 @@ class _Connection:
     def __init__(
         self, raw: Any, backend: BackendName,
         on_exit: Callable[[Any], None] | None = None,
-        origin: str = "unknown",
+        origin: str = "unknown", read_only: bool = False,
     ) -> None:
+        self._read_only = read_only
         self._raw = raw
         self.backend = backend
         self._on_exit = on_exit
@@ -89,6 +90,10 @@ class _Connection:
                 )
 
     def executescript(self, script: str) -> None:
+        if self._read_only:
+            # Do not even acquire the shared DDL advisory lock when a
+            # diagnostic script accidentally requests schema initialization.
+            raise PermissionError("Read-only PostgreSQL connection cannot initialize schema")
         if self.backend == "sqlite":
             self._raw.executescript(script)
             return
@@ -190,6 +195,7 @@ class PostgresDatabase(RelationalDatabase):
 
     def __init__(
         self, dsn: str, *, max_size: int = 8, checkout_timeout: float = 10.0,
+        read_only: bool = False,
     ) -> None:
         cleaned = dsn.strip()
         if not cleaned:
@@ -203,6 +209,7 @@ class PostgresDatabase(RelationalDatabase):
         self.dsn = cleaned
         self._max_size = max_size
         self._checkout_timeout = checkout_timeout
+        self._read_only = read_only
         # Small stdlib pool, no new dependency: every render used to pay
         # a full TCP+TLS+auth handshake per query (10-15 fresh connections
         # per menu render). Connections here are reused across threads;
@@ -236,18 +243,22 @@ class PostgresDatabase(RelationalDatabase):
         started = time.monotonic()
         raw = self._checkout()
         limit_ms = current_statement_timeout_ms()
-        if limit_ms is not None:
-            # SET LOCAL lasts only for this borrower's transaction: commit
-            # or rollback at the end of the `with` block clears it, so the
-            # pooled connection returns to background workers unlimited.
-            try:
+        try:
+            if self._read_only:
+                # PostgreSQL, not a Python SQL-string heuristic, enforces
+                # SELECT-only behavior on every pooled checkout. Each
+                # transaction loses this setting automatically at commit.
+                raw.execute("SET TRANSACTION READ ONLY")
+            if limit_ms is not None:
+                # SET LOCAL lasts only for this borrower's transaction.
                 raw.execute(f"SET LOCAL statement_timeout = {int(limit_ms)}")
-            except Exception:
-                self._checkin(raw)
-                raise
+        except Exception:
+            self._checkin(raw)
+            raise
         held_since = time.monotonic()
         owner = self._checkout_origin()
-        borrowed = _Connection(raw, self.backend, origin=owner)
+        borrowed = _Connection(raw, self.backend, origin=owner,
+                               read_only=self._read_only)
         with self._lock:
             self._borrowers[id(raw)] = (
                 held_since, threading.current_thread().name, borrowed,

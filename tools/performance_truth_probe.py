@@ -31,14 +31,22 @@ def _timed(fn):
     return round(time.monotonic() - start, 2), result, error
 
 
+def read_only_forward_monitor(store):
+    """Existing-table monitor: no runtime schema initialization/correction."""
+    from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+
+    return ForwardAccuracyMonitor(PerpetualMarketStore(store), read_only=True)
+
+
 def probe() -> dict:
     from parlay_bot.config import Settings
-    from parlay_bot.perpetuals.forward_audit import MODEL, ForwardAccuracyMonitor
-    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+    from parlay_bot.perpetuals.forward_audit import MODEL
     from parlay_bot.storage.hot import PostgresHotStore
 
     settings = Settings()
-    store = PostgresHotStore(settings.rival_database_url.get_secret_value())
+    store = PostgresHotStore(settings.rival_database_url.get_secret_value(),
+                             read_only=True)
     now = datetime.now(UTC)
     day, week = (now - timedelta(days=1)).isoformat(), (now - timedelta(days=7)).isoformat()
     out: dict = {"now": now.isoformat(), "model": MODEL}
@@ -227,7 +235,7 @@ def probe() -> dict:
             out["lineage_columns"] = [str(r["column_name"]) for r in conn.execute(
                 "SELECT column_name FROM information_schema.columns "
                 "WHERE table_name='perp_forward_audit'").fetchall()]
-        monitor = ForwardAccuracyMonitor(PerpetualMarketStore(store))
+        monitor = read_only_forward_monitor(store)
         for name, fn in (
             ("summary", lambda: monitor.summary(asset="BTC")["last_7d"][5]),
             ("benefit", lambda: monitor.active_learning_evidence(asset="BTC", horizon_minutes=5)),

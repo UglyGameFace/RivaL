@@ -130,11 +130,17 @@ def select_family_proof_scope(
 class ForwardAccuracyMonitor:
     """Issue, settle and score immutable prospective research only."""
 
-    def __init__(self, market: PerpetualMarketStore) -> None:
+    def __init__(self, market: PerpetualMarketStore, *,
+                 read_only: bool = False) -> None:
         self.market = market
         self.store = market.store
+        self._read_only = read_only
 
     def initialize(self) -> None:
+        if self._read_only:
+            # Diagnostics may inspect existing production tables, never run
+            # DDL or retrospective label corrections merely to read them.
+            return
         # Monitors are constructed for every signal and venue proof. Schema
         # DDL belongs to process startup, not every background scan. Share
         # readiness with all monitors backed by this market instance.

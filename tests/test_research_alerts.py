@@ -108,3 +108,39 @@ def test_checks_share_a_single_connection(tmp_path):
         assert len(opened) == 1
     finally:
         store.close()
+
+
+def test_checks_work_with_name_keyed_rows_like_postgres(tmp_path):
+    store = _store(tmp_path, forecast_age=timedelta(minutes=1),
+                   trained_age=timedelta(hours=12), review_age=timedelta(minutes=5),
+                   pooled_scores=[])
+    real = store.connect
+
+    class NameKeyed:  # PostgreSQL dict rows: row[0] raises KeyError
+        def __init__(self, conn):
+            self.conn = conn
+
+        def execute(self, sql, params=()):
+            cursor = self.conn.execute(sql, params)
+
+            class Rows:
+                def fetchone(self):
+                    row = cursor.fetchone()
+                    return None if row is None else dict(row)
+
+                def fetchall(self):
+                    return [dict(r) for r in cursor.fetchall()]
+            return Rows()
+
+    from contextlib import contextmanager
+
+    @contextmanager
+    def connect():
+        with real() as conn:
+            yield NameKeyed(conn)
+
+    store.connect = connect
+    try:
+        assert research_alerts(store, now=NOW) == []
+    finally:
+        store.close()

@@ -59,13 +59,15 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
 
     def scalar(sql: str, params=()):
         row = conn.execute(sql, params).fetchone()
-        return None if row is None else row[0]
+        # PostgreSQL rows are keyed by column name (row[0] raises KeyError,
+        # which made every check read as "unreadable"); alias the one value.
+        return None if row is None else row["v"]
 
     # 1. Forecast cycles are still issuing.
     try:
         # Indexed lookup (asset, horizon_minutes, issued_at); BTC 5-min is
         # issued every cycle, so it is the cycle's own heartbeat.
-        newest = _utc(scalar("SELECT MAX(issued_at) FROM perp_forward_audit "
+        newest = _utc(scalar("SELECT MAX(issued_at) AS v FROM perp_forward_audit "
                              "WHERE asset='BTC' AND horizon_minutes=5"))
         if newest is None or stamp - newest > FORECASTS_STALE_AFTER:
             alerts.append(("forecasts:stopped",
@@ -80,7 +82,7 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
     # 2. Nightly six-year model is fresh (training ran AND passed its gates).
     try:
         trained = _utc(scalar(
-            "SELECT MAX(trained_through) FROM rival_pooled_models WHERE gates_passed=1"))
+            "SELECT MAX(trained_through) AS v FROM rival_pooled_models WHERE gates_passed=1"))
         if trained is None:
             alerts.append(("pooled:none", "⚠️ No six-year model imported yet"))
         elif stamp - trained > MODEL_STALE_AFTER:
@@ -117,7 +119,7 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
     # 4. RivaL Intelligence is still producing reviews.
     if intelligence_enabled:
         try:
-            newest = _utc(scalar("SELECT MAX(issued_at) FROM rival_intelligence_calls"))
+            newest = _utc(scalar("SELECT MAX(issued_at) AS v FROM rival_intelligence_calls"))
             if newest is None or stamp - newest > INTELLIGENCE_STALE_AFTER:
                 alerts.append(("intelligence:stale",
                                "⚠️ RivaL Intelligence: no review for "

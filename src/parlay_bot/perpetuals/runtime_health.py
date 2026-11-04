@@ -156,9 +156,19 @@ class RuntimeHealthMonitor:
                             "no verified fresh completed candle"
                         )
             if learning_enabled:
-                # Count only genuinely later, source-exact, settleable outcomes.
+                # Count only outcomes settlement will actually accept: the same
+                # rules as ForwardAccuracyMonitor._settle (candle first seen
+                # after issuance, issued before the target closed, a valid
+                # positive close). Rows it rejects forever were counted as
+                # "recoverable" and kept the alert open; they are now
+                # reported separately instead of hidden.
                 backlog = conn.execute(
-                    """SELECT COUNT(*) AS n FROM perp_forward_audit AS f
+                    """SELECT
+                         SUM(CASE WHEN f.issued_at<c.closed_at AND c.close_price>0
+                                  THEN 1 ELSE 0 END) AS n,
+                         SUM(CASE WHEN f.issued_at<c.closed_at AND c.close_price>0
+                                  THEN 0 ELSE 1 END) AS unsettleable
+                       FROM perp_forward_audit AS f
                        JOIN perp_market_candles AS c
                         ON c.venue=f.venue AND c.contract=f.contract
                        AND c.quote=f.quote AND c.interval_minutes=5
@@ -170,8 +180,12 @@ class RuntimeHealthMonitor:
                     ((stamp-timedelta(minutes=15)).isoformat(),
                      stamp.isoformat(), stamp.isoformat()),
                 ).fetchone()
-                if int(backlog["n"]) > 0:
+                if int(backlog["n"] or 0) > 0:
                     faults["settlement_backlog"] = f"{backlog['n']} recoverable prospective outcomes"
+                if int(backlog["unsettleable"] or 0) > 0:
+                    _LOG.info("RivaL %s unsettled forecasts can never settle "
+                              "(issued after target close or invalid price)",
+                              backlog["unsettleable"])
             if streaming_enabled and learning_enabled:
                 # No claim of an executable fill: only verified matching
                 # bid/ask observations. Require a meaningful sample size.

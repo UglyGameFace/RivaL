@@ -171,6 +171,7 @@ class RivalDiscordClient(discord.Client):
         self._benefit_task: asyncio.Task[None] | None = None
         self._intelligence_task: asyncio.Task[None] | None = None
         self._context_task: asyncio.Task[None] | None = None
+        self._records_task: asyncio.Task[None] | None = None
         self._status_policy = StatusPostPolicy()
         self.liquidity_last_bucket: str | None = None
         self.tree = app_commands.CommandTree(self)
@@ -1900,6 +1901,10 @@ class RivalDiscordClient(discord.Client):
                 self._context_task = asyncio.create_task(
                     self._context_loop(), name="rival-binance-context",
                 )
+            if self._records_task is None and self.research_drive is not None:
+                self._records_task = asyncio.create_task(
+                    self._records_loop(), name="rival-records-backup",
+                )
             if (self._intelligence_task is None
                     and isinstance(self.intelligence_research, LocalFirstResearch)
                     and self.intelligence_research.available):
@@ -2060,6 +2065,27 @@ class RivalDiscordClient(discord.Client):
                 await asyncio.sleep(30)
         finally:
             await feed.aclose()
+
+    async def _records_loop(self) -> None:
+        """Nightly backup of the bot's own live records into the Drive warehouse."""
+        import tempfile
+        from pathlib import Path
+
+        from parlay_bot.perpetuals.records_backup import RecordsBackup
+
+        await self.wait_until_ready()
+        await asyncio.sleep(600)
+        backup = RecordsBackup(self.store, self.research_drive,
+                               Path(tempfile.gettempdir()) / "rival-records")
+        while not self.is_closed():
+            try:
+                if not host_memory.snapshot().pressure:
+                    await asyncio.wait_for(backup.run_once(), timeout=1800)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - backup must never affect the bot
+                _LOG.exception("RivaL records backup failed; retrying next hour")
+            await asyncio.sleep(3600)
 
     async def _status_loop(self) -> None:
         """Post the status card on start, on confirmed change, and daily."""
@@ -3221,7 +3247,7 @@ class RivalDiscordClient(discord.Client):
         "_liquidity_task",
         "_target_task", "_sports_results_task", "_sports_task",
         "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
-        "_hypothesis_task", "_candidate_task", "_archive_task", "_context_task",
+        "_hypothesis_task", "_candidate_task", "_archive_task", "_context_task", "_records_task",
         "_heartbeat_task", "_status_task", "_benefit_task", "_intelligence_task",
     )
 

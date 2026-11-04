@@ -287,3 +287,21 @@ def test_nightly_retrains_keep_one_live_record_per_recipe():
     assert model_sha256(base) != model_sha256(tomorrow)
     assert family({**base, "feature_version": FEATURE_VERSION_V2}) != family(base)
     assert family({**base, "horizon_minutes": 15}) != family(base)
+
+
+def test_warehouse_fill_lists_depth_and_positioning_history():
+    import importlib.util
+    import pathlib
+    import sys
+
+    tools = pathlib.Path(__file__).resolve().parents[1] / "tools"
+    sys.path.insert(0, str(tools))
+    spec = importlib.util.spec_from_file_location("warehouse_fill", tools / "warehouse_fill.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    from datetime import date
+
+    urls = module.official_urls(date(2023, 1, 5))
+    assert any("/daily/bookDepth/BTCUSDT/BTCUSDT-bookDepth-2023-01-01.zip" in u for u in urls)
+    assert any("/daily/metrics/XRPUSDT/XRPUSDT-metrics-2021-12-01.zip" in u for u in urls)
+    assert not any("2023-01-04" in u for u in urls)  # newest two days not yet published

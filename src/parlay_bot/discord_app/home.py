@@ -399,31 +399,49 @@ def warm_benefit_cache(market: object) -> int:
 
 
 def _pooled_record(market: object, asset: str, horizon: int) -> dict:
-    """Live graded record of the pooled multi-year challenger (7 days)."""
+    """Live graded record of the pooled multi-year challenger now in use (7 days).
+
+    Only the newest model family counts (older versions are separate tests),
+    only gradable results count (a target with no trades has no result), and
+    the sample is reported as distinct target windows: the exchanges move
+    together, so one window across nine exchanges is about one observation.
+    """
     since = (datetime.now(UTC) - timedelta(days=7)).isoformat()
     with market.store.connect() as conn:
         try:
+            latest = conn.execute(
+                """SELECT family FROM rival_model_shadow_forecasts
+                   WHERE asset=? AND horizon_minutes=? AND family LIKE 'pooled_%'
+                     AND issued_at>=? ORDER BY issued_at DESC LIMIT 1""",
+                (asset, horizon, since),
+            ).fetchone()
+            if latest is None:
+                return {"issued": 0}
             row = conn.execute(
                 """SELECT COUNT(*) AS issued,
-                          SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END) AS graded,
-                          SUM(CASE WHEN settled_at IS NOT NULL AND probability_up<>0.5 AND
+                          SUM(CASE WHEN outcome_up IN (0,1) THEN 1 ELSE 0 END) AS graded,
+                          SUM(CASE WHEN outcome_up IN (0,1) AND probability_up<>0.5 AND
                                 ((probability_up>0.5 AND outcome_up=1) OR
                                  (probability_up<0.5 AND outcome_up=0)) THEN 1 ELSE 0 END) AS hits,
-                          SUM(CASE WHEN settled_at IS NOT NULL AND probability_up<>0.5
+                          SUM(CASE WHEN outcome_up IN (0,1) AND probability_up<>0.5
                                    THEN 1 ELSE 0 END) AS decided,
-                          AVG(model_brier) AS model_brier,
-                          AVG(incumbent_brier) AS incumbent_brier,
-                          AVG(baseline_brier) AS baseline_brier,
+                          COUNT(DISTINCT CASE WHEN outcome_up IN (0,1)
+                                THEN target_opened_at END) AS windows,
+                          AVG(CASE WHEN outcome_up IN (0,1) THEN model_brier END) AS model_brier,
+                          AVG(CASE WHEN outcome_up IN (0,1) THEN incumbent_brier END)
+                              AS incumbent_brier,
+                          AVG(CASE WHEN outcome_up IN (0,1) THEN baseline_brier END)
+                              AS baseline_brier,
                           MIN(issued_at) AS first_issued
                    FROM rival_model_shadow_forecasts
-                   WHERE asset=? AND horizon_minutes=? AND family LIKE 'pooled_%'
-                     AND issued_at>=?""",
-                (asset, horizon, since),
+                   WHERE asset=? AND horizon_minutes=? AND family=? AND issued_at>=?""",
+                (asset, horizon, latest["family"], since),
             ).fetchone()
         except Exception:  # noqa: BLE001 - table appears after first challenger issue
             return {"issued": 0}
-    return {k: row[k] for k in ("issued", "graded", "hits", "decided", "model_brier",
-                                 "incumbent_brier", "baseline_brier", "first_issued")}
+    return {k: row[k] for k in ("issued", "graded", "hits", "decided", "windows",
+                                 "model_brier", "incumbent_brier", "baseline_brier",
+                                 "first_issued")}
 
 
 def _intelligence_status(market: object, asset: str, horizon: int) -> dict | None:
@@ -1618,11 +1636,15 @@ class GuidedHome(discord.ui.View):
                 graded, decided = int(pooled["graded"] or 0), int(pooled["decided"] or 0)
                 if decided and pooled["model_brier"] is not None:
                     hits = int(pooled["hits"] or 0)
+                    windows = int(pooled.get("windows") or 0)
                     exchange_text += (
                         f"\n**New 6-year model (live test):** {hits:,} of {decided:,} right "
-                        f"({hits / decided:.1%}) · Brier {float(pooled['model_brier']):.3f} vs "
-                        f"current model {float(pooled['incumbent_brier']):.3f} vs basic "
-                        f"{float(pooled['baseline_brier']):.3f} (same predictions, last 7 days)"
+                        f"({hits / decided:.1%}) over {windows:,} time windows · Brier "
+                        f"{float(pooled['model_brier']):.3f} vs current model "
+                        f"{float(pooled['incumbent_brier']):.3f} vs basic "
+                        f"{float(pooled['baseline_brier']):.3f} (same predictions since "
+                        f"this version went live"
+                        + ("; too few windows to judge yet)" if windows < 300 else ")")
                     )
                 else:
                     exchange_text += (f"\n**New 6-year model (live test):** "

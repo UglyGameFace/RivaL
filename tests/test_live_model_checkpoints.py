@@ -202,3 +202,24 @@ def test_concurrent_checkpoint_update_never_issues_unpersisted_weights(tmp_path)
         assert recovered == expected
     finally:
         hot.close()
+
+
+def test_cache_adopts_external_metadata_even_if_weights_are_identical(tmp_path):
+    """A harmless remote trained_at refresh should not force endless full reads."""
+    hot = SQLiteHotStore(tmp_path / "cache_refresh.sqlite")
+    try:
+        now = datetime.now(UTC)
+        rows = samples(now)
+        learner = module.LiveModelCheckpoints(hot)
+        first = learner.fit(rows, as_of=now)
+        with hot.connect() as conn:
+            conn.execute(
+                "UPDATE rival_live_model_checkpoints SET trained_at=?",
+                ((now + timedelta(seconds=1)).isoformat(),),
+            )
+        assert learner.fit(rows, as_of=now + timedelta(seconds=2)) == first
+        assert learner._cache_hits == 0  # full read of external metadata
+        assert learner.fit(rows, as_of=now + timedelta(seconds=3)) == first
+        assert learner._cache_hits == 1  # subsequent digest probe is enough
+    finally:
+        hot.close()

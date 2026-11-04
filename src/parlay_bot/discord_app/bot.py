@@ -3221,6 +3221,10 @@ class RivalDiscordClient(discord.Client):
         if horizon == 15 and self.kalshi_updown is not None:
             try:
                 result["kalshi"] = self.kalshi_updown.summary(asset=asset)
+                # The order-flow challengers, scored against Kalshi the same way.
+                result["kalshi_challengers"] = {
+                    family: self.kalshi_updown.challenger_summary(family, asset=asset)
+                    for family in ("flow_v1", "flow_v2")}
             except Exception:  # noqa: BLE001 - optional comparison line
                 _LOG.warning("Kalshi up/down scorecard unavailable")
         return result

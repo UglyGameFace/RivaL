@@ -34,6 +34,33 @@ def kalshi_fee(price: float) -> float:
     return math.ceil(round(0.07 * price * (1 - price) * 100, 6)) / 100
 
 
+def score_vs_market(rows, *, days: int, edge: float = EDGE) -> dict:
+    """(P(up), yes_ask, no_ask, result) rows -> Brier vs market and value bets."""
+    n = len(rows)
+    if not n:
+        return {"contracts": 0, "score_window_days": days}
+    model_err = market_err = 0.0
+    stakes = profit = 0.0
+    bets = wins = 0
+    for p, ya, na, y in rows:
+        mid = ya / (ya + na)  # market's implied P(up), spread removed
+        model_err += (p - y) ** 2
+        market_err += (mid - y) ** 2
+        for side_p, ask, win in ((p, ya, y == 1), (1 - p, na, y == 0)):
+            cost = ask + kalshi_fee(ask)
+            if side_p - cost >= edge:
+                bets += 1
+                wins += win
+                stakes += cost
+                profit += (1.0 if win else 0.0) - cost
+    return {
+        "contracts": n, "score_window_days": days,
+        "model_brier": model_err / n, "market_brier": market_err / n,
+        "value_bets": bets, "value_bet_wins": wins,
+        "return_per_dollar_after_fees": profit / stakes if stakes else None,
+    }
+
+
 def _time(value) -> datetime | None:
     try:
         return datetime.fromisoformat(str(value)).astimezone(UTC)
@@ -187,31 +214,44 @@ class KalshiUpDown:
             params += (asset,)
         with self.store.connect() as conn:
             rows = conn.execute(query, params).fetchall()
-        n = len(rows)
-        if not n:
-            return {"contracts": 0, "score_window_days": days}
-        model_err = market_err = 0.0
-        stakes = profit = 0.0
-        bets = wins = 0
-        for row in rows:
-            p, ya, na, y = (float(row["probability_up"]), float(row["yes_ask"]),
-                            float(row["no_ask"]), int(row["result_yes"]))
-            mid = ya / (ya + na)  # market's implied P(up), spread removed
-            model_err += (p - y) ** 2
-            market_err += (mid - y) ** 2
-            for side_p, ask, win in ((p, ya, y == 1), (1 - p, na, y == 0)):
-                cost = ask + kalshi_fee(ask)
-                if side_p - cost >= edge:
-                    bets += 1
-                    wins += win
-                    stakes += cost
-                    profit += (1.0 if win else 0.0) - cost
-        return {
-            "contracts": n, "score_window_days": days,
-            "model_brier": model_err / n, "market_brier": market_err / n,
-            "value_bets": bets, "value_bet_wins": wins,
-            "return_per_dollar_after_fees": profit / stakes if stakes else None,
-        }
+        return score_vs_market(
+            [(float(r["probability_up"]), float(r["yes_ask"]), float(r["no_ask"]),
+              int(r["result_yes"])) for r in rows], days=days, edge=edge)
+
+    def challenger_summary(self, family: str, *, asset: str | None = None,
+                           days: int = 7, edge: float = EDGE) -> dict:
+        """A shadow challenger scored against Kalshi exactly like the main model.
+
+        A RivaL 15-minute forecast whose reference candle closes at a contract's
+        open predicts the same event (price at open+15 vs at open). Its
+        probability (averaged across exchanges) meets the start-time asks, real
+        fees and the official result. Read-only: nothing new is issued.
+        """
+        self.initialize()
+        since = max((datetime.now(UTC) - timedelta(days=days)).isoformat(),
+                    START_PRICE_FROZEN_FROM)
+        with self.store.connect() as conn:
+            contracts = conn.execute(
+                "SELECT asset,opens_at,yes_ask,no_ask,result_yes FROM rival_kalshi_updown "
+                "WHERE result_yes IS NOT NULL AND yes_ask IS NOT NULL AND no_ask IS NOT NULL "
+                "AND issued_at>=?" + (" AND asset=?" if asset else ""),
+                (since, asset) if asset else (since,)).fetchall()
+            scored = []
+            for row in contracts:
+                opens = _time(row["opens_at"])
+                if opens is None:
+                    continue
+                call = conn.execute(
+                    """SELECT AVG(probability_up) AS p, COUNT(*) AS n
+                       FROM rival_model_shadow_forecasts
+                       WHERE family=? AND asset=? AND horizon_minutes=15
+                         AND target_opened_at=? AND issued_at<=?""",
+                    (family, row["asset"], (opens + timedelta(minutes=10)).isoformat(),
+                     (opens + timedelta(minutes=5)).isoformat())).fetchone()
+                if call is not None and int(call["n"] or 0) > 0:
+                    scored.append((float(call["p"]), float(row["yes_ask"]),
+                                   float(row["no_ask"]), int(row["result_yes"])))
+        return score_vs_market(scored, days=days, edge=edge)
 
     async def aclose(self) -> None:
         if self._client is not None:

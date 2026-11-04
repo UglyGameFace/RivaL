@@ -83,7 +83,9 @@ def test_extended_gateway_route_authentication_busy_and_profiles():
         assert modes == [("BTC", "extended")]
         assert _post(server, "/v1/research")[0] == 200
         assert modes[-1] == ("BTC", "research")
-        assert server.busy.acquire(blocking=False)
+        # The handler writes its reply before its finally releases the lock, so
+        # the client can get here first; wait (bounded) instead of racing it.
+        assert server.busy.acquire(timeout=2)
         try:
             assert _post(server, "/v1/extended-research")[0] == 429
         finally:

@@ -91,7 +91,8 @@ jobs:
                       print(json.dumps(json.loads(line.split("=", 1)[1]), indent=1))
                       break
               else:
-                  print("no probe output; stderr tail:", str(shell.get("stderr", ""))[-800:])
+                  raise SystemExit("Discloud performance probe returned no verified result; "
+                               "stderr tail: " + str(shell.get("stderr", ""))[-800:])
           PY
       - uses: actions/upload-artifact@v4
         if: always() && hashFiles('render.json') != ''

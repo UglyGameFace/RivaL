@@ -83,12 +83,9 @@ class PerpetualColdArchiveService:
             )
         self._initialized = True
 
-    # Finding the oldest unarchived candle walked past every archived one
-    # from the beginning (~3 s, ~45 times an hour). Candles become eligible
-    # in time order, so first look from the newest position already reached.
-    # Only when that finds nothing, sweep from the beginning, so a backfilled
-    # older day is still archived on the next run. A sweep that came back
-    # empty is not repeated for EMPTY_SWEEP_PAUSE.
+    # Prefer the recent archive tail. Revisit older candles at least every
+    # 15 minutes, even when newer candles keep arriving, and drain any
+    # discovered older backfill before resuming forward progress.
     EMPTY_SWEEP_PAUSE = timedelta(minutes=15)
 
     def _first_unarchived(self, conn, cutoff: str, start: str):
@@ -116,19 +113,30 @@ class PerpetualColdArchiveService:
         bound = cutoff.astimezone(UTC).isoformat()
         resume = getattr(self, "_resume_closed_at", "")
         wall = datetime.now(UTC)
+        last_sweep = getattr(self, "_last_sweep_at", None)
+        sweeping = getattr(self, "_backfill_closed_at", None)
         with self.store.connect() as conn:
-            first = self._first_unarchived(conn, bound, resume) if resume else None
-            if first is None:
-                empty_at = getattr(self, "_empty_sweep_at", None)
-                if empty_at is not None and wall - empty_at < self.EMPTY_SWEEP_PAUSE:
-                    return None
+            first = None
+            if sweeping is not None:
+                candidate = self._first_unarchived(conn, bound, sweeping)
+                if candidate is not None and str(candidate["closed_at"]) < resume:
+                    first = candidate
+                else:
+                    self._backfill_closed_at = None
+            if first is None and (
+                last_sweep is None or wall - last_sweep >= self.EMPTY_SWEEP_PAUSE
+            ):
                 first = self._first_unarchived(conn, bound, "")
-                if first is None:
-                    self._empty_sweep_at = wall
-                    return None
-            self._empty_sweep_at = None
-            # Only move forward: a backfilled older day is drained by sweeps.
+                self._last_sweep_at = wall
+                if first is not None and resume and str(first["closed_at"]) < resume:
+                    self._backfill_closed_at = str(first["closed_at"])
+            if first is None:
+                first = self._first_unarchived(conn, bound, resume) if resume else None
+            if first is None:
+                return None
             self._resume_closed_at = max(resume, str(first["closed_at"]))
+            day_start = str(first["partition_date"])
+            day_end = (datetime.fromisoformat(day_start) + timedelta(days=1)).date().isoformat()
             selected = conn.execute(
                 """
                 SELECT c.venue,c.contract,c.quote,c.interval_minutes,c.opened_at,
@@ -141,13 +149,13 @@ class PerpetualColdArchiveService:
                  AND a.opened_at=c.opened_at
                 WHERE a.opened_at IS NULL AND c.closed_at < ?
                   AND c.venue=? AND c.contract=? AND c.quote=?
-                  AND c.interval_minutes=? AND substr(c.opened_at,1,10)=?
+                  AND c.interval_minutes=? AND c.opened_at>=? AND c.opened_at<?
                 ORDER BY c.opened_at LIMIT ?
                 """,
                 (
-                    cutoff.astimezone(UTC).isoformat(), first["venue"],
+                    bound, first["venue"],
                     first["contract"], first["quote"], first["interval_minutes"],
-                    first["partition_date"], max_rows,
+                    day_start, day_end, max_rows,
                 ),
             ).fetchall()
         rows = tuple(dict(row) for row in selected)

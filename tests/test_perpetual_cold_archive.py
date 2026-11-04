@@ -274,17 +274,42 @@ def test_caught_up_archive_does_not_rescan_from_the_beginning_every_run(tmp_path
                         lambda conn, bound, start: starts.append(start) or real(conn, bound, start))
     _insert(store, opened=now - timedelta(days=20))
     batch = service._next_batch(cutoff=cutoff, max_rows=10)
-    assert batch is not None and starts == [""]  # first run: sweep from the beginning
-    with store.connect() as conn:  # mark it archived, as a completed batch would
+    assert batch is not None and starts == [""]
+    with store.connect() as conn:
         conn.execute("""INSERT INTO perp_candle_archive_receipts
             (venue,contract,quote,interval_minutes,opened_at,batch_id,archived_at)
             SELECT venue,contract,quote,interval_minutes,opened_at,'b','x'
             FROM perp_market_candles""")
     starts.clear()
     assert service._next_batch(cutoff=cutoff, max_rows=10) is None
-    assert starts[0] != "" and starts[1] == ""  # resume, then one sweep (empty)
+    assert len(starts) == 1 and starts[0] != ""
     starts.clear()
     assert service._next_batch(cutoff=cutoff, max_rows=10) is None
-    assert starts == [starts[0]] and starts[0] != ""  # no repeat sweep after an empty one
-    _insert(store, opened=now - timedelta(days=19), venue="okx")  # newly eligible, later
+    assert len(starts) == 1 and starts[0] != ""
+    _insert(store, opened=now - timedelta(days=19), venue="okx")
     assert service._next_batch(cutoff=cutoff, max_rows=10).venue == "okx"
+    store.close()
+
+
+def test_older_backfills_are_drained_even_when_newer_candles_arrive(tmp_path):
+    store, _, service = _setup(tmp_path)
+    now = datetime(2026, 10, 28, 20, tzinfo=UTC)
+    cutoff = now - timedelta(days=14)
+    old = now - timedelta(days=40)
+    recent = now - timedelta(days=20)
+    _insert(store, opened=recent, venue="gate")
+    first = service._next_batch(cutoff=cutoff, max_rows=10)
+    assert first is not None and first.venue == "gate"
+    service._mark_archived(first, now)
+    _insert(store, opened=old, venue="okx")
+    _insert(store, opened=old + timedelta(days=1), venue="bitget")
+    service._last_sweep_at = datetime.now(UTC) - timedelta(minutes=16)
+    batch = service._next_batch(cutoff=cutoff, max_rows=10)
+    assert batch is not None and batch.venue == "okx"
+    service._mark_archived(batch, now)
+    _insert(store, opened=recent + timedelta(days=1), venue="gate")
+    next_batch = service._next_batch(cutoff=cutoff, max_rows=10)
+    assert next_batch is not None and next_batch.venue == "bitget"
+    service._mark_archived(next_batch, now)
+    assert service._next_batch(cutoff=cutoff, max_rows=10).venue == "gate"
+    store.close()

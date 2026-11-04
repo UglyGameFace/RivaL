@@ -16,20 +16,28 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 _LOG = logging.getLogger(__name__)
-# (table, time column). Days are exported only once every row has settled.
+ASSETS = ("BTC", "ETH", "SOL", "XRP")
+HORIZONS = (5, 15, 60)
+_BY_ASSET_HORIZON = tuple(("asset=? AND horizon_minutes=?", (a, h))
+                          for a in ASSETS for h in HORIZONS)
+# (table, time column, scopes). Each scope is an extra indexed filter so a
+# day's export never scans a whole large table.
 TABLES = (
-    ("perp_liquidity_5m", "bucket_start"),
-    ("perp_market_candles", "opened_at"),
-    ("perp_market_contexts", "observed_at"),
-    ("perp_forward_audit", "issued_at"),
-    ("rival_model_shadow_forecasts", "issued_at"),
-    ("rival_intelligence_calls", "issued_at"),
-    ("rival_polymarket_observations", "learned_at"),
-    ("rival_polymarket_model_forward", "issued_at"),
-    ("rival_poly_oracle_observations", "observed_at"),
+    ("perp_liquidity_5m", "bucket_start", (("", ()),)),
+    # idx_perp_market_candles_observed (interval_minutes, first_observed_at)
+    ("perp_market_candles", "first_observed_at", (("interval_minutes=?", (5,)),)),
+    ("perp_market_contexts", "observed_at", (("", ()),)),
+    # idx_perp_forward_asset_horizon (asset, horizon_minutes, issued_at)
+    ("perp_forward_audit", "issued_at", _BY_ASSET_HORIZON),
+    # idx_rival_model_shadow_score (asset, horizon_minutes, family, issued_at)
+    ("rival_model_shadow_forecasts", "issued_at", _BY_ASSET_HORIZON),
+    ("rival_intelligence_calls", "issued_at", (("", ()),)),
+    ("rival_polymarket_observations", "learned_at", (("", ()),)),
+    ("rival_polymarket_model_forward", "issued_at", (("", ()),)),
+    ("rival_poly_oracle_observations", "observed_at", (("", ()),)),
 )
 SETTLE_DELAY = timedelta(hours=3)  # 60-minute targets settle well inside this
-MAX_DAYS_PER_RUN = 14  # bounded backfill per night
+MAX_DAYS_PER_RUN = 3  # gentle on the database: about 70 day-files per day
 MAX_BACKFILL_DAYS = 120
 
 
@@ -61,45 +69,53 @@ class RecordsBackup:
         """(table, column, day) still to save, oldest first, bounded."""
         self.initialize()
         last_day = (now - SETTLE_DELAY).date() - timedelta(days=1)
+        first_day = last_day - timedelta(days=MAX_BACKFILL_DAYS)
+        with self.store.connect() as conn:
+            done = {(str(r["table_name"]), str(r["day"])) for r in conn.execute(
+                "SELECT table_name, day FROM rival_records_backup WHERE day>=?",
+                (first_day.isoformat(),)).fetchall()}
         out = []
-        for table, column in TABLES:
-            try:
-                with self.store.connect() as conn:
-                    first = conn.execute(f"SELECT MIN({column}) FROM {table}").fetchone()[0]
-                    done = {str(r["day"]) for r in conn.execute(
-                        "SELECT day FROM rival_records_backup WHERE table_name=?",
-                        (table,)).fetchall()}
-            except Exception:  # noqa: BLE001 - table not created on this host
-                _LOG.debug("Records backup: %s unavailable", table)
-                continue
-            if first is None:
-                continue
-            start = max(datetime.fromisoformat(str(first).replace(" ", "T", 1)).date(),
-                        last_day - timedelta(days=MAX_BACKFILL_DAYS))
-            day = start
-            while day <= last_day:
-                if day.isoformat() not in done:
-                    out.append((table, column, day))
-                day += timedelta(days=1)
-        out.sort(key=lambda item: item[2])
-        return out[:MAX_DAYS_PER_RUN * len(TABLES)]
+        for table, column, _ in TABLES:
+            todo = []
+            day = last_day
+            while day >= first_day and len(todo) < MAX_DAYS_PER_RUN:
+                if (table, day.isoformat()) not in done:
+                    todo.append((table, column, day))
+                day -= timedelta(days=1)
+            out += todo  # newest first, so recent days are safe soonest
+        return out
 
     def _rows(self, table: str, column: str, day: date) -> list[dict]:
         lo = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
         hi = lo + timedelta(days=1)
+        scopes = next(s for t, _, s in TABLES if t == table)
+        rows: list[dict] = []
         with self.store.connect() as conn:
-            rows = conn.execute(
-                f"SELECT * FROM {table} WHERE {column}>=? AND {column}<? ORDER BY {column}",
-                (lo.isoformat(), hi.isoformat()),
-            ).fetchall()
-        return [dict(row) for row in rows]
+            for where, params in scopes:
+                extra = f"{where} AND " if where else ""
+                rows += [dict(r) for r in conn.execute(
+                    f"SELECT * FROM {table} WHERE {extra}{column}>=? AND {column}<?",
+                    (*params, lo.isoformat(), hi.isoformat()),
+                ).fetchall()]
+        return rows
 
     async def save_day(self, table: str, column: str, day: date) -> int:
         import asyncio
 
         from parlay_bot.research.publish import _artifact
 
-        rows = await asyncio.to_thread(self._rows, table, column, day)
+        try:
+            rows = await asyncio.to_thread(self._rows, table, column, day)
+        except Exception:  # noqa: BLE001 - table absent on this host
+            rows = None
+        if not rows:
+            with self.store.connect() as conn:
+                conn.execute(
+                    """INSERT INTO rival_records_backup
+                       (table_name,day,rows,sha256,drive_file_id,saved_at)
+                       VALUES (?,?,0,'','',?) ON CONFLICT DO NOTHING""",
+                    (table, day.isoformat(), datetime.now(UTC).isoformat()))
+            return 0
         path = self.workdir / file_name(table, day)
         path.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(path, "wt", encoding="utf-8") as handle:
@@ -130,8 +146,9 @@ class RecordsBackup:
         saved, rows, failed = 0, 0, 0
         for table, column, day in await asyncio.to_thread(self.pending, stamp):
             try:
-                rows += await self.save_day(table, column, day)
-                saved += 1
+                count = await self.save_day(table, column, day)
+                rows += count
+                saved += count > 0
             except Exception:  # noqa: BLE001 - retried next run
                 failed += 1
                 _LOG.warning("Records backup failed for %s %s", table, day)

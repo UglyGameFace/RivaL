@@ -322,10 +322,13 @@ class FamilyPromotion:
             # horizon; a newer nightly model must earn its own promotion.
             from parlay_bot.perpetuals.pooled_model import PooledModelSet
             try:
-                active = PooledModelSet(self.store).active(horizon, now=stamp)
+                models = PooledModelSet(self.store)
+                serving = {(doc or {}).get("_family") for doc in (
+                    models.active(horizon, now=stamp),
+                    models.active(horizon, now=stamp, context=False))}
             except Exception:  # noqa: BLE001 - fail closed to the incumbent
                 return None
-            return selected if active and active.get("_family") == selected else None
+            return selected if selected in serving else None
         if selected.startswith("historical_"):
             # A paper winner cannot serve after its screened source-specific
             # historical artifact disappears or becomes incompatible.

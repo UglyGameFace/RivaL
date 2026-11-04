@@ -305,3 +305,24 @@ def test_warehouse_fill_lists_depth_and_positioning_history():
     assert any("/daily/bookDepth/BTCUSDT/BTCUSDT-bookDepth-2023-01-01.zip" in u for u in urls)
     assert any("/daily/metrics/XRPUSDT/XRPUSDT-metrics-2021-12-01.zip" in u for u in urls)
     assert not any("2023-01-04" in u for u in urls)  # newest two days not yet published
+
+
+def test_price_only_model_serves_when_binance_context_is_unavailable(tmp_path):
+    import json as _json
+
+    from parlay_bot.perpetuals.pooled_features import FEATURE_VERSION_V2, FEATURES_V2
+    from parlay_bot.perpetuals.pooled_model import PooledModelSet
+    from parlay_bot.storage.hot import SQLiteHotStore
+
+    store = SQLiteHotStore(tmp_path / "fallback.sqlite")
+    try:
+        models = PooledModelSet(store)
+        v1 = _doc(through="2026-10-31T23:55:00+00:00")
+        v2 = {**_doc(through="2026-11-01T23:55:00+00:00"),
+              "feature_version": FEATURE_VERSION_V2, "features": list(FEATURES_V2)}
+        models.import_document("v1", _json.dumps(v1).encode())
+        models.import_document("v2", _json.dumps(v2).encode())
+        assert models.active(5)["feature_version"] == FEATURE_VERSION_V2
+        assert models.active(5, context=False)["trained_through"] == v1["trained_through"]
+    finally:
+        store.close()

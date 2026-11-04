@@ -28,12 +28,21 @@ class PolymarketPooledForecaster:
         self.models = models
 
     def _streams(self, asset: str, since: datetime) -> tuple[dict, dict]:
-        with self.market.store.connect() as conn:
-            rows = conn.execute(
-                """SELECT DISTINCT venue, contract, quote FROM perp_market_candles
-                   WHERE interval_minutes=5 AND opened_at>=?""",
-                (since.isoformat(),),
-            ).fetchall()
+        import time
+
+        cached = getattr(self, "_stream_cache", None)
+        if cached and time.monotonic() - cached[0] < 600:
+            rows = cached[1]
+        else:
+            # Uses idx_perp_market_candles_observed (interval_minutes,
+            # first_observed_at); refreshed every 10 minutes, not per contract.
+            with self.market.store.connect() as conn:
+                rows = [dict(r) for r in conn.execute(
+                    """SELECT DISTINCT venue, contract, quote FROM perp_market_candles
+                       WHERE interval_minutes=5 AND first_observed_at>=?""",
+                    (since.isoformat(),),
+                ).fetchall()]
+            self._stream_cache = (time.monotonic(), rows)
         out: dict[str, dict[str, tuple[str, str]]] = {}
         for row in rows:
             coin = asset_for_contract(str(row["contract"]))
@@ -53,7 +62,9 @@ class PolymarketPooledForecaster:
         """{'probability', 'family', 'venues'} or None when not computable."""
         if horizon not in (5, 15, 60):
             return None
-        doc = self.models.active(horizon)
+        feed = getattr(self.market, "binance_context", None)
+        context = feed.bundle(asset) if feed else None
+        doc = self.models.active(horizon, context=context is not None)
         if doc is None:
             return None
         clock = now or datetime.now(UTC)
@@ -62,8 +73,6 @@ class PolymarketPooledForecaster:
         if not start <= clock < start + timedelta(minutes=5):
             return None
         streams, btc = self._streams(asset, start - timedelta(minutes=15))
-        feed = getattr(self.market, "binance_context", None)
-        context = feed.bundle(asset) if feed else None
         probabilities = []
         for venue, source in sorted(streams.items()):
             try:

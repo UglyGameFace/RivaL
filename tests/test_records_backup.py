@@ -43,7 +43,10 @@ async def test_each_completed_day_is_saved_once(tmp_path):
         assert result == {"saved": 2, "rows": 3, "failed": 0}
         assert len(drive.saved["records-rival_intelligence_calls-2026-11-01"]) == 2
         assert len(drive.saved["records-rival_intelligence_calls-2026-11-02"]) == 1
-        assert (await backup.run_once(now))["saved"] == 0  # idempotent
+        assert set(drive.saved) == {"records-rival_intelligence_calls-2026-11-01",
+                                    "records-rival_intelligence_calls-2026-11-02"}
+        await backup.run_once(now)  # older, empty days: markers only, no files
+        assert len(drive.saved) == 2
         assert not list((tmp_path / "work").glob("*"))  # temp files removed
         assert file_name("perp_liquidity_5m", date(2026, 11, 1)) == \
             "rival-records__perp_liquidity_5m__2026-11-01.ndjson.gz"

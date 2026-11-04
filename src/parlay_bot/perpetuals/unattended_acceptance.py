@@ -28,37 +28,59 @@ def unattended_acceptance_receipt(
     return _receipt_from_rows(rows, stamp)
 
 
+_ASSETS = ("BTC", "ETH", "SOL", "XRP")
+_HORIZONS = (5, 15, 60)
+_SAMPLE = 200
+
+
 def _paired_rows(store, stamp, days):
+    """Newest settled incumbent/challenger pairs, read cheaply.
+
+    One unscoped ``issued_at`` range over the whole forecast table has no
+    usable index and held a pooled connection for 4-17 s on the host. Each
+    (asset, horizon) scope instead walks ``idx_perp_forward_asset_horizon``
+    newest-first and stops after ``_SAMPLE`` pairs, so the work no longer
+    grows with table size. Merging and re-limiting keeps the same newest-200
+    sample as before.
+    """
+    start = (stamp - timedelta(days=days)).isoformat()
+    end = stamp.isoformat()
+    rows = []
     with store.connect() as conn:
-        return conn.execute(
-            """SELECT f.venue,f.contract,f.quote,f.horizon_minutes,
-                      f.model_version,f.reference_opened_at,
-                      f.issued_at,f.target_opened_at,f.settled_at,
-                      f.outcome_up,f.model_brier AS incumbent_brier,
-                      s.family,s.training_sha256,s.probability_up,
-                      s.model_brier AS challenger_brier,
-                      s.incumbent_brier AS paired_incumbent_brier,
-                      s.settled_at AS challenger_settled_at,
-                      q.state AS quote_state,q.entry_at,q.exit_at,
-                      q.entry_bid,q.entry_ask,q.exit_bid,q.exit_ask
-               FROM perp_forward_audit AS f
-               JOIN rival_model_shadow_forecasts AS s
-                ON s.venue=f.venue AND s.contract=f.contract
-               AND s.quote=f.quote AND s.asset=f.asset
-               AND s.horizon_minutes=f.horizon_minutes
-               AND s.reference_opened_at=f.reference_opened_at
-               AND s.issued_at=f.issued_at
-               AND s.target_opened_at=f.target_opened_at
-               LEFT JOIN rival_family_quote_shadow AS q
-                ON q.venue=s.venue AND q.contract=s.contract
-               AND q.quote=s.quote AND q.horizon_minutes=s.horizon_minutes
-               AND q.family=s.family
-               AND q.reference_opened_at=s.reference_opened_at
-               WHERE f.settled_at IS NOT NULL AND s.settled_at IS NOT NULL
-                 AND f.issued_at>=? AND f.issued_at<=?
-               ORDER BY f.issued_at DESC LIMIT 200""",
-            ((stamp-timedelta(days=days)).isoformat(),stamp.isoformat()),
-        ).fetchall()
+        for asset in _ASSETS:
+            for horizon in _HORIZONS:
+                rows.extend(conn.execute(
+                    """SELECT f.venue,f.contract,f.quote,f.horizon_minutes,
+                              f.model_version,f.reference_opened_at,
+                              f.issued_at,f.target_opened_at,f.settled_at,
+                              f.outcome_up,f.model_brier AS incumbent_brier,
+                              s.family,s.training_sha256,s.probability_up,
+                              s.model_brier AS challenger_brier,
+                              s.incumbent_brier AS paired_incumbent_brier,
+                              s.settled_at AS challenger_settled_at,
+                              q.state AS quote_state,q.entry_at,q.exit_at,
+                              q.entry_bid,q.entry_ask,q.exit_bid,q.exit_ask
+                       FROM perp_forward_audit AS f
+                       JOIN rival_model_shadow_forecasts AS s
+                        ON s.venue=f.venue AND s.contract=f.contract
+                       AND s.quote=f.quote AND s.asset=f.asset
+                       AND s.horizon_minutes=f.horizon_minutes
+                       AND s.reference_opened_at=f.reference_opened_at
+                       AND s.issued_at=f.issued_at
+                       AND s.target_opened_at=f.target_opened_at
+                       LEFT JOIN rival_family_quote_shadow AS q
+                        ON q.venue=s.venue AND q.contract=s.contract
+                       AND q.quote=s.quote AND q.horizon_minutes=s.horizon_minutes
+                       AND q.family=s.family
+                       AND q.reference_opened_at=s.reference_opened_at
+                       WHERE f.asset=? AND f.horizon_minutes=?
+                         AND f.issued_at>=? AND f.issued_at<=?
+                         AND f.settled_at IS NOT NULL AND s.settled_at IS NOT NULL
+                       ORDER BY f.issued_at DESC LIMIT ?""",
+                    (asset, horizon, start, end, _SAMPLE),
+                ).fetchall())
+    rows.sort(key=lambda r: str(r["issued_at"]), reverse=True)
+    return rows[:_SAMPLE]
 
 
 def _receipt_from_rows(rows, stamp):

@@ -76,3 +76,35 @@ def test_unreadable_tables_say_so_instead_of_claiming_missing(tmp_path):
                         "intelligence:unreadable"}
     finally:
         store.close()
+
+
+def test_busy_pool_gives_one_honest_line_not_three(tmp_path):
+    class BusyStore:
+        calls = 0
+
+        def connect(self):
+            BusyStore.calls += 1
+            raise TimeoutError("all pooled connections are checked out")
+
+    alerts = research_alerts(BusyStore(), now=NOW)
+    assert [key for key, _ in alerts] == ["database:busy"]
+    assert BusyStore.calls == 1  # one checkout attempt, not one per check
+
+
+def test_checks_share_a_single_connection(tmp_path):
+    store = _store(tmp_path, forecast_age=timedelta(minutes=1),
+                   trained_age=timedelta(hours=12), review_age=timedelta(minutes=5),
+                   pooled_scores=[])
+    opened = []
+    real = store.connect
+
+    def counting():
+        opened.append(1)
+        return real()
+
+    store.connect = counting
+    try:
+        assert research_alerts(store, now=NOW) == []
+        assert len(opened) == 1
+    finally:
+        store.close()

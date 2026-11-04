@@ -56,6 +56,7 @@ from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals import host_memory
+from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
@@ -189,6 +190,10 @@ class RivalDiscordClient(discord.Client):
         self._health_task: asyncio.Task[None] | None = None
         self._health_restarts: dict[str, list[datetime]] = {}
         self._health_acceptance_seen = False
+        # (computed_at, receipt): the acceptance join is evidence, not an
+        # alarm, so one read per 15 minutes is enough for every consumer.
+        self._acceptance_cache: tuple[datetime, dict] | None = None
+        self._acceptance_task: asyncio.Future[dict] | None = None
         _LOG.info(
             "RivaL operational storage initialized (backend=%s)",
             self.store.database.backend,
@@ -949,8 +954,7 @@ class RivalDiscordClient(discord.Client):
             if self.autonomous is not None and self.stream_shadow is not None:
                 try:
                     receipt = await asyncio.wait_for(
-                        asyncio.to_thread(unattended_acceptance_receipt, self.store),
-                        timeout=4,
+                        self._cached_acceptance_receipt(), timeout=4,
                     )
                     statement = (
                         f"{receipt['status']} • quoted and scored "
@@ -2002,6 +2006,27 @@ class RivalDiscordClient(discord.Client):
             })
         return states
 
+    async def _cached_acceptance_receipt(self, now: datetime | None = None) -> dict:
+        """One shared acceptance read per 15 minutes.
+
+        A caller's timeout does not stop the worker thread, so every new call
+        used to start another multi-second join while the last one still held
+        its connection. Callers now share one in-flight read and its result.
+        """
+        stamp = now or datetime.now(UTC)
+        cached = self._acceptance_cache
+        if cached is not None and stamp - cached[0] < timedelta(minutes=15):
+            return cached[1]
+        task = self._acceptance_task
+        if task is None or task.done():
+            task = asyncio.ensure_future(asyncio.to_thread(
+                unattended_acceptance_receipt, self.store, now=stamp,
+            ))
+            self._acceptance_task = task
+        receipt = await asyncio.shield(task)
+        self._acceptance_cache = (stamp, receipt)
+        return receipt
+
     async def _status_facts(self) -> StatusFacts:
         """Real runtime state only; a slow source is reported, not guessed."""
         now = datetime.now(UTC)
@@ -2387,6 +2412,10 @@ class RivalDiscordClient(discord.Client):
                 self.polymarket_research.maybe_settle(self.auto_hunt.polymarket)
             except asyncio.CancelledError:
                 raise
+            except TimeoutError:
+                # Polymarket's public listing did not answer within 16 s. A slow
+                # third-party read is routine; retry next pass without paging.
+                _LOG.warning("RivaL silent Polymarket listing timed out; retrying in 90 s")
             except Exception:  # noqa: BLE001
                 _LOG.exception("RivaL silent Polymarket learning temporarily unavailable")
             await asyncio.sleep(max(1, 90 - (time.monotonic() - started)))
@@ -2615,6 +2644,10 @@ class RivalDiscordClient(discord.Client):
                     await asyncio.sleep(3600)
                 else:
                     _LOG.info("RivaL Intelligence review skipped %s: %s", asset, exc)
+            except InsufficientEvidence as exc:
+                # Fewer than three healthy venues right now: the reviewer is
+                # correctly refusing to explain thin evidence. A skip, not a fault.
+                _LOG.info("RivaL Intelligence review skipped %s: %s", asset, exc)
             except Exception:  # noqa: BLE001 - optional reviewer never breaks the bot
                 _LOG.exception("RivaL Intelligence review failed %s", asset)
 
@@ -3114,14 +3147,15 @@ class RivalDiscordClient(discord.Client):
                             "RivaL watchdog repaired %d causally settleable forecasts",
                             recovered,
                         )
-                if self.autonomous is not None and self.stream_shadow is not None:
+                # Only needed until the first hosted receipt is logged; after
+                # that, re-running the join every watchdog pass just held a
+                # database connection for seconds (status card "database busy").
+                if (self.autonomous is not None and self.stream_shadow is not None
+                        and not self._health_acceptance_seen):
                     receipt = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            unattended_acceptance_receipt, self.store, now=now,
-                        ), timeout=15,
+                        self._cached_acceptance_receipt(now), timeout=15,
                     )
-                    if (receipt["status"] == "HOST_EVIDENCE_PRESENT"
-                            and not self._health_acceptance_seen):
+                    if receipt["status"] == "HOST_EVIDENCE_PRESENT":
                         self._health_acceptance_seen = True
                         _LOG.info(
                             "RivaL hosted unattended model-to-quote receipt "

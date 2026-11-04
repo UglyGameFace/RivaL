@@ -122,6 +122,13 @@ class ShadowModelCompetition:
                 ON rival_model_shadow_forecasts (settled_at,target_opened_at);
             CREATE INDEX IF NOT EXISTS idx_rival_model_shadow_score
                 ON rival_model_shadow_forecasts (asset,horizon_minutes,family,issued_at);
+            -- Pairs a challenger with its incumbent forecast (acceptance
+            -- receipt, status card). The primary key puts family before
+            -- reference_opened_at, so without this every pair lookup scanned
+            -- all of that stream's shadow rows.
+            CREATE INDEX IF NOT EXISTS idx_rival_model_shadow_pair
+                ON rival_model_shadow_forecasts
+                (venue,contract,quote,horizon_minutes,reference_opened_at);
             """)
 
     def issue(self, conn, *, samples, features, now, venue, contract, quote,

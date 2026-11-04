@@ -145,3 +145,17 @@ def test_blocked_provider_is_shown_as_off_not_failing():
     assert assess(facts)[0] == "healthy"
     field = next(f for f in build_embed(facts)[0].fields if f.name == "Market data")
     assert "1/1 exchange feeds fresh" in field.value and "off" in field.value
+
+
+def test_open_socket_with_no_data_is_not_a_green_check():
+    from parlay_bot.discord_app.status_card import _stream_line
+    blocked = _stream_line("binance", {"connected": True, "updates": 0, "reconnects": 0,
+                                       "fresh_assets": ()})
+    assert blocked.startswith("⚪") and "no book data" in blocked
+    stale = _stream_line("binance", {"connected": True, "updates": 50, "reconnects": 2,
+                                     "fresh_assets": ()})
+    assert stale.startswith("⚠️")
+    live = _stream_line("hyperliquid", {"connected": True, "updates": 456, "reconnects": 0,
+                                        "fresh_assets": ("BTC",)})
+    assert live.startswith("✅")
+    assert _stream_line("hyperliquid", {"connected": False}).startswith("🛑")

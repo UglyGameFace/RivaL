@@ -296,6 +296,10 @@ class ForwardAccuracyMonitor:
                 );
                 CREATE INDEX IF NOT EXISTS idx_rival_forward_lineage_issued
                     ON rival_forward_model_lineage (issued_at);
+                -- Scope the current-policy lookup by horizon/model and time.
+                CREATE INDEX IF NOT EXISTS idx_rival_forward_lineage_policy
+                    ON rival_forward_model_lineage
+                       (model_version,horizon_minutes,issued_at,venue,contract,quote);
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_regime_method
                     ON perp_forward_regimes (method_version,regime);
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_pending
@@ -423,15 +427,20 @@ class ForwardAccuracyMonitor:
         stamp = utc(now or datetime.now(UTC))
         with self.store.connect() as conn:
             rows = conn.execute(
-                """WITH current_policy AS (
-                    SELECT venue,contract,quote,historical_seed_sha256,
-                           ROW_NUMBER() OVER (
-                               PARTITION BY venue,contract,quote ORDER BY issued_at DESC
-                           ) AS position
+                """WITH latest_policy AS (
+                    SELECT venue,contract,quote,MAX(issued_at) AS issued_at
                     FROM rival_forward_model_lineage
-                    WHERE model_version=? AND horizon_minutes=? AND issued_at<=? AND issued_at>=?
-                )
-                , per_venue AS (
+                    WHERE model_version=? AND horizon_minutes=?
+                      AND issued_at<=? AND issued_at>=?
+                    GROUP BY venue,contract,quote
+                ), current_policy AS (
+                    SELECT l.venue,l.contract,l.quote,l.historical_seed_sha256
+                    FROM rival_forward_model_lineage l
+                    JOIN latest_policy p ON p.venue=l.venue
+                      AND p.contract=l.contract AND p.quote=l.quote
+                      AND p.issued_at=l.issued_at
+                    WHERE l.model_version=? AND l.horizon_minutes=?
+                ), per_venue AS (
                     SELECT f.target_opened_at, f.venue,
                            AVG(f.model_brier) AS model_brier,
                            AVG(f.baseline_brier) AS baseline_brier
@@ -444,7 +453,6 @@ class ForwardAccuracyMonitor:
                       AND l.issued_at=f.issued_at
                     JOIN current_policy c ON c.venue=f.venue
                       AND c.contract=f.contract AND c.quote=f.quote
-                      AND c.position=1
                       AND COALESCE(c.historical_seed_sha256,'')=
                           COALESCE(l.historical_seed_sha256,'')
                     WHERE f.asset=? AND f.horizon_minutes=? AND f.model_version=?
@@ -465,7 +473,7 @@ class ForwardAccuracyMonitor:
                 GROUP BY target_opened_at
                 ORDER BY target_opened_at""",
                 (MODEL, horizon_minutes, stamp.isoformat(), (stamp-timedelta(days=14)).isoformat(),
-                 asset, horizon_minutes, MODEL,
+                 MODEL, horizon_minutes, asset, horizon_minutes, MODEL,
                  (stamp-timedelta(days=14)).isoformat(), stamp.isoformat(), stamp.isoformat()),
             ).fetchall()
         aligned = [r for r in rows if

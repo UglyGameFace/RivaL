@@ -442,3 +442,43 @@ def test_discord_proof_shows_all_gate_failures_and_explains_missing_data():
     assert any(
         "No eligible issuer history" in str(f.value) for f in no_issued.fields
     )
+
+
+
+@pytest.mark.asyncio
+async def test_slow_reference_for_one_asset_does_not_block_other_assets():
+    """A stale BTC REST request must not make a fresh SOL quote miss its deadline."""
+    import httpx
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def source(request: httpx.Request) -> httpx.Response:
+        coin = json.loads(request.content)["coin"]
+        if coin == "BTC":
+            started.set()
+            await release.wait()
+        now = datetime.now(UTC)
+        return httpx.Response(200, json={
+            "coin": coin, "time": int(now.timestamp() * 1000),
+            "levels": [
+                [{"px": "100", "sz": "100"}],
+                [{"px": "100.1", "sz": "100"}],
+            ],
+        })
+
+    reference = httpx.AsyncClient(
+        transport=httpx.MockTransport(source),
+        base_url="https://api.hyperliquid.xyz",
+    )
+    quotes = PublicBestQuoteClient(reference_client=reference)
+    blocked = asyncio.create_task(quotes.get_reference("BTC"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=2)
+        sol = await asyncio.wait_for(quotes.get_reference("SOL"), timeout=2)
+        assert sol.asset == "SOL"
+    finally:
+        release.set()
+        await blocked
+        await quotes.aclose()
+        await reference.aclose()

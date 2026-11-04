@@ -83,29 +83,69 @@ class PerpetualColdArchiveService:
             )
         self._initialized = True
 
+    # Prefer the recent archive tail. Revisit older candles at least every
+    # 15 minutes, even when newer candles keep arriving, and drain any
+    # discovered older backfill before resuming forward progress.
+    EMPTY_SWEEP_PAUSE = timedelta(minutes=15)
+
+    def _first_unarchived(self, conn, cutoff: str, start: str):
+        return conn.execute(
+            """
+            SELECT c.venue,c.contract,c.quote,c.interval_minutes,c.closed_at,
+                   substr(c.opened_at,1,10) AS partition_date
+            FROM perp_market_candles c
+            LEFT JOIN perp_candle_archive_receipts a
+              ON a.venue=c.venue AND a.contract=c.contract
+             AND a.quote=c.quote AND a.interval_minutes=c.interval_minutes
+             AND a.opened_at=c.opened_at
+            WHERE a.opened_at IS NULL AND c.closed_at < ? AND c.closed_at >= ?
+            ORDER BY c.closed_at,c.venue,c.contract,c.opened_at LIMIT 1
+            """,
+            (cutoff, start),
+        ).fetchone()
+
     def _next_batch(self, *, cutoff: datetime, max_rows: int) -> CandleArchiveBatch | None:
         if cutoff.tzinfo is None:
             raise ValueError("cutoff must be timezone-aware")
         if not 1 <= max_rows <= 5000:
             raise ValueError("perpetual archive max_rows must be 1..5000")
         self.initialize()
+        bound = cutoff.astimezone(UTC).isoformat()
+        resume = getattr(self, "_resume_closed_at", "")
+        wall = datetime.now(UTC)
+        last_sweep = getattr(self, "_last_sweep_at", None)
+        sweeping = getattr(self, "_backfill_closed_at", None)
         with self.store.connect() as conn:
-            first = conn.execute(
-                """
-                SELECT c.venue,c.contract,c.quote,c.interval_minutes,
-                       substr(c.opened_at,1,10) AS partition_date
-                FROM perp_market_candles c
-                LEFT JOIN perp_candle_archive_receipts a
-                  ON a.venue=c.venue AND a.contract=c.contract
-                 AND a.quote=c.quote AND a.interval_minutes=c.interval_minutes
-                 AND a.opened_at=c.opened_at
-                WHERE a.opened_at IS NULL AND c.closed_at < ?
-                ORDER BY c.closed_at,c.venue,c.contract,c.opened_at LIMIT 1
-                """,
-                (cutoff.astimezone(UTC).isoformat(),),
-            ).fetchone()
+            first = None
+            if sweeping is not None:
+                candidate = self._first_unarchived(conn, bound, sweeping)
+                if candidate is not None and str(candidate["closed_at"]) < resume:
+                    first = candidate
+                else:
+                    self._backfill_closed_at = None
+            if first is None and (
+                last_sweep is None or wall - last_sweep >= self.EMPTY_SWEEP_PAUSE
+            ):
+                first = self._first_unarchived(conn, bound, "")
+                self._last_sweep_at = wall
+                self._empty_sweep_at = wall if first is None else None
+                if first is not None and resume and str(first["closed_at"]) < resume:
+                    self._backfill_closed_at = str(first["closed_at"])
+            if first is None:
+                first = self._first_unarchived(conn, bound, resume) if resume else None
+            if first is None and getattr(self, "_empty_sweep_at", None) is None:
+                # A prior sweep found work, so an older backfill could have
+                # arrived behind the cursor. Do not defer its first check.
+                first = self._first_unarchived(conn, bound, "")
+                self._last_sweep_at = wall
+                self._empty_sweep_at = wall if first is None else None
+                if first is not None and resume and str(first["closed_at"]) < resume:
+                    self._backfill_closed_at = str(first["closed_at"])
             if first is None:
                 return None
+            self._resume_closed_at = max(resume, str(first["closed_at"]))
+            day_start = str(first["partition_date"])
+            day_end = (datetime.fromisoformat(day_start) + timedelta(days=1)).date().isoformat()
             selected = conn.execute(
                 """
                 SELECT c.venue,c.contract,c.quote,c.interval_minutes,c.opened_at,
@@ -118,13 +158,13 @@ class PerpetualColdArchiveService:
                  AND a.opened_at=c.opened_at
                 WHERE a.opened_at IS NULL AND c.closed_at < ?
                   AND c.venue=? AND c.contract=? AND c.quote=?
-                  AND c.interval_minutes=? AND substr(c.opened_at,1,10)=?
+                  AND c.interval_minutes=? AND c.opened_at>=? AND c.opened_at<?
                 ORDER BY c.opened_at LIMIT ?
                 """,
                 (
-                    cutoff.astimezone(UTC).isoformat(), first["venue"],
+                    bound, first["venue"],
                     first["contract"], first["quote"], first["interval_minutes"],
-                    first["partition_date"], max_rows,
+                    day_start, day_end, max_rows,
                 ),
             ).fetchall()
         rows = tuple(dict(row) for row in selected)

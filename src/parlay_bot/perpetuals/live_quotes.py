@@ -264,7 +264,8 @@ class PublicBestQuoteClient:
             base_url=base_url, timeout=httpx.Timeout(5.0),
         )
         self._cache: dict[str, tuple[float, BookQuote]] = {}
-        self._lock = asyncio.Lock()
+        # Independent assets must not queue behind one slow or blocked book.
+        self._asset_locks = {asset: asyncio.Lock() for asset in ASSETS}
         self._blocked_until = 0.0
         # Independent read-only fallback, used ONLY for display. Never feed
         # these USD perp prices into Binance-USDT paper/profit settlement.
@@ -272,7 +273,7 @@ class PublicBestQuoteClient:
         self._reference_client = reference_client
         self._reference_cache: dict[str, tuple[float, PerpReferenceBook]] = {}
         self._reference_blocked_until = 0.0
-        self._reference_lock = asyncio.Lock()
+        self._reference_locks = {asset: asyncio.Lock() for asset in ASSETS}
         self.stream_hub: StreamingBookHub | None = None
         # Additional venue books (OKX, Bitget). Clients passed in are owned
         # by the caller, like the Binance/reference clients above.
@@ -302,7 +303,7 @@ class PublicBestQuoteClient:
     async def get(self, asset: str) -> BookQuote:
         if asset not in ASSETS:
             raise QuoteUnavailable("Only BTC, ETH, SOL and XRP USDT futures supported.")
-        async with self._lock:
+        async with self._asset_locks[asset]:
             if self.stream_hub is not None:
                 streamed = self.stream_hub.snapshot("binance", asset)
                 if isinstance(streamed, BookQuote):
@@ -347,7 +348,7 @@ class PublicBestQuoteClient:
         """A second verified, native USD-perp reference for read-only UI."""
         if asset not in ASSETS:
             raise QuoteUnavailable("Unsupported perpetual market.")
-        async with self._reference_lock:
+        async with self._reference_locks[asset]:
             if self.stream_hub is not None:
                 streamed = self.stream_hub.snapshot("hyperliquid", asset)
                 if isinstance(streamed, PerpReferenceBook):

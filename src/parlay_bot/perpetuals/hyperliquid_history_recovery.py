@@ -48,15 +48,63 @@ class HyperliquidHistoryRecovery(GateHistoryRecovery):
         if not 12 <= page_bars <= 600:
             raise ValueError("invalid Hyperliquid history recovery configuration")
         super().__init__(market, client=client, assets=assets, page_bars=page_bars)
+        self._retention_ready = False
+
+    def initialize(self) -> None:
+        super().initialize()
+        if self._retention_ready:
+            return
+        with self.store.connect() as conn:
+            conn.executescript("""
+                CREATE TABLE IF NOT EXISTS perp_history_api_retention (
+                    venue TEXT NOT NULL,
+                    asset TEXT NOT NULL,
+                    interval_minutes INTEGER NOT NULL,
+                    requested_from TEXT NOT NULL,
+                    resumed_at TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    reason TEXT NOT NULL,
+                    PRIMARY KEY (venue,asset,interval_minutes)
+                );
+            """)
+        self._retention_ready = True
+
+    def _record_retention_limit(
+        self, asset: str, *, requested_from: datetime,
+        resumed_at: datetime, now: datetime,
+    ) -> None:
+        # An API cap is not recovered history; retain the missing period as
+        # a durable, explicit gap rather than claiming six complete months.
+        with self.store.connect() as conn:
+            conn.execute(
+                """INSERT INTO perp_history_api_retention
+                   (venue,asset,interval_minutes,requested_from,resumed_at,
+                    observed_at,reason)
+                   VALUES ('hyperliquid',?,5,?,?,?,'candleSnapshot_latest_5000')
+                   ON CONFLICT(venue,asset,interval_minutes) DO UPDATE SET
+                     requested_from=excluded.requested_from,
+                     resumed_at=excluded.resumed_at,
+                     observed_at=excluded.observed_at,
+                     reason=excluded.reason""",
+                (asset, requested_from.isoformat(), resumed_at.isoformat(),
+                 now.isoformat()),
+            )
 
     def progress(self) -> list[dict]:
         self.initialize()
         with self.store.connect() as conn:
             rows = conn.execute(
-                """SELECT venue,asset,started_from,next_opened_at,attempted_at,
-                          inserted_bars,empty_windows,status,retry_after
-                   FROM perp_history_recovery
-                   WHERE venue='hyperliquid' ORDER BY asset"""
+                """SELECT r.venue,r.asset,r.started_from,r.next_opened_at,
+                          r.attempted_at,r.inserted_bars,r.empty_windows,
+                          r.status,r.retry_after,
+                          x.requested_from AS retention_requested_from,
+                          x.resumed_at AS retention_resumed_at,
+                          x.reason AS retention_reason
+                   FROM perp_history_recovery r
+                   LEFT JOIN perp_history_api_retention x
+                     ON x.venue=r.venue AND x.asset=r.asset
+                    AND x.interval_minutes=5
+                   WHERE r.venue='hyperliquid' ORDER BY r.asset"""
             ).fetchall()
         return [dict(x) for x in rows]
 
@@ -196,9 +244,58 @@ class HyperliquidHistoryRecovery(GateHistoryRecovery):
                     observed, op, high, low, close, volume, trades,
                 ))
             if not candles:
-                # Never advance past an empty window: an upstream page
-                # with no in-window bars is an API gap, not coverage.
-                # Retrying later preserves the cursor (mirrors OKX).
+                # Hyperliquid documents only the newest 5,000 candles per
+                # interval. A six-month 5m cursor predates that API horizon;
+                # blindly retrying it every six hours never makes progress.
+                # Probe a conservative recent window first. Advance ONLY if
+                # we observed actual source bars there; keep the older gap
+                # explicit and never count it as verified historical data.
+                ancient = until <= clock - 5000 * _STEP
+                if ancient:
+                    recoverable = (
+                        clock.replace(minute=clock.minute // 5 * 5,
+                                      second=0, microsecond=0)
+                        - 4500 * _STEP
+                    )
+                    probe_until = min(recoverable + self.page_bars * _STEP, end)
+                    if probe_until > recoverable:
+                        recent = await self._info({
+                            "type": "candleSnapshot",
+                            "req": {
+                                "coin": asset, "interval": "5m",
+                                "startTime": int(recoverable.timestamp() * 1000),
+                                "endTime": int(probe_until.timestamp() * 1000),
+                            },
+                        })
+                        verified = isinstance(recent, list) and any(
+                            isinstance(bar, dict)
+                            and bar.get("s") == asset and bar.get("i") == "5m"
+                            and isinstance(bar.get("t"), int)
+                            and int(recoverable.timestamp() * 1000) <= bar["t"]
+                            < int(probe_until.timestamp() * 1000)
+                            and bar["t"] % 300_000 == 0
+                            for bar in recent
+                        )
+                        if verified:
+                            await asyncio.to_thread(
+                                self._record_retention_limit, asset,
+                                requested_from=cursor, resumed_at=recoverable,
+                                now=clock,
+                            )
+                            await asyncio.to_thread(
+                                self._advance, asset, now=clock,
+                                next_open=recoverable, empty=True,
+                                status="api_retention_limited",
+                            )
+                            _LOG.warning(
+                                "RivaL Hyperliquid historical source API limit "
+                                "asset=%s older 5m candles unavailable via "
+                                "candleSnapshot; resume from verified window %s",
+                                asset, recoverable.isoformat(),
+                            )
+                            return 0
+                # An empty page inside the supported window, or a failed
+                # recent probe, is not proof of retention loss.
                 await asyncio.to_thread(
                     self._advance, asset, now=clock, next_open=None,
                     empty=True, status="upstream_empty",

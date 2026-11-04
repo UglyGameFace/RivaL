@@ -176,7 +176,7 @@ class RuntimeHealthMonitor:
                 # No claim of an executable fill: only verified matching
                 # bid/ask observations. Require a meaningful sample size.
                 quote_rows = conn.execute(
-                    """SELECT COUNT(*) AS n,
+                    """SELECT f.venue,COUNT(*) AS n,
                               SUM(CASE WHEN q.entry_at IS NOT NULL THEN 1
                                        ELSE 0 END) AS matched
                        FROM rival_model_shadow_forecasts AS f
@@ -188,16 +188,21 @@ class RuntimeHealthMonitor:
                        WHERE f.venue IN ('hyperliquid','binance')
                          AND (f.probability_up>=0.56 OR f.probability_up<=0.44
                               OR f.incumbent_up>=0.56 OR f.incumbent_up<=0.44)
-                         AND f.issued_at>=? AND f.issued_at<?""",
+                         AND f.issued_at>=? AND f.issued_at<?
+                       GROUP BY f.venue""",
                     ((stamp-timedelta(hours=2)).isoformat(),
                      (stamp-timedelta(minutes=5)).isoformat()),
-                ).fetchone()
-                n = int(quote_rows["n"])
-                matched = int(quote_rows["matched"] or 0)
+                ).fetchall()
+                n = sum(int(row["n"]) for row in quote_rows)
+                matched = sum(int(row["matched"] or 0) for row in quote_rows)
                 if n >= 12 and matched / n < 0.8:
+                    by_venue = ", ".join(
+                        f'{row["venue"]} {int(row["matched"] or 0)}/{int(row["n"])}'
+                        for row in quote_rows
+                    )
                     faults["quote_coverage"] = (
                         f"{matched}/{n} prospective actionable family forecasts "
-                        "have a source-matched book"
+                        f"have a source-matched book (by venue: {by_venue})"
                     )
             if learning_enabled:
                 regressions = conn.execute(

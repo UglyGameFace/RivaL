@@ -149,3 +149,27 @@ async def test_provider_rejects_invalid_history_and_does_not_invent_prices():
                 await provider.collect(assets=("BTC",), bars=2)
     finally:
         await raw.aclose()
+
+
+
+@pytest.mark.asyncio
+async def test_gate_reuses_verified_contract_metadata_but_rechecks_expired_or_invalid():
+    """Two candle fetches need not both pay for a contract lookup."""
+    calls = []
+    def source(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        return response(request)
+
+    raw = httpx.AsyncClient(transport=httpx.MockTransport(source))
+    provider = GateMarketClient(raw)
+    try:
+        await provider.collect(assets=("BTC",), bars=2)
+        await provider.collect(assets=("BTC",), bars=2)
+        assert sum("/contracts/" in path for path in calls) == 1
+        assert sum(path.endswith("/candlesticks") for path in calls) == 2
+        # Expired metadata is fetched again, not trusted indefinitely.
+        provider._verified_contracts["BTC_USDT"] = (-float("inf"), 0.001)
+        await provider.collect(assets=("BTC",), bars=2)
+        assert sum("/contracts/" in path for path in calls) == 2
+    finally:
+        await raw.aclose()

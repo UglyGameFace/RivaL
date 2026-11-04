@@ -62,3 +62,20 @@ def test_failed_save_keeps_counts_for_the_next_try(tmp_path):
         assert problems.stored(store)[1] == {"ERROR": 0, "WARNING": 2}
     finally:
         store.close()
+
+
+
+def test_logging_shutdown_flush_is_safe_and_does_not_lose_pending_counts(tmp_path):
+    """Python calls logging.Handler.flush() without a database argument."""
+    store = SQLiteHotStore(tmp_path / "shutdown.sqlite")
+    problems = RecentProblems(clock=lambda: NOW)
+    logger = logging.getLogger("parlay_bot.test_shutdown_flush")
+    logger.addHandler(problems)
+    try:
+        logger.warning("warning before shutdown")
+        assert problems.flush() == 0
+        assert problems.flush(store) == 1
+        assert problems.stored(store)[1]["WARNING"] == 1
+    finally:
+        logger.removeHandler(problems)
+        store.close()

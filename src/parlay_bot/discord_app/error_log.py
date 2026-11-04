@@ -108,8 +108,15 @@ class RecentProblems(logging.Handler):
         template TEXT NOT NULL, count INTEGER NOT NULL, last_at TEXT NOT NULL,
         text TEXT NOT NULL, PRIMARY KEY (hour, logger, level, template))"""
 
-    def flush(self, store) -> int:
-        """Add unsaved counts to the hourly table; on failure they are kept."""
+    def flush(self, store=None) -> int:
+        """Persist unsaved counts when a store is supplied.
+
+        logging.Handler.flush() is also called with no arguments during
+        logging.shutdown()/atexit. That must remain safe and must not discard
+        pending durable counts when no database connection was provided.
+        """
+        if store is None:
+            return 0
         with self._mutex:
             pending, self._pending = self._pending, {}
         if not pending:

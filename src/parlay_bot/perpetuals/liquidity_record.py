@@ -19,6 +19,10 @@ Sources (public, read-only):
   "sell" match is an aggressive buy) and ``ticker`` (best bid/ask and their
   sizes only: its depth columns describe the top of book, not 10/25 bps).
   Spot is where US-hours price discovery happens; with perps it gives basis.
+- OKX liquidations (``liquidation-orders``, all USDT swaps, filtered to our
+  assets): forced orders per bucket. ``side`` "sell" closes a LONG and
+  "buy" closes a SHORT; sizes are contracts converted to coins. Format
+  verified from a live sample on the host (Nov 4 2026).
 """
 from __future__ import annotations
 
@@ -62,8 +66,17 @@ SCHEMA = """CREATE TABLE IF NOT EXISTS perp_liquidity_5m (
     first_event_at TEXT,
     last_event_at TEXT,
     recorded_at TEXT NOT NULL,
+    long_liq_volume DOUBLE PRECISION,
+    short_liq_volume DOUBLE PRECISION,
+    long_liq_count INTEGER,
+    short_liq_count INTEGER,
     PRIMARY KEY (venue, asset, bucket_start)
 )"""
+# Added after the table first shipped; existing databases get them on start.
+LIQUIDATION_COLUMNS = (
+    ("long_liq_volume", "DOUBLE PRECISION"), ("short_liq_volume", "DOUBLE PRECISION"),
+    ("long_liq_count", "INTEGER"), ("short_liq_count", "INTEGER"),
+)
 COLUMNS = (
     "venue", "asset", "bucket_start", "complete", "book_samples",
     "spread_bps_mean", "spread_bps_max", "mid_last",
@@ -72,6 +85,7 @@ COLUMNS = (
     "depth_25bps_covered_fraction", "buy_trades", "sell_trades",
     "buy_volume", "sell_volume", "first_event_at", "last_event_at",
     "recorded_at",
+    "long_liq_volume", "short_liq_volume", "long_liq_count", "short_liq_count",
 )
 
 
@@ -113,6 +127,10 @@ class _Bucket:
     sell_trades: int = 0
     buy_volume: float = 0.0
     sell_volume: float = 0.0
+    long_liq_volume: float = 0.0
+    short_liq_volume: float = 0.0
+    long_liq_count: int = 0
+    short_liq_count: int = 0
     first_event: datetime | None = None
     last_event: datetime | None = None
 
@@ -247,10 +265,37 @@ class LiquidityRecorder:
                 self.observe_trade("hyperliquid", asset, at, size=float(trade["sz"]),
                                    aggressive_buy=side == "B")
 
+    def observe_liquidation(self, venue: str, asset: str, at: datetime, *,
+                            size: float, long_closed: bool) -> None:
+        if asset not in self.assets or not math.isfinite(size) or size <= 0:
+            return
+        bucket = self._bucket(venue, asset, at)
+        if bucket is None:
+            return
+        if long_closed:
+            bucket.long_liq_count += 1
+            bucket.long_liq_volume += size
+        else:
+            bucket.short_liq_count += 1
+            bucket.short_liq_volume += size
+
     def _okx(self, wrapper: dict) -> None:
         arg, data = wrapper.get("arg") or {}, wrapper.get("data")
         if not isinstance(data, list):
-            return  # subscribe acks and pings
+            return  # subscribe acks, notices and pings
+        if arg.get("channel") == "liquidation-orders":
+            for item in data:
+                asset = str(item.get("instId", "")).removesuffix("-USDT-SWAP")
+                if asset not in OKX_CONTRACT_SIZE:
+                    continue
+                for detail in item.get("details") or ():
+                    if detail.get("side") not in ("buy", "sell"):
+                        continue
+                    at = datetime.fromtimestamp(int(detail["ts"]) / 1000, tz=UTC)
+                    self.observe_liquidation(
+                        "okx", asset, at, size=float(detail["sz"]) * OKX_CONTRACT_SIZE[asset],
+                        long_closed=detail["side"] == "sell")
+            return
         asset = str(arg.get("instId", "")).removesuffix("-USDT-SWAP")
         if asset not in OKX_CONTRACT_SIZE:
             return
@@ -319,6 +364,10 @@ class LiquidityRecorder:
             "first_event_at": bucket.first_event.isoformat() if bucket.first_event else None,
             "last_event_at": bucket.last_event.isoformat() if bucket.last_event else None,
             "recorded_at": "",  # stamped when drained
+            "long_liq_volume": bucket.long_liq_volume,
+            "short_liq_volume": bucket.short_liq_volume,
+            "long_liq_count": bucket.long_liq_count,
+            "short_liq_count": bucket.short_liq_count,
         }
 
     def drain(self, *, now: datetime) -> list[dict]:
@@ -336,6 +385,17 @@ class LiquidityRecorder:
         return sorted(rows, key=lambda r: (r["bucket_start"], r["venue"], r["asset"]))
 
 
+def ensure_liquidation_columns(store, conn) -> None:
+    """Add the liquidation columns to a table created before they existed."""
+    database = getattr(store, "database", None)
+    if database is None:  # a bare test double: its table is created from SCHEMA
+        return
+    present = set(database.column_names(conn, "perp_liquidity_5m"))
+    for column, definition in LIQUIDATION_COLUMNS:
+        if column not in present:
+            conn.execute(f"ALTER TABLE perp_liquidity_5m ADD COLUMN {column} {definition}")
+
+
 class LiquidityStore:
     """Immutable bucket rows in PostgreSQL (or SQLite in tests)."""
 
@@ -351,6 +411,7 @@ class LiquidityStore:
                 SCHEMA + ";\nCREATE INDEX IF NOT EXISTS idx_perp_liquidity_5m_asset_time "
                 "ON perp_liquidity_5m (asset, bucket_start)"
             )
+            ensure_liquidation_columns(self.store, conn)
         self._ready = True
 
     def insert(self, rows: list[dict]) -> int:

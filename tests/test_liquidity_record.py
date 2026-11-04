@@ -152,3 +152,54 @@ def test_okx_and_coinbase_order_flow_is_parsed_with_correct_sides_and_units():
     assert coinbase["buy_volume"] == 2.0 and coinbase["sell_volume"] == 0.0  # last_match skipped
     assert coinbase["bid_depth_10bps_mean"] == 1.5 and coinbase["mid_last"] == 99990.5
     assert recorder.rejected == 0
+
+
+def test_okx_liquidations_from_a_real_host_sample_are_bucketed_by_side():
+    import json as _json
+    from datetime import UTC, datetime, timedelta
+
+    from parlay_bot.perpetuals.liquidity_record import LiquidityRecorder
+
+    recorder = LiquidityRecorder()
+    # Verbatim shape captured from the live host on 2026-11-04.
+    sample = {"arg": {"channel": "liquidation-orders", "instType": "SWAP"},
+              "data": [{"details": [{"bkLoss": "0", "bkPx": "77662.3", "ccy": "",
+                                     "posSide": "short", "side": "buy", "sz": "0.44",
+                                     "ts": "1793720772160"}],
+                        "instFamily": "BTC-USDT", "instId": "BTC-USDT-SWAP",
+                        "instType": "SWAP", "uly": "BTC-USDT"},
+                       {"details": [{"side": "sell", "posSide": "long", "sz": "3",
+                                     "ts": "1793720772160"}],
+                        "instId": "DOGE-USDT-SWAP"}]}  # not one of our assets
+    recorder.ingest("okx", _json.dumps(sample))
+    recorder.ingest("okx", _json.dumps({"event": "notice", "code": "64010"}))
+    at = datetime.fromtimestamp(1793720772160 / 1000, tz=UTC)
+    rows = recorder.drain(now=at + timedelta(minutes=6))
+    assert len(rows) == 1 and rows[0]["asset"] == "BTC"
+    assert rows[0]["short_liq_count"] == 1 and rows[0]["long_liq_count"] == 0
+    assert abs(rows[0]["short_liq_volume"] - 0.0044) < 1e-12  # 0.44 contracts x 0.01 BTC
+    assert recorder.rejected == 0
+
+
+def test_existing_liquidity_table_gains_liquidation_columns(tmp_path):
+    from parlay_bot.perpetuals.liquidity_record import LiquidityStore
+    from parlay_bot.storage.hot import SQLiteHotStore
+
+    store = SQLiteHotStore(tmp_path / "old.sqlite")
+    try:
+        with store.connect() as conn:  # the table as first shipped, without liquidations
+            conn.execute("""CREATE TABLE perp_liquidity_5m (venue TEXT, asset TEXT,
+                bucket_start TEXT, complete INTEGER, book_samples INTEGER,
+                spread_bps_mean REAL, spread_bps_max REAL, mid_last REAL,
+                bid_depth_10bps_mean REAL, ask_depth_10bps_mean REAL,
+                bid_depth_25bps_mean REAL, ask_depth_25bps_mean REAL,
+                depth_25bps_covered_fraction REAL, buy_trades INTEGER, sell_trades INTEGER,
+                buy_volume REAL, sell_volume REAL, first_event_at TEXT, last_event_at TEXT,
+                recorded_at TEXT, PRIMARY KEY (venue, asset, bucket_start))""")
+        LiquidityStore(store).initialize()
+        with store.connect() as conn:
+            names = store.database.column_names(conn, "perp_liquidity_5m")
+        assert {"long_liq_volume", "short_liq_volume",
+                "long_liq_count", "short_liq_count"} <= names
+    finally:
+        store.close()

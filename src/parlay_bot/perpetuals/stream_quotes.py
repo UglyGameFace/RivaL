@@ -274,8 +274,9 @@ class StreamingBookHub:
                 ))
             # Order flow from US-reachable venues: OKX perps and Coinbase spot.
             okx = json.dumps({"op": "subscribe", "args": [
-                {"channel": channel, "instId": f"{asset}-USDT-SWAP"}
-                for asset in self.assets for channel in ("books5", "trades")]})
+                *({"channel": channel, "instId": f"{asset}-USDT-SWAP"}
+                  for asset in self.assets for channel in ("books5", "trades")),
+                {"channel": "liquidation-orders", "instType": "SWAP"}]})
             coinbase = json.dumps({"type": "subscribe",
                                    "product_ids": [f"{a}-USD" for a in self.assets],
                                    "channels": ["matches", "ticker"]})

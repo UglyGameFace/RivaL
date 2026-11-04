@@ -172,6 +172,8 @@ class RivalDiscordClient(discord.Client):
         self._intelligence_task: asyncio.Task[None] | None = None
         self._context_task: asyncio.Task[None] | None = None
         self._records_task: asyncio.Task[None] | None = None
+        self._kalshi_updown_task: asyncio.Task[None] | None = None
+        self.kalshi_updown = None
         self._status_policy = StatusPostPolicy()
         self.liquidity_last_bucket: str | None = None
         self.tree = app_commands.CommandTree(self)
@@ -1901,6 +1903,10 @@ class RivalDiscordClient(discord.Client):
                 self._context_task = asyncio.create_task(
                     self._context_loop(), name="rival-binance-context",
                 )
+            if self._kalshi_updown_task is None:
+                self._kalshi_updown_task = asyncio.create_task(
+                    self._kalshi_updown_loop(), name="rival-kalshi-updown",
+                )
             if self._records_task is None and self.research_drive is not None:
                 self._records_task = asyncio.create_task(
                     self._records_loop(), name="rival-records-backup",
@@ -2065,6 +2071,34 @@ class RivalDiscordClient(discord.Client):
                 await asyncio.sleep(30)
         finally:
             await feed.aclose()
+
+    async def _kalshi_updown_loop(self) -> None:
+        """Six-year model vs Kalshi 15-minute Up/Down (also Robinhood, Coinbase)."""
+        from parlay_bot.perpetuals.kalshi_updown import KalshiUpDown
+        from parlay_bot.perpetuals.polymarket_pooled import PolymarketPooledForecaster
+
+        await self.wait_until_ready()
+        tracker = KalshiUpDown(self.store, PolymarketPooledForecaster(
+            self.perp_collector.market, self._pooled_model_set()))
+        self.kalshi_updown = tracker
+        turn = 0
+        try:
+            while not self.is_closed():
+                try:
+                    saved = await asyncio.wait_for(tracker.issue(), timeout=50)
+                    if turn % 5 == 0:
+                        settled = await asyncio.wait_for(tracker.settle(), timeout=50)
+                        if saved or settled:
+                            _LOG.info("RivaL Kalshi up/down recorded=%d settled=%d",
+                                      saved, settled)
+                except asyncio.CancelledError:
+                    raise
+                except Exception:  # noqa: BLE001 - research only
+                    _LOG.warning("RivaL Kalshi up/down cycle failed", exc_info=True)
+                turn += 1
+                await asyncio.sleep(60)
+        finally:
+            await tracker.aclose()
 
     async def _records_loop(self) -> None:
         """Nightly backup of the bot's own live records into the Drive warehouse."""
@@ -3134,6 +3168,11 @@ class RivalDiscordClient(discord.Client):
             result["pooled"] = learner.pooled_summary(asset=asset, horizon=horizon)
         except Exception:  # noqa: BLE001 - optional comparison line
             _LOG.warning("Pooled Polymarket scorecard unavailable")
+        if horizon == 15 and self.kalshi_updown is not None:
+            try:
+                result["kalshi"] = self.kalshi_updown.summary(asset=asset)
+            except Exception:  # noqa: BLE001 - optional comparison line
+                _LOG.warning("Kalshi up/down scorecard unavailable")
         return result
 
     def training_status(self, asset: str, horizon: int) -> dict:
@@ -3247,7 +3286,8 @@ class RivalDiscordClient(discord.Client):
         "_liquidity_task",
         "_target_task", "_sports_results_task", "_sports_task",
         "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
-        "_hypothesis_task", "_candidate_task", "_archive_task", "_context_task", "_records_task",
+        "_hypothesis_task", "_candidate_task", "_archive_task", "_context_task",
+        "_records_task", "_kalshi_updown_task",
         "_heartbeat_task", "_status_task", "_benefit_task", "_intelligence_task",
     )
 

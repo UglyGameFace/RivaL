@@ -19,8 +19,18 @@ def unattended_acceptance_receipt(
     if stamp.utcoffset() is None:
         raise ValueError("acceptance requires an aware clock")
     stamp = stamp.astimezone(UTC)
+    # The newest 200 paired results are normally inside the last two days;
+    # widen to 21 days only when they are not (the 21-day join took ~17 s).
+    for lookback in (2, 21):
+        rows = _paired_rows(store, stamp, lookback)
+        if len(rows) >= 200:
+            break
+    return _receipt_from_rows(rows, stamp)
+
+
+def _paired_rows(store, stamp, days):
     with store.connect() as conn:
-        rows = conn.execute(
+        return conn.execute(
             """SELECT f.venue,f.contract,f.quote,f.horizon_minutes,
                       f.model_version,f.reference_opened_at,
                       f.issued_at,f.target_opened_at,f.settled_at,
@@ -47,8 +57,11 @@ def unattended_acceptance_receipt(
                WHERE f.settled_at IS NOT NULL AND s.settled_at IS NOT NULL
                  AND f.issued_at>=? AND f.issued_at<=?
                ORDER BY f.issued_at DESC LIMIT 200""",
-            ((stamp-timedelta(days=21)).isoformat(),stamp.isoformat()),
+            ((stamp-timedelta(days=days)).isoformat(),stamp.isoformat()),
         ).fetchall()
+
+
+def _receipt_from_rows(rows, stamp):
     issued = settled = paired = quoted = 0
     samples = []
     for row in rows:

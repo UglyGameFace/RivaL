@@ -1771,7 +1771,7 @@ class GuidedHome(discord.ui.View):
                 intel_text = (
                     f"\n**RivaL Intelligence (reviews the models):** now {now_call} for "
                     f"{self.horizon} min; last 7 days {followed}, {abstained}.\n"
-                    f"_{latest['thesis'][:200]}_"
+                    f"*{discord.utils.escape_markdown(str(latest['thesis'])[:200])}*"
                 )
             elif isinstance(intelligence, Exception):
                 intel_text = "\n**RivaL Intelligence:** cannot check right now"

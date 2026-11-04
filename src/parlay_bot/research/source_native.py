@@ -356,6 +356,10 @@ def export_source_month(market, *, venue: str, contract: str, quote: str,
 
 
 
+_ELIGIBLE_CACHE: dict = {}
+ELIGIBLE_CACHE_SECONDS = 6 * 3600
+
+
 def publication_ranges(now: datetime) -> list[tuple[str, str]]:
     """Recent six months PLUS one rotated older source-month DB read.
 
@@ -414,6 +418,30 @@ class NativeMonthlyPublisher:
             )
 
     def _eligible(self, now: datetime) -> list[tuple[str, str, str, str]]:
+        """Complete, not-yet-published source months (counts cached 6 hours).
+
+        Counting six months of candles took ~18 s and ran every archive pass;
+        completed months barely change, so the expensive count is reused and
+        only the small receipts table is re-read each time.
+        """
+        import time
+
+        key = tuple(publication_ranges(now))
+        cached = _ELIGIBLE_CACHE.get(key)
+        if cached and time.monotonic() - cached[0] < ELIGIBLE_CACHE_SECONDS:
+            self.initialize()
+            with self.market.store.connect() as conn:
+                done = {(str(r["venue"]), str(r["contract"]), str(r["quote"]), str(r["month"]))
+                        for r in conn.execute(
+                            "SELECT venue,contract,quote,month FROM "
+                            "rival_native_research_receipts").fetchall()}
+            return [item for item in cached[1] if item not in done]
+        selected = self._eligible_uncached(now)
+        _ELIGIBLE_CACHE.clear()
+        _ELIGIBLE_CACHE[key] = (time.monotonic(), list(selected))
+        return selected
+
+    def _eligible_uncached(self, now: datetime) -> list[tuple[str, str, str, str]]:
         self.initialize()
         selected: list[tuple[str, str, str, str]] = []
         # Each SELECT is bounded to six current months OR one older month.

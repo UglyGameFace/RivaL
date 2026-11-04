@@ -19,6 +19,7 @@ from parlay_bot.perpetuals.features import (
     live_examples,
     persisted_candles,
 )
+from parlay_bot.perpetuals.flow_challenger import FlowChallenger
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.historical_challengers import HistoricalChallengers
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -681,6 +682,14 @@ class ForwardAccuracyMonitor:
         pooled_set = self._pooled_models()
         btc_streams = {v: (c, q) for v, c, q in eligible if asset_for_contract(c) == "BTC"}
         btc_cache: dict[str, list] = {}
+        # Order-flow challenger inputs: one causal snapshot per asset per cycle.
+        flow = FlowChallenger(self.store)
+        flow_inputs: dict = {}
+        try:
+            flow_inputs = flow.asset_inputs(stamp, {
+                a for _, c, _ in selection if (a := asset_for_contract(c)) is not None})
+        except Exception:  # noqa: BLE001 - optional challenger never blocks forecasts
+            _LOG.exception("RivaL order-flow challenger inputs unavailable")
         timing["select"] += time.perf_counter() - mark
         for venue, contract, quote in selection:
             try:
@@ -867,6 +876,14 @@ class ForwardAccuracyMonitor:
                             # statement before they can commit incumbent work.
                             conn.execute("SAVEPOINT rival_shadow_prediction")
                             try:
+                                flow_call = None
+                                if asset in flow_inputs:
+                                    flow_call = flow.call(
+                                        conn, venue=venue, contract=contract, quote=quote,
+                                        asset=asset, horizon=horizon,
+                                        reference_opened_at=utc(last.opened_at),
+                                        issued_at=issued_at, features=features,
+                                        flow=flow_inputs[asset])
                                 ShadowModelCompetition(self.store).issue(
                                     conn, samples=samples, features=features,
                                     now=stamp, venue=venue, contract=contract, quote=quote,
@@ -877,6 +894,7 @@ class ForwardAccuracyMonitor:
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
+                                    challengers=(flow_call,) if flow_call else (),
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger
                                 conn.execute("ROLLBACK TO SAVEPOINT rival_shadow_prediction")
@@ -946,6 +964,12 @@ class ForwardAccuracyMonitor:
         # Issuance reads candles, not settlements, so nothing it uses changes.
         mark = time.perf_counter()
         settled = self._settle(stamp)
+        try:
+            learned = flow.learn(stamp)
+            if learned:
+                _LOG.info("RivaL order-flow challenger learned from %d graded outcomes", learned)
+        except Exception:  # noqa: BLE001 - optional challenger never blocks settlement
+            _LOG.exception("RivaL order-flow challenger learning unavailable")
         # Causal shadow forecasts settle only against already-verified matching
         # incumbent outcomes. No new provider calls, Discord messages or fills.
         try:

@@ -157,3 +157,58 @@ def test_checked_out_connection_closes_on_checkin_after_close(
         raw = conn._raw
         db.close()
     assert raw.close_calls == 1
+
+
+def test_read_only_pool_marks_each_checkout_and_blocks_schema_advisory_lock(
+    fake_connect: dict,
+) -> None:
+    db = PostgresDatabase("postgresql://user:pass@host/db", read_only=True)
+    with db.connect() as conn:
+        assert conn._read_only is True
+        with pytest.raises(PermissionError, match="Read-only"):
+            conn.executescript("CREATE TABLE bad (n INTEGER)")
+    with db.connect() as conn:
+        assert conn._read_only is True
+    assert len(fake_connect["created"]) == 1
+    db.close()
+
+
+def test_read_only_postgres_rejects_actual_writes_when_service_present() -> None:
+    import os
+    import psycopg
+
+    from parlay_bot.storage.hot import PostgresHotStore
+
+    dsn = os.getenv("RIVAL_TEST_DATABASE_URL")
+    if not dsn:
+        pytest.skip("PostgreSQL integration service unavailable")
+    writer = PostgresHotStore(dsn)
+    reader = PostgresHotStore(dsn, read_only=True)
+    try:
+        with writer.connect() as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS rival_read_only_probe_test "
+                "(id INTEGER PRIMARY KEY, value INTEGER NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO rival_read_only_probe_test(id,value) VALUES (1,10) "
+                "ON CONFLICT(id) DO UPDATE SET value=excluded.value"
+            )
+        with reader.connect() as conn:
+            assert conn.execute(
+                "SELECT value FROM rival_read_only_probe_test WHERE id=1"
+            ).fetchone()["value"] == 10
+            with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
+                conn.execute("UPDATE rival_read_only_probe_test SET value=99 WHERE id=1")
+        with reader.connect() as conn:
+            with pytest.raises(PermissionError, match="Read-only"):
+                conn.executescript("CREATE TABLE rival_should_never_exist (id INTEGER)")
+        with writer.connect() as conn:
+            assert conn.execute(
+                "SELECT value FROM rival_read_only_probe_test WHERE id=1"
+            ).fetchone()["value"] == 10
+    finally:
+        with writer.connect() as conn:
+            conn.execute("DROP TABLE IF EXISTS rival_read_only_probe_test")
+        reader.close()
+        writer.close()

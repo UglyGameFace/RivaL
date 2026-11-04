@@ -558,7 +558,7 @@ class SQLiteHotStore(RelationalHotStore):
 
 
 class PostgresHotStore(RelationalHotStore):
-    """Managed PostgreSQL backend for Discloud production."""
+    """Managed PostgreSQL backend, with opt-in server-enforced read-only probes."""
 
-    def __init__(self, dsn: str) -> None:
-        super().__init__(PostgresDatabase(dsn))
+    def __init__(self, dsn: str, *, read_only: bool = False) -> None:
+        super().__init__(PostgresDatabase(dsn, read_only=read_only))

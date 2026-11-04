@@ -59,3 +59,29 @@ async def test_records_forecast_with_real_asks_then_grades_after_fees(tmp_path):
         assert summary["model_brier"] == pytest.approx(0.09)
     finally:
         store.close()
+
+
+class LateForecaster:
+    def __init__(self):
+        self.calls = 0
+
+    def forecast(self, *, asset, horizon, opens_at, now):
+        self.calls += 1
+        return None if self.calls <= 4 else {"probability": 0.6, "family": "f",
+                                              "model_sha256": "b" * 64, "venues": 3}
+
+
+@pytest.mark.asyncio
+async def test_waits_for_the_opening_bar_instead_of_recording_no_forecast(tmp_path):
+    store = SQLiteHotStore(tmp_path / "late.sqlite")
+    try:
+        now = datetime.now(UTC)
+        tracker = FakeKalshi(store, now)
+        tracker.forecaster = LateForecaster()
+        assert await tracker.issue(now) == 0  # bar not ready: nothing recorded yet
+        assert await tracker.issue(now) == 4  # next minute: forecast exists
+        with store.connect() as conn:
+            assert conn.execute("SELECT COUNT(*) FROM rival_kalshi_updown "
+                                "WHERE probability_up IS NOT NULL").fetchone()[0] == 4
+    finally:
+        store.close()

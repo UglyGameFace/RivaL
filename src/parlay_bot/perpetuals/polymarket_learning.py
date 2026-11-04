@@ -77,7 +77,6 @@ class PolymarketOutcomeLearner:
         """One pooled-model forecast per contract, from data up to its start."""
         if self.pooled_forecaster is None or notice.slug in self._pooled_done:
             return
-        self._pooled_done[notice.slug] = now.timestamp()
         if len(self._pooled_done) > 5000:
             cutoff = now.timestamp() - 86400
             self._pooled_done = {k: v for k, v in self._pooled_done.items() if v > cutoff}
@@ -86,7 +85,8 @@ class PolymarketOutcomeLearner:
                 asset=notice.asset, horizon=notice.horizon, opens_at=notice.issued, now=now,
             )
             if result is None:
-                return
+                return  # e.g. the bar at the start is not collected yet: retry
+            self._pooled_done[notice.slug] = now.timestamp()
             market = notice.up_ask / (notice.up_ask + notice.down_ask)
             with self.store.connect() as conn:
                 conn.execute(

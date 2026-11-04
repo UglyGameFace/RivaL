@@ -115,6 +115,10 @@ class KalshiUpDown:
                         opens_at=opens, now=clock)
                 except Exception:  # noqa: BLE001 - the market record is still kept
                     _LOG.warning("Kalshi up/down forecast failed ticker=%s", ticker)
+                if forecast is None and clock < opens + ISSUE_WINDOW - timedelta(seconds=75):
+                    # The bar that closed at the open may not be collected yet;
+                    # retry next minute rather than record a contract unforecast.
+                    continue
                 forecast = forecast or {}
                 with self.store.connect() as conn:
                     conn.execute(

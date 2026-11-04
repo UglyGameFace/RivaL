@@ -734,9 +734,11 @@ class ForwardAccuracyMonitor:
                     except Exception:  # noqa: BLE001 - optional challenger only
                         _LOG.exception("RivaL pooled model inputs unavailable")
                 timing["pooled"] += time.perf_counter() - mark
+                window_inputs: dict = {}  # shared by this stream's three horizons
                 for horizon in HORIZONS:
                     mark = time.perf_counter()
-                    samples = live_examples(candles, horizon_minutes=horizon)
+                    samples = live_examples(candles, horizon_minutes=horizon,
+                                            feature_cache=window_inputs)
                     if len(samples) < MIN_PREVIOUS_EVALUATED + 20:
                         metrics["insufficient_causal_labels"] += 1
                         continue

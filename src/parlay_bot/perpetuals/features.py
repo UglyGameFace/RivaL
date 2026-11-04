@@ -129,11 +129,16 @@ def indicator_features(
 
 def live_examples(
     candles: Sequence[MarketCandle], *, horizon_minutes: int,
+    feature_cache: dict | None = None,
 ) -> tuple[LabeledExample, ...]:
     """Return only outcomes that could genuinely be predicted from prior observations.
 
     All inputs share one venue/instrument/timeframe. Gaps and batched backfills
     prevent samples. Targets only contribute labels after first observation.
+
+    ``feature_cache``: pass the same dict for every horizon of ONE candle list.
+    A window's inputs do not depend on the horizon, so they are computed once
+    instead of three times (this was most of the forecast cycle's CPU).
     """
     if horizon_minutes not in HORIZONS:
         raise ValueError("unsupported forecast horizon")
@@ -181,40 +186,20 @@ def live_examples(
         # A backfill that reveals both sides together cannot be scored as live.
         if available <= issued or utc(target.closed_at) <= issued:
             continue
-        if any(
-            int((utc(b.opened_at) - utc(a.opened_at)).total_seconds()) != seconds
-            for a, b in itertools.pairwise(extended)
-        ):
-            continue
         if int((utc(target.opened_at) - utc(current.opened_at)).total_seconds()) != (
             horizon_bars * seconds
         ):
             continue
-        if any(utc(c.observed_at) > issued for c in extended):
+        # Horizon-independent: window continuity, causality and inputs.
+        key = (idx, current.opened_at, current.observed_at, current.close_price)
+        if feature_cache is not None and key in feature_cache:
+            features = feature_cache[key]
+        else:
+            features = _window_features(history, extended, current, seconds, issued)
+            if feature_cache is not None:
+                feature_cache[key] = features
+        if features is None:
             continue
-        closes = [x.close_price for x in history]
-        returns = [
-            math.log(closes[i] / closes[i - 1])
-            for i in range(1, len(closes))
-        ]
-        mean = sum(returns) / len(returns)
-        variance = sum((value - mean) ** 2 for value in returns) / len(returns)
-        volume_mean = sum(x.volume_base for x in history[:-1]) / LOOKBACK
-        features = (
-            max(-5., min(5., returns[-1] * 100)),
-            max(-5., min(5., math.log(closes[-1] / closes[0]) * 100)),
-            max(0., min(5., math.sqrt(variance) * 100)),
-            max(0., min(5., (current.high_price - current.low_price)
-                              / current.close_price * 100)),
-            max(-2., min(2., math.log((current.volume_base + 1)
-                                     / (volume_mean + 1)))),
-            *indicator_features(
-                [x.close_price for x in extended],
-                [x.high_price for x in extended],
-                [x.low_price for x in extended],
-                [x.volume_base for x in extended],
-            ),
-        )
         # A target candle with zero trades only repeats the previous price
         # (thin dYdX markets); it is not an observed move, so no label.
         if target.trades == 0:
@@ -235,6 +220,41 @@ def live_examples(
             by_issuance[issued] = example
             ordered_by_open[issued] = current.opened_at
     return tuple(by_issuance[key] for key in sorted(by_issuance))
+
+
+def _window_features(history, extended, current, seconds, issued):
+    """Inputs for one window, or None when the window is not usable."""
+    if any(
+        int((utc(b.opened_at) - utc(a.opened_at)).total_seconds()) != seconds
+        for a, b in itertools.pairwise(extended)
+    ):
+        return None
+    if any(utc(c.observed_at) > issued for c in extended):
+        return None
+    closes = [x.close_price for x in history]
+    returns = [
+        math.log(closes[i] / closes[i - 1])
+        for i in range(1, len(closes))
+    ]
+    mean = sum(returns) / len(returns)
+    variance = sum((value - mean) ** 2 for value in returns) / len(returns)
+    volume_mean = sum(x.volume_base for x in history[:-1]) / LOOKBACK
+    features = (
+        max(-5., min(5., returns[-1] * 100)),
+        max(-5., min(5., math.log(closes[-1] / closes[0]) * 100)),
+        max(0., min(5., math.sqrt(variance) * 100)),
+        max(0., min(5., (current.high_price - current.low_price)
+                          / current.close_price * 100)),
+        max(-2., min(2., math.log((current.volume_base + 1)
+                                 / (volume_mean + 1)))),
+        *indicator_features(
+            [x.close_price for x in extended],
+            [x.high_price for x in extended],
+            [x.low_price for x in extended],
+            [x.volume_base for x in extended],
+        ),
+    )
+    return features
 
 
 def feature_vector(candles) -> tuple[float, ...]:

@@ -20,6 +20,7 @@ from parlay_bot.perpetuals.history_inventory import six_months_prior
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
 _LOG = logging.getLogger(__name__)
+MATH_EVIDENCE_TTL = timedelta(minutes=10)
 
 
 class InsufficientEvidence(ValueError):
@@ -99,6 +100,13 @@ def _prospective_math_evidence(market: PerpetualMarketStore, *, asset: str,
     auditor = market.research_forward_auditor
     if auditor is None:
         return {"status": "not_configured", "after_cost_edge_verified": False}
+    # This 14-day score costs 3-7 s and held a pooled connection on every
+    # Intelligence review. A review only summarises it, so reuse the score
+    # for MATH_EVIDENCE_TTL; never one computed for a later clock.
+    cache = market.__dict__.setdefault("_review_math_evidence", {})
+    hit = cache.get(asset)
+    if hit is not None and hit[0] <= clock and clock - hit[0] < MATH_EVIDENCE_TTL:
+        return dict(hit[1])
     try:
         report = auditor.active_learning_evidence(
             asset=asset, horizon_minutes=5, now=clock,
@@ -112,7 +120,7 @@ def _prospective_math_evidence(market: PerpetualMarketStore, *, asset: str,
         def score(value: object) -> float | None:
             return (float(value) if type(value) in (float, int)
                     and math.isfinite(value) and 0 <= value <= 1 else None)
-        return {
+        evidence = {
             "status": status,
             "source": "postgres_perp_forward_audit",
             "scope": "current_adaptive_policy_14_day_matched_future_outcomes",
@@ -125,6 +133,8 @@ def _prospective_math_evidence(market: PerpetualMarketStore, *, asset: str,
             "frozen_model_improvement_verified": False,
             "after_cost_edge_verified": False,
         }
+        cache[asset] = (clock, evidence)
+        return dict(evidence)
     except Exception:  # noqa: BLE001 - optional scores never block other research
         _LOG.warning("Persisted prospective mathematical evidence unavailable", exc_info=True)
         return {"status": "unavailable", "after_cost_edge_verified": False}

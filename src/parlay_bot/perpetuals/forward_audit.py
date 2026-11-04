@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import math
+import time
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
@@ -649,6 +650,12 @@ class ForwardAccuracyMonitor:
             except Exception:  # noqa: BLE001 - optional schema must fail open for incumbent
                 _LOG.exception("RivaL optional path research schema unavailable")
         issued = 0
+        # Seconds per phase for this cycle, logged once at the end so a slow
+        # cycle names its own bottleneck (forecasts expire when it runs long).
+        timing = {k: 0.0 for k in ("select", "read", "pooled", "fit", "challengers",
+                                   "boosters", "write", "settle")}
+        self.last_timing = timing
+        mark = time.perf_counter()
         metrics = {
             "discovered_streams": 0, "selected_streams": 0,
             "short_history": 0, "stale_last_candle": 0,
@@ -674,12 +681,15 @@ class ForwardAccuracyMonitor:
         pooled_set = self._pooled_models()
         btc_streams = {v: (c, q) for v, c, q in eligible if asset_for_contract(c) == "BTC"}
         btc_cache: dict[str, list] = {}
+        timing["select"] += time.perf_counter() - mark
         for venue, contract, quote in selection:
             try:
+                mark = time.perf_counter()
                 rows = self.market.recent_candles(
                     venue=venue, contract=contract, quote=quote,
                     interval_minutes=5, count=1000, as_of=stamp,
                 )
+                timing["read"] += time.perf_counter() - mark
                 if len(rows) < 65:
                     metrics["short_history"] += 1
                     continue
@@ -694,6 +704,7 @@ class ForwardAccuracyMonitor:
                     continue
                 features = _features(candles)
                 pooled_vector = None
+                mark = time.perf_counter()
                 if pooled_set is not None and any(pooled_set.active(h) for h in HORIZONS):
                     try:
                         coin = asset_for_contract(contract)
@@ -722,12 +733,16 @@ class ForwardAccuracyMonitor:
                             }
                     except Exception:  # noqa: BLE001 - optional challenger only
                         _LOG.exception("RivaL pooled model inputs unavailable")
+                timing["pooled"] += time.perf_counter() - mark
                 for horizon in HORIZONS:
+                    mark = time.perf_counter()
                     samples = live_examples(candles, horizon_minutes=horizon)
                     if len(samples) < MIN_PREVIOUS_EVALUATED + 20:
                         metrics["insufficient_causal_labels"] += 1
                         continue
                     tested = self.market.live_model_checkpoints.fit(samples, as_of=stamp)
+                    timing["fit"] += time.perf_counter() - mark
+                    mark = time.perf_counter()
                     # Historical challengers are *shadow research* until a
                     # separate, model-SHA-specific prospective + quote/cost
                     # promotion gate authorizes serving. In particular,
@@ -741,6 +756,7 @@ class ForwardAccuracyMonitor:
                         incumbent=tested, wall_clock=now is None,
                         shadow_candidates=historical_shadows,
                     )
+                    timing["challengers"] += time.perf_counter() - mark
                     if tested.evaluated < MIN_PREVIOUS_EVALUATED:
                         metrics["insufficient_training"] += 1
                         continue
@@ -770,6 +786,7 @@ class ForwardAccuracyMonitor:
                     # roll back the existing incumbent. Missing source-exact
                     # artifacts simply mean no boosted shadow prediction.
                     boosters = ()
+                    mark = time.perf_counter()
                     try:
                         boosters = self.market.historical_challengers.registry.compatible_boosters(
                             venue=venue, contract=contract, quote=quote,
@@ -777,6 +794,8 @@ class ForwardAccuracyMonitor:
                         )
                     except Exception:  # noqa: BLE001 - optional research inputs
                         _LOG.exception("RivaL boosted artifact lookup unavailable")
+                    timing["boosters"] += time.perf_counter() - mark
+                    mark = time.perf_counter()
                     # Store regime and model fingerprints BEFORE the target
                     # closes, in the same DB transaction as the forecast.
                     # Existing predictions are never retro-tagged using
@@ -879,6 +898,7 @@ class ForwardAccuracyMonitor:
                                     conn.execute("RELEASE SAVEPOINT rival_path_shadow")
                         issued += int(record.rowcount == 1)
                         metrics["duplicate_forecasts"] += int(record.rowcount == 0)
+                    timing["write"] += time.perf_counter() - mark
             except (ValueError, TypeError, ArithmeticError) as exc:
                 metrics["invalid_data"] += 1
                 _LOG.warning(
@@ -922,6 +942,7 @@ class ForwardAccuracyMonitor:
         # Settlement used to run first and pushed issuance a median 85 s
         # (up to 5 min) into the target window, so many forecasts expired.
         # Issuance reads candles, not settlements, so nothing it uses changes.
+        mark = time.perf_counter()
         settled = self._settle(stamp)
         # Causal shadow forecasts settle only against already-verified matching
         # incumbent outcomes. No new provider calls, Discord messages or fills.
@@ -947,6 +968,9 @@ class ForwardAccuracyMonitor:
             except Exception:  # noqa: BLE001 - background repair never blocks issuance
                 _LOG.exception("RivaL stale settlement reconciliation failed")
         metrics["settled_forecasts"] = settled
+        timing["settle"] += time.perf_counter() - mark
+        _LOG.info("RivaL forward cycle timing %s",
+                  " ".join(f"{k}={v:.1f}s" for k, v in timing.items()))
         self._record_cycle(stamp, metrics)
         # The table alone does not explain a bare menu: log the gate
         # breakdown so the next empty-signal report names its cause.

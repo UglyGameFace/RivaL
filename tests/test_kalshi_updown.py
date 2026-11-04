@@ -42,7 +42,9 @@ class FakeKalshi(KalshiUpDown):
 
 
 @pytest.mark.asyncio
-async def test_records_forecast_with_real_asks_then_grades_after_fees(tmp_path):
+async def test_records_forecast_with_real_asks_then_grades_after_fees(tmp_path, monkeypatch):
+    monkeypatch.setattr("parlay_bot.perpetuals.kalshi_updown.START_PRICE_FROZEN_FROM",
+                        "2000-01-01T00:00:00+00:00")
     store = SQLiteHotStore(tmp_path / "kalshi.sqlite")
     try:
         now = datetime.now(UTC)
@@ -83,5 +85,21 @@ async def test_waits_for_the_opening_bar_instead_of_recording_no_forecast(tmp_pa
         with store.connect() as conn:
             assert conn.execute("SELECT COUNT(*) FROM rival_kalshi_updown "
                                 "WHERE probability_up IS NOT NULL").fetchone()[0] == 4
+    finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_price_seen_too_late_is_never_compared(tmp_path):
+    store = SQLiteHotStore(tmp_path / "late-price.sqlite")
+    try:
+        now = datetime.now(UTC)
+        tracker = FakeKalshi(store, now + timedelta(minutes=3))  # first look 5 min in
+        tracker.now = now  # contract opened 2 min before `now`
+        await tracker.issue(now + timedelta(minutes=3))
+        with store.connect() as conn:
+            row = conn.execute("SELECT yes_ask, probability_up FROM rival_kalshi_updown "
+                               "LIMIT 1").fetchone()
+        assert row["yes_ask"] is None and row["probability_up"] is not None
     finally:
         store.close()

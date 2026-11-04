@@ -31,6 +31,8 @@ def book_features(notice):
     return values
 
 
+START_PRICE_WINDOW = timedelta(seconds=90)
+
 class PolymarketOutcomeLearner:
     def __init__(self, store):
         self.store = store
@@ -40,6 +42,9 @@ class PolymarketOutcomeLearner:
         # forecast per contract is stored beside this book model's forecast.
         self.pooled_forecaster = None
         self._pooled_done: dict[str, float] = {}
+        # Market's implied P(up) frozen at its first look within START_PRICE_WINDOW
+        # of the contract start: the fair price to compare a start-time forecast to.
+        self._start_price: dict[str, float] = {}
 
     def initialize(self):
         if self._initialized:
@@ -77,6 +82,17 @@ class PolymarketOutcomeLearner:
         """One pooled-model forecast per contract, from data up to its start."""
         if self.pooled_forecaster is None or notice.slug in self._pooled_done:
             return
+        if (notice.slug not in self._start_price
+                and notice.quote_at - notice.issued <= START_PRICE_WINDOW):
+            self._start_price[notice.slug] = notice.up_ask / (notice.up_ask + notice.down_ask)
+        if notice.slug not in self._start_price:
+            # First seen too late: the market already knew more than the
+            # model's start-time inputs. Never compared, never scored.
+            self._pooled_done[notice.slug] = now.timestamp()
+            return
+        if len(self._start_price) > 5000:
+            self._start_price = {k: v for k, v in self._start_price.items()
+                                 if k not in self._pooled_done}
         if len(self._pooled_done) > 5000:
             cutoff = now.timestamp() - 86400
             self._pooled_done = {k: v for k, v in self._pooled_done.items() if v > cutoff}
@@ -87,7 +103,7 @@ class PolymarketOutcomeLearner:
             if result is None:
                 return  # e.g. the bar at the start is not collected yet: retry
             self._pooled_done[notice.slug] = now.timestamp()
-            market = notice.up_ask / (notice.up_ask + notice.down_ask)
+            market = self._start_price.pop(notice.slug)
             with self.store.connect() as conn:
                 conn.execute(
                     "INSERT INTO rival_polymarket_model_forward "

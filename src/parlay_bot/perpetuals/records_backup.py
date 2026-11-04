@@ -138,7 +138,7 @@ class RecordsBackup:
         try:
             try:
                 rows = await asyncio.to_thread(self._write, table, column, day, path)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 if self._table_exists(table):
                     # A failed read is NOT an empty day: retry on the next run.
                     raise RuntimeError(f"records read failed for {table} {day}") from exc

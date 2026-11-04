@@ -362,6 +362,23 @@ def probe() -> dict:
             }
         except Exception as exc:  # noqa: BLE001
             out["bitget_page_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        # Saved warning/error history (survives restarts), grouped, last 24 h.
+        try:
+            since = (datetime.now(UTC) - timedelta(hours=24)).strftime("%Y-%m-%dT%H:00:00+00:00")
+            with store.connect() as conn:
+                out["problem_log_24h"] = [
+                    {"logger": r["logger"], "level": r["level"], "count": int(r["n"]),
+                     "hours": int(r["hours"]), "last_at": str(r["last_at"]),
+                     "text": str(r["text"])[:180]}
+                    for r in conn.execute(
+                        """SELECT logger, level, template, SUM(count) AS n,
+                                  COUNT(*) AS hours, MAX(last_at) AS last_at, MAX(text) AS text
+                           FROM rival_problem_log WHERE hour>=?
+                           GROUP BY logger, level, template
+                           ORDER BY (level='ERROR') DESC, SUM(count) DESC LIMIT 40""",
+                        (since,)).fetchall()]
+        except Exception as exc:  # noqa: BLE001 - table appears after the first save
+            out["problem_log_error"] = type(exc).__name__
     finally:
         store.close()
     return out

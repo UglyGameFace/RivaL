@@ -2076,6 +2076,11 @@ class RivalDiscordClient(discord.Client):
             ), timeout=15)
         except Exception:  # noqa: BLE001
             _LOG.warning("RivaL status card could not check prediction health")
+        try:  # real 24 h across restarts; memory only if the database is unreachable
+            problems, problem_totals = await asyncio.wait_for(
+                asyncio.to_thread(self.problem_log.stored, self.store), timeout=10)
+        except Exception:  # noqa: BLE001 - the card must never fail on its history
+            problems, problem_totals = self.problem_log.recent(), self.problem_log.totals()
         memory = host_memory.snapshot()
         return StatusFacts(
             now=now, boot_at=self._boot_at,
@@ -2090,8 +2095,8 @@ class RivalDiscordClient(discord.Client):
                 "limit_mb": memory.limit_bytes // (1024 * 1024),
                 "pressure": memory.pressure, "oom_kills": memory.oom_kills,
             },
-            problems=self.problem_log.recent(),
-            problem_totals=self.problem_log.totals(),
+            problems=problems,
+            problem_totals=problem_totals,
             research=research,
         )
 
@@ -2174,6 +2179,11 @@ class RivalDiscordClient(discord.Client):
             try:
                 if channel is None:
                     channel = await self.fetch_channel(channel_id)
+                try:
+                    await asyncio.wait_for(
+                        asyncio.to_thread(self.problem_log.flush, self.store), timeout=15)
+                except Exception as exc:  # noqa: BLE001 - counts stay in memory and retry
+                    _LOG.info("RivaL problem history not saved yet (%s)", type(exc).__name__)
                 facts = await self._status_facts()
                 embed, _, signature = build_embed(facts)
                 if self._status_policy.should_post(signature, facts.now):

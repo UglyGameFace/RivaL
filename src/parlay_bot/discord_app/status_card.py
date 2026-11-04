@@ -76,6 +76,19 @@ def _clip(lines: list[str], limit: int = 1000) -> str:
     return "\n".join(out) or "—"
 
 
+def _stream_line(venue: str, s: dict) -> str:
+    """A socket can stay open while the provider sends nothing usable
+    (Binance on a blocked host): that is not a healthy stream."""
+    counts = f"{s.get('updates', 0):,} book updates, {s.get('reconnects', 0)} reconnects"
+    if not s.get("connected"):
+        return f"🛑 {venue}: disconnected ({counts})"
+    if not s.get("fresh_assets"):
+        return (f"⚠️ {venue}: connected but no fresh book data ({counts})"
+                if s.get("updates") else
+                f"⚪ {venue}: connected, no book data received (provider may block this server)")
+    return f"✅ {venue}: {counts}"
+
+
 def assess(facts: StatusFacts) -> tuple[str, tuple[str, ...]]:
     """Severity and a stable signature of current problems (not counters)."""
     now = facts.now
@@ -186,11 +199,7 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
     embed.add_field(name="Market data", value=feeds, inline=False)
 
     if facts.streams:
-        stream_lines = [
-            f"{'✅' if s.get('connected') else '🛑'} {venue}: "
-            f"{s.get('updates', 0):,} book updates, {s.get('reconnects', 0)} reconnects"
-            for venue, s in facts.streams.items()
-        ]
+        stream_lines = [_stream_line(venue, s) for venue, s in facts.streams.items()]
         last = _parse(facts.liquidity_last_bucket)
         stream_lines.append(
             f"{'✅' if last and now - last <= STALE_LIQUIDITY_AFTER else '⚠️'} "

@@ -115,3 +115,40 @@ def test_rows_stored_once_and_never_overwritten(tmp_path):
     assert store.insert(changed) == 0
     saved = store.recent(asset="BTC")
     assert len(saved) == 1 and saved[0]["spread_bps_mean"] != 999.0
+
+
+def test_okx_and_coinbase_order_flow_is_parsed_with_correct_sides_and_units():
+    import json as _json
+    from datetime import UTC, datetime, timedelta
+
+    from parlay_bot.perpetuals.liquidity_record import LiquidityRecorder
+
+    recorder = LiquidityRecorder()
+    t0 = datetime(2026, 11, 4, 13, 0, 5, tzinfo=UTC)
+    ms = int(t0.timestamp() * 1000)
+    recorder.ingest("okx", _json.dumps({"event": "subscribe", "arg": {"channel": "trades"}}))
+    recorder.ingest("okx", _json.dumps({
+        "arg": {"channel": "books5", "instId": "BTC-USDT-SWAP"},
+        "data": [{"bids": [["100000.0", "300", "0", "4"]], "asks": [["100001.0", "100", "0", "2"]],
+                  "ts": str(ms)}]}))
+    recorder.ingest("okx", _json.dumps({
+        "arg": {"channel": "trades", "instId": "BTC-USDT-SWAP"},
+        "data": [{"instId": "BTC-USDT-SWAP", "px": "100000", "sz": "50", "side": "buy", "ts": str(ms)},
+                 {"instId": "BTC-USDT-SWAP", "px": "100000", "sz": "20", "side": "sell", "ts": str(ms)}]}))
+    stamp = t0.isoformat().replace("+00:00", "Z")
+    # Coinbase reports the MAKER side: a "sell" match is an aggressive BUY.
+    recorder.ingest("coinbase", _json.dumps({"type": "last_match", "product_id": "BTC-USD",
+                                             "side": "buy", "size": "9", "time": stamp}))
+    recorder.ingest("coinbase", _json.dumps({"type": "match", "product_id": "BTC-USD",
+                                             "side": "sell", "size": "2", "time": stamp}))
+    recorder.ingest("coinbase", _json.dumps({"type": "ticker", "product_id": "BTC-USD",
+                                             "best_bid": "99990", "best_bid_size": "1.5",
+                                             "best_ask": "99991", "best_ask_size": "0.5",
+                                             "time": stamp}))
+    rows = {r["venue"]: r for r in recorder.drain(now=t0 + timedelta(minutes=6))}
+    okx, coinbase = rows["okx"], rows["coinbase"]
+    assert okx["buy_volume"] == 0.5 and okx["sell_volume"] == 0.2  # 50/20 contracts x 0.01 BTC
+    assert okx["bid_depth_10bps_mean"] == 3.0 and okx["ask_depth_10bps_mean"] == 1.0
+    assert coinbase["buy_volume"] == 2.0 and coinbase["sell_volume"] == 0.0  # last_match skipped
+    assert coinbase["bid_depth_10bps_mean"] == 1.5 and coinbase["mid_last"] == 99990.5
+    assert recorder.rejected == 0

@@ -12,6 +12,13 @@ Sources (public, read-only):
   ``<symbol>@aggTrade`` (``m`` true = buyer is maker = aggressive sell).
 - Hyperliquid: ``l2Book`` (top levels per side) and ``trades``
   (``side`` "B" = aggressive buy, "A" = aggressive sell).
+- OKX USDT perpetuals: ``books5`` (top 5 levels) and ``trades`` (``side`` is
+  the taker's side). Sizes are contracts, converted to base units with each
+  contract's official face value so volumes are comparable across venues.
+- Coinbase spot (USD): ``matches`` (``side`` is the MAKER's side, so a
+  "sell" match is an aggressive buy) and ``ticker`` (best bid/ask and their
+  sizes only: its depth columns describe the top of book, not 10/25 bps).
+  Spot is where US-hours price discovery happens; with perps it gives basis.
 """
 from __future__ import annotations
 
@@ -30,7 +37,8 @@ FLUSH_GRACE = timedelta(seconds=15)
 # A bucket counts as complete when the feed covered it within this slack.
 COVERAGE_SLACK = timedelta(seconds=30)
 DEPTH_BANDS_BPS = (10, 25)
-VENUES = ("binance", "hyperliquid")
+VENUES = ("binance", "hyperliquid", "okx", "coinbase")
+OKX_CONTRACT_SIZE = {"BTC": 0.01, "ETH": 0.1, "SOL": 1.0, "XRP": 100.0}
 SYMBOL_TO_ASSET = {symbol: asset for asset, symbol in ASSETS.items()}
 
 SCHEMA = """CREATE TABLE IF NOT EXISTS perp_liquidity_5m (
@@ -193,6 +201,10 @@ class LiquidityRecorder:
                 self._binance(wrapper.get("data", wrapper))
             elif venue == "hyperliquid":
                 self._hyperliquid(wrapper)
+            elif venue == "okx":
+                self._okx(wrapper)
+            elif venue == "coinbase":
+                self._coinbase(wrapper)
         except (AttributeError, KeyError, IndexError, TypeError, ValueError, OverflowError):
             self.rejected += 1
 
@@ -234,6 +246,46 @@ class LiquidityRecorder:
                 at = datetime.fromtimestamp(trade["time"] / 1000, tz=UTC)
                 self.observe_trade("hyperliquid", asset, at, size=float(trade["sz"]),
                                    aggressive_buy=side == "B")
+
+    def _okx(self, wrapper: dict) -> None:
+        arg, data = wrapper.get("arg") or {}, wrapper.get("data")
+        if not isinstance(data, list):
+            return  # subscribe acks and pings
+        asset = str(arg.get("instId", "")).removesuffix("-USDT-SWAP")
+        if asset not in OKX_CONTRACT_SIZE:
+            return
+        face = OKX_CONTRACT_SIZE[asset]
+        if arg.get("channel") == "books5":
+            for book in data:
+                at = datetime.fromtimestamp(int(book["ts"]) / 1000, tz=UTC)
+                bids = [(p, q * face) for p, q in _levels(book["bids"])]
+                asks = [(p, q * face) for p, q in _levels(book["asks"])]
+                self.observe_book("okx", asset, at, bids, asks)
+        elif arg.get("channel") == "trades":
+            for trade in data:
+                if trade["side"] not in ("buy", "sell"):
+                    continue
+                at = datetime.fromtimestamp(int(trade["ts"]) / 1000, tz=UTC)
+                self.observe_trade("okx", asset, at, size=float(trade["sz"]) * face,
+                                   aggressive_buy=trade["side"] == "buy")
+
+    def _coinbase(self, raw: dict) -> None:
+        kind = raw.get("type")
+        asset = str(raw.get("product_id", "")).removesuffix("-USD")
+        if asset not in ASSETS or kind not in ("match", "ticker"):
+            return  # last_match replays a pre-subscription trade; skip it
+        at = datetime.fromisoformat(str(raw["time"]))
+        if kind == "match":
+            if raw["side"] not in ("buy", "sell"):
+                return
+            # Coinbase reports the MAKER's side: a resting sell was hit by a buyer.
+            self.observe_trade("coinbase", asset, at, size=float(raw["size"]),
+                               aggressive_buy=raw["side"] == "sell")
+        else:
+            self.observe_book(
+                "coinbase", asset, at,
+                _levels([[raw["best_bid"], raw["best_bid_size"]]]),
+                _levels([[raw["best_ask"], raw["best_ask_size"]]]))
 
     # ---- draining ------------------------------------------------------
     def _row(self, venue: str, asset: str, bucket: _Bucket) -> dict:

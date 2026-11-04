@@ -32,6 +32,8 @@ VENUES = ("hyperliquid", "binance")
 RECONNECT_CAP_SECONDS = 60.0
 # Liquidity-only Binance feeds (issue #295), on Binance's documented routes:
 # partial depth is a /public stream, aggregate trades a /market stream.
+OKX_PUBLIC_WS = "wss://ws.okx.com:8443/ws/v5/public"
+COINBASE_WS = "wss://ws-feed.exchange.coinbase.com"
 BINANCE_DEPTH_WS = "wss://fstream.binance.com/public/stream?streams="
 BINANCE_TRADES_WS = "wss://fstream.binance.com/market/stream?streams="
 
@@ -213,7 +215,8 @@ class StreamingBookHub:
                 + random.uniform(0, 1)
             )
 
-    async def _run_liquidity(self, name: str, url: str) -> None:
+    async def _run_liquidity(self, name: str, url: str, venue: str = "binance",
+                             subscribe: str | None = None) -> None:
         """Binance depth/trade socket feeding only the liquidity recorder.
 
         Separate from the quote socket so a liquidity-feed fault can never
@@ -229,9 +232,11 @@ class StreamingBookHub:
                     max_size=1_048_576, max_queue=64,
                 ) as socket:
                     attempts = 0
+                    if subscribe is not None:
+                        await socket.send(subscribe)
                     async for message in socket:
                         if self.recorder is not None:
-                            self.recorder.ingest("binance", message)
+                            self.recorder.ingest(venue, message)
                             self._liquidity_frames += 1
             except asyncio.CancelledError:
                 raise
@@ -266,6 +271,21 @@ class StreamingBookHub:
             ):
                 self._tasks.append(asyncio.create_task(
                     self._run_liquidity(name, url), name=f"rival-{name}-liquidity",
+                ))
+            # Order flow from US-reachable venues: OKX perps and Coinbase spot.
+            okx = json.dumps({"op": "subscribe", "args": [
+                {"channel": channel, "instId": f"{asset}-USDT-SWAP"}
+                for asset in self.assets for channel in ("books5", "trades")]})
+            coinbase = json.dumps({"type": "subscribe",
+                                   "product_ids": [f"{a}-USD" for a in self.assets],
+                                   "channels": ["matches", "ticker"]})
+            for name, url, venue, message in (
+                ("okx-orderflow", OKX_PUBLIC_WS, "okx", okx),
+                ("coinbase-orderflow", COINBASE_WS, "coinbase", coinbase),
+            ):
+                self._tasks.append(asyncio.create_task(
+                    self._run_liquidity(name, url, venue, message),
+                    name=f"rival-{name}-liquidity",
                 ))
 
     async def aclose(self) -> None:

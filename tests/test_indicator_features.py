@@ -88,3 +88,27 @@ def test_live_vector_matches_training_vector_for_last_bar():
     assert _features(candles[:119]) == last.features
     with pytest.raises(ValueError):
         _features(candles[:39])
+
+
+def test_shared_window_cache_gives_identical_examples_for_every_horizon():
+    from datetime import UTC, datetime, timedelta
+
+    from parlay_bot.perpetuals.features import live_examples
+    from parlay_bot.perpetuals.hyperliquid import MarketCandle
+
+    start, price, candles = datetime(2026, 10, 1, tzinfo=UTC), 100.0, []
+    for i in range(400):
+        opened = start + timedelta(minutes=5 * i + (5 if i > 200 else 0))  # one gap
+        price *= 1.001 if i % 3 else 0.998
+        candles.append(MarketCandle(
+            venue="okx", contract="BTC-USDT-SWAP", quote="USDT", interval_minutes=5,
+            opened_at=opened, closed_at=opened + timedelta(minutes=5),
+            observed_at=opened + timedelta(minutes=5, seconds=30),
+            open_price=price, high_price=price * 1.002, low_price=price * 0.998,
+            close_price=price * (1.0005 if i % 2 else 0.9995),
+            volume_base=float(i % 7), trades=0 if i % 50 == 0 else 3))
+    shared: dict = {}
+    for horizon in (5, 15, 60):
+        assert (live_examples(candles, horizon_minutes=horizon, feature_cache=shared)
+                == live_examples(candles, horizon_minutes=horizon))
+    assert shared  # windows were actually reused

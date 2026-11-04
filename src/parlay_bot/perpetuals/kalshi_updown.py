@@ -22,6 +22,10 @@ from parlay_bot.discord_app.kalshi_public import _ROOT, parse_orderbook
 _LOG = logging.getLogger(__name__)
 SERIES = {"BTC": "KXBTC15M", "ETH": "KXETH15M", "SOL": "KXSOL15M", "XRP": "KXXRP15M"}
 ISSUE_WINDOW = timedelta(minutes=5)  # the forecast only uses bars up to the open
+# Kalshi's prices are frozen at the first look within this time of the open,
+# so the model (start-time inputs) is compared with the market at the start.
+START_PRICE_WINDOW = timedelta(seconds=90)
+START_PRICE_FROZEN_FROM = "2026-11-04T03:15:00+00:00"  # earlier rows: late asks
 EDGE = 0.05
 
 
@@ -43,6 +47,7 @@ class KalshiUpDown:
         self.forecaster = forecaster
         self._client = client
         self._ready = False
+        self._start_book: dict[str, tuple] = {}
 
     def initialize(self) -> None:
         if self._ready:
@@ -102,12 +107,15 @@ class KalshiUpDown:
                     fresh.append((ticker, opens, closes, row.get("floor_strike")))
             fresh = [f for f in fresh if f[0] not in self._known([f[0] for f in fresh])]
             for ticker, opens, closes, reference in fresh:
-                yes_ask = no_ask = yes_size = no_size = None
-                try:
-                    yes_ask, no_ask, yes_size, no_size = parse_orderbook(
-                        await self._get(f"/markets/{ticker}/orderbook"))
-                except (httpx.HTTPError, ValueError, TypeError):
-                    _LOG.info("Kalshi book unavailable ticker=%s", ticker)
+                if ticker not in self._start_book and clock - opens <= START_PRICE_WINDOW:
+                    try:
+                        self._start_book[ticker] = parse_orderbook(
+                            await self._get(f"/markets/{ticker}/orderbook"))
+                    except (httpx.HTTPError, ValueError, TypeError):
+                        _LOG.info("Kalshi book unavailable ticker=%s", ticker)
+                # No start-time book: the contract is kept but never compared.
+                yes_ask, no_ask, yes_size, no_size = self._start_book.get(
+                    ticker, (None, None, None, None))
                 forecast = None
                 try:
                     forecast = await asyncio.to_thread(
@@ -133,7 +141,10 @@ class KalshiUpDown:
                          forecast.get("family"), forecast.get("model_sha256"),
                          forecast.get("venues"), yes_ask, no_ask, yes_size, no_size),
                     )
+                self._start_book.pop(ticker, None)
                 saved += 1
+        if len(self._start_book) > 500:
+            self._start_book.clear()
         return saved
 
     async def settle(self) -> int:
@@ -170,7 +181,7 @@ class KalshiUpDown:
         query = ("SELECT probability_up,yes_ask,no_ask,result_yes FROM rival_kalshi_updown "
                  "WHERE result_yes IS NOT NULL AND probability_up IS NOT NULL "
                  "AND yes_ask IS NOT NULL AND no_ask IS NOT NULL AND issued_at>=?")
-        params: tuple = (since,)
+        params: tuple = (max(since, START_PRICE_FROZEN_FROM),)
         if asset:
             query += " AND asset=?"
             params += (asset,)

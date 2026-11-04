@@ -31,6 +31,13 @@ def book_features(notice):
     return values
 
 
+START_PRICE_WINDOW = timedelta(seconds=90)
+# Before this time the market price was taken when the forecast was issued,
+# which could be minutes into the contract; such rows count only if issued
+# within START_PRICE_WINDOW of the start.
+START_PRICE_FROZEN_FROM = datetime(2026, 11, 4, 3, 15, tzinfo=UTC)
+
+
 class PolymarketOutcomeLearner:
     def __init__(self, store):
         self.store = store
@@ -40,6 +47,9 @@ class PolymarketOutcomeLearner:
         # forecast per contract is stored beside this book model's forecast.
         self.pooled_forecaster = None
         self._pooled_done: dict[str, float] = {}
+        # Market's implied P(up) frozen at its first look within START_PRICE_WINDOW
+        # of the contract start: the fair price to compare a start-time forecast to.
+        self._start_price: dict[str, float] = {}
 
     def initialize(self):
         if self._initialized:
@@ -77,6 +87,17 @@ class PolymarketOutcomeLearner:
         """One pooled-model forecast per contract, from data up to its start."""
         if self.pooled_forecaster is None or notice.slug in self._pooled_done:
             return
+        if (notice.slug not in self._start_price
+                and notice.quote_at - notice.issued <= START_PRICE_WINDOW):
+            self._start_price[notice.slug] = notice.up_ask / (notice.up_ask + notice.down_ask)
+        if notice.slug not in self._start_price:
+            # First seen too late: the market already knew more than the
+            # model's start-time inputs. Never compared, never scored.
+            self._pooled_done[notice.slug] = now.timestamp()
+            return
+        if len(self._start_price) > 5000:
+            self._start_price = {k: v for k, v in self._start_price.items()
+                                 if k not in self._pooled_done}
         if len(self._pooled_done) > 5000:
             cutoff = now.timestamp() - 86400
             self._pooled_done = {k: v for k, v in self._pooled_done.items() if v > cutoff}
@@ -87,7 +108,7 @@ class PolymarketOutcomeLearner:
             if result is None:
                 return  # e.g. the bar at the start is not collected yet: retry
             self._pooled_done[notice.slug] = now.timestamp()
-            market = notice.up_ask / (notice.up_ask + notice.down_ask)
+            market = self._start_price.pop(notice.slug)
             with self.store.connect() as conn:
                 conn.execute(
                     "INSERT INTO rival_polymarket_model_forward "
@@ -204,7 +225,8 @@ class PolymarketOutcomeLearner:
         since = (clock - timedelta(days=days)).isoformat()
         with self.store.connect() as conn:
             rows = conn.execute(
-                "SELECT f.probability_up,f.market_baseline,o.direction "
+                "SELECT f.probability_up,f.market_baseline,o.direction,"
+                "f.issued_at,v.expires_at,v.horizon "
                 "FROM rival_polymarket_model_forward f "
                 "JOIN rival_polymarket_observations v ON v.slug=f.slug "
                 "JOIN rival_polymarket_ai_outcomes o "
@@ -215,6 +237,13 @@ class PolymarketOutcomeLearner:
                 "AND v.asset=? AND v.horizon=?",
                 (since, clock.isoformat(), asset, horizon),
             ).fetchall()
+        def fair(row) -> bool:
+            issued = datetime.fromisoformat(str(row["issued_at"]))
+            start = (datetime.fromisoformat(str(row["expires_at"]))
+                     - timedelta(minutes=int(row["horizon"])))
+            return issued >= START_PRICE_FROZEN_FROM or issued - start <= START_PRICE_WINDOW
+
+        rows = [r for r in rows if fair(r)]
         n = len(rows)
         if not n:
             return {"contracts": 0, "score_window_days": days}

@@ -11,6 +11,7 @@ import asyncio
 import logging
 import math
 import threading
+import time
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.ai_types import ResearchUnavailable
@@ -484,6 +485,14 @@ class AutonomousResearch:
         started = datetime.now(UTC)
         issued = settled = ai_count = 0
         math_ok = settlement_ok = review_ok = gemini_ok = True
+        stages: dict[str, float] = {}
+        mark = time.perf_counter()
+
+        def lap(name: str) -> None:
+            nonlocal mark
+            stages[name] = time.perf_counter() - mark
+            mark = time.perf_counter()
+
         try:
             issued, settled = await asyncio.to_thread(self.forward.run_once)
         except asyncio.CancelledError:
@@ -491,6 +500,7 @@ class AutonomousResearch:
         except Exception:  # noqa: BLE001
             math_ok = False
             _LOG.exception("RivaL forward mathematical research cycle failed")
+        lap("forward")
         # Challenge the incumbent only with forecasts genuinely issued by
         # the completed live research cycle, on shared UTC target windows.
         try:
@@ -504,6 +514,7 @@ class AutonomousResearch:
             raise
         except Exception:  # noqa: BLE001 - ensemble cannot block existing bot
             _LOG.exception("RivaL multi-exchange challenger unavailable safely")
+        lap("multi")
         try:
             await asyncio.to_thread(self.settle_ai)
         except asyncio.CancelledError:
@@ -511,6 +522,7 @@ class AutonomousResearch:
         except Exception:  # noqa: BLE001
             settlement_ok = False
             _LOG.exception("RivaL Gemini outcome settlement failed")
+        lap("ai_settle")
         if datetime.now(UTC).minute < 5:
             try:
                 await asyncio.to_thread(self.review_model)
@@ -525,6 +537,7 @@ class AutonomousResearch:
                 raise
             except Exception:  # noqa: BLE001
                 _LOG.exception("RivaL promotion evaluation failed")
+        lap("hourly_review")
         try:
             ai_count = await self.run_auto_ai()
         except asyncio.CancelledError:
@@ -532,6 +545,7 @@ class AutonomousResearch:
         except Exception:  # noqa: BLE001
             gemini_ok = False
             _LOG.exception("RivaL automatic Gemini research cycle failed")
+        lap("auto_ai")
         try:
             await asyncio.to_thread(
                 self._save_cycle, started=started,
@@ -559,4 +573,8 @@ class AutonomousResearch:
             raise
         except Exception:  # noqa: BLE001 - preserve the independent math cycle
             _LOG.exception("RivaL official macro/event research unavailable")
+        lap("events")
+        self.last_stages = stages
+        _LOG.info("RivaL forecast stage timing %s",
+                  " ".join(f"{k}={v:.1f}s" for k, v in stages.items()))
         return issued, settled, ai_count

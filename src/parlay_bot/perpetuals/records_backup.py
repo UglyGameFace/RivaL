@@ -86,66 +86,77 @@ class RecordsBackup:
             out += todo  # newest first, so recent days are safe soonest
         return out
 
-    def _rows(self, table: str, column: str, day: date) -> list[dict]:
-        lo = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
-        hi = lo + timedelta(days=1)
+    def _write(self, table: str, column: str, day: date, path: Path) -> int:
+        """Stream one day to a gzip file, ONE HOUR at a time.
+
+        Never holds a whole day of a large table in memory (the bot's host
+        has a 512 MB limit); each hour's rows are written and released.
+        """
+        start = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
         scopes = next(s for t, _, s in TABLES if t == table)
-        rows: list[dict] = []
+        count = 0
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with gzip.open(path, "wt", encoding="utf-8") as handle:
+            for hour in range(24):
+                lo, hi = start + timedelta(hours=hour), start + timedelta(hours=hour + 1)
+                for where, params in scopes:
+                    extra = f"{where} AND " if where else ""
+                    with self.store.connect() as conn:
+                        rows = conn.execute(
+                            f"SELECT * FROM {table} WHERE {extra}{column}>=? AND {column}<?",
+                            (*params, lo.isoformat(), hi.isoformat()),
+                        ).fetchall()
+                    for row in rows:
+                        handle.write(json.dumps(dict(row), default=str, sort_keys=True) + "\n")
+                    count += len(rows)
+                    del rows
+        return count
+
+    def _mark(self, table: str, day: date, rows: int, sha256: str, file_id: str) -> None:
         with self.store.connect() as conn:
-            for where, params in scopes:
-                extra = f"{where} AND " if where else ""
-                rows += [dict(r) for r in conn.execute(
-                    f"SELECT * FROM {table} WHERE {extra}{column}>=? AND {column}<?",
-                    (*params, lo.isoformat(), hi.isoformat()),
-                ).fetchall()]
-        return rows
+            conn.execute(
+                """INSERT INTO rival_records_backup
+                   (table_name,day,rows,sha256,drive_file_id,saved_at)
+                   VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                (table, day.isoformat(), rows, sha256, file_id,
+                 datetime.now(UTC).isoformat()))
 
     async def save_day(self, table: str, column: str, day: date) -> int:
         import asyncio
 
         from parlay_bot.research.publish import _artifact
 
-        try:
-            rows = await asyncio.to_thread(self._rows, table, column, day)
-        except Exception:  # noqa: BLE001 - table absent on this host
-            rows = None
-        if not rows:
-            with self.store.connect() as conn:
-                conn.execute(
-                    """INSERT INTO rival_records_backup
-                       (table_name,day,rows,sha256,drive_file_id,saved_at)
-                       VALUES (?,?,0,'','',?) ON CONFLICT DO NOTHING""",
-                    (table, day.isoformat(), datetime.now(UTC).isoformat()))
-            return 0
         path = self.workdir / file_name(table, day)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        with gzip.open(path, "wt", encoding="utf-8") as handle:
-            for row in rows:
-                handle.write(json.dumps(row, default=str, sort_keys=True) + "\n")
         try:
-            artifact = _artifact(path, len(rows))
+            try:
+                rows = await asyncio.to_thread(self._write, table, column, day, path)
+            except Exception:  # noqa: BLE001 - table absent on this host
+                rows = 0
+            if not rows:
+                await asyncio.to_thread(self._mark, table, day, 0, "", "")
+                return 0
+            artifact = _artifact(path, rows)
             stored = await self.drive.ensure_history_file(
                 artifact=artifact, batch_id=f"records-{table}-{day.isoformat()}",
                 mime_type="application/gzip",
             )
-            with self.store.connect() as conn:
-                conn.execute(
-                    """INSERT INTO rival_records_backup
-                       (table_name,day,rows,sha256,drive_file_id,saved_at)
-                       VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                    (table, day.isoformat(), len(rows), artifact.sha256,
-                     stored.file_id, datetime.now(UTC).isoformat()),
-                )
+            await asyncio.to_thread(self._mark, table, day, rows, artifact.sha256,
+                                    stored.file_id)
+            return rows
         finally:
             path.unlink(missing_ok=True)
-        return len(rows)
 
     async def run_once(self, now: datetime | None = None) -> dict:
         import asyncio
 
         stamp = now or datetime.now(UTC)
         saved, rows, failed = 0, 0, 0
+        from parlay_bot.perpetuals import host_memory
+
         for table, column, day in await asyncio.to_thread(self.pending, stamp):
+            if host_memory.snapshot().pressure:
+                _LOG.info("Records backup paused: host memory pressure")
+                break
             try:
                 count = await self.save_day(table, column, day)
                 rows += count

@@ -111,13 +111,24 @@ def test_learner_issues_pooled_forecast_once_per_contract(tmp_path):
         learner.initialize()
         learner.pooled_forecaster = Fake()
         notice = SimpleNamespace(slug="s1", asset="BTC", horizon=15, issued=START,
+                                 quote_at=START + timedelta(seconds=30),
                                  up_ask=.5, down_ask=.52)
         learner._issue_pooled(notice, START + timedelta(seconds=30))
-        learner._issue_pooled(notice, START + timedelta(seconds=35))
+        later = SimpleNamespace(**{**vars(notice), "quote_at": START + timedelta(minutes=3),
+                                   "up_ask": .9, "down_ask": .12})
+        learner._issue_pooled(later, START + timedelta(minutes=3))
+        assert len(calls) == 1
+        # A contract first seen minutes after its start is never compared.
+        late = SimpleNamespace(**{**vars(later), "slug": "s2"})
+        learner._issue_pooled(late, START + timedelta(minutes=3))
         assert len(calls) == 1
         with store.connect() as conn:
             row = conn.execute("SELECT model_version, probability_up FROM "
                                "rival_polymarket_model_forward").fetchone()
         assert (row["model_version"], row["probability_up"]) == ("pooled:pooled_15m_x", .6)
+        with store.connect() as conn:
+            baseline = conn.execute("SELECT market_baseline FROM "
+                                    "rival_polymarket_model_forward").fetchone()[0]
+        assert baseline == pytest.approx(.5 / 1.02)  # the price at the start
     finally:
         store.close()

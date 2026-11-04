@@ -83,29 +83,52 @@ class PerpetualColdArchiveService:
             )
         self._initialized = True
 
+    # Finding the oldest unarchived candle walked past every archived one
+    # from the beginning (~3 s, ~45 times an hour). Candles become eligible
+    # in time order, so first look from the newest position already reached.
+    # Only when that finds nothing, sweep from the beginning, so a backfilled
+    # older day is still archived on the next run. A sweep that came back
+    # empty is not repeated for EMPTY_SWEEP_PAUSE.
+    EMPTY_SWEEP_PAUSE = timedelta(minutes=15)
+
+    def _first_unarchived(self, conn, cutoff: str, start: str):
+        return conn.execute(
+            """
+            SELECT c.venue,c.contract,c.quote,c.interval_minutes,c.closed_at,
+                   substr(c.opened_at,1,10) AS partition_date
+            FROM perp_market_candles c
+            LEFT JOIN perp_candle_archive_receipts a
+              ON a.venue=c.venue AND a.contract=c.contract
+             AND a.quote=c.quote AND a.interval_minutes=c.interval_minutes
+             AND a.opened_at=c.opened_at
+            WHERE a.opened_at IS NULL AND c.closed_at < ? AND c.closed_at >= ?
+            ORDER BY c.closed_at,c.venue,c.contract,c.opened_at LIMIT 1
+            """,
+            (cutoff, start),
+        ).fetchone()
+
     def _next_batch(self, *, cutoff: datetime, max_rows: int) -> CandleArchiveBatch | None:
         if cutoff.tzinfo is None:
             raise ValueError("cutoff must be timezone-aware")
         if not 1 <= max_rows <= 5000:
             raise ValueError("perpetual archive max_rows must be 1..5000")
         self.initialize()
+        bound = cutoff.astimezone(UTC).isoformat()
+        resume = getattr(self, "_resume_closed_at", "")
+        wall = datetime.now(UTC)
         with self.store.connect() as conn:
-            first = conn.execute(
-                """
-                SELECT c.venue,c.contract,c.quote,c.interval_minutes,
-                       substr(c.opened_at,1,10) AS partition_date
-                FROM perp_market_candles c
-                LEFT JOIN perp_candle_archive_receipts a
-                  ON a.venue=c.venue AND a.contract=c.contract
-                 AND a.quote=c.quote AND a.interval_minutes=c.interval_minutes
-                 AND a.opened_at=c.opened_at
-                WHERE a.opened_at IS NULL AND c.closed_at < ?
-                ORDER BY c.closed_at,c.venue,c.contract,c.opened_at LIMIT 1
-                """,
-                (cutoff.astimezone(UTC).isoformat(),),
-            ).fetchone()
+            first = self._first_unarchived(conn, bound, resume) if resume else None
             if first is None:
-                return None
+                empty_at = getattr(self, "_empty_sweep_at", None)
+                if empty_at is not None and wall - empty_at < self.EMPTY_SWEEP_PAUSE:
+                    return None
+                first = self._first_unarchived(conn, bound, "")
+                if first is None:
+                    self._empty_sweep_at = wall
+                    return None
+            self._empty_sweep_at = None
+            # Only move forward: a backfilled older day is drained by sweeps.
+            self._resume_closed_at = max(resume, str(first["closed_at"]))
             selected = conn.execute(
                 """
                 SELECT c.venue,c.contract,c.quote,c.interval_minutes,c.opened_at,

@@ -262,3 +262,29 @@ def test_archive_receipts_roll_back_all_batches_when_late_source_changes(tmp_pat
         service._mark_archived(batch, now)
     assert _count(store, "perp_candle_archive_receipts") == 0
     assert _count(store, "perp_market_candles") == 120
+
+
+def test_caught_up_archive_does_not_rescan_from_the_beginning_every_run(tmp_path, monkeypatch):
+    store, _, service = _setup(tmp_path)
+    now = datetime(2026, 10, 28, 20, tzinfo=UTC)
+    cutoff = now - timedelta(days=14)
+    starts = []
+    real = service._first_unarchived
+    monkeypatch.setattr(service, "_first_unarchived",
+                        lambda conn, bound, start: starts.append(start) or real(conn, bound, start))
+    _insert(store, opened=now - timedelta(days=20))
+    batch = service._next_batch(cutoff=cutoff, max_rows=10)
+    assert batch is not None and starts == [""]  # first run: sweep from the beginning
+    with store.connect() as conn:  # mark it archived, as a completed batch would
+        conn.execute("""INSERT INTO perp_candle_archive_receipts
+            (venue,contract,quote,interval_minutes,opened_at,batch_id,archived_at)
+            SELECT venue,contract,quote,interval_minutes,opened_at,'b','x'
+            FROM perp_market_candles""")
+    starts.clear()
+    assert service._next_batch(cutoff=cutoff, max_rows=10) is None
+    assert starts[0] != "" and starts[1] == ""  # resume, then one sweep (empty)
+    starts.clear()
+    assert service._next_batch(cutoff=cutoff, max_rows=10) is None
+    assert starts == [starts[0]] and starts[0] != ""  # no repeat sweep after an empty one
+    _insert(store, opened=now - timedelta(days=19), venue="okx")  # newly eligible, later
+    assert service._next_batch(cutoff=cutoff, max_rows=10).venue == "okx"

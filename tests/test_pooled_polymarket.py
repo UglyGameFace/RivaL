@@ -134,3 +134,11 @@ def test_learner_issues_pooled_forecast_once_per_contract(tmp_path):
         assert baseline == pytest.approx(.5 / 1.02)  # the price at the start
     finally:
         store.close()
+
+
+def test_polymarket_crypto_fee_matches_published_peak():
+    from parlay_bot.perpetuals.polymarket_learning import polymarket_fee
+
+    # Peak effective rate 1.80% of the amount paid, at a 50-cent price.
+    assert polymarket_fee(0.5) / 0.5 == pytest.approx(0.018)
+    assert polymarket_fee(0.9) / 0.9 < 0.007

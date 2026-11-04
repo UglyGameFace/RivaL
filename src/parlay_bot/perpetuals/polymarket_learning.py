@@ -36,6 +36,13 @@ START_PRICE_WINDOW = timedelta(seconds=90)
 # which could be minutes into the contract; such rows count only if issued
 # within START_PRICE_WINDOW of the start.
 START_PRICE_FROZEN_FROM = datetime(2026, 11, 4, 3, 15, tzinfo=UTC)
+# Polymarket crypto taker fee per share: FEE_RATE * p * p * (1 - p)
+# (fee = C * p * feeRate * (p(1-p))^1; peak effective 1.80% at p = 0.5).
+POLYMARKET_CRYPTO_FEE_RATE = 0.072
+
+
+def polymarket_fee(price: float) -> float:
+    return POLYMARKET_CRYPTO_FEE_RATE * price * price * (1 - price)
 
 
 class PolymarketOutcomeLearner:
@@ -49,7 +56,7 @@ class PolymarketOutcomeLearner:
         self._pooled_done: dict[str, float] = {}
         # Market's implied P(up) frozen at its first look within START_PRICE_WINDOW
         # of the contract start: the fair price to compare a start-time forecast to.
-        self._start_price: dict[str, float] = {}
+        self._start_price: dict[str, tuple[float, float]] = {}
 
     def initialize(self):
         if self._initialized:
@@ -80,6 +87,10 @@ class PolymarketOutcomeLearner:
                     slug TEXT NOT NULL,model_version TEXT NOT NULL,issued_at TEXT NOT NULL,
                     weights_sha256 TEXT NOT NULL,probability_up DOUBLE PRECISION NOT NULL,market_baseline DOUBLE PRECISION NOT NULL,
                     PRIMARY KEY(slug,model_version)
+                );
+                CREATE TABLE IF NOT EXISTS rival_polymarket_pooled_quotes (
+                    slug TEXT PRIMARY KEY, up_ask DOUBLE PRECISION NOT NULL,
+                    down_ask DOUBLE PRECISION NOT NULL
                 );""")
             self._initialized = True
 
@@ -89,7 +100,7 @@ class PolymarketOutcomeLearner:
             return
         if (notice.slug not in self._start_price
                 and notice.quote_at - notice.issued <= START_PRICE_WINDOW):
-            self._start_price[notice.slug] = notice.up_ask / (notice.up_ask + notice.down_ask)
+            self._start_price[notice.slug] = (notice.up_ask, notice.down_ask)
         if notice.slug not in self._start_price:
             # First seen too late: the market already knew more than the
             # model's start-time inputs. Never compared, never scored.
@@ -108,7 +119,8 @@ class PolymarketOutcomeLearner:
             if result is None:
                 return  # e.g. the bar at the start is not collected yet: retry
             self._pooled_done[notice.slug] = now.timestamp()
-            market = self._start_price.pop(notice.slug)
+            up_ask, down_ask = self._start_price.pop(notice.slug)
+            market = up_ask / (up_ask + down_ask)
             with self.store.connect() as conn:
                 conn.execute(
                     "INSERT INTO rival_polymarket_model_forward "
@@ -118,6 +130,9 @@ class PolymarketOutcomeLearner:
                      result["model_sha256"],
                      float(result["probability"]), market),
                 )
+                conn.execute(
+                    "INSERT INTO rival_polymarket_pooled_quotes (slug,up_ask,down_ask) "
+                    "VALUES (?,?,?) ON CONFLICT DO NOTHING", (notice.slug, up_ask, down_ask))
         except Exception:  # the book model must never depend on the pooled model
             import logging
             logging.getLogger(__name__).warning("Pooled Polymarket forecast unavailable",
@@ -226,8 +241,9 @@ class PolymarketOutcomeLearner:
         with self.store.connect() as conn:
             rows = conn.execute(
                 "SELECT f.probability_up,f.market_baseline,o.direction,"
-                "f.issued_at,v.expires_at,v.horizon "
+                "f.issued_at,v.expires_at,v.horizon,q.up_ask,q.down_ask "
                 "FROM rival_polymarket_model_forward f "
+                "LEFT JOIN rival_polymarket_pooled_quotes q ON q.slug=f.slug "
                 "JOIN rival_polymarket_observations v ON v.slug=f.slug "
                 "JOIN rival_polymarket_ai_outcomes o "
                 "ON o.slug=f.slug AND o.condition_id=v.condition_id "
@@ -256,6 +272,20 @@ class PolymarketOutcomeLearner:
                 bets.append(y - m)          # bought UP at m
             elif m - p >= edge:
                 bets.append((1 - y) - (1 - m))  # bought DOWN at 1-m
+        # Real start-time asks plus Polymarket's crypto taker fee, where recorded.
+        real = [(float(r["probability_up"]), float(r["up_ask"]), float(r["down_ask"]), y)
+                for r, y in zip(rows, ys, strict=True)
+                if r["up_ask"] is not None and r["down_ask"] is not None]
+        stakes = profit = 0.0
+        real_bets = real_wins = 0
+        for p, up_ask, down_ask, y in real:
+            for side_p, ask, win in ((p, up_ask, y == 1), (1 - p, down_ask, y == 0)):
+                cost = ask + polymarket_fee(ask)
+                if 0 < ask < 1 and side_p - cost >= edge:
+                    real_bets += 1
+                    real_wins += win
+                    stakes += cost
+                    profit += (1.0 if win else 0.0) - cost
         return {
             "contracts": n, "score_window_days": days,
             "model_brier": sum((p - y) ** 2 for p, y in zip(ps, ys, strict=True)) / n,
@@ -264,6 +294,9 @@ class PolymarketOutcomeLearner:
             "value_bets": len(bets),
             "value_bet_wins": sum(b > 0 for b in bets),
             "value_bet_avg_return": sum(bets) / len(bets) if bets else None,
+            "priced_contracts": len(real),
+            "real_value_bets": real_bets, "real_value_bet_wins": real_wins,
+            "real_return_per_dollar_after_fees": profit / stakes if stakes else None,
         }
 
     def summary(self, *, asset=None, horizon=None):

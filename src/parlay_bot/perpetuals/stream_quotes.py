@@ -32,7 +32,7 @@ VENUES = ("hyperliquid", "binance")
 RECONNECT_CAP_SECONDS = 60.0
 # Liquidity-only Binance feeds (issue #295), on Binance's documented routes:
 # partial depth is a /public stream, aggregate trades a /market stream.
-OKX_PUBLIC_WS = "wss://ws.okx.com:8443/ws/v5/public"
+OKX_PUBLIC_WS = "wss://ws.okx.com:443/ws/v5/public"
 COINBASE_WS = "wss://ws-feed.exchange.coinbase.com"
 BINANCE_DEPTH_WS = "wss://fstream.binance.com/public/stream?streams="
 BINANCE_TRADES_WS = "wss://fstream.binance.com/market/stream?streams="

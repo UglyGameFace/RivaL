@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
@@ -162,6 +163,34 @@ class BitgetMarketClient(_HttpSource):
 class GateMarketClient(_HttpSource):
     """Official Gate Futures V4 USDT direct-contract OHLCV API."""
 
+    # The contract metadata request was repeated for every five-minute candle
+    # and can consume much of the collector's 12-second provider budget.
+    # Fail closed on refresh; never cache a delisted/unverified instrument.
+    CONTRACT_TTL_SECONDS = 900.0
+
+    def __init__(self, client: httpx.AsyncClient | None = None) -> None:
+        super().__init__(client)
+        self._verified_contracts: dict[str, tuple[float, float]] = {}
+
+    async def _multiplier(self, symbol: str) -> float:
+        saved = self._verified_contracts.get(symbol)
+        now = time.monotonic()
+        if saved is not None and now - saved[0] < self.CONTRACT_TTL_SECONDS:
+            return saved[1]
+        contract = await self._get(
+            f"https://api.gateio.ws/api/v4/futures/usdt/contracts/{symbol}", {},
+        )
+        if (
+            not isinstance(contract, dict) or contract.get("name") != symbol
+            or contract.get("type") != "direct"
+            or contract.get("status") != "trading"
+            or contract.get("in_delisting", False)
+        ):
+            raise MarketDataError("Gate active direct USDT perpetual unavailable")
+        multiplier = _number(contract.get("quanto_multiplier"), positive=True)
+        self._verified_contracts[symbol] = (time.monotonic(), multiplier)
+        return multiplier
+
     async def collect(
         self, *, assets: tuple[str, ...] = ("BTC", "ETH", "SOL"),
         interval_minutes: int = 5, bars: int = 48,
@@ -174,17 +203,7 @@ class GateMarketClient(_HttpSource):
         candles: list[MarketCandle] = []
         for asset in assets:
             symbol = f"{asset}_USDT"
-            contract = await self._get(
-                f"https://api.gateio.ws/api/v4/futures/usdt/contracts/{symbol}", {},
-            )
-            if (
-                not isinstance(contract, dict) or contract.get("name") != symbol
-                or contract.get("type") != "direct"
-                or contract.get("status") != "trading"
-                or contract.get("in_delisting", False)
-            ):
-                raise MarketDataError("Gate active direct USDT perpetual unavailable")
-            multiplier = _number(contract.get("quanto_multiplier"), positive=True)
+            multiplier = await self._multiplier(symbol)
             result = await self._get(
                 "https://api.gateio.ws/api/v4/futures/usdt/candlesticks",
                 {"contract": symbol, "interval": _INTERVAL[interval_minutes][1],

@@ -2078,7 +2078,7 @@ class RivalDiscordClient(discord.Client):
             _LOG.warning("RivaL status card could not check prediction health")
         try:  # real 24 h across restarts; memory only if the database is unreachable
             problems, problem_totals = await asyncio.wait_for(
-                asyncio.to_thread(self.problem_log.stored, self.store), timeout=10)
+                asyncio.to_thread(self.problem_log.stored, self.store, limit=40), timeout=10)
         except Exception:  # noqa: BLE001 - the card must never fail on its history
             problems, problem_totals = self.problem_log.recent(), self.problem_log.totals()
         memory = host_memory.snapshot()

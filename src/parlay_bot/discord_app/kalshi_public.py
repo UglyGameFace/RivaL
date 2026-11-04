@@ -206,10 +206,17 @@ class KalshiCryptoBrowser:
             return
         try:
             for market in snapshot.markets:
-                await asyncio.to_thread(
-                    self._forward.observe, asset=snapshot.asset,
-                    market=market, at=snapshot.checked_at,
-                )
+                # One ineligible market (closed during the listing, more than
+                # 90 days out, or missing a real ask) is skipped; it must not
+                # abort the other markets or the pending settlement checks.
+                try:
+                    await asyncio.to_thread(
+                        self._forward.observe, asset=snapshot.asset,
+                        market=market, at=snapshot.checked_at,
+                    )
+                except ValueError as exc:
+                    _LOG.info("Kalshi market skipped ticker=%s: %s",
+                              getattr(market, "ticker", "?"), exc)
             pending = await asyncio.to_thread(
                 self._forward.pending, now=datetime.now(UTC), limit=2,
             )

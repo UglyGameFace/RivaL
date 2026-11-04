@@ -322,18 +322,32 @@ class AutonomousResearch:
         """
         current = _utc(now or datetime.now(UTC))
         self.initialize()
+        # Only the last 7 days of targets are scored below. Reading 14 days of
+        # every asset in one unindexed scan (~220k rows, 119 slow-query
+        # warnings a day) to drop half in Python was the cost. Ask per
+        # (asset, horizon) through idx_perp_forward_asset_horizon, with the
+        # same 7-day target filter in SQL. The issued_at bounds keep the
+        # original 14-day window; a target can never precede its issuance.
+        rows = []
         with self.store.connect() as conn:
-            rows = conn.execute(
-                """SELECT asset,horizon_minutes,target_opened_at,
-                          model_brier,baseline_brier
-                   FROM perp_forward_audit
-                   WHERE model_version=? AND settled_at IS NOT NULL
-                     AND model_brier IS NOT NULL AND baseline_brier IS NOT NULL
-                     AND issued_at>=? AND issued_at<=?
-                   ORDER BY target_opened_at""",
-                (FORWARD_MODEL, (current - timedelta(days=14)).isoformat(),
-                 current.isoformat()),
-            ).fetchall()
+            for asset in self.assets:
+                for horizon in HORIZONS:
+                    rows.extend(conn.execute(
+                        """SELECT asset,horizon_minutes,target_opened_at,
+                                  model_brier,baseline_brier
+                           FROM perp_forward_audit
+                           WHERE asset=? AND horizon_minutes=?
+                             AND issued_at>=? AND issued_at<=?
+                             AND model_version=? AND settled_at IS NOT NULL
+                             AND model_brier IS NOT NULL AND baseline_brier IS NOT NULL
+                             AND target_opened_at>=?
+                           ORDER BY target_opened_at""",
+                        (asset, horizon,
+                         max(current - timedelta(days=14),
+                             current - timedelta(days=7, hours=2)).isoformat(),
+                         current.isoformat(), FORWARD_MODEL,
+                         (current - timedelta(days=7)).isoformat()),
+                    ).fetchall())
         count = 0
         for asset in self.assets:
             for horizon in HORIZONS:

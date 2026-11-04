@@ -53,5 +53,8 @@ jobs:
           if [[ "${{ github.event_name }}" == "schedule" || "${{ inputs.publish }}" == "true" ]]; then
             publish_flag="--publish"
           fi
+          # Daily files through yesterday: never wait for a month to close.
+          through_day="$(date -u -d yesterday +%Y-%m-%d)"
           python tools/train_pooled_model.py --cache binance-cache \
-            --last-month "$last_month" --out pooled-models $publish_flag
+            --last-month "$last_month" --through-day "$through_day" \
+            --out pooled-models $publish_flag

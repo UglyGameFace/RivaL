@@ -116,3 +116,54 @@ async def test_hyperliquid_empty_page_does_not_advance_cursor(tmp_path):
         assert row["inserted_bars"] == 0
     finally:
         await worker.aclose()
+
+
+
+@pytest.mark.asyncio
+async def test_old_hyperliquid_pages_use_verified_recent_window_without_false_completion(tmp_path):
+    """Official 5,000-candle retention must not stall every six-month cursor."""
+    threshold = NOW - 5000 * STEP
+    seen = []
+
+    def capped(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        start_ms = payload["req"]["startTime"]
+        start = datetime.fromtimestamp(start_ms / 1000, UTC)
+        seen.append(start)
+        if start < threshold:
+            return httpx.Response(200, json=[])
+        return httpx.Response(200, json=[
+            {"s": "XRP", "i": "5m", "t": start_ms + i * 300_000,
+             "o": "1", "h": "2", "l": "1", "c": "1.5",
+             "v": "100", "n": 10}
+            for i in range(12)
+        ])
+
+    store = SQLiteHotStore(tmp_path / "hl-retention.sqlite")
+    market = PerpetualMarketStore(store)
+    raw = httpx.AsyncClient(transport=httpx.MockTransport(capped))
+    worker = HyperliquidHistoryRecovery(
+        market, assets=("XRP",), page_bars=12, client=raw,
+    )
+    try:
+        assert await worker.run_once(now=NOW) == 0
+        row = worker.progress()[0]
+        assert row["status"] == "api_retention_limited"
+        assert row["retention_reason"] == "candleSnapshot_latest_5000"
+        assert row["retention_requested_from"] == row["started_from"]
+        assert row["retention_resumed_at"] == row["next_opened_at"]
+        assert datetime.fromisoformat(row["next_opened_at"]) > threshold
+        # The skipped months have no fabricated candle records.
+        assert market.recent_candles(
+            venue="hyperliquid", contract="XRP", quote="USDC",
+            interval_minutes=5,
+        ) == []
+        assert await worker.run_once(now=NOW + timedelta(minutes=5)) == 12
+        after = worker.progress()[0]
+        assert after["inserted_bars"] == 12
+        assert after["retention_reason"] == "candleSnapshot_latest_5000"
+        assert len(seen) >= 3
+    finally:
+        await worker.aclose()
+        await raw.aclose()
+        store.close()

@@ -56,5 +56,5 @@ jobs:
           # Daily files through yesterday: never wait for a month to close.
           through_day="$(date -u -d yesterday +%Y-%m-%d)"
           python tools/train_pooled_model.py --cache binance-cache \
-            --last-month "$last_month" --through-day "$through_day" \
+            --last-month "$last_month" --through-day "$through_day" --venue-records \
             --out pooled-models $publish_flag

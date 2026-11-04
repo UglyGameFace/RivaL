@@ -176,16 +176,24 @@ class ForwardAccuracyMonitor:
 
     @staticmethod
     def _pooled_calls(pooled_set, horizon: int, vectors) -> list[dict]:
-        doc, vector = (vectors or {}).get(horizon, (None, None))
-        if pooled_set is None or doc is None or vector is None:
+        """One shadow call per served pooled model (one per training lineage)."""
+        pairs = (vectors or {}).get(horizon) or ()
+        if isinstance(pairs, tuple) and len(pairs) == 2 and isinstance(pairs[0], dict):
+            pairs = (pairs,)  # a single (doc, vector)
+        if pooled_set is None:
             return []
-        try:
-            return [{"family": doc["_family"], "probability": pooled_probability(doc, vector),
-                     "model_sha256": doc["_sha256"],
-                     "training_rows": int(doc.get("training_rows") or 0)}]
-        except (ValueError, KeyError, TypeError, OverflowError):
-            _LOG.warning("RivaL pooled model prediction failed %s min", horizon)
-            return []
+        calls = []
+        for doc, vector in pairs:
+            if doc is None or vector is None:
+                continue
+            try:
+                calls.append({"family": doc["_family"],
+                              "probability": pooled_probability(doc, vector),
+                              "model_sha256": doc["_sha256"],
+                              "training_rows": int(doc.get("training_rows") or 0)})
+            except (ValueError, KeyError, TypeError, OverflowError):
+                _LOG.warning("RivaL pooled model prediction failed %s min", horizon)
+        return calls
 
     def _withdraw_no_trade_labels(self) -> None:
         """Correct outcomes graded from candles that had no trades.
@@ -752,7 +760,7 @@ class ForwardAccuracyMonitor:
                 features = _features(candles)
                 pooled_vector = None
                 mark = time.perf_counter()
-                if pooled_set is not None and any(pooled_set.active(h) for h in HORIZONS):
+                if pooled_set is not None and any(pooled_set.serving(h) for h in HORIZONS):
                     try:
                         coin = asset_for_contract(contract)
                         btc_rows = None
@@ -770,13 +778,14 @@ class ForwardAccuracyMonitor:
                             # Per horizon: each active model gets the inputs
                             # its own version was trained on; without live
                             # Binance context the price-only model serves.
+                            # Every training lineage gets its own call.
                             pooled_vector = {
-                                h: (doc, model_vector(
+                                h: [(doc, model_vector(
                                     doc, candles, asset=coin, btc_candles=btc_rows,
                                     context=bundle))
+                                    for doc in pooled_set.serving(
+                                        h, context=bundle is not None)]
                                 for h in HORIZONS
-                                if (doc := pooled_set.active(
-                                    h, context=bundle is not None)) is not None
                             }
                     except Exception:  # noqa: BLE001 - optional challenger only
                         _LOG.exception("RivaL pooled model inputs unavailable")

@@ -23,14 +23,20 @@ import feature_signal_experiment as source
 
 from parlay_bot.config import Settings
 from parlay_bot.perpetuals.pooled_features import ASSETS, FEATURE_VERSION, FEATURE_VERSION_V2
-from parlay_bot.perpetuals.pooled_model import family, model_sha256
-from parlay_bot.research.pooled_training import frame_context, frame_features, train_horizon
+from parlay_bot.perpetuals.pooled_model import VENUE_SOURCE, family, model_sha256
+from parlay_bot.research.pooled_training import (
+    frame_context,
+    frame_features,
+    train_horizon,
+    venue_frames,
+    venue_holdout,
+)
 from parlay_bot.research.publish import _artifact, _drive
 from parlay_bot.research.training_warehouse import TrainingWarehouse
 
 
 async def load(cache: Path, last_month: str, *, use_warehouse: bool,
-               through_day=None) -> tuple[dict, dict]:
+               through_day=None, venue_records: bool = False) -> tuple[dict, dict, list]:
     import httpx
 
     sem = asyncio.Semaphore(16)
@@ -45,7 +51,10 @@ async def load(cache: Path, last_month: str, *, use_warehouse: bool,
             raw = {asset: await source.load_asset(client, asset, last_month, cache, sem,
                                                   fetcher=fetcher, through_day=through_day)
                    for asset in ASSETS}
-        return raw, (warehouse.stats if warehouse else {"warehouse": "not used"})
+        # RivaL's own exchange candles, backed up nightly by the bot.
+        records = (await warehouse.records("perp_market_candles")
+                   if warehouse is not None and venue_records else [])
+        return raw, (warehouse.stats if warehouse else {"warehouse": "not used"}), records
     finally:
         if drive is not None:
             await drive.aclose()
@@ -77,13 +86,15 @@ def main() -> int:
                         help="also train on daily files through this UTC day")
     parser.add_argument("--out", type=Path, default=Path("pooled-models"))
     parser.add_argument("--publish", action="store_true")
+    parser.add_argument("--venue-records", action="store_true",
+                        help="also train a candidate on RivaL's own exchange candles")
     parser.add_argument("--no-warehouse", action="store_true",
                         help="read Binance directly instead of the Drive warehouse")
     args = parser.parse_args()
     args.cache.mkdir(parents=True, exist_ok=True)
-    raw, warehouse_stats = asyncio.run(load(args.cache, args.last_month,
-                                            use_warehouse=not args.no_warehouse,
-                                            through_day=args.through_day))
+    raw, warehouse_stats, records = asyncio.run(load(
+        args.cache, args.last_month, use_warehouse=not args.no_warehouse,
+        through_day=args.through_day, venue_records=args.venue_records))
     print("WAREHOUSE=" + json.dumps(warehouse_stats), flush=True)
     frames = {}
     for asset in ASSETS:
@@ -95,6 +106,11 @@ def main() -> int:
         frames[asset] = (k, pd.concat([frame_features(k, btc, asset), context], axis=1))
         print(f"features {asset}: {len(k):,} bars", flush=True)
     trained_through = max(k.index.max() for k, _ in frames.values())
+    venues = venue_frames(records) if records else {}
+    if venues:
+        rows = sum(len(k) for k, _ in venues.values())
+        print(f"venue candles: {len(records)} days, {len(venues)} streams, {rows:,} bars",
+              flush=True)
     # Evaluate on the most recent ~10 months, validate on the year before.
     test_start = pd.Timestamp(trained_through).tz_convert("UTC").normalize() - pd.Timedelta(days=300)
     train_end = test_start - pd.Timedelta(days=365)
@@ -135,6 +151,32 @@ def main() -> int:
         if doc["gates_passed"] and size <= 2_200_000:
             published.append(path)
         print(json.dumps({f"{horizon}m": summary[f"{horizon}m"]}), flush=True)
+        if venues:
+            # Same inputs and settings, plus RivaL's own candles from the exact
+            # venues it forecasts. A separate family: it runs beside the
+            # Binance-only model and must beat it on venue bars neither saw.
+            aug = train_horizon({**frames, **venues}, horizon, train_end=train_end,
+                                test_start=test_start,
+                                trained_through=max(trained_through, max(
+                                    k.index.max() for k, _ in venues.values())),
+                                feature_version=FEATURE_VERSION)
+            aug["training_sources"] = ["binance_um_originals", VENUE_SOURCE]
+            aug["venue_streams"] = sorted(venues)
+            holdout = venue_holdout(frames, venues, horizon)
+            aug["evaluation"]["venue_holdout"] = holdout
+            aug_path = args.out / (f"pooled-{horizon}m-venues-{datetime.now(UTC):%Y%m%d}-"
+                                   f"{model_sha256(aug)[:12]}.json")
+            aug_path.write_text(json.dumps(aug, sort_keys=True, separators=(",", ":")))
+            ok = (aug["gates_passed"] and holdout["passed"]
+                  and aug_path.stat().st_size <= 2_200_000)
+            if ok:
+                published.append(aug_path)
+            summary[f"{horizon}m_venues"] = {
+                "family": family(aug), "gates_passed": aug["gates_passed"],
+                "venue_holdout": holdout, "published": bool(ok),
+                "test": aug["evaluation"]["test"]}
+            print(json.dumps({f"{horizon}m_venues": summary[f"{horizon}m_venues"]},
+                             default=str), flush=True)
     if args.publish and published:
         ids = asyncio.run(publish(published))
         print(f"published {len(ids)} model(s) to Drive", flush=True)

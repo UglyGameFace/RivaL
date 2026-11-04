@@ -32,6 +32,11 @@ def book_features(notice):
 
 
 START_PRICE_WINDOW = timedelta(seconds=90)
+# Before this time the market price was taken when the forecast was issued,
+# which could be minutes into the contract; such rows count only if issued
+# within START_PRICE_WINDOW of the start.
+START_PRICE_FROZEN_FROM = datetime(2026, 11, 4, 3, 15, tzinfo=UTC)
+
 
 class PolymarketOutcomeLearner:
     def __init__(self, store):
@@ -220,7 +225,8 @@ class PolymarketOutcomeLearner:
         since = (clock - timedelta(days=days)).isoformat()
         with self.store.connect() as conn:
             rows = conn.execute(
-                "SELECT f.probability_up,f.market_baseline,o.direction "
+                "SELECT f.probability_up,f.market_baseline,o.direction,"
+                "f.issued_at,v.expires_at,v.horizon "
                 "FROM rival_polymarket_model_forward f "
                 "JOIN rival_polymarket_observations v ON v.slug=f.slug "
                 "JOIN rival_polymarket_ai_outcomes o "
@@ -231,6 +237,13 @@ class PolymarketOutcomeLearner:
                 "AND v.asset=? AND v.horizon=?",
                 (since, clock.isoformat(), asset, horizon),
             ).fetchall()
+        def fair(row) -> bool:
+            issued = datetime.fromisoformat(str(row["issued_at"]))
+            start = (datetime.fromisoformat(str(row["expires_at"]))
+                     - timedelta(minutes=int(row["horizon"])))
+            return issued >= START_PRICE_FROZEN_FROM or issued - start <= START_PRICE_WINDOW
+
+        rows = [r for r in rows if fair(r)]
         n = len(rows)
         if not n:
             return {"contracts": 0, "score_window_days": days}

@@ -25,6 +25,7 @@ ISSUE_WINDOW = timedelta(minutes=5)  # the forecast only uses bars up to the ope
 # Kalshi's prices are frozen at the first look within this time of the open,
 # so the model (start-time inputs) is compared with the market at the start.
 START_PRICE_WINDOW = timedelta(seconds=90)
+START_PRICE_FROZEN_FROM = "2026-11-04T03:15:00+00:00"  # earlier rows: late asks
 EDGE = 0.05
 
 
@@ -180,7 +181,7 @@ class KalshiUpDown:
         query = ("SELECT probability_up,yes_ask,no_ask,result_yes FROM rival_kalshi_updown "
                  "WHERE result_yes IS NOT NULL AND probability_up IS NOT NULL "
                  "AND yes_ask IS NOT NULL AND no_ask IS NOT NULL AND issued_at>=?")
-        params: tuple = (since,)
+        params: tuple = (max(since, START_PRICE_FROZEN_FROM),)
         if asset:
             query += " AND asset=?"
             params += (asset,)

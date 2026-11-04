@@ -128,10 +128,19 @@ class PerpetualColdArchiveService:
             ):
                 first = self._first_unarchived(conn, bound, "")
                 self._last_sweep_at = wall
+                self._empty_sweep_at = wall if first is None else None
                 if first is not None and resume and str(first["closed_at"]) < resume:
                     self._backfill_closed_at = str(first["closed_at"])
             if first is None:
                 first = self._first_unarchived(conn, bound, resume) if resume else None
+            if first is None and getattr(self, "_empty_sweep_at", None) is None:
+                # A prior sweep found work, so an older backfill could have
+                # arrived behind the cursor. Do not defer its first check.
+                first = self._first_unarchived(conn, bound, "")
+                self._last_sweep_at = wall
+                self._empty_sweep_at = wall if first is None else None
+                if first is not None and resume and str(first["closed_at"]) < resume:
+                    self._backfill_closed_at = str(first["closed_at"])
             if first is None:
                 return None
             self._resume_closed_at = max(resume, str(first["closed_at"]))

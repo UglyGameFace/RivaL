@@ -282,7 +282,7 @@ def test_caught_up_archive_does_not_rescan_from_the_beginning_every_run(tmp_path
             FROM perp_market_candles""")
     starts.clear()
     assert service._next_batch(cutoff=cutoff, max_rows=10) is None
-    assert len(starts) == 1 and starts[0] != ""
+    assert len(starts) == 2 and starts[0] != "" and starts[1] == ""
     starts.clear()
     assert service._next_batch(cutoff=cutoff, max_rows=10) is None
     assert len(starts) == 1 and starts[0] != ""

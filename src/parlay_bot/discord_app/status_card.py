@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from hashlib import sha1
+from pathlib import Path
 
 import discord
 
@@ -87,6 +89,21 @@ def _stream_line(venue: str, s: dict) -> str:
                 if s.get("updates") else
                 f"⚪ {venue}: connected, no book data received (provider may block this server)")
     return f"✅ {venue}: {counts}"
+
+
+def _prediction_health_revision() -> str:
+    """Git blob ID of the actual deployed health checks, not a CI-upload claim.
+
+    The running file's fingerprint can be compared with GitHub's blob SHA,
+    exposing stale Discloud code without disclosing credentials or logs.
+    """
+    from parlay_bot.discord_app import research_alerts
+
+    try:
+        content = Path(research_alerts.__file__).read_bytes()
+    except (OSError, TypeError):
+        return "unavailable"
+    return sha1(b"blob " + str(len(content)).encode() + b"\\0" + content).hexdigest()[:10]
 
 
 def assess(facts: StatusFacts) -> tuple[str, tuple[str, ...]]:
@@ -232,7 +249,8 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
         for g in facts.problems
     ]
     embed.add_field(name="Recent errors and warnings", value=_clip(lines), inline=False)
-    embed.set_footer(text="Posted when problems change and once a day")
+    embed.set_footer(text="Posted when problems change and once a day • "
+                          f"Prediction checks {_prediction_health_revision()}")
     return embed, severity, signature
 
 

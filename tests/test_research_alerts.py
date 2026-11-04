@@ -144,3 +144,25 @@ def test_checks_work_with_name_keyed_rows_like_postgres(tmp_path):
         assert research_alerts(store, now=NOW) == []
     finally:
         store.close()
+
+
+def test_month_complete_training_data_is_not_called_stale_mid_month(tmp_path):
+    # Data through the 1st is exactly what monthly training produces, even on the 25th.
+    late_month = datetime(2026, 11, 25, 12, tzinfo=UTC)
+    store = _store(tmp_path, forecast_age=timedelta(minutes=1),
+                   trained_age=late_month - datetime(2026, 11, 1, tzinfo=UTC),
+                   review_age=timedelta(minutes=5), pooled_scores=[])
+    try:
+        # _store stamps rows relative to NOW; re-stamp them for late_month.
+        with store.connect() as conn:
+            conn.execute("UPDATE perp_forward_audit SET issued_at=?",
+                         ((late_month - timedelta(minutes=1)).isoformat(),))
+            conn.execute("UPDATE rival_intelligence_calls SET issued_at=?",
+                         ((late_month - timedelta(minutes=5)).isoformat(),))
+            conn.execute("UPDATE rival_pooled_models SET trained_through='2026-11-01 00:00:00+00:00'")
+        assert research_alerts(store, now=late_month) == []
+        with store.connect() as conn:  # still on October data on the 25th: stale
+            conn.execute("UPDATE rival_pooled_models SET trained_through='2026-10-01 00:00:00+00:00'")
+        assert [k for k, _ in research_alerts(store, now=late_month)] == ["pooled:stale"]
+    finally:
+        store.close()

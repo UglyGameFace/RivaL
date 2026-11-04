@@ -12,7 +12,11 @@ from datetime import UTC, datetime, timedelta
 _LOG = logging.getLogger(__name__)
 
 FORECASTS_STALE_AFTER = timedelta(minutes=20)  # cycles run every 5 minutes
-MODEL_STALE_AFTER = timedelta(days=3)  # nightly training; 3 misses in a row
+# Training uses COMPLETE calendar months only (the workflow passes the last
+# finished month), so its data always ends on the 1st of a month. Judging it
+# by "older than 3 days" fired falsely from the 4th of every month. It is
+# stale only when this month's 1st is still missing after a short grace.
+MONTH_GRACE = timedelta(days=2)
 INTELLIGENCE_STALE_AFTER = timedelta(hours=2)  # reviews every 5-15 minutes
 DECAY_WINDOW = timedelta(days=3)
 DECAY_MIN_GRADED = 300
@@ -85,10 +89,14 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
             "SELECT MAX(trained_through) AS v FROM rival_pooled_models WHERE gates_passed=1"))
         if trained is None:
             alerts.append(("pooled:none", "⚠️ No six-year model imported yet"))
-        elif stamp - trained > MODEL_STALE_AFTER:
-            alerts.append(("pooled:stale",
-                           (f"⚠️ Six-year model data is {_ago(stamp - trained)} old: "
-                            "nightly training failed or missed its accuracy gates")))
+        else:
+            month_start = stamp.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            if trained < month_start and stamp - month_start > MONTH_GRACE:
+                alerts.append(("pooled:stale",
+                               (f"⚠️ Six-year model still uses data through "
+                                f"{trained:%b %d}: {month_start:%B}'s monthly training "
+                                "has not been imported (training failed, missed its "
+                                "gates, or did not run)")))
     except Exception as exc:  # noqa: BLE001 - unreadable is not the same as missing
         _LOG.warning("Research alert: six-year model table unreadable (%s)",
                      type(exc).__name__)

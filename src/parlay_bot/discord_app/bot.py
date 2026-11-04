@@ -194,6 +194,7 @@ class RivalDiscordClient(discord.Client):
         # alarm, so one read per 15 minutes is enough for every consumer.
         self._acceptance_cache: tuple[datetime, dict] | None = None
         self._acceptance_task: asyncio.Future[dict] | None = None
+        self._acceptance_log_task: asyncio.Future[None] | None = None
         _LOG.info(
             "RivaL operational storage initialized (backend=%s)",
             self.store.database.backend,
@@ -2006,6 +2007,21 @@ class RivalDiscordClient(discord.Client):
             })
         return states
 
+    async def _log_acceptance_once(self, now: datetime) -> None:
+        try:
+            receipt = await self._cached_acceptance_receipt(now)
+        except Exception:  # noqa: BLE001 - optional evidence; retried next pass
+            _LOG.warning("RivaL acceptance receipt unavailable; retrying next watchdog pass")
+            return
+        if receipt["status"] == "HOST_EVIDENCE_PRESENT":
+            self._health_acceptance_seen = True
+            _LOG.info(
+                "RivaL hosted unattended model-to-quote receipt "
+                "matched_scored=%d source_quoted=%d; "
+                "restart and promotion still require separate proof",
+                receipt["paired_scored"], receipt["source_quoted"],
+            )
+
     async def _cached_acceptance_receipt(self, now: datetime | None = None) -> dict:
         """One shared acceptance read per 15 minutes.
 
@@ -3150,19 +3166,16 @@ class RivalDiscordClient(discord.Client):
                 # Only needed until the first hosted receipt is logged; after
                 # that, re-running the join every watchdog pass just held a
                 # database connection for seconds (status card "database busy").
+                # The first read after a restart takes ~20 s; awaiting it here
+                # timed out and skipped this whole watchdog pass (incidents
+                # unpublished). It only feeds a one-time log line, so it runs
+                # beside the watchdog instead of inside it.
                 if (self.autonomous is not None and self.stream_shadow is not None
-                        and not self._health_acceptance_seen):
-                    receipt = await asyncio.wait_for(
-                        self._cached_acceptance_receipt(now), timeout=15,
-                    )
-                    if receipt["status"] == "HOST_EVIDENCE_PRESENT":
-                        self._health_acceptance_seen = True
-                        _LOG.info(
-                            "RivaL hosted unattended model-to-quote receipt "
-                            "matched_scored=%d source_quoted=%d; "
-                            "restart and promotion still require separate proof",
-                            receipt["paired_scored"], receipt["source_quoted"],
-                        )
+                        and not self._health_acceptance_seen
+                        and (self._acceptance_log_task is None
+                             or self._acceptance_log_task.done())):
+                    self._acceptance_log_task = asyncio.ensure_future(
+                        self._log_acceptance_once(now))
                 events = await asyncio.wait_for(
                     asyncio.to_thread(self.health_monitor.publish, faults, now=now),
                     timeout=15,

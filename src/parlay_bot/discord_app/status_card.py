@@ -103,7 +103,7 @@ def _prediction_health_revision() -> str:
         content = Path(research_alerts.__file__).read_bytes()
     except (OSError, TypeError):
         return "unavailable"
-    return sha1(b"blob " + str(len(content)).encode() + b"\\0" + content).hexdigest()[:10]
+    return sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()[:10]
 
 
 def assess(facts: StatusFacts) -> tuple[str, tuple[str, ...]]:

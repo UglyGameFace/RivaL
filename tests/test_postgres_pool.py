@@ -175,6 +175,7 @@ def test_read_only_pool_marks_each_checkout_and_blocks_schema_advisory_lock(
 
 def test_read_only_postgres_rejects_actual_writes_when_service_present() -> None:
     import os
+
     import psycopg
 
     from parlay_bot.storage.hot import PostgresHotStore
@@ -200,9 +201,8 @@ def test_read_only_postgres_rejects_actual_writes_when_service_present() -> None
             ).fetchone()["value"] == 10
             with pytest.raises(psycopg.errors.ReadOnlySqlTransaction):
                 conn.execute("UPDATE rival_read_only_probe_test SET value=99 WHERE id=1")
-        with reader.connect() as conn:
-            with pytest.raises(PermissionError, match="Read-only"):
-                conn.executescript("CREATE TABLE rival_should_never_exist (id INTEGER)")
+        with reader.connect() as conn, pytest.raises(PermissionError, match="Read-only"):
+            conn.executescript("CREATE TABLE rival_should_never_exist (id INTEGER)")
         with writer.connect() as conn:
             assert conn.execute(
                 "SELECT value FROM rival_read_only_probe_test WHERE id=1"

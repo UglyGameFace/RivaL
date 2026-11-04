@@ -1,8 +1,8 @@
 """The production diagnostics cannot initialize schemas or change live labels."""
 from __future__ import annotations
 
-from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.storage.hot import SQLiteHotStore
 from tools.performance_truth_probe import read_only_forward_monitor
 

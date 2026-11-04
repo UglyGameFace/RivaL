@@ -130,3 +130,31 @@ def test_v2_adds_okx_coinbase_flow_and_spot_basis_beside_v1(tmp_path):
                 features=(0.0,) * 10, flow=vector) is None
     finally:
         store.close()
+
+
+def test_model_state_is_read_once_per_cycle_and_refreshed_after_learning(tmp_path):
+    store = _store(tmp_path)
+    challenger = FlowChallenger(store)
+    reads = []
+    real = challenger._state
+    challenger._state = lambda conn, a, h: reads.append((a, h)) or real(conn, a, h)
+    try:
+        flow = (0.0,) * FLOW_FEATURES
+        with store.connect() as conn:
+            for i in range(3):
+                ref = NOW - timedelta(minutes=30 - 5 * i)
+                challenger.call(conn, venue="okx", contract="BTC-USDT-SWAP", quote="USDT",
+                                asset="BTC", horizon=5, reference_opened_at=ref,
+                                issued_at=ref, features=(0.1,) * 10, flow=flow)
+            conn.execute("INSERT INTO perp_forward_audit VALUES "
+                         "('okx','BTC-USDT-SWAP','USDT',5,?,?,1)",
+                         ((NOW - timedelta(minutes=30)).isoformat(), NOW.isoformat()))
+        assert reads == [("BTC", 5)]  # three forecasts, one read
+        challenger.learn(NOW)
+        with store.connect() as conn:
+            after = challenger.call(conn, venue="okx", contract="BTC-USDT-SWAP", quote="USDT",
+                                    asset="BTC", horizon=5, reference_opened_at=NOW,
+                                    issued_at=NOW, features=(0.1,) * 10, flow=flow)
+        assert after["training_rows"] == 1  # learned weights, not the cached copy
+    finally:
+        store.close()

@@ -173,3 +173,50 @@ def test_status_footer_identifies_live_prediction_health_source():
     expected = sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()[:10]
     assert _prediction_health_revision() == expected
     assert f"Prediction checks {expected}" in build_embed(_facts())[0].footer.text
+
+
+def test_error_lines_say_what_is_still_happening_and_what_has_stopped():
+    from parlay_bot.discord_app.error_log import ProblemGroup
+    from parlay_bot.discord_app.status_card import problem_lines, problem_state
+
+    now = datetime(2026, 11, 4, 19, 30, tzinfo=UTC)
+    boot = now - timedelta(hours=2)
+
+    def group(text, last, level="ERROR"):
+        return ProblemGroup("parlay_bot.x", level, 3, last - timedelta(hours=1), last, text)
+
+    fixed = group("deadlock", boot - timedelta(minutes=30))   # before the restart
+    startup = group("gate timeout", boot + timedelta(minutes=4))
+    quiet = group("slow query", now - timedelta(minutes=90), "WARNING")
+    live = group("stale quote", now - timedelta(minutes=5))
+    assert [problem_state(g, now=now, boot_at=boot) for g in (fixed, startup, quiet, live)] == [
+        "stopped", "startup", "quiet", "active"]
+    lines = problem_lines([fixed, startup, quiet, live], now=now, boot_at=boot,
+                          totals={"ERROR": 9, "WARNING": 3})
+    assert lines[0].startswith("🔴 1 still happening • 🟢 1 quiet 1h+ • ✅ 2 fixed or stopped")
+    assert lines[2].startswith("🔴") and "stale quote" in lines[2]  # live problems lead
+    assert lines[-1].startswith("✅") and "deadlock" in lines[-1]
+    assert problem_lines([], now=now, boot_at=boot, totals={})[-1] == "None"
+
+
+def test_health_alert_shows_recovered_once_its_incident_closes():
+    from parlay_bot.discord_app.error_log import ProblemGroup
+    from parlay_bot.discord_app.status_card import problem_state
+
+    now = datetime(2026, 11, 4, 19, 30, tzinfo=UTC)
+    alert = ProblemGroup("parlay_bot.perpetuals.runtime_health", "ERROR", 13,
+                         now - timedelta(hours=3), now - timedelta(minutes=20),
+                         "RivaL HEALTH ALERT settlement_backlog: 14 recoverable outcomes")
+    boot = now - timedelta(hours=2)
+    assert problem_state(alert, now=now, boot_at=boot, open_incidents=set()) == "recovered"
+    assert problem_state(alert, now=now, boot_at=boot,
+                         open_incidents={"settlement_backlog"}) == "active"
+    feed = ProblemGroup("parlay_bot.perpetuals.runtime_health", "ERROR", 2,
+                        now - timedelta(hours=1), now - timedelta(minutes=5),
+                        "RivaL HEALTH ALERT feed:hyperliquid:ETH: no fresh candle")
+    assert problem_state(feed, now=now, boot_at=boot,
+                         open_incidents={"feed:hyperliquid:ETH"}) == "active"
+    assert problem_state(feed, now=now, boot_at=boot,
+                         open_incidents={"feed:hyperliquid:BTC"}) == "recovered"
+    # Unknown incident state (watchdog unreadable) never claims recovery.
+    assert problem_state(alert, now=now, boot_at=boot, open_incidents=None) == "active"

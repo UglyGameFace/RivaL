@@ -19,6 +19,10 @@ STALE_FEED_AFTER = timedelta(minutes=20)
 STALE_LIQUIDITY_AFTER = timedelta(minutes=15)
 HEARTBEAT_FAILING_AFTER = 3  # consecutive failed pings
 DAILY = timedelta(hours=24)
+# A logged problem counts as "still happening" only if it repeated within
+# this window; startup noise is the burst while every worker starts at once.
+ACTIVE_WINDOW = timedelta(minutes=60)
+STARTUP_GRACE = timedelta(minutes=10)
 COLORS = {"healthy": discord.Color.green(), "degraded": discord.Color.orange(),
           "down": discord.Color.red()}
 LABELS = {"healthy": "🟢 Healthy", "degraded": "🟡 Degraded", "down": "🔴 Problem"}
@@ -241,17 +245,73 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
         embed.add_field(name="Memory", value=text, inline=True)
 
     totals = facts.problem_totals or {}
-    header = (f"{totals.get('ERROR', 0)} errors • {totals.get('WARNING', 0)} warnings "
-              "in the last 24 h")
-    lines = [header] + [
-        f"`{g.count}×` **{g.level}** {g.logger.rsplit('.', 1)[-1]}: {g.text} "
-        f"({_ago(g.last_at, now)})"
-        for g in facts.problems
-    ]
+    open_incidents = (None if facts.incidents is None
+                      else {str(i["issue_key"]) for i in facts.incidents})
+    lines = problem_lines(facts.problems, now=now, boot_at=facts.boot_at, totals=totals,
+                          open_incidents=open_incidents)
     embed.add_field(name="Recent errors and warnings", value=_clip(lines), inline=False)
     embed.set_footer(text="Posted when problems change and once a day • "
                           f"Prediction checks {_prediction_health_revision()}")
     return embed, severity, signature
+
+
+def problem_state(group, *, now: datetime, boot_at: datetime,
+                  open_incidents: set[str] | None = None) -> str:
+    """recovered | active | startup | stopped | quiet.
+
+    recovered: a watchdog HEALTH ALERT whose incident has since closed.
+
+    stopped: not seen since this process (and its code) started.
+    startup: seen only while workers were starting after the restart.
+    quiet:   seen after startup but not within ACTIVE_WINDOW.
+    active:  repeated within ACTIVE_WINDOW after startup.
+    """
+    # Keys may contain colons (feed:hyperliquid:ETH), so match the prefix.
+    if (open_incidents is not None and group.text.startswith("RivaL HEALTH ALERT ")
+            and not any(group.text.startswith(f"RivaL HEALTH ALERT {key}: ")
+                        for key in open_incidents)):
+        return "recovered"
+    last = group.last_at
+    if last < boot_at:
+        return "stopped"
+    if last <= boot_at + STARTUP_GRACE:
+        return "startup"
+    return "active" if now - last <= ACTIVE_WINDOW else "quiet"
+
+
+def problem_lines(problems, *, now: datetime, boot_at: datetime, totals: dict,
+                  open_incidents: set[str] | None = None) -> list[str]:
+    """Card lines: what still needs attention first, then what has stopped."""
+    states: dict[str, list] = {"active": [], "quiet": [], "startup": [], "recovered": [],
+                               "stopped": []}
+    for group in problems:
+        states[problem_state(group, now=now, boot_at=boot_at,
+                             open_incidents=open_incidents)].append(group)
+    started = discord.utils.format_dt(boot_at, "t")
+    lines = [
+        (f"🔴 {len(states['active'])} still happening • 🟢 {len(states['quiet'])} quiet 1h+ • "
+         f"✅ {len(states['stopped']) + len(states['startup']) + len(states['recovered'])}"
+         " fixed or stopped"),
+        f"({totals.get('ERROR', 0)} errors • {totals.get('WARNING', 0)} warnings in the last 24 h)",
+    ]
+    for g in states["active"]:
+        lines.append(f"🔴 `{g.count}×` **{g.level}** {g.logger.rsplit('.', 1)[-1]}: "
+                     f"{g.text} ({_ago(g.last_at, now)})")
+    for g in states["quiet"]:
+        lines.append(f"🟢 `{g.count}×` {g.logger.rsplit('.', 1)[-1]}: {g.text[:90]} "
+                     f"(last {_ago(g.last_at, now)})")
+    for g in states["startup"]:
+        lines.append(f"⚪ `{g.count}×` {g.logger.rsplit('.', 1)[-1]}: {g.text[:70]} "
+                     f"(only during startup at {started})")
+    for g in states["recovered"]:
+        lines.append(f"✅ `{g.count}×` {g.logger.rsplit('.', 1)[-1]}: {g.text[:70]} "
+                     f"(recovered: incident closed; last alert {_ago(g.last_at, now)})")
+    for g in states["stopped"]:
+        lines.append(f"✅ `{g.count}×` {g.logger.rsplit('.', 1)[-1]}: {g.text[:70]} "
+                     f"(not since restart at {started})")
+    if not problems:
+        lines.append("None")
+    return lines
 
 
 class StatusPostPolicy:

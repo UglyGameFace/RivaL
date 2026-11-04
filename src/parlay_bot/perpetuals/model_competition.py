@@ -210,32 +210,44 @@ class ShadowModelCompetition:
         if (utc(issued_at) >= utc(target_opened_at) + timedelta(minutes=5)
                 or not (0 <= incumbent_up <= 1 and 0 <= baseline_up <= 1)):
             return 0
-        saved = 0
+        pending = []
         for family, probability in predictions.items():
-            row = conn.execute(
-                """INSERT INTO rival_model_shadow_forecasts
-                    (venue,contract,quote,asset,horizon_minutes,family,
-                     reference_opened_at,issued_at,target_opened_at,
-                     probability_up,incumbent_up,baseline_up,training_count,
-                     training_sha256)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                (venue,contract,quote,asset,horizon,family,
-                 utc(reference_opened_at).isoformat(),utc(issued_at).isoformat(),
-                 utc(target_opened_at).isoformat(),probability,
-                 incumbent_up,baseline_up,
-                  (int(eligible_history[family]["training_count"])
-                   if family in eligible_history else
-                   int(eligible_pooled[family]["training_rows"])
-                   if family in eligible_pooled else
-                   len(eligible) if family not in eligible_boosters else 0),
-                  (eligible_history[family]["training_sha256"]
-                   if family in eligible_history else
-                   eligible_pooled[family]["model_sha256"]
-                   if family in eligible_pooled else
-                   eligible_boosters[family]["model_sha256"]
-                   if family in eligible_boosters else fingerprint)),
+            pending.append((
+                venue, contract, quote, asset, horizon, family,
+                utc(reference_opened_at).isoformat(), utc(issued_at).isoformat(),
+                utc(target_opened_at).isoformat(), probability,
+                incumbent_up, baseline_up,
+                (int(eligible_history[family]["training_count"])
+                 if family in eligible_history else
+                 int(eligible_pooled[family]["training_rows"])
+                 if family in eligible_pooled else
+                 len(eligible) if family not in eligible_boosters else 0),
+                (eligible_history[family]["training_sha256"]
+                 if family in eligible_history else
+                 eligible_pooled[family]["model_sha256"]
+                 if family in eligible_pooled else
+                 eligible_boosters[family]["model_sha256"]
+                 if family in eligible_boosters else fingerprint),
+            ))
+        # Keep shadow issuance in the incumbent's existing transaction, but
+        # avoid an individual PostgreSQL network roundtrip per candidate.
+        # 50 x 14 fields = 700 parameters (safe for legacy SQLite's 999 limit).
+        columns = (
+            "venue,contract,quote,asset,horizon_minutes,family,"
+            "reference_opened_at,issued_at,target_opened_at,"
+            "probability_up,incumbent_up,baseline_up,training_count,training_sha256"
+        )
+        value_group = "(" + ",".join("?" for _ in range(14)) + ")"
+        saved = 0
+        for offset in range(0, len(pending), 50):
+            batch = pending[offset:offset + 50]
+            result = conn.execute(
+                f"INSERT INTO rival_model_shadow_forecasts ({columns}) VALUES "
+                + ",".join(value_group for _ in batch)
+                + " ON CONFLICT DO NOTHING",
+                tuple(value for row in batch for value in row),
             )
-            saved += int(row.rowcount == 1)
+            saved += result.rowcount
         return saved
 
     def settle(self, *, now: datetime) -> int:

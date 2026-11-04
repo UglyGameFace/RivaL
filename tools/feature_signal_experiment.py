@@ -54,6 +54,22 @@ def months(first: str, last: str) -> list[str]:
     return out
 
 
+def _maybe_unpublished(url: str) -> bool:
+    """A recent daily (3 days) or monthly (~40 days) file may not be out yet,
+    so its "not found" must be re-checked next run, never cached forever."""
+    import re
+
+    today = datetime.now(UTC).date()
+    found = re.search(r"-(\d{4}-\d{2}-\d{2})\.zip$", url)
+    if found:
+        return date.fromisoformat(found.group(1)) >= today - timedelta(days=3)
+    found = re.search(r"-(\d{4}-\d{2})\.zip$", url)
+    if found:
+        return date.fromisoformat(found.group(1) + "-01") >= (
+            today - timedelta(days=40)).replace(day=1)
+    return False
+
+
 async def fetch(client: httpx.AsyncClient, url: str, cache: Path, sem) -> bytes | None:
     path = cache / hashlib.sha1(url.encode()).hexdigest()
     if path.exists():
@@ -63,7 +79,8 @@ async def fetch(client: httpx.AsyncClient, url: str, cache: Path, sem) -> bytes 
             try:
                 resp = await client.get(url)
                 if resp.status_code == 404:
-                    path.write_bytes(b"")
+                    if not _maybe_unpublished(url):  # recent: re-check next run
+                        path.write_bytes(b"")
                     return None
                 resp.raise_for_status()
                 raw = resp.content
@@ -96,26 +113,71 @@ KLINE = ["open_time", "open", "high", "low", "close", "volume", "close_time",
          "quote_volume", "count", "taker_buy_volume", "taker_buy_quote_volume"]
 
 
+def recent_days(last_month: str, through_day: date | None) -> list[date]:
+    """UTC days after the last complete month, up to through_day inclusive."""
+    if through_day is None:
+        return []
+    y, m = map(int, last_month.split("-"))
+    d = date(y + (m == 12), 1 if m == 12 else m + 1, 1)
+    out = []
+    while d <= through_day:
+        out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
 async def load_asset(client, asset: str, last_month: str, cache: Path, sem,
-                     fetcher=None) -> pd.DataFrame:
+                     fetcher=None, through_day: date | None = None) -> pd.DataFrame:
     get = fetcher or fetch
     sym = f"{asset}USDT"
     ms = months(FIRST_MONTH, last_month)
     kl_urls = [f"{BASE}/monthly/klines/{sym}/5m/{sym}-5m-{m}.zip" for m in ms]
     pr_urls = [f"{BASE}/monthly/premiumIndexKlines/{sym}/5m/{sym}-5m-{m}.zip" for m in ms]
     fu_urls = [f"{BASE}/monthly/fundingRate/{sym}/{sym}-fundingRate-{m}.zip" for m in ms]
+    # The current month only exists as daily files. Use them in order and
+    # stop at the first one not yet published: a gap would corrupt every
+    # rolling feature that spans it.
+    monthly_k = await asyncio.gather(*(get(client, u, cache, sem) for u in kl_urls))
+    # Binance posts a month's file a few days after it ends; cover any
+    # trailing months it has not posted yet with that month's daily files.
+    daily_from = last_month  # daily files start the month AFTER this one
+    while (through_day is not None and monthly_k and not monthly_k[-1]
+           and len(monthly_k) > 1):
+        monthly_k.pop()
+        kl_urls.pop()
+        pr_urls.pop()
+        fu_urls.pop()
+        ms.pop()
+        daily_from = ms[-1]
+    recent = recent_days(daily_from, through_day)
+    if recent:
+        daily = await asyncio.gather(*(get(client, u, cache, sem) for d in recent for u in (
+            f"{BASE}/daily/klines/{sym}/5m/{sym}-5m-{d.isoformat()}.zip",
+            f"{BASE}/daily/premiumIndexKlines/{sym}/5m/{sym}-5m-{d.isoformat()}.zip")))
+        recent_k, recent_p = [], []
+        for i, _ in enumerate(recent):
+            k_raw, p_raw = daily[2 * i], daily[2 * i + 1]
+            if not k_raw:
+                break
+            recent_k.append(k_raw)
+            if p_raw:
+                recent_p.append(p_raw)
+        covered_through = recent[len(recent_k) - 1] if recent_k else None
+    else:
+        recent_k, recent_p, covered_through = [], [], None
     days = []
     d = METRICS_FROM
-    end = date.fromisoformat(last_month + "-01") + timedelta(days=31)
+    end = (covered_through + timedelta(days=1) if covered_through is not None
+           else date.fromisoformat(last_month + "-01") + timedelta(days=31))
     while d < min(end, datetime.now(UTC).date() - timedelta(days=1)):
         days.append(d)
         d += timedelta(days=1)
     me_urls = [f"{BASE}/daily/metrics/{sym}/{sym}-metrics-{x.isoformat()}.zip" for x in days]
-    raws = await asyncio.gather(*(get(client, u, cache, sem)
-                                  for u in kl_urls + pr_urls + fu_urls + me_urls))
+    raws = [*monthly_k, *await asyncio.gather(*(get(client, u, cache, sem)
+                                               for u in pr_urls + fu_urls + me_urls))]
     n1, n2, n3 = len(kl_urls), len(kl_urls) + len(pr_urls), len(kl_urls) + len(pr_urls) + len(fu_urls)
-    kl = [read_zip_csv(r, KLINE) for r in raws[:n1] if r]
-    pr = [read_zip_csv(r, KLINE[:5]) for r in raws[n1:n2] if r]
+    kl = [read_zip_csv(r, KLINE) for r in [*raws[:n1], *recent_k] if r]
+    pr = [read_zip_csv(r, KLINE[:5]) for r in [*raws[n1:n2], *recent_p] if r]
     fu = [read_zip_csv(r, ["calc_time", "funding_interval_hours", "last_funding_rate"])
           for r in raws[n2:n3] if r]
     me = [read_zip_csv(r, ["create_time", "symbol", "oi", "oi_value", "toptrader_ls_count",
@@ -148,6 +210,9 @@ async def load_asset(client, asset: str, last_month: str, cache: Path, sem,
                       .dt.floor("min") + pd.Timedelta(minutes=1))
         k = pd.merge_asof(k.reset_index().sort_values("t"), f[["known", "fund"]].sort_values("known"),
                           left_on="t", right_on="known", direction="backward").set_index("t")
+        # Funding has no daily files: past the last published rate (8 h
+        # interval) it is unknown, not the last value carried forward.
+        k.loc[k.index > f["known"].max() + pd.Timedelta(hours=9), "fund"] = np.nan
     else:
         k["fund"] = np.nan
     if me:

@@ -14,7 +14,7 @@ import argparse
 import asyncio
 import json
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -29,7 +29,8 @@ from parlay_bot.research.publish import _artifact, _drive
 from parlay_bot.research.training_warehouse import TrainingWarehouse
 
 
-async def load(cache: Path, last_month: str, *, use_warehouse: bool) -> tuple[dict, dict]:
+async def load(cache: Path, last_month: str, *, use_warehouse: bool,
+               through_day=None) -> tuple[dict, dict]:
     import httpx
 
     sem = asyncio.Semaphore(16)
@@ -42,7 +43,7 @@ async def load(cache: Path, last_month: str, *, use_warehouse: bool) -> tuple[di
         fetcher = warehouse.fetcher(source.fetch) if warehouse else None
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
             raw = {asset: await source.load_asset(client, asset, last_month, cache, sem,
-                                                  fetcher=fetcher)
+                                                  fetcher=fetcher, through_day=through_day)
                    for asset in ASSETS}
         return raw, (warehouse.stats if warehouse else {"warehouse": "not used"})
     finally:
@@ -72,6 +73,8 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache", type=Path, default=Path("binance-cache"))
     parser.add_argument("--last-month", required=True)
+    parser.add_argument("--through-day", type=date.fromisoformat, default=None,
+                        help="also train on daily files through this UTC day")
     parser.add_argument("--out", type=Path, default=Path("pooled-models"))
     parser.add_argument("--publish", action="store_true")
     parser.add_argument("--no-warehouse", action="store_true",
@@ -79,7 +82,8 @@ def main() -> int:
     args = parser.parse_args()
     args.cache.mkdir(parents=True, exist_ok=True)
     raw, warehouse_stats = asyncio.run(load(args.cache, args.last_month,
-                                            use_warehouse=not args.no_warehouse))
+                                            use_warehouse=not args.no_warehouse,
+                                            through_day=args.through_day))
     print("WAREHOUSE=" + json.dumps(warehouse_stats), flush=True)
     frames = {}
     for asset in ASSETS:

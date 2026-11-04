@@ -34,6 +34,11 @@ class ConnectionLike(Protocol):
     def executescript(self, script: str) -> None: ...
 
 
+def _owner_group(origin: str) -> str:
+    """Problem-history group for a caller: module.function, no line number."""
+    return str(origin).split(":", 1)[0]
+
+
 def _postgres_sql(sql: str) -> str:
     """Translate the project's qmark placeholders to psycopg placeholders."""
     # Psycopg treats every percent sign as placeholder syntax when parameters
@@ -87,6 +92,7 @@ class _Connection:
                     "RivaL PostgreSQL slow operation owner=%s operation=%s "
                     "duration=%.2fs (SQL/parameters omitted)",
                     self.origin, operation, elapsed,
+                    extra={"problem_group": _owner_group(self.origin)},
                 )
 
     def executescript(self, script: str) -> None:
@@ -288,6 +294,7 @@ class PostgresDatabase(RelationalDatabase):
                         borrowed.query_count, borrowed.query_seconds,
                         borrowed.slowest_operation, borrowed.max_query_seconds,
                         borrowed.commit_seconds,
+                        extra={"problem_group": _owner_group(borrowed.origin)},
                     )
 
         borrowed._on_exit = release

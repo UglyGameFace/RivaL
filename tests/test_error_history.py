@@ -79,3 +79,34 @@ def test_logging_shutdown_flush_is_safe_and_does_not_lose_pending_counts(tmp_pat
     finally:
         logger.removeHandler(problems)
         store.close()
+
+
+def test_slow_database_owners_are_counted_separately(tmp_path):
+    """One slow-query format string must not merge every caller into one count."""
+    from parlay_bot.storage.database import _owner_group
+
+    store = SQLiteHotStore(tmp_path / "owners.sqlite")
+    problems = RecentProblems(clock=lambda: NOW)
+    log = logging.getLogger("parlay_bot.storage.database_test_owners")
+    log.addHandler(problems)
+    msg = "RivaL PostgreSQL slow operation owner=%s operation=%s duration=%.2fs"
+    try:
+        for owner in ("perpetual_candles._next_batch:117", "perpetual_candles._next_batch:92"):
+            log.warning(msg, owner, "SELECT", 2.9,
+                        extra={"problem_group": _owner_group(owner)})
+        for _ in range(3):
+            owner = "forward_audit.active_learning_evidence:434"
+            log.warning(msg, owner, "WITH", 7.1,
+                        extra={"problem_group": _owner_group(owner)})
+        log.warning("plain %s", "warning")  # no group: unchanged behaviour
+        assert problems.flush(store) == 3
+        groups, totals = problems.stored(store)
+    finally:
+        log.removeHandler(problems)
+        store.close()
+    assert totals == {"ERROR": 0, "WARNING": 6}
+    counts = {g.text.split("owner=")[1].split(":")[0] if "owner=" in g.text else g.text: g.count
+              for g in groups}
+    assert counts == {"perpetual_candles._next_batch": 2,
+                      "forward_audit.active_learning_evidence": 3,
+                      "plain warning": 1}

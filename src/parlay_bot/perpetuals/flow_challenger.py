@@ -34,23 +34,24 @@ L2 = 1e-4
 SHRINK_HALF = 300  # graded results at which the model gets half its own say
 MAX_LEARN_PER_CYCLE = 4000
 
-SCHEMA = (
-    """CREATE TABLE IF NOT EXISTS rival_flow_features (
-        venue TEXT NOT NULL, contract TEXT NOT NULL, quote TEXT NOT NULL,
-        horizon_minutes INTEGER NOT NULL, reference_opened_at TEXT NOT NULL,
-        asset TEXT NOT NULL, issued_at TEXT NOT NULL, features TEXT NOT NULL,
-        learned INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (venue,contract,quote,horizon_minutes,reference_opened_at)
-    )""",
-    """CREATE INDEX IF NOT EXISTS idx_rival_flow_features_pending
-        ON rival_flow_features (learned, issued_at)""",
-    """CREATE TABLE IF NOT EXISTS rival_flow_model_state (
-        asset TEXT NOT NULL, horizon_minutes INTEGER NOT NULL,
-        weights TEXT NOT NULL, updates INTEGER NOT NULL, positives INTEGER NOT NULL,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (asset, horizon_minutes)
-    )""",
-)
+def _schema(features: str, state: str) -> tuple[str, ...]:
+    return (
+        f"""CREATE TABLE IF NOT EXISTS {features} (
+            venue TEXT NOT NULL, contract TEXT NOT NULL, quote TEXT NOT NULL,
+            horizon_minutes INTEGER NOT NULL, reference_opened_at TEXT NOT NULL,
+            asset TEXT NOT NULL, issued_at TEXT NOT NULL, features TEXT NOT NULL,
+            learned INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (venue,contract,quote,horizon_minutes,reference_opened_at)
+        )""",
+        f"""CREATE INDEX IF NOT EXISTS idx_{features}_pending
+            ON {features} (learned, issued_at)""",
+        f"""CREATE TABLE IF NOT EXISTS {state} (
+            asset TEXT NOT NULL, horizon_minutes INTEGER NOT NULL,
+            weights TEXT NOT NULL, updates INTEGER NOT NULL, positives INTEGER NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (asset, horizon_minutes)
+        )""",
+    )
 
 
 def _clip(value: float, low: float = -5.0, high: float = 5.0) -> float:
@@ -74,6 +75,11 @@ def _sigmoid(x: float) -> float:
 
 
 class FlowChallenger:
+    family = FAMILY
+    n_flow = FLOW_FEATURES
+    features_table = "rival_flow_features"
+    state_table = "rival_flow_model_state"
+
     def __init__(self, store) -> None:
         self.store = store
         self._ready = False
@@ -87,7 +93,7 @@ class FlowChallenger:
         PerpetualMarketStore(self.store).initialize()  # contexts + forecasts' inputs
         with self.store.connect() as conn:
             conn.execute(LIQUIDITY_SCHEMA)  # same definition the recorder uses
-            for statement in SCHEMA:
+            for statement in _schema(self.features_table, self.state_table):
                 conn.execute(statement)
         self._ready = True
 
@@ -156,13 +162,13 @@ class FlowChallenger:
     # ---------- model ----------
     def _state(self, conn, asset: str, horizon: int) -> dict:
         row = conn.execute(
-            "SELECT weights, updates, positives FROM rival_flow_model_state "
+            f"SELECT weights, updates, positives FROM {self.state_table} "
             "WHERE asset=? AND horizon_minutes=?", (asset, horizon)).fetchone()
         if row is None:
-            return {"weights": [0.0] * (11 + FLOW_FEATURES), "updates": 0, "positives": 0}
+            return {"weights": [0.0] * (11 + self.n_flow), "updates": 0, "positives": 0}
         weights = json.loads(row["weights"])
-        if len(weights) != 11 + FLOW_FEATURES:
-            weights = [0.0] * (11 + FLOW_FEATURES)
+        if len(weights) != 11 + self.n_flow:
+            weights = [0.0] * (11 + self.n_flow)
         return {"weights": weights, "updates": int(row["updates"]),
                 "positives": int(row["positives"])}
 
@@ -178,11 +184,11 @@ class FlowChallenger:
     def call(self, conn, *, venue, contract, quote, asset, horizon,
              reference_opened_at, issued_at, features, flow) -> dict | None:
         """Persist this forecast's exact inputs and return the shadow call."""
-        if flow is None or len(features) != 10:
+        if flow is None or len(features) != 10 or len(flow) != self.n_flow:
             return None
         inputs = tuple(_clip(float(v)) for v in (*features, *flow))
         conn.execute(
-            """INSERT INTO rival_flow_features
+            f"""INSERT INTO {self.features_table}
                (venue,contract,quote,horizon_minutes,reference_opened_at,asset,
                 issued_at,features) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
             (venue, contract, quote, horizon, reference_opened_at.isoformat(),
@@ -190,7 +196,7 @@ class FlowChallenger:
         )
         state = self._state(conn, asset, horizon)
         return {
-            "family": FAMILY,
+            "family": self.family,
             "probability": self.probability(state, inputs),
             "training_rows": state["updates"],
             "model_sha256": hashlib.sha256(json.dumps(
@@ -202,9 +208,9 @@ class FlowChallenger:
         self.initialize()
         with self.store.connect() as conn:
             rows = conn.execute(
-                """SELECT x.venue,x.contract,x.quote,x.horizon_minutes,
+                f"""SELECT x.venue,x.contract,x.quote,x.horizon_minutes,
                           x.reference_opened_at,x.asset,x.features,f.outcome_up
-                   FROM rival_flow_features x
+                   FROM {self.features_table} x
                    JOIN perp_forward_audit f
                      ON f.venue=x.venue AND f.contract=x.contract AND f.quote=x.quote
                     AND f.horizon_minutes=x.horizon_minutes
@@ -233,7 +239,7 @@ class FlowChallenger:
                     state["positives"] += int(label)
                     learned += 1
                 conn.execute(
-                    """UPDATE rival_flow_features SET learned=1
+                    f"""UPDATE {self.features_table} SET learned=1
                        WHERE venue=? AND contract=? AND quote=? AND horizon_minutes=?
                          AND reference_opened_at=?""",
                     (row["venue"], row["contract"], row["quote"],
@@ -242,7 +248,7 @@ class FlowChallenger:
             stamp = now.astimezone(UTC).isoformat()
             for (asset, horizon), state in states.items():
                 conn.execute(
-                    """INSERT INTO rival_flow_model_state
+                    f"""INSERT INTO {self.state_table}
                        (asset,horizon_minutes,weights,updates,positives,updated_at)
                        VALUES (?,?,?,?,?,?)
                        ON CONFLICT(asset,horizon_minutes) DO UPDATE SET
@@ -252,3 +258,57 @@ class FlowChallenger:
                      state["positives"], stamp),
                 )
         return learned
+
+
+class FlowChallengerV2(FlowChallenger):
+    """v1's inputs plus OKX perp and Coinbase spot order flow and the
+    spot-vs-perp basis. Runs beside v1 so the extra data has to prove it
+    helps on the same graded outcomes.
+
+    Extra inputs (7): OKX 5-min trade imbalance and 10 bps book imbalance,
+    Coinbase spot 5-min trade imbalance and top-of-book imbalance, the
+    Hyperliquid-perp-over-Coinbase-spot basis, and an availability flag for
+    each of OKX and Coinbase.
+    """
+
+    family = "flow_v2"
+    n_flow = FLOW_FEATURES + 7
+    features_table = "rival_flow2_features"
+    state_table = "rival_flow2_model_state"
+
+    def asset_inputs(self, now: datetime, assets) -> dict[str, tuple[float, ...]]:
+        base = super().asset_inputs(now, assets)
+        stamp = now.astimezone(UTC)
+        out = {}
+        with self.store.connect() as conn:
+            for asset in assets:
+                latest = {}
+                for venue in ("hyperliquid", "okx", "coinbase"):
+                    row = conn.execute(
+                        """SELECT complete, mid_last, bid_depth_10bps_mean,
+                                  ask_depth_10bps_mean, buy_volume, sell_volume
+                           FROM perp_liquidity_5m
+                           WHERE venue=? AND asset=? AND recorded_at<=? AND bucket_start>=?
+                           ORDER BY bucket_start DESC LIMIT 1""",
+                        (venue, asset, stamp.isoformat(),
+                         (stamp - timedelta(minutes=15)).isoformat()),
+                    ).fetchone()
+                    if row is not None and int(row["complete"] or 0) == 1:
+                        latest[venue] = row
+                okx, spot, perp = latest.get("okx"), latest.get("coinbase"), latest.get("hyperliquid")
+                basis = 0.0
+                if spot is not None and perp is not None:
+                    s_mid, p_mid = float(spot["mid_last"] or 0), float(perp["mid_last"] or 0)
+                    if s_mid > 0 and p_mid > 0:
+                        basis = _clip((p_mid / s_mid - 1) * 1e4 / 5)
+                extra = (
+                    _ratio(okx["buy_volume"], okx["sell_volume"]) if okx else 0.0,
+                    _ratio(okx["bid_depth_10bps_mean"], okx["ask_depth_10bps_mean"]) if okx else 0.0,
+                    _ratio(spot["buy_volume"], spot["sell_volume"]) if spot else 0.0,
+                    _ratio(spot["bid_depth_10bps_mean"], spot["ask_depth_10bps_mean"]) if spot else 0.0,
+                    basis,
+                    1.0 if okx else 0.0,
+                    1.0 if spot else 0.0,
+                )
+                out[asset] = (*base[asset], *extra)
+        return out

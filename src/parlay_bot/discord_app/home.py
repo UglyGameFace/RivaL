@@ -1717,6 +1717,22 @@ class GuidedHome(discord.ui.View):
                             f"; value bets {kalshi['value_bet_wins']}/{kalshi['value_bets']} "
                             f"won, {kalshi['return_per_dollar_after_fees'] * 100:+.1f}¢ per $1 "
                             "at real prices after Kalshi fees")
+                labels = {"flow_v1": "Order-flow challenger",
+                          "flow_v2": "Order-flow challenger + OKX/Coinbase"}
+                for family, scored in (poly.get("kalshi_challengers") or {}).items():
+                    if not scored.get("contracts"):
+                        continue
+                    better = scored["model_brier"] < scored["market_brier"]
+                    poly_text += (
+                        f"\n**{labels.get(family, family)} vs Kalshi (shadow, not served):** "
+                        f"{scored['contracts']:,} contracts, "
+                        f"{'better' if better else 'not better'} than Kalshi's prices "
+                        f"(Brier {scored['model_brier']:.3f} vs {scored['market_brier']:.3f})")
+                    if scored.get("value_bets"):
+                        poly_text += (
+                            f"; value bets {scored['value_bet_wins']}/{scored['value_bets']} "
+                            f"won, {scored['return_per_dollar_after_fees'] * 100:+.1f}¢ per $1 "
+                            "after fees")
                 poly_text += f"\n**Past results learned from:** {learned:,} (not live predictions)"
                 if observed and not learned:
                     poly_text += (f"\n⚠️ {observed:,} contracts seen, but none of their "

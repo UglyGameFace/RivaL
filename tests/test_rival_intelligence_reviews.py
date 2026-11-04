@@ -94,3 +94,82 @@ def test_follow_without_clear_consensus_makes_no_call(tmp_path):
         assert ledger.latest(asset="BTC")["stances"][5] == ("follow", "none")
     finally:
         store.close()
+
+
+def test_market_context_comes_from_rivals_own_feeds_and_never_the_future(tmp_path):
+    from parlay_bot.perpetuals.intelligence import market_context
+    from parlay_bot.perpetuals.liquidity_record import SCHEMA as LIQUIDITY
+
+    store = SQLiteHotStore(tmp_path / "ctx.sqlite")
+    market = PerpetualMarketStore(store)
+    try:
+        market.initialize()
+        now = datetime(2026, 11, 4, 20, 0, tzinfo=UTC)
+        with store.connect() as conn:
+            conn.executescript(LIQUIDITY)
+            for at, mark, oi in ((now - timedelta(minutes=60), 100.0, 1000.0),
+                                 (now - timedelta(minutes=2), 100.1, 1100.0),
+                                 (now + timedelta(minutes=1), 150.0, 9000.0)):  # future
+                conn.execute("INSERT INTO perp_market_contexts VALUES "
+                             "('hyperliquid','BTC','USDC',?,?,100.0,0.0000125,?)",
+                             (at.isoformat(), mark, oi))
+            for start, rec, buy, sell in ((now - timedelta(minutes=30), now - timedelta(minutes=25), 6, 4),
+                                          (now - timedelta(minutes=10), now + timedelta(minutes=1), 0, 99)):
+                conn.execute(
+                    """INSERT INTO perp_liquidity_5m (venue,asset,bucket_start,complete,
+                       book_samples,spread_bps_mean,spread_bps_max,mid_last,buy_trades,
+                       sell_trades,buy_volume,sell_volume,first_event_at,last_event_at,
+                       recorded_at) VALUES ('okx','BTC',?,1,5,1,2,100,1,1,?,?,?,?,?)""",
+                    (start.isoformat(), buy, sell, start.isoformat(), start.isoformat(),
+                     rec.isoformat()))
+        ctx = market_context(market, asset="BTC", now=now)
+        assert ctx["premium_bps"] == 10.0
+        assert ctx["funding_bps"] == 1.0  # hourly 0.00125% as an 8-hour rate
+        assert ctx["open_interest_change_1h"] == 0.1
+        assert ctx["taker_buy_share_1h"] == 0.6  # the future bucket is invisible
+        assert market_context(market, asset="ETH", now=now) == {}  # missing, not guessed
+    finally:
+        store.close()
+
+
+def test_reviewer_sees_each_challengers_real_record_best_three_only(tmp_path):
+    from parlay_bot.perpetuals import intelligence
+    from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
+
+    intelligence._RECORDS.clear()
+    store = SQLiteHotStore(tmp_path / "rec.sqlite")
+    market = PerpetualMarketStore(store)
+    try:
+        ForwardAccuracyMonitor(market).initialize()
+        ShadowModelCompetition(store).initialize()
+        now = datetime(2026, 11, 4, 20, 0, tzinfo=UTC)
+        target = now + timedelta(minutes=1)
+        families = {"calib_incumbent_v1": .70, "flow_v1": .55, "flow_v2": .52,
+                    "pooled_5m_aaaa": .45, "knn21_v1": .9}  # knn is not a reviewed family
+        with store.connect() as conn:
+            for family, p in families.items():
+                for i in range(40):  # graded history: outcome always UP
+                    ref = (now - timedelta(days=2, minutes=5 * i)).isoformat()
+                    conn.execute(
+                        """INSERT INTO rival_model_shadow_forecasts (venue,contract,quote,
+                           asset,horizon_minutes,family,reference_opened_at,issued_at,
+                           target_opened_at,probability_up,incumbent_up,baseline_up,
+                           training_count,training_sha256,settled_at,outcome_up,
+                           model_brier,incumbent_brier,baseline_brier)
+                           VALUES ('okx','BTC','USDT','BTC',5,?,?,?,?,?,.5,.5,1,'x',?,1,?,.25,.25)""",
+                        (family, ref, ref, ref, p, (now - timedelta(days=1)).isoformat(),
+                         (p - 1) ** 2))
+                conn.execute(  # the current slot's call
+                    """INSERT INTO rival_model_shadow_forecasts (venue,contract,quote,asset,
+                       horizon_minutes,family,reference_opened_at,issued_at,target_opened_at,
+                       probability_up,incumbent_up,baseline_up,training_count,training_sha256)
+                       VALUES ('okx','BTC','USDT','BTC',5,?,?,?,?,?,.5,.5,1,'x')""",
+                    (family, now.isoformat(), (now - timedelta(seconds=30)).isoformat(),
+                     target.isoformat(), p))
+        calls = model_calls(market, asset="BTC", now=now, summary={})["5"]
+        assert set(calls) == {"calib_incumbent_v1", "flow_v1", "flow_v2"}  # best three
+        record = calls["calib_incumbent_v1"]["record"]
+        assert record == {"hit_rate": 1.0, "graded": 40, "beats_basic": True}
+        assert "knn21_v1" not in calls and "pooled_5m_aaaa" not in calls
+    finally:
+        store.close()

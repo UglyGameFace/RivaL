@@ -25,6 +25,9 @@ HORIZONS = (5, 15, 60)
 # far from 50% and most exchanges on the same side.
 CONSENSUS_MARGIN = 0.02
 CONSENSUS_SHARE = 2 / 3
+MAX_CHALLENGERS = 3
+RECORD_TTL = timedelta(minutes=30)
+_RECORDS: dict[str, tuple[datetime, dict]] = {}
 
 
 def utc(value: datetime) -> datetime:
@@ -47,8 +50,9 @@ def model_calls(market, *, asset: str, now: datetime | None = None,
             challengers = conn.execute(
                 """SELECT horizon_minutes, family, target_opened_at, probability_up
                    FROM rival_model_shadow_forecasts
-                   WHERE asset=? AND family LIKE 'pooled_%' AND issued_at>=?
-                     AND issued_at<=?""",
+                   WHERE asset=? AND (family LIKE 'pooled_%' OR family LIKE 'flow_%'
+                                      OR family LIKE 'calib_%')
+                     AND issued_at>=? AND issued_at<=?""",
                 (asset, since, stamp.isoformat()),
             ).fetchall()
         except Exception:  # noqa: BLE001 - optional challenger table
@@ -70,13 +74,122 @@ def model_calls(market, *, asset: str, now: datetime | None = None,
                 "beats_basic": part.get("model_beats_baseline") is True,
             }}
         families = {str(r["family"]) for r in challengers if int(r["horizon_minutes"]) == horizon}
-        for family in sorted(families):
+        records = challenger_records(market, asset=asset, now=stamp,
+                                     families={(horizon, f) for f in families})
+        ranked = []
+        for family in families:
             call = _latest_slot([r for r in challengers if int(r["horizon_minutes"]) == horizon
                                  and str(r["family"]) == family])
             if call is not None:
-                entry[_short(family)] = {**call, "record": {}}
+                record = records.get((horizon, family), {})
+                ranked.append((-(record.get("brier_gain") or -1.0), family, call, record))
+        # The reviewer reads at most 12 lines: live + the 3 best-graded
+        # challengers per timeframe, each with its real 7-day record.
+        for _, family, call, record in sorted(ranked)[:MAX_CHALLENGERS]:
+            entry[_short(family)] = {**call, "record": {
+                k: record[k] for k in ("hit_rate", "graded", "beats_basic") if k in record}}
         if entry:
             out[str(horizon)] = entry
+    return out
+
+
+def challenger_records(market, *, asset: str, now: datetime,
+                       families: set[tuple[int, str]]) -> dict:
+    """7-day graded record of each challenger: hit rate and Brier vs up-rate.
+
+    Only outcomes settled before ``now``. Cached per asset for RECORD_TTL.
+    """
+    if not families:
+        return {}
+    hit = _RECORDS.get(asset)
+    if hit is not None and timedelta(0) <= now - hit[0] < RECORD_TTL and \
+            all(key in hit[1] or key in hit[1].get("_none", ()) for key in families):
+        return hit[1]
+    names = sorted({f for _, f in families})
+    marks = ",".join("?" * len(names))
+    out: dict = {"_none": set()}
+    try:
+        with market.store.connect() as conn:
+            rows = conn.execute(
+                f"""SELECT horizon_minutes AS h, family, COUNT(*) AS n,
+                          AVG(model_brier) AS m, AVG(baseline_brier) AS b,
+                          SUM(CASE WHEN (probability_up>0.5 AND outcome_up=1)
+                                    OR (probability_up<0.5 AND outcome_up=0)
+                                   THEN 1 ELSE 0 END) AS hits,
+                          SUM(CASE WHEN probability_up<>0.5 THEN 1 ELSE 0 END) AS decided
+                   FROM rival_model_shadow_forecasts
+                   WHERE asset=? AND family IN ({marks}) AND issued_at>=?
+                     AND settled_at IS NOT NULL AND settled_at<=?
+                     AND outcome_up IN (0,1) AND model_brier IS NOT NULL
+                     AND baseline_brier IS NOT NULL
+                   GROUP BY horizon_minutes, family""",
+                (asset, *names, (now - timedelta(days=7)).isoformat(), now.isoformat()),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - a review is still useful without records
+        _LOG.warning("RivaL Intelligence challenger records unavailable")
+        return {}
+    for r in rows:
+        decided = int(r["decided"] or 0)
+        out[(int(r["h"]), str(r["family"]))] = {
+            "graded": int(r["n"]),
+            "hit_rate": round(int(r["hits"] or 0) / decided, 4) if decided else None,
+            "beats_basic": float(r["m"]) < float(r["b"]),
+            "brier_gain": round(float(r["b"]) - float(r["m"]), 6),
+        }
+    out["_none"] = {key for key in families if key not in out}
+    _RECORDS[asset] = (now, out)
+    return out
+
+
+def market_context(market, *, asset: str, now: datetime | None = None) -> dict:
+    """Positioning numbers from RivaL's own feeds when Binance is unavailable.
+
+    Same keys as BinanceContext.numbers: Hyperliquid funding (as an 8-hour
+    rate), perp premium over the oracle and 1-hour open-interest change;
+    taker-buy share of the last hour of Hyperliquid + OKX perp trades. Only
+    rows recorded at or before ``now``; missing data is left out, not guessed.
+    """
+    stamp = utc(now or datetime.now(UTC))
+    out: dict = {}
+    try:
+        with market.store.connect() as conn:
+            ctx = conn.execute(
+                """SELECT observed_at, mark_price, oracle_price, funding_rate,
+                          open_interest_base FROM perp_market_contexts
+                   WHERE venue='hyperliquid' AND contract=? AND observed_at<=?
+                     AND observed_at>=?
+                   ORDER BY observed_at DESC LIMIT 1""",
+                (asset, stamp.isoformat(), (stamp - timedelta(minutes=15)).isoformat()),
+            ).fetchone()
+            if ctx is not None:
+                if float(ctx["oracle_price"] or 0) > 0:
+                    out["premium_bps"] = round(
+                        (float(ctx["mark_price"]) / float(ctx["oracle_price"]) - 1) * 1e4, 2)
+                out["funding_bps"] = round(float(ctx["funding_rate"]) * 8 * 1e4, 3)
+                before = conn.execute(
+                    """SELECT open_interest_base FROM perp_market_contexts
+                       WHERE venue='hyperliquid' AND contract=? AND observed_at<=?
+                         AND observed_at>=?
+                       ORDER BY observed_at DESC LIMIT 1""",
+                    (asset, (stamp - timedelta(minutes=55)).isoformat(),
+                     (stamp - timedelta(minutes=75)).isoformat()),
+                ).fetchone()
+                old, new = (float(before["open_interest_base"] or 0) if before else 0,
+                            float(ctx["open_interest_base"] or 0))
+                if old > 0 and new > 0:
+                    out["open_interest_change_1h"] = round(new / old - 1, 5)
+            flow = conn.execute(
+                """SELECT SUM(buy_volume) AS buy, SUM(sell_volume) AS sell
+                   FROM perp_liquidity_5m
+                   WHERE asset=? AND venue IN ('hyperliquid','okx') AND complete=1
+                     AND bucket_start>=? AND recorded_at<=?""",
+                (asset, (stamp - timedelta(hours=1)).isoformat(), stamp.isoformat()),
+            ).fetchone()
+            total = float(flow["buy"] or 0) + float(flow["sell"] or 0) if flow else 0
+            if total > 0:
+                out["taker_buy_share_1h"] = round(float(flow["buy"]) / total, 4)
+    except Exception:  # noqa: BLE001 - context is optional evidence
+        _LOG.warning("RivaL Intelligence market context unavailable")
     return out
 
 

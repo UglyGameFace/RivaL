@@ -1,0 +1,35 @@
+name: diag kalshi series
+on:
+  push:
+    branches: [diag/kalshi-series]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - run: |
+          python3 - <<'PY'
+          import json, urllib.request
+          def get(url):
+              with urllib.request.urlopen(url, timeout=30) as r:
+                  return json.load(r)
+          base = "https://external-api.kalshi.com/trade-api/v2"
+          series = get(base + "/series?category=Crypto")["series"]
+          coins = ("BTC", "ETH", "SOL", "XRP")
+          picks = [s for s in series if any(c in s["ticker"] for c in coins)]
+          for s in picks:
+              print("SERIES", s["ticker"], "|", s.get("title"), "|", s.get("frequency"),
+                    "|", json.dumps(s.get("settlement_sources"))[:160])
+          for t in [s["ticker"] for s in picks if "15M" in s["ticker"] or "H" == s["ticker"][-1:]][:6]:
+              m = get(base + f"/markets?series_ticker={t}&status=open&limit=2")["markets"]
+              for x in m:
+                  keys = {k: x.get(k) for k in ("ticker","title","subtitle","open_time","close_time",
+                          "floor_strike","cap_strike","strike_type","yes_ask","no_ask","rules_primary")}
+                  print("MARKET", t, json.dumps(keys)[:900])
+          s = get(base + "/markets?series_ticker=KXBTC15M&status=settled&limit=2")["markets"]
+          for x in s:
+              print("SETTLED", json.dumps({k: x.get(k) for k in ("ticker","open_time","close_time","result",
+                    "expiration_value","floor_strike","strike_type")})[:600])
+          PY

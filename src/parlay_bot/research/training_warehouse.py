@@ -46,7 +46,7 @@ class TrainingWarehouse:
         self.cache = cache
         self.max_uploads = max_uploads
         self.index: dict[str, tuple[str, str, int]] = {}
-        self.stats = {"from_warehouse": 0, "official_saved": 0, "official_not_saved": 0,
+        self.stats = {"indexed_files": 0, "from_warehouse": 0, "already_cached": 0, "official_saved": 0, "official_not_saved": 0,
                       "missing_at_source": 0, "save_failed": 0}
         self._upload_lock = asyncio.Semaphore(4)
 
@@ -55,7 +55,10 @@ class TrainingWarehouse:
         drive = self.drive
         await drive._verify_folder_boundary()
         folder = drive.folders.history
-        for token in ("USDT-5m-", "binance-aux-", PREFIX):
+        # Drive's "name contains" matches from the START of words, so the
+        # klines originals ("BTCUSDT-5m-2024-03.zip") need one prefix per coin.
+        tokens = [f"{coin}USDT-5m-" for coin in ("BTC", "ETH", "SOL", "XRP")]
+        for token in (*tokens, "binance-aux-", PREFIX):
             page = None
             for _ in range(200):
                 params = {
@@ -77,6 +80,7 @@ class TrainingWarehouse:
                 page = doc.get("nextPageToken")
                 if not page:
                     break
+        self.stats["indexed_files"] = len(self.index)
         _LOG.info("warehouse index: %d files", len(self.index))
 
     def _lookup(self, url: str):
@@ -133,6 +137,7 @@ class TrainingWarehouse:
             local = cache / hashlib.sha1(url.encode()).hexdigest()
             if local.exists():
                 raw = local.read_bytes() or None
+                self.stats["already_cached"] += 1
                 if raw is not None and self._lookup(url) is None:
                     await self._save(url, raw)  # cached official bytes -> warehouse
                 return raw

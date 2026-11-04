@@ -27,7 +27,7 @@ class FakeKalshi(KalshiUpDown):
         self.result = None
 
     async def _get(self, path, params=None):
-        opens = self.now - timedelta(minutes=2)
+        opens = self.now - timedelta(minutes=1)
         ticker = f"{params['series_ticker']}-T1" if params else ""
         if path.endswith("/orderbook"):
             # YES bids at 0.45 -> NO ask 0.55; NO bids at 0.50 -> YES ask 0.50
@@ -94,9 +94,8 @@ async def test_price_seen_too_late_is_never_compared(tmp_path):
     store = SQLiteHotStore(tmp_path / "late-price.sqlite")
     try:
         now = datetime.now(UTC)
-        tracker = FakeKalshi(store, now + timedelta(minutes=3))  # first look 5 min in
-        tracker.now = now  # contract opened 2 min before `now`
-        await tracker.issue(now + timedelta(minutes=3))
+        tracker = FakeKalshi(store, now)  # contract opened 1 min before `now`
+        await tracker.issue(now + timedelta(minutes=2))  # first look 3 min in
         with store.connect() as conn:
             row = conn.execute("SELECT yes_ask, probability_up FROM rival_kalshi_updown "
                                "LIMIT 1").fetchone()

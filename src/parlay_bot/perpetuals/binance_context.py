@@ -136,7 +136,9 @@ class BinanceContextFeed:
             out["premium_bps"] = round(premium * 1e4, 2)
         if bundle["funding"]:
             out["funding_bps"] = round(bundle["funding"][-1][1] * 1e4, 3)
-        oi = bundle["open_interest"]
+        # Only open-interest points from before the last closed bar: a point
+        # inside the unfinished period would leak the window being graded.
+        oi = [p for p in bundle["open_interest"] if p[0] < bars[-1][0]][-13:]
         if len(oi) >= 2 and oi[0][1] > 0:
             out["open_interest_change_1h"] = round(oi[-1][1] / oi[0][1] - 1, 5)
         return out

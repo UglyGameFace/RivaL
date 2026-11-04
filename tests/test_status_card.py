@@ -159,3 +159,17 @@ def test_open_socket_with_no_data_is_not_a_green_check():
                                         "fresh_assets": ("BTC",)})
     assert live.startswith("✅")
     assert _stream_line("hyperliquid", {"connected": False}).startswith("🛑")
+
+
+def test_status_footer_identifies_live_prediction_health_source():
+    """Operator can compare the running code with GitHub's exact file blob."""
+    from hashlib import sha1
+    from pathlib import Path
+
+    from parlay_bot.discord_app import research_alerts
+    from parlay_bot.discord_app.status_card import _prediction_health_revision
+
+    content = Path(research_alerts.__file__).read_bytes()
+    expected = sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()[:10]
+    assert _prediction_health_revision() == expected
+    assert f"Prediction checks {expected}" in build_embed(_facts())[0].footer.text

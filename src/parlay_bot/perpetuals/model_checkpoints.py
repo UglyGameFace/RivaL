@@ -5,6 +5,7 @@ forward accuracy and trading qualification remain separate, prospective gates.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -30,6 +31,15 @@ class LiveModelCheckpoints:
         self._lock = threading.RLock()
         self._loaded = 0
         self._fitted = 0
+        # A digest probe checks PostgreSQL on every fit; cached JSON is never
+        # trusted when a different process has changed the durable checkpoint.
+        self._checkpoint_cache = {}
+        self._cache_hits = 0
+
+    def _cache_checkpoint(self, identity, row, state):
+        if identity not in self._checkpoint_cache and len(self._checkpoint_cache) >= 144:
+            self._checkpoint_cache.pop(next(iter(self._checkpoint_cache)))
+        self._checkpoint_cache[identity] = (row, copy.deepcopy(state))
 
     def initialize(self):
         if self._initialized:
@@ -124,13 +134,39 @@ class LiveModelCheckpoints:
                     FEATURE_CONTRACT + (":" + seed["model_sha256"] if seed else ""), TARGET_CONTRACT)
         self.initialize()
         with self._lock:
+            query_scope = ("WHERE venue=? AND contract=? AND quote=? "
+                           "AND horizon_minutes=? AND feature_contract=? AND target_contract=?")
+            cached = self._checkpoint_cache.get(identity)
+            cached_read = False
             with self.store.connect() as conn:
-                row = conn.execute(
-                    "SELECT * FROM rival_live_model_checkpoints WHERE venue=? AND contract=? "
-                    "AND quote=? AND horizon_minutes=? AND feature_contract=? AND target_contract=?",
-                    identity,
-                ).fetchone()
-            state = self._restore(row, now)
+                if cached is not None:
+                    # Small indexed probe avoids downloading the large
+                    # correction-fingerprint map on every five-minute cycle.
+                    probe = conn.execute(
+                        "SELECT training_digest,trained_at FROM rival_live_model_checkpoints "
+                        + query_scope, identity,
+                    ).fetchone()
+                    if (probe is not None
+                        and probe["training_digest"] == cached[0]["training_digest"]
+                        and probe["trained_at"] == cached[0]["trained_at"]):
+                        row = cached[0]
+                        cached_read = True
+                    else:
+                        row = conn.execute(
+                            "SELECT * FROM rival_live_model_checkpoints " + query_scope,
+                            identity,
+                        ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT * FROM rival_live_model_checkpoints " + query_scope,
+                        identity,
+                    ).fetchone()
+            # An earlier as_of must never reuse weights from the future.
+            if cached_read and utc(datetime.fromisoformat(row["trained_at"])) <= now:
+                state = copy.deepcopy(cached[1])
+                self._cache_hits += 1
+            else:
+                state = self._restore(row, now)
             fingerprints = {
                 utc(s.issued_at).isoformat(): hashlib.sha256(canonical([
                     utc(s.label_known_at).isoformat(), s.features, s.label_up,
@@ -167,16 +203,45 @@ class LiveModelCheckpoints:
             state["recent"] = dict(sorted({**state["recent"], **fingerprints}.items())[-2000:])
             encoded = canonical(state)
             weights_sha = hashlib.sha256(canonical(state["weights"]).encode()).hexdigest()
-            with self.store.connect() as conn:
-                conn.execute(
-                    "INSERT INTO rival_live_model_checkpoints "
-                    "(venue,contract,quote,horizon_minutes,feature_contract,target_contract,"
-                    "training_digest,trained_at,weights_sha256,state_json) VALUES (?,?,?,?,?,?,?,?,?,?) "
-                    "ON CONFLICT(venue,contract,quote,horizon_minutes,feature_contract,target_contract) "
-                    "DO UPDATE SET training_digest=excluded.training_digest,trained_at=excluded.trained_at,"
-                    "weights_sha256=excluded.weights_sha256,state_json=excluded.state_json "
-                    "WHERE rival_live_model_checkpoints.trained_at<=excluded.trained_at",
-                    (*identity, hashlib.sha256(encoded.encode()).hexdigest(), now.isoformat(), weights_sha, encoded),
+            if row is None or encoded != row["state_json"]:
+                digest = hashlib.sha256(encoded.encode()).hexdigest()
+                with self.store.connect() as conn:
+                    saved = conn.execute(
+                        "INSERT INTO rival_live_model_checkpoints "
+                        "(venue,contract,quote,horizon_minutes,feature_contract,target_contract,"
+                        "training_digest,trained_at,weights_sha256,state_json) VALUES (?,?,?,?,?,?,?,?,?,?) "
+                        "ON CONFLICT(venue,contract,quote,horizon_minutes,feature_contract,target_contract) "
+                        "DO UPDATE SET training_digest=excluded.training_digest,trained_at=excluded.trained_at,"
+                        "weights_sha256=excluded.weights_sha256,state_json=excluded.state_json "
+                        "WHERE rival_live_model_checkpoints.trained_at<=excluded.trained_at "
+                        "AND rival_live_model_checkpoints.training_digest=?",
+                        (*identity, digest, now.isoformat(), weights_sha, encoded,
+                         row["training_digest"] if row is not None else ""),
+                    )
+                if saved.rowcount:
+                    self._cache_checkpoint(
+                        identity,
+                        {"training_digest": digest, "trained_at": now.isoformat(),
+                         "weights_sha256": weights_sha, "state_json": encoded},
+                        state,
+                    )
+                elif row is None or utc(datetime.fromisoformat(row["trained_at"])) <= now:
+                    # Another writer won the race. Refuse to issue a forecast
+                    # whose learned weights were not durably checkpointed.
+                    # The next cycle reloads the winning version.
+                    self._checkpoint_cache.pop(identity, None)
+                    raise RuntimeError("live checkpoint changed during fit; retry from database")
+            elif (cached is None or row["training_digest"] != cached[0]["training_digest"]
+                  or row["trained_at"] != cached[0]["trained_at"]):
+                # Another writer can commit identical weights at a newer time.
+                # Adopt that validated metadata even when no new labels exist.
+                self._cache_checkpoint(
+                    identity,
+                    {"training_digest": row["training_digest"],
+                     "trained_at": row["trained_at"],
+                     "weights_sha256": row["weights_sha256"],
+                     "state_json": row["state_json"]},
+                    state,
                 )
             self._fitted += int(trained > 0)
             labels = state["updates"] + state["historical_training_labels"]
@@ -198,6 +263,7 @@ class LiveModelCheckpoints:
         return {"persisted_checkpoints": len(rows),
                 "latest_trained_at": max((r["trained_at"] for r in rows), default=None),
                 "reused_this_process": self._loaded, "fitted_this_process": self._fitted,
+                "verified_checkpoint_cache_hits": self._cache_hits,
                 "historical_seeded_checkpoints": sum(bool(s and s["historical_seed"]) for s in valid),
                 "feature_contract": FEATURE_CONTRACT, "target_contract": TARGET_CONTRACT,
                 "model_version": STATE_VERSION}

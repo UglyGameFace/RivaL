@@ -69,3 +69,157 @@ def test_changed_training_data_fits_new_weights_and_keeps_scope(tmp_path):
         assert checkpoints.summary()["persisted_checkpoints"] == 1
     finally:
         hot.close()
+
+
+def test_identical_cycle_reuses_verified_checkpoint_without_rewriting(tmp_path):
+    """A 5-minute cycle with unchanged matured labels needs just one tiny read."""
+    hot = SQLiteHotStore(tmp_path / "checkpoint_cache.sqlite")
+    try:
+        now = datetime.now(UTC)
+        rows = samples(now)
+        model = module.LiveModelCheckpoints(hot)
+        first = model.fit(rows, as_of=now)
+        with hot.connect() as conn:
+            saved = conn.execute(
+                "SELECT training_digest,trained_at FROM rival_live_model_checkpoints"
+            ).fetchone()
+            original = (saved["training_digest"], saved["trained_at"])
+        calls = []
+        real = hot.connect
+
+        def counted():
+            calls.append(1)
+            return real()
+
+        hot.connect = counted
+        repeated = model.fit(rows, as_of=now + timedelta(minutes=1))
+        assert repeated == first
+        assert len(calls) == 1  # digest check, not a second write checkout
+        assert model._cache_hits == 1
+        with hot.connect() as conn:
+            current = conn.execute(
+                "SELECT training_digest,trained_at FROM rival_live_model_checkpoints"
+            ).fetchone()
+        assert (current["training_digest"], current["trained_at"]) == original
+    finally:
+        hot.close()
+
+
+def test_cache_revalidates_another_writers_source_correction(tmp_path):
+    """Digest mismatch must reload and correct weights, never use stale cache."""
+    from dataclasses import replace
+
+    hot = SQLiteHotStore(tmp_path / "external_writer.sqlite")
+    try:
+        now = datetime.now(UTC)
+        rows = samples(now)
+        primary = module.LiveModelCheckpoints(hot)
+        original = primary.fit(rows, as_of=now)
+
+        changed = (*rows[:-1], replace(rows[-1], label_up=1-rows[-1].label_up))
+        other_writer = module.LiveModelCheckpoints(hot)
+        updated = other_writer.fit(changed, as_of=now + timedelta(seconds=1))
+        assert updated.final_weights != original.final_weights
+
+        restored = primary.fit(rows, as_of=now + timedelta(seconds=2))
+        assert restored == original  # historical correction triggers rebuild
+        assert primary._cache_hits == 0
+        assert module.LiveModelCheckpoints(hot).fit(
+            rows, as_of=now + timedelta(seconds=3)
+        ) == original
+    finally:
+        hot.close()
+
+
+def test_newly_matured_label_still_persists_and_survives_restart(tmp_path):
+    """Optimization must not skip genuine incremental training."""
+    from dataclasses import replace
+
+    hot = SQLiteHotStore(tmp_path / "new_label.sqlite")
+    try:
+        now = datetime.now(UTC)
+        rows = samples(now)
+        learner = module.LiveModelCheckpoints(hot)
+        first = learner.fit(rows, as_of=now)
+        newest = replace(
+            rows[-1], issued_at=rows[-1].issued_at + timedelta(minutes=5),
+            label_known_at=rows[-1].label_known_at + timedelta(minutes=5),
+            label_up=1 - rows[-1].label_up,
+        )
+        expanded = (*rows, newest)
+        later = learner.fit(expanded, as_of=now + timedelta(minutes=1))
+        assert later.updates == first.updates + 1
+        assert later.final_weights != first.final_weights
+        assert module.LiveModelCheckpoints(hot).fit(
+            expanded, as_of=now + timedelta(minutes=2)
+        ) == later
+    finally:
+        hot.close()
+
+
+def test_concurrent_checkpoint_update_never_issues_unpersisted_weights(tmp_path):
+    """A commit race must fail closed, not return weights the database lacks."""
+    from dataclasses import replace
+
+    hot = SQLiteHotStore(tmp_path / "write_race.sqlite")
+    try:
+        now = datetime.now(UTC)
+        rows = samples(now)
+        primary = module.LiveModelCheckpoints(hot)
+        primary.fit(rows, as_of=now)
+        changed = (*rows[:-1], replace(rows[-1], label_up=1 - rows[-1].label_up))
+        competitor = module.LiveModelCheckpoints(hot)
+
+        next_sample = replace(
+            rows[-1], issued_at=rows[-1].issued_at + timedelta(minutes=5),
+            label_known_at=rows[-1].label_known_at + timedelta(minutes=5),
+        )
+        expanded = (*rows, next_sample)
+        original_connect = hot.connect
+        calls = [0]
+
+        def race_connect():
+            calls[0] += 1
+            if calls[0] == 2:
+                # Between the primary digest probe and its conditional write,
+                # simulate a second process committing a corrected source row.
+                hot.connect = original_connect
+                try:
+                    competitor.fit(changed, as_of=now + timedelta(seconds=30))
+                finally:
+                    hot.connect = race_connect
+            return original_connect()
+
+        hot.connect = race_connect
+        with pytest.raises(RuntimeError, match="checkpoint changed during fit"):
+            primary.fit(expanded, as_of=now + timedelta(minutes=1))
+        hot.connect = original_connect
+        # The losing worker can retry on the next cycle from the real row.
+        expected = module.LiveModelCheckpoints(hot).fit(
+            expanded, as_of=now + timedelta(minutes=2)
+        )
+        recovered = primary.fit(expanded, as_of=now + timedelta(minutes=3))
+        assert recovered == expected
+    finally:
+        hot.close()
+
+
+def test_cache_adopts_external_metadata_even_if_weights_are_identical(tmp_path):
+    """A harmless remote trained_at refresh should not force endless full reads."""
+    hot = SQLiteHotStore(tmp_path / "cache_refresh.sqlite")
+    try:
+        now = datetime.now(UTC)
+        rows = samples(now)
+        learner = module.LiveModelCheckpoints(hot)
+        first = learner.fit(rows, as_of=now)
+        with hot.connect() as conn:
+            conn.execute(
+                "UPDATE rival_live_model_checkpoints SET trained_at=?",
+                ((now + timedelta(seconds=1)).isoformat(),),
+            )
+        assert learner.fit(rows, as_of=now + timedelta(seconds=2)) == first
+        assert learner._cache_hits == 0  # full read of external metadata
+        assert learner.fit(rows, as_of=now + timedelta(seconds=3)) == first
+        assert learner._cache_hits == 1  # subsequent digest probe is enough
+    finally:
+        hot.close()

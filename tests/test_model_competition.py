@@ -159,3 +159,46 @@ def test_opposite_exchange_outcomes_cannot_subsidize_bad_model(learning_store):
         assert item["qualified_sources"] == ["hyperliquid/BTC/USDC"]
         assert not item["by_venue"]["okx/BTC-USDT-SWAP/USDT"]["qualified_research"]
         assert item["by_regime"]["unknown"]["high_confidence_misses"] == 112
+
+
+def test_shadow_batch_preserves_duplicates_and_sqlite_parameter_limit(learning_store):
+    """Many candidate rows commit together on SQLite and PostgreSQL."""
+    hot = learning_store
+    market = PerpetualMarketStore(hot)
+    ForwardAccuracyMonitor(market).initialize()
+    comp = ShadowModelCompetition(hot)
+    now = datetime(2026, 10, 31, 12, tzinfo=UTC)
+    opened = now - timedelta(minutes=5)
+    target = now + timedelta(minutes=5)
+    issued = now - timedelta(seconds=20)
+    pooled = [
+        {"family": f"pooled_batch_{i}", "probability": 0.51,
+         "training_rows": 100, "model_sha256": f"{i:064x}"}
+        for i in range(52)
+    ]
+    writes = []
+
+    class RecordingConnection:
+        def __init__(self, underlying):
+            self.underlying = underlying
+
+        def execute(self, sql, params=()):
+            if sql.startswith("INSERT INTO rival_model_shadow_forecasts"):
+                writes.append(sql)
+            return self.underlying.execute(sql, params)
+
+    with hot.connect() as conn:
+        recorded = RecordingConnection(conn)
+        arguments = dict(
+            samples=_samples(now=now), features=(0.25,) * 10, now=now,
+            venue="hyperliquid", contract="BTC", quote="USDC", asset="BTC",
+            horizon=5, reference_opened_at=opened, target_opened_at=target,
+            issued_at=issued, incumbent_up=0.6, baseline_up=0.45, pooled=pooled,
+        )
+        assert comp.issue(recorded, **arguments) == 54  # 52 pooled + 2 live
+        assert len(writes) == 2  # 50 rows + 4, never 54 roundtrips
+        assert comp.issue(recorded, **arguments) == 0
+        count = conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts"
+        ).fetchone()
+        assert count["n"] == 54

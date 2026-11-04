@@ -231,7 +231,10 @@ class LiveModelCheckpoints:
                     # The next cycle reloads the winning version.
                     self._checkpoint_cache.pop(identity, None)
                     raise RuntimeError("live checkpoint changed during fit; retry from database")
-            elif identity not in self._checkpoint_cache:
+            elif (cached is None or row["training_digest"] != cached[0]["training_digest"]
+                  or row["trained_at"] != cached[0]["trained_at"]):
+                # Another writer can commit identical weights at a newer time.
+                # Adopt that validated metadata even when no new labels exist.
                 self._cache_checkpoint(
                     identity,
                     {"training_digest": row["training_digest"],

@@ -1674,6 +1674,20 @@ class GuidedHome(discord.ui.View):
                             f"{pooled['value_bet_avg_return'] * 100:+.1f}¢ per $1 before "
                             "spread and fees"
                         )
+                kalshi = poly.get("kalshi") or {}
+                if kalshi.get("contracts"):
+                    k_verdict = ("better" if kalshi["model_brier"] < kalshi["market_brier"]
+                                 else "not better")
+                    poly_text += (
+                        f"\n**Kalshi 15-min (also Robinhood, Coinbase):** "
+                        f"{kalshi['contracts']:,} contracts, {k_verdict} than Kalshi's "
+                        f"prices (Brier {kalshi['model_brier']:.3f} vs "
+                        f"{kalshi['market_brier']:.3f})")
+                    if kalshi.get("value_bets"):
+                        poly_text += (
+                            f"; value bets {kalshi['value_bet_wins']}/{kalshi['value_bets']} "
+                            f"won, {kalshi['return_per_dollar_after_fees'] * 100:+.1f}¢ per $1 "
+                            "at real prices after Kalshi fees")
                 poly_text += f"\n**Past results learned from:** {learned:,} (not live predictions)"
                 if observed and not learned:
                     poly_text += (f"\n⚠️ {observed:,} contracts seen, but none of their "

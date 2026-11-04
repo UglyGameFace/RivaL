@@ -35,6 +35,7 @@ TABLES = (
     ("rival_polymarket_observations", "learned_at", (("", ()),)),
     ("rival_polymarket_model_forward", "issued_at", (("", ()),)),
     ("rival_poly_oracle_observations", "observed_at", (("", ()),)),
+    ("rival_kalshi_updown", "issued_at", (("", ()),)),
 )
 SETTLE_DELAY = timedelta(hours=3)  # 60-minute targets settle well inside this
 MAX_DAYS_PER_RUN = 3  # gentle on the database: about 70 day-files per day

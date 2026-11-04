@@ -2122,8 +2122,11 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(3600)
 
     async def _status_loop(self) -> None:
-        """Post the status card on start, on confirmed change, and daily."""
+        """Post the status card after startup settles, on confirmed change, and daily."""
         await self.wait_until_ready()
+        # Checks made seconds after a restart report startup noise (nothing
+        # pinged yet, database busy). Let the bot settle before the first card.
+        await asyncio.sleep(360)
         channel_id = self.settings.rival_status_channel_id
         channel = None
         while not self.is_closed():

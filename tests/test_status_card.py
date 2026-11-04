@@ -129,3 +129,19 @@ def test_prediction_health_alerts_change_the_card_signature():
     assert severity == "degraded" and "research:pooled:stale" in signature
     embed = build_embed(alert)[0]
     assert any(f.name == "Prediction health" and "stale" in f.value for f in embed.fields)
+
+
+def test_blocked_provider_is_shown_as_off_not_failing():
+    from datetime import UTC, datetime
+
+    from parlay_bot.discord_app.status_card import StatusFacts, assess, build_embed
+
+    now = datetime(2026, 11, 3, tzinfo=UTC)
+    facts = StatusFacts(now=now, boot_at=now, ready=True, incidents=[], research=[],
+                        feeds=[{"venue": "binance", "asset": "BTC", "status": "blocked",
+                                "last_success_at": None, "failure_count": 60},
+                               {"venue": "okx", "asset": "BTC", "status": "ok",
+                                "last_success_at": now.isoformat()}])
+    assert assess(facts)[0] == "healthy"
+    field = next(f for f in build_embed(facts)[0].fields if f.name == "Market data")
+    assert "1/1 exchange feeds fresh" in field.value and "off" in field.value

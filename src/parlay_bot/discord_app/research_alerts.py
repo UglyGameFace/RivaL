@@ -46,7 +46,10 @@ def research_alerts(store, *, now: datetime | None = None,
 
     # 1. Forecast cycles are still issuing.
     try:
-        newest = _utc(scalar("SELECT MAX(issued_at) FROM perp_forward_audit"))
+        # Indexed lookup (asset, horizon_minutes, issued_at); BTC 5-min is
+        # issued every cycle, so it is the cycle's own heartbeat.
+        newest = _utc(scalar("SELECT MAX(issued_at) FROM perp_forward_audit "
+                             "WHERE asset='BTC' AND horizon_minutes=5"))
         if newest is None or stamp - newest > FORECASTS_STALE_AFTER:
             alerts.append(("forecasts:stopped",
                            "🛑 No new forecasts for "
@@ -54,7 +57,8 @@ def research_alerts(store, *, now: datetime | None = None,
                            + " (cycles run every 5 min)"))
     except Exception:  # noqa: BLE001
         _LOG.warning("Research alert: forecast table unreadable")
-        alerts.append(("forecasts:unreadable", "⚠️ Forecast table unreadable"))
+        alerts.append(("forecasts:unreadable",
+                       "⚠️ Couldn't check forecasts (database busy); will re-check"))
 
     # 2. Nightly six-year model is fresh (training ran AND passed its gates).
     try:
@@ -66,8 +70,9 @@ def research_alerts(store, *, now: datetime | None = None,
             alerts.append(("pooled:stale",
                            (f"⚠️ Six-year model data is {_ago(stamp - trained)} old: "
                             "nightly training failed or missed its accuracy gates")))
-    except Exception:  # noqa: BLE001 - table appears after the first import
-        alerts.append(("pooled:none", "⚠️ No six-year model imported yet"))
+    except Exception:  # noqa: BLE001 - unreadable is not the same as missing
+        alerts.append(("pooled:unreadable",
+                       "⚠️ Couldn't check the six-year model (database busy)"))
 
     # 3. Live accuracy decay: the six-year model worse than the base rate.
     try:
@@ -99,6 +104,7 @@ def research_alerts(store, *, now: datetime | None = None,
                 alerts.append(("intelligence:stale",
                                "⚠️ RivaL Intelligence: no review for "
                                + (_ago(stamp - newest) if newest else "ever")))
-        except Exception:  # noqa: BLE001 - table appears with the first review
-            alerts.append(("intelligence:stale", "⚠️ RivaL Intelligence: no review yet"))
+        except Exception:  # noqa: BLE001 - unreadable is not the same as missing
+            alerts.append(("intelligence:unreadable",
+                           "⚠️ Couldn't check RivaL Intelligence (database busy)"))
     return alerts

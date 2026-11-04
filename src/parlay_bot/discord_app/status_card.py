@@ -98,6 +98,8 @@ def assess(facts: StatusFacts) -> tuple[str, tuple[str, ...]]:
     if facts.feeds is not None:
         for feed in facts.feeds:
             last = _parse(feed.get("last_success_at"))
+            if feed.get("status") == "blocked":
+                continue  # intentionally off (provider refuses this server)
             if last is None or now - last > STALE_FEED_AFTER:
                 keys.append(f"feed:{feed['venue']}/{feed['asset']}")
     if facts.streams:
@@ -164,19 +166,23 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
     if facts.feeds is None:
         feeds = "⚪ Market collection disabled or unreadable"
     else:
-        stale = []
+        stale, off = [], []
         for feed in facts.feeds:
             last = _parse(feed.get("last_success_at"))
+            if feed.get("status") == "blocked":
+                off.append(f"⚪ {feed['venue']}/{feed['asset']}: off (provider blocks this server)")
+                continue
             if last is None or now - last > STALE_FEED_AFTER:
                 stale.append(
                     f"• {feed['venue']}/{feed['asset']}: last data {_ago(last, now)}"
                     + (f", {feed['failure_count']} failures" if feed.get("failure_count")
                        else "")
                     + (f" ({feed['status']})" if feed.get("status") else ""))
-        fresh = len(facts.feeds) - len(stale)
-        summary = (f"{'✅' if not stale else '⚠️'} {fresh}/{len(facts.feeds)} "
+        active = len(facts.feeds) - len(off)
+        fresh = active - len(stale)
+        summary = (f"{'✅' if not stale else '⚠️'} {fresh}/{active} "
                    "exchange feeds fresh (<20 min)")
-        feeds = _clip([summary, *stale])
+        feeds = _clip([summary, *stale, *off])
     embed.add_field(name="Market data", value=feeds, inline=False)
 
     if facts.streams:

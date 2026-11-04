@@ -11,8 +11,9 @@ NOW = datetime(2026, 11, 3, 12, tzinfo=UTC)
 def _store(tmp_path, *, forecast_age, trained_age, review_age, pooled_scores):
     store = SQLiteHotStore(tmp_path / "alerts.sqlite")
     with store.connect() as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS perp_forward_audit (issued_at TEXT)")
-        conn.execute("INSERT INTO perp_forward_audit VALUES (?)",
+        conn.execute("CREATE TABLE IF NOT EXISTS perp_forward_audit "
+                     "(asset TEXT, horizon_minutes INTEGER, issued_at TEXT)")
+        conn.execute("INSERT INTO perp_forward_audit VALUES ('BTC', 5, ?)",
                      ((NOW - forecast_age).isoformat(),))
         conn.execute("""CREATE TABLE rival_pooled_models (trained_through TEXT,
                         gates_passed INTEGER)""")
@@ -63,5 +64,15 @@ def test_decay_needs_enough_graded_forecasts(tmp_path):
                    pooled_scores=[(.30, .25)] * 50)
     try:
         assert research_alerts(store, now=NOW) == []
+    finally:
+        store.close()
+
+
+def test_unreadable_tables_say_so_instead_of_claiming_missing(tmp_path):
+    store = SQLiteHotStore(tmp_path / "empty.sqlite")  # no tables at all
+    try:
+        keys = {key for key, _ in research_alerts(store, now=NOW)}
+        assert keys == {"forecasts:unreadable", "pooled:unreadable",
+                        "intelligence:unreadable"}
     finally:
         store.close()

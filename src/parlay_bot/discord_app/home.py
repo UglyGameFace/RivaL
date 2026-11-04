@@ -1667,7 +1667,14 @@ class GuidedHome(discord.ui.View):
                         f"contracts, {verdict} (Brier {pooled['model_brier']:.3f} vs "
                         f"{pooled['market_brier']:.3f})"
                     )
-                    if pooled.get("value_bets"):
+                    if pooled.get("real_value_bets"):
+                        poly_text += (
+                            f"; value bets {pooled['real_value_bet_wins']}/"
+                            f"{pooled['real_value_bets']} won, "
+                            f"{pooled['real_return_per_dollar_after_fees'] * 100:+.1f}¢ per $1 "
+                            "at real start prices after Polymarket's fee"
+                        )
+                    elif pooled.get("value_bets"):
                         poly_text += (
                             f"; when it disagreed by 5+ pts: {pooled['value_bet_wins']}/"
                             f"{pooled['value_bets']} won, "
@@ -1771,7 +1778,7 @@ class GuidedHome(discord.ui.View):
                 intel_text = (
                     f"\n**RivaL Intelligence (reviews the models):** now {now_call} for "
                     f"{self.horizon} min; last 7 days {followed}, {abstained}.\n"
-                    f"_{latest['thesis'][:200]}_"
+                    f"*{discord.utils.escape_markdown(str(latest['thesis'])[:200])}*"
                 )
             elif isinstance(intelligence, Exception):
                 intel_text = "\n**RivaL Intelligence:** cannot check right now"

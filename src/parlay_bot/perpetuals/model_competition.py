@@ -20,7 +20,10 @@ from parlay_bot.research.boosted_portable import predict_portable
 
 FAMILIES = ("gaussian_nb_v1", "knn21_v1")
 # Per-artifact challenger families (one name per trained model file).
-CHALLENGER_PREFIXES = ("boosted_", "historical_", "pooled_")
+# flow_ online challengers must be quote-shadowed like every other family:
+# without it they could never meet the 80% matched-quote promotion gate, and
+# their unquoted forecasts dragged the live quote_coverage check to ~55%.
+CHALLENGER_PREFIXES = ("boosted_", "historical_", "pooled_", "flow_")
 MIN_TRAIN = 80
 MAX_TRAIN = 480
 

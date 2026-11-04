@@ -202,3 +202,31 @@ def test_qualified_historical_watch_auto_serves_only_with_current_proof(
     assert reverted[0]["model_version"] == MODEL
     assert reverted[0]["probability_up"] == .52
     store.close()
+
+
+def test_flow_challenger_forecasts_get_source_matched_quotes(tmp_path):
+    """Every shadow family the coverage check counts must be quote-shadowed."""
+    store = SQLiteHotStore(tmp_path / "flow-quote.sqlite")
+    stamp = datetime(2026, 11, 1, 12, tzinfo=UTC)
+    monitor = ShadowModelCompetition(store)
+    monitor.initialize()
+    with store.connect() as conn:
+        assert monitor.issue(
+            conn, samples=[], features=(0.,) * 10, now=stamp,
+            venue="hyperliquid", contract="BTC", quote="USDC", asset="BTC",
+            horizon=5, reference_opened_at=stamp,
+            target_opened_at=stamp + timedelta(minutes=5),
+            issued_at=stamp, incumbent_up=.52, baseline_up=.50,
+            challengers=({"family": "flow_v2", "probability": .62,
+                          "training_rows": 300, "model_sha256": "c" * 64},),
+        ) == 1
+    entry = stamp + timedelta(seconds=20)
+    book = PerpReferenceBook(
+        asset="BTC", venue="hyperliquid", bid=100., ask=100.1,
+        bid_quantity=20., ask_quantity=20., exchange_at=entry, received_at=entry,
+    )
+    assert FamilyQuoteShadow(store).observe(book, now=entry + timedelta(seconds=1))["opened"] == 1
+    with store.connect() as conn:
+        quoted = conn.execute("SELECT family, challenger_side FROM rival_family_quote_shadow").fetchone()
+    assert quoted["family"] == "flow_v2" and quoted["challenger_side"] == "LONG"
+    store.close()

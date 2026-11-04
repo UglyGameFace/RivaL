@@ -89,3 +89,44 @@ def test_young_model_stays_near_the_up_rate():
     assert abs(young - 0.5) < 0.05  # 10 graded results earn almost no say
     seasoned = dict(strong, updates=3000, positives=1500)
     assert FlowChallenger.probability(seasoned, inputs) > 0.85
+
+
+def test_v2_adds_okx_coinbase_flow_and_spot_basis_beside_v1(tmp_path):
+    from parlay_bot.perpetuals.flow_challenger import FlowChallengerV2
+
+    store = _store(tmp_path)
+    try:
+        with store.connect() as conn:
+            start = NOW - timedelta(minutes=10)
+            for venue, mid, buy, sell in (("hyperliquid", 100.10, 6, 4),
+                                          ("okx", 100.05, 3, 1), ("coinbase", 100.00, 1, 3)):
+                conn.execute(
+                    """INSERT INTO perp_liquidity_5m (venue,asset,bucket_start,complete,
+                       book_samples,spread_bps_mean,spread_bps_max,mid_last,
+                       bid_depth_10bps_mean,ask_depth_10bps_mean,bid_depth_25bps_mean,
+                       ask_depth_25bps_mean,depth_25bps_covered_fraction,buy_trades,
+                       sell_trades,buy_volume,sell_volume,first_event_at,last_event_at,
+                       recorded_at) VALUES (?, 'BTC', ?, 1, 5, 1, 2, ?, 2, 2, 2, 2, 1, 1, 1,
+                       ?, ?, ?, ?, ?)""",
+                    (venue, start.isoformat(), mid, buy, sell, start.isoformat(),
+                     start.isoformat(), (NOW - timedelta(minutes=4)).isoformat()))
+        v2 = FlowChallengerV2(store)
+        vector = v2.asset_inputs(NOW, {"BTC"})["BTC"]
+        assert len(vector) == v2.n_flow == FLOW_FEATURES + 7
+        okx_flow, okx_book, spot_flow, spot_book, basis, has_okx, has_spot = vector[-7:]
+        assert okx_book == spot_book == 0.0  # balanced 2 vs 2 books
+        assert okx_flow == 0.5 and spot_flow == -0.5 and has_okx == has_spot == 1.0
+        assert abs(basis - (100.10 / 100.00 - 1) * 1e4 / 5) < 1e-9  # perp over spot, scaled
+        with store.connect() as conn:
+            call = v2.call(conn, venue="okx", contract="BTC-USDT-SWAP", quote="USDT",
+                           asset="BTC", horizon=5, reference_opened_at=NOW, issued_at=NOW,
+                           features=(0.0,) * 10, flow=vector)
+            v1_rows = conn.execute("SELECT COUNT(*) AS n FROM rival_flow_features").fetchone()["n"]
+        assert call["family"] == "flow_v2" and v1_rows == 0  # separate tables and model
+        with store.connect() as conn:  # v1 refuses a v2-length vector instead of mis-reading it
+            assert FlowChallenger(store).call(
+                conn, venue="okx", contract="BTC-USDT-SWAP", quote="USDT", asset="BTC",
+                horizon=5, reference_opened_at=NOW, issued_at=NOW,
+                features=(0.0,) * 10, flow=vector) is None
+    finally:
+        store.close()

@@ -58,6 +58,7 @@ class BinanceContextFeed:
         self._client = client
         self._bundles: dict[str, dict] = {}
         self.failures = 0
+        self.blocked_until: datetime | None = None  # Binance refused this host (HTTP 451)
 
     async def _get(self, path: str, params: dict):
         if self._client is None:
@@ -90,9 +91,24 @@ class BinanceContextFeed:
         }
         self._bundles[asset] = bundle
 
+    def available(self) -> bool:
+        return any(self.bundle(asset) for asset in ASSETS)
+
     async def refresh(self) -> None:
+        now = datetime.now(UTC)
+        if self.blocked_until is not None and now < self.blocked_until:
+            return
         results = await asyncio.gather(*(self.refresh_asset(a) for a in ASSETS),
                                        return_exceptions=True)
+        if all(isinstance(r, httpx.HTTPStatusError) and r.response.status_code == 451
+               for r in results):
+            if self.blocked_until is None:
+                _LOG.warning("Binance refuses this host (HTTP 451, region block): "
+                             "models that need Binance context fall back to price-only; "
+                             "re-checking every 6 hours")
+            self.blocked_until = now + timedelta(hours=6)
+            return
+        self.blocked_until = None
         failed = [a for a, r in zip(ASSETS, results) if isinstance(r, BaseException)]
         self.failures = self.failures + 1 if failed else 0
         if failed and self.failures in (1, 10) or (failed and self.failures % 120 == 0):

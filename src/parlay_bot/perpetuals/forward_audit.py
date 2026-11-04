@@ -167,11 +167,8 @@ class ForwardAccuracyMonitor:
 
     @staticmethod
     def _pooled_calls(pooled_set, horizon: int, vectors) -> list[dict]:
-        vector = (vectors or {}).get(horizon)
-        if pooled_set is None or vector is None:
-            return []
-        doc = pooled_set.active(horizon)
-        if doc is None:
+        doc, vector = (vectors or {}).get(horizon, (None, None))
+        if pooled_set is None or doc is None or vector is None:
             return []
         try:
             return [{"family": doc["_family"], "probability": pooled_probability(doc, vector),
@@ -711,14 +708,17 @@ class ForwardAccuracyMonitor:
                             btc_rows = btc_cache[venue]
                         if coin is not None:
                             context = getattr(self.market, "binance_context", None)
+                            bundle = context.bundle(coin) if context else None
                             # Per horizon: each active model gets the inputs
-                            # its own version was trained on.
+                            # its own version was trained on; without live
+                            # Binance context the price-only model serves.
                             pooled_vector = {
-                                h: model_vector(
+                                h: (doc, model_vector(
                                     doc, candles, asset=coin, btc_candles=btc_rows,
-                                    context=context.bundle(coin) if context else None)
+                                    context=bundle))
                                 for h in HORIZONS
-                                if (doc := pooled_set.active(h)) is not None
+                                if (doc := pooled_set.active(
+                                    h, context=bundle is not None)) is not None
                             }
                     except Exception:  # noqa: BLE001 - optional challenger only
                         _LOG.exception("RivaL pooled model inputs unavailable")

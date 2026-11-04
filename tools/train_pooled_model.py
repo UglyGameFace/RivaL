@@ -110,6 +110,15 @@ def main() -> int:
         passing = [c for c in candidates if c["gates_passed"]] or candidates
         doc = max(passing, key=lambda c: (c["evaluation"]["validation"]["brier_gain"],
                                           c["feature_version"] == FEATURE_VERSION))
+        # The price-only model is ALWAYS published too (when it passes): the
+        # bot serves it whenever live Binance context is unavailable.
+        fallback = next(c for c in candidates if c["feature_version"] == FEATURE_VERSION)
+        if fallback is not doc and fallback["gates_passed"]:
+            extra = args.out / (f"pooled-{horizon}m-{datetime.now(UTC):%Y%m%d}-"
+                                f"{model_sha256(fallback)[:12]}.json")
+            extra.write_text(json.dumps(fallback, sort_keys=True, separators=(",", ":")))
+            if extra.stat().st_size <= 2_200_000:
+                published.append(extra)
         path = args.out / f"pooled-{horizon}m-{datetime.now(UTC):%Y%m%d}-{model_sha256(doc)[:12]}.json"
         path.write_text(json.dumps(doc, sort_keys=True, separators=(",", ":")))
         size = path.stat().st_size

@@ -11,7 +11,7 @@ import json
 import math
 from datetime import UTC, datetime
 
-from parlay_bot.perpetuals.pooled_features import FEATURE_SETS
+from parlay_bot.perpetuals.pooled_features import FEATURE_SETS, FEATURE_VERSION
 
 SCHEMA = "rival-pooled-model-v1"
 MAX_TREES = 1000
@@ -121,6 +121,7 @@ class PooledModelSet:
         self.store = store
         self._ready = False
         self._active: dict[int, dict] = {}
+        self._fallback: dict[int, dict] = {}  # newest price-only (v1) model
         self._loaded_at: float | None = None
 
     def initialize(self) -> None:
@@ -160,18 +161,24 @@ class PooledModelSet:
         self._loaded_at = None
         return row.rowcount
 
-    def active(self, horizon: int, *, now: datetime | None = None) -> dict | None:
+    def active(self, horizon: int, *, now: datetime | None = None,
+               context: bool = True) -> dict | None:
+        """Newest usable model; without live context, the newest price-only one."""
         import time
 
         if self._loaded_at is None or time.monotonic() - self._loaded_at > self.REFRESH_SECONDS:
             self._reload(now)
-        return self._active.get(horizon)
+        doc = self._active.get(horizon)
+        if doc is not None and not context and doc.get("feature_version") != FEATURE_VERSION:
+            return self._fallback.get(horizon)
+        return doc
 
     def _reload(self, now) -> None:
         import time
 
         self.initialize()
         active: dict[int, dict] = {}
+        fallback: dict[int, dict] = {}
         with self.store.connect() as conn:
             rows = conn.execute(
                 """SELECT horizon_minutes, document FROM rival_pooled_models
@@ -179,7 +186,7 @@ class PooledModelSet:
             ).fetchall()
         for row in rows:
             horizon = int(row["horizon_minutes"])
-            if horizon in active:
+            if horizon in active and horizon in fallback:
                 continue
             try:
                 doc = validate(json.loads(row["document"]))
@@ -188,6 +195,9 @@ class PooledModelSet:
             if usable(doc, now=now):
                 clean = {k: v for k, v in doc.items() if not k.startswith("_")}
                 doc["_family"], doc["_sha256"] = family(clean), model_sha256(clean)
-                active[horizon] = doc
+                active.setdefault(horizon, doc)
+                if doc.get("feature_version") == FEATURE_VERSION:
+                    fallback.setdefault(horizon, doc)
         self._active = active
+        self._fallback = fallback
         self._loaded_at = time.monotonic()

@@ -433,40 +433,52 @@ class ForwardAccuracyMonitor:
         stamp = utc(now or datetime.now(UTC))
         with self.store.connect() as conn:
             rows = conn.execute(
-                """WITH latest_policy AS (
+                # Start from this coin's settled forecasts (~10k rows) and
+                # look each lineage row up by its primary key. Left to the
+                # planner, PostgreSQL misestimated these joins as 1 row and
+                # probed the forecast table once per lineage row of EVERY
+                # coin (40k probes, 2-5 s). MATERIALIZED fixes the order;
+                # the rows joined and the scores are unchanged.
+                """WITH fx AS MATERIALIZED (
+                    SELECT f.venue,f.contract,f.quote,f.reference_opened_at,
+                           f.issued_at,f.target_opened_at,f.model_brier,f.baseline_brier
+                    FROM perp_forward_audit f
+                    WHERE f.asset=? AND f.horizon_minutes=? AND f.model_version=?
+                      AND f.issued_at>=? AND f.issued_at<=? AND f.settled_at<=?
+                      AND f.settled_at>f.issued_at AND f.outcome_up IN (0,1)
+                      AND f.model_brier BETWEEN 0 AND 1
+                      AND f.baseline_brier BETWEEN 0 AND 1
+                ), fl AS MATERIALIZED (
+                    SELECT fx.venue,fx.contract,fx.quote,fx.target_opened_at,
+                           fx.model_brier,fx.baseline_brier,
+                           COALESCE(l.historical_seed_sha256,'') AS seed
+                    FROM fx JOIN rival_forward_model_lineage l ON l.venue=fx.venue
+                      AND l.contract=fx.contract AND l.quote=fx.quote
+                      AND l.horizon_minutes=? AND l.model_version=?
+                      AND l.reference_opened_at=fx.reference_opened_at
+                      AND l.issued_at=fx.issued_at
+                ), latest_policy AS MATERIALIZED (
                     SELECT venue,contract,quote,MAX(issued_at) AS issued_at
                     FROM rival_forward_model_lineage
                     WHERE model_version=? AND horizon_minutes=?
                       AND issued_at<=? AND issued_at>=?
                     GROUP BY venue,contract,quote
-                ), current_policy AS (
-                    SELECT l.venue,l.contract,l.quote,l.historical_seed_sha256
+                ), current_policy AS MATERIALIZED (
+                    SELECT l.venue,l.contract,l.quote,
+                           COALESCE(l.historical_seed_sha256,'') AS seed
                     FROM rival_forward_model_lineage l
                     JOIN latest_policy p ON p.venue=l.venue
                       AND p.contract=l.contract AND p.quote=l.quote
                       AND p.issued_at=l.issued_at
                     WHERE l.model_version=? AND l.horizon_minutes=?
                 ), per_venue AS (
-                    SELECT f.target_opened_at, f.venue,
-                           AVG(f.model_brier) AS model_brier,
-                           AVG(f.baseline_brier) AS baseline_brier
-                    FROM perp_forward_audit f
-                    JOIN rival_forward_model_lineage l ON l.venue=f.venue
-                      AND l.contract=f.contract AND l.quote=f.quote
-                      AND l.horizon_minutes=f.horizon_minutes
-                      AND l.model_version=f.model_version
-                      AND l.reference_opened_at=f.reference_opened_at
-                      AND l.issued_at=f.issued_at
-                    JOIN current_policy c ON c.venue=f.venue
-                      AND c.contract=f.contract AND c.quote=f.quote
-                      AND COALESCE(c.historical_seed_sha256,'')=
-                          COALESCE(l.historical_seed_sha256,'')
-                    WHERE f.asset=? AND f.horizon_minutes=? AND f.model_version=?
-                      AND f.issued_at>=? AND f.issued_at<=? AND f.settled_at<=?
-                      AND f.settled_at>f.issued_at AND f.outcome_up IN (0,1)
-                      AND f.model_brier BETWEEN 0 AND 1
-                      AND f.baseline_brier BETWEEN 0 AND 1
-                    GROUP BY f.target_opened_at, f.venue
+                    SELECT fl.target_opened_at, fl.venue,
+                           AVG(fl.model_brier) AS model_brier,
+                           AVG(fl.baseline_brier) AS baseline_brier
+                    FROM fl JOIN current_policy c ON c.venue=fl.venue
+                      AND c.contract=fl.contract AND c.quote=fl.quote
+                      AND c.seed=fl.seed
+                    GROUP BY fl.target_opened_at, fl.venue
                 )
                 SELECT target_opened_at, AVG(model_brier) AS model_brier,
                        AVG(baseline_brier) AS baseline_brier,
@@ -478,9 +490,11 @@ class ForwardAccuracyMonitor:
                 -- cannot outweigh another venue's worse predictions.
                 GROUP BY target_opened_at
                 ORDER BY target_opened_at""",
-                (MODEL, horizon_minutes, stamp.isoformat(), (stamp-timedelta(days=14)).isoformat(),
-                 MODEL, horizon_minutes, asset, horizon_minutes, MODEL,
-                 (stamp-timedelta(days=14)).isoformat(), stamp.isoformat(), stamp.isoformat()),
+                (asset, horizon_minutes, MODEL, (stamp-timedelta(days=14)).isoformat(),
+                 stamp.isoformat(), stamp.isoformat(),
+                 horizon_minutes, MODEL,
+                 MODEL, horizon_minutes, stamp.isoformat(), (stamp-timedelta(days=14)).isoformat(),
+                 MODEL, horizon_minutes),
             ).fetchall()
         aligned = [r for r in rows if
                    int(datetime.fromisoformat(r["target_opened_at"]).timestamp()) %

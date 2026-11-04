@@ -83,6 +83,10 @@ class FlowChallenger:
     def __init__(self, store) -> None:
         self.store = store
         self._ready = False
+        # One instance serves one forecast cycle. Weights only change in
+        # learn(), which runs after every forecast of the cycle is issued, so
+        # each (asset, horizon) state is read once per cycle, not per forecast.
+        self._states: dict[tuple[str, int], dict] = {}
 
     def initialize(self) -> None:
         if self._ready:
@@ -194,7 +198,10 @@ class FlowChallenger:
             (venue, contract, quote, horizon, reference_opened_at.isoformat(),
              asset, issued_at.isoformat(), json.dumps(inputs, separators=(",", ":"))),
         )
-        state = self._state(conn, asset, horizon)
+        key = (asset, horizon)
+        if key not in self._states:
+            self._states[key] = self._state(conn, asset, horizon)
+        state = self._states[key]
         return {
             "family": self.family,
             "probability": self.probability(state, inputs),
@@ -246,6 +253,7 @@ class FlowChallenger:
                      row["horizon_minutes"], row["reference_opened_at"]),
                 )
             stamp = now.astimezone(UTC).isoformat()
+            self._states.clear()  # new weights: never serve a stale copy
             for (asset, horizon), state in states.items():
                 conn.execute(
                     f"""INSERT INTO {self.state_table}

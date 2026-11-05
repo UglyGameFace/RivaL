@@ -367,44 +367,29 @@ async def test_guided_results_uses_strict_source_matched_cost_proof(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_old_and_new_profit_commands_use_same_strict_view(tmp_path):
+async def test_menus_reach_what_the_removed_commands_did(tmp_path):
+    """The removed /rival-tools proof and target commands stay reachable in /rival."""
     from unittest.mock import Mock
-
-    from discord import app_commands
 
     bot = _client(tmp_path)
     shadow = Mock()
     shadow.report.return_value = {
-        "status": "NOT_PROVEN", "asset": "BTC", "horizon_minutes": 5,
-        "eligible_windows": 7, "entries": 3, "closed": 2,
-        "missed_exits": 1, "coverage": 2 / 7, "days": 1,
-        "costs": {
-            "conservative": {
-                "assumed_extra_cost_bps": 14,
-                "mean_net_bps": -3, "daily_lower_bps": None,
-            },
-            "severe": {
-                "assumed_extra_cost_bps": 80,
-                "mean_net_bps": -69, "daily_lower_bps": None,
-            },
-        },
+        "status": "NOT_PROVEN", "closed": 2, "eligible_windows": 7, "days": 1,
+        "costs": {"severe": {"mean_net_bps": -69}},
     }
-    bot.stream_shadow = shadow
+    home = _home(bot)
+    home.stream_shadow = shadow
     try:
-        coin = app_commands.Choice(name="BTC", value="BTC")
-        horizon = app_commands.Choice(name="5 minutes", value=5)
-        views = []
-        for name in ("stream-proof", "profit-proof"):
-            i = _interaction()
-            await bot.tree.get_command("rival-tools").get_command(name).callback(i, coin, horizon)
-            i.response.defer.assert_awaited_once_with(
-                ephemeral=True, thinking=True,
-            )
-            views.append(i.edit_original_response.await_args.kwargs["embed"].to_dict())
-        assert views == [views[0], views[0]]
-        assert "NOT_PROVEN" in str(views[0])
-        assert "No real-money profit" in str(views[0])
-        assert shadow.report.call_count == 2
+        i = _interaction()
+        await home.act(i, "help")
+        assert "Advanced Tools" in _labels(home)
+        await home.act(i, "advanced")
+        assert "Manual Price Target" in _labels(home)
+        await home.act(i, "performance")
+        assert "After-Cost Check" in _labels(home)
+        await home.act(i, "proof")
+        assert shadow.report.call_count == 1
+        assert "NOT_PROVEN" in home.note and "NOT PROVEN" in home.note
     finally:
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()

@@ -42,7 +42,7 @@ async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) ->
         recorded = await home.render()
         after = _fields(recorded)["📡 Is everything running?"]
         assert "Prediction cycle:" in after
-        assert "0 predictions recorded" in after
+        assert "made 0 predictions" in after
         assert "No check recorded" not in after
     finally:
         home.stop()
@@ -125,7 +125,7 @@ async def test_feed_read_failure_does_not_hide_recorded_cycle(tmp_path, monkeypa
         status = _fields(embed)["📡 Is everything running?"]
         assert "Price feeds:** couldn't check right now" in status
         assert "Prediction cycle:" in status
-        assert "0 predictions recorded" in status
+        assert "made 0 predictions" in status
         assert len(embed.fields) == 4
     finally:
         home.stop()

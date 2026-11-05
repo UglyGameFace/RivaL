@@ -116,6 +116,8 @@ from parlay_bot.storage.hot import PostgresHotStore, RelationalHotStore, SQLiteH
 from parlay_bot.storage.startup import initialize_with_dns_recovery
 
 _LOG = logging.getLogger(__name__)
+# Optional bulk workers start after the post-restart burst (see _after_startup_burst).
+STARTUP_QUIET_PERIOD = timedelta(minutes=5)
 
 
 def build_hot_store(settings: Settings) -> RelationalHotStore:
@@ -2881,7 +2883,7 @@ class RivalDiscordClient(discord.Client):
     async def _history_loop(self) -> None:
         """Low-priority history repair; live feeds and predictions never wait."""
         await self.wait_until_ready()
-        await asyncio.sleep(20)
+        await self._after_startup_burst()
         last_audited_hour: int | None = None
         # Backfills are bulk research, not a live signal dependency. The old
         # loop ran nine providers x four assets in one startup burst, holding
@@ -3234,6 +3236,7 @@ class RivalDiscordClient(discord.Client):
                 # unpublished). It only feeds a one-time log line, so it runs
                 # beside the watchdog instead of inside it.
                 if (self.autonomous is not None and self.stream_shadow is not None
+                        and now - self._boot_at >= STARTUP_QUIET_PERIOD
                         and not self._health_acceptance_seen
                         and (self._acceptance_log_task is None
                              or self._acceptance_log_task.done())):
@@ -3326,9 +3329,24 @@ class RivalDiscordClient(discord.Client):
             ),
         }
 
+    async def _after_startup_burst(self) -> None:
+        """Hold optional bulk work until the post-restart burst has passed.
+
+        For ~4 minutes after each restart every worker warms up at once
+        (cold forecast fits, model reloads) while the Discord gateway
+        resumes. On Nov 5 that burst stalled the event loop 25-46 times
+        (>1 s) and once put the gateway 41.9 s behind; a command sent then
+        could fail. Archive copies, history repair and the one-time
+        acceptance receipt (22 s of SQL) gain nothing from running in it.
+        """
+        wait = (self._boot_at + STARTUP_QUIET_PERIOD - datetime.now(UTC)).total_seconds()
+        if wait > 0:
+            await asyncio.sleep(wait)
+
     async def _archive_loop(self) -> None:
         await self.wait_until_ready()
         assert self.archive_runtime is not None
+        await self._after_startup_burst()
 
         while not self.is_closed():
             if host_memory.snapshot().pressure:

@@ -8,7 +8,7 @@ on:
       mode:
         description: "counts = database counts; render = text of every Research page"
         type: choice
-        options: [counts, render, logs]
+        options: [counts, render, logs, llm-bench, llm-read, llm-logs]
         default: counts
       since:
         description: "counts mode: only measure issue timing from this ISO time (UTC)"
@@ -52,6 +52,37 @@ jobs:
               with request.urlopen(req, timeout=500) as response:
                   data = json.load(response)
               return data.get("apps", {}).get("shell", {})
+          LLM_APP = "1793549637375"  # RivaL-Intelligence (TEMP probe branch only)
+          def console(app, cmd):
+              req = request.Request(
+                  "https://api.discloud.app/v2/app/" + app + "/console",
+                  data=json.dumps({"command": cmd}).encode(),
+                  headers={"api-token": os.environ["DISCLOUD_TOKEN"],
+                           "Content-Type": "application/json"}, method="PUT")
+              with request.urlopen(req, timeout=500) as response:
+                  return json.load(response).get("apps", {}).get("shell", {})
+          if os.environ["MODE"] == "llm-bench":
+              bench = base64.b64encode(gzip.compress(pathlib.Path("tools/llm_reasoning_bench.py").read_bytes())).decode()
+              ev = base64.b64encode(gzip.compress(pathlib.Path("tools/bench_evidence.json").read_bytes())).decode()
+              cmd = ("python -c \"import base64,gzip,subprocess,sys;"
+                     f"open('/tmp/rb.py','wb').write(gzip.decompress(base64.b64decode('{bench}')));"
+                     f"subprocess.Popen([sys.executable,'/tmp/rb.py','{ev}'],start_new_session=True,"
+                     "stdout=subprocess.DEVNULL,stderr=open('/tmp/rb.err','w'));print('started')\"")
+              shell = console(LLM_APP, cmd)
+              print("stdout:", str(shell.get("stdout", ""))[-300:], "stderr:", str(shell.get("stderr", ""))[-600:])
+              raise SystemExit(0)
+          if os.environ["MODE"] == "llm-read":
+              shell = console(LLM_APP, "python -c \"import pathlib;p=pathlib.Path('/tmp/rival_reasoning_bench.json');e=pathlib.Path('/tmp/rb.err');print('BENCH='+(p.read_text() if p.exists() else '{}'));print('ERR='+(e.read_text()[-800:] if e.exists() else ''))\"")
+              print(str(shell.get("stdout", ""))[-60000:]); print("stderr:", str(shell.get("stderr", ""))[-600:])
+              raise SystemExit(0)
+          if os.environ["MODE"] == "llm-logs":
+              req = request.Request("https://api.discloud.app/v2/app/" + LLM_APP + "/logs",
+                                    headers={"api-token": os.environ["DISCLOUD_TOKEN"]})
+              with request.urlopen(req, timeout=60) as response:
+                  data = json.load(response)
+              apps = data.get("apps"); app = apps[0] if isinstance(apps, list) else apps or {}
+              print("\n".join(str((app.get("terminal") or {}).get("big") or "").splitlines()[-150:]))
+              raise SystemExit(0)
           if os.environ["MODE"] == "logs":
               import re
               req = request.Request(

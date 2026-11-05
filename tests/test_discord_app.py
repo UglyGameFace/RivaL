@@ -301,8 +301,8 @@ async def test_opportunities_are_default_not_history_on_research_view(tmp_path) 
     assert "rival:research:opportunities" in buttons
     assert "rival:research:accuracy" in buttons
     displayed = (await view.render()).to_dict()
-    assert "Opportunity Desk" in displayed["title"]
-    assert "PASS" in displayed["description"]
+    assert "right now" in displayed["title"]
+    assert "No, not yet" in displayed["description"]
 
 
 

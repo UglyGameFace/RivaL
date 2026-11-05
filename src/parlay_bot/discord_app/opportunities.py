@@ -343,15 +343,17 @@ def crypto_desk_embed(
         raise ValueError("unknown asset")
     stamp = now or datetime.now(UTC)
     embed = discord.Embed(
-        title=f"RivaL • {asset} Opportunity Desk",
-        description="**Decision: PASS on real-money entries** until a forward-tested, after-cost edge qualifies. Live model watches are not buy/sell orders.",
+        title=f"RivaL • {asset} right now",
+        description=("**Should you trade on this? No, not yet.** RivaL hasn't proven it "
+                     "makes money after fees. These are its current guesses to watch, "
+                     "not buy or sell advice."),
         color=discord.Color.orange(),
         timestamp=stamp,
     )
     if market is None:
         embed.add_field(
             name="⛔ Data unavailable",
-            value="Live PostgreSQL collection is not connected. No entry or price inferred.",
+            value="The live price database isn't connected, so nothing is shown.",
             inline=False,
         )
         return embed
@@ -360,33 +362,33 @@ def crypto_desk_embed(
     except Exception:  # noqa: BLE001 - hide backend errors from users
         # Do not leak DB credentials or provider responses into a Discord embed.
         embed.add_field(
-            name="⛔ Cannot verify live data",
-            value="Forecast ledger or venue prices unavailable. PASS until restored.",
+            name="⛔ Couldn't load live data",
+            value="Predictions or prices couldn't be read right now. Try again shortly.",
             inline=False,
         )
         return embed
     if not watches:
         embed.add_field(
-            name="⏳ No qualified live watch",
-            value="No *fresh, unexpired* pre-outcome prediction from an actively collecting exchange. PASS. Collection and learning continue automatically.",
+            name="⏳ Nothing to watch right now",
+            value="There's no recent prediction that is still open. RivaL keeps collecting prices and learning in the background.",
             inline=False,
         )
     for watch in watches:
         # Scores below belong to the live model only; say so when a watch
         # comes from a different (unproven) model version.
-        other = (f" • model {str(watch.get('model_version'))[:28]} (no track record)"
+        other = (f" • test model {str(watch.get('model_version'))[:28]} (no track record yet)"
                  if watch.get("model_version") not in (None, LIVE_MODEL) else "")
         embed.add_field(
-            name=(f"👀 {watch['direction']} watch • {watch['horizon_minutes']}m • "
+            name=(f"👀 Leans {watch['direction']} • next {watch['horizon_minutes']} min • "
                   f"{watch['venue']}{other}")[:256],
             value=(
-                f"Last completed candle: **{_cash(watch['price'])}** "
+                f"Price at the last finished candle: **{_cash(watch['price'])}** "
                 f"({discord.utils.format_dt(watch['price_observed_at'], style='R')})\n"
-                f"Raw model probability for {watch['direction']}: **{watch['direction_probability']:.1%}** "
-                "(not profit-calibrated)\n"
-                f"Issued {discord.utils.format_dt(watch['issued'], style='R')} · "
-                f"Result known {discord.utils.format_dt(watch['target'] + timedelta(minutes=5), style='R')}\n"
-                "**Action: WATCH, not an approved entry.**"
+                f"How sure it is: **{watch['direction_probability']:.1%}** chance of "
+                f"{watch['direction']} (its own estimate; not proven accurate)\n"
+                f"Made {discord.utils.format_dt(watch['issued'], style='R')} · "
+                f"Answer known {discord.utils.format_dt(watch['target'] + timedelta(minutes=5), style='R')}\n"
+                "**Just watch: this is not a signal to trade.**"
             ),
             inline=False,
         )
@@ -397,30 +399,30 @@ def crypto_desk_embed(
                 info = report["last_7d"][horizon]
                 decided = info["settled"]
                 edge = info["model_beats_baseline"]
-                verdict = ("Beating the basic forecast" if edge is True
-                           else "Not beating the basic forecast" if edge is False
-                           else "Not enough independent proof")
+                verdict = ("Doing better than a simple guess" if edge is True
+                           else "Not doing better than a simple guess" if edge is False
+                           else "Too early to tell")
                 period = "Last 7 days"
                 try:
                     first = datetime.fromisoformat(str(info.get("first_issued")))
                     if first.tzinfo is not None and stamp - first < timedelta(days=6, hours=12):
-                        period = f"Since {first:%b %d} (model went live)"
+                        period = f"Since {first:%b %d} (when this model started)"
                 except (TypeError, ValueError):
                     pass
                 embed.add_field(
-                    name=f"{period} • {horizon}m • live model",
+                    name=f"{period} • {horizon}-min predictions • current model",
                     value=(
-                        f"Graded predictions: **{decided:,}** · "
-                        f"Hit rate: **{info['hit_rate']:.1%}** "
+                        f"Scored: **{decided:,}** · "
+                        f"Right: **{info['hit_rate']:.1%}** "
                         if info["hit_rate"] is not None else
-                        f"Graded predictions: **{decided:,}** · No reliable hit rate"
-                    ) + f"\n**{verdict}**. Overlapping events and costs not yet cleared.",
+                        f"Scored: **{decided:,}** · Not enough to give a % yet"
+                    ) + f"\n**{verdict}**. Trading fees aren't counted here.",
                     inline=False,
                 )
         except Exception:  # noqa: BLE001 - safe failure on unavailable DB
-            embed.add_field(name="Forward proof", value="Unable to verify scores.", inline=False)
+            embed.add_field(name="Track record", value="Couldn't load the scores right now.", inline=False)
     embed.set_footer(
-        text="Read-only • Prices are last completed candles, not executable quotes • No automatic orders"
+        text="Look only • Prices are from the last finished candle, not live order prices • No trades are placed"
     )
     return embed
 
@@ -435,8 +437,8 @@ def sportsbook_desk_embed(
             platform="discord", user_id=user_id, leg_count=1, risk=RiskMode.BALANCED,
         )
     except ParlayBuildError as exc:
-        embed.description = "**Decision: PASS**\n" + str(exc)
-        embed.set_footer(text="Live prices or verified sportsbook availability required.")
+        embed.description = "**No pick right now (PASS)**\n" + str(exc)
+        embed.set_footer(text="Needs live odds from a sportsbook in your state.")
         return embed
     leg = slip.legs[0]
     line = f" · Line **{leg.line_value:g}**" if leg.line_value is not None else ""
@@ -446,20 +448,19 @@ def sportsbook_desk_embed(
         f"At **{display_book(slip.bookmaker)}** · "
         f"Odds **{leg.price_american or f'{leg.price_decimal:.2f}'}** "
         f"({leg.price_decimal:.2f} decimal)\n"
-        f"Cross-book no-vig estimate **{leg.market_fair_probability:.1%}** · "
-        f"Indicative ROI at that price **{leg.price_edge:+.1%}**\n"
-        f"**Compare price before placing anything.** This is a screened quotation, "
-        "not a verified profitable bet."
+        f"Chance it wins, based on all sportsbooks' odds: **{leg.market_fair_probability:.1%}** · "
+        f"Expected return at this price: **{leg.price_edge:+.1%}** (an estimate)\n"
+        f"**Check the price yourself before betting.** This is a price that looks "
+        "good on paper, not a proven winning bet."
     )
     embed.add_field(
-        name="Decision check",
+        name="Why it was picked",
         value=(
-            f"Price screen: ≥2% indicative edge · "
-            f"{leg.reference_books} independent reference price samples. "
-            "No bet is placed for you."
+            f"Its price looks at least 2% better than the average across "
+            f"{leg.reference_books} other sportsbooks. No bet is placed for you."
         ), inline=False,
     )
     embed.set_footer(
-        text="Jurisdiction-filtered • No-vig market consensus ≠ proven prediction • Prices can change"
+        text="Only sportsbooks in your state • The odds' consensus isn't a guarantee • Prices can change"
     )
     return embed

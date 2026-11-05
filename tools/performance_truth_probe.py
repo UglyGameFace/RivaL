@@ -32,6 +32,16 @@ def probe() -> dict:
                                 (now - timedelta(minutes=45)).isoformat())
             out["cycles"] = q("""SELECT completed_at, math_ok, model_review_ok FROM perp_learning_cycle_health
                                  ORDER BY completed_at DESC LIMIT 3""")
+            out["liquidity"] = q("""SELECT venue, bucket_start, SUM(book_samples) AS books,
+                                     SUM(buy_trades+sell_trades) AS trades, COUNT(*) AS assets
+                                  FROM perp_liquidity_5m WHERE bucket_start>=?
+                                  GROUP BY venue, bucket_start ORDER BY bucket_start DESC, venue LIMIT 40""",
+                                 (now - timedelta(hours=3)).isoformat())
+            out["stream_errors"] = q("""SELECT hour, SUM(count) AS n, MAX(text) AS text FROM rival_problem_log
+                                        WHERE hour>=? AND (text LIKE '%stream%' OR text LIKE '%stale%'
+                                          OR text LIKE '%Hyperliquid%' OR text LIKE '%hyperliquid%')
+                                        GROUP BY hour, template ORDER BY hour DESC LIMIT 20""",
+                                     (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:00:00+00:00"))
             out["boots"] = q("SELECT started_at FROM rival_runtime_health_boots ORDER BY started_at DESC LIMIT 2")
     finally:
         store.close()

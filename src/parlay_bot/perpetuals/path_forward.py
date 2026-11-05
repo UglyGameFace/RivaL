@@ -37,6 +37,42 @@ def _sigma(candles, index: int, steps: int) -> float:
     return max(.0001, min(.25, statistics.pstdev(returns)*math.sqrt(steps)))
 
 
+def prune_path_memo(memo: dict, candles) -> None:
+    """Drop samples whose volatility window starts before this read."""
+    if not candles:
+        memo.clear()
+        return
+    first = candles[0].opened_at
+    for key in [key for key in memo if key[0] < first]:
+        del memo[key]
+
+
+def _reference_samples(candles, index: int, steps: int, ahead) -> tuple:
+    """(side, sample) pairs for one matured reference bar; () if unusable."""
+    try:
+        vol = _sigma(candles, index, steps)
+    except ValueError:
+        return ()
+    reference = candles[index]
+    entry = float(reference.close_price)
+    movement = math.log(entry / float(candles[index-3].close_price))
+    bars = [{"high": c.high_price, "low": c.low_price} for c in ahead]
+    out = []
+    for side in SIDES:
+        flags = trace_barriers(
+            entry=entry, sigma_horizon=vol, side=side, future=bars,
+        )
+        if flags is None:
+            continue
+        sign = 1 if side == "long" else -1
+        realized = sign*math.log(float(ahead[-1].close_price)/entry)
+        out.append((side, (
+            utc(reference.opened_at).isoformat(),
+            bool(sign*movement >= 0), flags[0], flags[1], realized,
+        )))
+    return tuple(out)
+
+
 def _quantile(values, p):
     sequence = sorted(values)
     at = (len(sequence)-1)*p
@@ -44,13 +80,22 @@ def _quantile(values, p):
     return sequence[lower]*(upper-at) + sequence[upper]*(at-lower) if upper != lower else sequence[lower]
 
 
-def empirical_paths(candles, *, horizon: int, now: datetime):
+def empirical_paths(candles, *, horizon: int, now: datetime, memo: dict | None = None):
     """Both sides' source-specific priors from past matured NONOVERLAP paths.
 
     The aligned/trend bucket is fixed using only information known at each
     reference bar, not hindsight labels or market regimes selected after test.
     Historical periods with late first observations are not *forward proof*,
     but may train a prior after their data is actually known.
+
+    ``memo``: pass the same dict each cycle for ONE stream and horizon. A
+    reference bar's samples depend only on the bars from its volatility window
+    to the end of its path, which never change once stored; they are keyed by
+    the first and last of those bars, so the 1,000-bar read can slide forward
+    without recomputing them. The reference grid is a ``steps``-wide stride
+    from the start of the read, so a bar recurs every ``steps`` cycles: keep
+    the dict whole and trim it with prune_path_memo(). The causality checks
+    below still run every call.
     """
     if horizon not in HORIZONS:
         return {}
@@ -80,25 +125,16 @@ def empirical_paths(candles, *, horizon: int, now: datetime):
                or utc(item.closed_at) >= instant or utc(item.observed_at) > instant
                for j,item in enumerate(ahead)):
             continue
-        try:
-            vol = _sigma(candles,index,steps)
-        except ValueError:
-            continue
-        entry = float(reference.close_price)
-        movement = math.log(entry / float(candles[index-3].close_price))
-        bars = [{"high":c.high_price,"low":c.low_price} for c in ahead]
-        for side in SIDES:
-            flags = trace_barriers(
-                entry=entry, sigma_horizon=vol, side=side, future=bars,
-            )
-            if flags is None:
-                continue
-            sign = 1 if side=="long" else -1
-            realized = sign*math.log(float(ahead[-1].close_price)/entry)
-            side_samples[side].append((
-                utc(reference.opened_at).isoformat(),
-                bool(sign*movement >= 0), flags[0], flags[1], realized,
-            ))
+        key = (candles[index-LOOKBACK].opened_at, reference.opened_at,
+               ahead[-1].opened_at if ahead else None, steps)
+        if memo is not None and key in memo:
+            samples = memo[key]
+        else:
+            samples = _reference_samples(candles, index, steps, ahead)
+            if memo is not None:
+                memo[key] = samples
+        for side, sample in samples:
+            side_samples[side].append(sample)
     if not all(len(rows) >= MIN_TRAIN for rows in side_samples.values()):
         return {}
     current_movement = math.log(
@@ -173,7 +209,10 @@ class ProspectivePathLedger:
                 ON rival_forward_paths(asset,horizon_minutes,side,issued_at);
             """)
 
-    def issue(self, conn, *, candles, asset, horizon, now, issued_at):
+    def issue(self, conn, *, candles, asset, horizon, now, issued_at, options=None):
+        """Insert both sides' path forecasts. ``options``: empirical_paths()
+        for the same candles, horizon and ``now``, computed before the caller's
+        transaction opened; computed here when not given (same result)."""
         if horizon not in HORIZONS:
             return 0
         now,issued_at=utc(now),utc(issued_at)
@@ -181,7 +220,8 @@ class ProspectivePathLedger:
         if (issued_at < utc(last.observed_at)
                 or issued_at >= utc(last.opened_at)+timedelta(minutes=10)):
             return 0
-        options=empirical_paths(candles,horizon=horizon,now=now)
+        if options is None:
+            options=empirical_paths(candles,horizon=horizon,now=now)
         if not options:
             return 0
         # The path starts with the next complete candle AFTER issuance

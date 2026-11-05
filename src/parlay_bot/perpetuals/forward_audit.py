@@ -29,7 +29,11 @@ from parlay_bot.perpetuals.markets import ASSETS, asset_for_contract
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.perpetuals.model_checkpoints import LiveModelCheckpoints
 from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
-from parlay_bot.perpetuals.path_forward import ProspectivePathLedger
+from parlay_bot.perpetuals.path_forward import (
+    ProspectivePathLedger,
+    empirical_paths,
+    prune_path_memo,
+)
 from parlay_bot.perpetuals.pooled_features import model_vector
 from parlay_bot.perpetuals.pooled_model import PooledModelSet
 from parlay_bot.perpetuals.pooled_model import probability as pooled_probability
@@ -772,6 +776,12 @@ class ForwardAccuracyMonitor:
             self.market._window_feature_memos = window_memos
         while len(window_memos) > MAX_STREAMS_PER_CYCLE * 2:
             window_memos.pop(next(iter(window_memos)))
+        path_memos = getattr(self.market, "_path_sample_memos", None)
+        if path_memos is None:
+            path_memos = {}
+            self.market._path_sample_memos = path_memos
+        while len(path_memos) > MAX_STREAMS_PER_CYCLE * 4:
+            path_memos.pop(next(iter(path_memos)))
         for venue, contract, quote in selection:
             try:
                 mark = self._mark()
@@ -913,6 +923,19 @@ class ForwardAccuracyMonitor:
                             samples, features, now=stamp)
                     except Exception:  # noqa: BLE001 - optional challenger
                         shadow_prepared = None  # issue() recomputes and isolates it
+                    # Path priors likewise: CPU work, before the transaction,
+                    # with each reference bar's samples carried across cycles.
+                    path_options = None
+                    if path_ready and horizon in (15, 60):
+                        memo_key = (venue, contract, quote, horizon)
+                        path_memo = path_memos.pop(memo_key, None) or {}
+                        try:
+                            path_options = empirical_paths(
+                                candles, horizon=horizon, now=stamp, memo=path_memo)
+                        except Exception:  # noqa: BLE001 - issue() recomputes and isolates it
+                            path_options = None
+                        prune_path_memo(path_memo, candles)
+                        path_memos[memo_key] = path_memo
                     with self.store.connect() as conn:
                         record = conn.execute(
                             """INSERT INTO perp_forward_audit (
@@ -1011,6 +1034,7 @@ class ForwardAccuracyMonitor:
                                     ProspectivePathLedger(self.store).issue(
                                         conn, candles=candles, asset=asset,
                                         horizon=horizon, now=stamp, issued_at=issued_at,
+                                        options=path_options,
                                     )
                                 except Exception:  # noqa: BLE001 - optional path learner
                                     conn.execute("ROLLBACK TO SAVEPOINT rival_path_shadow")

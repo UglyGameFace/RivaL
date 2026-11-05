@@ -27,6 +27,8 @@ CHALLENGER_PREFIXES = ("boosted_", "historical_", "pooled_", "flow_", "calib_")
 MIN_TRAIN = 80
 MAX_TRAIN = 480
 SETTLE_BATCH = 240
+# Rows per set-based UPDATE: 6 key columns each, 600 + 8 parameters (SQLite allows 999).
+SETTLE_UPDATE_CHUNK = 100
 
 
 def _probability(value: float) -> float:
@@ -338,7 +340,12 @@ class ShadowModelCompetition:
                    ORDER BY s.target_opened_at LIMIT {SETTLE_BATCH}""",
                 params,
             ).fetchall()
-            total = 0
+            # Validate per row exactly as before, then write in a few set-based
+            # UPDATEs instead of one network round trip per shadow row. Rows
+            # graded together share the incumbent's settlement time and outcome;
+            # each row's Brier scores are computed from its own stored
+            # probabilities, the same arithmetic the per-row update did.
+            groups: dict[tuple[str, int], list[tuple]] = {}
             for row in rows:
                 # Reject impossible pre-close settlements even when a legacy
                 # row incorrectly marks its incumbent as settled.
@@ -350,21 +357,28 @@ class ShadowModelCompetition:
                         continue
                 except (TypeError, ValueError, OverflowError):
                     continue
-                y = int(row["verified_outcome_up"])
-                update = conn.execute(
-                    """UPDATE rival_model_shadow_forecasts SET settled_at=?,
-                        outcome_up=?,model_brier=?,incumbent_brier=?,baseline_brier=?
-                       WHERE venue=? AND contract=? AND quote=?
-                        AND horizon_minutes=? AND family=?
-                        AND reference_opened_at=? AND settled_at IS NULL""",
-                    (row["verified_settled_at"],y,
-                     (row["probability_up"]-y)**2,
-                     (row["incumbent_up"]-y)**2,
-                     (row["baseline_up"]-y)**2,
-                     row["venue"],row["contract"],row["quote"],
-                     row["horizon_minutes"],row["family"],row["reference_opened_at"]),
-                )
-                total += int(update.rowcount == 1)
+                groups.setdefault(
+                    (str(row["verified_settled_at"]), int(row["verified_outcome_up"])), [],
+                ).append((row["venue"], row["contract"], row["quote"],
+                          row["horizon_minutes"], row["family"], row["reference_opened_at"]))
+            total = 0
+            match = ("(venue=? AND contract=? AND quote=? AND horizon_minutes=? "
+                     "AND family=? AND reference_opened_at=?)")
+            for (settled_at, y), keys in groups.items():
+                for offset in range(0, len(keys), SETTLE_UPDATE_CHUNK):
+                    chunk = keys[offset:offset + SETTLE_UPDATE_CHUNK]
+                    update = conn.execute(
+                        """UPDATE rival_model_shadow_forecasts SET settled_at=?,
+                            outcome_up=?,
+                            model_brier=(probability_up-?)*(probability_up-?),
+                            incumbent_brier=(incumbent_up-?)*(incumbent_up-?),
+                            baseline_brier=(baseline_up-?)*(baseline_up-?)
+                           WHERE settled_at IS NULL AND ("""
+                        + " OR ".join(match for _ in chunk) + ")",
+                        (settled_at, y, y, y, y, y, y, y,
+                         *(value for key in chunk for value in key)),
+                    )
+                    total += update.rowcount
             return total, total == len(rows)
 
     def report(self, *, asset, horizon, now=None) -> dict:

@@ -40,6 +40,7 @@ from parlay_bot.perpetuals.pooled_model import probability as pooled_probability
 from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
+from parlay_bot.perpetuals.venue_prior import venue_prior_calls
 from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
 from parlay_bot.storage.database import database_clock
 
@@ -1002,6 +1003,12 @@ class ForwardAccuracyMonitor:
                                         reference_opened_at=utc(last.opened_at),
                                         issued_at=issued_at, features=features,
                                         flow=flow_inputs[flow.family][asset])))
+                                pooled_calls = self._pooled_calls(pooled_set, horizon, pooled_vector)
+                                # Same calls re-centred on this stream's own up-rate,
+                                # as separate families (venue_prior.py explains why).
+                                venue_calls = venue_prior_calls(
+                                    (*pooled_calls, *flow_calls), stream_up=baseline)
+                                flow_calls = (*flow_calls, *venue_calls)
                                 calib_call = calib.call(asset=asset, horizon=horizon,
                                                         incumbent_up=probability,
                                                         baseline_up=baseline)
@@ -1016,7 +1023,7 @@ class ForwardAccuracyMonitor:
                                     incumbent_up=probability, baseline_up=baseline,
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
-                                    pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
+                                    pooled=pooled_calls,
                                     challengers=flow_calls,
                                     prepared=shadow_prepared,
                                 )

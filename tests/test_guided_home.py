@@ -407,11 +407,9 @@ async def test_ten_source_and_ensemble_discord_commands_are_private_on_android(t
     bot = _client(tmp_path)
     try:
         asset = app_commands.Choice(name="BTC", value="BTC")
-        horizon = app_commands.Choice(name="5 minutes", value=5)
         sources = app_commands.Choice(name="Exchange sources", value="sources")
         for name, args in (
             ("status", (sources, asset)),
-            ("multi-proof", (asset, horizon)),
         ):
             command = bot.tree.get_command("rival-tools").get_command(name)
             assert command is not None
@@ -477,11 +475,10 @@ def test_every_legacy_tool_is_grouped_without_duplicate_global_commands(tmp_path
         assert roots == {"rival", "rival-signal", "rival-stop", "rival-tools"}
         group = bot.tree.get_command("rival-tools")
         names = [c.name for c in group.commands]
-        # health, source-health and stream-status became views of status.
-        assert len(names) == len(set(names)) == 18
-        assert {"paper-open", "paper-close", "practice", "picks",
-                "quote", "research", "multi-proof", "status",
-                "target", "profit-proof"}.issubset(names)
+        # health, source-health and stream-status became views of status;
+        # leagues and sport-proof became views of sports; the rest live in /rival.
+        assert len(names) == len(set(names)) == 6
+        assert set(names) == {"status", "research", "data", "quote", "sports", "target-proof"}
         assert not {"health", "source-health", "stream-status"} & set(names)
         assert all(not name.startswith("rival-") for name in names)
     finally:

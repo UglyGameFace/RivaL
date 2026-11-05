@@ -14,6 +14,14 @@ def probe() -> dict:
     from parlay_bot.perpetuals.market_store import PerpetualMarketStore
     from parlay_bot.storage.hot import PostgresHotStore
 
+    import importlib
+    for name in ("parlay_bot.perpetuals.market_store", "parlay_bot.perpetuals.forward_audit",
+                 "parlay_bot.perpetuals.model_competition", "parlay_bot.perpetuals.intelligence",
+                 "parlay_bot.perpetuals.analysis_evidence"):
+        module = importlib.import_module(name)
+        for obj in vars(module).values():
+            if isinstance(obj, type) and "initialize" in vars(obj):
+                obj.initialize = lambda self, *a, **k: None  # read-only probe: schema exists
     s = Settings()
     store = PostgresHotStore(s.rival_database_url.get_secret_value(), read_only=True)
     market = PerpetualMarketStore(store)

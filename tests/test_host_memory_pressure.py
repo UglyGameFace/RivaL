@@ -62,3 +62,61 @@ def test_no_mem_pressure_when_rss_below_bound():
     state = host_memory.HostMemory(240 * host_memory.MIB, 512 * host_memory.MIB, None)
     assert not state.pressure
     assert "cgroup_oom_kills=unavailable" in state.detail
+
+
+def test_cgroup_usage_controls_pressure_when_python_rss_is_low(monkeypatch):
+    """Discloud kills the container, which can exceed its Python VmRSS."""
+    fixtures = {
+        "/sys/fs/cgroup/memory.max": str(512 * host_memory.MIB),
+        "/sys/fs/cgroup/memory.current": str(480 * host_memory.MIB),
+        "/sys/fs/cgroup/memory.peak": str(490 * host_memory.MIB),
+        "/proc/self/status": "VmRSS:\t100000 kB\n",
+        "/sys/fs/cgroup/memory.events": "oom_kill 0\n",
+    }
+    monkeypatch.setattr(host_memory, "_read_bytes", fixtures.get)
+    state = host_memory.snapshot()
+    assert state.rss_bytes == 100000 * 1024
+    assert state.cgroup_bytes == 480 * host_memory.MIB
+    assert state.cgroup_peak_bytes == 490 * host_memory.MIB
+    assert state.pressure
+    assert "cgroup_mb=480 cgroup_peak_mb=490" in state.detail
+
+
+def test_cgroup_v1_usage_and_peak_fallback(monkeypatch):
+    fixtures = {
+        "/sys/fs/cgroup/memory.max": "max",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes": str(512 * host_memory.MIB),
+        "/sys/fs/cgroup/memory/memory.usage_in_bytes": str(440 * host_memory.MIB),
+        "/sys/fs/cgroup/memory/memory.max_usage_in_bytes": str(490 * host_memory.MIB),
+        "/proc/self/status": "VmRSS:\t99000 kB\n",
+    }
+    monkeypatch.setattr(host_memory, "_read_bytes", fixtures.get)
+    state = host_memory.snapshot()
+    assert state.pressure
+    assert state.cgroup_bytes == 440 * host_memory.MIB
+    assert state.cgroup_peak_bytes == 490 * host_memory.MIB
+
+
+def test_cgroup_usage_unavailable_preserves_rss_fallback(monkeypatch):
+    monkeypatch.setattr(host_memory, "_read_bytes", lambda _: "invalid")
+    state = host_memory.snapshot()
+    assert state.cgroup_bytes is None
+    assert state.cgroup_peak_bytes is None
+    assert not state.pressure
+    assert "cgroup_mb=unavailable" in state.detail
+
+
+def test_cgroup_smaller_than_rss_does_not_hide_memory_pressure():
+    limit = 512 * host_memory.MIB
+    state = host_memory.HostMemory(
+        450 * host_memory.MIB, limit, 0,
+        cgroup_bytes=30 * host_memory.MIB,
+    )
+    assert state.pressure
+
+
+def test_nonnegative_cgroup_usage_boundaries():
+    assert host_memory._nonnegative_usage("0") == 0
+    assert host_memory._nonnegative_usage("-1") is None
+    assert host_memory._nonnegative_usage("max") is None
+    assert host_memory._nonnegative_usage(str(1 << 50)) is None

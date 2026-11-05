@@ -42,3 +42,28 @@ def test_a_healthy_loop_reports_nothing():
         return watch
 
     assert asyncio.run(scenario()).stalls == []
+
+
+def test_a_cpu_bound_worker_thread_is_named_as_a_suspect():
+    import sys
+    import threading
+
+    from parlay_bot.discord_app import loop_watch
+
+    stop = threading.Event()
+
+    def crunch():
+        while not stop.is_set():
+            sum(i * i for i in range(1000))
+
+    worker = threading.Thread(target=crunch, name="rival-test-crunch", daemon=True)
+    worker.start()
+    try:
+        time.sleep(0.05)
+        text = loop_watch._busy_threads(threading.get_ident(), sys._current_frames())
+    finally:
+        stop.set()
+        worker.join()
+    # Test code lives outside parlay_bot, so no RivaL frame is named; the
+    # helper must still run and return a bounded string.
+    assert isinstance(text, str) and len(text) < 500

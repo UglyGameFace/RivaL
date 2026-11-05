@@ -123,7 +123,7 @@ async def test_global_beats_but_venue_trails_is_pass(tmp_path):
             if x.name.startswith("Track record")
         )
         assert "hyperliquid" in track and "worse than a simple guess" in track
-        assert "All venues:" in track
+        assert "All exchanges:" in track
     finally:
         store.close()
 

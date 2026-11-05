@@ -272,10 +272,20 @@ def _plain_training_line(proof: dict, horizon: int) -> str:
     source = ("started from a verified historical model, then live data"
               if proof["latest_historical_seed_sha256"] else "live data only")
     return (
-        f"{label} {source} · "
-        f"{int(proof['latest_online_training_updates']):,} live updates so far · "
+        f"{label} {source} · {_updates_text(proof)} · "
         f"history used in {seeded} of the last {proven} predictions."
     )
+
+
+def _updates_text(proof: dict) -> str:
+    """Per-exchange live update counts as a range (each venue learns separately)."""
+    low, high = proof.get("online_training_updates_low"), proof.get("online_training_updates_high")
+    venues = int(proof.get("online_training_venues") or 0)
+    if low is not None and high is not None and venues > 1 and low != high:
+        return f"{int(low):,}–{int(high):,} live updates per exchange ({venues} exchanges)"
+    if low is not None and venues >= 1:
+        return f"{int(low):,} live updates so far"
+    return f"{int(proof['latest_online_training_updates']):,} live updates so far"
 
 
 def _history_headline(proofs: list[dict]) -> str:
@@ -1265,8 +1275,7 @@ class ResearchDashboard(discord.ui.View):
                             )
                             rows.append(
                                 f"**{horizon}m:** {history}; "
-                                f"**{proof['latest_online_training_updates']}** "
-                                "online updates. "
+                                f"**{_updates_text(proof)}**. "
                                 f"{proof['historically_seeded']} of "
                                 f"{proof['lineage_proven']} recorded forecasts "
                                 "had a historical seed."
@@ -1870,9 +1879,13 @@ class ResearchDashboard(discord.ui.View):
                             embed.add_field(
                                 name=f"Forward {horizon}m calibration",
                                 value=(
-                                    (f"⚠️ Counts only predictions made before their "
-                                     f"window opened; all {late:,} graded {horizon}-minute "
-                                     "predictions were issued after it opened.\n"
+                                    (f"ℹ️ Not measured here, by design: each {horizon}-minute "
+                                     "prediction is issued about 1–2 minutes after its "
+                                     "result window opens (the model only uses closed "
+                                     "candles, so its accuracy score elsewhere is fair, "
+                                     "but nobody could have traded at that price). "
+                                     f"Calibration counts only predictions made before the "
+                                     f"window, and none of the {late:,} graded ones were.\n"
                                      if late and not reliability["unique_targets"] else "") +
                                     f"**{reliability['unique_targets']}** independent "
                                     f"UTC target outcomes over **{reliability['days']}** "

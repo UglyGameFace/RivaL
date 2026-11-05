@@ -17,6 +17,10 @@ import discord
 
 STALE_FEED_AFTER = timedelta(minutes=20)
 STALE_LIQUIDITY_AFTER = timedelta(minutes=15)
+# A live book stream that has delivered nothing for this long is a problem
+# (counted in the status, so the card reposts when it stops and recovers).
+STREAM_STALLED_AFTER = timedelta(minutes=2)
+STARTUP_GRACE = timedelta(minutes=5)
 HEARTBEAT_FAILING_AFTER = 3  # consecutive failed pings
 DAILY = timedelta(hours=24)
 # A logged problem counts as "still happening" only if it repeated within
@@ -82,12 +86,26 @@ def _clip(lines: list[str], limit: int = 1000) -> str:
     return "\n".join(out) or "—"
 
 
+def _stream_stalled(s: dict) -> bool:
+    """Connected, has delivered before, but nothing accepted for a while."""
+    age = s.get("last_update_age_s")
+    return bool(s.get("connected") and s.get("updates") and age is not None
+                and age > STREAM_STALLED_AFTER.total_seconds())
+
+
 def _stream_line(venue: str, s: dict) -> str:
     """A socket can stay open while the provider sends nothing usable
     (Binance on a blocked host): that is not a healthy stream."""
     counts = f"{s.get('updates', 0):,} book updates, {s.get('reconnects', 0)} reconnects"
     if not s.get("connected"):
         return f"🛑 {venue}: disconnected ({counts})"
+    age = s.get("last_update_age_s")
+    if s.get("updates") and age is not None:
+        # Judge the stream by when it last delivered, not by whether every
+        # coin's 10 s quote happens to be fresh at this instant.
+        if _stream_stalled(s):
+            return f"⚠️ {venue}: connected but no book update for {int(age // 60)}m ({counts})"
+        return f"✅ {venue}: streaming, last update {int(age)}s ago ({counts})"
     if not s.get("fresh_assets"):
         return (f"⚠️ {venue}: connected but no fresh book data ({counts})"
                 if s.get("updates") else
@@ -140,6 +158,8 @@ def assess(facts: StatusFacts) -> tuple[str, tuple[str, ...]]:
         for venue, state in facts.streams.items():
             if not state.get("connected"):
                 keys.append(f"stream:{venue}")
+            elif _stream_stalled(state) and now - facts.boot_at > STARTUP_GRACE:
+                keys.append(f"stream_stalled:{venue}")
     if facts.liquidity_last_bucket is not None or facts.streams:
         last = _parse(facts.liquidity_last_bucket)
         if last is None or now - last > STALE_LIQUIDITY_AFTER:
@@ -230,9 +250,10 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
     if facts.research is not None:
         embed.add_field(
             name="Prediction health",
-            value=_clip([text for _, text in facts.research])
-            or "✅ Forecasts flowing, six-year model fresh, accuracy above the "
-               "up-rate, RivaL Intelligence reviewing",
+            # _clip() of an empty list returns "—", which hid this message.
+            value=(_clip([text for _, text in facts.research]) if facts.research
+                   else "✅ No problems: forecasts flowing, six-year model fresh, "
+                        "accuracy above the up-rate, RivaL Intelligence reviewing"),
             inline=False)
 
     if facts.memory:

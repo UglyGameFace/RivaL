@@ -2629,7 +2629,11 @@ class RivalDiscordClient(discord.Client):
         that slot's forecasts and graded later.
         """
         from parlay_bot.perpetuals.ai_types import ResearchUnavailable
-        from parlay_bot.perpetuals.intelligence import IntelligenceLedger, model_calls
+        from parlay_bot.perpetuals.intelligence import (
+            IntelligenceLedger,
+            market_context,
+            model_calls,
+        )
 
         await self.wait_until_ready()
         ledger = IntelligenceLedger(self.store)
@@ -2652,9 +2656,17 @@ class RivalDiscordClient(discord.Client):
                     model_calls, self.perp_collector.market, asset=asset,
                 )
                 feed = getattr(self.perp_collector.market, "binance_context", None)
+                context = feed.numbers(asset) if feed else {}
+                if context:
+                    context = {**context, "source": "binance"}
+                else:  # Binance blocks this host: use RivaL's own feeds
+                    context = await asyncio.to_thread(
+                        market_context, self.perp_collector.market, asset=asset)
+                    if context:
+                        context["source"] = "hyperliquid_okx"
                 review = await self.intelligence_research.explain_models(
                     asset=asset, venues=tuple(self.perp_collector.providers), calls=calls,
-                    market_context=feed.numbers(asset) if feed else None,
+                    market_context=context or None,
                 )
                 saved = await asyncio.to_thread(
                     ledger.record, asset=asset, calls=calls, review=review,

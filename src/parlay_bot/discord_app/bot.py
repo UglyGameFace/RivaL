@@ -2634,23 +2634,37 @@ class RivalDiscordClient(discord.Client):
             market_context,
             model_calls,
         )
+        from parlay_bot.perpetuals.local_first_research import LocalBusy
 
         await self.wait_until_ready()
         ledger = IntelligenceLedger(self.store)
         assets = tuple(a for a in self.perp_collector.assets
                        if a in ("BTC", "ETH", "SOL", "XRP"))
         turn = 0
+        # Hourly tally of what happened to each slot's review. Skips are
+        # INFO lines (expected, transient), so without this a run of missed
+        # reviews was invisible outside the console buffer.
+        tally: dict[str, int] = {}
+        tally_started = datetime.now(UTC)
         while not self.is_closed():
             now = datetime.now(UTC)
+            if now - tally_started >= timedelta(hours=1):
+                if tally.get("reviewed", 0) < sum(tally.values()):
+                    _LOG.warning("RivaL Intelligence review outcomes last hour: %s",
+                                 ", ".join(f"{k}={v}" for k, v in sorted(tally.items())))
+                tally, tally_started = {}, now
             slot = now.replace(second=0, microsecond=0, minute=now.minute // 5 * 5)
             target = slot + timedelta(seconds=150)
             if target <= now:
                 target += timedelta(minutes=5)
+                slot += timedelta(minutes=5)
             await asyncio.sleep((target - now).total_seconds())
             if host_memory.snapshot().pressure or not assets:
+                tally["memory_pressure"] = tally.get("memory_pressure", 0) + 1
                 continue
             asset = assets[turn % len(assets)]
             turn += 1
+            outcome = "failed"
             try:
                 calls = await asyncio.to_thread(
                     model_calls, self.perp_collector.market, asset=asset,
@@ -2660,8 +2674,12 @@ class RivalDiscordClient(discord.Client):
                 if context:
                     context = {**context, "source": "binance"}
                 else:  # Binance blocks this host: use RivaL's own feeds
+                    # As of the slot open (the forecasts' reference close):
+                    # anything observed later is inside the windows being
+                    # graded and must not inform the stance.
                     context = await asyncio.to_thread(
-                        market_context, self.perp_collector.market, asset=asset)
+                        market_context, self.perp_collector.market, asset=asset,
+                        now=slot)
                     if context:
                         context["source"] = "hyperliquid_okx"
                 review = await self.intelligence_research.explain_models(
@@ -2673,9 +2691,11 @@ class RivalDiscordClient(discord.Client):
                     model=str(review.get("model")), issued_at=datetime.now(UTC),
                 )
                 _LOG.info("RivaL Intelligence reviewed %s saved=%d", asset, saved)
+                outcome = "reviewed" if saved else "nothing_saved"
             except asyncio.CancelledError:
                 raise
             except ResearchUnavailable as exc:
+                outcome = "busy" if isinstance(exc, LocalBusy) else "unavailable"
                 if "needs the review update" in str(exc):
                     _LOG.warning("RivaL Intelligence service lacks the model-review "
                                  "endpoint; upload the latest LLM package")
@@ -2685,9 +2705,11 @@ class RivalDiscordClient(discord.Client):
             except InsufficientEvidence as exc:
                 # Fewer than three healthy venues right now: the reviewer is
                 # correctly refusing to explain thin evidence. A skip, not a fault.
+                outcome = "thin_evidence"
                 _LOG.info("RivaL Intelligence review skipped %s: %s", asset, exc)
             except Exception:  # noqa: BLE001 - optional reviewer never breaks the bot
                 _LOG.exception("RivaL Intelligence review failed %s", asset)
+            tally[outcome] = tally.get(outcome, 0) + 1
 
     async def _benefit_loop(self) -> None:
         """Keep Bot Performance's slow "Is accuracy improving?" answer ready.

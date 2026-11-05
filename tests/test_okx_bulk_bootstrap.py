@@ -326,3 +326,42 @@ async def test_okx_pacer_slows_shared_traffic_on_throttle():
         await pacer.cooldown(0)
     assert pacer.throttles == 30
     assert pacer.spacing == 0.5
+
+
+@pytest.mark.asyncio
+async def test_other_data_family_manifests_do_not_block_candle_research(tmp_path):
+    """KuCoin funding/premium/OI manifests share the venue prefix; they are
+    skipped before download instead of failing the 5m candle restore."""
+    downloads = []
+
+    class Client:
+        async def get(self, url, *, params, headers, follow_redirects=False):
+            if url.endswith("/files"):
+                return httpx.Response(200, json={"files": [
+                    {"name": "kucoin-uta-v2-BTC-premium-1hour-20250723T120000-1a.manifest.json"},
+                    {"name": "kucoin-XRP-funding-2021-01-07-ecfa.manifest.json"},
+                    {"name": "kucoin-uta-v2-BTC-open_interest-1day-20260827T160000-74.manifest.json"},
+                ]})
+            downloads.append(url)
+            raise AssertionError("a non-candle manifest was downloaded")
+
+    class Drive:
+        DRIVE_URL = "https://www.googleapis.com/drive/v3"
+        folders = SimpleNamespace(manifests="private-manifests")
+        _client = Client()
+
+        async def _verify_folder_boundary(self):
+            return None
+
+        async def _headers(self):
+            return {}
+
+        @staticmethod
+        def _escape_query(s):
+            return s
+
+    rows = await restore_verified_source_months(
+        Drive(), venue="kucoin", months=["2026-05"], root=tmp_path,
+    )
+    assert rows == []
+    assert downloads == []

@@ -612,9 +612,12 @@ async def restore_verified_source_months(
         if (not isinstance(entry, dict)
             or not str(entry.get("name", "")).startswith(venue + "-")):
             raise HistoryImportError("unexpected native manifest listing record")
-        # OKX month snapshots have exact, immutable -5m-YYYY-MM names.
-        # Filter the Drive metadata *before* downloading each manifest.
-        if venue in {"okx", "gate"} and not any(
+        # Native 5m month snapshots have exact, immutable -5m-YYYY-MM-- names
+        # for every venue. Filter the Drive metadata *before* downloading each
+        # manifest, so another data family's manifests for the same venue
+        # (KuCoin funding, premium and open-interest originals) are not
+        # mistaken for candle months and do not block candle research.
+        if not any(
             f"-5m-{month}--" in entry["name"] for month in months
         ):
             continue
@@ -727,6 +730,8 @@ async def restore_verified_source_months(
                 or len(response.content) != history.size_bytes
                 or hashlib.sha256(response.content).hexdigest() != info["data_sha256"]):
                 raise HistoryImportError("source-native history failed byte restore")
+        except HistoryImportError:
+            raise  # already a specific, safe reason; do not mask it
         except (KeyError, ValueError, TypeError, IndexError) as exc:
             raise HistoryImportError("invalid source-native archive metadata") from exc
         path = target / item.name

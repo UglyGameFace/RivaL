@@ -1,0 +1,83 @@
+"""Name the code that blocks the Discord event loop.
+
+Discord gives a command 3 seconds to be acknowledged. A command that fails
+with "Unknown interaction" (10062) even though its first statement is
+``defer()`` means the event loop itself was busy: some synchronous work ran
+on it instead of in a thread. That is invisible in the logs, so this watch
+records where the loop was when it stalled.
+
+A loop task stamps a heartbeat every ``TICK`` seconds. A daemon thread
+checks the stamp; when it is older than ``STALL_AFTER`` it captures the
+loop thread's current stack once per stall and logs the innermost RivaL
+frames (file:line and function only: no locals, arguments or values).
+Overhead is one tiny task wake-up and one thread check per tick.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import sys
+import threading
+import time
+import traceback
+
+_LOG = logging.getLogger(__name__)
+
+TICK = 0.25
+STALL_AFTER = 1.0
+FRAMES = 4
+
+
+def _location(thread_id: int) -> str:
+    frame = sys._current_frames().get(thread_id)
+    if frame is None:
+        return "unknown"
+    stack = traceback.extract_stack(frame)
+    ours = [f for f in stack if "parlay_bot" in f.filename
+            and not f.filename.endswith("loop_watch.py")]
+    picked = (ours or stack)[-FRAMES:]
+    return " <- ".join(
+        f"{f.filename.rsplit('parlay_bot/', 1)[-1]}:{f.lineno} {f.name}"
+        for f in reversed(picked)
+    )
+
+
+class LoopStallWatch:
+    def __init__(self, *, stall_after: float = STALL_AFTER, tick: float = TICK) -> None:
+        self.stall_after = stall_after
+        self.tick = tick
+        self._beat = time.monotonic()
+        self._loop_thread: int | None = None
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+        self.stalls: list[tuple[float, str]] = []  # (seconds, location), bounded
+
+    async def run(self) -> None:
+        """The loop-side heartbeat; cancel it to stop the watch."""
+        self._loop_thread = threading.get_ident()
+        self._beat = time.monotonic()
+        self._thread = threading.Thread(target=self._watch, name="rival-loop-stall-watch",
+                                        daemon=True)
+        self._thread.start()
+        try:
+            while True:
+                self._beat = time.monotonic()
+                await asyncio.sleep(self.tick)
+        finally:
+            self._stop.set()
+
+    def _watch(self) -> None:
+        reported_for = None
+        while not self._stop.wait(self.tick):
+            beat = self._beat
+            late = time.monotonic() - beat
+            if late < self.stall_after:
+                if reported_for is not None and reported_for != beat:
+                    reported_for = None
+                continue
+            if reported_for == beat or self._loop_thread is None:
+                continue
+            reported_for = beat
+            where = _location(self._loop_thread)
+            self.stalls = (self.stalls + [(round(late, 1), where)])[-20:]
+            _LOG.warning("RivaL event loop blocked >%.1fs at %s", self.stall_after, where)

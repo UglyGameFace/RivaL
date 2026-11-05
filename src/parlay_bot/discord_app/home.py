@@ -1815,11 +1815,17 @@ class GuidedHome(discord.ui.View):
                     if rep_["abstained"] and rep_["model_hit_when_abstained"] is not None
                     else f"abstained {rep_['abstained']}"
                 )
-                now_call = (f"{direction.upper()}" if stance == "follow" and direction != "none"
-                            else "no call")
+                # "now DOWN" read as "the service is down"; spell out that it is
+                # a price call, and that abstaining is a choice, not an outage.
+                now_call = ({"up": "calls UP (price rising)",
+                             "down": "calls DOWN (price falling)"}.get(direction.lower(),
+                                                                         direction.upper())
+                            if stance == "follow" and direction != "none"
+                            else "makes no call")
                 intel_text = (
-                    f"\n**RivaL Intelligence (reviews the models):** now {now_call} for "
-                    f"{self.horizon} min; last 7 days {followed}, {abstained}.\n"
+                    f"\n**RivaL Intelligence (reviews the models):** for the next "
+                    f"{self.horizon}-min candle it {now_call}. Last 7 days {followed}, "
+                    f"{abstained}.\n"
                     f"*{discord.utils.escape_markdown(str(latest['thesis'])[:200])}*"
                 )
             elif isinstance(intelligence, Exception):

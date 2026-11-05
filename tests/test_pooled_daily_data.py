@@ -99,3 +99,21 @@ def test_recent_not_found_is_rechecked_but_old_not_found_is_cached():
     assert source._maybe_unpublished(
         f"{base}/monthly/klines/BTCUSDT/5m/BTCUSDT-5m-{today:%Y-%m}.zip")
     assert not source._maybe_unpublished(f"{base}/monthly/klines/BTCUSDT/5m/BTCUSDT-5m-2021-03.zip")
+
+
+def test_model_pick_uses_validation_only_never_the_test_year():
+    import train_pooled_model as trainer
+
+    def cand(version, val_gain, test_gain, passed):
+        return {"feature_version": version, "gates_passed": passed,
+                "evaluation": {"validation": {"brier_gain": val_gain},
+                               "test": {"brier_gain": test_gain}}}
+
+    # The validation winner fails the (test-year) gates; the runner-up passes.
+    # Filtering by gates first would let the test year pick the runner-up.
+    winner = cand(trainer.FEATURE_VERSION_V2, 0.004, -0.001, False)
+    runner_up = cand(trainer.FEATURE_VERSION, 0.001, 0.003, True)
+    assert trainer.pick_by_validation([runner_up, winner]) is winner
+    # Ties go to the price-only features.
+    a, b = cand(trainer.FEATURE_VERSION, 0.002, 0, True), cand(trainer.FEATURE_VERSION_V2, 0.002, 0, True)
+    assert trainer.pick_by_validation([b, a]) is a

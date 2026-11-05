@@ -76,6 +76,13 @@ async def publish(paths: list[Path]) -> list[str]:
         await drive.aclose()
 
 
+
+def pick_by_validation(candidates: list[dict]) -> dict:
+    """The validation winner, ties to the price-only features. Never looks at
+    test results or the gates (which include the test year)."""
+    return max(candidates, key=lambda c: (c["evaluation"]["validation"]["brier_gain"],
+                                          c["feature_version"] == FEATURE_VERSION))
+
 def main() -> int:
     import pandas as pd
 
@@ -126,10 +133,11 @@ def main() -> int:
                 "gates_passed": c["gates_passed"],
                 "validation_gain": c["evaluation"]["validation"]["brier_gain"],
                 "test_gain": c["evaluation"]["test"]["brier_gain"]}}), flush=True)
-        # Choose on validation only; the test year stays an untouched check.
-        passing = [c for c in candidates if c["gates_passed"]] or candidates
-        doc = max(passing, key=lambda c: (c["evaluation"]["validation"]["brier_gain"],
-                                          c["feature_version"] == FEATURE_VERSION))
+        # Choose on validation only. The pass/fail gates include the test
+        # year, so filtering by them first would let the test year help pick
+        # the winner. Pick first; the gates then only decide whether the
+        # validation winner is published.
+        doc = pick_by_validation(candidates)
         # The price-only model is ALWAYS published too (when it passes): the
         # bot serves it whenever live Binance context is unavailable.
         fallback = next(c for c in candidates if c["feature_version"] == FEATURE_VERSION)

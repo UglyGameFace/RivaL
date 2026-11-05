@@ -78,9 +78,13 @@ def memory_holders(top: int = 10, node_budget: int = 4_000_000) -> list[tuple[st
     seen: set = set()
     budget = [node_budget]
     sizes: dict[str, int] = {}
-    owners = [o for o in gc.get_objects()
-              if type(o).__module__.startswith("parlay_bot") and hasattr(o, "__dict__")
-              and not isinstance(o, type)]
+    def _ours(o) -> bool:
+        module = getattr(type(o), "__module__", "")
+        # Some C types expose __module__ as a descriptor, not a string.
+        return (isinstance(module, str) and module.startswith("parlay_bot")
+                and not isinstance(o, type) and isinstance(getattr(o, "__dict__", None), dict))
+
+    owners = [o for o in gc.get_objects() if _ours(o)]
     for owner in owners:
         seen.add(id(owner))
         seen.add(id(vars(owner)))

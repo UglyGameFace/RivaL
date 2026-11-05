@@ -20,6 +20,8 @@ MONTH_GRACE = timedelta(days=2)
 INTELLIGENCE_STALE_AFTER = timedelta(hours=2)  # reviews every 5-15 minutes
 DECAY_WINDOW = timedelta(days=3)
 DECAY_MIN_GRADED = 300
+# A trained version counts as in use if it issued a forecast this recently.
+IN_USE_WITHIN = timedelta(minutes=30)
 
 
 def _utc(value) -> datetime | None:
@@ -56,33 +58,6 @@ def research_alerts(store, *, now: datetime | None = None,
                      type(exc).__name__)
         return [("database:busy",
                  "⚠️ Couldn't check prediction health (database busy); will re-check")]
-
-
-def _decay_detail(conn, stamp: datetime, horizon: int) -> str:
-    """Name the trained model and venue that lost most to the up-rate.
-
-    The headline pools every model version and venue for the horizon, so on
-    its own it cannot say which model to look at. Same rows, same window.
-    """
-    try:
-        worst = conn.execute(
-            """SELECT SUBSTR(training_sha256,1,12) AS model, venue, COUNT(*) AS n,
-                      AVG(model_brier) - AVG(baseline_brier) AS gap
-               FROM rival_model_shadow_forecasts
-               WHERE family LIKE 'pooled%' AND horizon_minutes=? AND settled_at IS NOT NULL
-                 AND model_brier IS NOT NULL AND baseline_brier IS NOT NULL
-                 AND settled_at>=?
-               GROUP BY SUBSTR(training_sha256,1,12), venue
-               HAVING COUNT(*)>=30
-               ORDER BY gap DESC LIMIT 1""",
-            (horizon, (stamp - DECAY_WINDOW).isoformat()),
-        ).fetchone()
-    except Exception:  # noqa: BLE001 - the detail never hides the alert itself
-        return ""
-    if worst is None or float(worst["gap"]) <= 0:
-        return ""
-    return (f"; worst: model {worst['model']} on {worst['venue']}, "
-            f"+{float(worst['gap']):.4f} Brier over {int(worst['n'])}")
 
 
 def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str, str]]:
@@ -130,25 +105,38 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
         alerts.append(("pooled:unreadable",
                        "⚠️ Couldn't read the six-year model table; will re-check"))
 
-    # 3. Live accuracy decay: the six-year model worse than the base rate.
+    # 3. Live accuracy decay: a six-year model IN USE worse than the base rate.
+    # Judged per trained version, and only for versions issued in the last
+    # IN_USE_WITHIN: averaging a family over 3 days kept alerting on versions
+    # already replaced by nightly retraining. A version with fewer than
+    # DECAY_MIN_GRADED graded results gets no verdict yet.
     try:
         rows = conn.execute(
-            """SELECT horizon_minutes, COUNT(*) AS n,
-                      AVG(model_brier) AS m, AVG(baseline_brier) AS b
+            """SELECT horizon_minutes, family, SUBSTR(training_sha256,1,12) AS model,
+                      COUNT(*) AS n, AVG(model_brier) AS m, AVG(baseline_brier) AS b,
+                      MAX(issued_at) AS last_issued
                FROM rival_model_shadow_forecasts
                WHERE family LIKE 'pooled%' AND settled_at IS NOT NULL
                  AND model_brier IS NOT NULL AND baseline_brier IS NOT NULL
                  AND settled_at>=?
-               GROUP BY horizon_minutes""",
+               GROUP BY horizon_minutes, family, SUBSTR(training_sha256,1,12)""",
             ((stamp - DECAY_WINDOW).isoformat(),),
         ).fetchall()
+        worst: dict[int, tuple] = {}
         for row in rows:
-            if int(row["n"]) >= DECAY_MIN_GRADED and float(row["m"]) > float(row["b"]):
-                horizon = int(row["horizon_minutes"])
-                alerts.append((f"decay:{horizon}m",
-                               (f"⚠️ {horizon}-min six-year model scored worse than the "
-                                f"plain up-rate over the last 3 days ({int(row['n'])} graded)"
-                                + _decay_detail(conn, stamp, horizon))))
+            last = _utc(row["last_issued"])
+            if (last is None or stamp - last > IN_USE_WITHIN
+                    or int(row["n"]) < DECAY_MIN_GRADED):
+                continue
+            gap = float(row["m"]) - float(row["b"])
+            horizon = int(row["horizon_minutes"])
+            if gap > 0 and (horizon not in worst or gap > worst[horizon][0]):
+                worst[horizon] = (gap, str(row["model"]), int(row["n"]))
+        for horizon, (gap, model, n) in sorted(worst.items()):
+            alerts.append((f"decay:{horizon}m",
+                           (f"⚠️ {horizon}-min six-year model {model} (in use) scored "
+                            f"worse than the plain up-rate: +{gap:.4f} Brier over "
+                            f"{n} graded in the last 3 days")))
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("Research alert: challenger table unreadable (%s)", type(exc).__name__)
 

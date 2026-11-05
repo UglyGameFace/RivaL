@@ -207,9 +207,6 @@ class FlowChallenger:
             "family": self.family,
             "probability": self.probability(state, inputs),
             "training_rows": state["updates"],
-            # The pooled up-rate this model is centred on (all venues of the
-            # asset); a venue-prior variant re-centres it on one venue.
-            "trained_up": (state["positives"] + 5) / (state["updates"] + 10),
             "model_sha256": hashlib.sha256(json.dumps(
                 state["weights"], separators=(",", ":")).encode()).hexdigest(),
         }

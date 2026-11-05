@@ -26,7 +26,7 @@ class _FakeRaw:
 
 
 def _connection(monkeypatch, step):
-    ticks = iter(range(0, 10_000))
+    ticks = iter(range(10_000))
     monkeypatch.setattr(database.time, "monotonic", lambda: next(ticks) * step)
     return _Connection(_FakeRaw(None), "postgres")
 

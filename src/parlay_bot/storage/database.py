@@ -44,8 +44,8 @@ class DatabaseClock:
     Python work in between. Names and totals only, never SQL or values.
     """
 
-    __slots__ = ("sql_seconds", "commit_seconds", "wait_seconds",
-                 "statements", "commits", "checkouts")
+    __slots__ = ("checkouts", "commit_seconds", "commits", "sql_seconds",
+                 "statements", "wait_seconds")
 
     def __init__(self) -> None:
         self.sql_seconds = self.commit_seconds = self.wait_seconds = 0.0
@@ -59,7 +59,7 @@ class DatabaseClock:
 _CLOCKS = threading.local()
 
 
-class database_clock:  # noqa: N801 - used like contextlib's lower-case managers
+class database_clock:
     """``with database_clock() as clock:`` measures this thread's PostgreSQL time."""
 
     def __enter__(self) -> DatabaseClock:

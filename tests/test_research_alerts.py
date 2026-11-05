@@ -25,12 +25,13 @@ def _store(tmp_path, *, forecast_age, trained_age, review_age, pooled_scores):
         conn.execute("""CREATE TABLE IF NOT EXISTS rival_model_shadow_forecasts (
                         family TEXT, horizon_minutes INTEGER, settled_at TEXT,
                         model_brier REAL, baseline_brier REAL, venue TEXT,
-                        training_sha256 TEXT, issued_at TEXT)""")
-        for model, base in pooled_scores:
+                        training_sha256 TEXT, issued_at TEXT, target_opened_at TEXT)""")
+        for i, (model, base) in enumerate(pooled_scores):
             conn.execute(
-                "INSERT INTO rival_model_shadow_forecasts VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO rival_model_shadow_forecasts VALUES (?,?,?,?,?,?,?,?,?)",
                 ("pooled_5m_abc", 5, (NOW - timedelta(hours=1)).isoformat(), model, base,
-                 "okx", "abc" * 21 + "d", (NOW - timedelta(minutes=10)).isoformat()))
+                 "okx", "abc" * 21 + "d", (NOW - timedelta(minutes=10)).isoformat(),
+                 (NOW - timedelta(minutes=5 * i)).isoformat()))
     return store
 
 
@@ -178,15 +179,16 @@ def test_decay_judges_only_the_version_in_use(tmp_path):
             conn.execute("""CREATE TABLE rival_model_shadow_forecasts (
                             family TEXT, horizon_minutes INTEGER, settled_at TEXT,
                             model_brier REAL, baseline_brier REAL, venue TEXT,
-                            training_sha256 TEXT, issued_at TEXT)""")
+                            training_sha256 TEXT, issued_at TEXT, target_opened_at TEXT)""")
             settled = (NOW - timedelta(hours=1)).isoformat()
             old = (NOW - timedelta(hours=8)).isoformat()      # replaced version
             recent = (NOW - timedelta(minutes=5)).isoformat()  # version in use
             rows = ([("pooled_5m_abc", 5, settled, .30, .25, "okx", "a" * 64, old)] * 400
                     + [("pooled_5m_abc", 5, settled, .24, .25, "okx", "b" * 64, recent)] * 400)
-            for row in rows:
+            for i, row in enumerate(rows):
                 conn.execute("INSERT INTO rival_model_shadow_forecasts "
-                             "VALUES (?,?,?,?,?,?,?,?)", row)
+                             "VALUES (?,?,?,?,?,?,?,?,?)",
+                             (*row, (NOW - timedelta(minutes=5 * (i % 400))).isoformat()))
         alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
         assert "decay:5m" not in alerts  # the losing version is no longer in use
         with store.connect() as conn:  # now the version in use loses too
@@ -195,5 +197,41 @@ def test_decay_judges_only_the_version_in_use(tmp_path):
         alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
         assert alerts["decay:5m"].startswith("⚠️ 5-min six-year model bbbbbbbbbbbb (in use)")
         assert "+0.0200 Brier over 400" in alerts["decay:5m"]
+    finally:
+        store.close()
+
+
+def test_a_gap_within_random_noise_is_not_called_decay(tmp_path):
+    """+0.0009 Brier over ~1,400 noisy forecasts (Nov 5) is chance, not decay."""
+    import random
+
+    rng = random.Random(7)
+    store = SQLiteHotStore(tmp_path / "noise.sqlite")
+    try:
+        with store.connect() as conn:
+            conn.execute("""CREATE TABLE rival_model_shadow_forecasts (
+                            family TEXT, horizon_minutes INTEGER, settled_at TEXT,
+                            model_brier REAL, baseline_brier REAL, venue TEXT,
+                            training_sha256 TEXT, issued_at TEXT, target_opened_at TEXT)""")
+            settled = (NOW - timedelta(hours=1)).isoformat()
+            recent = (NOW - timedelta(minutes=5)).isoformat()
+
+            def insert(model_shift, sha):
+                for i in range(1400):
+                    base = rng.choice((0.2025, 0.3025))  # p=0.55 vs outcomes
+                    model = max(0.0, base + rng.gauss(model_shift, 0.05))
+                    conn.execute("INSERT INTO rival_model_shadow_forecasts VALUES (?,?,?,?,?,?,?,?,?)",
+                                 ("pooled_15m_x", 15, settled, model, base, "okx", sha * 64,
+                                  recent, (NOW - timedelta(minutes=5 * i)).isoformat()))
+
+            insert(0.0009, "c")
+        alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
+        assert "decay:15m" not in alerts
+        with store.connect() as conn:
+            conn.execute("DELETE FROM rival_model_shadow_forecasts")
+            insert(0.02, "d")  # a real, sustained loss still alerts
+        alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
+        assert alerts["decay:15m"].startswith("⚠️ 15-min six-year model dddddddddddd (in use)")
+        assert "× the noise)" in alerts["decay:15m"]
     finally:
         store.close()

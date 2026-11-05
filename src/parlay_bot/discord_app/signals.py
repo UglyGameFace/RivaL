@@ -624,10 +624,10 @@ async def signal_embed(
     venue_count = int(venue_evidence["settled"]) if venue_evidence else 0
     venue_hit = venue_evidence.get("hit_rate") if venue_evidence else None
     measured = (
-        f"{venue_hit:.1%} of {venue_count} finished\n"
+        f"{venue_hit:.1%} of {venue_count:,} finished\n"
         f"This exchange • last 7 days"
         if venue_hit is not None and venue_count >= 50
-        else f"Not enough yet\n{venue_count} finished; needs 50"
+        else f"Not enough yet\n{venue_count:,} finished; needs 50"
     )
     matched_quote = (
         f"Buy ~${book.ask:,.{4 if asset == 'XRP' else 2}f}\n"
@@ -702,7 +702,7 @@ async def signal_embed(
         venue_count = int(venue_evidence["settled"])
         venue_label = "Combined model" if engine == "multi" else chosen["venue"]
         track_lines.append(
-            f"{venue_label}: {venue_count} finished predictions"
+            f"{venue_label}: {venue_count:,} finished predictions"
             + (f" • right {venue_hit:.1%}"
                if venue_hit is not None else " • not enough scored yet")
             + (" • better than a simple guess" if venue_beats is True else
@@ -735,7 +735,7 @@ async def signal_embed(
             track_lines.append("Couldn't compare with the current model.")
     else:
         track_lines.append(
-            f"All exchanges: {global_count} finished"
+            f"All exchanges: {global_count:,} finished"
         + (f" • right {global_hit:.1%}"
            if global_hit is not None else " • not enough scored yet")
     )

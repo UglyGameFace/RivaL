@@ -285,7 +285,7 @@ async def test_qualified_signal_does_not_wait_for_stalled_exchange_dns(monkeypat
         asset="BTC", horizon_minutes=15, now=stamp,
         decision_only=True, decision_out=decision,
     )
-    assert "NO LIVE SIGNAL" in response.title
+    assert "No prediction right now" in response.title
     assert not decision
     assert loop.time() - started < 4.0
 
@@ -398,6 +398,6 @@ async def test_qualified_quote_uses_remaining_deadline_and_fails_closed(
         decision_only=True, decision_out=decision,
         deadline=time.monotonic() + 0.28,
     )
-    assert "NO LIVE SIGNAL" in embed.title
+    assert "No prediction right now" in embed.title
     assert decision == {}
     assert time.monotonic() - started < 0.4

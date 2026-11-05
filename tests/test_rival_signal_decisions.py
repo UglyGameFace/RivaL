@@ -148,9 +148,9 @@ async def test_weak_model_is_pass_not_actionable_even_with_current_quote(tmp_pat
         seed_prediction(market, now, venue="hyperliquid", probability=.514)
         report = await signal_embed(market, mock_quotes(now), asset="BTC",
                                     horizon_minutes=5, now=now)
-        assert "UP LEAN • NO SIGNAL" in report.title
+        assert "only a slight UP lean" in report.title
         assert "coin flip" in report.description
-        assert "51.4%" in next(x.value for x in report.fields if x.name == "⚡ Model strength")
+        assert "51.4%" in next(x.value for x in report.fields if x.name == "⚡ How sure the model is")
     finally:
         store.close()
 
@@ -171,9 +171,9 @@ async def test_blocked_exchange_uses_only_another_forecasts_matching_book(tmp_pa
         signal = await signal_embed(market, quotes, asset="BTC",
                                     horizon_minutes=5, now=now)
         assert "UP WATCH" in signal.title
-        assert "Source: **binance**" in next(x.value for x in signal.fields if x.name == "Model and expiry")
-        assert "$81,003.00" in next(x.value for x in signal.fields if x.name == "Fresh matching-market bid / ask 💱")
-        assert "$81,000.00" not in next(x.value for x in signal.fields if x.name == "Fresh matching-market bid / ask 💱")
+        assert "Exchange: **binance**" in next(x.value for x in signal.fields if x.name == "Details")
+        assert "$81,003.00" in next(x.value for x in signal.fields if x.name == "Live price right now 💱")
+        assert "$81,000.00" not in next(x.value for x in signal.fields if x.name == "Live price right now 💱")
         quotes.get.assert_awaited_once_with("BTC")
     finally:
         store.close()
@@ -189,8 +189,8 @@ async def test_unmatched_price_or_near_expiry_is_not_a_fabricated_signal(tmp_pat
         seed_prediction(market, now, venue="gate", probability=.72)
         unmatched = await signal_embed(market, quotes, asset="BTC",
                                        horizon_minutes=5, now=now)
-        assert "MARKET PRICE UNAVAILABLE" in unmatched.title
-        assert "not a valid real-time entry" in next(x.value for x in unmatched.fields if x.name == "Matching live price")
+        assert "can't get a live price" in unmatched.title
+        assert "isn't a price you" in next(x.value for x in unmatched.fields if x.name == "Live price")
         quotes.get.assert_not_awaited()
         quotes.get_reference.assert_not_awaited()
 
@@ -200,7 +200,7 @@ async def test_unmatched_price_or_near_expiry_is_not_a_fabricated_signal(tmp_pat
             market, quotes, asset="BTC", horizon_minutes=5,
             now=now + timedelta(minutes=6),
         )
-        assert "NO LIVE SIGNAL" in near_close.title
+        assert "No prediction right now" in near_close.title
     finally:
         store.close()
 
@@ -212,7 +212,7 @@ async def test_no_data_and_disconnected_market_are_clean_no_signal(tmp_path):
     disconnected = await signal_embed(
         None, quotes, asset="ETH", horizon_minutes=15, now=now,
     )
-    assert "NO LIVE SIGNAL" in disconnected.title
+    assert "No prediction right now" in disconnected.title
     quotes.get.assert_not_awaited()
     store = SQLiteHotStore(tmp_path / "empty.sqlite")
     try:
@@ -220,7 +220,7 @@ async def test_no_data_and_disconnected_market_are_clean_no_signal(tmp_path):
             PerpetualMarketStore(store), quotes,
             asset="BTC", horizon_minutes=5, now=now,
         )
-        assert "NO LIVE SIGNAL" in result.title
+        assert "No prediction right now" in result.title
     finally:
         store.close()
     with pytest.raises(ValueError):
@@ -300,7 +300,7 @@ async def test_single_day_brier_win_is_not_enough_for_watch(tmp_path):
         signal = await signal_embed(
             market, mock_quotes(now), asset="BTC", horizon_minutes=5, now=now,
         )
-        assert "INSUFFICIENT PROOF" in signal.title
+        assert "not enough proof yet" in signal.title
         assert "WATCH" not in signal.title
     finally:
         store.close()
@@ -324,7 +324,7 @@ async def test_marginal_brier_win_cannot_qualify_a_watch(tmp_path):
         signal = await signal_embed(
             market, mock_quotes(now), asset="BTC", horizon_minutes=5, now=now,
         )
-        assert "INSUFFICIENT PROOF" in signal.title
+        assert "not enough proof yet" in signal.title
         assert "WATCH" not in signal.title
     finally:
         store.close()

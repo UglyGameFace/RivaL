@@ -74,8 +74,8 @@ def model_strength(probability: float) -> str:
 
 def _no_signal(asset: str, horizon: int, reason: str) -> discord.Embed:
     return discord.Embed(
-        title=f"⏳ {asset} | {horizon}m • NO LIVE SIGNAL",
-        description=reason + "\n\nNo trade is approved or placed.",
+        title=f"⏳ {asset} • next {horizon} min • No prediction right now",
+        description=reason + "\n\nNothing is traded for you.",
         color=discord.Color.orange(),
     )
 
@@ -255,12 +255,11 @@ async def signal_embed(
     ]
     if not live:
         reason = (
-            "The latest prediction is too close to expiration. "
-            "RivaL will not present a nearly finished forecast as a new entry."
+            "The latest prediction is almost over, so RivaL won't show it as "
+            "a new one. A fresh one comes every 5 minutes."
             if relevant else
-            "No new forward prediction qualifies for this market yet. "
-            "The background collector must first produce a genuine, "
-            "unexpired forecast; historical data cannot substitute."
+            "There's no new prediction for this yet. RivaL makes them as new "
+            "prices come in; old data can't stand in for one."
         )
         return _no_signal(asset, horizon_minutes, reason)
 
@@ -568,55 +567,51 @@ async def signal_embed(
         return _no_signal(asset, horizon_minutes, "Screening completed.")
 
     if venue_beats is False:
-        verdict = "⛔ NO CALL • PASS • MODEL UNDERPERFORMING"
+        verdict = "⛔ No call: doing worse than a simple guess"
         message = (
-            f"Recent {chosen['venue']} forward scores do not beat a simple "
-            "baseline."
+            f"On {chosen['venue']}, its recent predictions haven't beaten a simple "
+            "guess, so RivaL won't make a call."
         )
     elif book is None:
-        verdict = "⏳ NO CALL • WAIT • MARKET PRICE UNAVAILABLE"
+        verdict = "⏳ No call: can't get a live price"
         message = (
-            "A forecast exists, but no matching current exchange order book "
-            "could be verified. No other exchange price was substituted."
+            "There's a prediction, but RivaL couldn't get a live price from the "
+            "same exchange, and it won't use another exchange's price instead."
         )
     elif is_watch:
-        verdict = f"👀 {direction} WATCH • RESEARCH ONLY"
+        verdict = f"👀 Leans {direction}: watch only"
         message = (
-            "A genuine forward model leans "
+            "The model expects the price to go "
             + ("higher" if direction == "UP" else "lower")
-            + ". This is an observed directional watch, not a validated "
-              "profitable entry or a trade recommendation."
+            + ". It has done better than a simple guess on this exchange, but "
+              "that doesn't prove it makes money. This is not advice to trade."
         )
     elif (strength == "directional watch" and venue_beats is True
             and not venue_evidence.get("watch_evidence_passes")
             and direction != "FLAT"):
-        verdict = "⏳ NO CALL • INSUFFICIENT PROOF"
+        verdict = "⏳ No call: not enough proof yet"
         message = (
-            "The model's average score beats its baseline, but the "
-            "same-model forecasts lack sufficient independent UTC-day "
-            "coverage or a positive day-block uncertainty bound. "
-            "No evidence-qualified WATCH is issued."
+            "On average it beats a simple guess, but not on enough separate "
+            "days to trust it yet."
         )
     elif (strength == "directional watch" and venue_beats is None
             and direction != "FLAT"):
-        verdict = "⏳ NO CALL • UNVERIFIED MODEL"
+        verdict = "⏳ No call: track record can't be checked"
         message = (
-            f"The {chosen['venue']} track record could not be verified: "
-            "too few settled forecasts for this venue, or the lookup "
-            "failed. This raw direction is shown as research only, never "
-            "as an evidence-qualified watch."
+            f"There aren't enough finished predictions on {chosen['venue']} to "
+            "check its record (or the lookup failed). The direction below is "
+            "for information only."
         )
     else:
-        verdict = f"⏳ NO CALL • {direction} LEAN • NO SIGNAL" if direction != "FLAT" else (
-            "⏳ NO CALL • NO DIRECTION"
-        )
+        verdict = (f"⏳ No call: only a slight {direction} lean" if direction != "FLAT"
+                   else "⏳ No call: no direction")
         message = (
-            f"Raw {max(probability, 1 - probability):.1%} model probability is "
-            "too close to a coin flip for an actionable signal."
+            f"The model is only {max(probability, 1 - probability):.1%} sure, too "
+            "close to a coin flip to make a call."
         )
 
     embed = discord.Embed(
-        title=f"{asset} | {horizon_minutes}m • {verdict}",
+        title=f"{asset} • next {horizon_minutes} min • {verdict}"[:256],
         description=message,
         # Only verified watches receive directional colours. Unproven leans stay amber.
         color=(discord.Color.green() if is_watch and direction == "UP"
@@ -629,40 +624,42 @@ async def signal_embed(
     venue_count = int(venue_evidence["settled"]) if venue_evidence else 0
     venue_hit = venue_evidence.get("hit_rate") if venue_evidence else None
     measured = (
-        f"{venue_hit:.1%} from {venue_count} settled\n"
-        f"Same venue • last 7d"
+        f"{venue_hit:.1%} of {venue_count} finished\n"
+        f"This exchange • last 7 days"
         if venue_hit is not None and venue_count >= 50
-        else f"Unverified • {venue_count} settled\nMinimum 50 required"
+        else f"Not enough yet\n{venue_count} finished; needs 50"
     )
     matched_quote = (
-        f"Bid ${book.bid:,.{4 if asset == 'XRP' else 2}f}\n"
-        f"Ask ${book.ask:,.{4 if asset == 'XRP' else 2}f}"
-        if book is not None else "Not verified"
+        f"Buy ~${book.ask:,.{4 if asset == 'XRP' else 2}f}\n"
+        f"Sell ~${book.bid:,.{4 if asset == 'XRP' else 2}f}"
+        if book is not None else "Not available"
     )
+    plain_strength = {"very weak": "very weak", "weak": "weak",
+                      "directional watch": "strong enough to watch"}.get(strength, strength)
     for index, (name, value) in enumerate((
-        ("💱 Same-venue live price", matched_quote),
-        ("⏱️ Expires", discord.utils.format_dt(
+        ("💱 Live price (same exchange)", matched_quote),
+        ("⏱️ Prediction ends", discord.utils.format_dt(
             chosen["target"] + timedelta(minutes=5), style="R",
         )),
-        ("⚡ Model strength", (f"{max(probability, 1-probability):.1%} raw\n"
-                             f"{strength} • not calibrated")),
-        ("📊 Measured direction accuracy", measured),
+        ("⚡ How sure the model is", (f"{max(probability, 1-probability):.1%}\n"
+                                     f"{plain_strength} (its own estimate)")),
+        ("📊 How often it's been right", measured),
     )):
         embed.add_field(name=name, value=value, inline=True)
         if index in (1, 3):
             embed.add_field(name="\u200b", value="\u200b", inline=True)
     embed.add_field(
-        name="Model and expiry",
+        name="Details",
         value=(
-            f"**{direction if is_watch else 'NO CALL'}** • raw model {direction} "
+            f"**Call: {direction if is_watch else 'none'}** • leans {direction} "
             f"{max(probability, 1 - probability):.1%} "
-            f"({strength})\n"
-            f"Source: **{chosen['venue']}** • "
-            f"Issued {discord.utils.format_dt(chosen['issued'], style='R')}\n"
-            f"Expires {discord.utils.format_dt(chosen['target'] + timedelta(minutes=5), style='R')}"
+            f"({plain_strength})\n"
+            f"Exchange: **{chosen['venue']}** • "
+            f"Made {discord.utils.format_dt(chosen['issued'], style='R')}\n"
+            f"Ends {discord.utils.format_dt(chosen['target'] + timedelta(minutes=5), style='R')}"
             + (
-                f"\nEngine: **multi-fused {chosen.get('model_version', 'multi')}** "
-                f"({chosen.get('contributor_count', '?')} venues)"
+                f"\nModel: **combined from {chosen.get('contributor_count', '?')} "
+                f"exchanges** ({chosen.get('model_version', 'multi')})"
                 if chosen.get("engine") == "multi" else ""
             )
         ),
@@ -680,22 +677,22 @@ async def signal_embed(
         )
         price_decimals = 4 if asset == "XRP" else 2
         embed.add_field(
-            name="Fresh matching-market bid / ask 💱",
+            name="Live price right now 💱",
             value=(
                 f"**{quote_label}**\n"
-                f"Bid **${book.bid:,.{price_decimals}f}** · "
-                f"Ask **${book.ask:,.{price_decimals}f}**\n"
-                f"Observed {discord.utils.format_dt(book.exchange_at, style='R')} "
-                "• Not a guaranteed fill"
+                f"Buy at about **${book.ask:,.{price_decimals}f}** · "
+                f"Sell at about **${book.bid:,.{price_decimals}f}**\n"
+                f"Seen {discord.utils.format_dt(book.exchange_at, style='R')} "
+                "• Real orders can fill at a different price"
             ),
             inline=False,
         )
     else:
         embed.add_field(
-            name="Matching live price",
+            name="Live price",
             value=(
-                "**Unavailable.** A previous completed candle is not a "
-                "valid real-time entry price."
+                "**Not available.** An old candle's price isn't a price you "
+                "could actually trade at."
             ),
             inline=False,
         )
@@ -703,25 +700,25 @@ async def signal_embed(
     if venue_evidence is not None:
         venue_hit = venue_evidence.get("hit_rate")
         venue_count = int(venue_evidence["settled"])
-        venue_label = "multi-fused" if engine == "multi" else chosen["venue"]
+        venue_label = "Combined model" if engine == "multi" else chosen["venue"]
         track_lines.append(
-            f"{venue_count} settled {venue_label} forecasts"
-            + (f" • Direction correct {venue_hit:.1%}"
-               if venue_hit is not None else " • Not enough scored outcomes")
-            + (" • Beats baseline" if venue_beats is True else
-               " • Trails baseline" if venue_beats is False else
-               " • Unverified (needs 50 settled)")
+            f"{venue_label}: {venue_count} finished predictions"
+            + (f" • right {venue_hit:.1%}"
+               if venue_hit is not None else " • not enough scored yet")
+            + (" • better than a simple guess" if venue_beats is True else
+               " • worse than a simple guess" if venue_beats is False else
+               " • too few to judge (needs 50)")
         )
+        reason = str(venue_evidence.get("watch_reason", "unavailable")).replace("_", " ")
         track_lines.append(
-            "WATCH day-block proof: "
-            + ("PASS" if venue_evidence.get("watch_evidence_passes")
-               else f"WITHHELD ({venue_evidence.get('watch_reason', 'unavailable')})")
-            + f" • {venue_evidence.get('watch_days', 0)} qualifying UTC days"
+            "Good on enough separate days? "
+            + ("Yes" if venue_evidence.get("watch_evidence_passes")
+               else f"Not yet ({reason})")
+            + f" • {venue_evidence.get('watch_days', 0)} days count so far"
         )
     else:
         track_lines.append(
-            f"{chosen['venue']} venue record not evaluated "
-            "(no matching book)."
+            f"{chosen['venue']}: record not checked (no live price from it)."
         )
     global_hit = evidence.get("hit_rate")
     global_count = int(evidence["settled"])
@@ -730,23 +727,24 @@ async def signal_embed(
         incumbent_brier = evidence.get("incumbent_brier")
         if challenger_brier is not None and incumbent_brier is not None:
             track_lines.append(
-                f"Live model on the same windows: mean Brier "
-                f"{incumbent_brier:.4f} vs challenger {challenger_brier:.4f}."
+                f"Vs the current model on the same candles: error score "
+                f"{incumbent_brier:.4f} (current) vs {challenger_brier:.4f} (combined); "
+                "lower is better."
             )
         else:
-            track_lines.append("Live model comparison unavailable.")
+            track_lines.append("Couldn't compare with the current model.")
     else:
         track_lines.append(
-            f"All venues: {global_count} settled"
-        + (f" • Direction correct {global_hit:.1%}"
-           if global_hit is not None else " • Not enough scored outcomes")
+            f"All exchanges: {global_count} finished"
+        + (f" • right {global_hit:.1%}"
+           if global_hit is not None else " • not enough scored yet")
     )
     track_lines.append(
-        "Cross-exchange outcomes are correlated. Neither an "
-        "independent edge nor after-cost profitability is established."
+        "Exchanges tend to move together, so these aren't fully separate "
+        "results. It hasn't been shown to make money after fees."
     )
     embed.add_field(
-        name="Model track record (last 7 days)",
+        name="Track record (last 7 days)",
         value="\n".join(track_lines),
         inline=False,
     )
@@ -758,58 +756,61 @@ async def signal_embed(
         alt_prob = float(alt_watch["probability_up"])
         alt_beats = venue_proofs[venue].get("model_beats_baseline")
         alt_state = (
-            "qualified"
+            "good enough to watch"
             if alt_beats is True
             and venue_proofs[venue].get("watch_evidence_passes") is True
             and model_strength(alt_prob) == "directional watch"
-            else "unqualified" if alt_beats is False else "unverified"
+            else "worse than a simple guess" if alt_beats is False
+            else "not enough record"
         )
         alternatives.append(
-            f"{venue} {_direction(alt_prob)} "
+            f"{venue}: leans {_direction(alt_prob)} "
             f"{max(alt_prob, 1 - alt_prob):.0%} • {alt_state}"
         )
     if alternatives:
         embed.add_field(
-            name="Other venues with verified books",
+            name="Other exchanges with a live price",
             value="\n".join(alternatives),
             inline=False,
         )
     if stream_shadow is not None:
         if shadow is None:
             embed.add_field(
-                name="Source-matched after-cost proof",
-                value="Cannot verify real forward quote evidence. NOT PROVEN.",
+                name="Would it have made money after fees?",
+                value="Couldn't check this. Not proven.",
                 inline=False,
             )
         else:
             try:
                 severe = shadow["costs"]["severe"]["mean_net_bps"]
+                status = {"NOT_PROVEN": "Not proven"}.get(
+                    str(shadow["status"]), str(shadow["status"]).replace("_", " ").title())
                 embed.add_field(
-                    name="Source-matched after-cost proof",
+                    name="Would it have made money after fees?",
                     value=(
-                        f"**{shadow['status']}** • "
-                        f"{shadow['closed']}/{shadow['eligible_windows']} "
-                        "prospective quote windows paired"
+                        f"**{status}** • "
+                        f"{shadow['closed']} of {shadow['eligible_windows']} pretend "
+                        f"trades could be checked against later real prices"
                         f" • {shadow['days']} days"
-                        + (f" • Severe-cost mean {severe:+.1f} bps"
+                        + (f" • with high fees, average {severe / 100:+.2f}% per trade"
                            if severe is not None else
-                           " • Too few observed exits")
-                        + "\nOnly genuine later same-venue books; "
-                          "no authenticated fills or guaranteed returns."
+                           " • too few finished to say")
+                        + "\nUses real prices seen later on the same exchange; "
+                          "no actual trades, no guaranteed returns."
                     ),
                     inline=False,
                 )
             except Exception:  # noqa: BLE001 - missing proof must not halt signals
                 _LOG.exception("RivaL forward quote evidence unavailable")
                 embed.add_field(
-                    name="Source-matched after-cost proof",
-                    value="Cannot verify real forward quote evidence. NOT PROVEN.",
+                    name="Would it have made money after fees?",
+                    value="Couldn't check this. Not proven.",
                     inline=False,
                 )
     embed.set_footer(
         text=(
-            "Research watch only • Refresh to recheck • No approved "
-            "entry/stop/target or real order"
+            "For watching only • Refresh to check again • No buy/sell levels "
+            "and no real orders"
         ),
     )
     _LOG.info(

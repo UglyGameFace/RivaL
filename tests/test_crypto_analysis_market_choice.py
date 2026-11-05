@@ -209,7 +209,7 @@ async def test_dashboard_shows_polymarket_outcomes_without_market_choice(tmp_pat
 
         home.polymarket_status = None
         offline = await home.render()
-        assert "Contract score read unavailable" in str(offline.to_dict())
+        assert "Couldn't load these scores right now" in str(offline.to_dict())
         assert "0% win rate" not in str(offline.to_dict())
     finally:
         home.stop()

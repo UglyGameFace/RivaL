@@ -96,8 +96,8 @@ async def test_promoted_slot_serves_fused_watch_with_disclosure(tmp_path, caplog
                 now=now,
             )
         assert "UP WATCH" in signal.title
-        assert "multi-fused" in next(x.value for x in signal.fields if x.name == "Model and expiry")
-        assert "Source: **hyperliquid**" in next(x.value for x in signal.fields if x.name == "Model and expiry")
+        assert "combined from" in next(x.value for x in signal.fields if x.name == "Details")
+        assert "Exchange: **hyperliquid**" in next(x.value for x in signal.fields if x.name == "Details")
         assert "engine=multi" in caplog.text
     finally:
         store.close()
@@ -118,7 +118,7 @@ async def test_unpromoted_slot_ignores_fused_rows(tmp_path):
             horizon_minutes=5,
             now=now,
         )
-        assert "NO LIVE SIGNAL" in signal.title
+        assert "No prediction right now" in signal.title
     finally:
         store.close()
 
@@ -158,7 +158,7 @@ async def test_promoted_fused_single_day_win_stays_research(tmp_path):
         signal = await signal_embed(
             market, mock_books(now), asset="BTC", horizon_minutes=5, now=now,
         )
-        assert "INSUFFICIENT PROOF" in signal.title
+        assert "not enough proof yet" in signal.title
         assert "WATCH" not in signal.title
     finally:
         store.close()

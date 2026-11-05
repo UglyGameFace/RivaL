@@ -93,10 +93,10 @@ async def test_stronger_qualified_venue_wins_over_priority(tmp_path):
             market, mock_books(now), asset="BTC", horizon_minutes=5, now=now,
         )
         assert "UP WATCH" in signal.title
-        assert "Source: **okx**" in next(x.value for x in signal.fields if x.name == "Model and expiry")
+        assert "Exchange: **okx**" in next(x.value for x in signal.fields if x.name == "Details")
         alternatives = next(
             x.value for x in signal.fields
-            if x.name.startswith("Other venues")
+            if x.name.startswith("Other exchanges")
         )
         assert "hyperliquid" in alternatives
     finally:
@@ -116,13 +116,13 @@ async def test_global_beats_but_venue_trails_is_pass(tmp_path):
             market, mock_books(now, okx=False), asset="BTC",
             horizon_minutes=5, now=now,
         )
-        assert "PASS • MODEL UNDERPERFORMING" in signal.title
+        assert "doing worse than a simple guess" in signal.title
         assert "WATCH" not in signal.title
         track = next(
             x.value for x in signal.fields
-            if x.name.startswith("Model track record")
+            if x.name.startswith("Track record")
         )
-        assert "hyperliquid" in track and "Trails baseline" in track
+        assert "hyperliquid" in track and "worse than a simple guess" in track
         assert "All venues:" in track
     finally:
         store.close()
@@ -158,7 +158,7 @@ async def test_weak_forecast_stays_lean_even_when_venue_qualified(tmp_path):
             market, mock_books(now, okx=False), asset="BTC",
             horizon_minutes=5, now=now,
         )
-        assert "LEAN • NO SIGNAL" in signal.title
+        assert "only a slight" in signal.title
     finally:
         store.close()
 

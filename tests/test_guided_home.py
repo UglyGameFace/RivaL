@@ -300,7 +300,7 @@ async def test_private_signal_button_explains_no_forecast_without_fake_prices(tm
         await home.act(i, "forecast")
         assert home.page == "forecast"
         sent = i.edit_original_response.await_args.kwargs["embed"]
-        assert "NO LIVE SIGNAL" in sent.title
+        assert "No prediction right now" in sent.title
         assert "Market collection is disconnected" in sent.description
         assert "Home" in _labels(home)
     finally:
@@ -326,7 +326,7 @@ async def test_rival_signal_slash_command_is_private_and_uses_same_signal_engine
         )
         i.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
         i.edit_original_response.assert_awaited_once()
-        assert "NO LIVE SIGNAL" in i.edit_original_response.await_args.kwargs["embed"].title
+        assert "No prediction right now" in i.edit_original_response.await_args.kwargs["embed"].title
     finally:
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()

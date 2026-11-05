@@ -2,7 +2,7 @@
 
 RivaL uses three host-only settings: `POLYMARKET_CLOB_API_KEY`, `POLYMARKET_CLOB_API_SECRET`, `POLYMARKET_CLOB_API_PASSPHRASE`. `RIVAL_POLYBOLT_ENABLED=true` enables the read-only oracle worker (already the default). Discloud changes may require a restart before the process loads new values. **Never paste credential values into Discord, GitHub, logs, or this chat.**
 
-After the updated bot starts, run `/rival-tools health`. The **Polymarket oracle research** section distinguishes:
+After the updated bot starts, run `/rival-tools status` (view: Runtime diagnostics). The **Polymarket oracle research** section distinguishes:
 
 - **credentials needed**: one or more required environment variables are absent or empty
 - **not authenticated**: settings are present but no authenticated server acknowledgement has arrived; review the safe provider-state field

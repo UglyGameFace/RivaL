@@ -896,10 +896,7 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Cannot verify model evidence. NO BET."
                 )
 
-        @tools_group.command(
-            name="health",
-            description="Check Discord command sync, workers and verified data state.",
-        )
+        # Runtime diagnostics view of /rival-tools status (was /rival-tools health).
         async def rival_health(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             online = self.is_ready() and self.discord_ready_at is not None
@@ -1539,15 +1536,7 @@ class RivalDiscordClient(discord.Client):
             )
             await interaction.edit_original_response(content=message)
 
-        @tools_group.command(
-            name="source-health",
-            description="Inspect all nine futures collectors for the selected coin.",
-        )
-        @app_commands.choices(coin=[
-            app_commands.Choice(name="BTC", value="BTC"),
-            app_commands.Choice(name="ETH", value="ETH"),
-            app_commands.Choice(name="SOL", value="SOL"),
-        ])
+        # Exchange sources view of /rival-tools status (was /rival-tools source-health).
         async def rival_source_health(
             interaction: discord.Interaction, coin: app_commands.Choice[str],
         ) -> None:
@@ -1652,10 +1641,7 @@ class RivalDiscordClient(discord.Client):
                     content="No verified multi-source outcome evidence available.",
                 )
 
-        @tools_group.command(
-            name="stream-status",
-            description="Check live BTC/ETH/SOL exchange streams and freshness.",
-        )
+        # Live streams view of /rival-tools status (was /rival-tools stream-status).
         async def rival_stream_status(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             if self.live_stream is None:
@@ -1686,6 +1672,54 @@ class RivalDiscordClient(discord.Client):
                     inline=False,
                 )
             await interaction.edit_original_response(embed=embed)
+
+        @tools_group.command(
+            name="status",
+            description="Live status card now; or runtime diagnostics, exchange sources or streams.",
+        )
+        @app_commands.choices(
+            view=[
+                app_commands.Choice(name="Status card (default)", value="card"),
+                app_commands.Choice(name="Runtime diagnostics", value="diagnostics"),
+                app_commands.Choice(name="Exchange sources (pick a coin)", value="sources"),
+                app_commands.Choice(name="Live streams", value="streams"),
+            ],
+            coin=[
+                app_commands.Choice(name="BTC", value="BTC"),
+                app_commands.Choice(name="ETH", value="ETH"),
+                app_commands.Choice(name="SOL", value="SOL"),
+                app_commands.Choice(name="XRP", value="XRP"),
+            ],
+        )
+        async def rival_status(
+            interaction: discord.Interaction,
+            view: app_commands.Choice[str] | None = None,
+            coin: app_commands.Choice[str] | None = None,
+        ) -> None:
+            """One place for health: the same card the bot posts, built now."""
+            choice = view.value if view is not None else "card"
+            if choice == "diagnostics":
+                await rival_health(interaction)
+                return
+            if choice == "sources":
+                await rival_source_health(
+                    interaction, coin or app_commands.Choice(name="BTC", value="BTC"))
+                return
+            if choice == "streams":
+                await rival_stream_status(interaction)
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
+            try:
+                facts = await asyncio.wait_for(self._status_facts(), timeout=20)
+                embed, _, _ = build_embed(facts)
+                embed.set_footer(text=(embed.footer.text or "") +
+                                 " • on request; other views: diagnostics, sources, streams")
+                await interaction.edit_original_response(embed=embed)
+            except Exception:  # noqa: BLE001 - never leave the command hanging
+                _LOG.exception("RivaL on-demand status card failed")
+                await interaction.edit_original_response(
+                    content="Status card could not be built right now; try "
+                            "`/rival-tools status view: Runtime diagnostics`.")
 
         @tools_group.command(
             name="stream-proof",

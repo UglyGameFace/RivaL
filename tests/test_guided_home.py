@@ -415,8 +415,9 @@ async def test_ten_source_and_ensemble_discord_commands_are_private_on_android(t
     try:
         asset = app_commands.Choice(name="BTC", value="BTC")
         horizon = app_commands.Choice(name="5 minutes", value=5)
+        sources = app_commands.Choice(name="Exchange sources", value="sources")
         for name, args in (
-            ("source-health", (asset,)),
+            ("status", (sources, asset)),
             ("multi-proof", (asset, horizon)),
         ):
             command = bot.tree.get_command("rival-tools").get_command(name)
@@ -483,10 +484,12 @@ def test_every_legacy_tool_is_grouped_without_duplicate_global_commands(tmp_path
         assert roots == {"rival", "rival-signal", "rival-stop", "rival-tools"}
         group = bot.tree.get_command("rival-tools")
         names = [c.name for c in group.commands]
-        assert len(names) == len(set(names)) == 20
+        # health, source-health and stream-status became views of status.
+        assert len(names) == len(set(names)) == 18
         assert {"paper-open", "paper-close", "practice", "picks",
-                "quote", "research", "multi-proof", "source-health",
-                "target", "stream-status", "profit-proof"}.issubset(names)
+                "quote", "research", "multi-proof", "status",
+                "target", "profit-proof"}.issubset(names)
+        assert not {"health", "source-health", "stream-status"} & set(names)
         assert all(not name.startswith("rival-") for name in names)
     finally:
         bot.store.close()

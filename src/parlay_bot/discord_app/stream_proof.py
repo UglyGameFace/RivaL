@@ -70,7 +70,7 @@ def stream_proof_embed(report: dict) -> discord.Embed:
                 value=(
                     "No eligible issuer history for this exact coin, horizon "
                     "and supported exchange. Check /rival-tools data, "
-                    "/rival-tools stream-status and autonomous collector health."
+                    "/rival-tools status (view: Live streams) and autonomous collector health."
                 ),
                 inline=False,
             )

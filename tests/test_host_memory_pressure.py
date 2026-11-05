@@ -120,3 +120,18 @@ def test_nonnegative_cgroup_usage_boundaries():
     assert host_memory._nonnegative_usage("-1") is None
     assert host_memory._nonnegative_usage("max") is None
     assert host_memory._nonnegative_usage(str(1 << 50)) is None
+
+
+def test_unlimited_cgroup_does_not_confuse_machine_usage_with_app_rss(monkeypatch):
+    fixtures = {
+        "/sys/fs/cgroup/memory.max": "max",
+        "/sys/fs/cgroup/memory.current": str(10240 * host_memory.MIB),
+        "/sys/fs/cgroup/memory.peak": str(12000 * host_memory.MIB),
+        "/proc/self/status": "VmRSS:\t50000 kB\n",
+    }
+    monkeypatch.setattr(host_memory, "_read_bytes", fixtures.get)
+    state = host_memory.snapshot()
+    assert state.limit_bytes == 512 * host_memory.MIB
+    assert state.cgroup_bytes is None
+    assert state.cgroup_peak_bytes is None
+    assert not state.pressure

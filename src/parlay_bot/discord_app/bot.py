@@ -2715,6 +2715,10 @@ class RivalDiscordClient(discord.Client):
             # boundary and late forecasts expire, so record where time goes.
             stages: dict[str, float] = {}
             cycle_started = mark = time.monotonic()
+            # A SIGKILL/OOM has no Python traceback. Leave a low-cost resource
+            # trail before long-lived stages, so the last phase is identifiable.
+            _LOG.info("RivaL perp memory checkpoint stage=pre_collect %s",
+                      host_memory.snapshot().detail)
             try:
                 await self.perp_collector.collect_once()
             except asyncio.CancelledError:
@@ -2722,6 +2726,8 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001 - collector never crashes Discord
                 _LOG.exception("RivaL perp automatic collection cycle failed")
             stages["collect"], mark = time.monotonic() - mark, time.monotonic()
+            _LOG.info("RivaL perp memory checkpoint stage=post_collect %s",
+                      host_memory.snapshot().detail)
             # Bounded spike analytics and future-only self-evaluation: reuse
             # the existing source collector cycle and saved original bars.
             if self.spike_watch is not None and not host_memory.snapshot().pressure:
@@ -2755,6 +2761,8 @@ class RivalDiscordClient(discord.Client):
             # market observation. It makes no exchange or Gemini API calls.
             # Failure is isolated from both collection and Discord.
             if self.autonomous is not None:
+                _LOG.info("RivaL perp memory checkpoint stage=pre_forecast %s",
+                          host_memory.snapshot().detail)
                 try:
                     issued, settled, ai_issued = await self.autonomous.cycle()
                     _LOG.info(
@@ -2767,6 +2775,8 @@ class RivalDiscordClient(discord.Client):
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL autonomous research cycle failed safely")
             stages["forecast"], mark = time.monotonic() - mark, time.monotonic()
+            _LOG.info("RivaL perp memory checkpoint stage=post_forecast %s",
+                      host_memory.snapshot().detail)
             # Once per hour, inspect persisted evidence without adding API
             # requests or disturbing live predictions and market collection.
             if self.autonomous is not None:

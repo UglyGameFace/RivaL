@@ -326,3 +326,43 @@ def test_price_only_model_serves_when_binance_context_is_unavailable(tmp_path):
         assert models.active(5, context=False)["trained_through"] == v1["trained_through"]
     finally:
         store.close()
+
+
+def test_unchanged_registry_reload_skips_documents_but_sees_new_and_maturing_models(tmp_path):
+    """The 10-minute refresh re-downloaded ~10 MB of model JSON even when no
+    model changed. It now reads only the (family, sha) list then, and still
+    picks up a newly imported model and one whose training end was in the
+    future at the last reload."""
+    import json as _json
+    from datetime import UTC, datetime
+
+    from parlay_bot.perpetuals.pooled_model import PooledModelSet
+    from parlay_bot.storage.hot import SQLiteHotStore
+
+    store = SQLiteHotStore(tmp_path / "reload.sqlite")
+    try:
+        models = PooledModelSet(store)
+        models.import_document("a", _json.dumps(_doc(through="2026-10-30T23:55:00+00:00")).encode())
+        future = _doc(through="2026-11-02T23:55:00+00:00")
+        future["trees"] = [[[0, 0.0, 1, 2, 1, 2], [0.4], [-0.4]]]
+        models.import_document("b", _json.dumps(future).encode())
+        early = datetime(2026, 11, 1, tzinfo=UTC)
+        later = datetime(2026, 11, 3, tzinfo=UTC)
+        models._reload(early)
+        assert models.active(5, now=early)["trained_through"].startswith("2026-10-30")
+        assert models._pending_usable is True
+        models._reload(later)  # same rows, but model b is now usable
+        assert models.active(5, now=later)["trained_through"].startswith("2026-11-02")
+        assert models._pending_usable is False
+
+        selection = models._active
+        models._reload(later)  # nothing changed: selection object kept as is
+        assert models._active is selection
+        newer = _doc(through="2026-11-02T23:59:00+00:00")
+        newer["trees"] = [[[0, 0.0, 1, 2, 1, 2], [0.1], [-0.1]]]
+        models.import_document("c", _json.dumps(newer).encode())
+        models._reload(later)
+        assert models._active is not selection
+        assert models.active(5, now=later)["trained_through"] == "2026-11-02T23:59:00+00:00"
+    finally:
+        store.close()

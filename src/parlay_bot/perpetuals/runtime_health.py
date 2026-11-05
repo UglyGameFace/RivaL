@@ -14,6 +14,8 @@ from parlay_bot.storage.hot import RelationalHotStore
 _LOG = logging.getLogger(__name__)
 # How long a challenger-regression verdict (a 7-day paired score) is reused.
 REGRESSION_RECHECK = timedelta(minutes=10)
+# A challenger counts as in use if it issued a forecast this recently.
+REGRESSION_IN_USE_WITHIN = timedelta(minutes=30)
 
 
 def _age(now: datetime, value: object) -> timedelta | None:
@@ -237,8 +239,11 @@ class RuntimeHealthMonitor:
                        WHERE settled_at IS NOT NULL AND issued_at>=?
                          AND model_brier IS NOT NULL AND incumbent_brier IS NOT NULL
                        GROUP BY venue,contract,quote,family
-                       HAVING COUNT(*)>=50""",
-                    ((stamp-timedelta(days=7)).isoformat(),),
+                       HAVING COUNT(*)>=50 AND MAX(issued_at)>=?""",
+                    # Only families still issuing: a retired or replaced
+                    # challenger keeps its record but stops raising incidents.
+                    ((stamp-timedelta(days=7)).isoformat(),
+                     (stamp-REGRESSION_IN_USE_WITHIN).isoformat()),
                 ).fetchall()
                 for row in regressions:
                     if float(row["model_score"]) > float(row["incumbent_score"]) + 0.025:

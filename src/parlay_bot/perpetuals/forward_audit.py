@@ -61,6 +61,11 @@ HORIZONS = RESEARCH_HORIZONS
 MIN_PREVIOUS_EVALUATED = 20
 MAX_STREAMS_PER_CYCLE = 40
 MAX_PENDING_SETTLEMENTS = 120
+# flow_v1/flow_v2 are retired: over 7 days of graded outcomes (to Nov 5, 2026)
+# they lost to every venue's up-rate at every horizon (60m: -0.047/-0.054
+# Brier) and their ~78%-UP calls came true 33-44% of the time. A calibrated,
+# input-standardized successor would be a new family, not these.
+ISSUE_FLOW_CHALLENGERS = False
 # The incumbent's fast settlement covers the last 2 days; a day of margin.
 SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
 
@@ -751,7 +756,10 @@ class ForwardAccuracyMonitor:
         btc_cache: dict[str, list] = {}
         # Order-flow challenger inputs: one causal snapshot per asset per cycle.
         # v2 adds OKX/Coinbase flow and spot basis; both are graded side by side.
-        flows = (FlowChallenger(self.store), FlowChallengerV2(self.store))
+        # Retired Nov 5, 2026 (ISSUE_FLOW_CHALLENGERS): their stored forecasts
+        # and weights stay; nothing new is issued or learned.
+        flows = ((FlowChallenger(self.store), FlowChallengerV2(self.store))
+                 if ISSUE_FLOW_CHALLENGERS else ())
         flow_inputs: dict = {}
         cycle_assets = {a for _, c, _ in selection if (a := asset_for_contract(c)) is not None}
         for flow in flows:

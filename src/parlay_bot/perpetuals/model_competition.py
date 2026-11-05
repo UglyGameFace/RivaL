@@ -320,25 +320,36 @@ class ShadowModelCompetition:
 
     def _settle_batch(self, *, now: datetime, since: datetime | None) -> tuple[int, bool]:
         stamp = utc(now).isoformat()
+        # A target can only be graded once its candle has closed (validated
+        # below), so rows whose target is still open are not looked up at all.
+        due = (utc(now) - timedelta(minutes=5)).isoformat()
         window = "" if since is None else " AND s.target_opened_at>=?"
         params = (stamp,) if since is None else (stamp, utc(since).isoformat())
         with self.store.connect() as conn:
+            # Look each unsettled row's incumbent up by its primary key. As a
+            # plain join, PostgreSQL hash-joined against every settled
+            # incumbent forecast (a parallel full scan, 0.7-2.2 s per batch);
+            # correlated lookups are a few thousand index probes instead.
+            match_f = """FROM perp_forward_audit f
+                         WHERE f.venue=s.venue AND f.contract=s.contract AND f.quote=s.quote
+                           AND f.horizon_minutes=s.horizon_minutes
+                           AND f.model_version='prospective-logistic-persistent-v3'
+                           AND f.reference_opened_at=s.reference_opened_at
+                           AND f.asset=s.asset AND f.issued_at=s.issued_at
+                           AND f.target_opened_at=s.target_opened_at
+                           AND f.settled_at IS NOT NULL AND f.settled_at<=?
+                           AND f.outcome_up IN (0,1)"""
             rows = conn.execute(
-                """SELECT s.*,f.outcome_up AS verified_outcome_up,
-                          f.settled_at AS verified_settled_at
-                   FROM rival_model_shadow_forecasts s
-                   JOIN perp_forward_audit f
-                    ON f.model_version='prospective-logistic-persistent-v3'
-                    AND f.venue=s.venue AND f.contract=s.contract
-                    AND f.quote=s.quote AND f.asset=s.asset
-                    AND f.horizon_minutes=s.horizon_minutes
-                    AND f.reference_opened_at=s.reference_opened_at
-                    AND f.issued_at=s.issued_at
-                   WHERE s.settled_at IS NULL AND f.settled_at IS NOT NULL
-                    AND f.settled_at<=? AND f.outcome_up IN (0,1)
-                    AND s.target_opened_at=f.target_opened_at""" + window + f"""
-                   ORDER BY s.target_opened_at LIMIT {SETTLE_BATCH}""",
-                params,
+                f"""SELECT * FROM (
+                      SELECT s.*,
+                             (SELECT f.outcome_up {match_f}) AS verified_outcome_up,
+                             (SELECT f.settled_at {match_f}) AS verified_settled_at
+                      FROM rival_model_shadow_forecasts s
+                      WHERE s.settled_at IS NULL AND s.target_opened_at<?{window}
+                    ) x
+                    WHERE x.verified_settled_at IS NOT NULL
+                    ORDER BY x.target_opened_at LIMIT {SETTLE_BATCH}""",
+                (stamp, stamp, due, *params[1:]),
             ).fetchall()
             # Validate per row exactly as before, then write in a few set-based
             # UPDATEs instead of one network round trip per shadow row. Rows

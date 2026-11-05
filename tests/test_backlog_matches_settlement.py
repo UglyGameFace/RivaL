@@ -73,7 +73,7 @@ def test_regression_verdict_is_reused_for_ten_minutes_then_rechecked(tmp_path):
                 math_ok INTEGER NOT NULL, ai_settlement_ok INTEGER NOT NULL,
                 model_review_ok INTEGER NOT NULL, gemini_ok INTEGER NOT NULL)""")
             for i in range(60):
-                at = (NOW - timedelta(hours=6, minutes=-5 * i)).isoformat()
+                at = (NOW - timedelta(minutes=300 - 5 * i)).isoformat()
                 conn.execute(
                     """INSERT INTO rival_model_shadow_forecasts (venue,contract,quote,asset,
                          horizon_minutes,family,reference_opened_at,issued_at,target_opened_at,
@@ -93,5 +93,40 @@ def test_regression_verdict_is_reused_for_ten_minutes_then_rechecked(tmp_path):
         # and after it the ledger is read again.
         later = NOW + REGRESSION_RECHECK + timedelta(seconds=1)
         assert key not in monitor.inspect(now=later, learning_enabled=True)
+    finally:
+        store.close()
+
+
+def test_a_retired_challenger_keeps_its_record_but_raises_no_incident(tmp_path):
+    from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
+
+    store = SQLiteHotStore(tmp_path / "retired.sqlite")
+    try:
+        store.initialize()
+        market = PerpetualMarketStore(store)
+        market.initialize()
+        ForwardAccuracyMonitor(market).initialize()
+        ShadowModelCompetition(store).initialize()
+        with store.connect() as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS perp_learning_cycle_health (
+                slot_utc TEXT PRIMARY KEY, started_at TEXT NOT NULL,
+                completed_at TEXT NOT NULL, math_issued INTEGER NOT NULL,
+                math_settled INTEGER NOT NULL, ai_issued INTEGER NOT NULL,
+                math_ok INTEGER NOT NULL, ai_settlement_ok INTEGER NOT NULL,
+                model_review_ok INTEGER NOT NULL, gemini_ok INTEGER NOT NULL)""")
+            for i in range(60):  # losing badly, but last issued 3 hours ago
+                at = (NOW - timedelta(hours=8, minutes=-5 * i)).isoformat()
+                conn.execute(
+                    """INSERT INTO rival_model_shadow_forecasts (venue,contract,quote,asset,
+                         horizon_minutes,family,reference_opened_at,issued_at,target_opened_at,
+                         probability_up,incumbent_up,baseline_up,training_count,training_sha256,
+                         settled_at,outcome_up,model_brier,incumbent_brier,baseline_brier)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("dydx", "BTC-USD", "USD", "BTC", 5, "flow_v1", at, at, at,
+                     .9, .5, .5, 10, "0" * 64, at, 0, .81, .25, .25))
+        monitor = RuntimeHealthMonitor(store)
+        monitor.started_at = NOW - timedelta(hours=1)
+        faults = monitor.inspect(now=NOW, learning_enabled=True)
+        assert not any(key.startswith("regression:") for key in faults)
     finally:
         store.close()

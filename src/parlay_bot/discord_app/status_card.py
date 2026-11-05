@@ -98,7 +98,9 @@ def _stream_stalled(s: dict) -> bool:
 def _stream_line(venue: str, s: dict) -> str:
     """A socket can stay open while the provider sends nothing usable
     (Binance on a blocked host): that is not a healthy stream."""
-    counts = f"{s.get('updates', 0):,} updates, {s.get('reconnects', 0)} reconnects"
+    reconnects = s.get("reconnects", 0)
+    counts = (f"{s.get('updates', 0):,} updates, {reconnects} "
+              f"reconnect{'' if reconnects == 1 else 's'}")
     if not s.get("connected"):
         return f"🛑 {venue}: disconnected ({counts})"
     age = s.get("last_update_age_s")
@@ -324,11 +326,21 @@ def plain(text: str) -> str:
         return f"{name or 'An outside service'} didn't answer in time"
     if "memory pressure" in low:
         return "Memory ran low, so extra work was paused"
-    if "unavailable" in low or "failed" in low:
-        # Drop key=value details; keep the readable part.
-        words = _KV.sub("", t).split(" | ")[0]
-        return re.sub(r"\s+", " ", words).strip(" ;:,")[:120]
-    return t[:120]
+    for needle, words in (
+        ("streaming forward proof failed", "After-fee check skipped (no live price)"),
+        ("candidate import from drive", "Couldn't load a new model from Google Drive"),
+        ("sports settlement snapshot", "Couldn't check finished sports results"),
+        ("slash command failed", "A slash command hit an error"),
+        ("command sync failed", "Couldn't update the bot's slash commands"),
+        ("cold archive", "Old-data archiving hit a problem"),
+        ("polymarket", "A Polymarket check hit a problem"),
+        ("kalshi", "A Kalshi check hit a problem"),
+    ):
+        if needle in low:
+            return words
+    # Drop key=value details and the technical "[ErrorType: ...]" tail.
+    words = re.sub(r"\s*\[.*", "", _KV.sub("", t)).split(" | ")[0]
+    return re.sub(r"\s+", " ", words).strip(" ;:,")[:120] or t[:120]
 
 
 def problem_state(group, *, now: datetime, boot_at: datetime,

@@ -1879,9 +1879,13 @@ class ResearchDashboard(discord.ui.View):
                             embed.add_field(
                                 name=f"Forward {horizon}m calibration",
                                 value=(
-                                    (f"⚠️ Counts only predictions made before their "
-                                     f"window opened; all {late:,} graded {horizon}-minute "
-                                     "predictions were issued after it opened.\n"
+                                    (f"ℹ️ Not measured here, by design: each {horizon}-minute "
+                                     "prediction is issued about 1–2 minutes after its "
+                                     "result window opens (the model only uses closed "
+                                     "candles, so its accuracy score elsewhere is fair, "
+                                     "but nobody could have traded at that price). "
+                                     f"Calibration counts only predictions made before the "
+                                     f"window, and none of the {late:,} graded ones were.\n"
                                      if late and not reliability["unique_targets"] else "") +
                                     f"**{reliability['unique_targets']}** independent "
                                     f"UTC target outcomes over **{reliability['days']}** "

@@ -176,7 +176,7 @@ async def test_signal_is_vetoed_before_market_books_or_llm_calls(tmp_path):
         market, NotUsedQuotes(), asset="BTC", horizon_minutes=5,
         now=stamp, decision_out=verdict, decision_only=True,
     )
-    assert "NO LIVE SIGNAL" in response.title
+    assert "No prediction right now" in response.title
     assert "Employment Situation" in response.description
     assert verdict["is_watch"] is False
     assert verdict["event_risk"] == "official_release_window"

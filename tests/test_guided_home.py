@@ -75,7 +75,7 @@ async def test_beginner_home_begins_simple_and_keeps_advanced_features(tmp_path)
         assert len(home.children) <= 25
         assert max(item.row for item in home.children) <= 4
         embed = await home.render()
-        assert "bot's real" in embed.description
+        assert "bot's predictions" in embed.description
         assert "No real bets" in embed.description
     finally:
         home.stop()
@@ -300,7 +300,7 @@ async def test_private_signal_button_explains_no_forecast_without_fake_prices(tm
         await home.act(i, "forecast")
         assert home.page == "forecast"
         sent = i.edit_original_response.await_args.kwargs["embed"]
-        assert "NO LIVE SIGNAL" in sent.title
+        assert "No prediction right now" in sent.title
         assert "Market collection is disconnected" in sent.description
         assert "Home" in _labels(home)
     finally:
@@ -326,7 +326,7 @@ async def test_rival_signal_slash_command_is_private_and_uses_same_signal_engine
         )
         i.response.defer.assert_awaited_once_with(ephemeral=True, thinking=True)
         i.edit_original_response.assert_awaited_once()
-        assert "NO LIVE SIGNAL" in i.edit_original_response.await_args.kwargs["embed"].title
+        assert "No prediction right now" in i.edit_original_response.await_args.kwargs["embed"].title
     finally:
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
@@ -453,12 +453,12 @@ async def test_advanced_tools_and_legacy_pages_do_not_duplicate_metrics(tmp_path
         assert "Profit Proof" not in _labels(home)
         assert "Home" in _labels(home)
         view = await home.render()
-        assert view.title == "📊 RivaL | BTC Performance (5 min)"
+        assert view.title == "📊 How RivaL is doing: BTC, 5-min predictions"
         assert [f.name for f in view.fields] == [
-            "📈 How accurate are BTC exchange predictions?",
-            "🎯 How accurate are Polymarket predictions?",
-            "🧠 Is RivaL actually learning?",
-            "📡 Are market feeds and predictions running?",
+            "📈 BTC exchange predictions (up or down?)",
+            "🎯 Polymarket / Kalshi predictions",
+            "🧠 Is it learning?",
+            "📡 Is everything running?",
         ]
         assert all(len(field.value) < 1025 for field in view.fields)
     finally:

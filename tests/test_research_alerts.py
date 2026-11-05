@@ -195,8 +195,10 @@ def test_decay_judges_only_the_version_in_use(tmp_path):
             conn.execute("UPDATE rival_model_shadow_forecasts SET model_brier=.27 "
                          "WHERE training_sha256=?", ("b" * 64,))
         alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
-        assert alerts["decay:5m"].startswith("⚠️ 5-min six-year model bbbbbbbbbbbb (in use)")
-        assert "+0.0200 Brier over 400" in alerts["decay:5m"]
+        assert alerts["decay:5m"].startswith("⚠️ The 5-min 6-year model has done worse")
+        assert "Version bbbbbbbbbbbb" in alerts["decay:5m"]
+        assert "(400 results" in alerts["decay:5m"]
+        assert "error-score gap +0.0200" in alerts["decay:5m"]
     finally:
         store.close()
 
@@ -231,7 +233,8 @@ def test_a_gap_within_random_noise_is_not_called_decay(tmp_path):
             conn.execute("DELETE FROM rival_model_shadow_forecasts")
             insert(0.02, "d")  # a real, sustained loss still alerts
         alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
-        assert alerts["decay:15m"].startswith("⚠️ 15-min six-year model dddddddddddd (in use)")
-        assert "× the noise)" in alerts["decay:15m"]
+        assert alerts["decay:15m"].startswith("⚠️ The 15-min 6-year model has done worse")
+        assert "Version dddddddddddd" in alerts["decay:15m"]
+        assert "× bigger than chance" in alerts["decay:15m"]
     finally:
         store.close()

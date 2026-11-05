@@ -230,10 +230,10 @@ async def test_okx_forecast_can_watch_with_its_own_book(tmp_path) -> None:
         signal = await signal_embed(
             market, quotes, asset="BTC", horizon_minutes=5, now=now,
         )
-        assert "UP WATCH" in signal.title
-        assert "Source: **okx**" in next(x.value for x in signal.fields if x.name == "Model and expiry")
-        assert "OKX" in next(x.value for x in signal.fields if x.name == "Fresh matching-market bid / ask 💱")
-        assert "$81,000.00" in next(x.value for x in signal.fields if x.name == "Fresh matching-market bid / ask 💱")
+        assert "Leans UP: watch only" in signal.title
+        assert "Exchange: **okx**" in next(x.value for x in signal.fields if x.name == "Details")
+        assert "OKX" in next(x.value for x in signal.fields if x.name == "Live price right now 💱")
+        assert "$81,000.00" in next(x.value for x in signal.fields if x.name == "Live price right now 💱")
         quotes.get_venue.assert_awaited_once_with("BTC", "okx")
     finally:
         store.close()

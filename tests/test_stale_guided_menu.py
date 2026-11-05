@@ -271,8 +271,8 @@ async def test_signal_evidence_runs_concurrently_with_book_fetch(tmp_path):
             stream_shadow=SlowShadow(),
         )
         assert marks["shadow_start"] < marks["book_end"]
-        assert "UP WATCH" in embed.title
-        assert "Source-matched after-cost proof" in [f.name for f in embed.fields]
+        assert "Leans UP: watch only" in embed.title
+        assert "Would it have made money after fees?" in [f.name for f in embed.fields]
     finally:
         store.close()
 

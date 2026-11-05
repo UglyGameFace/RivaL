@@ -63,11 +63,11 @@ def test_live_watch_displays_real_price_and_pending_forecast(tmp_path):
         assert items[0]["price"] == pytest.approx(100200)
         assert items[0]["direction"] == "UP"
         displayed = crypto_desk_embed(market, asset="BTC", now=now).to_dict()
-        assert "PASS" in displayed["description"]
-        assert "WATCH" in displayed["fields"][0]["value"]
+        assert "Should you trade on this? No, not yet." in displayed["description"]
+        assert "not a signal to trade" in displayed["fields"][0]["value"]
         assert "$100,200.00" in displayed["fields"][0]["value"]
-        assert "not profit-calibrated" in displayed["fields"][0]["value"]
-        assert "No automatic orders" in displayed["footer"]["text"]
+        assert "not proven accurate" in displayed["fields"][0]["value"]
+        assert "No trades are placed" in displayed["footer"]["text"]
     finally:
         store.close()
 
@@ -80,14 +80,14 @@ def test_stale_candle_or_expired_window_never_becomes_live_opportunity(tmp_path)
         embed = crypto_desk_embed(
             market, asset="BTC", now=now + timedelta(hours=1),
         )
-        assert "No qualified live watch" in embed.fields[0].name
+        assert "Nothing to watch right now" in embed.fields[0].name
     finally:
         store.close()
 
 
 def test_disconnected_price_feed_is_explicit_pass():
     embed = crypto_desk_embed(None, asset="BTC")
-    assert "PASS" in embed.description
+    assert "No, not yet" in embed.description
     assert "Data unavailable" in embed.fields[0].name
 
 

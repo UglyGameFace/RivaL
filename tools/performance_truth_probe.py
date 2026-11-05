@@ -43,6 +43,17 @@ def probe() -> dict:
                                         GROUP BY hour, template ORDER BY hour DESC LIMIT 20""",
                                      (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:00:00+00:00"))
             out["boots"] = q("SELECT started_at FROM rival_runtime_health_boots ORDER BY started_at DESC LIMIT 2")
+        with store.connect() as conn:
+            out["decay_stats"] = [dict(r) for r in conn.execute(
+                """SELECT horizon_minutes AS h, SUBSTR(training_sha256,1,12) AS model,
+                          COUNT(*) AS n, AVG(model_brier)-AVG(baseline_brier) AS gap,
+                          AVG((model_brier-baseline_brier)*(model_brier-baseline_brier)) AS d2,
+                          COUNT(DISTINCT target_opened_at) AS targets, MAX(issued_at) AS last
+                   FROM rival_model_shadow_forecasts
+                   WHERE family LIKE 'pooled%' AND settled_at IS NOT NULL
+                     AND model_brier IS NOT NULL AND baseline_brier IS NOT NULL AND settled_at>=?
+                   GROUP BY 1,2 HAVING MAX(issued_at)>=?""",
+                ((now - timedelta(days=3)).isoformat(), (now - timedelta(minutes=30)).isoformat())).fetchall()]
         try:
             from parlay_bot.discord_app.research_alerts import research_alerts
             out["research_alerts"] = [list(x) for x in research_alerts(store)]

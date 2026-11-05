@@ -148,9 +148,10 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
         for horizon, (gap, model, n, sigmas) in sorted(worst.items()):
             alerts.append((f"decay:{horizon}m",
                            (f"⚠️ The {horizon}-min 6-year model has done worse than a "
-                            f"simple guess over the last 3 days ({n:,} results; the gap is "
-                            f"{sigmas:.1f}× bigger than chance would explain). "
-                            f"Version {model}, error-score gap +{gap:.4f}")))
+                            f"simple guess over the last 3 days ({n:,} results"
+                            + (f"; the gap is {sigmas:.1f}× bigger than chance would explain"
+                               if sigmas > 0 else "")
+                            + f"). Version {model}, error-score gap +{gap:.4f}")))
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("Research alert: challenger table unreadable (%s)", type(exc).__name__)
 

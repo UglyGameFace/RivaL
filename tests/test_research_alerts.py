@@ -197,7 +197,8 @@ def test_decay_judges_only_the_version_in_use(tmp_path):
         alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
         assert alerts["decay:5m"].startswith("⚠️ The 5-min 6-year model has done worse")
         assert "Version bbbbbbbbbbbb" in alerts["decay:5m"]
-        assert "+0.0200 Brier over 400" in alerts["decay:5m"]
+        assert "(400 results" in alerts["decay:5m"]
+        assert "error-score gap +0.0200" in alerts["decay:5m"]
     finally:
         store.close()
 

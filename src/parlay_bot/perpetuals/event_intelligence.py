@@ -415,6 +415,10 @@ class EventIntelligence:
                     self._status(source, stamp, "ok")
                 except (httpx.HTTPError, ValueError, TypeError, ET.ParseError, UnicodeError) as exc:
                     code = type(exc).__name__[:60]
+                    if isinstance(exc, httpx.HTTPStatusError):
+                        # The status (429 rate limit vs 403 block vs 5xx) is
+                        # what decides the remedy; it carries no secrets.
+                        code = f"{code}:{exc.response.status_code}"
                     self._status(source, stamp, "unavailable")
                     summary["source_failures"].append({"source": source, "error": code})
                     _LOG.warning("RivaL official event feed unavailable source=%s error=%s",

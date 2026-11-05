@@ -43,6 +43,11 @@ def probe() -> dict:
                                         GROUP BY hour, template ORDER BY hour DESC LIMIT 20""",
                                      (now - timedelta(hours=24)).strftime("%Y-%m-%dT%H:00:00+00:00"))
             out["boots"] = q("SELECT started_at FROM rival_runtime_health_boots ORDER BY started_at DESC LIMIT 2")
+        try:
+            from parlay_bot.discord_app.research_alerts import research_alerts
+            out["research_alerts"] = [list(x) for x in research_alerts(store)]
+        except Exception as exc:  # noqa: BLE001
+            out["research_alerts_error"] = f"{type(exc).__name__}: {str(exc)[:120]}"
     finally:
         store.close()
     out["container"] = host_memory.snapshot().detail

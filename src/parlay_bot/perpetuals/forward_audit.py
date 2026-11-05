@@ -56,6 +56,7 @@ def no_trade_outcome(row) -> bool:
 
 
 SETTLEMENT_DUE_AFTER = timedelta(minutes=5)
+SUMMARY_TTL_SECONDS = 60
 SETTLEMENT_OVERDUE_AFTER = timedelta(minutes=65)
 HORIZONS = RESEARCH_HORIZONS
 MIN_PREVIOUS_EVALUATED = 20
@@ -1384,6 +1385,39 @@ class ForwardAccuracyMonitor:
         }
 
     def summary(self, *, asset: str, now: datetime | None = None) -> dict:
+        """The 14-day scorecard, shared for SUMMARY_TTL across live readers.
+
+        Every Research and Performance page and each Intelligence review read
+        this 2-5 s aggregate separately; under load the first Performance
+        render hit its 7 s read limit ("Score read unavailable") while the
+        same query ran several times at once. A call for "now" reuses a
+        result computed in the last minute; an explicit historical clock
+        always computes fresh.
+        """
+        import copy
+        import time as _time
+
+        wall = datetime.now(UTC)
+        stamp = utc(now or wall)
+        live = abs((stamp - wall).total_seconds()) <= 10
+        cache = getattr(self.store, "_forward_summary_cache", None)
+        if cache is None:
+            cache = {}
+            try:
+                self.store._forward_summary_cache = cache
+            except AttributeError:
+                live = False
+        key = asset
+        if live:
+            hit = cache.get(key)
+            if hit is not None and _time.monotonic() - hit[0] < SUMMARY_TTL_SECONDS:
+                return copy.deepcopy(hit[1])
+        result = self._summary_uncached(asset=asset, now=stamp)
+        if live:
+            cache[key] = (_time.monotonic(), copy.deepcopy(result))
+        return result
+
+    def _summary_uncached(self, *, asset: str, now: datetime | None = None) -> dict:
         """Aggregate valid paired future scores without counting missing errors as zero.
 
         Across nine collecting exchanges, two horizons and two weeks this otherwise

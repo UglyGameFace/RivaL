@@ -83,7 +83,9 @@ class LiveModelCheckpoints:
             if known > now:
                 continue
             issued = utc(s.issued_at).isoformat()
-            content = (known, tuple(s.features), s.label_up)
+            # A hash of the content, not the content: holding every sample's
+            # features again for ~108 streams cost ~30 MB (Nov 5 measurement).
+            content = hash((known, tuple(s.features), s.label_up))
             hit = previous.get(issued)
             if hit is not None and hit[0] == content:
                 digest = hit[1]
@@ -260,8 +262,12 @@ class LiveModelCheckpoints:
             }
             encoded = canonical(state)
             weights_sha = hashlib.sha256(canonical(state["weights"]).encode()).hexdigest()
-            if row is None or encoded != row["state_json"]:
-                digest = hashlib.sha256(encoded.encode()).hexdigest()
+            digest = hashlib.sha256(encoded.encode()).hexdigest()
+            # training_digest is the SHA-256 of the stored state JSON (written
+            # together below, verified on restore), so comparing digests is
+            # comparing the JSON, without keeping ~100 KB of it per stream
+            # in the cache.
+            if row is None or digest != row["training_digest"]:
                 with self.store.connect() as conn:
                     saved = conn.execute(
                         "INSERT INTO rival_live_model_checkpoints "
@@ -279,7 +285,7 @@ class LiveModelCheckpoints:
                     self._cache_checkpoint(
                         identity,
                         {"training_digest": digest, "trained_at": now.isoformat(),
-                         "weights_sha256": weights_sha, "state_json": encoded},
+                         "weights_sha256": weights_sha},
                         state,
                     )
                 elif row is None or utc(datetime.fromisoformat(row["trained_at"])) <= now:
@@ -296,8 +302,7 @@ class LiveModelCheckpoints:
                     identity,
                     {"training_digest": row["training_digest"],
                      "trained_at": row["trained_at"],
-                     "weights_sha256": row["weights_sha256"],
-                     "state_json": row["state_json"]},
+                     "weights_sha256": row["weights_sha256"]},
                     state,
                 )
             self._fitted += int(trained > 0)

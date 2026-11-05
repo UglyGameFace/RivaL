@@ -174,6 +174,7 @@ class RivalDiscordClient(discord.Client):
         self._benefit_task: asyncio.Task[None] | None = None
         self._intelligence_task: asyncio.Task[None] | None = None
         self._loop_watch_task: asyncio.Task[None] | None = None
+        self._memory_task: asyncio.Task[None] | None = None
         self._context_task: asyncio.Task[None] | None = None
         self._records_task: asyncio.Task[None] | None = None
         self._kalshi_updown_task: asyncio.Task[None] | None = None
@@ -1777,6 +1778,10 @@ class RivalDiscordClient(discord.Client):
         return
 
     async def setup_hook(self) -> None:
+        if self._memory_task is None:
+            self._memory_task = asyncio.create_task(
+                self._memory_receipt_loop(), name="rival-memory-receipt",
+            )
         if self._loop_watch_task is None:
             # First, so a stall during startup is attributed too.
             from parlay_bot.discord_app.loop_watch import LoopStallWatch
@@ -3336,6 +3341,21 @@ class RivalDiscordClient(discord.Client):
             ),
         }
 
+    async def _memory_receipt_loop(self) -> None:
+        """Every 30 minutes, record what kinds of objects are accumulating."""
+        from parlay_bot.discord_app.memory_receipt import MemoryReceipt
+
+        receipt = MemoryReceipt()
+        await asyncio.sleep(10 * 60)  # past the startup burst
+        while not self.is_closed():
+            try:
+                await asyncio.to_thread(receipt.sample)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - diagnostic only
+                _LOG.warning("RivaL memory receipt unavailable", exc_info=True)
+            await asyncio.sleep(30 * 60)
+
     async def _after_startup_burst(self) -> None:
         """Hold optional bulk work until the post-restart burst has passed.
 
@@ -3431,7 +3451,7 @@ class RivalDiscordClient(discord.Client):
         "_hypothesis_task", "_candidate_task", "_archive_task", "_context_task",
         "_records_task", "_kalshi_updown_task",
         "_heartbeat_task", "_status_task", "_benefit_task", "_intelligence_task",
-        "_loop_watch_task",
+        "_loop_watch_task", "_memory_task",
     )
 
     async def close(self) -> None:

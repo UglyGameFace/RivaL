@@ -239,7 +239,7 @@ async def test_polymarket_stats_do_not_require_exchange_or_drive(tmp_path):
         view = await home.render()
         body = str(view.to_dict())
         assert "Past results studied:** 12 (history, not live predictions)" in body
-        assert "Real-time predictions checked:** 5" in body
+        assert "Checked:** 5 live predictions" in body
         assert "0.210" in body
         assert "0.240" in body
         # A healthy empty heartbeat table means no cycle, not a failed read.
@@ -319,9 +319,9 @@ async def test_exchange_performance_one_page_shows_sample_and_learning(
         assert "0.251" in body and "0.249" in body
         assert "99" in body and "too early to compare with Polymarket's odds" in body
         assert "14" in body and "Built from the 6-year history?" in body
-        assert "4 predictions logged, 7 results checked" in body
+        assert "made 4 predictions and checked 7 results" in body
         assert "Does it make money?** Not proven yet" in body
-        assert "Is accuracy improving?** Cannot check right now" in body
+        assert "Getting more accurate?** Couldn't check right now" in body
         assert "practice usdt" not in body.lower()
     finally:
         home.stop()

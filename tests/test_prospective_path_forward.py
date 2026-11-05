@@ -182,3 +182,23 @@ def test_same_bar_tp_and_stop_are_ambiguous_not_model_wins(learning_store):
         assert all(r["state"]=="ambiguous"
                    and r["tp1_before_stop"] is None
                    and r["tp2_before_stop"] is None for r in rows)
+
+
+def test_path_sample_memo_carried_across_cycles_changes_nothing():
+    """Reusing earlier cycles' per-bar samples gives the exact same priors."""
+    from parlay_bot.perpetuals.path_forward import prune_path_memo
+
+    history = _candles(count=430)
+    for horizon in (15, 60):
+        memo: dict = {}
+        steps = horizon // 5
+        for shift in range(steps + 2):  # every grid phase, then repeats
+            window = history[shift:shift + 400]
+            now = window[-1].observed_at + timedelta(seconds=5)
+            before = len(memo)
+            assert (empirical_paths(window, horizon=horizon, now=now, memo=memo)
+                    == empirical_paths(window, horizon=horizon, now=now))
+            prune_path_memo(memo, window)
+            assert all(key[0] >= window[0].opened_at for key in memo)
+            if shift >= steps:  # the grid has come round: nothing new to compute
+                assert len(memo) <= before + 1

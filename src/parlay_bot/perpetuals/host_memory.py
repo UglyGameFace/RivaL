@@ -138,10 +138,13 @@ class HostMemory:
 
 
 def snapshot() -> HostMemory:
+    cgroup_limit = _cgroup_limit()
     return HostMemory(
         rss_bytes=_rss_bytes(),
-        limit_bytes=_cgroup_limit() or _fallback_limit(),
+        limit_bytes=cgroup_limit or _fallback_limit(),
         oom_kills=_cgroup_oom_kills(),
-        cgroup_bytes=_cgroup_usage(),
-        cgroup_peak_bytes=_cgroup_peak(),
+        # An unlimited/root cgroup may measure the entire host rather than
+        # this 512 MB app. Only compare usage with a real cgroup limit.
+        cgroup_bytes=_cgroup_usage() if cgroup_limit is not None else None,
+        cgroup_peak_bytes=_cgroup_peak() if cgroup_limit is not None else None,
     )

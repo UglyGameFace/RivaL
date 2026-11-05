@@ -453,7 +453,7 @@ async def test_advanced_tools_and_legacy_pages_do_not_duplicate_metrics(tmp_path
         assert "Profit Proof" not in _labels(home)
         assert "Home" in _labels(home)
         view = await home.render()
-        assert view.title == "📊 RivaL | BTC Performance (5 min)"
+        assert view.title == "📊 How RivaL is doing: BTC, 5-min predictions"
         assert [f.name for f in view.fields] == [
             "📈 BTC exchange predictions (up or down?)",
             "🎯 Polymarket / Kalshi predictions",

@@ -149,7 +149,7 @@ class ShadowModelCompetition:
                 (venue,contract,quote,horizon_minutes,reference_opened_at);
             -- Recent rows of one venue (runtime quote-coverage watchdog, every
             -- 2 minutes): the venue-only bitmap read ~66k rows to keep ~600
-            -- (1.0 s on production); this range reads only the 2-hour window.
+            -- (1.0 s on production). This range reads only the 2-hour window.
             CREATE INDEX IF NOT EXISTS idx_rival_model_shadow_venue_issued
                 ON rival_model_shadow_forecasts (venue,issued_at);
             """)

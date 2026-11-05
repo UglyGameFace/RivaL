@@ -19,13 +19,13 @@ def probe() -> dict:
         with store.connect() as conn:
             q = lambda sql, *a: [dict(r) for r in conn.execute(sql, a).fetchall()]  # noqa: E731
             out["reviews"] = q("""SELECT COUNT(*) AS n, MAX(issued_at) AS last FROM rival_intelligence_calls
-                                  WHERE issued_at>=?""", "2026-11-05T13:44:00+00:00")
+                                  WHERE issued_at>=?""", "2026-11-05T14:00:00+00:00")
             out["hyp"] = q("""SELECT status, COUNT(*) AS n FROM rival_llm_feature_hypotheses
                               WHERE attempted_at>=? GROUP BY status""", "2026-11-05T13:44:00+00:00")
             out["incidents"] = q("SELECT issue_key, detail FROM rival_runtime_health_incidents WHERE state='OPEN'")
             out["memory"] = q("""SELECT hour, level, text FROM rival_problem_log
                                  WHERE text LIKE '%memory receipt%' OR text LIKE '%high host RSS%'
-                                 ORDER BY last_at DESC LIMIT 6""")
+                                 ORDER BY last_at DESC LIMIT 14""")
             out["problems"] = q("""SELECT level, SUM(count) AS n, MAX(last_at) AS last, MAX(text) AS text
                                    FROM rival_problem_log WHERE last_at>=?
                                    GROUP BY level, template ORDER BY n DESC LIMIT 15""",

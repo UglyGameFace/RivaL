@@ -193,7 +193,8 @@ def test_error_lines_say_what_is_still_happening_and_what_has_stopped():
         "stopped", "startup", "quiet", "active"]
     lines = problem_lines([fixed, startup, quiet, live], now=now, boot_at=boot,
                           totals={"ERROR": 9, "WARNING": 3})
-    assert lines[0].startswith("🔴 1 still happening • 🟢 1 quiet 1h+ • ✅ 2 fixed or stopped")
+    assert lines[0].startswith("🔴 1 still happening • 🟢 1 quiet 1h+ • "
+                               "⚪ 1 only right after the restart • ✅ 1 not seen since")
     assert lines[2].startswith("🔴") and "stale quote" in lines[2]  # live problems lead
     assert lines[-1].startswith("✅") and "deadlock" in lines[-1]
     assert problem_lines([], now=now, boot_at=boot, totals={})[-1] == "None"

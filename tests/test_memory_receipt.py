@@ -31,3 +31,19 @@ def test_growth_is_reported_with_the_types_that_grew(monkeypatch, caplog):
 
 def test_malloc_trim_is_safe_to_call():
     assert memory_receipt._malloc_trim() in (True, False)
+
+
+def test_memory_holders_names_the_attribute_that_holds_the_bytes():
+    from parlay_bot.discord_app.memory_receipt import memory_holders
+    from parlay_bot.storage import hot
+
+    class Holder:
+        pass
+
+    Holder.__module__ = "parlay_bot.test_fixture"
+    holder = Holder()
+    holder.big_cache = {i: list(range(50)) for i in range(2000)}
+    names = dict(memory_holders(top=20))
+    assert any(name == "Holder.big_cache" for name in names), names
+    assert names["Holder.big_cache"] > 512 * 1024
+    del holder, hot

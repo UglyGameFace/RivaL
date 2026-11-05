@@ -13,7 +13,7 @@ POLYMARKET_CLOB_API_SECRET=<your authenticated CLOB API secret>
 POLYMARKET_CLOB_API_PASSPHRASE=<your CLOB API passphrase>
 ```
 
-The bot does **not** derive keys, access wallets, trade, share credentials or automate account registration. All three are required, and credentials must have permission to receive licensed PolyBolt quotes. Without them the new worker does not start and its status correctly says 'credentials needed'. Official auth rejection similarly leaves the feed inactive, preserving book-only studies. `/rival-tools health` reports the actual configured/connected/fresh state without disclosing secrets.
+The bot does **not** derive keys, access wallets, trade, share credentials or automate account registration. All three are required, and credentials must have permission to receive licensed PolyBolt quotes. Without them the new worker does not start and its status correctly says 'credentials needed'. Official auth rejection similarly leaves the feed inactive, preserving book-only studies. `/rival-tools status` (view: Runtime diagnostics) reports the actual configured/connected/fresh state without disclosing secrets.
 
 A single read-only socket authenticates, subscribes to 60-second Chainlink TWAPs for four coins, validates exact source, channel, symbol, timestamps, sequence continuity and dropped frames. Missing sequence numbers reset the volatility sample; reconnects reauthenticate, discard stale observations and use bounded backoff. Snapshots may supply at most the preceding two minutes and are **not** execution history. The ephemeral buffer is bounded, no tick-by-tick PostgreSQL writes.
 

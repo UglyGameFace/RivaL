@@ -31,25 +31,17 @@ from parlay_bot.discord_app.home import (
 )
 from parlay_bot.discord_app.interaction_scope import install_interaction_scope
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
-from parlay_bot.discord_app.multi_proof import multi_proof_embed
-from parlay_bot.discord_app.opportunities import (
-    crypto_desk_embed,
-    sportsbook_desk_embed,
-)
 from parlay_bot.discord_app.owner_gate import OwnerGate, install_owner_gate
 from parlay_bot.discord_app.polymarket_live_board import (
     LivePolymarketBoardService,
     LivePolymarketBoardStore,
 )
-from parlay_bot.discord_app.presentation import onboarding_embed
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.discord_app.signals import signal_embed
 from parlay_bot.discord_app.sports_discovery import sports_discovery_embed
 from parlay_bot.discord_app.stale_dashboards import build_stale_dashboard_views
 from parlay_bot.discord_app.status_card import StatusFacts, StatusPostPolicy, build_embed
-from parlay_bot.discord_app.stream_proof import stream_proof_embed
 from parlay_bot.discord_app.targeting import DirectionTargetService, DirectionTargetStore
-from parlay_bot.discord_app.views import LocationView, OnboardingView
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
 from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
 from parlay_bot.jurisdiction.registry import JurisdictionRegistry
@@ -709,74 +701,7 @@ class RivalDiscordClient(discord.Client):
             except (discord.NotFound, discord.HTTPException):
                 _LOG.warning("RivaL signal response expired or unavailable")
 
-        @tools_group.command(
-            name="picks",
-            description="Best current sportsbook price opportunity, or a clear PASS.",
-        )
-        async def rival_picks(interaction: discord.Interaction) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            await self._refresh_sports_for_pick()
-            saved = await asyncio.to_thread(
-                self.location_service.get_saved,
-                platform="discord", user_id=str(interaction.user.id),
-            )
-            if saved is None:
-                await interaction.edit_original_response(
-                    embed=onboarding_embed(),
-                    view=OnboardingView(
-                        service=self.location_service,
-                        parlay_builder=self.parlay_builder,
-                        current_collector=self.current_collector,
-                    ),
-                )
-            else:
-                await interaction.edit_original_response(
-                    embed=await asyncio.to_thread(
-                        sportsbook_desk_embed, self.parlay_builder,
-                        user_id=str(interaction.user.id),
-                    ),
-                    view=LocationView(
-                        service=self.location_service,
-                        parlay_builder=self.parlay_builder,
-                        current_collector=self.current_collector,
-                    ),
-                )
-
-        @tools_group.command(
-            name="opportunities",
-            description="Show current sports prices and live crypto watches, not history lessons.",
-        )
-        async def rival_opportunities(interaction: discord.Interaction) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            await self._refresh_sports_for_pick()
-            crypto_market = self.perp_collector.market if self.perp_collector else None
-            crypto = await asyncio.to_thread(crypto_desk_embed, crypto_market)
-            saved = await asyncio.to_thread(
-                self.location_service.get_saved,
-                platform="discord", user_id=str(interaction.user.id),
-            )
-            if saved is None:
-                sports = onboarding_embed()
-            else:
-                sports = await asyncio.to_thread(
-                    sportsbook_desk_embed, self.parlay_builder,
-                    user_id=str(interaction.user.id),
-                )
-            await interaction.edit_original_response(
-                embeds=[sports, crypto],
-                view=ResearchDashboard(
-                    owner_id=interaction.user.id, market=crypto_market,
-                    ai=self.intelligence_research,
-                    venues=tuple(self.perp_collector.providers) if self.perp_collector else (),
-                    shadow_enabled=self.shadow_monitor is not None,
-                    target_service=self.direction_targets,
-                ),
-            )
-
-        @tools_group.command(
-            name="leagues",
-            description="See sports and leagues actually authorized by your odds provider.",
-        )
+        # leagues view of /rival-tools sports (was /rival-tools leagues).
         async def rival_leagues(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             if self.current_provider is None:
@@ -817,18 +742,7 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Could not verify entitled leagues. No invented coverage."
                 )
 
-        @tools_group.command(
-            name="sport-proof",
-            description="Show independently scored soccer or basketball model evidence.",
-        )
-        @app_commands.describe(
-            sport="Soccer Poisson or basketball scoring model",
-            league="Exact official provider league ID, such as EPL or NBA",
-        )
-        @app_commands.choices(sport=[
-            app_commands.Choice(name="Soccer", value="SOCCER"),
-            app_commands.Choice(name="Basketball", value="BASKETBALL"),
-        ])
+        # sport-proof view of /rival-tools sports (was /rival-tools sport-proof).
         async def rival_sport_proof(
             interaction: discord.Interaction,
             sport: app_commands.Choice[str],
@@ -896,10 +810,7 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Cannot verify model evidence. NO BET."
                 )
 
-        @tools_group.command(
-            name="health",
-            description="Check Discord command sync, workers and verified data state.",
-        )
+        # Runtime diagnostics view of /rival-tools status (was /rival-tools health).
         async def rival_health(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             online = self.is_ready() and self.discord_ready_at is not None
@@ -1057,14 +968,11 @@ class RivalDiscordClient(discord.Client):
             )
             embed.add_field(name="Latest refresh attempt", value=self.sports_refresh_status, inline=False)
             embed.set_footer(
-                text="Use /rival-tools quote and /rival-tools sport-proof for separate market/model evidence"
+                text="Use /rival-tools quote and /rival-tools sports view: Model evidence for separate market/model evidence"
             )
             await interaction.edit_original_response(embed=embed)
 
-        @tools_group.command(
-            name="sports",
-            description="Discover sports and leagues actually present in fresh odds feeds.",
-        )
+        # sports view of /rival-tools sports (was /rival-tools sports).
         async def rival_sports(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             await self._refresh_sports_for_pick()
@@ -1078,6 +986,46 @@ class RivalDiscordClient(discord.Client):
                     collector_enabled=self.current_collector is not None,
                 ),
             )
+
+        @tools_group.command(
+            name="sports",
+            description="Sports feed coverage, provider leagues, or scored model evidence.",
+        )
+        @app_commands.describe(
+            view="What to show (default: sports present in fresh odds feeds)",
+            sport="Model evidence only: soccer or basketball",
+            league="Model evidence only: exact provider league ID, such as EPL or NBA",
+        )
+        @app_commands.choices(
+            view=[
+                app_commands.Choice(name="Fresh odds feeds (default)", value="feeds"),
+                app_commands.Choice(name="Provider-authorized leagues", value="leagues"),
+                app_commands.Choice(name="Model evidence (pick sport + league)", value="proof"),
+            ],
+            sport=[
+                app_commands.Choice(name="Soccer", value="SOCCER"),
+                app_commands.Choice(name="Basketball", value="BASKETBALL"),
+            ],
+        )
+        async def rival_sports_tools(
+            interaction: discord.Interaction,
+            view: app_commands.Choice[str] | None = None,
+            sport: app_commands.Choice[str] | None = None,
+            league: str | None = None,
+        ) -> None:
+            choice = view.value if view is not None else "feeds"
+            if choice == "leagues":
+                await rival_leagues(interaction)
+            elif choice == "proof":
+                if sport is None or not league:
+                    await interaction.response.send_message(
+                        "Model evidence needs both `sport` and `league` (for example EPL or NBA).",
+                        ephemeral=True,
+                    )
+                    return
+                await rival_sport_proof(interaction, sport, league)
+            else:
+                await rival_sports(interaction)
 
         @tools_group.command(
             name="quote",
@@ -1113,324 +1061,6 @@ class RivalDiscordClient(discord.Client):
                 )
 
         @tools_group.command(
-            name="profit-proof",
-            description="See actual prospective bid/ask paper profit evidence and missing data.",
-        )
-        @app_commands.describe(
-            coin="BTC, ETH or SOL futures",
-            timeframe="Independent 5 or 15-minute forecast horizon",
-        )
-        @app_commands.choices(
-            coin=[
-                app_commands.Choice(name="BTC", value="BTC"),
-                app_commands.Choice(name="ETH", value="ETH"),
-                app_commands.Choice(name="SOL", value="SOL"),
-            ],
-            timeframe=[
-                app_commands.Choice(name="5 minutes", value=5),
-                app_commands.Choice(name="15 minutes", value=15),
-            ],
-        )
-        async def rival_profit_proof(
-            interaction: discord.Interaction,
-            coin: app_commands.Choice[str],
-            timeframe: app_commands.Choice[int],
-        ) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            if self.stream_shadow is not None:
-                # The old 5-minute Binance-only ledger is retained as history,
-                # but live claims now use ONLY the strict source-matched audit.
-                try:
-                    result = await asyncio.to_thread(
-                        self.stream_shadow.report,
-                        asset=coin.value, horizon_minutes=timeframe.value,
-                    )
-                    await interaction.edit_original_response(
-                        embed=stream_proof_embed(result),
-                    )
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL strict profit evidence unavailable")
-                    await interaction.edit_original_response(
-                        content="Strict after-cost evidence unavailable. NOT PROVEN.",
-                    )
-                return
-            if self.quote_profit is None:
-                await interaction.edit_original_response(
-                    content="⛔ No prospective quote ledger is enabled. Profit NOT PROVEN."
-                )
-                return
-            try:
-                proof = await asyncio.to_thread(
-                    self.quote_profit.proof,
-                    asset=coin.value, horizon_minutes=timeframe.value,
-                )
-                embed = discord.Embed(
-                    title=f"RivaL • {coin.value} {timeframe.value}m Profit Verification",
-                    description=(
-                        "**REAL PROFIT: NOT VERIFIED**\\n"
-                        + proof.explanation
-                        + "\\nNo exchange orders were placed by this test."
-                    ),
-                    color=discord.Color.orange(),
-                )
-                embed.add_field(
-                    name="Prospective observation coverage",
-                    value=(
-                        f"{proof.verified_quote_exits} completed entry/exit quotes "
-                        f"of {proof.eligible_forecast_windows} potential "
-                        f"forecast windows ({proof.coverage:.1%}); "
-                        f"{proof.missing_exits} missed exits."
-                    ), inline=False,
-                )
-                embed.add_field(
-                    name="After-cost paper mean",
-                    value=(
-                        f"Conservative: "
-                        f"{proof.net_conservative_bps:+.2f} bps"
-                        if proof.net_conservative_bps is not None
-                        else "No completed quote-paired paper trades"
-                    ) + (
-                        f"\\nSevere stress: {proof.net_severe_bps:+.2f} bps"
-                        if proof.net_severe_bps is not None else ""
-                    ), inline=False,
-                )
-                embed.add_field(
-                    name="Time-ordered confidence screen",
-                    value=(
-                        f"{proof.utc_days} UTC days; "
-                        f"conservative daily lower: "
-                        f"{proof.conservative_daily_lower_bps:+.2f} bps"
-                        if proof.conservative_daily_lower_bps is not None
-                        else f"{proof.utc_days} UTC days; no valid daily lower bound"
-                    ) + (
-                        f"\\nSevere daily lower: {proof.severe_daily_lower_bps:+.2f} bps"
-                        if proof.severe_daily_lower_bps is not None else ""
-                    ), inline=False,
-                )
-                embed.add_field(
-                    name="Shadow qualification",
-                    value=(
-                        "PASS on observed quote-based assumptions; "
-                        "real-money proof still absent"
-                        if proof.quote_shadow_qualified else "NOT QUALIFIED"
-                    ), inline=False,
-                )
-                embed.set_footer(
-                    text=(
-                        "Fresh Binance USD-M bid/ask observations • "
-                        "hypothetical 25 USDT trade • assumed fees/funding/slippage "
-                        "• never verified fills"
-                    )
-                )
-                await interaction.edit_original_response(embed=embed)
-            except Exception:  # noqa: BLE001
-                _LOG.exception("RivaL prospective profit verification unavailable")
-                await interaction.edit_original_response(
-                    content="⛔ Cannot verify forward trading returns. NOT PROVEN."
-                )
-
-        @tools_group.command(
-            name="paper-open",
-            description="Open a limited, quote-based PAPER position (never a real order).",
-        )
-        @app_commands.describe(
-            coin="Paper BTC/ETH/SOL perpetual",
-            direction="Long expects price to rise, short expects price to fall",
-            notional_usdt="Paper notional in USDT, maximum 250",
-        )
-        @app_commands.choices(
-            coin=[
-                app_commands.Choice(name="BTC", value="BTC"),
-                app_commands.Choice(name="ETH", value="ETH"),
-                app_commands.Choice(name="SOL", value="SOL"),
-            ],
-            direction=[
-                app_commands.Choice(name="Long (paper)", value="long"),
-                app_commands.Choice(name="Short (paper)", value="short"),
-            ],
-        )
-        async def rival_paper_open(
-            interaction: discord.Interaction,
-            coin: app_commands.Choice[str],
-            direction: app_commands.Choice[str],
-            notional_usdt: float = 25.0,
-        ) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            try:
-                quote = await self.public_quotes.get(coin.value)
-                message = await asyncio.to_thread(
-                    self.paper_ledger.open,
-                    user_id=str(interaction.user.id),
-                    position_id=str(interaction.id),
-                    quote=quote, side=direction.value,
-                    notional_usdt=notional_usdt,
-                )
-                await interaction.edit_original_response(content="🧪 " + message)
-            except (QuoteUnavailable, ValueError) as exc:
-                await interaction.edit_original_response(
-                    content=f"⛔ Paper position not opened: {exc}",
-                )
-            except Exception:  # noqa: BLE001
-                _LOG.exception("RivaL paper open unavailable")
-                await interaction.edit_original_response(
-                    content="⛔ Could not verify a paper entry. No real order.",
-                )
-
-        @tools_group.command(
-            name="paper-close",
-            description="Close your quote-based PAPER position (not a real exchange trade).",
-        )
-        @app_commands.choices(coin=[
-            app_commands.Choice(name="BTC", value="BTC"),
-            app_commands.Choice(name="ETH", value="ETH"),
-            app_commands.Choice(name="SOL", value="SOL"),
-        ])
-        async def rival_paper_close(
-            interaction: discord.Interaction,
-            coin: app_commands.Choice[str],
-        ) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            try:
-                quote = await self.public_quotes.get(coin.value)
-                closed = await asyncio.to_thread(
-                    self.paper_ledger.close,
-                    user_id=str(interaction.user.id), asset=coin.value,
-                    quote=quote,
-                )
-                await interaction.edit_original_response(content=(
-                    f"🧪 Paper {closed.side.upper()} {coin.value} closed. "
-                    f"Indicative entry ${closed.entry:,.4f}, exit "
-                    f"${closed.exit:,.4f}. Gross ${closed.gross_usdt:,.4f}; "
-                    f"assumed costs ${closed.assumed_cost_usdt:,.4f}; "
-                    f"**paper-only net ${closed.assumed_net_usdt:,.4f}**. "
-                    "No authenticated fills; not actual P&L."
-                ))
-            except (QuoteUnavailable, ValueError) as exc:
-                await interaction.edit_original_response(
-                    content=f"⛔ Paper close unavailable: {exc}",
-                )
-            except Exception:  # noqa: BLE001
-                _LOG.exception("RivaL paper close unavailable")
-                await interaction.edit_original_response(
-                    content="⛔ Paper close unavailable; position unchanged.",
-                )
-
-        @tools_group.command(
-            name="practice",
-            description="Fund your fictional USDT bankroll and view practice risk and progress.",
-        )
-        @app_commands.describe(
-            funded_usdt=(
-                "Optional starting amount (100–100000); omit to view your existing funds"
-            ),
-        )
-        async def rival_practice(
-            interaction: discord.Interaction,
-            funded_usdt: float | None = None,
-        ) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            try:
-                result = await asyncio.to_thread(
-                    self.paper_ledger.fund, str(interaction.user.id),
-                    starting_usdt=funded_usdt,
-                )
-                cash = result["practice"]
-                embed = discord.Embed(
-                    title="🧪 RivaL • Practice Funded Account",
-                    description=(
-                        "**100% fictional funds.** No deposit, payout, "
-                        "real order, actual trading return, or leverage."
-                    ),
-                    color=discord.Color.blurple(),
-                )
-                embed.add_field(
-                    name="Starting practice balance",
-                    value=f"${cash['funded']:,.2f} USDT",
-                )
-                embed.add_field(
-                    name="Practice equity",
-                    value=f"${cash['equity']:,.2f} USDT",
-                )
-                embed.add_field(
-                    name="Available / reserved",
-                    value=(
-                        f"${cash['available']:,.2f} / "
-                        f"${cash['committed']:,.2f} USDT"
-                    ), inline=False,
-                )
-                embed.add_field(
-                    name="Simulated outcomes",
-                    value=(
-                        f"{cash['completed']} complete • "
-                        f"{cash['wins']} wins • {cash['losses']} losses\n"
-                        f"Estimated realized net: ${cash['realized']:+,.2f} USDT"
-                    ), inline=False,
-                )
-                embed.add_field(
-                    name="Daily practice loss budget",
-                    value=(
-                        f"${cash['day_loss']:,.2f} used / "
-                        f"${cash['daily_loss_cap']:,.2f} limit"
-                    ), inline=False,
-                )
-                cohorts = result["practice_feedback"]["validated_cohorts"]
-                if cohorts:
-                    embed.add_field(
-                        name="Your quote-based practice patterns",
-                        value="\\n".join(
-                            f"{x['asset']} {x['side']}: "
-                            f"{x['wins']}/{x['settled']} profitable, "
-                            f"mean net ${x['mean_net_usdt']:+,.2f} USDT"
-                            for x in cohorts[:6]
-                        ), inline=False,
-                    )
-                embed.set_footer(
-                    text=(
-                        "Trade feedback improves research visibility; "
-                        "only independent forward outcomes qualify AI updates."
-                    ),
-                )
-                await interaction.edit_original_response(embed=embed)
-            except ValueError as exc:
-                await interaction.edit_original_response(
-                    content=f"⛔ Practice funding refused: {exc}"
-                )
-            except Exception:  # noqa: BLE001
-                _LOG.exception("RivaL private practice account unavailable")
-                await interaction.edit_original_response(
-                    content="⛔ Practice account unavailable. No balance was credited."
-                )
-
-        @tools_group.command(
-            name="paper-results",
-            description="Your isolated paper ledger, including losses and fees.",
-        )
-        async def rival_paper_results(interaction: discord.Interaction) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            try:
-                result = await asyncio.to_thread(
-                    self.paper_ledger.summary, str(interaction.user.id),
-                )
-                await interaction.edit_original_response(
-                    content=(
-                        f"🧪 **Paper only:** {result['open']} open, "
-                        f"{result['closed']} closed. "
-                        f"After assumed fees and slippage: "
-                        f"**${result['assumed_net_usdt']:,.4f} USDT**.\\n"
-                        f"Fictional equity: **${result['practice']['equity']:,.2f}** "
-                        f"• Free: **${result['practice']['available']:,.2f}** "
-                        f"• Reserved: ${result['practice']['committed']:,.2f}.\\n"
-                        "Real-world P&L unverified; simulated decisions "
-                        "cannot authorize model promotion."
-                    ),
-                )
-            except Exception:  # noqa: BLE001
-                _LOG.exception("RivaL paper summary unavailable")
-                await interaction.edit_original_response(
-                    content="⛔ Paper ledger unavailable; no P&L asserted.",
-                )
-
-        @tools_group.command(
             name="target-proof",
             description="Independent forward evidence for your saved exact-price target.",
         )
@@ -1442,7 +1072,7 @@ class RivalDiscordClient(discord.Client):
                 )
                 if target is None or target.price_goal is None:
                     await interaction.edit_original_response(
-                        content="No saved exact-price target. Use /rival-tools target with target_price."
+                        content="No saved exact-price target. Set one in /rival → Advanced → Manual Price Target."
                     )
                     return
                 market = self.perp_collector.market if self.perp_collector else None
@@ -1483,48 +1113,6 @@ class RivalDiscordClient(discord.Client):
                     content="⛔ Target probability research unavailable; no estimate published."
                 )
 
-        @tools_group.command(
-            name="target",
-            description="Watch UP/DOWN or an exact crypto USDT price, automatically.",
-        )
-        @app_commands.describe(
-            coin="Which crypto perpetual market should RivaL monitor?",
-            timeframe="Watch a 5m or 15m window.",
-            target_price="Optional: exact USDT price to watch for a verified hit.",
-        )
-        @app_commands.choices(
-            coin=[
-                app_commands.Choice(name="Bitcoin (BTC)", value="BTC"),
-                app_commands.Choice(name="Ethereum (ETH)", value="ETH"),
-                app_commands.Choice(name="Solana (SOL)", value="SOL"),
-            ],
-            timeframe=[
-                app_commands.Choice(name="5 minutes", value=5),
-                app_commands.Choice(name="15 minutes", value=15),
-            ],
-        )
-        async def rival_target(
-            interaction: discord.Interaction,
-            coin: app_commands.Choice[str],
-            timeframe: app_commands.Choice[int],
-            target_price: float | None = None,
-        ) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            try:
-                ok, message = await self.direction_targets.follow(
-                    interaction.user,
-                    asset=coin.value, horizon_minutes=timeframe.value,
-                    target_price=target_price,
-                )
-            except ValueError as exc:
-                ok, message = False, str(exc)
-            except Exception:  # noqa: BLE001 - never expose Discord or DB secrets
-                _LOG.exception("RivaL personal target registration failed")
-                ok, message = False, "Target setup unavailable; no target was changed."
-            await interaction.edit_original_response(
-                content=("✅ " if ok else "⛔ ") + message,
-            )
-
         @self.tree.command(
             name="rival-stop",
             description="Stop all your personal RivaL notifications and tracking.",
@@ -1539,15 +1127,7 @@ class RivalDiscordClient(discord.Client):
             )
             await interaction.edit_original_response(content=message)
 
-        @tools_group.command(
-            name="source-health",
-            description="Inspect all nine futures collectors for the selected coin.",
-        )
-        @app_commands.choices(coin=[
-            app_commands.Choice(name="BTC", value="BTC"),
-            app_commands.Choice(name="ETH", value="ETH"),
-            app_commands.Choice(name="SOL", value="SOL"),
-        ])
+        # Exchange sources view of /rival-tools status (was /rival-tools source-health).
         async def rival_source_health(
             interaction: discord.Interaction, coin: app_commands.Choice[str],
         ) -> None:
@@ -1612,50 +1192,7 @@ class RivalDiscordClient(discord.Client):
                     content="Source freshness couldn't be verified. NOT FRESH.",
                 )
 
-        @tools_group.command(
-            name="multi-proof",
-            description="Compare the nine-venue challenger to existing predictions.",
-        )
-        @app_commands.choices(
-            coin=[
-                app_commands.Choice(name="BTC", value="BTC"),
-                app_commands.Choice(name="ETH", value="ETH"),
-                app_commands.Choice(name="SOL", value="SOL"),
-            ],
-            timeframe=[
-                app_commands.Choice(name="5 minutes", value=5),
-                app_commands.Choice(name="15 minutes", value=15),
-            ],
-        )
-        async def rival_multi_proof(
-            interaction: discord.Interaction,
-            coin: app_commands.Choice[str],
-            timeframe: app_commands.Choice[int],
-        ) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            if self.autonomous is None:
-                await interaction.edit_original_response(
-                    content="Multi-source shadow model is disabled, not approved.",
-                )
-                return
-            try:
-                value = await asyncio.to_thread(
-                    self.autonomous.multi.report,
-                    asset=coin.value, horizon_minutes=timeframe.value,
-                )
-                await interaction.edit_original_response(
-                    embed=multi_proof_embed(value),
-                )
-            except Exception:  # noqa: BLE001
-                _LOG.exception("Multi-exchange evidence unavailable")
-                await interaction.edit_original_response(
-                    content="No verified multi-source outcome evidence available.",
-                )
-
-        @tools_group.command(
-            name="stream-status",
-            description="Check live BTC/ETH/SOL exchange streams and freshness.",
-        )
+        # Live streams view of /rival-tools status (was /rival-tools stream-status).
         async def rival_stream_status(interaction: discord.Interaction) -> None:
             await interaction.response.defer(ephemeral=True, thinking=True)
             if self.live_stream is None:
@@ -1688,42 +1225,52 @@ class RivalDiscordClient(discord.Client):
             await interaction.edit_original_response(embed=embed)
 
         @tools_group.command(
-            name="stream-proof",
-            description="Check source-matched, forward-only after-cost shadow results.",
+            name="status",
+            description="Live status card now; or runtime diagnostics, exchange sources or streams.",
         )
         @app_commands.choices(
+            view=[
+                app_commands.Choice(name="Status card (default)", value="card"),
+                app_commands.Choice(name="Runtime diagnostics", value="diagnostics"),
+                app_commands.Choice(name="Exchange sources (pick a coin)", value="sources"),
+                app_commands.Choice(name="Live streams", value="streams"),
+            ],
             coin=[
                 app_commands.Choice(name="BTC", value="BTC"),
                 app_commands.Choice(name="ETH", value="ETH"),
                 app_commands.Choice(name="SOL", value="SOL"),
-            ],
-            timeframe=[
-                app_commands.Choice(name="5 minutes", value=5),
-                app_commands.Choice(name="15 minutes", value=15),
+                app_commands.Choice(name="XRP", value="XRP"),
             ],
         )
-        async def rival_stream_proof(
-            interaction: discord.Interaction, coin: app_commands.Choice[str],
-            timeframe: app_commands.Choice[int],
+        async def rival_status(
+            interaction: discord.Interaction,
+            view: app_commands.Choice[str] | None = None,
+            coin: app_commands.Choice[str] | None = None,
         ) -> None:
-            await interaction.response.defer(ephemeral=True, thinking=True)
-            if self.stream_shadow is None:
-                await interaction.edit_original_response(
-                    content="Live shadow scoring disabled. No returns verified.",
-                )
+            """One place for health: the same card the bot posts, built now."""
+            choice = view.value if view is not None else "card"
+            if choice == "diagnostics":
+                await rival_health(interaction)
                 return
+            if choice == "sources":
+                await rival_source_health(
+                    interaction, coin or app_commands.Choice(name="BTC", value="BTC"))
+                return
+            if choice == "streams":
+                await rival_stream_status(interaction)
+                return
+            await interaction.response.defer(ephemeral=True, thinking=True)
             try:
-                report = await asyncio.to_thread(
-                    self.stream_shadow.report,
-                    asset=coin.value, horizon_minutes=timeframe.value,
-                )
-                embed = stream_proof_embed(report)
+                facts = await asyncio.wait_for(self._status_facts(), timeout=20)
+                embed, _, _ = build_embed(facts)
+                embed.set_footer(text=(embed.footer.text or "") +
+                                 " • on request; other views: diagnostics, sources, streams")
                 await interaction.edit_original_response(embed=embed)
-            except Exception:  # noqa: BLE001
-                _LOG.exception("RivaL stream proof unavailable")
+            except Exception:  # noqa: BLE001 - never leave the command hanging
+                _LOG.exception("RivaL on-demand status card failed")
                 await interaction.edit_original_response(
-                    content="Live quote shadow evidence unavailable, no profit claimed.",
-                )
+                    content="Status card could not be built right now; try "
+                            "`/rival-tools status view: Runtime diagnostics`.")
 
         @tools_group.command(
             name="data",

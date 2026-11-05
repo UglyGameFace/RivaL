@@ -24,7 +24,7 @@ de-duplicated open/resolved incidents in PostgreSQL:
 The watchdog writes every check to `rival_runtime_health_checkpoints`.
 A fresh checkpoint proves *the watchdog ran*, not that individual providers
 worked. Incidents go to the host ERROR log on transition, then show in the
-existing `/rival tools health` screen. For owner notifications without opening
+existing `/rival-tools status` (view: Runtime diagnostics) screen. For owner notifications without opening
 Discord, configure `RIVAL_HEALTH_DISCORD_WEBHOOK_URL` as a dedicated Discord
 webhook URL in the Discloud **host environment**, not in GitHub source or a
 tracked file. It sends state changes only, not a message every poll, and

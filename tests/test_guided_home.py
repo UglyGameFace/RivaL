@@ -58,10 +58,15 @@ async def test_beginner_home_begins_simple_and_keeps_advanced_features(tmp_path)
         assert "simple private home" in bot.tree.get_command("rival").description
         tools = bot.tree.get_command("rival-tools")
         assert tools is not None
-        assert tools.get_command("picks") is not None
         assert tools.get_command("research") is not None
-        assert tools.get_command("profit-proof") is not None
-        assert tools.get_command("practice") is not None
+        assert tools.get_command("status") is not None
+        # Everything the home menu already covers is no longer a separate command.
+        for gone in ("picks", "opportunities", "profit-proof", "practice", "paper-open",
+                     "paper-close", "paper-results", "target", "multi-proof", "stream-proof",
+                     "leagues", "sport-proof", "health", "source-health", "stream-status"):
+            assert tools.get_command(gone) is None, gone
+        assert {c.name for c in tools.commands} == {
+            "status", "research", "data", "quote", "sports", "target-proof"}
         assert home.page == "home"
         assert set(_labels(home)) == {
             "Crypto", "Sports", "Notifications", "Bot Performance",
@@ -362,44 +367,32 @@ async def test_guided_results_uses_strict_source_matched_cost_proof(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_old_and_new_profit_commands_use_same_strict_view(tmp_path):
+async def test_menus_reach_what_the_removed_commands_did(tmp_path):
+    """The removed /rival-tools proof and target commands stay reachable in /rival."""
     from unittest.mock import Mock
-
-    from discord import app_commands
 
     bot = _client(tmp_path)
     shadow = Mock()
     shadow.report.return_value = {
-        "status": "NOT_PROVEN", "asset": "BTC", "horizon_minutes": 5,
-        "eligible_windows": 7, "entries": 3, "closed": 2,
-        "missed_exits": 1, "coverage": 2 / 7, "days": 1,
-        "costs": {
-            "conservative": {
-                "assumed_extra_cost_bps": 14,
-                "mean_net_bps": -3, "daily_lower_bps": None,
-            },
-            "severe": {
-                "assumed_extra_cost_bps": 80,
-                "mean_net_bps": -69, "daily_lower_bps": None,
-            },
-        },
+        "status": "NOT_PROVEN", "closed": 2, "eligible_windows": 7, "days": 1,
+        "costs": {"severe": {"mean_net_bps": -69}},
     }
-    bot.stream_shadow = shadow
+    home = _home(bot)
+    home.stream_shadow = shadow
     try:
-        coin = app_commands.Choice(name="BTC", value="BTC")
-        horizon = app_commands.Choice(name="5 minutes", value=5)
-        views = []
-        for name in ("stream-proof", "profit-proof"):
-            i = _interaction()
-            await bot.tree.get_command("rival-tools").get_command(name).callback(i, coin, horizon)
-            i.response.defer.assert_awaited_once_with(
-                ephemeral=True, thinking=True,
-            )
-            views.append(i.edit_original_response.await_args.kwargs["embed"].to_dict())
-        assert views == [views[0], views[0]]
-        assert "NOT_PROVEN" in str(views[0])
-        assert "No real-money profit" in str(views[0])
-        assert shadow.report.call_count == 2
+        i = _interaction()
+        home.navigate("help")
+        home._buttons()
+        assert "Advanced Tools" in _labels(home)
+        home.navigate("advanced")
+        home._buttons()
+        assert "Manual Price Target" in _labels(home)
+        home.navigate("performance")
+        home._buttons()
+        assert "After-Cost Check" in _labels(home)
+        await home.act(i, "proof")
+        assert shadow.report.call_count == 1
+        assert "NOT_PROVEN" in home.note and "NOT PROVEN" in home.note
     finally:
         await bot.zip_resolver.aclose()
         await bot.public_quotes.aclose()
@@ -414,10 +407,9 @@ async def test_ten_source_and_ensemble_discord_commands_are_private_on_android(t
     bot = _client(tmp_path)
     try:
         asset = app_commands.Choice(name="BTC", value="BTC")
-        horizon = app_commands.Choice(name="5 minutes", value=5)
+        sources = app_commands.Choice(name="Exchange sources", value="sources")
         for name, args in (
-            ("source-health", (asset,)),
-            ("multi-proof", (asset, horizon)),
+            ("status", (sources, asset)),
         ):
             command = bot.tree.get_command("rival-tools").get_command(name)
             assert command is not None
@@ -483,10 +475,11 @@ def test_every_legacy_tool_is_grouped_without_duplicate_global_commands(tmp_path
         assert roots == {"rival", "rival-signal", "rival-stop", "rival-tools"}
         group = bot.tree.get_command("rival-tools")
         names = [c.name for c in group.commands]
-        assert len(names) == len(set(names)) == 20
-        assert {"paper-open", "paper-close", "practice", "picks",
-                "quote", "research", "multi-proof", "source-health",
-                "target", "stream-status", "profit-proof"}.issubset(names)
+        # health, source-health and stream-status became views of status;
+        # leagues and sport-proof became views of sports; the rest live in /rival.
+        assert len(names) == len(set(names)) == 6
+        assert set(names) == {"status", "research", "data", "quote", "sports", "target-proof"}
+        assert not {"health", "source-health", "stream-status"} & set(names)
         assert all(not name.startswith("rival-") for name in names)
     finally:
         bot.store.close()

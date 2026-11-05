@@ -301,13 +301,13 @@ async def test_slash_command_keeps_direction_mode_and_adds_optional_price(tmp_pa
         rival_db_path=str(tmp_path / "slash.sqlite"), discord_token=None,
     ))
     try:
-        cmd = client.tree.get_command("rival-tools").get_command("target")
-        assert cmd is not None
-        assert [p.name for p in cmd.parameters] == [
-            "coin", "timeframe", "target_price",
-        ]
-        assert cmd.parameters[-1].required is False
-        assert client.tree.get_command("rival-tools").get_command("sports") is not None
+        tools = client.tree.get_command("rival-tools")
+        # Exact-price targets are set from /rival -> Help -> Advanced Tools now.
+        assert tools.get_command("target") is None
+        assert tools.get_command("target-proof") is not None
+        sports = tools.get_command("sports")
+        assert [p.name for p in sports.parameters] == ["view", "sport", "league"]
+        assert all(not p.required for p in sports.parameters)
         assert client.tree.get_command("rival-stop") is not None
     finally:
         await client.zip_resolver.aclose()

@@ -148,7 +148,7 @@ def test_reviewer_sees_each_challengers_real_record_best_three_only(tmp_path):
                     "pooled_5m_aaaa": .45, "knn21_v1": .9}  # knn is not a reviewed family
         with store.connect() as conn:
             for family, p in families.items():
-                for i in range(40):  # graded history: outcome always UP
+                for i in range(60):  # graded history: outcome always UP
                     ref = (now - timedelta(days=2, minutes=5 * i)).isoformat()
                     conn.execute(
                         """INSERT INTO rival_model_shadow_forecasts (venue,contract,quote,
@@ -169,7 +169,21 @@ def test_reviewer_sees_each_challengers_real_record_best_three_only(tmp_path):
         calls = model_calls(market, asset="BTC", now=now, summary={})["5"]
         assert set(calls) == {"calib_incumbent_v1", "flow_v1", "flow_v2"}  # best three
         record = calls["calib_incumbent_v1"]["record"]
-        assert record == {"hit_rate": 1.0, "graded": 40, "beats_basic": True}
+        assert record == {"hit_rate": 1.0, "graded": 60, "beats_basic": True}
         assert "knn21_v1" not in calls and "pooled_5m_aaaa" not in calls
     finally:
         store.close()
+
+
+def test_a_few_lucky_results_never_outrank_a_long_record():
+    from parlay_bot.perpetuals.intelligence import MIN_GRADED_TO_RANK, _rank_key
+
+    lucky = {"graded": 3, "brier_gain": 0.2}
+    solid = {"graded": 500, "brier_gain": 0.004}
+    even = {"graded": 500, "brier_gain": 0.0}
+    none = {}
+    order = sorted([("lucky", lucky), ("none", none), ("even", even), ("solid", solid)],
+                   key=lambda item: _rank_key(item[1]))
+    assert [name for name, _ in order] == ["solid", "even", "lucky", "none"]
+    # Exactly at the bar, a record is ranked on its gain.
+    assert _rank_key({"graded": MIN_GRADED_TO_RANK, "brier_gain": 0.1})[0] == 0

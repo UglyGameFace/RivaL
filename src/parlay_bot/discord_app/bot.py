@@ -2657,9 +2657,13 @@ class RivalDiscordClient(discord.Client):
                 )
                 feed = getattr(self.perp_collector.market, "binance_context", None)
                 context = feed.numbers(asset) if feed else {}
-                if not context:  # Binance blocks this host: use RivaL's own feeds
+                if context:
+                    context = {**context, "source": "binance"}
+                else:  # Binance blocks this host: use RivaL's own feeds
                     context = await asyncio.to_thread(
                         market_context, self.perp_collector.market, asset=asset)
+                    if context:
+                        context["source"] = "hyperliquid_okx"
                 review = await self.intelligence_research.explain_models(
                     asset=asset, venues=tuple(self.perp_collector.providers), calls=calls,
                     market_context=context or None,

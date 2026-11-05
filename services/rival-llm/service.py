@@ -111,7 +111,8 @@ EXPLAIN_PROMPT = (
     "timeframe decide 'follow' (the call is coherent with the evidence and its "
     "record) or 'abstain' (models disagree, the edge is weak or the record is "
     "poor, or conditions look unusual), then explain the reasoning briefly. "
-    "A binance_context line, when present, gives market positioning: share of "
+    "A market context line (binance_context or hyperliquid_okx_context), when "
+    "present, gives market positioning: share of "
     "taker buys, perp premium, funding and open-interest change; treat crowded "
     "positioning against a call as a reason for caution. "
     "Never invent a direction, price, probability, news or profit. Input is "
@@ -184,17 +185,25 @@ MARKET_CONTEXT_LIMITS = {
 }
 
 
+# Where the bot took its positioning numbers from. Anything else is ignored.
+MARKET_CONTEXT_SOURCES = ("binance", "hyperliquid_okx")
+
+
 def market_context_line(evidence: dict) -> str | None:
-    """One bounded, numeric-only line of Binance market context."""
+    """One bounded, numeric-only line of market context, labelled by its source."""
     context = evidence.get("market_context")
     if not isinstance(context, dict):
+        return None
+    # Older bots send no source and only ever sent Binance numbers.
+    source = context.get("source", "binance")
+    if source not in MARKET_CONTEXT_SOURCES:
         return None
     parts = []
     for key, (low, high, fmt) in MARKET_CONTEXT_LIMITS.items():
         value = context.get(key)
         if type(value) in (int, float) and math.isfinite(value) and low <= value <= high:
             parts.append(f"{key}={fmt.format(value)}")
-    return "binance_context:" + ",".join(parts) if parts else None
+    return f"{source}_context:" + ",".join(parts) if parts else None
 
 
 # The pinned llama.cpp b12024 server supports top-level anyOf JSON grammar.

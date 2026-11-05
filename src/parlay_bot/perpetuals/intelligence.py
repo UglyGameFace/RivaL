@@ -26,6 +26,10 @@ HORIZONS = (5, 15, 60)
 CONSENSUS_MARGIN = 0.02
 CONSENSUS_SHARE = 2 / 3
 MAX_CHALLENGERS = 3
+# A record ranks a challenger only once it has this many graded outcomes (the
+# same bar as the regression watchdog). Below it, a few lucky results could
+# put a challenger ahead of one with hundreds of solid ones.
+MIN_GRADED_TO_RANK = 50
 RECORD_TTL = timedelta(minutes=30)
 _RECORDS: dict[str, tuple[datetime, dict]] = {}
 
@@ -82,7 +86,7 @@ def model_calls(market, *, asset: str, now: datetime | None = None,
                                  and str(r["family"]) == family])
             if call is not None:
                 record = records.get((horizon, family), {})
-                ranked.append((-(record.get("brier_gain") or -1.0), family, call, record))
+                ranked.append((_rank_key(record), family, call, record))
         # The reviewer reads at most 12 lines: live + the 3 best-graded
         # challengers per timeframe, each with its real 7-day record.
         for _, family, call, record in sorted(ranked)[:MAX_CHALLENGERS]:
@@ -91,6 +95,16 @@ def model_calls(market, *, asset: str, now: datetime | None = None,
         if entry:
             out[str(horizon)] = entry
     return out
+
+
+def _rank_key(record: dict) -> tuple:
+    """Sort key, best first: enough graded results ranked by Brier gain over
+    the up-rate; then the rest by how many results they have."""
+    graded = int(record.get("graded") or 0)
+    gain = record.get("brier_gain")
+    if graded >= MIN_GRADED_TO_RANK and gain is not None:
+        return (0, -float(gain))
+    return (1, -graded)
 
 
 def challenger_records(market, *, asset: str, now: datetime,

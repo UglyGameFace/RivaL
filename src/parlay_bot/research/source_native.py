@@ -485,6 +485,16 @@ class NativeMonthlyPublisher:
                     ))
         return selected
 
+    def _record_receipt(self, values: tuple) -> None:
+        with self.market.store.connect() as conn:
+            conn.execute(
+                """INSERT INTO rival_native_research_receipts
+                   (venue,contract,quote,month,data_sha256,history_file_id,
+                    manifest_file_id,published_at)
+                   VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                values,
+            )
+
     async def run_once(self, *, now: datetime | None = None,
                        max_batches: int = 2) -> list[dict]:
         import asyncio
@@ -509,8 +519,11 @@ class NativeMonthlyPublisher:
                 # Missing/malformed sources remain unqualified, not silently
                 # patched or marked as already published.
                 continue
-            history_artifact = _artifact(result.data_path, result.records)
-            manifest_artifact = _artifact(result.manifest_path, 1)
+            # Hashing a month file (up to 12 MB) and the receipt write below
+            # run in worker threads: this coroutine is on the Discord loop.
+            history_artifact = await asyncio.to_thread(
+                _artifact, result.data_path, result.records)
+            manifest_artifact = await asyncio.to_thread(_artifact, result.manifest_path, 1)
             source_batch = "native-" + history_artifact.sha256[:24]
             history = await self.drive.ensure_history_file(
                 artifact=history_artifact, batch_id=source_batch,
@@ -527,15 +540,11 @@ class NativeMonthlyPublisher:
                 file_id=manifest.file_id, parent_id=self.drive.folders.manifests,
                 artifact=manifest_artifact,
             )
-            with self.market.store.connect() as conn:
-                conn.execute(
-                    """INSERT INTO rival_native_research_receipts
-                       (venue,contract,quote,month,data_sha256,history_file_id,
-                        manifest_file_id,published_at)
-                       VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                    (venue,contract,quote,month,history_artifact.sha256,
-                     history.file_id,manifest.file_id,stamp.isoformat()),
-                )
+            await asyncio.to_thread(
+                self._record_receipt,
+                (venue, contract, quote, month, history_artifact.sha256,
+                 history.file_id, manifest.file_id, stamp.isoformat()),
+            )
             copied.append({
                 "venue": venue, "contract": contract, "quote": quote,
                 "month": month, "rows": result.records,

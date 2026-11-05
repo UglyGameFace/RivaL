@@ -109,11 +109,41 @@ class KalshiUpDown:
                 f"SELECT ticker FROM rival_kalshi_updown WHERE ticker IN ({marks})",
                 tuple(tickers)).fetchall()}
 
+    def _record(self, values: tuple) -> None:
+        with self.store.connect() as conn:
+            conn.execute(
+                """INSERT INTO rival_kalshi_updown
+                   (ticker,asset,opens_at,closes_at,open_reference,issued_at,
+                    probability_up,family,model_sha256,venues,yes_ask,no_ask,
+                    yes_size,no_size)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                values,
+            )
+
+    def _apply_results(self, results: list[tuple]) -> int:
+        """One connection for every published result (was one per row)."""
+        if not results:
+            return 0
+        self.initialize()
+        updated = 0
+        stamp = datetime.now(UTC).isoformat()
+        with self.store.connect() as conn:
+            for result_yes, value, ticker in results:
+                updated += conn.execute(
+                    """UPDATE rival_kalshi_updown SET result_yes=?, expiration_value=?,
+                       settled_at=? WHERE ticker=? AND result_yes IS NULL""",
+                    (result_yes, value, stamp, ticker),
+                ).rowcount
+        return updated
+
+    # Every database call below runs in a worker thread. These coroutines
+    # run on the Discord event loop; a synchronous PostgreSQL round trip
+    # here blocked it (stall watch, Nov 5: 64 stalls >1 s in settle()).
     async def issue(self, now: datetime | None = None) -> int:
         """Record every Kalshi 15-minute contract that opened in the last 5 minutes."""
         import asyncio
 
-        self.initialize()
+        await asyncio.to_thread(self.initialize)
         clock = now or datetime.now(UTC)
         saved = 0
         for asset, series in SERIES.items():
@@ -132,7 +162,8 @@ class KalshiUpDown:
                         and opens <= clock < opens + ISSUE_WINDOW
                         and closes - opens == timedelta(minutes=15)):
                     fresh.append((ticker, opens, closes, row.get("floor_strike")))
-            fresh = [f for f in fresh if f[0] not in self._known([f[0] for f in fresh])]
+            known = await asyncio.to_thread(self._known, [f[0] for f in fresh])
+            fresh = [f for f in fresh if f[0] not in known]
             for ticker, opens, closes, reference in fresh:
                 if ticker not in self._start_book and clock - opens <= START_PRICE_WINDOW:
                     try:
@@ -155,19 +186,13 @@ class KalshiUpDown:
                     # retry next minute rather than record a contract unforecast.
                     continue
                 forecast = forecast or {}
-                with self.store.connect() as conn:
-                    conn.execute(
-                        """INSERT INTO rival_kalshi_updown
-                           (ticker,asset,opens_at,closes_at,open_reference,issued_at,
-                            probability_up,family,model_sha256,venues,yes_ask,no_ask,
-                            yes_size,no_size)
-                           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                        (ticker, asset, opens.isoformat(), closes.isoformat(),
-                         float(reference) if isinstance(reference, (int, float)) else None,
-                         clock.isoformat(), forecast.get("probability"),
-                         forecast.get("family"), forecast.get("model_sha256"),
-                         forecast.get("venues"), yes_ask, no_ask, yes_size, no_size),
-                    )
+                await asyncio.to_thread(self._record, (
+                    ticker, asset, opens.isoformat(), closes.isoformat(),
+                    float(reference) if isinstance(reference, (int, float)) else None,
+                    clock.isoformat(), forecast.get("probability"),
+                    forecast.get("family"), forecast.get("model_sha256"),
+                    forecast.get("venues"), yes_ask, no_ask, yes_size, no_size,
+                ))
                 self._start_book.pop(ticker, None)
                 saved += 1
         if len(self._start_book) > 500:
@@ -176,8 +201,9 @@ class KalshiUpDown:
 
     async def settle(self) -> int:
         """Copy Kalshi's own published results onto recorded contracts."""
-        self.initialize()
-        updated = 0
+        import asyncio
+
+        results: list[tuple] = []
         for series in SERIES.values():
             try:
                 rows = (await self._get("/markets", {"series_ticker": series,
@@ -192,14 +218,8 @@ class KalshiUpDown:
                     value = float(row.get("expiration_value"))
                 except (TypeError, ValueError):
                     value = None
-                with self.store.connect() as conn:
-                    updated += conn.execute(
-                        """UPDATE rival_kalshi_updown SET result_yes=?, expiration_value=?,
-                           settled_at=? WHERE ticker=? AND result_yes IS NULL""",
-                        (int(result == "yes"), value, datetime.now(UTC).isoformat(),
-                         str(row.get("ticker"))),
-                    ).rowcount
-        return updated
+                results.append((int(result == "yes"), value, str(row.get("ticker"))))
+        return await asyncio.to_thread(self._apply_results, results)
 
     def summary(self, *, asset: str | None = None, days: int = 7, edge: float = EDGE) -> dict:
         """Model vs Kalshi on settled contracts; value bets at real ask + fee."""

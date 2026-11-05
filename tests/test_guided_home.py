@@ -75,7 +75,7 @@ async def test_beginner_home_begins_simple_and_keeps_advanced_features(tmp_path)
         assert len(home.children) <= 25
         assert max(item.row for item in home.children) <= 4
         embed = await home.render()
-        assert "bot's real" in embed.description
+        assert "bot's predictions" in embed.description
         assert "No real bets" in embed.description
     finally:
         home.stop()
@@ -455,10 +455,10 @@ async def test_advanced_tools_and_legacy_pages_do_not_duplicate_metrics(tmp_path
         view = await home.render()
         assert view.title == "📊 RivaL | BTC Performance (5 min)"
         assert [f.name for f in view.fields] == [
-            "📈 How accurate are BTC exchange predictions?",
-            "🎯 How accurate are Polymarket predictions?",
-            "🧠 Is RivaL actually learning?",
-            "📡 Are market feeds and predictions running?",
+            "📈 BTC exchange predictions (up or down?)",
+            "🎯 Polymarket / Kalshi predictions",
+            "🧠 Is it learning?",
+            "📡 Is everything running?",
         ]
         assert all(len(field.value) < 1025 for field in view.fields)
     finally:

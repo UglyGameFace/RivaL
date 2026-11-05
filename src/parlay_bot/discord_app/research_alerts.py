@@ -59,7 +59,7 @@ def research_alerts(store, *, now: datetime | None = None,
         _LOG.warning("Research alert: no database connection for health checks (%s)",
                      type(exc).__name__)
         return [("database:busy",
-                 "⚠️ Couldn't check prediction health (database busy); will re-check")]
+                 "⚠️ Couldn't check the predictions (database busy); will try again")]
 
 
 def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str, str]]:
@@ -79,33 +79,32 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
                              "WHERE asset='BTC' AND horizon_minutes=5"))
         if newest is None or stamp - newest > FORECASTS_STALE_AFTER:
             alerts.append(("forecasts:stopped",
-                           "🛑 No new forecasts for "
+                           "🛑 No new predictions for "
                            + (_ago(stamp - newest) if newest else "ever")
-                           + " (cycles run every 5 min)"))
+                           + " (they should come every 5 min)"))
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("Research alert: forecast table unreadable (%s)", type(exc).__name__)
         alerts.append(("forecasts:unreadable",
-                       "⚠️ Couldn't read the forecast table; will re-check"))
+                       "⚠️ Couldn't read the predictions; will try again"))
 
     # 2. Nightly six-year model is fresh (training ran AND passed its gates).
     try:
         trained = _utc(scalar(
             "SELECT MAX(trained_through) AS v FROM rival_pooled_models WHERE gates_passed=1"))
         if trained is None:
-            alerts.append(("pooled:none", "⚠️ No six-year model imported yet"))
+            alerts.append(("pooled:none", "⚠️ The 6-year model hasn't been loaded yet"))
         else:
             month_start = stamp.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
             if trained < month_start and stamp - month_start > MONTH_GRACE:
                 alerts.append(("pooled:stale",
-                               (f"⚠️ Six-year model still uses data through "
-                                f"{trained:%b %d}: {month_start:%B}'s monthly training "
-                                "has not been imported (training failed, missed its "
-                                "gates, or did not run)")))
+                               (f"⚠️ The 6-year model's data stops at {trained:%b %d}: "
+                                f"{month_start:%B}'s monthly update hasn't been loaded "
+                                "(training failed, didn't pass its checks, or didn't run)")))
     except Exception as exc:  # noqa: BLE001 - unreadable is not the same as missing
         _LOG.warning("Research alert: six-year model table unreadable (%s)",
                      type(exc).__name__)
         alerts.append(("pooled:unreadable",
-                       "⚠️ Couldn't read the six-year model table; will re-check"))
+                       "⚠️ Couldn't read the 6-year model; will try again"))
 
     # 3. Live accuracy decay: a six-year model IN USE worse than the base rate.
     # Judged per trained version, and only for versions issued in the last
@@ -148,9 +147,10 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
                 worst[horizon] = (gap, str(row["model"]), int(row["n"]), gap / error if error else 0.0)
         for horizon, (gap, model, n, sigmas) in sorted(worst.items()):
             alerts.append((f"decay:{horizon}m",
-                           (f"⚠️ {horizon}-min six-year model {model} (in use) scored "
-                            f"worse than the plain up-rate: +{gap:.4f} Brier over "
-                            f"{n} graded in the last 3 days ({sigmas:.1f}× the noise)")))
+                           (f"⚠️ The {horizon}-min 6-year model has done worse than a "
+                            f"simple guess over the last 3 days ({n:,} results; the gap is "
+                            f"{sigmas:.1f}× bigger than chance would explain). "
+                            f"Version {model}, error-score gap +{gap:.4f}")))
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("Research alert: challenger table unreadable (%s)", type(exc).__name__)
 
@@ -160,11 +160,11 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
             newest = _utc(scalar("SELECT MAX(issued_at) AS v FROM rival_intelligence_calls"))
             if newest is None or stamp - newest > INTELLIGENCE_STALE_AFTER:
                 alerts.append(("intelligence:stale",
-                               "⚠️ RivaL Intelligence: no review for "
+                               "⚠️ RivaL Intelligence hasn't reviewed anything for "
                                + (_ago(stamp - newest) if newest else "ever")))
         except Exception as exc:  # noqa: BLE001 - unreadable is not the same as missing
             _LOG.warning("Research alert: Intelligence table unreadable (%s)",
                          type(exc).__name__)
             alerts.append(("intelligence:unreadable",
-                           "⚠️ Couldn't read RivaL Intelligence reviews; will re-check"))
+                           "⚠️ Couldn't read RivaL Intelligence's reviews; will try again"))
     return alerts

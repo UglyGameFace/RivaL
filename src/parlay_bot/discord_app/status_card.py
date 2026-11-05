@@ -8,6 +8,7 @@ once a day, never on a timer that floods the channel.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha1
@@ -29,7 +30,8 @@ ACTIVE_WINDOW = timedelta(minutes=60)
 STARTUP_GRACE = timedelta(minutes=10)
 COLORS = {"healthy": discord.Color.green(), "degraded": discord.Color.orange(),
           "down": discord.Color.red()}
-LABELS = {"healthy": "🟢 Healthy", "degraded": "🟡 Degraded", "down": "🔴 Problem"}
+LABELS = {"healthy": "🟢 All good", "degraded": "🟡 Something needs a look",
+          "down": "🔴 Not working right"}
 
 
 @dataclass
@@ -96,7 +98,7 @@ def _stream_stalled(s: dict) -> bool:
 def _stream_line(venue: str, s: dict) -> str:
     """A socket can stay open while the provider sends nothing usable
     (Binance on a blocked host): that is not a healthy stream."""
-    counts = f"{s.get('updates', 0):,} book updates, {s.get('reconnects', 0)} reconnects"
+    counts = f"{s.get('updates', 0):,} updates, {s.get('reconnects', 0)} reconnects"
     if not s.get("connected"):
         return f"🛑 {venue}: disconnected ({counts})"
     age = s.get("last_update_age_s")
@@ -104,12 +106,12 @@ def _stream_line(venue: str, s: dict) -> str:
         # Judge the stream by when it last delivered, not by whether every
         # coin's 10 s quote happens to be fresh at this instant.
         if _stream_stalled(s):
-            return f"⚠️ {venue}: connected but no book update for {int(age // 60)}m ({counts})"
-        return f"✅ {venue}: streaming, last update {int(age)}s ago ({counts})"
+            return f"⚠️ {venue}: connected but nothing new for {int(age // 60)} min ({counts})"
+        return f"✅ {venue}: live, last update {int(age)}s ago ({counts})"
     if not s.get("fresh_assets"):
-        return (f"⚠️ {venue}: connected but no fresh book data ({counts})"
+        return (f"⚠️ {venue}: connected but nothing recent ({counts})"
                 if s.get("updates") else
-                f"⚪ {venue}: connected, no book data received (provider may block this server)")
+                f"⚪ {venue}: connected but nothing received (the exchange may block this server)")
     return f"✅ {venue}: {counts}"
 
 
@@ -177,103 +179,156 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
     embed = discord.Embed(
         title=f"RivaL Status • {LABELS[severity]}",
         description=(
-            f"Process up since {discord.utils.format_dt(facts.boot_at, 'f')} "
-            f"({_ago(facts.boot_at, now).replace(' ago', '')}) • Discord "
-            f"{'connected' if facts.ready else 'NOT connected'}"
+            f"Running since {discord.utils.format_dt(facts.boot_at, 'f')} "
+            f"({_ago(facts.boot_at, now).replace(' ago', '')}) • "
+            f"{'Connected to Discord' if facts.ready else '⚠️ NOT connected to Discord'}"
         ),
         color=COLORS[severity], timestamp=now,
     )
     hb = facts.heartbeat
     if hb is None:
-        heartbeat = "⚪ Not configured (set RIVAL_HEALTHCHECKS_PING_URL)"
+        heartbeat = "⚪ Not set up (set RIVAL_HEALTHCHECKS_PING_URL)"
     else:
         ok = hb.get("consecutive_problems", 0) == 0
-        heartbeat = (f"{'✅' if ok else '⚠️'} Healthchecks.io • last good ping "
+        heartbeat = (f"{'✅' if ok else '⚠️'} Last check-in with Healthchecks.io "
                      f"{_ago(_parse(hb.get('last_success_at')), now)}")
         if hb.get("last_problem"):
-            heartbeat += (f"\nLast problem {_ago(_parse(hb.get('last_problem_at')), now)}: "
+            heartbeat += (f"\nLast failed check-in "
+                          f"{_ago(_parse(hb.get('last_problem_at')), now)}: "
                           f"{hb['last_problem']}"
                           + (f" ({hb['consecutive_problems']} in a row)"
                              if hb.get("consecutive_problems") else ""))
-    embed.add_field(name="External heartbeat", value=heartbeat[:1024], inline=False)
+    embed.add_field(name="Outside uptime check", value=heartbeat[:1024], inline=False)
 
     active = [w for w in facts.workers if w["state"] != "disabled"]
     running = sum(w["state"] == "running" for w in active)
-    lines = [f"{'✅' if running == len(active) else '⚠️'} {running}/{len(active)} running"]
-    lines += [f"🛑 `{w['name']}` stopped" for w in active if w["state"] == "stopped"]
-    lines += [f"↻ `{w['name']}` restarted {w['restarts_last_hour']}× in the last hour"
+    lines = [f"{'✅' if running == len(active) else '⚠️'} {running} of {len(active)} running"]
+    lines += [f"🛑 {w['name']}: stopped" for w in active if w["state"] == "stopped"]
+    lines += [f"↻ {w['name']}: restarted {w['restarts_last_hour']}× in the last hour"
               for w in active if w.get("restarts_last_hour")]
-    embed.add_field(name="Background workers", value=_clip(lines), inline=False)
+    embed.add_field(name="Bot jobs", value=_clip(lines), inline=False)
 
     if facts.incidents is None:
-        incidents = "⚠️ Watchdog incident table unreadable (database slow or down)"
+        incidents = "⚠️ Couldn't read the alert list (database slow or down)"
     elif not facts.incidents:
-        incidents = "✅ None open"
+        incidents = "✅ None"
     else:
         incidents = _clip([
             f"• `{i['issue_key']}` since {_ago(_parse(i.get('first_seen_at')), now)}: "
             f"{str(i.get('detail') or '')[:140]}"
             for i in facts.incidents
         ])
-    embed.add_field(name="Open watchdog incidents", value=incidents, inline=False)
+    embed.add_field(name="Open alerts", value=incidents, inline=False)
 
     if facts.feeds is None:
-        feeds = "⚪ Market collection disabled or unreadable"
+        feeds = "⚪ Price collection is off or couldn't be read"
     else:
         stale, off = [], []
         for feed in facts.feeds:
             last = _parse(feed.get("last_success_at"))
             if feed.get("status") == "blocked":
-                off.append(f"⚪ {feed['venue']}/{feed['asset']}: off (provider blocks this server)")
+                off.append(f"⚪ {feed['venue']}/{feed['asset']}: off (the exchange blocks this server)")
                 continue
             if last is None or now - last > STALE_FEED_AFTER:
                 stale.append(
-                    f"• {feed['venue']}/{feed['asset']}: last data {_ago(last, now)}"
+                    f"• {feed['venue']}/{feed['asset']}: last prices {_ago(last, now)}"
                     + (f", {feed['failure_count']} failures" if feed.get("failure_count")
                        else "")
                     + (f" ({feed['status']})" if feed.get("status") else ""))
         active = len(facts.feeds) - len(off)
         fresh = active - len(stale)
-        summary = (f"{'✅' if not stale else '⚠️'} {fresh}/{active} "
-                   "exchange feeds fresh (<20 min)")
+        summary = (f"{'✅' if not stale else '⚠️'} {fresh} of {active} up to date "
+                   "(new prices in the last 20 min)")
         feeds = _clip([summary, *stale, *off])
-    embed.add_field(name="Market data", value=feeds, inline=False)
+    embed.add_field(name="Exchange prices", value=feeds, inline=False)
 
     if facts.streams:
         stream_lines = [_stream_line(venue, s) for venue, s in facts.streams.items()]
         last = _parse(facts.liquidity_last_bucket)
         stream_lines.append(
             f"{'✅' if last and now - last <= STALE_LIQUIDITY_AFTER else '⚠️'} "
-            f"Liquidity record: newest saved 5-min bucket began {_ago(last, now)}")
-        embed.add_field(name="Live streams", value=_clip(stream_lines), inline=False)
+            f"Trading-activity record: last saved {_ago(last, now)}")
+        embed.add_field(name="Live order books", value=_clip(stream_lines), inline=False)
 
     if facts.research is not None:
         embed.add_field(
-            name="Prediction health",
+            name="Predictions",
             # _clip() of an empty list returns "—", which hid this message.
             value=(_clip([text for _, text in facts.research]) if facts.research
-                   else "✅ No problems: forecasts flowing, six-year model fresh, "
-                        "accuracy above the up-rate, RivaL Intelligence reviewing"),
+                   else "✅ No problems: new predictions are coming in, the 6-year "
+                        "model is up to date, it isn't doing worse than a simple guess, "
+                        "and RivaL Intelligence is reviewing"),
             inline=False)
 
     if facts.memory:
         memory = facts.memory
         text = f"{memory['rss_mb']} / {memory['limit_mb']} MB"
         if memory.get("pressure"):
-            text = "⚠️ " + text + " (pressure: optional work paused)"
+            text = "⚠️ " + text + " (running low: extra work paused)"
         if memory.get("oom_kills"):
-            text += f" • {memory['oom_kills']} OOM kills since host start"
-        embed.add_field(name="Memory", value=text, inline=True)
+            text += f" • {memory['oom_kills']} out-of-memory crashes since the server started"
+        embed.add_field(name="Memory used", value=text, inline=True)
 
     totals = facts.problem_totals or {}
     open_incidents = (None if facts.incidents is None
                       else {str(i["issue_key"]) for i in facts.incidents})
     lines = problem_lines(facts.problems, now=now, boot_at=facts.boot_at, totals=totals,
                           open_incidents=open_incidents)
-    embed.add_field(name="Recent errors and warnings", value=_clip(lines), inline=False)
-    embed.set_footer(text="Posted when problems change and once a day • "
-                          f"Prediction checks {_prediction_health_revision()}")
+    embed.add_field(name="Errors and warnings (last 24 h)", value=_clip(lines), inline=False)
+    embed.set_footer(text="Posts when something changes, and once a day • "
+                          f"Check version {_prediction_health_revision()}")
     return embed, severity, signature
+
+
+_KV = re.compile(r"\b(\w+)=(\S+)")
+
+
+def _field(text: str, key: str) -> str | None:
+    for k, v in _KV.findall(text):
+        if k == key:
+            return v.strip(",;")
+    return None
+
+
+def plain(text: str) -> str:
+    """Log text in everyday words; the exact message stays in the bot's logs."""
+    t = text.removeprefix("RivaL ").strip()
+    low = t.lower()
+    venue = _field(t, "venue") or _field(t, "source")
+    m = re.match(r"(\w+) (liquidity )?stream", t)
+    name = venue or (m.group(1) if m else None)
+    if low.startswith("health alert"):
+        key, _, detail = t[len("HEALTH ALERT "):].partition(": ")
+        return f"Health alert ({key}): {detail or key}"
+    if "event loop blocked" in low:
+        return "The bot froze for over a second while busy"
+    if "postgresql connection held" in low:
+        return "A database job took a long time"
+    if "rate limited" in low:
+        return f"{name or 'An exchange'} asked the bot to slow down"
+    if "blocked" in low and ("region" in low or "451" in low) or "refuses this host" in low:
+        return f"{name or 'An exchange'} blocks this server's location"
+    if "stream" in low and "disconnected" in low:
+        return f"{name or 'A live feed'} dropped and reconnected"
+    if "historical recovery failed" in low:
+        h = re.match(r"(\w+) historical", t)
+        return f"{h.group(1) if h else 'An exchange'}: couldn't download older price history this time"
+    if "perp collection failed" in low:
+        asset = _field(t, "asset")
+        return f"{venue or 'An exchange'}{'/' + asset if asset else ''}: couldn't get prices this time"
+    if "intelligence review failed" in low:
+        return "RivaL Intelligence couldn't finish a review"
+    if low.startswith("guided render timed out"):
+        return "A /rival menu took too long to load"
+    if "timeout" in low or "timed out" in low:
+        return f"{name or 'An outside service'} didn't answer in time"
+    if "memory pressure" in low:
+        return "Memory ran low, so extra work was paused"
+    if "unavailable" in low or "failed" in low:
+        # Drop key=value details; keep the readable part.
+        words = _KV.sub("", t).split(" | ")[0]
+        return re.sub(r"\s+", " ", words).strip(" ;:,")[:120]
+    return t[:120]
 
 
 def problem_state(group, *, now: datetime, boot_at: datetime,
@@ -312,27 +367,25 @@ def problem_lines(problems, *, now: datetime, boot_at: datetime, totals: dict,
     lines = [
         # A warning seen only in the minutes after a restart comes back after
         # the next restart: it is restart noise, not "fixed". Counted apart.
-        (f"🔴 {len(states['active'])} still happening • 🟢 {len(states['quiet'])} quiet 1h+ • "
-         f"⚪ {len(states['startup'])} only right after the restart • "
-         f"✅ {len(states['stopped']) + len(states['recovered'])} not seen since"),
-        (f"({totals.get('ERROR', 0)} errors • {totals.get('WARNING', 0)} warnings in the last "
-         "24 h, all restarts; ×counts are 24 h totals)"),
+        (f"🔴 {len(states['active'])} happening now • 🟢 {len(states['quiet'])} calmed "
+         f"down (none in the last hour) • ⚪ {len(states['startup'])} only while starting "
+         f"up • ✅ {len(states['stopped']) + len(states['recovered'])} stopped"),
+        (f"({totals.get('ERROR', 0)} errors and {totals.get('WARNING', 0)} warnings in "
+         "the last 24 h, counting restarts; the × number is how many times each happened)"),
     ]
     for g in states["active"]:
-        lines.append(f"🔴 `{g.count}×` **{g.level}** {g.logger.rsplit('.', 1)[-1]}: "
-                     f"{g.text} ({_ago(g.last_at, now)})")
+        lines.append(f"🔴 `{g.count}×` **{plain(g.text)}** ({_ago(g.last_at, now)})")
     for g in states["quiet"]:
-        lines.append(f"🟢 `{g.count}×` {g.logger.rsplit('.', 1)[-1]}: {g.text[:90]} "
-                     f"(last {_ago(g.last_at, now)})")
+        lines.append(f"🟢 `{g.count}×` {plain(g.text)[:90]} (last {_ago(g.last_at, now)})")
     for g in states["startup"]:
-        lines.append(f"⚪ `{g.count}×` {g.logger.rsplit('.', 1)[-1]}: {g.text[:70]} "
-                     f"(only in the first minutes after the {started} restart)")
+        lines.append(f"⚪ `{g.count}×` {plain(g.text)[:70]} (only right after the "
+                     f"{started} restart)")
     for g in states["recovered"]:
-        lines.append(f"✅ `{g.count}×` {g.logger.rsplit('.', 1)[-1]}: {g.text[:70]} "
-                     f"(recovered: incident closed; last alert {_ago(g.last_at, now)})")
+        lines.append(f"✅ `{g.count}×` {plain(g.text)[:70]} (fixed itself; last alert "
+                     f"{_ago(g.last_at, now)})")
     for g in states["stopped"]:
-        lines.append(f"✅ `{g.count}×` {g.logger.rsplit('.', 1)[-1]}: {g.text[:70]} "
-                     f"(not since restart at {started})")
+        lines.append(f"✅ `{g.count}×` {plain(g.text)[:70]} (not since the {started} "
+                     "restart)")
     if not problems:
         lines.append("None")
     return lines

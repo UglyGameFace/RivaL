@@ -40,10 +40,10 @@ def test_healthy_state_has_empty_signature():
     severity, signature = assess(_facts())
     assert (severity, signature) == ("healthy", ())
     embed, _, _ = build_embed(_facts())
-    assert "Healthy" in embed.title
+    assert "All good" in embed.title
     text = str(embed.to_dict())
-    assert "1/1 running" in text  # disabled workers are not counted
-    assert "1/1 exchange feeds fresh" in text
+    assert "1 of 1 running" in text  # disabled workers are not counted
+    assert "1 of 1 up to date" in text
 
 
 def test_real_problems_raise_severity_and_name_the_cause():
@@ -75,7 +75,7 @@ def test_unreadable_sources_are_reported_not_guessed():
     assert severity == "degraded"
     assert "watchdog:unreadable" in signature and "liquidity:stale" in signature
     text = str(build_embed(facts)[0].to_dict())
-    assert "unreadable" in text and "Not configured" in text
+    assert "Couldn't read" in text and "Not set up" in text
 
 
 def test_error_digest_groups_counts_and_redacts():
@@ -128,7 +128,7 @@ def test_prediction_health_alerts_change_the_card_signature():
     severity, signature = assess(alert)
     assert severity == "degraded" and "research:pooled:stale" in signature
     embed = build_embed(alert)[0]
-    assert any(f.name == "Prediction health" and "stale" in f.value for f in embed.fields)
+    assert any(f.name == "Predictions" and "stale" in f.value for f in embed.fields)
 
 
 def test_blocked_provider_is_shown_as_off_not_failing():
@@ -143,15 +143,15 @@ def test_blocked_provider_is_shown_as_off_not_failing():
                                {"venue": "okx", "asset": "BTC", "status": "ok",
                                 "last_success_at": now.isoformat()}])
     assert assess(facts)[0] == "healthy"
-    field = next(f for f in build_embed(facts)[0].fields if f.name == "Market data")
-    assert "1/1 exchange feeds fresh" in field.value and "off" in field.value
+    field = next(f for f in build_embed(facts)[0].fields if f.name == "Exchange prices")
+    assert "1 of 1 up to date" in field.value and "off" in field.value
 
 
 def test_open_socket_with_no_data_is_not_a_green_check():
     from parlay_bot.discord_app.status_card import _stream_line
     blocked = _stream_line("binance", {"connected": True, "updates": 0, "reconnects": 0,
                                        "fresh_assets": ()})
-    assert blocked.startswith("⚪") and "no book data" in blocked
+    assert blocked.startswith("⚪") and "nothing received" in blocked
     stale = _stream_line("binance", {"connected": True, "updates": 50, "reconnects": 2,
                                      "fresh_assets": ()})
     assert stale.startswith("⚠️")
@@ -172,7 +172,7 @@ def test_status_footer_identifies_live_prediction_health_source():
     content = Path(research_alerts.__file__).read_bytes()
     expected = sha1(b"blob " + str(len(content)).encode() + b"\0" + content).hexdigest()[:10]
     assert _prediction_health_revision() == expected
-    assert f"Prediction checks {expected}" in build_embed(_facts())[0].footer.text
+    assert f"Check version {expected}" in build_embed(_facts())[0].footer.text
 
 
 def test_error_lines_say_what_is_still_happening_and_what_has_stopped():
@@ -193,8 +193,8 @@ def test_error_lines_say_what_is_still_happening_and_what_has_stopped():
         "stopped", "startup", "quiet", "active"]
     lines = problem_lines([fixed, startup, quiet, live], now=now, boot_at=boot,
                           totals={"ERROR": 9, "WARNING": 3})
-    assert lines[0].startswith("🔴 1 still happening • 🟢 1 quiet 1h+ • "
-                               "⚪ 1 only right after the restart • ✅ 1 not seen since")
+    assert lines[0].startswith("🔴 1 happening now • 🟢 1 calmed down (none in the last "
+                               "hour) • ⚪ 1 only while starting up • ✅ 1 stopped")
     assert lines[2].startswith("🔴") and "stale quote" in lines[2]  # live problems lead
     assert lines[-1].startswith("✅") and "deadlock" in lines[-1]
     assert problem_lines([], now=now, boot_at=boot, totals={})[-1] == "None"
@@ -228,10 +228,10 @@ def test_stream_is_judged_by_its_last_delivery_not_one_instant():
 
     flowing = _stream_line("hyperliquid", {"connected": True, "updates": 276, "reconnects": 0,
                                            "fresh_assets": (), "last_update_age_s": 4.0})
-    assert flowing.startswith("✅ hyperliquid: streaming, last update 4s ago")
+    assert flowing.startswith("✅ hyperliquid: live, last update 4s ago")
     stalled = _stream_line("hyperliquid", {"connected": True, "updates": 276, "reconnects": 0,
                                            "fresh_assets": (), "last_update_age_s": 400.0})
-    assert stalled.startswith("⚠️ hyperliquid: connected but no book update for 6m")
+    assert stalled.startswith("⚠️ hyperliquid: connected but nothing new for 6 min")
 
 
 def test_a_stalled_stream_counts_after_startup_and_clears_when_it_recovers():
@@ -264,5 +264,5 @@ def test_empty_prediction_health_says_no_problems():
     embed, _, _ = build_embed(StatusFacts(
         now=now, boot_at=now, ready=True, heartbeat=None, workers=[], incidents=[],
         feeds=None, streams=None, liquidity_last_bucket=None, memory=None, research=[]))
-    field = next(f for f in embed.fields if f.name == "Prediction health")
+    field = next(f for f in embed.fields if f.name == "Predictions")
     assert field.value.startswith("✅ No problems")

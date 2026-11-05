@@ -72,25 +72,25 @@ MARKET_NAMES = {
     "draftkings": "DraftKings Predictions • NOT CONNECTED",
 }
 EXPLAIN = {
-    "home": "Crypto and Sports are for market research. Bot Performance shows forecast evidence; Practice contains only imaginary trading.",
-    "discover": "Old menus can open Crypto or Practice. No actual trades are placed.",
-    "crypto-desk": "Choose the platform you actually use. Event contracts (Polymarket, Kalshi, DraftKings Predictions) are NOT cryptocurrency perpetuals (Binance, Hyperliquid, OKX, etc.). Each platform needs separate verified calls and accuracy.",
-    "live": "Track one verified Polymarket contract DM, updated only on meaningful changes. Contract AI calls are labeled separately and market prices are not win probabilities.",
-    "hunt": "Track Polymarket in one live DM or follow an exchange forecast. Old price-shift DMs have been retired; Stop All cancels personal updates.",
-    "hunt-tools": "Old Auto-Hunt notifications retired. Use Notifications.",
-    "kalshi": "Kalshi is a different US prediction exchange. Its public prices and settlement rules must not inherit Polymarket Global forecast signals.",
-    "sports": "Sports odds show possible payouts, not guaranteed wins. PASS means no reliable recommendation is available. Set your state to filter sportsbooks.",
-    "slip": "A parlay combines picks. All legs must win for the parlay to win. No real wager is placed here.",
-    "crypto": "Choose a coin and timeframe. UP/DOWN is a forecast, not permission to trade. A price target is a number to watch, not a predicted certainty.",
-    "forecast": "A directional watch is research, not a proven profitable bet. Weak model probabilities are NO SIGNAL. Prices must match the forecast venue; genuine forward accuracy and expiry are shown.",
-    "quote": "Ask is the price you might buy at; bid is the price you might sell at. These quotes are not guaranteed fills.",
-    "practice": "Everything in Practice Money is fictional. Buying means you expect a rise; selling means you expect a fall. Fake gains never count as proven real profit.",
-    "results": "Your personal practice results use only fictional trades and funds. They never count toward the bot's prediction record.",
-    "performance": "Bot Performance reports source-specific prospective forecasts, settled results and learning evidence. Exchange forecasts do not score Polymarket contracts; counts of learned labels are not prediction wins.",
-    "help": "Choose Crypto for separate event-contract platforms or leveraged crypto exchange forecasts. DraftKings Sportsbook futures are sports bets, not perpetual crypto futures. Sports is for sportsbook odds.",
-    "advanced": "Additional research, API limits and manual price targets. Performance and learning are on one page.",
-    "feeds": "This former separate screen now opens Bot Performance, which includes feed and forecast-cycle health.",
-    "trust": "This former separate screen now opens Bot Performance. Model activity and improving accuracy are different measures.",
+    "home": "Crypto and Sports let you look at markets. Bot Performance shows how often RivaL's predictions were right. Practice uses pretend money only.",
+    "discover": "Pick Crypto or Practice. Nothing here places a real trade.",
+    "crypto-desk": "Pick the app you actually use. Prediction markets (Polymarket, Kalshi, DraftKings Predictions) work differently from crypto exchanges (Binance, Hyperliquid, OKX and others), so each one gets its own predictions and its own score.",
+    "live": "Get one private message about a Polymarket market that updates only when something important changes. RivaL's AI opinion is labeled separately, and a market's price is not a guarantee of how it ends.",
+    "hunt": "Follow a Polymarket market or an exchange prediction in your private messages. Stop All turns every personal update off.",
+    "hunt-tools": "These old notifications were replaced. Use Notifications.",
+    "kalshi": "Kalshi is a separate US prediction market with its own prices and rules, so RivaL scores it separately from Polymarket.",
+    "sports": "Sportsbook odds show what a bet could pay, not whether it will win. PASS means RivaL has no pick it trusts. Choose your state to see the sportsbooks you can use.",
+    "slip": "A parlay combines several picks, and every one of them has to win. No real bet is placed here.",
+    "crypto": "Pick a coin and a timeframe. UP or DOWN is RivaL's guess, not advice to trade. A price target is a price to watch for, not a promise.",
+    "forecast": "This is RivaL's guess about where the price goes next, not a proven money-maker. NO SIGNAL means the guess is too weak to show. Its track record and when it expires are listed.",
+    "quote": "Ask is about what you'd pay to buy; bid is about what you'd get to sell. Real orders can fill at a different price.",
+    "practice": "Practice uses pretend money only. Buy if you think the price will rise, sell if you think it will fall. Pretend wins never count as real profit.",
+    "results": "These are your own pretend trades. They never count toward the bot's prediction record.",
+    "performance": "Shows how often RivaL's saved predictions turned out right, whether it beats a simple guess, and whether everything is running. Exchange and Polymarket predictions are scored separately.",
+    "help": "Crypto covers prediction markets and crypto exchanges. Sports covers sportsbook odds. DraftKings sports futures are sports bets, not crypto.",
+    "advanced": "Extra research, how much of each data service is being used, and exact-price alerts. Accuracy and learning are on Bot Performance.",
+    "feeds": "This screen moved: Bot Performance now shows whether price feeds and predictions are running.",
+    "trust": "This screen moved to Bot Performance. Note that being busy and getting more accurate are not the same thing.",
 }
 
 
@@ -859,9 +859,9 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title="RivaL | Betting Genie",
                 description=(
-                    "Analyze crypto and sports, check the bot's real "
-                    "prediction record, or practice with imaginary money.\n"
-                    "Private research only. No real bets or orders are placed."
+                    "Look at crypto and sports markets, see how often the bot's "
+                    "predictions were right, or practice with pretend money.\n"
+                    "Only you can see this. No real bets or trades are ever placed."
                 ), color=discord.Color.blurple(),
             )
         elif p == "crypto-desk":
@@ -1491,11 +1491,11 @@ class GuidedHome(discord.ui.View):
                 )
         elif p == "performance":
             embed = discord.Embed(
-                title=f"📊 RivaL | {self.coin} Performance ({self.horizon} min)",
+                title=f"📊 How RivaL is doing: {self.coin}, {self.horizon}-min predictions",
                 description=(
-                    "**Profitable predictions: not proven yet.** These scores use "
-                    "predictions recorded before results were known. "
-                    "Practice-only trades are shown elsewhere."
+                    "**Does it make money?** Not proven yet. Every score here comes from "
+                    "predictions saved *before* the result was known, so nothing can be "
+                    "edited afterwards. Your own practice trades are under Practice."
                 ),
                 color=discord.Color.blurple(),
             )
@@ -1558,7 +1558,8 @@ class GuidedHome(discord.ui.View):
                 if isinstance(exchange, dict) else None
             )
             if not isinstance(part, dict):
-                exchange_text = "Score read unavailable. This is not a zero-win result."
+                exchange_text = ("Couldn't load the scores right now (that doesn't mean "
+                                 "zero wins). Press Refresh.")
             else:
                 decided = int(part.get("decided") or 0)
                 correct = int(part.get("correct") or 0)
@@ -1567,24 +1568,23 @@ class GuidedHome(discord.ui.View):
                 scored = int(part.get("scored", settled) or 0)
                 hit = part.get("hit_rate")
                 accuracy = (
-                    f"**{correct:,} of {decided:,} right** ({hit:.1%})"
+                    f"**{correct:,} of {decided:,}** ({hit:.1%})"
                     if isinstance(hit, (int, float)) and decided else
-                    "Not enough verified outcomes to measure"
+                    "not enough finished results to measure yet"
                 )
                 brier, baseline = part.get("brier"), part.get("baseline_brier")
                 if isinstance(brier, (int, float)) and isinstance(baseline, (int, float)):
-                    verdict = ("Better in these tests, but not approved for trading"
-                               if brier < baseline else "Not better than a basic prediction")
-                    scoring = (f"**Against a basic prediction:** {verdict}. "
-                               f"**Probability error (Brier):** RivaL {brier:.3f} vs "
-                               f"basic forecast {baseline:.3f}. Lower is better; "
-                               "this is not a software failure or money lost.")
+                    verdict = ("Slightly, so far, but not proven enough to trade on"
+                               if brier < baseline else "No, not yet")
+                    scoring = (f"**Better than a simple guess?** {verdict}. "
+                               f"(Error score: RivaL {brier:.3f}, simple guess "
+                               f"{baseline:.3f}; lower is better. The simple guess "
+                               "always uses how often the price usually rises.)")
                 else:
-                    scoring = "Cannot fairly compare with a basic prediction yet"
+                    scoring = "**Better than a simple guess?** Too early to compare fairly"
                 paired = (
-                    f" · {scored:,}/{settled:,} comparable results "
-                    f"({settled - scored:,} could not be graded, mostly because the "
-                    "exchange had no trades in the result candle)"
+                    f" · {settled - scored:,} couldn't be scored (nobody traded on "
+                    "that exchange during the candle)"
                     if scored != settled else ""
                 )
                 pending = ""
@@ -1592,48 +1592,50 @@ class GuidedHome(discord.ui.View):
                     due = int(part.get("due") or 0)
                     overdue = int(part.get("overdue") or 0)
                     waiting = max(0, issued - due)
-                    pending = (f" · {waiting:,} not due yet" if waiting else "") + (
-                        f"\n⚠️ **{overdue:,} past due with no result** (target candle "
-                        "missing or settlement behind)" if overdue else
-                        "\n✅ No results overdue"
+                    pending = (f" · {waiting:,} waiting for their candle to finish"
+                               if waiting else "") + (
+                        f"\n⚠️ **{overdue:,} should have a result by now but don't** "
+                        "(the candle is missing or checking is behind)" if overdue else
+                        "\n✅ No results running late"
                     )
                 venues = int(part.get("venues") or 0)
                 windows = int(part.get("windows") or 0)
                 scope = (
                     f"{venues} exchange{'s' if venues != 1 else ''} × "
-                    f"{windows:,} windows"
-                    if venues and windows else "all collecting exchanges"
+                    f"{windows:,} candles"
+                    if venues and windows else "every exchange it collects"
                 )
-                period = "last 7 days"
+                period = "the last 7 days"
                 try:
                     first = datetime.fromisoformat(str(part.get("first_issued")))
                     if first.tzinfo is not None and now - first < timedelta(days=6, hours=12):
                         days = max(1, round((now - first).total_seconds() / 86400))
-                        period = (f"since this model went live {first:%b %d} "
+                        period = (f"since this model started {first:%b %d} "
                                   f"(~{days} day{'s' if days != 1 else ''})")
                 except (TypeError, ValueError):
                     pass
                 late = int(part.get("issued_late") or 0)
                 timing = (
-                    f"\n⚠️ **{late:,} of {issued:,} made after their {self.horizon}-min "
-                    "window started** (from earlier data only): a fair model test, not a "
-                    "call at the opening price."
+                    f"\nℹ️ {'All' if late == issued else f'{late:,} of {issued:,}'} "
+                    "predictions were made a minute or two after the candle opened, using "
+                    "only earlier prices. That's a fair test, but not a price you could "
+                    "have traded at."
                     if late else
-                    "\nEach prediction is measured from the last closed 5-minute candle "
-                    "and is issued about 1–2 minutes after it closes."
+                    "\nℹ️ Each prediction uses the last finished 5-minute candle and is "
+                    "made 1–2 minutes after it closes."
                 )
                 problems = score_consistency_problems(part)
                 if problems:
                     _LOG.error("Performance consistency check failed for %s %s min: %s",
                                self.coin, self.horizon, "; ".join(problems))
                 exchange_text = (
-                    f"**Correct direction:** {accuracy}\n{scoring}\n"
-                    f"**Results checked:** {settled:,} of {issued:,} recorded "
-                    f"predictions{paired}{pending}{timing}\n"
-                    f"Scope: {period}, {scope}; incumbent model only"
-                    + ("\n⚠️ **Consistency check failed:** "
+                    f"**Called the direction right:** {accuracy}\n{scoring}\n"
+                    f"**Checked:** {settled:,} of {issued:,} predictions"
+                    f"{paired}{pending}{timing}\n"
+                    f"**Covers:** {period}, {scope}, current model only"
+                    + ("\n⚠️ **These numbers don't add up** ("
                        + "; ".join(problems)[:300]
-                       + ". Treat these numbers as unreliable." if problems else "")
+                       + "). Don't trust them until this is fixed." if problems else "")
                 )
             pooled = reports.get("pooled")
             if isinstance(pooled, dict) and int(pooled.get("issued") or 0):
@@ -1642,24 +1644,29 @@ class GuidedHome(discord.ui.View):
                     hits = int(pooled["hits"] or 0)
                     windows = int(pooled.get("windows") or 0)
                     exchange_text += (
-                        f"\n**New 6-year model (live test):** {hits:,} of {decided:,} right "
-                        f"({hits / decided:.1%}) over {windows:,} time windows · Brier "
-                        f"{float(pooled['model_brier']):.3f} vs current model "
-                        f"{float(pooled['incumbent_brier']):.3f} vs basic "
-                        f"{float(pooled['baseline_brier']):.3f} (same predictions since "
-                        f"this version went live"
-                        + ("; too few windows to judge yet)" if windows < 300 else ")")
+                        f"\n**New model on trial (trained on 6 years of prices):** right "
+                        f"{hits:,} of {decided:,} ({hits / decided:.1%}) over {windows:,} "
+                        f"candles. Error score {float(pooled['model_brier']):.3f} vs "
+                        f"current model {float(pooled['incumbent_brier']):.3f} vs simple "
+                        f"guess {float(pooled['baseline_brier']):.3f}, on the same candles"
+                        + ("; too early to judge" if windows < 300 else "")
                     )
                 else:
-                    exchange_text += (f"\n**New 6-year model (live test):** "
+                    exchange_text += (f"\n**New model on trial (6 years of prices):** "
                                       f"{int(pooled['issued']):,} predictions made, "
-                                      f"{graded:,} graded so far")
-            embed.add_field(name=f"📈 How accurate are {self.coin} exchange predictions?", value=exchange_text[:1024], inline=False)
+                                      f"{graded:,} scored so far")
+            embed.add_field(name=f"📈 {self.coin} exchange predictions (up or down?)",
+                            value=exchange_text[:1024], inline=False)
 
             # 2. Contract-native comparisons; historical labels are NOT model wins.
             poly = reports.get("polymarket")
+            def money(cents: float) -> str:
+                return (f"made {cents:.1f}¢" if cents > 0 else
+                        f"lost {-cents:.1f}¢" if cents < 0 else "broke even") + " per $1"
+
             if not isinstance(poly, dict):
-                poly_text = "Contract score read unavailable, not zero accuracy."
+                poly_text = ("Couldn't load these scores right now (that doesn't mean "
+                             "zero accuracy). Press Refresh.")
             else:
                 resolved = int(poly.get("settled_forward_contracts") or 0)
                 learned = int(poly.get("learned_contracts") or 0)
@@ -1670,171 +1677,174 @@ class GuidedHome(discord.ui.View):
                 if (resolved and isinstance(model_error, (int, float))
                         and isinstance(market_error, (int, float))):
                     outcome = (
-                        "Better in these tests, but not approved for trading"
-                        if model_error < market_error else "Not better than market prices"
+                        "Slightly, so far, but not proven enough to trade on"
+                        if model_error < market_error else "No, not yet"
                     )
                     poly_text = (
-                        f"**Real-time predictions checked:** {resolved:,} (last {window} days)\n"
-                        f"**Compared with market prices:** {outcome}. "
-                        f"**Probability error (Brier):** RivaL {model_error:.3f} vs "
-                        f"market prices {market_error:.3f}. Lower is better; "
-                        "this is not money lost."
+                        f"**Checked:** {resolved:,} live predictions (last {window} days)\n"
+                        f"**Better than Polymarket's own odds?** {outcome}. "
+                        f"(Error score: RivaL {model_error:.3f}, Polymarket "
+                        f"{market_error:.3f}; lower is better.)"
                     )
                 else:
-                    poly_text = (f"**Real-time predictions checked:** {resolved:,} "
-                                 "· no fair comparison available yet")
+                    poly_text = (f"**Checked:** {resolved:,} live predictions "
+                                 "· too early to compare with Polymarket's odds")
                 observed = int(poly.get("observed_contracts") or 0)
                 pooled = poly.get("pooled") or {}
                 if pooled.get("contracts"):
                     verdict = ("better" if pooled["model_brier"] < pooled["market_brier"]
                                else "not better")
                     poly_text += (
-                        f"\n**New 6-year model vs market prices:** {pooled['contracts']:,} "
-                        f"contracts, {verdict} (Brier {pooled['model_brier']:.3f} vs "
+                        f"\n**New 6-year model vs Polymarket's odds:** {verdict} on "
+                        f"{pooled['contracts']:,} contracts ({pooled['model_brier']:.3f} vs "
                         f"{pooled['market_brier']:.3f})"
                     )
                     if pooled.get("real_value_bets"):
                         poly_text += (
-                            f"; value bets {pooled['real_value_bet_wins']}/"
-                            f"{pooled['real_value_bets']} won, "
-                            f"{pooled['real_return_per_dollar_after_fees'] * 100:+.1f}¢ per $1 "
-                            "at real start prices after Polymarket's fee"
+                            f". When it disagreed with the odds, betting its side would "
+                            f"have won {pooled['real_value_bet_wins']} of "
+                            f"{pooled['real_value_bets']} and "
+                            f"{money(pooled['real_return_per_dollar_after_fees'] * 100)} "
+                            "after Polymarket's fee"
                         )
                     elif pooled.get("value_bets"):
                         poly_text += (
-                            f"; when it disagreed by 5+ pts: {pooled['value_bet_wins']}/"
-                            f"{pooled['value_bets']} won, "
-                            f"{pooled['value_bet_avg_return'] * 100:+.1f}¢ per $1 before "
-                            "spread and fees"
+                            f". When it disagreed with the odds by 5+ points, its side won "
+                            f"{pooled['value_bet_wins']} of {pooled['value_bets']} and "
+                            f"{money(pooled['value_bet_avg_return'] * 100)} before fees"
                         )
                 kalshi = poly.get("kalshi") or {}
                 if kalshi.get("contracts"):
                     k_verdict = ("better" if kalshi["model_brier"] < kalshi["market_brier"]
                                  else "not better")
                     poly_text += (
-                        f"\n**Kalshi 15-min (also Robinhood, Coinbase):** "
-                        f"{kalshi['contracts']:,} contracts, {k_verdict} than Kalshi's "
-                        f"prices (Brier {kalshi['model_brier']:.3f} vs "
-                        f"{kalshi['market_brier']:.3f})")
+                        f"\n**Kalshi 15-min (also on Robinhood, Coinbase):** {k_verdict} "
+                        f"than Kalshi's odds on {kalshi['contracts']:,} contracts "
+                        f"({kalshi['model_brier']:.3f} vs {kalshi['market_brier']:.3f})")
                     if kalshi.get("value_bets"):
                         poly_text += (
-                            f"; value bets {kalshi['value_bet_wins']}/{kalshi['value_bets']} "
-                            f"won, {kalshi['return_per_dollar_after_fees'] * 100:+.1f}¢ per $1 "
-                            "at real prices after Kalshi fees")
-                labels = {"flow_v1": "Order-flow challenger",
-                          "flow_v2": "Order-flow challenger + OKX/Coinbase"}
+                            f"; betting its side when it disagreed won "
+                            f"{kalshi['value_bet_wins']} of {kalshi['value_bets']} and "
+                            f"{money(kalshi['return_per_dollar_after_fees'] * 100)} "
+                            "after Kalshi's fees")
+                labels = {"flow_v1": "Order-flow test model",
+                          "flow_v2": "Order-flow test model + OKX/Coinbase"}
                 for family, scored in (poly.get("kalshi_challengers") or {}).items():
                     if not scored.get("contracts"):
                         continue
                     better = scored["model_brier"] < scored["market_brier"]
                     poly_text += (
-                        f"\n**{labels.get(family, family)} vs Kalshi (shadow, not served):** "
-                        f"{scored['contracts']:,} contracts, "
-                        f"{'better' if better else 'not better'} than Kalshi's prices "
-                        f"(Brier {scored['model_brier']:.3f} vs {scored['market_brier']:.3f})")
+                        f"\n**{labels.get(family, family)} vs Kalshi (testing only, not "
+                        f"used for calls):** {'better' if better else 'not better'} on "
+                        f"{scored['contracts']:,} contracts "
+                        f"({scored['model_brier']:.3f} vs {scored['market_brier']:.3f})")
                     if scored.get("value_bets"):
                         poly_text += (
-                            f"; value bets {scored['value_bet_wins']}/{scored['value_bets']} "
-                            f"won, {scored['return_per_dollar_after_fees'] * 100:+.1f}¢ per $1 "
-                            "after fees")
-                poly_text += f"\n**Past results learned from:** {learned:,} (not live predictions)"
+                            f"; its side won {scored['value_bet_wins']} of "
+                            f"{scored['value_bets']} and "
+                            f"{money(scored['return_per_dollar_after_fees'] * 100)} after fees")
+                poly_text += (f"\n**Past results studied:** {learned:,} (history, not live "
+                              "predictions)")
                 if observed and not learned:
-                    poly_text += (f"\n⚠️ {observed:,} contracts seen, but none of their "
-                                  "results could be read yet")
-            embed.add_field(name="🎯 How accurate are Polymarket predictions?", value=poly_text, inline=False)
+                    poly_text += (f"\n⚠️ Saw {observed:,} contracts but couldn't read any "
+                                  "of their results yet")
+            embed.add_field(name="🎯 Polymarket / Kalshi predictions",
+                            value=poly_text[:1024], inline=False)
 
             # 3. Live worker state is distinct from statistical learning benefit.
             cycles = reports.get("cycles")
             heart = cycles.get("learning") if isinstance(cycles, dict) else None
             if heart is None:
-                engine_text = "**Is learning running?** No completed check recorded"
+                engine_text = "**Learning loop:** ⚠️ no run recorded yet"
             elif heart.get("status") != "recorded":
-                engine_text = "**Is learning running?** Cannot check right now"
+                engine_text = "**Learning loop:** couldn't check right now"
             else:
                 age = int((now - heart["checked_at"].astimezone(UTC)).total_seconds() // 60)
                 if not heart["math_ok"] or not heart["model_review_ok"]:
-                    state = "FAILED stage"
+                    state = "❌ a step failed on the last run"
                 elif not 0 <= age <= 16:
-                    state = "STALE or invalid clock"
+                    state = "⚠️ hasn't run recently (or the clock is off)"
                 else:
-                    state = "Running"
+                    state = "✅ running"
                 engine_text = (
-                    f"**Is learning running?** {state} (last cycle {age} min ago, "
-                    "runs every 5 min; that cycle: "
-                    f"{heart['issued']} predictions logged, {heart['settled']} results checked "
-                    "and learned from, all coins/timeframes)"
+                    f"**Learning loop:** {state}. Last run {age} min ago (runs every "
+                    f"5 min): made {heart['issued']} predictions and checked "
+                    f"{heart['settled']} results, all coins and timeframes"
                 )
             benefit = reports.get("benefit")
             lineage = reports.get("lineage")
             if isinstance(benefit, dict):
                 reason = {
-                    "supported": "Possibly improving, not yet approved",
-                    "not_improving": "Not beating basic predictions yet",
-                    "insufficient": "Not enough future results to tell yet",
-                }.get(benefit.get("status"), "Not verified")
+                    "supported": "Maybe: it looks better, but that isn't proven yet",
+                    "not_improving": "No: it isn't beating the simple guess yet",
+                    "insufficient": "Too early to tell",
+                }.get(benefit.get("status"), "Can't confirm")
                 days = int(benefit.get("days") or 0)
                 need = ""
                 if benefit.get("status") == "insufficient" and days < 7:
                     need = f"; needs 7 days of results, has {days}"
                 trend_text = (
-                    f"**Is accuracy improving?** {reason} "
-                    f"({int(benefit.get('targets') or 0)} results / "
-                    f"{days} days checked{need}; current model, "
-                    "last 14 days, one result per time window)"
+                    f"**Getting more accurate?** {reason} "
+                    f"({int(benefit.get('targets') or 0):,} results over {days} "
+                    f"day{'s' if days != 1 else ''}{need})"
                 )
             elif isinstance(benefit, TimeoutError):
-                trend_text = ("**Is accuracy improving?** Cannot check right now: still "
-                              "calculating, press Refresh in a few seconds. Improvement unproven")
+                trend_text = ("**Getting more accurate?** Still calculating; press Refresh "
+                              "in a few seconds")
             else:
-                trend_text = "**Is accuracy improving?** Cannot check right now; improvement unproven"
+                trend_text = "**Getting more accurate?** Couldn't check right now"
             if isinstance(lineage, dict) and lineage.get("lineage_proven"):
                 sample = int(lineage.get("forecasts") or lineage["lineage_proven"])
                 unknown = int(lineage.get("lineage_unknown") or 0)
                 lineage_text = (
-                    f"**Used verified historical training:** "
-                    f"{lineage['historically_seeded']}/{lineage['lineage_proven']} recent predictions"
-                    f" (latest {sample:,} in 7 days"
-                    + (f"; {unknown:,} without a training record" if unknown else "")
-                    + ")\nHistorical challengers are evaluated separately."
+                    f"**Built from the 6-year history?** "
+                    f"{lineage['historically_seeded']} of the last "
+                    f"{lineage['lineage_proven']} predictions"
+                    + (f" ({unknown:,} of the latest {sample:,} have no training record)"
+                       if unknown else "")
+                    + ". The 6-year model is on trial separately (above)."
                 )
             else:
-                lineage_text = "**Used verified historical training:** Cannot confirm for recent predictions"
+                lineage_text = ("**Built from the 6-year history?** Can't confirm for "
+                                "recent predictions")
             intelligence = reports.get("intelligence")
             if isinstance(intelligence, dict):
                 rep_ = intelligence["report"]
                 latest = intelligence["latest"]
                 stance, direction = latest["stances"].get(self.horizon, ("—", "none"))
                 followed = (
-                    f"followed {rep_['followed']} calls ({rep_['followed_hit_rate']:.0%} right)"
+                    f"went along with the model {rep_['followed']} times "
+                    f"(right {rep_['followed_hit_rate']:.0%})"
                     if rep_["followed"] and rep_["followed_hit_rate"] is not None
-                    else f"followed {rep_['followed']} calls (none graded yet)"
+                    else f"went along with the model {rep_['followed']} times "
+                         "(none scored yet)"
                 )
                 abstained = (
-                    f"abstained {rep_['abstained']} (model was right "
+                    f"sat out {rep_['abstained']} (the model was right "
                     f"{rep_['model_hit_when_abstained']:.0%} of those)"
                     if rep_["abstained"] and rep_["model_hit_when_abstained"] is not None
-                    else f"abstained {rep_['abstained']}"
+                    else f"sat out {rep_['abstained']}"
                 )
                 # "now DOWN" read as "the service is down"; spell out that it is
-                # a price call, and that abstaining is a choice, not an outage.
-                now_call = ({"up": "calls UP (price rising)",
-                             "down": "calls DOWN (price falling)"}.get(direction.lower(),
-                                                                         direction.upper())
+                # a price call, and that sitting out is a choice, not an outage.
+                now_call = ({"up": "says UP (price rising)",
+                             "down": "says DOWN (price falling)"}.get(direction.lower(),
+                                                                     direction.upper())
                             if stance == "follow" and direction != "none"
                             else "makes no call")
+                # The AI's own note is technical; it stays in Detailed Research.
                 intel_text = (
-                    f"\n**RivaL Intelligence (reviews the models):** for the next "
-                    f"{self.horizon}-min candle it {now_call}. Last 7 days {followed}, "
-                    f"{abstained}.\n"
-                    f"*{discord.utils.escape_markdown(str(latest['thesis'])[:200])}*"
+                    f"\n**RivaL Intelligence (an AI that double-checks the model):** for "
+                    f"the next {self.horizon}-min candle it {now_call}. Last 7 days it "
+                    f"{followed} and {abstained}."
                 )
             elif isinstance(intelligence, Exception):
-                intel_text = "\n**RivaL Intelligence:** cannot check right now"
+                intel_text = "\n**RivaL Intelligence:** couldn't check right now"
             else:
-                intel_text = ("\n**RivaL Intelligence:** no model reviews recorded yet"
+                intel_text = ("\n**RivaL Intelligence:** hasn't reviewed anything yet"
                               if "intelligence" in reports else "")
             embed.add_field(
-                name="🧠 Is RivaL actually learning?",
+                name="🧠 Is it learning?",
                 value=f"{engine_text}\n{trend_text}\n{lineage_text}{intel_text}"[:1024],
                 inline=False,
             )
@@ -1843,7 +1853,7 @@ class GuidedHome(discord.ui.View):
             # substitute for an actual forecast-worker heartbeat.
             feeds = reports.get("feeds")
             if not isinstance(feeds, (list, tuple)):
-                feeds_text = "**Live price feeds:** Cannot check right now"
+                feeds_text = "**Price feeds:** couldn't check right now"
             else:
                 fresh, listed = set(), set()
                 for row in feeds:
@@ -1866,66 +1876,74 @@ class GuidedHome(discord.ui.View):
                 expected = listed or set(self.venues)
                 stale = sorted(expected - fresh)
                 feeds_text = (
-                    f"**Live price feeds:** {len(fresh)}/{len(expected)} up to date"
+                    f"**Price feeds:** {'✅' if not stale else '⚠️'} {len(fresh)} of "
+                    f"{len(expected)} exchanges up to date"
                     + (f" (behind: {', '.join(stale)[:200]})" if stale else "")
-                    if self.venues else "**Live price feeds:** Not configured"
+                    if self.venues else "**Price feeds:** not set up"
                 )
             cycle = cycles.get("forecast") if isinstance(cycles, dict) else None
             if cycle is None:
-                cycle_text = "**Prediction checks:** No check recorded" if isinstance(
+                cycle_text = "**Prediction cycle:** ⚠️ no run recorded yet" if isinstance(
                     cycles, dict,
-                ) else "**Prediction checks:** Cannot check right now"
+                ) else "**Prediction cycle:** couldn't check right now"
             elif cycle.get("status") != "recorded":
-                cycle_text = "**Prediction checks:** Cannot check right now"
+                cycle_text = "**Prediction cycle:** couldn't check right now"
             else:
                 age = int((now - cycle["checked_at"].astimezone(UTC)).total_seconds() // 60)
-                status = "fresh" if 0 <= age <= 10 else "stale/invalid time"
-                cycle_text = (f"**Prediction checks:** Last ran {age} min ago ({status}); "
-                              f"{cycle['issued']} predictions recorded (all coins/timeframes, latest cycle"
-                              + (f"; {cycle['expired']} skipped as too late" if cycle.get("expired")
-                                 else "") + ")")
+                status = ("✅" if 0 <= age <= 10 else
+                          "⚠️ late (or the clock is off):")
+                cycle_text = (f"**Prediction cycle:** {status} last ran {age} min ago and "
+                              f"made {cycle['issued']} predictions (all coins and timeframes)"
+                              + (f"; {cycle['expired']} skipped for running late"
+                                 if cycle.get("expired") else ""))
             coverage = reports.get("coverage")
             if isinstance(coverage, dict) and coverage["cycles"]:
                 ran = min(coverage["cycles"], 288)
                 missed = coverage["expired"]
                 cycle_text += (
-                    f"\n{'✅' if ran >= 274 else '⚠️'} **Last 24 h:** {ran} of 288 "
-                    f"five-minute cycles ran ({ran / 288:.0%})"
-                    + (f"; {missed:,} predictions skipped because the cycle ran late"
+                    f"\n**Last 24 hours:** {'✅' if ran >= 274 else '⚠️'} {ran} of 288 "
+                    f"cycles ran ({ran / 288:.0%})"
+                    + (f"; {missed:,} predictions skipped because a cycle ran late"
                        if missed else "")
+                    + ("" if ran >= 288 else
+                       ". Restarts and slow cycles both count against this")
                 )
             embed.add_field(
-                name="📡 Are market feeds and predictions running?", value=f"{feeds_text}\n{cycle_text}", inline=False,
+                name="📡 Is everything running?", value=f"{feeds_text}\n{cycle_text}"[:1024],
+                inline=False,
             )
             embed.timestamp = now
             embed.set_footer(
-                text="Live data snapshot · Private research, no orders · "
-                     "More proof in Results / Technical evidence"
+                text="Live numbers · Research only, no real trades · "
+                     "More detail: Detailed Research"
             )
         elif p == "help":
             embed = discord.Embed(
                 title="❓ Getting Started",
                 description=(
-                    "1. **Crypto:** inspect live markets or separate exchange forecasts.\n"
-                    "2. **Sports:** choose your state and browse odds.\n"
-                    "3. **Notifications:** enable tracking and stop it anytime.\n"
-                    "4. **Bot Performance:** verify forecast scores and learning.\n"
-                    "5. **Practice:** trade imaginary funds and see your own results.\n\n"
-                    "**WAIT** means evidence is insufficient. No bets are placed."
+                    "1. **Crypto:** live markets and RivaL's up/down predictions.\n"
+                    "2. **Sports:** choose your state and compare odds.\n"
+                    "3. **Notifications:** get updates in your messages; stop anytime.\n"
+                    "4. **Bot Performance:** how often the predictions were right.\n"
+                    "5. **Practice:** trade pretend money and track your results.\n"
+                    "**Advanced Tools:** exact-price alerts and deeper research.\n\n"
+                    "**WAIT** means RivaL isn't confident enough to make a call. "
+                    "No real bets are placed."
                 ), color=discord.Color.blurple(),
             )
         else:
             embed = discord.Embed(
                 title="⚙️ Advanced Tools",
-                description="Optional research, usage limits and manual targets. "
-                            "Accuracy, learning and feed health are together in Bot Performance.",
+                description="Exact-price alerts, deeper research, and how much of each "
+                            "data service is being used. Accuracy and learning are on "
+                            "Bot Performance.",
                 color=discord.Color.blurple(),
             )
         if self.note:
             embed.add_field(name="What Happened", value=self.note[:1000],
                             inline=False)
         if p != "performance":  # Performance sets its own footer above
-            embed.set_footer(text="Private research • No orders or guaranteed accuracy")
+            embed.set_footer(text="Research only • No real trades • Predictions can be wrong")
         return embed
 
     def _display_generation(self) -> GuidedHome:

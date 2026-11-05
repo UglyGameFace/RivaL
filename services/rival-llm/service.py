@@ -39,7 +39,9 @@ MAX_BODY = 30_000
 MAX_EVIDENCE_CHARS = 24_000
 CONTEXT_TOKENS = 4096
 GENERATION_TOKENS = 140
-EXPLAIN_GENERATION_TOKENS = 160  # three stances + 200/120-char text
+# Three stances + 200/120-char text. 160 was too tight: on Nov 5 measured
+# answers ran 129-163 tokens and a full answer was rejected as token_limit.
+EXPLAIN_GENERATION_TOKENS = 220
 # Strict, smaller response for a CPU-only feature suggestion, not a forecast.
 HYPOTHESIS_GENERATION_TOKENS = 136
 CONTEXT_SAFETY_TOKENS = 96
@@ -894,6 +896,25 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.server.busy.release()
 
 
+def cpu_threads(cpu_max: Path = Path("/sys/fs/cgroup/cpu.max")) -> int:
+    """llama.cpp threads for the CPU this container may actually use.
+
+    Hard-coded 2 used half of the 3.68-CPU quota after the Nov 5 resize. On
+    that host, with the real review prompt: 2 threads read 20 tok/s and wrote
+    10 tok/s (review 51-59 s); 4 threads with batch 512 read 37 and wrote
+    15.5 (review 22-33 s). Override with RIVAL_LLM_THREADS.
+    """
+    override = os.getenv("RIVAL_LLM_THREADS", "").strip()
+    if override.isdigit() and 1 <= int(override) <= 16:
+        return int(override)
+    try:
+        quota, period = cpu_max.read_text().split()[:2]
+        cpus = int(quota) / int(period) if quota != "max" else (os.cpu_count() or 2)
+    except (OSError, ValueError):
+        cpus = 2
+    return max(2, min(8, math.ceil(cpus)))
+
+
 def backend_command(
     binary: Path, model_path: Path, context_tokens: int,
 ) -> tuple[list[str], dict[str, str]]:
@@ -901,8 +922,10 @@ def backend_command(
     command = [
         str(binary), "--model", str(model_path),
         "--host", "127.0.0.1", "--port", "8766",
-        "--ctx-size", str(context_tokens), "--threads", "2", "--parallel", "1",
-        "--batch-size", "128", "--n-gpu-layers", "0",
+        "--ctx-size", str(context_tokens), "--threads", str(cpu_threads()),
+        "--parallel", "1",
+        # 512 doubled prompt reading over 128 at 4 threads (Nov 5 bench).
+        "--batch-size", "512", "--n-gpu-layers", "0",
         "--jinja", "--reasoning-budget", "0",
     ]
     env = os.environ.copy()

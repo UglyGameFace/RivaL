@@ -139,6 +139,11 @@ def labels(k, horizon: int):
     ok = (k.index.to_series().shift(-step) - k.index.to_series()) == pd.Timedelta(minutes=horizon)
     y = (future > c).astype("float32")
     y[~ok.to_numpy() | future.isna().to_numpy()] = np.nan
+    if "trades" in k.columns:
+        # Same rule as live grading: a flat target bar with no trades is a
+        # repeated price, not a real NOT UP, so it is withdrawn.
+        flat = (k["trades"].shift(-step) == 0) & (future == c)
+        y[flat.to_numpy()] = np.nan
     return y
 
 
@@ -247,3 +252,119 @@ def train_horizon(frames: dict, horizon: int, *, train_end, test_start, trained_
         raise ValueError(f"portable evaluator disagrees with LightGBM by {error}")
     doc["portable_max_error"] = error
     return doc
+
+
+def venue_frames(records: list[bytes], *, exclude=("binance",)) -> dict:
+    """RivaL's own 5m exchange candles (Drive backups) -> per-stream frames.
+
+    records: rival-records__perp_market_candles__<day>.ndjson.gz payloads.
+    Returns {"venue|contract|quote": (k, features)} with k indexed by bar
+    CLOSE time like the Binance frames. Alts take the same venue's BTC as
+    their BTC lead, exactly as the live bot does. Missing bars stay missing:
+    frame_features blanks any window that is not continuous.
+    """
+    import gzip
+    import io
+    import json
+
+    import pandas as pd
+
+    from parlay_bot.perpetuals.markets import asset_for_contract
+
+    keep = ("venue", "contract", "quote", "interval_minutes", "opened_at", "open_price",
+            "high_price", "low_price", "close_price", "volume_base", "trades")
+    rows = []
+    for payload in records:
+        with gzip.open(io.BytesIO(payload), "rt", encoding="utf-8") as handle:
+            for line in handle:
+                item = json.loads(line)
+                if item.get("interval_minutes") == 5 and item.get("venue") not in exclude:
+                    rows.append(tuple(item.get(k) for k in keep))
+    if not rows:
+        return {}
+    data = pd.DataFrame(rows, columns=list(keep))
+    data["asset"] = [asset_for_contract(str(c)) for c in data["contract"]]
+    data = data[data["asset"].isin(ASSETS)]
+    data["t"] = pd.to_datetime(data["opened_at"], utc=True, format="ISO8601") + pd.Timedelta(minutes=5)
+    data = data.drop_duplicates(["venue", "contract", "quote", "t"]).sort_values("t")
+    streams = {}
+    for (venue, contract, quote), part in data.groupby(["venue", "contract", "quote"]):
+        k = pd.DataFrame({"open": part["open_price"].astype(float).to_numpy(),
+                          "high": part["high_price"].astype(float).to_numpy(),
+                          "low": part["low_price"].astype(float).to_numpy(),
+                          "close": part["close_price"].astype(float).to_numpy(),
+                          "volume": part["volume_base"].astype(float).to_numpy(),
+                          "trades": part["trades"].astype(float).to_numpy()},
+                         index=pd.DatetimeIndex(part["t"].to_numpy(), name="t"))
+        k = k[k["close"] > 0]
+        if len(k) >= WINDOW:
+            streams[(venue, contract, quote, part["asset"].iloc[0])] = k
+    frames = {}
+    for (venue, contract, quote, asset), k in streams.items():
+        btc = None
+        if asset != "BTC":
+            same = [s for s in streams if s[0] == venue and s[3] == "BTC"]
+            same.sort(key=lambda s: (s[2] != quote, s[1]))  # same quote first
+            btc = streams[same[0]][["close"]] if same else None
+        frames[f"{venue}|{contract}|{quote}"] = (k, frame_features(k, btc, asset))
+    return frames
+
+
+def _stack(frames: dict, horizon: int, cols: list[str]):
+    import pandas as pd
+
+    parts = []
+    for k, f in frames.values():
+        part = f[cols].copy()
+        part["y"] = labels(k, horizon)
+        parts.append(part.dropna(subset=["y", "ret_12", "vol_12", "rsi"]))
+    return pd.concat(parts).sort_index() if parts else None
+
+
+def _lightgbm_fit(x, y):
+    import lightgbm as lgb
+
+    model = lgb.LGBMClassifier(**PARAMS).fit(x, y)
+    return lambda rows: model.predict_proba(rows)[:, 1]
+
+
+def venue_holdout(binance: dict, venues: dict, horizon: int, *, holdout_days: int = 28,
+                  feature_version: str = FEATURE_VERSION, fit=None) -> dict:
+    """Does adding RivaL's own candles help predict RivaL's own venues?
+
+    Both models train on everything before the holdout (purged by the
+    horizon): A on Binance only, B on Binance + RivaL's venue candles. Both
+    are scored on the last ``holdout_days`` of venue bars, which neither saw.
+    Passes only if B beats A on average AND on at least half the days.
+    """
+    import numpy as np
+    import pandas as pd
+
+    fit = fit or _lightgbm_fit
+    cols = list(FEATURE_SETS[feature_version])
+    a_rows, v_rows = _stack(binance, horizon, cols), _stack(venues, horizon, cols)
+    if a_rows is None or v_rows is None or v_rows.empty:
+        return {"passed": False, "reason": "no venue candles"}
+    start = v_rows.index.max().normalize() - pd.Timedelta(days=holdout_days)
+    cut = start - pd.Timedelta(minutes=horizon)
+    test = v_rows[v_rows.index >= start]
+    a_train = a_rows[a_rows.index < cut]
+    b_train = pd.concat([a_train, v_rows[v_rows.index < cut]])
+    if test.empty or len(b_train) == len(a_train):
+        return {"passed": False, "reason": "not enough venue history before the holdout"}
+    y = test["y"].to_numpy()
+    pa = fit(a_train[cols], a_train["y"])(test[cols])
+    pb = fit(b_train[cols], b_train["y"])(test[cols])
+    up = float(b_train["y"].mean())
+    daily = pd.Series((pa - y) ** 2 - (pb - y) ** 2, index=test.index).groupby(test.index.date).mean()
+    gain = float(np.mean((pa - y) ** 2) - np.mean((pb - y) ** 2))
+    positive = float((daily > 0).mean())
+    return {
+        "holdout_from": str(start), "rows": len(test), "days": len(daily),
+        "venue_rows_added": len(b_train) - len(a_train),
+        "brier_binance_only": round(float(np.mean((pa - y) ** 2)), 6),
+        "brier_with_venues": round(float(np.mean((pb - y) ** 2)), 6),
+        "brier_up_rate": round(float(np.mean((up - y) ** 2)), 6),
+        "paired_gain": round(gain, 6), "positive_days": round(positive, 3),
+        "passed": bool(gain > 0 and positive >= 0.5 and len(daily) >= 14),
+    }

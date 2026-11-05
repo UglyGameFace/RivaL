@@ -86,10 +86,22 @@ def model_sha256(doc: dict) -> str:
     return hashlib.sha256(json.dumps(doc, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+VENUE_SOURCE = "rival_venue_candles"
+
+
 def recipe(doc: dict) -> dict:
-    """What is being evaluated: inputs, horizon and fixed training settings."""
-    return {k: doc.get(k) for k in ("schema", "family", "feature_version", "features",
-                                    "horizon_minutes", "params")}
+    """What is being evaluated: inputs, horizon, training data and settings."""
+    out = {k: doc.get(k) for k in ("schema", "family", "feature_version", "features",
+                                   "horizon_minutes", "params")}
+    # Added only when present so every existing family keeps its name.
+    if doc.get("training_sources"):
+        out["training_sources"] = sorted(doc["training_sources"])
+    return out
+
+
+def lineage(doc: dict) -> str:
+    """'venues' when trained on RivaL's own exchange candles too, else 'binance'."""
+    return "venues" if VENUE_SOURCE in (doc.get("training_sources") or ()) else "binance"
 
 
 def family(doc: dict) -> str:
@@ -120,8 +132,10 @@ class PooledModelSet:
     def __init__(self, store) -> None:
         self.store = store
         self._ready = False
-        self._active: dict[int, dict] = {}
-        self._fallback: dict[int, dict] = {}  # newest price-only (v1) model
+        # Keyed (lineage, horizon): each training lineage runs side by side
+        # so its own live record decides, never a silent replacement.
+        self._active: dict[tuple[str, int], dict] = {}
+        self._fallback: dict[tuple[str, int], dict] = {}  # newest price-only (v1)
         self._loaded_at: float | None = None
 
     def initialize(self) -> None:
@@ -162,23 +176,30 @@ class PooledModelSet:
         return row.rowcount
 
     def active(self, horizon: int, *, now: datetime | None = None,
-               context: bool = True) -> dict | None:
+               context: bool = True, lineage: str = "binance") -> dict | None:
         """Newest usable model; without live context, the newest price-only one."""
         import time
 
         if self._loaded_at is None or time.monotonic() - self._loaded_at > self.REFRESH_SECONDS:
             self._reload(now)
-        doc = self._active.get(horizon)
+        doc = self._active.get((lineage, horizon))
         if doc is not None and not context and doc.get("feature_version") != FEATURE_VERSION:
-            return self._fallback.get(horizon)
+            return self._fallback.get((lineage, horizon))
         return doc
+
+    def serving(self, horizon: int, *, now: datetime | None = None,
+                context: bool = True) -> list[dict]:
+        """One model per training lineage for this horizon (Binance-only first)."""
+        return [doc for name in ("binance", "venues")
+                if (doc := self.active(horizon, now=now, context=context,
+                                       lineage=name)) is not None]
 
     def _reload(self, now) -> None:
         import time
 
         self.initialize()
-        active: dict[int, dict] = {}
-        fallback: dict[int, dict] = {}
+        active: dict[tuple[str, int], dict] = {}
+        fallback: dict[tuple[str, int], dict] = {}
         with self.store.connect() as conn:
             rows = conn.execute(
                 """SELECT horizon_minutes, document FROM rival_pooled_models
@@ -186,18 +207,19 @@ class PooledModelSet:
             ).fetchall()
         for row in rows:
             horizon = int(row["horizon_minutes"])
-            if horizon in active and horizon in fallback:
-                continue
             try:
                 doc = validate(json.loads(row["document"]))
             except (ValueError, TypeError, KeyError):
                 continue
+            key = (lineage(doc), horizon)
+            if key in active and key in fallback:
+                continue
             if usable(doc, now=now):
                 clean = {k: v for k, v in doc.items() if not k.startswith("_")}
                 doc["_family"], doc["_sha256"] = family(clean), model_sha256(clean)
-                active.setdefault(horizon, doc)
+                active.setdefault(key, doc)
                 if doc.get("feature_version") == FEATURE_VERSION:
-                    fallback.setdefault(horizon, doc)
+                    fallback.setdefault(key, doc)
         self._active = active
         self._fallback = fallback
         self._loaded_at = time.monotonic()

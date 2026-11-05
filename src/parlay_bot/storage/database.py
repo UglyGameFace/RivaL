@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import queue
+import re
 import sqlite3
 import sys
 import threading
@@ -32,6 +34,61 @@ class CursorLike(Protocol):
 class ConnectionLike(Protocol):
     def execute(self, sql: str, params: Sequence[Any] = ()) -> CursorLike: ...
     def executescript(self, script: str) -> None: ...
+
+
+class DatabaseClock:
+    """PostgreSQL time spent by ONE thread while a clock is active.
+
+    Lets a caller split its own wall time into SQL (execute, including lock
+    waits and result transfer), commit, and pool-checkout wait, versus the
+    Python work in between. Names and totals only, never SQL or values.
+    """
+
+    __slots__ = ("checkouts", "commit_seconds", "commits", "sql_seconds",
+                 "statements", "wait_seconds")
+
+    def __init__(self) -> None:
+        self.sql_seconds = self.commit_seconds = self.wait_seconds = 0.0
+        self.statements = self.commits = self.checkouts = 0
+
+    @property
+    def seconds(self) -> float:
+        return self.sql_seconds + self.commit_seconds + self.wait_seconds
+
+
+_CLOCKS = threading.local()
+
+
+class database_clock:
+    """``with database_clock() as clock:`` measures this thread's PostgreSQL time."""
+
+    def __enter__(self) -> DatabaseClock:
+        self._previous = getattr(_CLOCKS, "current", None)
+        self._clock = DatabaseClock()
+        _CLOCKS.current = self._clock
+        return self._clock
+
+    def __exit__(self, *exc: object) -> None:
+        _CLOCKS.current = self._previous
+
+
+def _active_clock() -> DatabaseClock | None:
+    return getattr(_CLOCKS, "current", None)
+
+
+_FIRST_TABLE = re.compile(r"\b(?:FROM|INTO|UPDATE)\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+
+
+def _statement_label(sql: str) -> str:
+    """Which statement was slow, without SQL text or values: first table + digest.
+
+    One caller often runs several SELECTs on one connection; the operation
+    word alone ("SELECT") could not say which one. The 8-hex digest of the
+    statement text tells statements on the same table apart.
+    """
+    match = _FIRST_TABLE.search(sql)
+    table = match.group(1).lower() if match else "none"
+    return f"{table}#{hashlib.sha256(sql.encode()).hexdigest()[:8]}"
 
 
 def _owner_group(origin: str) -> str:
@@ -82,6 +139,10 @@ class _Connection:
             elapsed = time.monotonic() - started
             self.query_count += 1
             self.query_seconds += elapsed
+            clock = _active_clock()
+            if clock is not None:
+                clock.sql_seconds += elapsed
+                clock.statements += 1
             if self.query_count == 1 or elapsed > self.max_query_seconds:
                 self.max_query_seconds = elapsed
                 self.slowest_operation = operation
@@ -90,8 +151,8 @@ class _Connection:
             if elapsed >= 2.0:
                 _LOG.warning(
                     "RivaL PostgreSQL slow operation owner=%s operation=%s "
-                    "duration=%.2fs (SQL/parameters omitted)",
-                    self.origin, operation, elapsed,
+                    "statement=%s duration=%.2fs (SQL/parameters omitted)",
+                    self.origin, operation, _statement_label(sql), elapsed,
                     extra={"problem_group": _owner_group(self.origin)},
                 )
 
@@ -137,7 +198,12 @@ class _Connection:
                         try:
                             self._raw.commit()
                         finally:
-                            self.commit_seconds += time.monotonic() - started
+                            spent = time.monotonic() - started
+                            self.commit_seconds += spent
+                            clock = _active_clock()
+                            if clock is not None:
+                                clock.commit_seconds += spent
+                                clock.commits += 1
                 result = False
             else:
                 result = self._raw.__exit__(exc_type, exc, tb)
@@ -271,6 +337,10 @@ class PostgresDatabase(RelationalDatabase):
             )
             checked_out = len(self._borrowers)
         waited = held_since - started
+        clock = _active_clock()
+        if clock is not None:
+            clock.wait_seconds += waited
+            clock.checkouts += 1
         if waited >= 1.0:
             _LOG.warning(
                 "RivaL PostgreSQL checkout slow wait=%.2fs checked_out=%d max=%d",

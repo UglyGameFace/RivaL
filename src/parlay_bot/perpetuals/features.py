@@ -127,6 +127,42 @@ def indicator_features(
     return (rsi_state, macd_state, bollinger_state, atr_state, volume_state)
 
 
+class WindowFeatureMemo:
+    """Window inputs carried from one forecast cycle to the next for ONE stream.
+
+    Each 5-minute cycle re-reads the latest 1,000 candles, so all but the
+    newest window were already computed last cycle. Pass a memo built from
+    the previous cycle's ``current`` map: windows looked up this cycle move
+    into ``current`` and anything not seen again (slid out of the read) is
+    dropped, which bounds memory to one read's worth of windows per stream.
+    Same mapping interface ``live_examples`` already uses for its cache.
+    """
+
+    __slots__ = ("_previous", "current", "reused")
+
+    def __init__(self, previous: dict | None = None) -> None:
+        self._previous = previous or {}
+        self.current: dict = {}
+        self.reused = 0
+
+    def __contains__(self, key) -> bool:
+        return key in self.current or key in self._previous
+
+    def __getitem__(self, key):
+        if key in self.current:
+            return self.current[key]
+        value = self._previous[key]
+        self.current[key] = value
+        self.reused += 1
+        return value
+
+    def __setitem__(self, key, value) -> None:
+        self.current[key] = value
+
+    def __len__(self) -> int:
+        return len(self.current)
+
+
 def live_examples(
     candles: Sequence[MarketCandle], *, horizon_minutes: int,
     feature_cache: dict | None = None,
@@ -191,7 +227,14 @@ def live_examples(
         ):
             continue
         # Horizon-independent: window continuity, causality and inputs.
-        key = (idx, current.opened_at, current.observed_at, current.close_price)
+        # The key names the window by its first and last candle, not by its
+        # position in this list, so the same window keeps the same key as
+        # the list slides forward each cycle (WindowFeatureMemo). Stored
+        # candles are immutable per opened_at, so two windows with the same
+        # first and last candle hold the same 40 bars; a backfilled bar
+        # inside the span shifts extended[0] and therefore the key.
+        key = (extended[0].opened_at, current.opened_at, current.observed_at,
+               current.close_price)
         if feature_cache is not None and key in feature_cache:
             features = feature_cache[key]
         else:

@@ -19,6 +19,7 @@ from parlay_bot.discord_app.polymarket_watch import (
     ASSETS,
     HORIZONS,
     READ_TIMEOUT,
+    MarketUnavailable,
     PolymarketReader,
     PolymarketWindowBoard,
     unavailable_text,
@@ -355,10 +356,17 @@ class LivePolymarketBoardService:
                 return await asyncio.wait_for(
                     self.reader.window_board(asset, horizon), timeout=READ_TIMEOUT + 1,
                 )
-            except Exception:  # noqa: BLE001
+            except Exception as exc:  # noqa: BLE001
+                # Name the failure: a timeout, a refused book (MarketUnavailable
+                # carries its reason, e.g. no_liquidity) and an HTTP error are
+                # different problems. Type and reason code only, no payloads.
+                # Only MarketUnavailable's fixed codes are logged as a reason;
+                # other exception text may echo a remote payload.
+                reason = str(exc)[:40] if isinstance(exc, MarketUnavailable) else "-"
                 _LOG.warning(
                     "Live Polymarket verified window unavailable asset=%s "
-                    "horizon=%dm", asset, horizon,
+                    "horizon=%dm error=%s reason=%s", asset, horizon,
+                    type(exc).__name__, reason,
                 )
                 return None
 

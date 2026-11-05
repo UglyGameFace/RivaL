@@ -165,3 +165,51 @@ class TrainingWarehouse:
             await self._save(url, raw)
             return raw
         return fetch
+
+    async def records(self, table: str, *, max_files: int = 400) -> list[bytes]:
+        """RivaL's own nightly backups of one live table (one file per UTC day).
+
+        Written by perpetuals.records_backup as
+        rival-records__<table>__<YYYY-MM-DD>.ndjson.gz in the history folder.
+        A saved day is never rewritten, so a local copy stays valid.
+        """
+        drive = self.drive
+        await drive._verify_folder_boundary()
+        folder = drive.folders.history
+        prefix = f"rival-records__{table}__"
+        found: dict[str, tuple[str, str]] = {}
+        page = None
+        for _ in range(50):
+            params = {
+                "q": (f"'{drive._escape_query(folder)}' in parents and trashed = false "
+                      f"and name contains '{drive._escape_query(prefix)}'"),
+                "spaces": "drive", "pageSize": 1000,
+                "fields": "nextPageToken,files(id,name,md5Checksum,parents)",
+            }
+            if page:
+                params["pageToken"] = page
+            response = await drive._client.get(f"{drive.DRIVE_URL}/files", params=params,
+                                               headers=await drive._headers())
+            response.raise_for_status()
+            doc = response.json()
+            for row in doc.get("files") or ():
+                name = str(row.get("name") or "")
+                if (name.startswith(prefix) and name.endswith(".ndjson.gz")
+                        and folder in (row.get("parents") or ()) and row.get("md5Checksum")):
+                    found[name] = (str(row["id"]), str(row["md5Checksum"]))
+            page = doc.get("nextPageToken")
+            if not page:
+                break
+        out = []
+        local_dir = self.cache / "records"
+        local_dir.mkdir(parents=True, exist_ok=True)
+        for name in sorted(found)[-max_files:]:
+            file_id, md5 = found[name]
+            local = local_dir / name
+            raw = local.read_bytes() if local.exists() else b""
+            if hashlib.md5(raw, usedforsecurity=False).hexdigest() != md5:
+                raw = await self._download(file_id, md5)  # md5-verified
+                local.write_bytes(raw)
+            out.append(raw)
+        self.stats[f"records_{table}"] = len(out)
+        return out

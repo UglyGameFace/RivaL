@@ -33,6 +33,7 @@ LEARNING_RATE = 0.02
 L2 = 1e-4
 SHRINK_HALF = 300  # graded results at which the model gets half its own say
 MAX_LEARN_PER_CYCLE = 4000
+LEARNED_BATCH = 100  # 5 keys each: 500 parameters, under SQLite's 999
 
 def _schema(features: str, state: str) -> tuple[str, ...]:
     return (
@@ -230,6 +231,7 @@ class FlowChallenger:
                 return 0
             states: dict[tuple[str, int], dict] = {}
             learned = 0
+            done: list[tuple] = []
             for row in rows:
                 key = (str(row["asset"]), int(row["horizon_minutes"]))
                 if key not in states:
@@ -245,12 +247,18 @@ class FlowChallenger:
                     state["updates"] += 1
                     state["positives"] += int(label)
                     learned += 1
+                done.append((row["venue"], row["contract"], row["quote"],
+                             row["horizon_minutes"], row["reference_opened_at"]))
+            # Mark learned rows in batches instead of one round trip per row
+            # (up to 4,000 a cycle). Same rows, same transaction as the
+            # weight update; plain OR of primary keys works on both backends.
+            match = "(venue=? AND contract=? AND quote=? AND horizon_minutes=? AND reference_opened_at=?)"
+            for offset in range(0, len(done), LEARNED_BATCH):
+                chunk = done[offset:offset + LEARNED_BATCH]
                 conn.execute(
-                    f"""UPDATE {self.features_table} SET learned=1
-                       WHERE venue=? AND contract=? AND quote=? AND horizon_minutes=?
-                         AND reference_opened_at=?""",
-                    (row["venue"], row["contract"], row["quote"],
-                     row["horizon_minutes"], row["reference_opened_at"]),
+                    f"UPDATE {self.features_table} SET learned=1 WHERE "
+                    + " OR ".join(match for _ in chunk),
+                    tuple(value for key in chunk for value in key),
                 )
             stamp = now.astimezone(UTC).isoformat()
             self._states.clear()  # new weights: never serve a stale copy

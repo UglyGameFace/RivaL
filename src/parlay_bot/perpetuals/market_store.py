@@ -43,6 +43,25 @@ class RequesterAIBudgetExhausted(Exception):
     """Internal control-flow rollback: do not spend shared quota on denied users."""
 
 
+def _conflict_detail(fields, stored, incoming, *, closed, original_seen,
+                     incoming_seen) -> str:
+    """'close_price 101.2->101.4 ...; seen +12s vs +95s after close' for one bar."""
+    def after_close(seen) -> str:
+        try:
+            delta = (utc(datetime.fromisoformat(str(seen)))
+                     - utc(datetime.fromisoformat(str(closed)))).total_seconds()
+            return f"+{delta:.0f}s"
+        except (TypeError, ValueError, OverflowError):
+            return "?"
+
+    changed = " ".join(
+        f"{name} {old}->{new}" for name, old, new in zip(fields, stored, incoming, strict=True)
+        if old != new
+    )
+    return (f"{changed}; seen {after_close(original_seen)} (original) vs "
+            f"{after_close(incoming_seen)} (incoming) after close")[:400]
+
+
 class PerpetualMarketStore:
     def __init__(self, store: RelationalHotStore) -> None:
         self.store = store
@@ -216,6 +235,11 @@ class PerpetualMarketStore:
         conflict_fields: dict[tuple[str, str], Counter[str]] = {}
         conflict_counts: Counter[tuple[str, str]] = Counter()
         conflict_samples: dict[tuple[str, str], str] = {}
+        # First conflicting bar per stream: original vs incoming values and
+        # how long after the bar closed each copy was observed. Public market
+        # numbers only; this is what tells a late exchange revision apart
+        # from a parsing or second-collector difference.
+        conflict_details: dict[tuple[str, str], str] = {}
         lighter_volume_only: Counter[tuple[str, str]] = Counter()
         # One latest receipt per candle, not a new row every five minutes.
         lighter_revisions: dict[tuple, tuple] = {}
@@ -236,7 +260,7 @@ class PerpetualMarketStore:
             for (venue, contract, quote, interval), (low, high) in bounds.items():
                 rows = conn.execute(
                     """SELECT opened_at,closed_at,open_price,high_price,low_price,
-                              close_price,volume_base,trades
+                              close_price,volume_base,trades,first_observed_at
                        FROM perp_market_candles
                        WHERE venue=? AND contract=? AND quote=?
                          AND interval_minutes=? AND opened_at>=? AND opened_at<=?""",
@@ -283,6 +307,12 @@ class PerpetualMarketStore:
                 changed = tuple(reasons)
                 conflict_fields.setdefault(group, Counter()).update(changed)
                 conflict_samples.setdefault(group, str(values[4]))
+                if old is not None and group not in conflict_details:
+                    conflict_details[group] = _conflict_detail(
+                        fields, stored_values(old), (values[5], *values[7:]),
+                        closed=values[5], original_seen=old.get("first_observed_at"),
+                        incoming_seen=values[6],
+                    )
                 if old is not None and values[0] == "lighter" and changed == ("volume_base",):
                     lighter_volume_only[group] += 1
                     lighter_revisions[values[:5]] = (
@@ -410,13 +440,14 @@ class PerpetualMarketStore:
                 "RivaL immutable candle conflicts skipped venue=%s "
                 "contract=%s bars=%d changed_fields=%s "
                 "example_opened_at=%s; original bars retained; "
-                "lighter_volume_revisions=%d",
+                "lighter_volume_revisions=%d example=%s",
                 venue, contract, conflict_counts[(venue, contract)],
                 ",".join(
                     f"{name}:{count}" for name, count in sorted(changed.items())
                 ),
                 conflict_samples[(venue, contract)],
                 lighter_volume_only[(venue, contract)],
+                conflict_details.get((venue, contract), "duplicate_in_batch"),
             )
         return MarketWriteResult(
             inserted, unchanged, len(batch.contexts), conflicted,

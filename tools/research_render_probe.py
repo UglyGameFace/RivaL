@@ -25,35 +25,13 @@ try:
     from parlay_bot.config import Settings
     from parlay_bot.storage.hot import PostgresHotStore
     store = PostgresHotStore(Settings().rival_database_url.get_secret_value())
-    since = "2026-11-05T19:22"
+    since = "2026-11-05T19"
     with store.connect() as conn:
         rows = conn.execute(
-            """SELECT template, level, SUM(count) AS n, MAX(last_at) AS last, MIN(hour) AS first_hour
-               FROM rival_problem_log WHERE hour>=? GROUP BY template, level ORDER BY n DESC""",
-            (since[:13],)).fetchall()
-        out["problems_since_boot"] = [{k: str(r[k])[:160] for k in ("template", "level", "n", "last", "first_hour")} for r in rows[:40]]
-        hourly = conn.execute(
-            """SELECT hour, template, SUM(count) AS n FROM rival_problem_log WHERE hour>=?
-               AND (template LIKE '%event loop blocked%' OR template LIKE '%cycle took%'
-                    OR template LIKE '%memory%') GROUP BY hour, template ORDER BY hour""",
-            (since[:13],)).fetchall()
-        out["hourly"] = [[str(r["hour"]), str(r["template"])[:70], int(r["n"])] for r in hourly]
-        ic = conn.execute(
-            """SELECT substr(issued_at,1,13) AS h, COUNT(*) AS n FROM rival_intelligence_calls
-               WHERE issued_at>=? GROUP BY h ORDER BY h""", (since,)).fetchall()
-        out["intelligence_saves_per_hour"] = [[str(r["h"]), int(r["n"])] for r in ic]
-        cyc = conn.execute(
-            """SELECT substr(issued_at,1,13) AS h, COUNT(DISTINCT substr(issued_at,1,16)) AS cycles,
-                      COUNT(*) AS n FROM perp_forward_audit WHERE issued_at>=? GROUP BY h ORDER BY h""",
-            (since,)).fetchall()
-        out["forecast_cycles_per_hour"] = [[str(r["h"]), int(r["cycles"]), int(r["n"])] for r in cyc]
-        try:
-            inc = conn.execute(
-                "SELECT issue_key, state, first_seen_at, last_seen_at, resolved_at, occurrence_count, detail FROM rival_runtime_health_incidents WHERE last_seen_at>=? ORDER BY last_seen_at",
-                (since,)).fetchall()
-            out["incidents"] = [{k: str(r[k])[:120] for k in r.keys()} for r in inc][:20]
-        except Exception as exc:  # noqa: BLE001
-            out["incidents"] = f"unreadable: {type(exc).__name__}"
+            """SELECT hour, template, text, count, last_at FROM rival_problem_log WHERE hour>=?
+               AND (template LIKE '%memory%' OR template LIKE '%event loop blocked%')
+               ORDER BY last_at""", (since,)).fetchall()
+        out["texts"] = [[str(r["last_at"])[:19], int(r["count"]), str(r["text"])[:400]] for r in rows]
     store.close()
 except Exception as exc:  # noqa: BLE001
     out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"

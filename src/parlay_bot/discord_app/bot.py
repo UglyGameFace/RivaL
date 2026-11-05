@@ -171,6 +171,7 @@ class RivalDiscordClient(discord.Client):
         self._status_task: asyncio.Task[None] | None = None
         self._benefit_task: asyncio.Task[None] | None = None
         self._intelligence_task: asyncio.Task[None] | None = None
+        self._loop_watch_task: asyncio.Task[None] | None = None
         self._context_task: asyncio.Task[None] | None = None
         self._records_task: asyncio.Task[None] | None = None
         self._kalshi_updown_task: asyncio.Task[None] | None = None
@@ -1774,6 +1775,14 @@ class RivalDiscordClient(discord.Client):
         return
 
     async def setup_hook(self) -> None:
+        if self._loop_watch_task is None:
+            # First, so a stall during startup is attributed too.
+            from parlay_bot.discord_app.loop_watch import LoopStallWatch
+
+            self.loop_watch = LoopStallWatch()
+            self._loop_watch_task = asyncio.create_task(
+                self.loop_watch.run(), name="rival-event-loop-stall-watch",
+            )
         install_view_dispatch_logging(self)
         # Discord-triggered queries get a 15 s PostgreSQL limit; workers don't.
         install_interaction_scope(self.tree)
@@ -3397,6 +3406,7 @@ class RivalDiscordClient(discord.Client):
         "_hypothesis_task", "_candidate_task", "_archive_task", "_context_task",
         "_records_task", "_kalshi_updown_task",
         "_heartbeat_task", "_status_task", "_benefit_task", "_intelligence_task",
+        "_loop_watch_task",
     )
 
     async def close(self) -> None:

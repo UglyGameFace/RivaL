@@ -112,3 +112,58 @@ def test_shared_window_cache_gives_identical_examples_for_every_horizon():
         assert (live_examples(candles, horizon_minutes=horizon, feature_cache=shared)
                 == live_examples(candles, horizon_minutes=horizon))
     assert shared  # windows were actually reused
+
+
+def _stream(n, *, start=None, skip=()):
+    from datetime import UTC, datetime, timedelta
+
+    from parlay_bot.perpetuals.hyperliquid import MarketCandle
+
+    start = start or datetime(2026, 10, 1, tzinfo=UTC)
+    price, out = 100.0, []
+    for i in range(n):
+        price *= 1.001 if i % 3 else 0.998
+        if i in skip:
+            continue
+        opened = start + timedelta(minutes=5 * i)
+        out.append(MarketCandle(
+            venue="okx", contract="BTC-USDT-SWAP", quote="USDT", interval_minutes=5,
+            opened_at=opened, closed_at=opened + timedelta(minutes=5),
+            observed_at=opened + timedelta(minutes=5, seconds=30),
+            open_price=price, high_price=price * 1.002, low_price=price * 0.998,
+            close_price=price * (1.0005 if i % 2 else 0.9995),
+            volume_base=float(i % 7), trades=0 if i % 50 == 0 else 3))
+    return out
+
+
+def test_window_memo_carried_across_cycles_gives_identical_examples():
+    """A memo from the previous cycle reuses windows and changes no example."""
+    from parlay_bot.perpetuals.features import WindowFeatureMemo, live_examples
+
+    history = _stream(460)
+    memo = WindowFeatureMemo()
+    for horizon in (5, 15, 60):
+        live_examples(history[:400], horizon_minutes=horizon, feature_cache=memo)
+    previous = memo.current
+    # Next cycle: the 400-candle read slides forward by one candle.
+    window = history[1:401]
+    carried = WindowFeatureMemo(previous)
+    for horizon in (5, 15, 60):
+        assert (live_examples(window, horizon_minutes=horizon, feature_cache=carried)
+                == live_examples(window, horizon_minutes=horizon))
+    assert carried.reused > 300  # nearly every window came from the last cycle
+    # Windows that slid out of the read are not kept.
+    assert len(carried.current) <= len(window)
+
+
+def test_window_memo_never_reuses_a_window_whose_span_changed():
+    """A bar recovered inside a window changes that window's key and inputs."""
+    from parlay_bot.perpetuals.features import WindowFeatureMemo, live_examples
+
+    gapped = _stream(400, skip={250})
+    memo = WindowFeatureMemo()
+    live_examples(gapped, horizon_minutes=5, feature_cache=memo)
+    filled = _stream(400)
+    carried = WindowFeatureMemo(memo.current)
+    assert (live_examples(filled, horizon_minutes=5, feature_cache=carried)
+            == live_examples(filled, horizon_minutes=5))

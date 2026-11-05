@@ -166,3 +166,22 @@ def test_month_complete_training_data_is_not_called_stale_mid_month(tmp_path):
         assert [k for k, _ in research_alerts(store, now=late_month)] == ["pooled:stale"]
     finally:
         store.close()
+
+
+def test_decay_alert_names_the_worst_model_and_venue(tmp_path):
+    store = SQLiteHotStore(tmp_path / "detail.sqlite")
+    try:
+        with store.connect() as conn:
+            conn.execute("""CREATE TABLE rival_model_shadow_forecasts (
+                            family TEXT, horizon_minutes INTEGER, settled_at TEXT,
+                            model_brier REAL, baseline_brier REAL, venue TEXT,
+                            training_sha256 TEXT)""")
+            at = (NOW - timedelta(hours=1)).isoformat()
+            rows = ([("pooled_5m_abc", 5, at, .24, .25, "binance", "a" * 64)] * 200
+                    + [("pooled_5m_abc", 5, at, .29, .22, "dydx", "b" * 64)] * 200)
+            for row in rows:
+                conn.execute("INSERT INTO rival_model_shadow_forecasts VALUES (?,?,?,?,?,?,?)", row)
+        alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
+        assert "worst: model bbbbbbbbbbbb on dydx, +0.0700 Brier over 200" in alerts["decay:5m"]
+    finally:
+        store.close()

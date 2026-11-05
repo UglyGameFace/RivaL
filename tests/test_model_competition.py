@@ -203,3 +203,89 @@ def test_shadow_batch_preserves_duplicates_and_sqlite_parameter_limit(learning_s
             "SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts"
         ).fetchone()
         assert count["n"] == 54
+
+
+def _seed_settled(hot, *, start, count, families, outcome=1):
+    """Settled incumbent forecasts with unsettled shadow rows on the same target."""
+    with hot.connect() as conn:
+        for i in range(count):
+            reference = start + timedelta(minutes=5 * i)
+            target = reference + timedelta(minutes=5)
+            issued = reference + timedelta(minutes=5, seconds=20)
+            settled = target + timedelta(minutes=6)
+            conn.execute(
+                """INSERT INTO perp_forward_audit (venue,contract,quote,asset,horizon_minutes,
+                     model_version,reference_opened_at,reference_close,issued_at,
+                     target_opened_at,probability_up,baseline_up,training_evaluated,
+                     settled_at,outcome_up,realized_close,model_brier,baseline_brier)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("hyperliquid", "BTC", "USDC", "BTC", 5, MODEL, reference.isoformat(),
+                 100.0, issued.isoformat(), target.isoformat(), .6, .5, 50,
+                 settled.isoformat(), outcome, 100.0 if outcome is None else 101.0,
+                 None if outcome is None else (.6 - outcome) ** 2,
+                 None if outcome is None else (.5 - outcome) ** 2))
+            for family in families:
+                conn.execute(
+                    """INSERT INTO rival_model_shadow_forecasts (venue,contract,quote,asset,
+                         horizon_minutes,family,reference_opened_at,issued_at,target_opened_at,
+                         probability_up,incumbent_up,baseline_up,training_count,training_sha256)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("hyperliquid", "BTC", "USDC", "BTC", 5, family, reference.isoformat(),
+                     issued.isoformat(), target.isoformat(), .55, .6, .5, 100, "0" * 64))
+
+
+def _unsettled(hot):
+    with hot.connect() as conn:
+        return conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts WHERE settled_at IS NULL"
+        ).fetchone()["n"]
+
+
+def test_settle_grades_more_than_one_batch_per_cycle(learning_store):
+    """Several shadow rows per forecast must not outgrow one 240-row batch."""
+    from parlay_bot.perpetuals.model_competition import SETTLE_BATCH
+
+    hot = learning_store
+    ForwardAccuracyMonitor(PerpetualMarketStore(hot)).initialize()
+    comp = ShadowModelCompetition(hot)
+    now = datetime(2026, 11, 4, 20, tzinfo=UTC)
+    _seed_settled(hot, start=now - timedelta(hours=12), count=100,
+                  families=("knn21_v1", "gaussian_nb_v1", "flow_v1"))
+    assert 300 > SETTLE_BATCH
+    assert comp.settle(now=now, since=now - timedelta(days=3)) == 300
+    assert _unsettled(hot) == 0
+    assert comp.settle(now=now) == 0
+
+
+def test_withdrawn_old_targets_stay_unsettled_and_outside_the_fast_pass(learning_store):
+    """No-trade incumbents never settle a shadow row; the fast pass skips them."""
+    hot = learning_store
+    ForwardAccuracyMonitor(PerpetualMarketStore(hot)).initialize()
+    comp = ShadowModelCompetition(hot)
+    now = datetime(2026, 11, 4, 20, tzinfo=UTC)
+    _seed_settled(hot, start=now - timedelta(days=10), count=5,
+                  families=("knn21_v1",), outcome=None)
+    _seed_settled(hot, start=now - timedelta(hours=2), count=4, families=("knn21_v1",))
+    assert comp.settle(now=now, since=now - timedelta(days=3)) == 4
+    # The full pass still never grades a withdrawn result.
+    assert comp.settle(now=now) == 0
+    assert _unsettled(hot) == 5
+
+
+def test_schema_setup_runs_once_per_store(learning_store):
+    hot = learning_store
+    ShadowModelCompetition(hot).initialize()
+    calls = []
+    real = hot.connect
+
+    def counted():
+        calls.append(1)
+        return real()
+
+    hot.connect = counted
+    try:
+        ShadowModelCompetition(hot).initialize()
+        ShadowModelCompetition(hot).initialize()
+    finally:
+        hot.connect = real
+    assert calls == []

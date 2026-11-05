@@ -58,6 +58,33 @@ def research_alerts(store, *, now: datetime | None = None,
                  "⚠️ Couldn't check prediction health (database busy); will re-check")]
 
 
+def _decay_detail(conn, stamp: datetime, horizon: int) -> str:
+    """Name the trained model and venue that lost most to the up-rate.
+
+    The headline pools every model version and venue for the horizon, so on
+    its own it cannot say which model to look at. Same rows, same window.
+    """
+    try:
+        worst = conn.execute(
+            """SELECT SUBSTR(training_sha256,1,12) AS model, venue, COUNT(*) AS n,
+                      AVG(model_brier) - AVG(baseline_brier) AS gap
+               FROM rival_model_shadow_forecasts
+               WHERE family LIKE 'pooled%' AND horizon_minutes=? AND settled_at IS NOT NULL
+                 AND model_brier IS NOT NULL AND baseline_brier IS NOT NULL
+                 AND settled_at>=?
+               GROUP BY SUBSTR(training_sha256,1,12), venue
+               HAVING COUNT(*)>=30
+               ORDER BY gap DESC LIMIT 1""",
+            (horizon, (stamp - DECAY_WINDOW).isoformat()),
+        ).fetchone()
+    except Exception:  # noqa: BLE001 - the detail never hides the alert itself
+        return ""
+    if worst is None or float(worst["gap"]) <= 0:
+        return ""
+    return (f"; worst: model {worst['model']} on {worst['venue']}, "
+            f"+{float(worst['gap']):.4f} Brier over {int(worst['n'])}")
+
+
 def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str, str]]:
     alerts: list[tuple[str, str]] = []
 
@@ -120,7 +147,8 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
                 horizon = int(row["horizon_minutes"])
                 alerts.append((f"decay:{horizon}m",
                                (f"⚠️ {horizon}-min six-year model scored worse than the "
-                                f"plain up-rate over the last 3 days ({int(row['n'])} graded)")))
+                                f"plain up-rate over the last 3 days ({int(row['n'])} graded)"
+                                + _decay_detail(conn, stamp, horizon))))
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("Research alert: challenger table unreadable (%s)", type(exc).__name__)
 

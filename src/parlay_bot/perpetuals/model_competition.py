@@ -26,6 +26,7 @@ FAMILIES = ("gaussian_nb_v1", "knn21_v1")
 CHALLENGER_PREFIXES = ("boosted_", "historical_", "pooled_", "flow_", "calib_")
 MIN_TRAIN = 80
 MAX_TRAIN = 480
+SETTLE_BATCH = 240
 
 
 def _probability(value: float) -> float:
@@ -106,6 +107,18 @@ class ShadowModelCompetition:
         self.store = store
 
     def initialize(self):
+        # Schema DDL once per store per process. settle() and report() run
+        # every cycle and on every status render; re-running CREATE ... IF NOT
+        # EXISTS took the DDL advisory lock each time.
+        if getattr(self.store, "_shadow_competition_ready", False):
+            return
+        self._create_schema()
+        try:
+            self.store._shadow_competition_ready = True
+        except AttributeError:  # a store that forbids attributes keeps the old behavior
+            pass
+
+    def _create_schema(self):
         with self.store.connect() as conn:
             conn.executescript("""CREATE TABLE IF NOT EXISTS rival_model_shadow_forecasts (
                 venue TEXT NOT NULL, contract TEXT NOT NULL, quote TEXT NOT NULL,
@@ -134,12 +147,37 @@ class ShadowModelCompetition:
                 (venue,contract,quote,horizon_minutes,reference_opened_at);
             """)
 
+    @staticmethod
+    def prepare(samples, features, *, now) -> dict:
+        """The CPU part of issue(), safe to run BEFORE opening the transaction.
+
+        Fits NB/kNN and fingerprints the training set from inputs that are
+        already fixed at issuance, so the forecast transaction holds its
+        PostgreSQL connection only for the inserts.
+        """
+        eligible = sorted(
+            (s for s in samples if utc(s.label_known_at) <= utc(now)),
+            key=lambda s: (utc(s.label_known_at), utc(s.issued_at)),
+        )[-MAX_TRAIN:]
+        fingerprint = hashlib.sha256(json.dumps([
+            (utc(s.issued_at).isoformat(), utc(s.label_known_at).isoformat(),
+             s.label_up, s.features) for s in eligible
+        ], separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+        return {"predictions": shadow_predictions(samples, features, as_of=now),
+                "training_count": len(eligible), "fingerprint": fingerprint}
+
     def issue(self, conn, *, samples, features, now, venue, contract, quote,
               asset, horizon, reference_opened_at, target_opened_at, issued_at,
               incumbent_up, baseline_up, boosters=(), historical_candidates=(),
-              pooled=(), challengers=()):
-        """Call only inside the incumbent forecast's *successful* transaction."""
-        predictions = shadow_predictions(samples, features, as_of=now)
+              pooled=(), challengers=(), prepared=None):
+        """Call only inside the incumbent forecast's *successful* transaction.
+
+        Pass ``prepared`` (from prepare(), same samples/features/now) to keep
+        the model fitting outside the transaction; results are identical.
+        """
+        if prepared is None:
+            prepared = self.prepare(samples, features, now=now)
+        predictions = dict(prepared["predictions"])
         # Exact-source historical boosters enter the SAME immutable future
         # comparison as existing live families, never the incumbent weights.
         eligible_boosters = {}
@@ -203,14 +241,8 @@ class ShadowModelCompetition:
             return 0
         # Training provenance is persisted at issuance, never reconstructed
         # from current weights after the future price is known.
-        eligible = sorted(
-            (s for s in samples if utc(s.label_known_at) <= utc(now)),
-            key=lambda s: (utc(s.label_known_at), utc(s.issued_at)),
-        )[-MAX_TRAIN:]
-        fingerprint = hashlib.sha256(json.dumps([
-            (utc(s.issued_at).isoformat(), utc(s.label_known_at).isoformat(),
-             s.label_up, s.features) for s in eligible
-        ], separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+        fingerprint = prepared["fingerprint"]
+        training_count = prepared["training_count"]
         if (utc(issued_at) >= utc(target_opened_at) + timedelta(minutes=5)
                 or not (0 <= incumbent_up <= 1 and 0 <= baseline_up <= 1)):
             return 0
@@ -225,7 +257,7 @@ class ShadowModelCompetition:
                  if family in eligible_history else
                  int(eligible_pooled[family]["training_rows"])
                  if family in eligible_pooled else
-                 len(eligible) if family not in eligible_boosters else 0),
+                 training_count if family not in eligible_boosters else 0),
                 (eligible_history[family]["training_sha256"]
                  if family in eligible_history else
                  eligible_pooled[family]["model_sha256"]
@@ -254,15 +286,40 @@ class ShadowModelCompetition:
             saved += result.rowcount
         return saved
 
-    def settle(self, *, now: datetime) -> int:
+    def settle(self, *, now: datetime, since: datetime | None = None,
+               budget_seconds: float = 20.0) -> int:
         """Only copy genuinely settled incumbent outcomes for the exact target.
 
         The incumbent settlement has already checked the original source
         candle's first-observation time and prohibited future/backfill labels.
         A shadow forecast may not exist or be scored without that proof.
+
+        Every incumbent forecast issues several shadow rows, more than one
+        240-row batch per cycle can grade, so batches repeat until none are
+        left or ``budget_seconds`` is spent. ``since`` bounds the fast pass to
+        recent targets: shadow rows whose incumbent result was withdrawn
+        (no-trade target) can never settle, and an unbounded oldest-first scan
+        walked past every one of them each cycle. Run an unbounded pass
+        periodically so late-settled old targets are still graded.
         """
+        import time
+
         self.initialize()
+        deadline = time.monotonic() + budget_seconds
+        total = 0
+        while True:
+            batch, settled_all = self._settle_batch(now=now, since=since)
+            total += batch
+            # Stop when the queue is drained, when a batch had a row the
+            # checks below refused (it would be fetched again: no progress),
+            # or when this cycle's time budget is used.
+            if not settled_all or batch < SETTLE_BATCH or time.monotonic() >= deadline:
+                return total
+
+    def _settle_batch(self, *, now: datetime, since: datetime | None) -> tuple[int, bool]:
         stamp = utc(now).isoformat()
+        window = "" if since is None else " AND s.target_opened_at>=?"
+        params = (stamp,) if since is None else (stamp, utc(since).isoformat())
         with self.store.connect() as conn:
             rows = conn.execute(
                 """SELECT s.*,f.outcome_up AS verified_outcome_up,
@@ -277,9 +334,9 @@ class ShadowModelCompetition:
                     AND f.issued_at=s.issued_at
                    WHERE s.settled_at IS NULL AND f.settled_at IS NOT NULL
                     AND f.settled_at<=? AND f.outcome_up IN (0,1)
-                    AND s.target_opened_at=f.target_opened_at
-                   ORDER BY s.target_opened_at LIMIT 240""",
-                (stamp,),
+                    AND s.target_opened_at=f.target_opened_at""" + window + f"""
+                   ORDER BY s.target_opened_at LIMIT {SETTLE_BATCH}""",
+                params,
             ).fetchall()
             total = 0
             for row in rows:
@@ -308,7 +365,7 @@ class ShadowModelCompetition:
                      row["horizon_minutes"],row["family"],row["reference_opened_at"]),
                 )
                 total += int(update.rowcount == 1)
-            return total
+            return total, total == len(rows)
 
     def report(self, *, asset, horizon, now=None) -> dict:
         """Research comparisons per *actual* venue, not a pooled fake winner.

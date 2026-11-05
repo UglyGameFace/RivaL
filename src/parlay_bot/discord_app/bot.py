@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -3459,6 +3460,9 @@ class RivalDiscordClient(discord.Client):
             _LOG.exception("RivaL shutdown could not close the database pool")
         await super().close()
 
+LOOP_FRIENDLY_SWITCH_INTERVAL = 0.001
+
+
 def run_discord_bot(settings: Settings | None = None) -> None:
     configured = settings or Settings()
     if configured.discord_token is None:
@@ -3468,5 +3472,14 @@ def run_discord_bot(settings: Settings | None = None) -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    # Forecast fits and feature windows are pure-Python CPU work run in
+    # worker threads. The event loop releases the GIL on every socket and
+    # TLS read, and under CPython's default 5 ms switch interval it then
+    # waits up to 5 ms to get it back each time (the convoy effect). On
+    # Nov 5 the stall watch caught the loop blocked >1 s inside ssl.read
+    # while a worker ran features._ema, 25-45 times in the minutes after
+    # each restart, and a /rival command missed Discord's 3 s deadline.
+    # A 1 ms interval cuts that wait 5x; CPU threads switch a little more.
+    sys.setswitchinterval(LOOP_FRIENDLY_SWITCH_INTERVAL)
     client = RivalDiscordClient(configured)
     client.run(configured.discord_token.get_secret_value(), log_handler=None)

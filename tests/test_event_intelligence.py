@@ -146,6 +146,7 @@ def test_one_source_outage_is_isolated_and_does_not_invent_all_clear(tmp_path):
     assert report["sources_checked"] == 4
     assert report["sources_ok"] == 3
     assert report["source_failures"][0]["source"] == "sec_releases"
+    assert report["source_failures"][0]["error"] == "HTTPStatusError:503"
     state = intel.context(asset="SOL", horizon=15, now=stamp)
     assert state["sources"]["sec_releases"] == "unavailable_or_stale"
     assert not state["event_risk_cleared"]

@@ -59,3 +59,14 @@ def test_enabling_local_background_flag_does_not_actually_enable_calls():
     assert not evaluate(data)["background_ai_enabled"]
     data["auto_ai_setting"]=True
     assert evaluate(data)["background_ai_enabled"]
+
+
+def test_remote_receipt_reads_only_settings_that_exist():
+    """A removed setting made the host script crash before printing (Nov 3+)."""
+    import re
+
+    from parlay_bot.config import Settings
+    from tools.discloud_llm_edge_audit import REMOTE
+
+    direct = set(re.findall(r"\bs\.(rival_[a-z0-9_]+)", REMOTE))
+    assert direct <= set(Settings.model_fields), direct - set(Settings.model_fields)

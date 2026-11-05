@@ -15,6 +15,7 @@ _LOG = logging.getLogger(__name__)
 # How long a challenger-regression verdict (a 7-day paired score) is reused.
 REGRESSION_RECHECK = timedelta(minutes=10)
 # A challenger counts as in use if it issued a forecast this recently.
+BACKLOG_GRACE = timedelta(minutes=10)
 REGRESSION_IN_USE_WITHIN = timedelta(minutes=30)
 
 
@@ -181,8 +182,14 @@ class RuntimeHealthMonitor:
                        AND f.target_opened_at<?
                        AND c.first_observed_at>f.issued_at
                        AND c.first_observed_at<=? AND c.closed_at<?""",
+                    # Settlement runs once per 5-minute cycle, so an outcome
+                    # candle that arrived late (after a restart or a slow
+                    # venue) is legitimately unsettled until the next cycle.
+                    # Only one still unsettled after two full cycles is a
+                    # backlog; production showed 38 incidents that each
+                    # cleared within one cycle (Nov 5).
                     ((stamp-timedelta(minutes=15)).isoformat(),
-                     stamp.isoformat(), stamp.isoformat()),
+                     (stamp-BACKLOG_GRACE).isoformat(), stamp.isoformat()),
                 ).fetchone()
                 if int(backlog["n"] or 0) > 0:
                     faults["settlement_backlog"] = f"{backlog['n']} recoverable prospective outcomes"

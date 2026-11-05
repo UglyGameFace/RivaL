@@ -310,10 +310,13 @@ def problem_lines(problems, *, now: datetime, boot_at: datetime, totals: dict,
                              open_incidents=open_incidents)].append(group)
     started = discord.utils.format_dt(boot_at, "t")
     lines = [
+        # A warning seen only in the minutes after a restart comes back after
+        # the next restart: it is restart noise, not "fixed". Counted apart.
         (f"🔴 {len(states['active'])} still happening • 🟢 {len(states['quiet'])} quiet 1h+ • "
-         f"✅ {len(states['stopped']) + len(states['startup']) + len(states['recovered'])}"
-         " fixed or stopped"),
-        f"({totals.get('ERROR', 0)} errors • {totals.get('WARNING', 0)} warnings in the last 24 h)",
+         f"⚪ {len(states['startup'])} only right after the restart • "
+         f"✅ {len(states['stopped']) + len(states['recovered'])} not seen since"),
+        (f"({totals.get('ERROR', 0)} errors • {totals.get('WARNING', 0)} warnings in the last "
+         "24 h, all restarts; ×counts are 24 h totals)"),
     ]
     for g in states["active"]:
         lines.append(f"🔴 `{g.count}×` **{g.level}** {g.logger.rsplit('.', 1)[-1]}: "
@@ -323,7 +326,7 @@ def problem_lines(problems, *, now: datetime, boot_at: datetime, totals: dict,
                      f"(last {_ago(g.last_at, now)})")
     for g in states["startup"]:
         lines.append(f"⚪ `{g.count}×` {g.logger.rsplit('.', 1)[-1]}: {g.text[:70]} "
-                     f"(only during startup at {started})")
+                     f"(only in the first minutes after the {started} restart)")
     for g in states["recovered"]:
         lines.append(f"✅ `{g.count}×` {g.logger.rsplit('.', 1)[-1]}: {g.text[:70]} "
                      f"(recovered: incident closed; last alert {_ago(g.last_at, now)})")

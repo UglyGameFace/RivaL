@@ -223,3 +223,63 @@ def test_cache_adopts_external_metadata_even_if_weights_are_identical(tmp_path):
         assert learner._cache_hits == 1  # subsequent digest probe is enough
     finally:
         hot.close()
+
+
+def test_checkpoint_saved_with_full_digests_is_reused_not_cold_restarted(tmp_path, monkeypatch):
+    """Checkpoints written before shortened fingerprints keep their learned weights."""
+    import hashlib
+    import json
+
+    hot = SQLiteHotStore(tmp_path / "legacy_digests.sqlite")
+    try:
+        now = datetime.now(UTC)
+        rows = samples(now)
+        first = module.LiveModelCheckpoints(hot).fit(rows, as_of=now)
+        # Rewrite the saved state the way the previous code stored it: full
+        # 64-hex SHA-256 fingerprints, with digests that still verify.
+        with hot.connect() as conn:
+            saved = conn.execute("SELECT * FROM rival_live_model_checkpoints").fetchone()
+            state = json.loads(saved["state_json"])
+            state["recent"] = {
+                issued: hashlib.sha256(module.canonical([
+                    r.label_known_at.isoformat(), r.features, r.label_up,
+                ]).encode()).hexdigest()
+                for r in rows for issued in [r.issued_at.isoformat()]
+            }
+            encoded = module.canonical(state)
+            conn.execute(
+                "UPDATE rival_live_model_checkpoints SET state_json=?, training_digest=?",
+                (encoded, hashlib.sha256(encoded.encode()).hexdigest()),
+            )
+        restarted = module.LiveModelCheckpoints(hot)
+        monkeypatch.setattr(restarted, "_cold_state",
+                            lambda *a, **kw: pytest.fail("legacy checkpoint was discarded"))
+        restored = restarted.fit(rows, as_of=now + timedelta(seconds=1))
+        assert restored.final_weights == first.final_weights
+        with hot.connect() as conn:
+            after = json.loads(conn.execute(
+                "SELECT state_json FROM rival_live_model_checkpoints").fetchone()["state_json"])
+        assert {len(v) for v in after["recent"].values()} == {module.FINGERPRINT_HEX}
+    finally:
+        hot.close()
+
+
+def test_legacy_full_digest_still_detects_a_source_correction(tmp_path):
+    from dataclasses import replace
+
+    saved_full = "ab" * 32
+    assert module._same_fingerprint(saved_full, saved_full[:module.FINGERPRINT_HEX])
+    assert not module._same_fingerprint(saved_full, "cd" * (module.FINGERPRINT_HEX // 2))
+    hot = SQLiteHotStore(tmp_path / "correction.sqlite")
+    try:
+        now = datetime.now(UTC)
+        rows = samples(now)
+        model = module.LiveModelCheckpoints(hot)
+        original = model.fit(rows, as_of=now)
+        corrected = (*rows[:-1], replace(rows[-1], features=(0.3,) * 10))
+        rebuilt = model.fit(corrected, as_of=now + timedelta(seconds=1))
+        # A changed input for an issuance already trained on forces a rebuild.
+        assert rebuilt.updates == original.updates
+        assert rebuilt.final_weights != original.final_weights
+    finally:
+        hot.close()

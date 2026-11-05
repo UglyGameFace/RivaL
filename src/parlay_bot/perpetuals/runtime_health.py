@@ -12,6 +12,8 @@ from uuid import uuid4
 from parlay_bot.storage.hot import RelationalHotStore
 
 _LOG = logging.getLogger(__name__)
+# How long a challenger-regression verdict (a 7-day paired score) is reused.
+REGRESSION_RECHECK = timedelta(minutes=10)
 
 
 def _age(now: datetime, value: object) -> timedelta | None:
@@ -218,7 +220,15 @@ class RuntimeHealthMonitor:
                         f"{matched}/{n} prospective actionable family forecasts "
                         f"have a source-matched book (by venue: {by_venue})"
                     )
-            if learning_enabled:
+            cached = getattr(self, "_regression_cache", None)
+            if learning_enabled and cached is not None and (
+                    timedelta(0) <= stamp - cached[0] < REGRESSION_RECHECK):
+                # A 7-day paired score barely moves in minutes; re-aggregating
+                # the whole shadow ledger on every 2-minute watchdog pass was
+                # one of the slow SELECTs. The alerts themselves are unchanged.
+                faults.update(cached[1])
+            elif learning_enabled:
+                regression_faults: dict[str, str] = {}
                 regressions = conn.execute(
                     """SELECT venue,contract,quote,family,COUNT(*) AS n,
                               AVG(model_brier) AS model_score,
@@ -233,11 +243,13 @@ class RuntimeHealthMonitor:
                 for row in regressions:
                     if float(row["model_score"]) > float(row["incumbent_score"]) + 0.025:
                         key = f"regression:{row['venue']}:{row['contract']}:{row['family']}"
-                        faults[key] = (
+                        regression_faults[key] = (
                             f"paired Brier {float(row['model_score']):.4f} vs "
                             f"incumbent {float(row['incumbent_score']):.4f}, "
                             f"n={row['n']}; promotion must stay gated"
                         )
+                faults.update(regression_faults)
+                self._regression_cache = (stamp, regression_faults)
             if import_enabled:
                 import_age = _age(stamp, import_checked_at)
                 if import_age is None and (warm or "import_unverified" in active):

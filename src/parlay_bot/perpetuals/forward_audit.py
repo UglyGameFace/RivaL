@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.perpetuals.calibrated_challenger import CalibratedIncumbent
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
 from parlay_bot.perpetuals.features import (
+    WindowFeatureMemo,
     feature_vector,
     live_examples,
     persisted_candles,
@@ -36,6 +37,7 @@ from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
+from parlay_bot.storage.database import database_clock
 
 _LOG = logging.getLogger(__name__)
 MODEL = "prospective-logistic-persistent-v3"
@@ -55,6 +57,8 @@ HORIZONS = RESEARCH_HORIZONS
 MIN_PREVIOUS_EVALUATED = 20
 MAX_STREAMS_PER_CYCLE = 40
 MAX_PENDING_SETTLEMENTS = 120
+# The incumbent's fast settlement covers the last 2 days; a day of margin.
+SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
 
 
 def _features(candles) -> tuple[float, ...]:
@@ -672,7 +676,28 @@ class ForwardAccuracyMonitor:
             ).fetchall()
         return self._settle_rows(now, pending)
 
+    def _mark(self) -> tuple[float, float]:
+        clock = getattr(self, "_db_clock", None)
+        return time.perf_counter(), clock.seconds if clock is not None else 0.0
+
+    def _lap(self, phase: str, mark: tuple[float, float]) -> None:
+        """Add wall time since ``mark`` to a phase, and the PostgreSQL share of it."""
+        started, db_started = mark
+        self.last_timing[phase] += time.perf_counter() - started
+        clock = getattr(self, "_db_clock", None)
+        if clock is not None:
+            self.last_db_timing[phase] += clock.seconds - db_started
+
     def run_once(self, *, now: datetime | None = None) -> tuple[int, int]:
+        """One forecast cycle, with its PostgreSQL time measured per phase."""
+        with database_clock() as clock:
+            self._db_clock = clock
+            try:
+                return self._run_once(now=now)
+            finally:
+                self._db_clock = None
+
+    def _run_once(self, *, now: datetime | None = None) -> tuple[int, int]:
         stamp = utc(now or datetime.now(UTC))
         if stamp > datetime.now(UTC) + timedelta(seconds=5):
             raise ValueError("prospective forecast time cannot be in the future")
@@ -693,7 +718,8 @@ class ForwardAccuracyMonitor:
         timing = {k: 0.0 for k in ("select", "read", "pooled", "fit", "challengers",
                                    "boosters", "write", "settle")}
         self.last_timing = timing
-        mark = time.perf_counter()
+        self.last_db_timing = dict.fromkeys(timing, 0.0)
+        mark = self._mark()
         metrics = {
             "discovered_streams": 0, "selected_streams": 0,
             "short_history": 0, "stale_last_candle": 0,
@@ -736,15 +762,24 @@ class ForwardAccuracyMonitor:
             calib.refit(stamp, cycle_assets)
         except Exception:  # noqa: BLE001 - optional challenger never blocks forecasts
             _LOG.exception("RivaL calibrated challenger fit unavailable")
-        timing["select"] += time.perf_counter() - mark
+        self._lap("select", mark)
+        # Per-stream window inputs from the previous cycle (process memory
+        # only; rebuilt from candles after a restart). Bounded to the
+        # streams that can be selected, so rotated-out streams are dropped.
+        window_memos = getattr(self.market, "_window_feature_memos", None)
+        if window_memos is None:
+            window_memos = {}
+            self.market._window_feature_memos = window_memos
+        while len(window_memos) > MAX_STREAMS_PER_CYCLE * 2:
+            window_memos.pop(next(iter(window_memos)))
         for venue, contract, quote in selection:
             try:
-                mark = time.perf_counter()
+                mark = self._mark()
                 rows = self.market.recent_candles(
                     venue=venue, contract=contract, quote=quote,
                     interval_minutes=5, count=1000, as_of=stamp,
                 )
-                timing["read"] += time.perf_counter() - mark
+                self._lap("read", mark)
                 if len(rows) < 65:
                     metrics["short_history"] += 1
                     continue
@@ -759,7 +794,7 @@ class ForwardAccuracyMonitor:
                     continue
                 features = _features(candles)
                 pooled_vector = None
-                mark = time.perf_counter()
+                mark = self._mark()
                 if pooled_set is not None and any(pooled_set.serving(h) for h in HORIZONS):
                     try:
                         coin = asset_for_contract(contract)
@@ -789,18 +824,23 @@ class ForwardAccuracyMonitor:
                             }
                     except Exception:  # noqa: BLE001 - optional challenger only
                         _LOG.exception("RivaL pooled model inputs unavailable")
-                timing["pooled"] += time.perf_counter() - mark
-                window_inputs: dict = {}  # shared by this stream's three horizons
+                self._lap("pooled", mark)
+                # Shared by this stream's three horizons AND carried to the
+                # next cycle: only the newest window is computed again.
+                stream_key = (venue, contract, quote)
+                window_inputs = WindowFeatureMemo(window_memos.pop(stream_key, None))
                 for horizon in HORIZONS:
-                    mark = time.perf_counter()
+                    mark = self._mark()
                     samples = live_examples(candles, horizon_minutes=horizon,
                                             feature_cache=window_inputs)
                     if len(samples) < MIN_PREVIOUS_EVALUATED + 20:
                         metrics["insufficient_causal_labels"] += 1
+                        # Feature work for a skipped horizon is still cycle time.
+                        self._lap("fit", mark)
                         continue
                     tested = self.market.live_model_checkpoints.fit(samples, as_of=stamp)
-                    timing["fit"] += time.perf_counter() - mark
-                    mark = time.perf_counter()
+                    self._lap("fit", mark)
+                    mark = self._mark()
                     # Historical challengers are *shadow research* until a
                     # separate, model-SHA-specific prospective + quote/cost
                     # promotion gate authorizes serving. In particular,
@@ -814,7 +854,7 @@ class ForwardAccuracyMonitor:
                         incumbent=tested, wall_clock=now is None,
                         shadow_candidates=historical_shadows,
                     )
-                    timing["challengers"] += time.perf_counter() - mark
+                    self._lap("challengers", mark)
                     if tested.evaluated < MIN_PREVIOUS_EVALUATED:
                         metrics["insufficient_training"] += 1
                         continue
@@ -844,7 +884,7 @@ class ForwardAccuracyMonitor:
                     # roll back the existing incumbent. Missing source-exact
                     # artifacts simply mean no boosted shadow prediction.
                     boosters = ()
-                    mark = time.perf_counter()
+                    mark = self._mark()
                     try:
                         boosters = self.market.historical_challengers.registry.compatible_boosters(
                             venue=venue, contract=contract, quote=quote,
@@ -852,8 +892,8 @@ class ForwardAccuracyMonitor:
                         )
                     except Exception:  # noqa: BLE001 - optional research inputs
                         _LOG.exception("RivaL boosted artifact lookup unavailable")
-                    timing["boosters"] += time.perf_counter() - mark
-                    mark = time.perf_counter()
+                    self._lap("boosters", mark)
+                    mark = self._mark()
                     # Store regime and model fingerprints BEFORE the target
                     # closes, in the same DB transaction as the forecast.
                     # Existing predictions are never retro-tagged using
@@ -866,6 +906,13 @@ class ForwardAccuracyMonitor:
                         tested.final_weights, separators=(",", ":"),
                         allow_nan=False,
                     ).encode()).hexdigest()
+                    # Shadow-model fitting is CPU work on inputs already
+                    # fixed at issuance: do it before the transaction opens.
+                    try:
+                        shadow_prepared = ShadowModelCompetition.prepare(
+                            samples, features, now=stamp)
+                    except Exception:  # noqa: BLE001 - optional challenger
+                        shadow_prepared = None  # issue() recomputes and isolates it
                     with self.store.connect() as conn:
                         record = conn.execute(
                             """INSERT INTO perp_forward_audit (
@@ -948,6 +995,7 @@ class ForwardAccuracyMonitor:
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
                                     challengers=flow_calls,
+                                    prepared=shadow_prepared,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger
                                 conn.execute("ROLLBACK TO SAVEPOINT rival_shadow_prediction")
@@ -971,7 +1019,8 @@ class ForwardAccuracyMonitor:
                                     conn.execute("RELEASE SAVEPOINT rival_path_shadow")
                         issued += int(record.rowcount == 1)
                         metrics["duplicate_forecasts"] += int(record.rowcount == 0)
-                    timing["write"] += time.perf_counter() - mark
+                    self._lap("write", mark)
+                window_memos[stream_key] = window_inputs.current
             except (ValueError, TypeError, ArithmeticError) as exc:
                 metrics["invalid_data"] += 1
                 _LOG.warning(
@@ -1015,7 +1064,7 @@ class ForwardAccuracyMonitor:
         # Settlement used to run first and pushed issuance a median 85 s
         # (up to 5 min) into the target window, so many forecasts expired.
         # Issuance reads candles, not settlements, so nothing it uses changes.
-        mark = time.perf_counter()
+        mark = self._mark()
         settled = self._settle(stamp)
         for flow in flows:
             try:
@@ -1028,7 +1077,13 @@ class ForwardAccuracyMonitor:
         # Causal shadow forecasts settle only against already-verified matching
         # incumbent outcomes. No new provider calls, Discord messages or fills.
         try:
-            ShadowModelCompetition(self.store).settle(now=stamp)
+            # Fast pass over recent targets every cycle; once an hour, also
+            # the full history, so targets whose incumbent settled late (stale
+            # reconciliation runs in the same hourly slot) are still graded.
+            competition = ShadowModelCompetition(self.store)
+            competition.settle(now=stamp, since=stamp - SHADOW_FAST_SETTLE_WINDOW)
+            if stamp.minute < 5:
+                competition.settle(now=stamp)
         except Exception:  # noqa: BLE001 - shadow research never blocks the live learner
             _LOG.exception("RivaL multi-model shadow settlement unavailable")
         if path_ready:
@@ -1049,9 +1104,16 @@ class ForwardAccuracyMonitor:
             except Exception:  # noqa: BLE001 - background repair never blocks issuance
                 _LOG.exception("RivaL stale settlement reconciliation failed")
         metrics["settled_forecasts"] = settled
-        timing["settle"] += time.perf_counter() - mark
-        _LOG.info("RivaL forward cycle timing %s",
-                  " ".join(f"{k}={v:.1f}s" for k, v in timing.items()))
+        self._lap("settle", mark)
+        clock = self._db_clock
+        # Wall time per phase, then the PostgreSQL part of each (execute +
+        # commit + pool wait); the difference is Python work in that phase.
+        _LOG.info("RivaL forward cycle timing %s | db %s | statements=%d commits=%d "
+                  "checkouts=%d pool_wait=%.1fs",
+                  " ".join(f"{k}={v:.1f}s" for k, v in timing.items()),
+                  " ".join(f"{k}={v:.1f}s" for k, v in self.last_db_timing.items()),
+                  clock.statements if clock else 0, clock.commits if clock else 0,
+                  clock.checkouts if clock else 0, clock.wait_seconds if clock else 0.0)
         self._record_cycle(stamp, metrics)
         # The table alone does not explain a bare menu: log the gate
         # breakdown so the next empty-signal report names its cause.

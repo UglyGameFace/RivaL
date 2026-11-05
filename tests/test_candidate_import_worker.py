@@ -25,12 +25,16 @@ async def test_optional_model_import_recovers_startup_pool_failure(monkeypatch):
             self.imported.append((file_id, payload))
             return 1
 
+        def fully_imported_file_ids(self):
+            return frozenset({"alreadyImported"})
+
         def inventory_receipt(self):
             return {"total": len(self.imported), "compatible": 1, "passed": 0, "missing_artifacts": 0}
 
     class Drive:
         async def read_verified_research_candidates(self, **kwargs):
             assert kwargs["limit"] == 20
+            assert kwargs["known_ids"] == frozenset({"alreadyImported"})
             return [("verifiedDriveFile", b"verified")], None
 
     class FakeClient:
@@ -43,6 +47,9 @@ async def test_optional_model_import_recovers_startup_pool_failure(monkeypatch):
             self.closed = False
 
         async def wait_until_ready(self):
+            return None
+
+        def _pooled_model_set(self):
             return None
 
         def is_closed(self):

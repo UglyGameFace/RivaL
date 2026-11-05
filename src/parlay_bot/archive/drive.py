@@ -634,7 +634,7 @@ class GoogleDriveArchiveClient:
 
     async def read_verified_research_candidates(
         self, *, limit: int = 20, page_token: str | None = None,
-        return_next_page: bool = False,
+        return_next_page: bool = False, known_ids: frozenset[str] = frozenset(),
     ) -> list[tuple[str, bytes]] | tuple[list[tuple[str, bytes]], str | None]:
         """Bounded immutable Google Drive candidate import, NEVER live promotion.
 
@@ -699,6 +699,12 @@ class GoogleDriveArchiveClient:
                        for ch in item.file_id)
             ):
                 raise DriveArchiveError("unverified research candidate source")
+            if item.file_id in known_ids:
+                # Already imported from these exact verified bytes (the caller
+                # passes only fully imported IDs). Metadata is still checked
+                # above; re-downloading up to 2.2 MB per file through TLS on
+                # the event loop after every restart is what stalled it.
+                continue
             media = await self._client.get(
                 f"{self.DRIVE_URL}/files/{item.file_id}",
                 params={"alt": "media"}, headers=await self._headers(),

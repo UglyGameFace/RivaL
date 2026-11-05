@@ -308,6 +308,21 @@ class ResearchCandidateRegistry:
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise CandidateValidationError("invalid historical model document") from exc
 
+    def fully_imported_file_ids(self) -> frozenset[str]:
+        """Drive files whose every candidate row is already complete.
+
+        A file with a legacy row still missing its admission reason is left
+        out, so replaying it can fill that reason exactly as before.
+        """
+        self.initialize()
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """SELECT drive_file_id FROM rival_offline_candidates
+                   GROUP BY drive_file_id
+                   HAVING SUM(CASE WHEN admission_reason IS NULL THEN 1 ELSE 0 END)=0"""
+            ).fetchall()
+        return frozenset(str(r["drive_file_id"]) for r in rows)
+
     def inventory_receipt(self) -> dict:
         """Actual persisted totals, not the count of Drive re-downloads."""
         self.initialize()

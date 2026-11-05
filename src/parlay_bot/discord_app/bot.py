@@ -3031,10 +3031,17 @@ class RivalDiscordClient(discord.Client):
                 # timeframe and trained model when new artifacts are published.
                 # Bound the scan, keep all existing candidates immutable, and
                 # perform expensive reads off the Discord interaction path.
+                # Files already imported are listed and checked but not
+                # downloaded again: every restart re-read all of them.
+                known = await asyncio.to_thread(self.offline_registry.fully_imported_file_ids)
+                pooled_set = self._pooled_model_set()
+                if pooled_set is not None:
+                    known |= await asyncio.to_thread(pooled_set.imported_file_ids)
                 for _ in range(12):
                     items, next_cursor = await asyncio.wait_for(
                         self.research_drive.read_verified_research_candidates(
                             limit=20, page_token=cursor, return_next_page=True,
+                            known_ids=known,
                         ), timeout=90,
                     )
                     pages += 1

@@ -94,3 +94,37 @@ def test_verified_history_schedule_defaults_enabled_with_explicit_stop_switch():
     assert "vars.RIVAL_HISTORY_MONTHLY_ENABLED != 'false'" in workflow
     assert "github.event_name == 'workflow_dispatch'" in workflow
     assert "live model promotion are separate" not in workflow
+
+
+@pytest.mark.asyncio
+async def test_already_imported_files_are_checked_but_not_downloaded_again():
+    payload = b'{"research_only":true,"live_model_promoted":false}'
+    checksum = hashlib.sha256(payload).hexdigest()
+    accessed = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        accessed.append(request.url.path)
+        if request.url.path == "/drive/v3/files":
+            return httpx.Response(200, json={"files": [
+                {"id": f"id{n}", "name": f"c{n}.json", "size": str(len(payload)),
+                 "parents": ["models"], "appProperties": {
+                     "rival_kind": "model", "rival_sha256": checksum}}
+                for n in ("Old", "New")]})
+        return httpx.Response(200, content=payload)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    drive = GoogleDriveArchiveClient(
+        client_id="id", client_secret="secret", refresh_token="refresh",
+        folders=DriveArchiveFolders(
+            root="root", history="history", manifests="manifests",
+            staging="staging", models="models",
+        ), client=client,
+    )
+    drive._verify_folder_boundary = AsyncMock()
+    drive._access_token = AsyncMock(return_value="token")
+    try:
+        got = await drive.read_verified_research_candidates(known_ids=frozenset({"idOld"}))
+        assert got == [("idNew", payload)]
+        assert accessed == ["/drive/v3/files", "/drive/v3/files/idNew"]
+    finally:
+        await client.aclose()

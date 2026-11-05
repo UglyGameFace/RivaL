@@ -131,10 +131,8 @@ async def test_discord_client_registers_rival_and_data_status_without_message_in
             "rival", "rival-signal", "rival-stop", "rival-tools",
         }
         tools = client.tree.get_command("rival-tools")
-        assert {c.name for c in tools.commands} >= {
-            "data", "research", "picks", "opportunities",
-            "profit-proof", "status", "multi-proof",
-            "practice", "target", "sports", "paper-open",
+        assert {c.name for c in tools.commands} == {
+            "data", "research", "status", "quote", "sports", "target-proof",
         }
         assert tools.get_command("data").description == (
             "Open the private RivaL market data dashboard."

@@ -312,7 +312,8 @@ def test_target_button_is_present_in_real_opportunities_view(tmp_path):
         )
         controls = {item.custom_id for item in view.children}
         assert "rival:research:follow-target" in controls
-        assert client.tree.get_command("rival-tools").get_command("target") is not None
+        # Targets are set from the /rival menus; the slash command is gone.
+        assert client.tree.get_command("rival-tools").get_command("target") is None
         assert client.tree.get_command("rival-stop") is not None
         view.screen = "accuracy"
         view._rebuild()

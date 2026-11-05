@@ -533,7 +533,7 @@ class _QuickTargetButton(discord.ui.Button["ResearchDashboard"]):
             )
         except Exception:  # noqa: BLE001 - never expose internal errors
             _LOG.exception("RivaL 5m target follow failed")
-            ok, message = False, "Could not start monitoring. Try /rival-tools target."
+            ok, message = False, "Could not start monitoring. Try /rival → Advanced → Manual Price Target."
         await interaction.followup.send(
             ("✅ " if ok else "⛔ ") + message, ephemeral=True,
         )

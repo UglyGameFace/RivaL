@@ -816,10 +816,14 @@ class GuidedHome(discord.ui.View):
             if self.research_factory is not None:
                 self._add("Detailed Research", "research", 2, "🔬")
                 self._add("Track Next Predictions", "track-forward", 3, "🎯")
+            self._add("After-Cost Check", "proof", 3, "💸")
         elif p == "help":
             self._add("Start with Sports", "sports", 0, "🏆")
             self._add("Analyze Crypto", "crypto-desk", 0, "📈")
             self._add("Practice Safely", "practice", 1, "💵")
+            # Exact-price targets, technical research and API limits live here
+            # now that their separate /rival-tools commands are gone.
+            self._add("Advanced Tools", "advanced", 2, "⚙️")
         elif p == "advanced":
             self._add("Bot Performance", "performance", 0, "📊", True)
             self._add("Technical Research", "research", 1, "🧪")

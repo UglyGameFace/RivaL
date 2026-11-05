@@ -58,10 +58,15 @@ async def test_beginner_home_begins_simple_and_keeps_advanced_features(tmp_path)
         assert "simple private home" in bot.tree.get_command("rival").description
         tools = bot.tree.get_command("rival-tools")
         assert tools is not None
-        assert tools.get_command("picks") is not None
         assert tools.get_command("research") is not None
-        assert tools.get_command("profit-proof") is not None
-        assert tools.get_command("practice") is not None
+        assert tools.get_command("status") is not None
+        # Everything the home menu already covers is no longer a separate command.
+        for gone in ("picks", "opportunities", "profit-proof", "practice", "paper-open",
+                     "paper-close", "paper-results", "target", "multi-proof", "stream-proof",
+                     "leagues", "sport-proof", "health", "source-health", "stream-status"):
+            assert tools.get_command(gone) is None, gone
+        assert {c.name for c in tools.commands} == {
+            "status", "research", "data", "quote", "sports", "target-proof"}
         assert home.page == "home"
         assert set(_labels(home)) == {
             "Crypto", "Sports", "Notifications", "Bot Performance",

@@ -1,42 +1,46 @@
-"""TEMP read-only probe (do not merge): capture one real review evidence payload."""
+"""TEMP read-only probe (do not merge): overall status check."""
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 MARKER = "RIVAL_PERFORMANCE_PROBE="
 
 
 def probe() -> dict:
     from parlay_bot.config import Settings
-    from parlay_bot.perpetuals.analysis_evidence import build_evidence
-    from parlay_bot.perpetuals.intelligence import market_context, model_calls
-    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+    from parlay_bot.perpetuals import host_memory
     from parlay_bot.storage.hot import PostgresHotStore
 
-    import importlib
-    for name in ("parlay_bot.perpetuals.market_store", "parlay_bot.perpetuals.forward_audit",
-                 "parlay_bot.perpetuals.model_competition", "parlay_bot.perpetuals.intelligence",
-                 "parlay_bot.perpetuals.analysis_evidence"):
-        module = importlib.import_module(name)
-        for obj in vars(module).values():
-            if isinstance(obj, type) and "initialize" in vars(obj):
-                obj.initialize = lambda self, *a, **k: None  # read-only probe: schema exists
-    s = Settings()
-    store = PostgresHotStore(s.rival_database_url.get_secret_value(), read_only=True)
-    market = PerpetualMarketStore(store)
-    out: dict = {"now": datetime.now(UTC).isoformat()}
+    store = PostgresHotStore(Settings().rival_database_url.get_secret_value(), read_only=True)
+    now = datetime.now(UTC)
+    out: dict = {"now": now.isoformat()}
     try:
-        venues = ("hyperliquid", "dydx", "bitget", "gate", "okx", "kucoin", "deribit",
-                  "lighter", "phemex")
-        evidence, _ = build_evidence(market, asset="BTC", venues=venues, horizon_minutes=5)
-        evidence = {**evidence, "model_calls": model_calls(market, asset="BTC")}
-        ctx = market_context(market, asset="BTC")
-        if ctx:
-            evidence["market_context"] = {**ctx, "source": "hyperliquid_okx"}
-        out["evidence"] = evidence
+        with store.connect() as conn:
+            q = lambda sql, *a: [dict(r) for r in conn.execute(sql, a).fetchall()]  # noqa: E731
+            out["reviews"] = q("""SELECT COUNT(*) AS n, MAX(issued_at) AS last FROM rival_intelligence_calls
+                                  WHERE issued_at>=?""", "2026-11-05T13:44:00+00:00")
+            out["hyp"] = q("""SELECT status, COUNT(*) AS n FROM rival_llm_feature_hypotheses
+                              WHERE attempted_at>=? GROUP BY status""", "2026-11-05T13:44:00+00:00")
+            out["incidents"] = q("SELECT issue_key, detail FROM rival_runtime_health_incidents WHERE state='OPEN'")
+            out["memory"] = q("""SELECT hour, level, text FROM rival_problem_log
+                                 WHERE text LIKE '%memory receipt%' OR text LIKE '%high host RSS%'
+                                 ORDER BY last_at DESC LIMIT 6""")
+            out["problems"] = q("""SELECT level, SUM(count) AS n, MAX(last_at) AS last, MAX(text) AS text
+                                   FROM rival_problem_log WHERE last_at>=?
+                                   GROUP BY level, template ORDER BY n DESC LIMIT 15""",
+                                (now - timedelta(minutes=45)).isoformat())
+            out["cycles"] = q("""SELECT completed_at, math_ok, model_review_ok FROM perp_learning_cycle_health
+                                 ORDER BY completed_at DESC LIMIT 3""")
+            out["boots"] = q("SELECT started_at FROM rival_runtime_health_boots ORDER BY started_at DESC LIMIT 2")
     finally:
         store.close()
+    out["container"] = host_memory.snapshot().detail
+    try:
+        status = open("/proc/1/status").read()
+        out["bot_rss_mb"] = next(int(l.split()[1]) // 1024 for l in status.splitlines() if l.startswith("VmRSS"))
+    except OSError:
+        pass
     return out
 
 
@@ -44,7 +48,7 @@ def main() -> int:
     try:
         report = probe()
     except Exception as exc:  # noqa: BLE001
-        report = {"error": f"{type(exc).__name__}: {str(exc)[:300]}"}
+        report = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
     print(MARKER + json.dumps(report, sort_keys=True, default=str))
     return 0
 

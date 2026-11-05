@@ -1,0 +1,143 @@
+name: Retire 10 reviewed temporary probes (one-time)
+on:
+  push:
+    branches:
+      - archive/probe-snapshots-2026-11-05
+    paths:
+      - .github/workflows/retire-reviewed-probes-once.yml
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  delete-reviewed-probes:
+    if: github.repository == 'UglyGameFace/RivaL' && github.ref == 'refs/heads/archive/probe-snapshots-2026-11-05'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Verify archived source, open PRs, exact SHA, then delete
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os
+          from urllib.parse import quote
+          from urllib.request import Request, urlopen
+          
+          REPO = "UglyGameFace/RivaL"
+          ARCHIVE = "archive/probe-snapshots-2026-11-05"
+          TARGETS = {
+              "probe/ale-compare": {
+                  "sha": "d61d8b211706b8845c839432453f2e1fbc8b0b11",
+                  "blob": "636cd10442de87796b5e48e500a28f45c39a4a60"
+              },
+              "probe/ale-explain": {
+                  "sha": "cae8d06f7d0b2c2296e7e05424ecd79baca1fc68",
+                  "blob": "2d0793228acdbc3433d7dbdede6b254de20a07cf"
+              },
+              "probe/archive-sweep-explain": {
+                  "sha": "b64a453e0d2d878ec114e8f244fb50feaa2d77b0",
+                  "blob": "716abf4c9be70d1e6b60447637934e9ff6229b69"
+              },
+              "probe/hourly": {
+                  "sha": "13f942d631836da5e8de0d391765878b6a8a501f",
+                  "blob": "5334722457284656dad339af2a6f24422d500526"
+              },
+              "probe/intelligence-audit": {
+                  "sha": "716f06d7afaa7eeb5f2a010262862395e77bfef1",
+                  "blob": "0c56355da4b3809e4cec11cebd61acb8a98f5873"
+              },
+              "probe/new-trackers": {
+                  "sha": "b7278f8c4a9b5e63ff305a03586e2bd9e1ae7451",
+                  "blob": "44bdf400f60afab0f788f6f2517ca9650b3ec4a3"
+              },
+              "probe/okx-liquidations": {
+                  "sha": "68de643d77ea244089e4749d0bc2fb1c4f2a64d9",
+                  "blob": "46d42880a5626d84572ceeaefc58609d7a287280"
+              },
+              "probe/prediction-health": {
+                  "sha": "e9f805501aa7fe99bfa24a0850fce363bf66a5b1",
+                  "blob": "635e94ec55749f63796641b0ebaaa0473268e4b3"
+              },
+              "probe/quote-cov": {
+                  "sha": "6bc3b164eaa937feccffe91699f843c98f598a35",
+                  "blob": "78c53a6b5009c3fb854e9ab7359da39132e4b364"
+              },
+              "probe/settle-plan": {
+                  "sha": "fa6a2b76074210d2badbd9883455a46374e77fdb",
+                  "blob": "25acc86f88413c9d89611291ad5df29e33d0131c"
+              }
+          }
+          
+          def api(method, route):
+              request = Request(
+                  "https://api.github.com" + route,
+                  method=method,
+                  headers={
+                      "Authorization": "Bearer " + os.environ["GITHUB_TOKEN"],
+                      "Accept": "application/vnd.github+json",
+                      "X-GitHub-Api-Version": "2022-11-28",
+                      "User-Agent": "rival-explicit-probe-retirement",
+                  },
+              )
+              with urlopen(request, timeout=30) as response:
+                  body = response.read()
+              return json.loads(body) if body else None
+          
+          def pages(path):
+              result = []
+              index = 1
+              while True:
+                  separator = "&" if "?" in path else "?"
+                  chunk = api("GET", path + separator + "per_page=100&page=" + str(index))
+                  if not isinstance(chunk, list):
+                      raise RuntimeError("Unexpected GitHub page result")
+                  result.extend(chunk)
+                  if len(chunk) < 100:
+                      return result
+                  index += 1
+          
+          if os.environ.get("GITHUB_REPOSITORY") != REPO:
+              raise SystemExit("Refusing repository mismatch")
+          if os.environ.get("GITHUB_REF") != "refs/heads/" + ARCHIVE:
+              raise SystemExit("Refusing non-archive trigger")
+          
+          root = "/repos/" + REPO
+          branches = {b["name"]: b for b in pages(root + "/branches")}
+          open_prs = pages(root + "/pulls?state=open")
+          active = {p["head"]["ref"] for p in open_prs
+                    if p.get("head") and (p["head"].get("repo") or {}).get("full_name") == REPO}
+          validated = []
+          for name, info in TARGETS.items():
+              b = branches.get(name)
+              if not b:
+                  print("Already absent:", name)
+                  continue
+              if b.get("protected") or name in active:
+                  raise SystemExit("Protected or active PR branch: " + name)
+              if b["commit"]["sha"] != info["sha"]:
+                  raise SystemExit("Changed branch head; refusing to delete: " + name)
+              path = "probe-snapshots/" + name.removeprefix("probe/") + "/performance_truth_probe.py"
+              snap = api("GET", root + "/contents/" + quote(path, safe="/") + "?ref=" + quote(ARCHIVE, safe=""))
+              if snap.get("sha") != info["blob"]:
+                  raise SystemExit("Snapshot mismatch; refusing to delete: " + name)
+              ref = api("GET", root + "/git/ref/heads/" + quote(name, safe="/"))
+              if ref.get("ref") != "refs/heads/" + name or ref["object"]["sha"] != info["sha"]:
+                  raise SystemExit("Ref mismatch; refusing to delete: " + name)
+              validated.append((name, info["sha"]))
+          
+          print("Verified archived snapshot and unprotected, inactive SHA for", len(validated), "branches")
+          for name, sha in validated:
+              ref = api("GET", root + "/git/ref/heads/" + quote(name, safe="/"))
+              if ref.get("ref") != "refs/heads/" + name or ref["object"]["sha"] != sha:
+                  raise SystemExit("Branch advanced during cleanup: " + name)
+              api("DELETE", root + "/git/refs/heads/" + quote(name, safe="/"))
+              print("DELETED:", name, sha)
+          
+          remaining = {b["name"] for b in pages(root + "/branches")}
+          left = sorted(set(TARGETS) & remaining)
+          if left:
+              raise SystemExit("Probe branches remain: " + ", ".join(left))
+          print("Verified all ten requested probe refs absent. Originals archived at", ARCHIVE)
+          PY

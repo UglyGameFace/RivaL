@@ -56,6 +56,37 @@ def _cgroup_limit() -> int | None:
     return None
 
 
+def _nonnegative_usage(text: str | None) -> int | None:
+    """Read cgroup usage/peak; zero is valid, unlike a memory limit."""
+    try:
+        size = int(str(text).strip())
+    except (ValueError, TypeError):
+        return None
+    return size if 0 <= size < 1 << 50 else None
+
+
+def _cgroup_usage() -> int | None:
+    for path in (
+        "/sys/fs/cgroup/memory.current",
+        "/sys/fs/cgroup/memory/memory.usage_in_bytes",
+    ):
+        size = _nonnegative_usage(_read_bytes(path))
+        if size is not None:
+            return size
+    return None
+
+
+def _cgroup_peak() -> int | None:
+    for path in (
+        "/sys/fs/cgroup/memory.peak",
+        "/sys/fs/cgroup/memory/memory.max_usage_in_bytes",
+    ):
+        size = _nonnegative_usage(_read_bytes(path))
+        if size is not None:
+            return size
+    return None
+
+
 def _fallback_limit() -> int:
     raw = os.environ.get("RIVAL_HOST_MEMORY_MB", str(_FALLBACK_MB))
     try:
@@ -82,20 +113,28 @@ class HostMemory:
     rss_bytes: int | None
     limit_bytes: int
     oom_kills: int | None
+    cgroup_bytes: int | None = None
+    cgroup_peak_bytes: int | None = None
 
     @property
     def pressure(self) -> bool:
-        # Never postpone useful work when Linux RSS cannot be measured.
-        return (
-            self.rss_bytes is not None
-            and self.rss_bytes >= self.limit_bytes * _PRESSURE_FRACTION
-        )
+        # Discloud enforces the container/cgroup limit, not this process's
+        # VmRSS alone. The container can also contain file cache, other
+        # processes and shared allocations. Fall back to RSS when unavailable.
+        readings = (self.rss_bytes, self.cgroup_bytes)
+        used = max((value for value in readings if value is not None), default=None)
+        return used is not None and used >= self.limit_bytes * _PRESSURE_FRACTION
 
     @property
     def detail(self) -> str:
         rss = "unavailable" if self.rss_bytes is None else str(self.rss_bytes // MIB)
+        usage = ("unavailable" if self.cgroup_bytes is None
+                 else str(self.cgroup_bytes // MIB))
+        peak = ("unavailable" if self.cgroup_peak_bytes is None
+                else str(self.cgroup_peak_bytes // MIB))
         kills = "unavailable" if self.oom_kills is None else str(self.oom_kills)
-        return f"rss_mb={rss} limit_mb={self.limit_bytes // MIB} cgroup_oom_kills={kills}"
+        return (f"rss_mb={rss} cgroup_mb={usage} cgroup_peak_mb={peak} "
+                f"limit_mb={self.limit_bytes // MIB} cgroup_oom_kills={kills}")
 
 
 def snapshot() -> HostMemory:
@@ -103,4 +142,6 @@ def snapshot() -> HostMemory:
         rss_bytes=_rss_bytes(),
         limit_bytes=_cgroup_limit() or _fallback_limit(),
         oom_kills=_cgroup_oom_kills(),
+        cgroup_bytes=_cgroup_usage(),
+        cgroup_peak_bytes=_cgroup_peak(),
     )

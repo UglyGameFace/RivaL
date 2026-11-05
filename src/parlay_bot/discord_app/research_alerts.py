@@ -7,6 +7,7 @@ unreadable table becomes its own alert instead of a guess.
 from __future__ import annotations
 
 import logging
+import math
 from datetime import UTC, datetime, timedelta
 
 _LOG = logging.getLogger(__name__)
@@ -20,6 +21,7 @@ MONTH_GRACE = timedelta(days=2)
 INTELLIGENCE_STALE_AFTER = timedelta(hours=2)  # reviews every 5-15 minutes
 DECAY_WINDOW = timedelta(days=3)
 DECAY_MIN_GRADED = 300
+DECAY_SIGMAS = 2.0
 # A trained version counts as in use if it issued a forecast this recently.
 IN_USE_WITHIN = timedelta(minutes=30)
 
@@ -114,6 +116,8 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
         rows = conn.execute(
             """SELECT horizon_minutes, family, SUBSTR(training_sha256,1,12) AS model,
                       COUNT(*) AS n, AVG(model_brier) AS m, AVG(baseline_brier) AS b,
+                      AVG((model_brier-baseline_brier)*(model_brier-baseline_brier)) AS d2,
+                      COUNT(DISTINCT target_opened_at) AS targets,
                       MAX(issued_at) AS last_issued
                FROM rival_model_shadow_forecasts
                WHERE family LIKE 'pooled%' AND settled_at IS NOT NULL
@@ -129,14 +133,24 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
                     or int(row["n"]) < DECAY_MIN_GRADED):
                 continue
             gap = float(row["m"]) - float(row["b"])
+            # Alert only when the gap is clearly beyond chance: more than
+            # DECAY_SIGMAS standard errors of the per-forecast differences.
+            # Venues share targets (correlated), so the error uses distinct
+            # targets, not rows. On Nov 5 a +0.0009 gap (pure noise; the same
+            # version had been ahead hours earlier) kept the card Degraded.
+            variance = max(0.0, float(row["d2"] or 0) - gap * gap)
+            targets = max(1, int(row["targets"] or 0))
+            error = math.sqrt(variance / targets)
+            if gap <= DECAY_SIGMAS * error:
+                continue
             horizon = int(row["horizon_minutes"])
-            if gap > 0 and (horizon not in worst or gap > worst[horizon][0]):
-                worst[horizon] = (gap, str(row["model"]), int(row["n"]))
-        for horizon, (gap, model, n) in sorted(worst.items()):
+            if horizon not in worst or gap > worst[horizon][0]:
+                worst[horizon] = (gap, str(row["model"]), int(row["n"]), gap / error if error else 0.0)
+        for horizon, (gap, model, n, sigmas) in sorted(worst.items()):
             alerts.append((f"decay:{horizon}m",
                            (f"⚠️ {horizon}-min six-year model {model} (in use) scored "
                             f"worse than the plain up-rate: +{gap:.4f} Brier over "
-                            f"{n} graded in the last 3 days")))
+                            f"{n} graded in the last 3 days ({sigmas:.1f}× the noise)")))
     except Exception as exc:  # noqa: BLE001
         _LOG.warning("Research alert: challenger table unreadable (%s)", type(exc).__name__)
 

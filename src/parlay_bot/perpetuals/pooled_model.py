@@ -38,7 +38,7 @@ def validate(doc: dict) -> dict:
         if not isinstance(tree, list) or not tree:
             raise ValueError("invalid pooled tree")
         total += len(tree)
-        for node in tree:
+        for position, node in enumerate(tree):
             if len(node) == 1:
                 if not math.isfinite(node[0]):
                     raise ValueError("invalid leaf")
@@ -47,7 +47,11 @@ def validate(doc: dict) -> dict:
             if (type(feature) is not int or not 0 <= feature < width
                     or not math.isfinite(threshold) or default_left not in (0, 1)
                     or missing not in (0, 1, 2)
-                    or not (0 < left < len(tree) and 0 < right < len(tree))):
+                    # Children must come AFTER their parent (the exporter
+                    # writes trees in that order). A child pointing back up
+                    # the tree would make raw_score loop forever.
+                    or type(left) is not int or type(right) is not int
+                    or not (position < left < len(tree) and position < right < len(tree))):
                 raise ValueError("invalid pooled split")
     if total > MAX_NODES:
         raise ValueError("oversized pooled model")

@@ -92,7 +92,7 @@ async def test_stronger_qualified_venue_wins_over_priority(tmp_path):
         signal = await signal_embed(
             market, mock_books(now), asset="BTC", horizon_minutes=5, now=now,
         )
-        assert "UP WATCH" in signal.title
+        assert "Leans UP: watch only" in signal.title
         assert "Exchange: **okx**" in next(x.value for x in signal.fields if x.name == "Details")
         alternatives = next(
             x.value for x in signal.fields

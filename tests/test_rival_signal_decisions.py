@@ -127,7 +127,7 @@ async def test_strong_forward_watch_uses_matching_hyperliquid_quote(tmp_path):
         seed_prediction(market, now, venue="hyperliquid", probability=.61)
         seed_settled(market, now, venue="hyperliquid")
         signal = await signal_embed(market, quotes, asset="BTC", horizon_minutes=5, now=now)
-        assert "UP WATCH" in signal.title
+        assert "Leans UP: watch only" in signal.title
         assert "RESEARCH ONLY" in signal.title
         assert "Hyperliquid" in next(
             x.value for x in signal.fields if x.name.startswith("Fresh matching")
@@ -170,7 +170,7 @@ async def test_blocked_exchange_uses_only_another_forecasts_matching_book(tmp_pa
         seed_settled(market, now, venue="binance")
         signal = await signal_embed(market, quotes, asset="BTC",
                                     horizon_minutes=5, now=now)
-        assert "UP WATCH" in signal.title
+        assert "Leans UP: watch only" in signal.title
         assert "Exchange: **binance**" in next(x.value for x in signal.fields if x.name == "Details")
         assert "$81,003.00" in next(x.value for x in signal.fields if x.name == "Live price right now 💱")
         assert "$81,000.00" not in next(x.value for x in signal.fields if x.name == "Live price right now 💱")
@@ -271,7 +271,7 @@ async def test_signal_venues_are_raced_not_tried_one_after_another(tmp_path, cap
             )
         assert started == ["hyperliquid", "binance"] or set(started) == {
             "hyperliquid", "binance"}
-        assert "UP WATCH" in signal.title
+        assert "Leans UP: watch only" in signal.title
         assert "Hyperliquid" in next(
             x.value for x in signal.fields if x.name.startswith("Fresh matching")
         )

@@ -95,7 +95,7 @@ async def test_promoted_slot_serves_fused_watch_with_disclosure(tmp_path, caplog
                 horizon_minutes=5,
                 now=now,
             )
-        assert "UP WATCH" in signal.title
+        assert "Leans UP: watch only" in signal.title
         assert "combined from" in next(x.value for x in signal.fields if x.name == "Details")
         assert "Exchange: **hyperliquid**" in next(x.value for x in signal.fields if x.name == "Details")
         assert "engine=multi" in caplog.text

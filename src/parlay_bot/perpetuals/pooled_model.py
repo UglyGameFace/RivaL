@@ -200,11 +200,23 @@ class PooledModelSet:
         self.initialize()
         active: dict[tuple[str, int], dict] = {}
         fallback: dict[tuple[str, int], dict] = {}
-        with self.store.connect() as conn:
-            rows = conn.execute(
-                """SELECT horizon_minutes, document FROM rival_pooled_models
+        order = """FROM rival_pooled_models
                    WHERE gates_passed=1 ORDER BY trained_through DESC, imported_at DESC"""
-            ).fetchall()
+        with self.store.connect() as conn:
+            # Every 10 minutes this re-downloaded every model document
+            # (~0.7 MB each, ~10 MB in all: 0.7-3 s). Documents are immutable
+            # per model_sha256, so when the ordered set of models is unchanged
+            # and none was waiting to become usable, the selection is too.
+            signature = tuple(
+                (str(r["family"]), str(r["model_sha256"]))
+                for r in conn.execute("SELECT family, model_sha256 " + order).fetchall()
+            )
+            if (signature == getattr(self, "_signature", None)
+                    and not getattr(self, "_pending_usable", True)):
+                self._loaded_at = time.monotonic()
+                return
+            rows = conn.execute("SELECT horizon_minutes, document " + order).fetchall()
+        pending_usable = False
         for row in rows:
             horizon = int(row["horizon_minutes"])
             try:
@@ -214,12 +226,18 @@ class PooledModelSet:
             key = (lineage(doc), horizon)
             if key in active and key in fallback:
                 continue
-            if usable(doc, now=now):
-                clean = {k: v for k, v in doc.items() if not k.startswith("_")}
-                doc["_family"], doc["_sha256"] = family(clean), model_sha256(clean)
-                active.setdefault(key, doc)
-                if doc.get("feature_version") == FEATURE_VERSION:
-                    fallback.setdefault(key, doc)
+            if not usable(doc, now=now):
+                # Trained through a time not yet reached: it becomes usable
+                # later without any row changing, so keep reloading in full.
+                pending_usable = pending_usable or doc.get("gates_passed") is True
+                continue
+            clean = {k: v for k, v in doc.items() if not k.startswith("_")}
+            doc["_family"], doc["_sha256"] = family(clean), model_sha256(clean)
+            active.setdefault(key, doc)
+            if doc.get("feature_version") == FEATURE_VERSION:
+                fallback.setdefault(key, doc)
         self._active = active
         self._fallback = fallback
+        self._signature = signature
+        self._pending_usable = pending_usable
         self._loaded_at = time.monotonic()

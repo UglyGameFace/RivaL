@@ -104,6 +104,10 @@ class StreamingBookHub:
         self._connected: dict[str, bool] = dict.fromkeys(VENUES, False)
         self._reconnects: dict[str, int] = dict.fromkeys(VENUES, 0)
         self._accepted: dict[str, int] = dict.fromkeys(VENUES, 0)
+        # When each venue last delivered an accepted book. "Fresh" per coin
+        # uses a 10 s quote age, but Hyperliquid pushes each coin only about
+        # every 5 s, so a coin can be briefly stale while the stream is fine.
+        self._last_accept: dict[str, datetime | None] = dict.fromkeys(VENUES, None)
         # Optional 5-minute liquidity recorder; attach before start().
         self.recorder = None
         self._liquidity_frames = 0
@@ -133,6 +137,10 @@ class StreamingBookHub:
                     a for a in self.assets
                     if self.snapshot(venue, a, now=clock) is not None
                 ),
+                "last_update_age_s": (
+                    None if self._last_accept[venue] is None
+                    else max(0.0, (clock - self._last_accept[venue]).total_seconds())
+                ),
             }
             for venue in VENUES
         }
@@ -157,6 +165,7 @@ class StreamingBookHub:
             return False  # No replayed/out-of-order or stale snapshot.
         self._quotes[key] = quote
         self._accepted[venue] += 1
+        self._last_accept[venue] = now
         return True
 
     async def _run(self, venue: str) -> None:

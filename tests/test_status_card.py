@@ -220,3 +220,48 @@ def test_health_alert_shows_recovered_once_its_incident_closes():
                          open_incidents={"feed:hyperliquid:BTC"}) == "recovered"
     # Unknown incident state (watchdog unreadable) never claims recovery.
     assert problem_state(alert, now=now, boot_at=boot, open_incidents=None) == "active"
+
+
+def test_stream_is_judged_by_its_last_delivery_not_one_instant():
+    from parlay_bot.discord_app.status_card import _stream_line
+
+    flowing = _stream_line("hyperliquid", {"connected": True, "updates": 276, "reconnects": 0,
+                                           "fresh_assets": (), "last_update_age_s": 4.0})
+    assert flowing.startswith("✅ hyperliquid: streaming, last update 4s ago")
+    stalled = _stream_line("hyperliquid", {"connected": True, "updates": 276, "reconnects": 0,
+                                           "fresh_assets": (), "last_update_age_s": 400.0})
+    assert stalled.startswith("⚠️ hyperliquid: connected but no book update for 6m")
+
+
+def test_a_stalled_stream_counts_after_startup_and_clears_when_it_recovers():
+    from datetime import UTC, datetime, timedelta
+
+    from parlay_bot.discord_app.status_card import StatusFacts, assess
+
+    now = datetime(2026, 11, 5, 14, 0, tzinfo=UTC)
+
+    def facts(age, boot_minutes=30):
+        return StatusFacts(
+            now=now, boot_at=now - timedelta(minutes=boot_minutes), ready=True,
+            heartbeat=None, workers=[], incidents=[], feeds=None,
+            streams={"hyperliquid": {"connected": True, "updates": 500, "reconnects": 0,
+                                     "fresh_assets": (), "last_update_age_s": age}},
+            liquidity_last_bucket=now.isoformat(), memory=None, research=[],
+        )
+
+    assert "stream_stalled:hyperliquid" in assess(facts(400))[1]
+    assert assess(facts(3)) == ("healthy", ())
+    assert "stream_stalled:hyperliquid" not in assess(facts(400, boot_minutes=2))[1]
+
+
+def test_empty_prediction_health_says_no_problems():
+    from datetime import UTC, datetime
+
+    from parlay_bot.discord_app.status_card import StatusFacts, build_embed
+
+    now = datetime(2026, 11, 5, 14, 0, tzinfo=UTC)
+    embed, _, _ = build_embed(StatusFacts(
+        now=now, boot_at=now, ready=True, heartbeat=None, workers=[], incidents=[],
+        feeds=None, streams=None, liquidity_last_bucket=None, memory=None, research=[]))
+    field = next(f for f in embed.fields if f.name == "Prediction health")
+    assert field.value.startswith("✅ No problems")

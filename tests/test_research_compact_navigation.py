@@ -309,3 +309,14 @@ def test_research_accuracy_offers_plain_and_technical_sections():
     assert labels["lineage"] == "Is it learning from history?"
     assert labels["technical"] == "Technical evidence"
     assert len(_SECTIONS["accuracy"]) <= 25
+
+
+def test_live_updates_are_shown_per_exchange_not_whichever_venue_was_last():
+    proof = {
+        "forecasts": 100, "latest_lineage_verified": True,
+        "latest_historical_seed_sha256": None, "latest_online_training_updates": 2035,
+        "online_training_updates_low": 1980, "online_training_updates_high": 2127,
+        "online_training_venues": 5, "historically_seeded": 0, "lineage_proven": 100,
+    }
+    explanation = _plain_training_line(proof, 5)
+    assert "1,980–2,127 live updates per exchange (5 exchanges)" in explanation

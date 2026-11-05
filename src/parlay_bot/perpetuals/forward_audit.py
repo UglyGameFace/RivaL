@@ -406,7 +406,7 @@ class ForwardAccuracyMonitor:
         stamp = utc(now or datetime.now(UTC))
         with self.store.connect() as conn:
             rows = conn.execute(
-                """SELECT f.issued_at, l.weights_sha256, l.feature_sha256,
+                """SELECT f.issued_at, f.venue, l.weights_sha256, l.feature_sha256,
                           l.training_labels, l.historical_training_labels,
                           l.online_training_updates, l.historical_seed_sha256
                    FROM perp_forward_audit AS f
@@ -423,6 +423,13 @@ class ForwardAccuracyMonitor:
                  (stamp - timedelta(days=7)).isoformat(), stamp.isoformat()),
             ).fetchall()
         proven = [r for r in rows if r["weights_sha256"] is not None]
+        # Each exchange's model learns separately, so "the latest" count was
+        # whichever venue predicted last and jumped up and down between
+        # renders. Report each venue's latest count as a range too.
+        per_venue: dict[str, int] = {}
+        for r in proven:  # newest first
+            if r["online_training_updates"] is not None and r["venue"] not in per_venue:
+                per_venue[r["venue"]] = int(r["online_training_updates"])
         latest = rows[0] if rows else None
         latest_proven = latest is not None and latest["weights_sha256"] is not None
         return {
@@ -434,6 +441,9 @@ class ForwardAccuracyMonitor:
             "latest_historical_seed_sha256": latest["historical_seed_sha256"] if latest_proven else None,
             "latest_historical_training_labels": latest["historical_training_labels"] if latest_proven else None,
             "latest_online_training_updates": latest["online_training_updates"] if latest_proven else None,
+            "online_training_updates_low": min(per_venue.values()) if per_venue else None,
+            "online_training_updates_high": max(per_venue.values()) if per_venue else None,
+            "online_training_venues": len(per_venue),
             "latest_training_labels": latest["training_labels"] if latest_proven else None,
             "latest_weights_sha256": latest["weights_sha256"] if latest_proven else None,
             "latest_lineage_verified": latest_proven,

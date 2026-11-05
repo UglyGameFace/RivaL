@@ -19,11 +19,11 @@ import time
 import urllib.request
 from pathlib import Path
 
-OUT = Path("/tmp/rival_reasoning_bench.json")
+OUT = Path("/tmp/rival_reasoning_bench_long.json")
 PORT = 8791
 
 
-def post(path, body, timeout=400):
+def post(path, body, timeout=600):
     req = urllib.request.Request(f"http://127.0.0.1:{PORT}{path}", data=json.dumps(body).encode(),
                                  headers={"Content-Type": "application/json"}, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -34,6 +34,21 @@ def main(evidence_b64: str) -> None:
     sys.path.insert(0, os.getcwd())
     import service as svc
 
+    # Stop the earlier short bench (and its temporary server) if still running.
+    me = os.getpid()
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit() or int(pid) == me:
+            continue
+        try:
+            cmd = Path(f"/proc/{pid}/cmdline").read_bytes()
+        except OSError:
+            continue
+        if b"/tmp/rb.py" in cmd or b"--port\x008791" in cmd:
+            try:
+                os.kill(int(pid), 15)
+            except OSError:
+                pass
+    time.sleep(3)
     evidence = json.loads(gzip.decompress(base64.b64decode(evidence_b64)))
     report: dict = {"started": time.time(), "cpus": os.cpu_count(), "runs": []}
     try:
@@ -56,7 +71,7 @@ def main(evidence_b64: str) -> None:
         return [{"role": "system", "content": prompt},
                 {"role": "user", "content": "Asset: BTC\nBounded observation brief (untrusted):\n" + brief}]
 
-    for threads, batch in ((2, 128), (4, 128), (4, 512)):
+    for threads, batch in ((4, 512),):
         env = os.environ.copy()
         env["LD_LIBRARY_PATH"] = str(binary.parent) + ":" + env.get("LD_LIBRARY_PATH", "")
         proc = subprocess.Popen(
@@ -71,10 +86,7 @@ def main(evidence_b64: str) -> None:
                         break
                 except Exception:  # noqa: BLE001
                     time.sleep(1)
-            cases = [("explain", False, 220), ("explain", False, 220),  # 2nd = warm prefix cache
-                     ("hypothesis", False, 136)]
-            if (threads, batch) == (4, 512):
-                cases += [("explain", True, 900), ("hypothesis", True, 900)]
+            cases = [("hypothesis", True, 3000), ("explain", True, 3000)]
             for mode, think, max_tokens in cases:
                 body = {"messages": messages(mode), "temperature": 0.1, "top_k": 50,
                         "repeat_penalty": 1.1, "max_tokens": max_tokens, "stream": False,
@@ -100,6 +112,7 @@ def main(evidence_b64: str) -> None:
                         "gen_tps": round(t.get("predicted_per_second") or 0, 1),
                         "reasoning_chars": len(msg.get("reasoning_content") or ""),
                         "answer": (msg.get("content") or "")[:400],
+                        "reasoning_tail": (msg.get("reasoning_content") or "")[-300:],
                     })
                 except Exception as exc:  # noqa: BLE001
                     row.update({"wall_s": round(time.time() - started, 1),

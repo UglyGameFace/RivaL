@@ -65,14 +65,14 @@ jobs:
               bench = base64.b64encode(gzip.compress(pathlib.Path("tools/llm_reasoning_bench.py").read_bytes())).decode()
               ev = base64.b64encode(gzip.compress(pathlib.Path("tools/bench_evidence.json").read_bytes())).decode()
               cmd = ("python -c \"import base64,gzip,subprocess,sys;"
-                     f"open('/tmp/rb.py','wb').write(gzip.decompress(base64.b64decode('{bench}')));"
-                     f"subprocess.Popen([sys.executable,'/tmp/rb.py','{ev}'],start_new_session=True,"
+                     f"open('/tmp/rb_long.py','wb').write(gzip.decompress(base64.b64decode('{bench}')));"
+                     f"subprocess.Popen([sys.executable,'/tmp/rb_long.py','{ev}'],start_new_session=True,"
                      "stdout=subprocess.DEVNULL,stderr=open('/tmp/rb.err','w'));print('started')\"")
               shell = console(LLM_APP, cmd)
               print("stdout:", str(shell.get("stdout", ""))[-300:], "stderr:", str(shell.get("stderr", ""))[-600:])
               raise SystemExit(0)
           if os.environ["MODE"] == "llm-read":
-              shell = console(LLM_APP, "python -c \"import pathlib;p=pathlib.Path('/tmp/rival_reasoning_bench.json');e=pathlib.Path('/tmp/rb.err');print('BENCH='+(p.read_text() if p.exists() else '{}'));print('ERR='+(e.read_text()[-800:] if e.exists() else ''))\"")
+              shell = console(LLM_APP, "python -c \"import pathlib;p=pathlib.Path('/tmp/rival_reasoning_bench_long.json');e=pathlib.Path('/tmp/rb.err');print('BENCH='+(p.read_text() if p.exists() else '{}'));print('ERR='+(e.read_text()[-800:] if e.exists() else ''))\"")
               print(str(shell.get("stdout", ""))[-60000:]); print("stderr:", str(shell.get("stderr", ""))[-600:])
               raise SystemExit(0)
           if os.environ["MODE"] == "llm-logs":

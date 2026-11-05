@@ -142,9 +142,11 @@ jobs:
           exit_code=$?
           set -e
           if (( exit_code != 0 )); then
-            report="data/native-reports/source-${VENUE}-research.json"
+            # Reports are content-addressed: source-<venue>-research-<sha20>.json
+            # (research.production._report). The old exact-name check never
+            # matched, so the OKX fallback never ran after an incomplete venue.
             if [[ "${{ github.event_name }}" != "workflow_dispatch" && "$VENUE" != "okx" ]] &&
-                python -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); sys.exit(0 if p.is_file() and json.loads(p.read_text()).get("status") == "source_months_incomplete" else 1)' "$report"; then
+                python -c 'import json,sys; from pathlib import Path; sys.exit(0 if any(json.loads(p.read_text()).get("status") == "source_months_incomplete" for p in Path("data/native-reports").glob(f"source-{sys.argv[1]}-research*.json")) else 1)' "$VENUE"; then
               echo "Unverified complete months blocked $VENUE; trying independent OKX research once."
               proposal_file="data/native-reports/llm-proposals-okx.json"
               python tools/discloud_feature_hypotheses.py --venue okx \
@@ -164,7 +166,7 @@ jobs:
           import os
           from pathlib import Path
 
-          reports = sorted(Path("data/native-reports").glob("source-*-research.json"))
+          reports = sorted(Path("data/native-reports").glob("source-*-research*.json"))
           lines = ["### Source-native acceptance", ""]
           if not reports:
               lines.append("No source-native report was produced. Check workflow authorization and errors.")

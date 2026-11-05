@@ -85,7 +85,10 @@ jobs:
           import json
           import os
           from pathlib import Path
-          report = Path("data/native-reports/source-bitget-research.json")
+          # Reports are content-addressed (source-bitget-research-<sha20>.json).
+          found = sorted(Path("data/native-reports").glob("source-bitget-research*.json"),
+                         key=lambda p: p.stat().st_mtime_ns)
+          report = found[-1] if found else Path("data/native-reports/source-bitget-research.json")
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as sink:
               if not report.exists():
                   sink.write("No completed Bitget research report. Check job output.\n")

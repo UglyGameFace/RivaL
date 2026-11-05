@@ -303,42 +303,58 @@ class IntelligenceLedger:
                             for r in rows}}
 
     def report(self, *, asset: str, horizon: int, now: datetime | None = None) -> dict:
-        """Grade 'follow' vs 'abstain' on the live model's actual outcomes."""
+        """Grade 'follow' and 'abstain' the same way, on what was known then.
+
+        Each review is graded only against the forecasts that existed when it
+        was made (issued at or before the review) and only with results that
+        were settled by ``now``, so a later forecast or a later settlement can
+        never rewrite an old review's score. Both stances use one rule: the
+        model's lean at review time (the stored consensus) against the
+        majority outcome of those same exchanges. "Abstained" therefore shows
+        how often following the model anyway would have been right; exact
+        50/50 leans and tied outcomes are left out of both.
+        """
         self.initialize()
         stamp = utc(now or datetime.now(UTC))
         with self.store.connect() as conn:
             rows = conn.execute(
-                """SELECT c.stance, c.direction, c.target_opened_at,
-                          AVG(f.outcome_up) AS up_rate,
-                          AVG(CASE WHEN (f.probability_up>0.5 AND f.outcome_up=1)
-                                    OR (f.probability_up<0.5 AND f.outcome_up=0)
-                               THEN 1.0 ELSE 0.0 END) AS model_hit,
-                          COUNT(*) AS n
+                """SELECT c.stance, c.direction, c.target_opened_at, c.consensus_up,
+                          AVG(f.outcome_up) AS up_rate, COUNT(*) AS n
                    FROM rival_intelligence_calls c
                    JOIN perp_forward_audit f
                      ON f.asset=c.asset AND f.horizon_minutes=c.horizon_minutes
                     AND f.target_opened_at=c.target_opened_at AND f.model_version=?
-                    AND f.outcome_up IN (0,1) AND f.probability_up<>0.5
+                    AND f.outcome_up IN (0,1) AND f.issued_at<=c.issued_at
+                    AND f.settled_at IS NOT NULL AND f.settled_at<=?
                    WHERE c.asset=? AND c.horizon_minutes=? AND c.issued_at>=?
-                   GROUP BY c.stance, c.direction, c.target_opened_at""",
-                (LIVE_MODEL, asset, horizon, (stamp - timedelta(days=7)).isoformat()),
+                     AND c.issued_at<=?
+                   GROUP BY c.stance, c.direction, c.target_opened_at, c.consensus_up""",
+                (LIVE_MODEL, stamp.isoformat(), asset, horizon,
+                 (stamp - timedelta(days=7)).isoformat(), stamp.isoformat()),
             ).fetchall()
-        followed = [r for r in rows if r["stance"] == "follow" and r["direction"] != "none"]
-        abstained = [r for r in rows if r["stance"] == "abstain"]
 
-        def call_hit(r) -> float:
-            # Majority outcome across exchanges for that slot decides the call.
-            up = float(r["up_rate"]) > 0.5
-            return 1.0 if (r["direction"] == "up") == up else 0.0
+        def outcome(r) -> str | None:
+            up_rate = float(r["up_rate"])
+            return "up" if up_rate > 0.5 else "down" if up_rate < 0.5 else None
 
+        def lean(r) -> str | None:
+            if r["stance"] == "follow":
+                return str(r["direction"]) if r["direction"] in ("up", "down") else None
+            p = float(r["consensus_up"])
+            return "up" if p > 0.5 else "down" if p < 0.5 else None
+
+        graded = [(r, lean(r), outcome(r)) for r in rows]
+        graded = [(r, call, result) for r, call, result in graded
+                  if call is not None and result is not None]
+        followed = [call == result for r, call, result in graded if r["stance"] == "follow"]
+        abstained = [call == result for r, call, result in graded if r["stance"] == "abstain"]
+        every = [call == result for _, call, result in graded]
         return {
             "followed": len(followed),
-            "followed_hit_rate": (sum(call_hit(r) for r in followed) / len(followed)
-                                  if followed else None),
+            "followed_hit_rate": sum(followed) / len(followed) if followed else None,
             "abstained": len(abstained),
-            "model_hit_when_abstained": (sum(float(r["model_hit"]) for r in abstained)
-                                         / len(abstained) if abstained else None),
-            "model_hit_overall": (sum(float(r["model_hit"]) for r in rows) / len(rows)
-                                  if rows else None),
-            "slots_graded": len(rows),
+            "model_hit_when_abstained": (sum(abstained) / len(abstained)
+                                         if abstained else None),
+            "model_hit_overall": sum(every) / len(every) if every else None,
+            "slots_graded": len(every),
         }

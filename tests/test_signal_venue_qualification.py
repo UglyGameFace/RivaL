@@ -117,7 +117,7 @@ async def test_global_beats_but_venue_trails_is_pass(tmp_path):
             horizon_minutes=5, now=now,
         )
         assert "doing worse than a simple guess" in signal.title
-        assert "WATCH" not in signal.title
+        assert "watch only" not in signal.title
         track = next(
             x.value for x in signal.fields
             if x.name.startswith("Track record")
@@ -139,9 +139,9 @@ async def test_unverified_when_no_venue_record(tmp_path):
             market, mock_books(now, okx=False), asset="BTC",
             horizon_minutes=5, now=now,
         )
-        assert "UNVERIFIED" in signal.title
-        assert "WATCH" not in signal.title
-        assert "track record could not be verified" in signal.description
+        assert "track record can't be checked" in signal.title
+        assert "watch only" not in signal.title
+        assert "to check its record" in signal.description
     finally:
         store.close()
 

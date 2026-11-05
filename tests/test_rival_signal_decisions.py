@@ -128,12 +128,12 @@ async def test_strong_forward_watch_uses_matching_hyperliquid_quote(tmp_path):
         seed_settled(market, now, venue="hyperliquid")
         signal = await signal_embed(market, quotes, asset="BTC", horizon_minutes=5, now=now)
         assert "Leans UP: watch only" in signal.title
-        assert "RESEARCH ONLY" in signal.title
+        assert "not advice to trade" in signal.description
         assert "Hyperliquid" in next(
-            x.value for x in signal.fields if x.name.startswith("Fresh matching")
+            x.value for x in signal.fields if x.name.startswith("Live price right now")
         )
         assert "$81,000.00" in str(signal.to_dict())
-        assert "not a validated" in signal.description
+        assert "doesn't prove it makes money" in signal.description
         quotes.get.assert_not_awaited()
     finally:
         store.close()
@@ -273,7 +273,7 @@ async def test_signal_venues_are_raced_not_tried_one_after_another(tmp_path, cap
             "hyperliquid", "binance"}
         assert "Leans UP: watch only" in signal.title
         assert "Hyperliquid" in next(
-            x.value for x in signal.fields if x.name.startswith("Fresh matching")
+            x.value for x in signal.fields if x.name.startswith("Live price right now")
         )
         assert "RivaL signal asset=BTC horizon=5" in caplog.text
         assert "book_venue=hyperliquid" in caplog.text
@@ -301,7 +301,7 @@ async def test_single_day_brier_win_is_not_enough_for_watch(tmp_path):
             market, mock_quotes(now), asset="BTC", horizon_minutes=5, now=now,
         )
         assert "not enough proof yet" in signal.title
-        assert "WATCH" not in signal.title
+        assert "watch only" not in signal.title
     finally:
         store.close()
 
@@ -325,7 +325,7 @@ async def test_marginal_brier_win_cannot_qualify_a_watch(tmp_path):
             market, mock_quotes(now), asset="BTC", horizon_minutes=5, now=now,
         )
         assert "not enough proof yet" in signal.title
-        assert "WATCH" not in signal.title
+        assert "watch only" not in signal.title
     finally:
         store.close()
 
@@ -347,7 +347,7 @@ async def test_other_model_history_never_qualifies_a_new_model(tmp_path):
         signal = await signal_embed(
             market, mock_quotes(now), asset="BTC", horizon_minutes=5, now=now,
         )
-        assert "UNVERIFIED" in signal.title
-        assert "WATCH" not in signal.title
+        assert "track record can't be checked" in signal.title
+        assert "watch only" not in signal.title
     finally:
         store.close()

@@ -139,8 +139,8 @@ async def test_promoted_but_unproven_challenger_is_unverified(tmp_path):
             horizon_minutes=5,
             now=now,
         )
-        assert "UNVERIFIED" in signal.title
-        assert "WATCH" not in signal.title
+        assert "track record can't be checked" in signal.title
+        assert "watch only" not in signal.title
     finally:
         store.close()
 
@@ -159,6 +159,6 @@ async def test_promoted_fused_single_day_win_stays_research(tmp_path):
             market, mock_books(now), asset="BTC", horizon_minutes=5, now=now,
         )
         assert "not enough proof yet" in signal.title
-        assert "WATCH" not in signal.title
+        assert "watch only" not in signal.title
     finally:
         store.close()

@@ -289,3 +289,26 @@ def test_schema_setup_runs_once_per_store(learning_store):
     finally:
         hot.connect = real
     assert calls == []
+
+
+def test_batched_settlement_writes_the_same_scores_as_per_row(learning_store):
+    """Set-based updates: each row's Brier scores come from its own probabilities."""
+    hot = learning_store
+    ForwardAccuracyMonitor(PerpetualMarketStore(hot)).initialize()
+    now = datetime(2026, 11, 4, 20, tzinfo=UTC)
+    _seed_settled(hot, start=now - timedelta(hours=3), count=3,
+                  families=("knn21_v1", "flow_v1"), outcome=0)
+    with hot.connect() as conn:  # give each shadow row its own probability
+        conn.execute("UPDATE rival_model_shadow_forecasts SET probability_up=.31 "
+                     "WHERE family='flow_v1'")
+    assert ShadowModelCompetition(hot).settle(now=now) == 6
+    with hot.connect() as conn:
+        rows = conn.execute(
+            "SELECT family,outcome_up,model_brier,incumbent_brier,baseline_brier,settled_at "
+            "FROM rival_model_shadow_forecasts").fetchall()
+    for row in rows:
+        p = .31 if row["family"] == "flow_v1" else .55
+        assert row["outcome_up"] == 0 and row["settled_at"] is not None
+        assert row["model_brier"] == pytest.approx(p ** 2, abs=1e-12)
+        assert row["incumbent_brier"] == pytest.approx(.36, abs=1e-12)
+        assert row["baseline_brier"] == pytest.approx(.25, abs=1e-12)

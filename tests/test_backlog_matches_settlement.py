@@ -130,3 +130,34 @@ def test_a_retired_challenger_keeps_its_record_but_raises_no_incident(tmp_path):
         assert not any(key.startswith("regression:") for key in faults)
     finally:
         store.close()
+
+
+def test_an_outcome_that_just_arrived_is_not_a_backlog_until_two_cycles_pass(tmp_path):
+    from parlay_bot.perpetuals.runtime_health import BACKLOG_GRACE
+
+    store = SQLiteHotStore(tmp_path / "grace.sqlite")
+    try:
+        store.initialize()
+        market = PerpetualMarketStore(store)
+        market.initialize()
+        ForwardAccuracyMonitor(market).initialize()
+        with store.connect() as conn:
+            conn.execute("""CREATE TABLE IF NOT EXISTS perp_learning_cycle_health (
+                slot_utc TEXT PRIMARY KEY, started_at TEXT NOT NULL,
+                completed_at TEXT NOT NULL, math_issued INTEGER NOT NULL,
+                math_settled INTEGER NOT NULL, ai_issued INTEGER NOT NULL,
+                math_ok INTEGER NOT NULL, ai_settlement_ok INTEGER NOT NULL,
+                model_review_ok INTEGER NOT NULL, gemini_ok INTEGER NOT NULL)""")
+            target = NOW - timedelta(minutes=40)
+            _forecast(conn, "okx", target - timedelta(minutes=1), target)
+            # The outcome candle reached RivaL late: 2 minutes ago.
+            conn.execute("UPDATE perp_market_candles SET first_observed_at=?",
+                         ((NOW - timedelta(minutes=2)).isoformat(),))
+        monitor = RuntimeHealthMonitor(store)
+        monitor.started_at = NOW - timedelta(hours=1)
+        assert "settlement_backlog" not in monitor.inspect(now=NOW, learning_enabled=True)
+        later = NOW + BACKLOG_GRACE
+        assert monitor.inspect(now=later, learning_enabled=True).get(
+            "settlement_backlog") == "1 recoverable prospective outcomes"
+    finally:
+        store.close()

@@ -381,11 +381,14 @@ async def test_menus_reach_what_the_removed_commands_did(tmp_path):
     home.stream_shadow = shadow
     try:
         i = _interaction()
-        await home.act(i, "help")
+        home.navigate("help")
+        home._buttons()
         assert "Advanced Tools" in _labels(home)
-        await home.act(i, "advanced")
+        home.navigate("advanced")
+        home._buttons()
         assert "Manual Price Target" in _labels(home)
-        await home.act(i, "performance")
+        home.navigate("performance")
+        home._buttons()
         assert "After-Cost Check" in _labels(home)
         await home.act(i, "proof")
         assert shadow.report.call_count == 1

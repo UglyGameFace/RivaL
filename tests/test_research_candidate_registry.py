@@ -157,3 +157,18 @@ def test_offline_screen_distinguishes_missing_months_and_holdout():
     assert verified_candidate(json.dumps(doc).encode())["admission_reason"] == (
         "holdout_brier_gain_below_0.005"
     )
+
+
+def test_fully_imported_ids_leave_out_files_with_a_missing_legacy_reason(tmp_path):
+    hot = SQLiteHotStore(tmp_path / "known.sqlite")
+    hot.initialize()
+    registry = ResearchCandidateRegistry(hot)
+    registry.initialize()
+    assert registry.fully_imported_file_ids() == frozenset()
+    registry.import_verified("driveDone_1", artifact())
+    registry.import_verified("driveLegacy_1", artifact(score=.58))
+    with hot.connect() as conn:  # a legacy row imported before reasons existed
+        conn.execute("UPDATE rival_offline_candidates SET admission_reason=NULL "
+                     "WHERE drive_file_id='driveLegacy_1'")
+    # The legacy file is still replayed so its reason gets filled.
+    assert registry.fully_imported_file_ids() == frozenset({"driveDone_1"})

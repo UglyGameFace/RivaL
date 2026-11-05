@@ -366,3 +366,19 @@ def test_unchanged_registry_reload_skips_documents_but_sees_new_and_maturing_mod
         assert models.active(5, now=later)["trained_through"] == "2026-11-02T23:59:00+00:00"
     finally:
         store.close()
+
+
+def test_imported_file_ids_lists_drive_files_already_in_the_registry(tmp_path):
+    import json as _json
+
+    from parlay_bot.perpetuals.pooled_model import PooledModelSet
+    from parlay_bot.storage.hot import SQLiteHotStore
+
+    store = SQLiteHotStore(tmp_path / "ids.sqlite")
+    try:
+        models = PooledModelSet(store)
+        assert models.imported_file_ids() == frozenset()
+        models.import_document("driveA", _json.dumps(_doc()).encode())
+        assert models.imported_file_ids() == frozenset({"driveA"})
+    finally:
+        store.close()

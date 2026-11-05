@@ -157,6 +157,12 @@ class PooledModelSet:
         return b'"rival-pooled-model-v1"' in payload[:4096] or \
             b'"schema":"rival-pooled-model-v1"' in payload
 
+    def imported_file_ids(self) -> frozenset[str]:
+        self.initialize()
+        with self.store.connect() as conn:
+            rows = conn.execute("SELECT drive_file_id FROM rival_pooled_models").fetchall()
+        return frozenset(str(r["drive_file_id"]) for r in rows)
+
     def import_document(self, file_id: str, payload: bytes) -> int:
         doc = validate(json.loads(payload))
         self.initialize()

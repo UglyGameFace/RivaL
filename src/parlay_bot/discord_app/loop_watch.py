@@ -28,18 +28,49 @@ STALL_AFTER = 1.0
 FRAMES = 4
 
 
-def _location(thread_id: int) -> str:
-    frame = sys._current_frames().get(thread_id)
+def _short(f) -> str:
+    name = f.filename
+    for marker in ("parlay_bot/", "site-packages/", "lib/python3"):
+        if marker in name:
+            name = name.rsplit(marker, 1)[-1]
+            break
+    return f"{name}:{f.lineno} {f.name}"
+
+
+def _location(thread_id: int, frames=None) -> str:
+    """Innermost frame (any library) plus the innermost RivaL frames."""
+    frame = (frames or sys._current_frames()).get(thread_id)
     if frame is None:
         return "unknown"
     stack = traceback.extract_stack(frame)
     ours = [f for f in stack if "parlay_bot" in f.filename
             and not f.filename.endswith("loop_watch.py")]
-    picked = (ours or stack)[-FRAMES:]
-    return " <- ".join(
-        f"{f.filename.rsplit('parlay_bot/', 1)[-1]}:{f.lineno} {f.name}"
-        for f in reversed(picked)
-    )
+    picked = ours[-FRAMES:]
+    parts = [_short(f) for f in reversed(picked)]
+    if stack and (not picked or stack[-1] is not picked[-1]):
+        parts.insert(0, "in " + _short(stack[-1]))
+    return " <- ".join(parts) or "unknown"
+
+
+_IDLE = ("wait", "_wait_for_tstate_lock", "get", "select", "poll", "_worker", "sleep",
+         "accept", "recv_into", "read")
+
+
+def _busy_threads(loop_thread: int, frames) -> str:
+    """Other threads running RivaL Python right now: a CPU-bound thread holding
+    the GIL also starves the loop, and then the loop's own frame is incidental."""
+    names = {t.ident: t.name for t in threading.enumerate()}
+    busy = []
+    for ident, frame in frames.items():
+        if ident in (loop_thread, threading.get_ident()):
+            continue
+        stack = traceback.extract_stack(frame)
+        if not stack or stack[-1].name in _IDLE:
+            continue
+        ours = [f for f in stack if "parlay_bot" in f.filename]
+        if ours:
+            busy.append(f"{names.get(ident, ident)}: {_short(ours[-1])}")
+    return "; ".join(busy[:3]) or "none"
 
 
 class LoopStallWatch:
@@ -78,6 +109,9 @@ class LoopStallWatch:
             if reported_for == beat or self._loop_thread is None:
                 continue
             reported_for = beat
-            where = _location(self._loop_thread)
+            frames = sys._current_frames()
+            where = _location(self._loop_thread, frames)
+            busy = _busy_threads(self._loop_thread, frames)
             self.stalls = (self.stalls + [(round(late, 1), where)])[-20:]
-            _LOG.warning("RivaL event loop blocked >%.1fs at %s", self.stall_after, where)
+            _LOG.warning("RivaL event loop blocked >%.1fs at %s | busy threads: %s",
+                         self.stall_after, where, busy)

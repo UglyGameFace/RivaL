@@ -21,7 +21,7 @@ from parlay_bot.discord_app.cdna_ui import (
 )
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
-from parlay_bot.discord_app.polymarket_live_board import matching_call
+from parlay_bot.discord_app.polymarket_live_board import changes_text, matching_call
 from parlay_bot.discord_app.polymarket_watch import unavailable_text
 from parlay_bot.discord_app.presentation import (
     parlay_embed,
@@ -1101,9 +1101,18 @@ class GuidedHome(discord.ui.View):
                             value=(
                                 f"{call.thesis[:450]}\n"
                                 f"Issued {discord.utils.format_dt(call.issued_at, style='R')} "
-                                "for this exact contract."
+                                "for this exact contract. It is re-made from live prices "
+                                "while the contract runs, so it can change; Track in DMs "
+                                "sends a new alert when it does."
                             ), inline=False,
                         )
+                        changes = (service.call_changes(board)
+                                   if callable(getattr(service, "call_changes", None)) else [])
+                        if changes:
+                            embed.add_field(
+                                name=f"⚠️ Call changed {len(changes)}× during this contract",
+                                value=changes_text(changes), inline=False,
+                            )
                     else:
                         research = getattr(service, "research", None)
                         reason = (

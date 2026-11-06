@@ -154,9 +154,19 @@ def matching_call(board, call, *, asset: str, horizon: int) -> bool:
     )
 
 
+MAX_CHANGE_ALERTS = 3  # per tracker per contract; after that the card says it keeps changing
+
+
+def changes_text(changes) -> str:
+    """'DOWN → UP 2 minutes ago' lines, newest first (Discord-relative times)."""
+    return "\n".join(
+        f"**{old} → {new}** <t:{int(at.timestamp())}:R>" for at, old, new in reversed(changes[-3:])
+    )
+
+
 def live_polymarket_embed(
     board: PolymarketWindowBoard | None, snapshot: ContractCall | None, *,
-    asset: str, horizon: int, ai_status: str | None = None,
+    asset: str, horizon: int, ai_status: str | None = None, changes=(),
 ) -> discord.Embed:
     current = board.current if board is not None else None
     valid = matching_call(board, snapshot, asset=asset, horizon=horizon)
@@ -208,6 +218,13 @@ def live_polymarket_embed(
                 "Open the listed contract to check its rules."
             )
         embed.add_field(name="Settlement source", value=resolution_text, inline=False)
+    if valid and changes:
+        embed.add_field(
+            name=f"⚠️ Call changed {len(changes)}× during this contract",
+            value=changes_text(changes) + "\nThe call is re-made from live prices, so "
+            "it can flip; it is not a trading signal.",
+            inline=False,
+        )
     if valid:
         embed.add_field(name=f"🧠 {snapshot.kind} contract call", value=f"**{direction}** • {snapshot.thesis}", inline=False)
         embed.add_field(name="Call timing", value=(
@@ -247,6 +264,9 @@ class LivePolymarketBoardService:
             tuple[str, int], tuple[datetime, PolymarketWindowBoard, ContractCall | None]
         ] = {}
         self._prime_pending: dict[tuple[str, int], asyncio.Task] = {}
+        # (user_id, slug) -> how many call changes that user was already
+        # alerted about (or had already happened when they first saw it).
+        self._alerted: dict[tuple[str, str], int] = {}
 
     def peek(self, asset: str, horizon: int) -> tuple[PolymarketWindowBoard, ContractCall | None] | None:
         saved = self._live_cache.get((asset, horizon))
@@ -378,6 +398,7 @@ class LivePolymarketBoardService:
             self._live_cache[(asset, horizon)] = (datetime.now(UTC), board, snapshot)
         embed = live_polymarket_embed(
             board, snapshot, asset=asset, horizon=horizon,
+            changes=self.call_changes(board),
             ai_status=(self.research.refresh_note(board.current.slug) if snapshot is not None
                        else self.research.status(board.current.slug)
                        if self.research is not None and board is not None and board.current is not None else None),
@@ -387,6 +408,53 @@ class LivePolymarketBoardService:
             str(embed.to_dict()).encode("utf-8"),
         ).hexdigest()
         return embed, digest
+
+    def call_changes(self, board) -> list:
+        if self.research is None or board is None or board.current is None:
+            return []
+        return self.research.changes(board.current.slug)
+
+    async def _alert_change(self, tracker, board, snapshot, changes) -> None:
+        """A NEW DM (edits don't notify) when the call flips mid-contract."""
+        if (board is None or board.current is None
+                or not matching_call(board, snapshot, asset=tracker.asset,
+                                     horizon=tracker.horizon)):
+            return
+        key = (tracker.user_id, board.current.slug)
+        if key not in self._alerted:
+            # First look at this contract: earlier flips are on the card;
+            # only alert for flips from now on.
+            self._alerted[key] = len(changes)
+            return
+        if len(changes) <= self._alerted[key] or self._alerted[key] >= MAX_CHANGE_ALERTS:
+            return
+        self._alerted[key] = len(changes)
+        _, old, new = changes[-1]
+        quote = board.current_quote
+        detail = (
+            f"[Open contract]({board.current.url}) • closes "
+            f"<t:{int(board.current.closes.timestamp())}:R>"
+            + (f"\nUP ask ${quote.up_ask:.2f} • DOWN ask ${quote.down_ask:.2f}"
+               if quote is not None else "")
+            + "\nRivaL re-makes this call from live prices during the contract, "
+              "so it can flip. Its measured record counts only its first call per "
+              "contract, and that record is not better than Polymarket's own odds. "
+              "Not a trading signal."
+        )
+        if self._alerted[key] >= MAX_CHANGE_ALERTS:
+            detail += "\nThis call keeps changing; no more alerts for this contract."
+        try:
+            channel = self.bot.get_partial_messageable(int(tracker.channel_id))
+            await asyncio.wait_for(channel.send(
+                content=(f"⚠️ **RivaL changed its {tracker.asset} {tracker.horizon}m "
+                         f"Polymarket call: {old} → {new}**"),
+                embed=discord.Embed(description=detail, color=discord.Color.red()),
+            ), timeout=5)
+        except (discord.HTTPException, TimeoutError) as exc:
+            _LOG.warning("Polymarket call-change alert failed user=%s reason=%s",
+                         tracker.user_id, type(exc).__name__)
+        if len(self._alerted) > 2000:
+            self._alerted = dict(list(self._alerted.items())[-1000:])
 
     async def start(self, user: discord.abc.User, *,
                     asset: str, horizon: int) -> tuple[bool, str]:
@@ -508,6 +576,16 @@ class LivePolymarketBoardService:
                 try:
                     async with observation_budget:
                         embed, fingerprint = await self._observation(*key)
+                    cached = self._live_cache.get(key)
+                    if cached is not None:
+                        _, board, snapshot = cached
+                        # Every cycle, so the baseline is set before the first
+                        # flip and that first flip alerts too.
+                        changes = self.call_changes(board)
+                        await asyncio.gather(*(
+                            self._alert_change(tracker, board, snapshot, changes)
+                            for tracker in members
+                        ))
                     # Release the quote-read budget before Discord edits.
                     # One slow DM must not block another verified book.
                     return sum(await asyncio.gather(*(

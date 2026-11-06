@@ -1,49 +1,45 @@
-"""Read-only: tracked boards, logged Polymarket problems, and 6 min of board samples across a rollover."""
-import asyncio, base64, gzip, json, time
-from datetime import UTC, datetime
+"""Read-only: how good are the frozen first calls, vs the market price, after fees?"""
+import base64, gzip, json, os
 MARKER = "RIVAL_RENDER_PROBE="
-out = {}
-async def sample(store):
-    from parlay_bot.discord_app.polymarket_watch import PolymarketReader
-    reader = PolymarketReader(); rows = []
-    keys = sorted({(a, h) for a, h in out.get("trackers_keys", [])} | {("BTC", 5)})
-    end = time.monotonic() + 75
-    try:
-        while time.monotonic() < end:
-            for a, h in keys:
-                t = time.monotonic()
-                try:
-                    b = await asyncio.wait_for(reader.window_board(a, h), 12)
-                    q = b.current_quote; slug = b.current.slug if b.current else None
-                    with store.connect() as c:
-                        f = c.execute("SELECT issued_at, probability_up FROM rival_polymarket_model_forward WHERE slug=? AND model_version='polymarket-terminal-book-logistic-v1'", (slug,)).fetchone() if slug else None
-                    rows.append([datetime.now(UTC).strftime("%H:%M:%S"), a, h, round(time.monotonic()-t,1), slug[-10:] if slug else None,
-                                 q is not None, b.quote_unavailable_reason, round(q.up_ask,2) if q else None,
-                                 str(f["issued_at"])[11:19] if f else None, round(float(f["probability_up"]),3) if f else None])
-                except Exception as exc:  # noqa: BLE001
-                    rows.append([datetime.now(UTC).strftime("%H:%M:%S"), a, h, "ERR", type(exc).__name__])
-            await asyncio.sleep(4)
-    finally:
-        await reader.aclose()
-    return rows
-import os
-if os.environ.get("RIVAL_PROBE_ASSETS","BTC")!="BTC":
+if os.environ.get("RIVAL_PROBE_ASSETS", "BTC") != "BTC":
     print(MARKER + base64.b64encode(gzip.compress(b"{}")).decode()); raise SystemExit(0)
+out = {}
 try:
     from parlay_bot.config import Settings
     from parlay_bot.storage.hot import PostgresHotStore
+    from parlay_bot.perpetuals.polymarket_learning import polymarket_fee
     store = PostgresHotStore(Settings().rival_database_url.get_secret_value())
     with store.connect() as conn:
-        tr = conn.execute("SELECT asset, horizon, enabled, updated_at FROM rival_polymarket_live_board ORDER BY updated_at DESC").fetchall()
-        out["trackers"] = [[r["asset"], int(r["horizon"]), int(r["enabled"]), str(r["updated_at"])[:19]] for r in tr]
-        out["trackers_keys"] = [[r["asset"], int(r["horizon"])] for r in tr if int(r["enabled"]) == 1]
-        cols = [r["column_name"] for r in conn.execute("SELECT column_name FROM information_schema.columns WHERE table_name='rival_problem_log'").fetchall()]
-        out["problem_cols"] = cols
-        probs = conn.execute("""SELECT * FROM rival_problem_log WHERE hour>='2026-11-05T12' AND
-              (template ILIKE '%polymarket%' OR template ILIKE '%board%') ORDER BY hour DESC LIMIT 40""").fetchall()
-        out["problems"] = [{k: str(r[k])[:160] for k in cols} for r in probs]
-    out["samples"] = asyncio.run(sample(store))
+        rows = conn.execute("""
+          SELECT f.model_version AS mv, v.asset, v.horizon, f.probability_up AS p, f.market_baseline AS m,
+                 o.direction AS y, v.features_json AS fj, f.issued_at, v.expires_at
+          FROM rival_polymarket_model_forward f
+          JOIN rival_polymarket_observations v ON v.slug=f.slug
+          JOIN rival_polymarket_ai_outcomes o ON o.slug=f.slug AND o.condition_id=v.condition_id
+          WHERE f.issued_at>='2026-11-04T03:15' AND o.direction IN ('UP','DOWN')""").fetchall()
     store.close()
+    agg = {}
+    for r in rows:
+        mv = "book" if not str(r["mv"]).startswith("pooled") else "pooled"
+        k = f'{mv}|{r["horizon"]}'
+        a = agg.setdefault(k, {"n":0,"bm":0.,"bk":0.,"dir_n":0,"dir_ok":0,"bets":0,"wins":0,"stake":0.,"pnl":0.,"follow_n":0,"follow_ok":0})
+        p, m, y = float(r["p"]), float(r["m"]), int(r["y"] == "UP")
+        f = json.loads(r["fj"]); up, down = float(f[0]), float(f[1])
+        a["n"] += 1; a["bm"] += (p-y)**2; a["bk"] += (m-y)**2
+        if abs(p-.5) >= .05:
+            a["dir_n"] += 1; a["dir_ok"] += int((p > .5) == (y == 1))
+        if abs(m-.5) >= .05:
+            a["follow_n"] += 1; a["follow_ok"] += int((m > .5) == (y == 1))
+        for sp, ask, win in ((p, up, y == 1), (1-p, down, y == 0)):
+            cost = ask + polymarket_fee(ask)
+            if 0 < ask < 1 and sp - cost >= .02:
+                a["bets"] += 1; a["wins"] += int(win); a["stake"] += cost; a["pnl"] += (1. if win else 0.) - cost
+    for k, a in agg.items():
+        n = a["n"]
+        out[k] = {"n": n, "model_brier": round(a["bm"]/n, 4), "market_brier": round(a["bk"]/n, 4),
+                  "directional": [a["dir_n"], round(a["dir_ok"]/a["dir_n"], 3) if a["dir_n"] else None],
+                  "market_lean": [a["follow_n"], round(a["follow_ok"]/a["follow_n"], 3) if a["follow_n"] else None],
+                  "edge_bets_2c": [a["bets"], a["wins"], round(a["pnl"]/a["stake"], 3) if a["stake"] else None]}
 except Exception as exc:  # noqa: BLE001
     out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
 print(MARKER + base64.b64encode(gzip.compress(json.dumps(out, default=str).encode())).decode())

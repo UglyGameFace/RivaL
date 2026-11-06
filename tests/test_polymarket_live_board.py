@@ -561,6 +561,7 @@ async def test_one_ping_per_contract_only_for_fresh_up_down_calls(tmp_path, monk
         assert "call issued: DOWN" in text and "41.7% UP" in text
         assert "did not beat the market's own price" in text and "Not a proven edge" in text
         assert "will not flip" in text
+        assert "Price check: DOWN costs" in text  # 58% DOWN vs 55¢ + fee
 
         # WAIT, an old call (e.g. after a restart) and the final minute never ping.
         for current_call in (

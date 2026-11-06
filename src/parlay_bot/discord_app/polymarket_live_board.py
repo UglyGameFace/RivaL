@@ -439,10 +439,6 @@ class LivePolymarketBoardService:
             # Under a minute left: too late to act on, so no ping (the card
             # still shows the change).
             return
-        if board.current.closes - datetime.now(UTC) < HEADS_UP_MIN_LEFT:
-            # Under a minute left there is no time to act safely; a ping would
-            # only invite a rushed trade. The card still shows the change.
-            return
         _, old, new = changes[-1]
         quote = board.current_quote
         detail = (

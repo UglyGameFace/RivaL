@@ -16,8 +16,8 @@ from parlay_bot.perpetuals.model_checkpoints import canonical
 
 MODEL = "polymarket-terminal-book-logistic-v1"
 MIN_LABELS = 100
-# Provisional near-even research filter, not a calibrated profit or confidence gate.
-MIN_DIRECTIONAL_MARGIN = 0.05
+# An exact 50/50 result is neutral. Do not invent an unvalidated 5-point
+# band around it: that suppressed most modest model leans indefinitely.
 
 
 def book_features(notice):
@@ -246,12 +246,28 @@ class PolymarketOutcomeLearner:
             if not (math.isfinite(p) and 0 <= p <= 1
                     and notice.issued <= issued < notice.expires):
                 return None
-        direction = ("WAIT" if abs(p - .5) < MIN_DIRECTIONAL_MARGIN
-                     else "UP" if p > .5 else "DOWN")
+        # Preserve the first prospective probability and directional lean.
+        # A barely-above-50% research lean is not a verified trading edge.
+        direction = "UP" if p > .5 else "DOWN" if p < .5 else "WAIT"
         return {"direction": direction,
                 "probability_up": p, "issued_at": issued, "model": MODEL,
                 "evidence_sha256": evidence, "training_labels": updates,
                 "weights_sha256": weight_sha}
+
+    def scoped_training_count(self, notice) -> int:
+        """Labels for this exact asset, horizon and published settlement source.
+
+        Aggregate training counts elsewhere in the UI must not be mistaken for
+        eligibility of a source-specific Polymarket contract model.
+        """
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT updates FROM rival_polymarket_model_state "
+                "WHERE asset=? AND horizon=? AND resolution_source=? AND model_version=?",
+                (notice.asset, notice.horizon, notice.resolution_source, MODEL),
+            ).fetchone()
+        return int(row["updates"]) if row is not None else 0
 
     def pooled_summary(self, *, asset, horizon, days=7, edge=0.05):
         """The pooled model vs the market's own price, on resolved contracts.

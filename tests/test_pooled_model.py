@@ -102,6 +102,85 @@ def test_exported_lightgbm_matches_native_predictions():
     assert max(abs(a - b) for a, b in zip(native, mine, strict=True)) < 1e-6
 
 
+def _train_frames(n=6000, seed=7, start=datetime(2025, 1, 1, tzinfo=UTC)):
+    """Synthetic (candles, features) frames for train_horizon: a random-walk
+    close series with random features, so the model has no signal and its
+    Brier gain sits near zero."""
+    from parlay_bot.perpetuals.pooled_features import FEATURES
+
+    rng = np.random.default_rng(seed)
+    index = pd.date_range(start, periods=n, freq="5min", tz=UTC)
+    closes = 100 * np.exp(np.cumsum(rng.normal(0, 0.001, n)))
+    k = pd.DataFrame({"open": closes, "high": closes * 1.001, "low": closes * 0.999,
+                      "close": closes, "volume": rng.uniform(5, 50, n)}, index=index)
+    f = pd.DataFrame(rng.normal(size=(n, len(FEATURES))).astype("float32"),
+                     index=index, columns=list(FEATURES))
+    return {"BTC": (k, f)}
+
+
+def _train_kwargs(frames):
+    start = frames["BTC"][0].index[0]
+    return {"train_end": start + pd.Timedelta(days=7),
+            "test_start": start + pd.Timedelta(days=14),
+            "trained_through": frames["BTC"][0].index[-1]}
+
+
+def test_pooled_gates_reject_a_tiny_brier_gain(monkeypatch):
+    """Round-5 P1-7: a +0.0001 Brier gain used to pass the 0.0 gates. The bar
+    is now 0.005, matching the historical-candidate bar."""
+    pytest.importorskip("lightgbm")
+    from parlay_bot.research import pooled_training
+
+    assert pooled_training.GATES["min_validation_gain"] == 0.005
+    assert pooled_training.GATES["min_test_gain"] == 0.005
+    frames = _train_frames()
+
+    def tiny_gain(*args, **kwargs):
+        return {"brier_gain": 0.0001, "daily_positive_fraction": 1.0, "ece": 0.0}
+
+    monkeypatch.setattr(pooled_training, "metrics", tiny_gain)
+    doc = pooled_training.train_horizon(frames, 5, **_train_kwargs(frames))
+    assert doc["gates_passed"] is False
+
+    def real_gain(*args, **kwargs):
+        return {"brier_gain": 0.006, "daily_positive_fraction": 0.9, "ece": 0.01}
+
+    monkeypatch.setattr(pooled_training, "metrics", real_gain)
+    doc = pooled_training.train_horizon(frames, 5, **_train_kwargs(frames))
+    assert doc["gates_passed"] is True
+
+
+def test_published_artifact_is_the_evaluated_fit():
+    """Round-5 P1-7: the published artifact used to be a refit on everything
+    including the test slice, while its evaluation block described the
+    pre-refit fit. The shipped weights are now the evaluated fit, labelled
+    as such, and training_rows counts only the rows those weights saw."""
+    pytest.importorskip("lightgbm")
+    from parlay_bot.research import pooled_training
+
+    frames = _train_frames()
+    doc = pooled_training.train_horizon(frames, 5, **_train_kwargs(frames))
+    assert doc["evaluation_status"] == "held-out evaluated"
+    assert doc["evaluation"]["validation"]["rows"] > 0
+    assert doc["evaluation"]["test"]["rows"] > 0
+    # The shipped weights saw only the train slice: validation and test
+    # rows were never refit into the artifact.
+    assert doc["training_rows"] == doc["evaluation"]["train_rows"]
+    assert doc["training_rows"] < len(frames["BTC"][0])
+
+
+def test_usable_rejects_backtest_only_label():
+    """A document labelled 'backtest-only, shipped model unevaluated' must
+    never serve: nothing has measured the shipped weights."""
+    from parlay_bot.perpetuals.pooled_model import usable
+
+    assert usable({**_doc(), "evaluation_status": "held-out evaluated"}) is True
+    assert usable({**_doc(),
+                   "evaluation_status": "backtest-only, shipped model unevaluated"}) is False
+    # Artifacts predating the label keep the old behaviour.
+    assert usable(_doc()) is True
+
+
 def _doc(horizon=5, passed=True, through="2026-10-31T23:55:00+00:00"):
     from parlay_bot.perpetuals.pooled_features import FEATURE_VERSION
     return {"schema": "rival-pooled-model-v1", "feature_version": FEATURE_VERSION,

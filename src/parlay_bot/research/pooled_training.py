@@ -7,7 +7,8 @@ re-implemented here with pandas; tests force both to agree.
 Evaluation is strictly chronological (train < validation year < test). The
 model is published only if it beats the basic up-rate forecast on validation
 AND test, on most test days, with calibrated probabilities. The published
-model is then refit on all data with the same fixed settings; its live
+model is the evaluated fit itself — it is never refit on the test slice, so
+the published evaluation block describes the shipped weights; its live
 forward record is the final judge.
 """
 from __future__ import annotations
@@ -29,7 +30,7 @@ PARAMS = {"n_estimators": 400, "learning_rate": 0.02, "num_leaves": 31, "max_dep
           "min_child_samples": 500, "subsample": 0.8, "subsample_freq": 1,
           "colsample_bytree": 0.8, "reg_lambda": 10.0, "n_jobs": 4,
           "random_state": 7, "verbosity": -1}
-GATES = {"min_validation_gain": 0.0, "min_test_gain": 0.0,
+GATES = {"min_validation_gain": 0.005, "min_test_gain": 0.005,
          "min_test_daily_positive": 0.55, "max_test_ece": 0.03}
 
 
@@ -230,21 +231,26 @@ def train_horizon(frames: dict, horizon: int, *, train_end, test_start, trained_
               and t["brier_gain"] > GATES["min_test_gain"]
               and t["daily_positive_fraction"] >= GATES["min_test_daily_positive"]
               and t["ece"] <= GATES["max_test_ece"])
-    # Refit on everything with the SAME fixed settings for the live model.
-    final = lgb.LGBMClassifier(**PARAMS).fit(data[cols], data["y"])
+    # Publish the EVALUATED fit, not a refit: the shipped weights are the
+    # ones scored on the test slice, so the published evaluation block
+    # describes the model that actually serves. A refit on everything
+    # (including test) would leave the evaluation describing weights that
+    # no longer exist — that artifact would have to be labelled
+    # "backtest-only, shipped model unevaluated" and would not be usable.
     doc = {
         "schema": SCHEMA, "feature_version": feature_version, "features": cols,
         "horizon_minutes": horizon, "family": "lightgbm",
         "params": PARAMS, "gates": GATES, "gates_passed": bool(passed),
+        "evaluation_status": "held-out evaluated",
         "trained_from": str(data.index.min()), "trained_through": str(trained_through),
-        "training_rows": len(data), "evaluation": evaluation,
+        "training_rows": len(train), "evaluation": evaluation,
         "created_at": datetime.now(UTC).isoformat(),
-        "trees": export_lightgbm(final),
+        "trees": export_lightgbm(model),
     }
     validate(doc)
     # Exact-match check: the bot's evaluator must reproduce LightGBM itself.
     sample = test[cols].sample(min(2000, len(test)), random_state=1)
-    native = final.predict_proba(sample)[:, 1]
+    native = model.predict_proba(sample)[:, 1]
     portable = np.array([probability(doc, tuple(float(x) for x in row))
                          for row in sample.itertuples(index=False)])
     error = float(np.max(np.abs(native - portable)))

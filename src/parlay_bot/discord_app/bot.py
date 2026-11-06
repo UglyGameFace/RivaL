@@ -2729,6 +2729,13 @@ class RivalDiscordClient(discord.Client):
                 task = getattr(self, attr)
                 if task is None or not task.done():
                     continue
+                if attr == "_polybolt_task" and self.polybolt.auth_rejected:
+                    # Stopped on purpose: Polymarket rejected the credentials.
+                    # Re-presenting them 3x an hour cannot help; it needs new
+                    # credentials (and a deploy), so report it, don't restart.
+                    faults[f"worker:{name}"] = ("stopped: Polymarket rejected the CLOB "
+                                                "credentials; update them to resume")
+                    continue
                 faults[f"worker:{name}"] = "background worker exited unexpectedly"
                 # Three restarts per rolling hour, at most one per minute.
                 # Cancelling a blocked to_thread DB operation then starting

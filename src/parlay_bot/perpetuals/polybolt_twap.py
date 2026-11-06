@@ -67,6 +67,10 @@ class PolyBoltTWAP:
         self._subscribed = False
         self._healthy_since: datetime | None = None
         self._last_error = "not connected"
+        # Set when Polymarket rejects the credentials. Retrying the same
+        # credentials cannot fix that, so the watchdog must not restart the
+        # worker; a deploy with new credentials creates a fresh instance.
+        self.auth_rejected = False
         self._auth_at: datetime | None = None
         self._first_valid_at: datetime | None = None
         self._valid_observations: int = 0
@@ -107,6 +111,7 @@ class PolyBoltTWAP:
                 self._healthy_since.isoformat() if self._healthy_since else None
             ),
             "auth_at": self._auth_at.isoformat() if self._auth_at else None,
+            "auth_rejected": self.auth_rejected,
             "reconnects": self._reconnects,
             "last_error": self._last_error,
             "model_approved": False,
@@ -134,6 +139,10 @@ class PolyBoltTWAP:
             ) else "provider_error"
             self._last_error = code
             self._subscribed = False
+            if code in ("auth_invalid", "auth_required"):
+                # Not authenticated any more: status must not say so.
+                self._authenticated = False
+                self.auth_rejected = True
             _LOG.warning(
                 "RivaL PolyBolt provider error code=%s (no credentials logged)",
                 code,
@@ -330,6 +339,8 @@ class PolyBoltTWAP:
                             code if code in ("auth_invalid", "auth_required")
                             else "unrecognized",
                         )
+                        if code in ("auth_invalid", "auth_required"):
+                            self.auth_rejected = True
                         return  # Invalid authorization won't fix itself on retry.
                     self.accept(auth)
                     _LOG.info("RivaL PolyBolt CLOB authentication verified")

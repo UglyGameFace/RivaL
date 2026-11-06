@@ -1,44 +1,20 @@
-"""Read-only: render Opportunities, Math & History and Track Next exactly as users open them."""
-import asyncio, base64, gzip, json, os, time
+import base64, gzip, json, os
 MARKER = "RIVAL_RENDER_PROBE="
-PART = {"BTC": [("opportunities", "overview"), ("opportunities", "proof")],
-        "ETH": [("math", "overview"), ("math", "pulse"), ("math", "spikes")],
-        "SOL": [("math", "history"), ("math", "recovery"), ("math", "learning")],
-        "XRP": [("accuracy", "tracker"), ("accuracy", "overview")]}[os.environ.get("RIVAL_PROBE_ASSETS", "BTC")]
-def dump(e):
-    return {"title": e.title, "description": e.description,
-            "fields": [[f.name, f.value] for f in e.fields], "footer": e.footer.text if e.footer else None}
-async def main():
+if os.environ.get("RIVAL_PROBE_ASSETS", "BTC") != "BTC":
+    print(MARKER + base64.b64encode(gzip.compress(b"{}")).decode()); raise SystemExit(0)
+out = {}
+try:
     from parlay_bot.config import Settings
-    from parlay_bot.discord_app.research_dashboard import ResearchDashboard
-    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
     from parlay_bot.storage.hot import PostgresHotStore
     store = PostgresHotStore(Settings().rival_database_url.get_secret_value())
-    out = {}
-    try:
-        market = PerpetualMarketStore(store)
-        with store.connect() as conn:
-            venues = tuple(sorted({str(r["venue"]) for r in conn.execute(
-                "SELECT DISTINCT venue FROM perp_forward_audit WHERE issued_at>=?", ("2026-11-04",)).fetchall()}))
-        out["venues"] = venues
-        for screen, section in PART:
-            view = ResearchDashboard(owner_id=629459300854661120, market=market, ai=None, venues=venues, shadow_enabled=True)
-            view.asset, view.screen, view.section = "BTC", screen, section
-            view._rebuild()
-            t = time.monotonic()
-            try:
-                e = await asyncio.wait_for(view.render(), timeout=28)
-                out[f"{screen}/{section}"] = dump(e) | {"secs": round(time.monotonic()-t, 1),
-                    "controls": [getattr(c, "label", None) or getattr(c, "placeholder", None) for c in view.children]}
-            except Exception as exc:  # noqa: BLE001
-                out[f"{screen}/{section}"] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}", "secs": round(time.monotonic()-t, 1)}
-            finally:
-                view.stop()
-    finally:
-        store.close()
-    return out
-try:
-    report = asyncio.run(main())
+    with store.connect() as conn:
+        rows = conn.execute("""SELECT logger, level, template, SUM(count) AS n, MAX(last_at) AS last, MAX(text) AS text
+            FROM rival_problem_log WHERE hour>='2026-11-05T00' AND (logger ILIKE '%research_dashboard%' OR logger ILIKE '%home%'
+              OR logger ILIKE '%opportunit%' OR template ILIKE '%interaction%' OR template ILIKE '%panel%' OR template ILIKE '%dashboard%'
+              OR logger ILIKE '%discord%')
+            GROUP BY logger, level, template ORDER BY n DESC LIMIT 40""").fetchall()
+        out["problems"] = [[r["logger"][-30:], r["level"], str(r["template"])[:120], int(r["n"]), str(r["last"])[5:16], str(r["text"])[:220]] for r in rows]
+    store.close()
 except Exception as exc:  # noqa: BLE001
-    report = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
-print(MARKER + base64.b64encode(gzip.compress(json.dumps(report, default=str).encode())).decode())
+    out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+print(MARKER + base64.b64encode(gzip.compress(json.dumps(out, default=str).encode())).decode())

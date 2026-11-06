@@ -1350,13 +1350,7 @@ class RivalDiscordClient(discord.Client):
     async def setup_hook(self) -> None:
         # Inside the running loop so Sentry's asyncio integration attaches to it.
         from parlay_bot.observability import init_sentry
-        if init_sentry() and SENTRY_VERIFY_ONCE:
-            # Temporary: one real error through the real startup path to prove
-            # reporting works end to end. Removed once confirmed in Sentry.
-            try:
-                raise RuntimeError(f"Sentry test error {datetime.now(UTC):%Y%m%dT%H%M%SZ}")
-            except RuntimeError:
-                _LOG.exception("RivaL Sentry verification error (expected, temporary)")
+        init_sentry()
         if self._memory_task is None:
             self._memory_task = asyncio.create_task(
                 self._memory_receipt_loop(), name="rival-memory-receipt",
@@ -3162,8 +3156,6 @@ class RivalDiscordClient(discord.Client):
 # with three CPU-bound threads, 100 small socket round trips took 931 ms at
 # 5 ms and 120 ms at 1 ms, with no measurable loss of thread throughput.
 GIL_SWITCH_INTERVAL = 0.001
-# Temporary switch for the one-time Sentry setup check (see setup_hook).
-SENTRY_VERIFY_ONCE = True
 
 
 def run_discord_bot(settings: Settings | None = None) -> None:

@@ -289,14 +289,14 @@ def test_live_market_and_model_predictions_are_clearly_separate():
         ends_at=current.closes, status="ok",
     )
     embed = live_polymarket_embed(board, model, asset="BTC", horizon=5)
-    assert "Polymarket AI WAIT" in embed.title
-    assert "No current contract-specific AI call" in embed.description
+    assert "Polymarket model NO FORECAST" in embed.title
+    assert "No eligible contract-specific model forecast issued" in embed.description
     full = str(embed.to_dict())
     assert "UP $0.61" in full and "DOWN $0.45" in full
     assert "hyperliquid" not in full and "59.0%" not in full
     assert next_window.slug in full
     assert "Next contract • forecast pending" in full
-    assert "WAIT / not issued" in full
+    assert "not issued yet" in full
     assert "First model call frozen" in embed.footer.text
 
 
@@ -322,9 +322,9 @@ def test_15m_model_leans_up_for_a_different_five_minute_candle_only():
         ends_at=current.closes, status="ok",
     )
     embed = live_polymarket_embed(board, model, asset="BTC", horizon=15)
-    assert "Polymarket AI WAIT" in embed.title
+    assert "Polymarket model NO FORECAST" in embed.title
     full = str(embed.to_dict())
-    assert "No current contract-specific AI call" in full
+    assert "No eligible contract-specific model forecast issued" in full
     assert "hyperliquid" not in full and "95.0%" not in full
 
 
@@ -350,8 +350,8 @@ def test_stale_or_unavailable_model_never_becomes_directional_call():
         ),
     ):
         embed = live_polymarket_embed(board, snapshot, asset="BTC", horizon=5)
-        assert "No current contract-specific AI call" in embed.description
-        assert "Polymarket AI WAIT" in embed.title
+        assert "No eligible contract-specific model forecast issued" in embed.description
+        assert "Polymarket model NO FORECAST" in embed.title
         assert "99.0%" not in str(embed.to_dict())
 
 

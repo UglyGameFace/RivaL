@@ -220,7 +220,7 @@ async def test_unknown_dm_destination_does_not_disable_tracking(tmp_path, monkey
 
 @pytest.mark.asyncio
 async def test_dm_panel_actions_authorized_to_current_card(tmp_path, monkeypatch):
-    hot, store, service, channel, user, edited = _setup(tmp_path)
+    hot, store, service, _channel, user, edited = _setup(tmp_path)
     try:
         monkeypatch.setattr(
             service, "_observation",

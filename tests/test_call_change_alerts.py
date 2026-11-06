@@ -72,6 +72,29 @@ async def test_tracker_gets_a_new_dm_for_each_flip_up_to_the_cap():
 
 
 @pytest.mark.asyncio
+async def test_no_flip_ping_when_too_little_time_is_left():
+    now = datetime.now(UTC)
+    closes = now + timedelta(seconds=40)
+    window = PolymarketListedWindow(asset="BTC", horizon=5, slug="btc-updown-5m-3",
+                                    opens=closes - timedelta(minutes=5), closes=closes,
+                                    accepting_orders=True, price_to_beat=None)
+    board = PolymarketWindowBoard(checked_at=now, current=window, next_window=None,
+                                  current_quote=None)
+    channel = SimpleNamespace(send=AsyncMock())
+    service = LivePolymarketBoardService(
+        bot=SimpleNamespace(get_partial_messageable=lambda _id: channel),
+        store=None, reader=None, market=None)
+    tracker = LivePolymarketTracker(user_id="7", asset="BTC", horizon=5, channel_id="1",
+                                    message_id="2", fingerprint="f")
+    call = _call(window.slug, closes, "UP", now - timedelta(seconds=1))
+    changes = []
+    await service._alert_change(tracker, board, call, changes)
+    changes.append((now, "DOWN", "UP"))
+    await service._alert_change(tracker, board, call, changes)
+    channel.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("p,minutes_left,expected", [
     (0.52, 3, 1),   # close to 50/50 with time left: warn once, before any flip
     (0.70, 3, 0),   # a clear lean: no heads-up

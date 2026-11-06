@@ -70,7 +70,7 @@ async def test_beginner_home_begins_simple_and_keeps_advanced_features(tmp_path)
         assert home.page == "home"
         assert set(_labels(home)) == {
             "Crypto", "Sports", "Notifications", "Bot Performance",
-            "Practice", "Help",
+            "Practice", "Live Panel", "Help",
         }
         assert len(home.children) <= 25
         assert max(item.row for item in home.children) <= 4
@@ -512,7 +512,7 @@ async def test_live_mode_and_retired_shift_toggles_do_not_restart_spam(tmp_path)
         home.live_source = "polymarket"
         await home.act(interaction, "desk-call")
         shown = interaction.edit_original_response.await_args.kwargs["view"]
-        assert "Track in DMs" in _labels(shown)
+        assert "Show DM Panel" in _labels(shown)
         assert "Stop Tracking" in _labels(shown)
         await home.act(interaction, "hunt")
         settings = interaction.edit_original_response.await_args.kwargs["view"]
@@ -539,7 +539,7 @@ async def test_live_mode_opens_one_automatic_tracker_without_extra_market_polls(
 ):
     bot = _client(tmp_path)
     home = _home(bot)
-    tracker = SimpleNamespace(asset="BTC", horizon=5)
+    tracker = SimpleNamespace(asset="BTC", horizon=5, channel_id="555", message_id="901")
     board_service = SimpleNamespace(
         store=SimpleNamespace(get=lambda _id: tracker),
         start=AsyncMock(return_value=(
@@ -564,13 +564,14 @@ async def test_live_mode_opens_one_automatic_tracker_without_extra_market_polls(
         await home.act(interaction, "live")
         rendered = interaction.edit_original_response.await_args.kwargs["view"]
         labels = _labels(rendered)
-        assert "Track in DMs" in labels
+        assert "Show DM Panel" in labels
         assert "Stop Tracking" in labels
         assert "Alert Settings" not in labels
         assert "Follow Polymarket" not in labels
         assert "Check Now" not in labels
         embed = await home.render()
-        assert "ON • This market" in " ".join(str(f.value) for f in embed.fields)
+        assert "ON • A single live DM panel" in " ".join(str(f.value) for f in embed.fields)
+        assert "https://discord.com/channels/@me/555/901" in str(embed.to_dict())
         provider.window_board.assert_not_awaited()
         await home.act(interaction, "poly-start")
         board_service.start.assert_awaited_once_with(

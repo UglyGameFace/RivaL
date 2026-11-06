@@ -58,10 +58,6 @@ class PolymarketResearch:
         self.oracle_challenger = PolymarketOracleChallenger(store)
         self._learning_tasks: dict[str, asyncio.Task] = {}
         self._math_calls: dict[str, ContractCall] = {}
-        # Per contract: every time the shown call changed direction
-        # (when, old, new). The book model is re-run on fresh prices
-        # throughout a contract, so its call can flip mid-contract.
-        self._changes: dict[str, list[tuple[datetime, str, str]]] = {}
         self._initialized = False
         self._closed = False
         self._init_lock = threading.Lock()
@@ -160,27 +156,12 @@ class PolymarketResearch:
         # Concurrent processes cannot overwrite the first genuine issuance.
         return self._saved(call.slug)
 
-    def _note_change(self, slug: str, before: ContractCall | None) -> None:
-        after = self._calls.get(slug) or self._math_calls.get(slug)
-        if (before is None or after is None or before.direction == after.direction
-                or before.direction not in ("UP", "DOWN")):
-            return
-        changes = self._changes.setdefault(slug, [])
-        changes.append((after.issued_at, before.direction, after.direction))
-        del changes[:-10]
-        _LOG.info("RivaL Polymarket call changed asset=%s horizon=%s slug=%s %s->%s",
-                  after.asset, after.horizon, slug, before.direction, after.direction)
-
-    def changes(self, slug: str) -> list[tuple[datetime, str, str]]:
-        """Direction changes of the shown call for this contract, oldest first."""
-        return list(self._changes.get(slug, ()))
-
     def peek(self, slug: str) -> ContractCall | None:
-        call = self._calls.get(slug) or self._math_calls.get(slug)
+        # The first book-model call is the scored, immutable forecast.
+        # A newer optional AI review must not replace or rewrite it.
+        call = self._math_calls.get(slug) or self._calls.get(slug)
         now = datetime.now(UTC)
-        return call if call is not None and call.issued_at <= now < call.expires and (
-            call.kind != "model" or now-call.issued_at <= timedelta(seconds=25)
-        ) else None
+        return call if call is not None and call.issued_at <= now < call.expires else None
 
     def status(self, slug: str) -> str:
         if slug in self._pending:
@@ -206,7 +187,6 @@ class PolymarketResearch:
         for slug in list(self._math_calls):
             if self._math_calls[slug].expires <= now:
                 self._math_calls.pop(slug, None)
-                self._changes.pop(slug, None)
         if len(self._status) > 48:
             for slug in list(self._status):
                 if slug not in self._pending:
@@ -231,18 +211,17 @@ class PolymarketResearch:
                     await asyncio.to_thread(self.initialize)
                     result = await asyncio.to_thread(self.study, notice)
                     if result is not None and not self._closed:
-                        before = self.peek(notice.slug) or self._math_calls.get(notice.slug)
                         self._math_calls[notice.slug] = ContractCall(
                             slug=notice.slug, asset=notice.asset, horizon=notice.horizon,
                             issued_at=result["issued_at"], expires=notice.expires,
                             direction=result["direction"], model=result["model"],
-                            thesis=f"Book-based model trained on {result['training_labels']} verified Polymarket outcomes.",
-                            risk="Experimental model score; calibrated accuracy and after-fee edge are unverified.",
+                            thesis="First model forecast, frozen for this contract; trained on verified Polymarket outcomes.",
+                            risk=("Research only. A near-even model probability yields WAIT; "
+                                  "calibrated accuracy and after-fee edge are unverified."),
                             evidence_sha256=result["evidence_sha256"], input_up_ask=notice.up_ask,
                             input_down_ask=notice.down_ask, kind="model",
                             probability_up=result.get("probability_up"),
                         )
-                        self._note_change(notice.slug, before)
                 except Exception:  # noqa: BLE001 - learning failures never block live quotes
                     _LOG.exception("Polymarket contract learning unavailable")
             learning = asyncio.create_task(learn(), name="rival-polymarket-outcome-learning")
@@ -281,6 +260,10 @@ class PolymarketResearch:
 
     @staticmethod
     def _needs_refresh(call: ContractCall, notice, now: datetime) -> bool:
+        """Optional independent AI research may publish a labeled revision.
+
+        Revisions do not alter the book-model's frozen, scored first forecast.
+        """
         return (
             now - call.issued_at >= timedelta(seconds=60)
             and call.input_up_ask is not None and call.input_down_ask is not None

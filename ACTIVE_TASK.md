@@ -1,3 +1,12 @@
+## In progress: frozen Polymarket first calls and accessible live panel (2026-11-06 UTC)
+
+- **Observed failure:** PR #403 re-evaluated a book-based UP/DOWN direction as often as every 5 seconds; the Discord card and separate flip notifications could say DOWN → UP → DOWN in one contract even though the scored forward ledger kept only the first call.
+- **Fix on branch `fix/polymarket-frozen-first-call-live-panel-20261105`:** derive the displayed model direction, issue time, model weights SHA, and evidence identity from the existing immutable first-issuance Postgres row and its matching observation. Near-50/50 first predictions show WAIT under a *provisional* 5-point no-call band, without claiming a calibrated edge. Live CLOB asks continue updating separately; old and restarted sessions keep the same original first call.
+- **Discord panel:** retire redundant per-flip/near-flip DMs, keep a single automatically edited tracking card, add a top-level Live Panel shortcut, a direct jump to the active card, and Show DM Panel to bring it back to the most recent DM position. Existing tracker table and disabled status remain backward-compatible.
+- **Acceptance:** Run Ruff and full relevant SQLite/Postgres GitHub CI; verify the first-forward record does not change after a quote or weight change, no extra DM sends per refresh, UI deep link and restart behavior; merge only after checks. Verify a real Discloud main-branch release and subsequent DM behavior independently. **No new trading edge or profitable accuracy is claimed.**
+
+---
+
 ## In progress: pinned llama.cpp bounded structured hypotheses (2026-11-03 UTC)
 
 - The latest independent standalone release 41575049053 verified a ready authenticated LFM3 model and safely grounded ordinary research but did not pass hypothesis generation: attempts 2,3,4,6 returned invalid_hypothesis and attempts 5,7 returned token_limit (attempt 1 still warming). This proves the remaining issue is hypothesis output, not connection or lack of data.

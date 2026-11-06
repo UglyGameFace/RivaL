@@ -16,6 +16,8 @@ from parlay_bot.perpetuals.model_checkpoints import canonical
 
 MODEL = "polymarket-terminal-book-logistic-v1"
 MIN_LABELS = 100
+# Provisional near-even research filter, not a calibrated profit or confidence gate.
+MIN_DIRECTIONAL_MARGIN = 0.05
 
 
 def book_features(notice):
@@ -217,16 +219,39 @@ class PolymarketOutcomeLearner:
             issued = datetime.now(UTC)
             if issued >= notice.expires or issued-notice.quote_at > timedelta(seconds=25):
                 return None
-            p = _sigmoid(sum(w*x for w, x in zip(weights, (1., *features))))
+            candidate_p = _sigmoid(sum(w*x for w, x in zip(weights, (1., *features))))
             conn.execute(
                 "INSERT INTO rival_polymarket_model_forward "
                 "(slug,model_version,issued_at,weights_sha256,probability_up,market_baseline) "
                 "VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING",
-                (notice.slug, MODEL, issued.isoformat(), weight_sha, p, notice.up_ask/(notice.up_ask+notice.down_ask)),
+                (notice.slug, MODEL, issued.isoformat(), weight_sha, candidate_p,
+                 notice.up_ask/(notice.up_ask+notice.down_ask)),
             )
-        return {"direction": "UP" if p > .5 else "DOWN" if p < .5 else "WAIT",
-                "probability_up": p, "issued_at": issued, "model": MODEL, "evidence_sha256": evidence,
-                "training_labels": updates, "weights_sha256": weight_sha}
+            # Always render the first prospectively issued model forecast.
+            # The original forward row and observation are immutable even if
+            # book quotes or the continuously learned weights move afterward.
+            first = conn.execute(
+                "SELECT f.issued_at,f.probability_up,f.weights_sha256,v.evidence_sha256 "
+                "FROM rival_polymarket_model_forward f "
+                "JOIN rival_polymarket_observations v ON v.slug=f.slug "
+                "WHERE f.slug=? AND f.model_version=? AND v.condition_id=?",
+                (notice.slug, MODEL, notice.condition_id),
+            ).fetchone()
+            if first is None:
+                return None  # Never reconstruct a call from mismatched evidence.
+            p = float(first["probability_up"])
+            issued = datetime.fromisoformat(first["issued_at"])
+            evidence = str(first["evidence_sha256"])
+            weight_sha = str(first["weights_sha256"])
+            if not (math.isfinite(p) and 0 <= p <= 1
+                    and notice.issued <= issued < notice.expires):
+                return None
+        direction = ("WAIT" if abs(p - .5) < MIN_DIRECTIONAL_MARGIN
+                     else "UP" if p > .5 else "DOWN")
+        return {"direction": direction,
+                "probability_up": p, "issued_at": issued, "model": MODEL,
+                "evidence_sha256": evidence, "training_labels": updates,
+                "weights_sha256": weight_sha}
 
     def pooled_summary(self, *, asset, horizon, days=7, edge=0.05):
         """The pooled model vs the market's own price, on resolved contracts.

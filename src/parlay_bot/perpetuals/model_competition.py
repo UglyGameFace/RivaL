@@ -11,12 +11,15 @@ from __future__ import annotations
 import hashlib
 import heapq
 import json
+import logging
 import math
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.research.boosted_portable import predict_portable
+
+_LOG = logging.getLogger(__name__)
 
 FAMILIES = ("gaussian_nb_v1", "knn21_v1")
 # Per-artifact challenger families (one name per trained model file).
@@ -115,6 +118,7 @@ class ShadowModelCompetition:
         if getattr(self.store, "_shadow_competition_ready", False):
             return
         self._create_schema()
+        self._withdraw_no_trade_labels()
         try:
             self.store._shadow_competition_ready = True
         except AttributeError:  # a store that forbids attributes keeps the old behavior
@@ -153,6 +157,43 @@ class ShadowModelCompetition:
             CREATE INDEX IF NOT EXISTS idx_rival_model_shadow_venue_issued
                 ON rival_model_shadow_forecasts (venue,issued_at);
             """)
+
+    def _withdraw_no_trade_labels(self) -> None:
+        """Match the incumbent ledger's no-trade correction on shadow rows.
+
+        ForwardAccuracyMonitor withdrew incumbent results graded from
+        zero-trade candles (outcome_up set to NULL, row kept). Shadow rows
+        settled from those results before the fix still carried the old
+        NOT UP label, and family promotion graded from them (4,964 rows in
+        production on Nov 6, all gaussian_nb_v1 / knn21_v1). Withdraw them
+        the same way: keep settled_at, clear the outcome and scores, so every
+        reader that already skips NULL outcomes skips them. Idempotent; new
+        settlements only copy outcomes in (0,1).
+        """
+        try:
+            with self.store.connect() as conn:
+                result = conn.execute(
+                    """UPDATE rival_model_shadow_forecasts
+                       SET outcome_up=NULL, model_brier=NULL,
+                           incumbent_brier=NULL, baseline_brier=NULL
+                       WHERE outcome_up IS NOT NULL AND EXISTS (
+                         SELECT 1 FROM perp_forward_audit f
+                         WHERE f.venue=rival_model_shadow_forecasts.venue
+                           AND f.contract=rival_model_shadow_forecasts.contract
+                           AND f.quote=rival_model_shadow_forecasts.quote
+                           AND f.horizon_minutes=rival_model_shadow_forecasts.horizon_minutes
+                           AND f.model_version='prospective-logistic-persistent-v3'
+                           AND f.reference_opened_at=rival_model_shadow_forecasts.reference_opened_at
+                           AND f.asset=rival_model_shadow_forecasts.asset
+                           AND f.issued_at=rival_model_shadow_forecasts.issued_at
+                           AND f.target_opened_at=rival_model_shadow_forecasts.target_opened_at
+                           AND f.settled_at IS NOT NULL AND f.outcome_up IS NULL)"""
+                )
+                if result.rowcount:
+                    _LOG.warning("RivaL withdrew %d challenger results copied from "
+                                 "no-trade candles", result.rowcount)
+        except Exception:  # noqa: BLE001 - a correction must never block startup
+            _LOG.exception("RivaL challenger no-trade correction unavailable")
 
     @staticmethod
     def prepare(samples, features, *, now) -> dict:

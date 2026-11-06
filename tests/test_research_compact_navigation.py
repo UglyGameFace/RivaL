@@ -25,6 +25,8 @@ def expanded_report() -> discord.Embed:
     old.timestamp = datetime.now(UTC)
     fields = (
         ("🟢 Live collection status", "**8/10** recently collecting • checked 2 minutes ago"),
+        ("Polymarket results · BTC Up/Down", "**5 min** · 1,757 settled: UP 50%"),
+        ("Is the Polymarket price fair? · BTC", "UP priced 45–55¢: UP won 51% ≈ fair"),
         ("Six-month history target", "1,085 / 527,040 five-minute bars • 0.206%"),
         ("Historical gap audit", "0/10 audited streams complete"),
         ("Gate six-month recovery", "Recovering history from Gate"),
@@ -69,12 +71,17 @@ def test_no_research_screen_turns_into_an_entire_grocery_list(screen):
 def test_overview_shows_useful_verified_summary_without_20_fields():
     result = _compact_embed(expanded_report(), screen="math", section="overview")
     names = [f.name for f in result.fields]
+    # A bettor first sees what actually happened on Polymarket, not
+    # backfill row counts.
     assert names == [
-        "Live market feeds", "Current market pulse · NOT a trading signal",
-        "Six-month history target",
+        "Live market feeds", "Polymarket results · BTC Up/Down",
+        "Current market pulse · NOT a trading signal",
     ]
     assert "8/10" in result.fields[0].value
-    assert "0.206%" in result.fields[2].value
+    assert "1,757 settled" in result.fields[1].value
+    fair = _compact_embed(expanded_report(), screen="math", section="fair")
+    assert [f.name for f in fair.fields] == [
+        "Live market feeds", "Is the Polymarket price fair? · BTC"]
     spikes = _compact_embed(expanded_report(), screen="math", section="spikes")
     assert [f.name for f in spikes.fields] == [
         "Live market feeds", "Spike watch analytics", "Recent spike events",

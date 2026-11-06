@@ -1043,7 +1043,7 @@ class GuidedHome(discord.ui.View):
                 )
                 embed = discord.Embed(
                     title=f"🎯 Polymarket | {self.coin} {self.horizon}m",
-                    description="**RivaL call: WAIT** • No verified contract-specific call yet.",
+                    description="**NO MODEL FORECAST** • Awaiting source-verified contract research.",
                     color=discord.Color.orange(),
                 )
                 tracker = None
@@ -1111,15 +1111,15 @@ class GuidedHome(discord.ui.View):
                             value=(
                                 f"[Next {self.horizon}-min contract]({upcoming.url}) • opens "
                                 f"{discord.utils.format_dt(upcoming.opens, style='R')}\n"
-                                "RivaL's call for it appears shortly after it opens (it needs that "
-                                "contract's live prices). Track in DMs switches to it "
+                                "The next model forecast can only be issued after the contract opens "
+                                "and verified live order-book data are available. The DM panel switches to it "
                                 "automatically; here, tap Refresh once it has opened."
                             ),
                             inline=False,
                         )
                     if matching_call(board, call, asset=self.coin, horizon=self.horizon):
                         embed.description = (
-                            f"**RivaL {call.kind} call: {call.direction}** "
+                            f"**RivaL {call.kind} research: {call.direction}** "
                             "• experimental, NOT a verified profitable edge."
                         )
                         embed.add_field(
@@ -1136,7 +1136,7 @@ class GuidedHome(discord.ui.View):
                         research = getattr(service, "research", None)
                         reason = (
                             research.status(event.slug) if research is not None
-                            else "Free contract AI or verified inputs unavailable."
+                            else "Verified model inputs not available."
                         )
                         embed.add_field(
                             name="🧠 Why no call?",

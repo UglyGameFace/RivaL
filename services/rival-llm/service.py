@@ -82,7 +82,10 @@ HYPOTHESIS_PROMPT = (
     "4=relative volume, 5=RSI, 6=MACD, 7=Bollinger, 8=ATR, 9=volume regime. "
     "Keep rationale and falsification short (5-55 characters each). "
     "No other keys, prices, predicted direction, confidence, weights, "
-    "claimed accuracy or performance. One JSON object; no prose."
+    "claimed accuracy or performance. One JSON object; no prose. "
+    "Lines starting 'Already tested' are real offline results of earlier ideas: "
+    "do not repeat an idea that scored worse than the baseline; prefer an "
+    "untested idea or a variation of one that scored better."
 )
 
 EXTENDED_PROMPT = (
@@ -324,6 +327,32 @@ def _brief_return(value: object) -> str:
     if abs(number) > 10000:
         return "?"
     return f"{number:+.3g}"
+
+
+def prior_trial_lines(evidence: dict) -> list[str]:
+    """Earlier ideas' offline results, from fixed enums and numbers only."""
+    trials = evidence.get("prior_trials")
+    if not isinstance(trials, list):
+        return []
+    lines = []
+    for trial in trials[:12]:
+        if not isinstance(trial, dict) or trial.get("hypothesis") not in HYPOTHESES:
+            continue
+        indices = trial.get("feature_indices")
+        try:
+            tests, better = int(trial["tests"]), int(trial["better"])
+            gain = float(trial["mean_brier_gain"])
+            indices = [int(i) for i in indices] if isinstance(indices, list) else []
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (0 < tests <= 10_000 and 0 <= better <= tests and math.isfinite(gain)
+                and all(0 <= i <= 9 for i in indices) and len(indices) <= 10):
+            continue
+        name = trial["hypothesis"] + (f" {indices}" if trial["hypothesis"] == "feature_subset_v2"
+                                      else "")
+        lines.append(f"Already tested {name}: {tests} tests, {better} beat baseline, "
+                     f"mean Brier change {gain:+.4f} ({'better' if gain > 0 else 'worse'})")
+    return lines
 
 
 def compact_evidence(asset: str, evidence: dict, *, extended: bool = False) -> str:
@@ -632,6 +661,10 @@ class Gateway(ThreadingHTTPServer):
                   else EXTENDED_PROMPT if mode == "extended"
                   else EXPLAIN_PROMPT if mode == "explain" else PROMPT)
         brief = compact_evidence(asset, evidence, extended=(mode == "extended"))
+        if mode == "hypothesis":
+            history = prior_trial_lines(evidence)
+            if history:
+                brief += "\n" + "\n".join(history)
         if mode == "explain":
             calls = model_call_lines(evidence)
             if not calls:

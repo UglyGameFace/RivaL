@@ -444,7 +444,7 @@ class LivePolymarketBoardService:
                 ),
             )
             return True, (
-                f"Live {asset} {horizon}m panel moved to the bottom of your DMs. "
+                f"Auto-tracking {asset} {horizon}m: live panel moved to the bottom of your DMs. "
                 "The same panel keeps updating live market prices and the first "
                 "frozen model call; no flip-alert DMs."
             )

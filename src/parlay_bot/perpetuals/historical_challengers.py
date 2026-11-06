@@ -69,7 +69,7 @@ class HistoricalChallengers:
     def _settle(self, now):
         with self.store.connect() as conn:
             rows = conn.execute(
-                "SELECT f.*,c.close_price,c.first_observed_at,c.closed_at FROM rival_history_forward f "
+                "SELECT f.*,c.close_price,c.first_observed_at,c.closed_at,c.trades FROM rival_history_forward f "
                 "JOIN perp_market_candles c ON c.venue=f.venue AND c.contract=f.contract "
                 "AND c.quote=f.quote AND c.interval_minutes=5 AND c.opened_at=f.target_opened_at "
                 "WHERE f.settled_at IS NULL AND c.closed_at<? "
@@ -88,11 +88,22 @@ class HistoricalChallengers:
                     or row["close_price"] <= 0
                     or not timedelta(0) <= observed-actual_close <= timedelta(minutes=12)):
                     continue
+                # A candle with no trades repeats the previous price; grading
+                # it would mint a NOT UP label from no market activity.
+                # Record no outcome: settled_at is set but outcome_up stays
+                # NULL, so the row leaves the pending queue and every reader
+                # that skips NULL outcomes skips it — the same withdrawal
+                # shape as the incumbent and shadow ledgers.
+                outcome = (
+                    None
+                    if int(row["trades"] or 0) == 0
+                    else int(row["close_price"] > row["reference_close"])
+                )
                 conn.execute(
                     "UPDATE rival_history_forward SET outcome_up=?,settled_at=? WHERE "
                     "model_sha256=? AND venue=? AND contract=? AND quote=? AND horizon_minutes=? "
                     "AND reference_opened_at=? AND settled_at IS NULL",
-                    (int(row["close_price"] > row["reference_close"]), row["first_observed_at"],
+                    (outcome, row["first_observed_at"],
                      row["model_sha256"], row["venue"], row["contract"], row["quote"],
                      row["horizon_minutes"], row["reference_opened_at"]),
                 )

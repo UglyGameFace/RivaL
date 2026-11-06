@@ -121,7 +121,43 @@ class MultiExchangeResearch:
                     ON perp_multi_quote_shadow (state,target_opened_at);
                 """
             )
+        self._withdraw_no_trade_labels()
         self._initialized = True
+
+    def _withdraw_no_trade_labels(self) -> None:
+        """Withdraw fused outcomes copied from withdrawn incumbent results.
+
+        ForwardAccuracyMonitor withdrew incumbent results graded from
+        zero-trade candles (outcome_up set to NULL, row kept). Fusion rows
+        settled from those results before the fix still carried the old
+        NOT UP label, and promotion graded from them. Withdraw them the
+        same way: keep settled_at, clear the outcome and Brier scores, so
+        every reader that already skips NULL outcomes skips them.
+        Idempotent; new settlements only copy outcomes in (0,1).
+        """
+        try:
+            with self.store.connect() as conn:
+                result = conn.execute(
+                    """UPDATE perp_multi_forward
+                       SET outcome_up=NULL, challenger_brier=NULL,
+                           incumbent_brier=NULL
+                       WHERE outcome_up IS NOT NULL AND EXISTS (
+                         SELECT 1 FROM perp_forward_audit f
+                         WHERE f.venue=perp_multi_forward.reference_venue
+                           AND f.contract=perp_multi_forward.reference_contract
+                           AND f.quote=perp_multi_forward.reference_quote
+                           AND f.horizon_minutes=perp_multi_forward.horizon_minutes
+                           AND f.model_version=?
+                           AND f.reference_opened_at=perp_multi_forward.reference_opened_at
+                           AND f.target_opened_at=perp_multi_forward.target_opened_at
+                           AND f.settled_at IS NOT NULL AND f.outcome_up IS NULL)""",
+                    (SOURCE_MODEL,),
+                )
+                if result.rowcount:
+                    _LOG.warning("RivaL withdrew %d fused results copied from "
+                                 "no-trade candles", result.rowcount)
+        except Exception:  # noqa: BLE001 - a correction must never block startup
+            _LOG.exception("RivaL fused no-trade correction unavailable")
 
     def issue(self, *, now: datetime | None = None) -> int:
         stamp = utc(now or datetime.now(UTC))
@@ -431,13 +467,17 @@ class MultiExchangeResearch:
         with self.store.connect() as conn:
             aggregate = conn.execute(
                 """SELECT COUNT(*) AS issued,
-                          SUM(CASE WHEN settled_at IS NOT NULL THEN 1 ELSE 0 END)
+                          SUM(CASE WHEN settled_at IS NOT NULL
+                              AND outcome_up IN (0,1) THEN 1 ELSE 0 END)
                               AS settled,
                           SUM(CASE WHEN settled_at IS NOT NULL
+                              AND outcome_up IN (0,1)
                               THEN challenger_brier ELSE 0 END) AS challenger_loss,
                           SUM(CASE WHEN settled_at IS NOT NULL
+                              AND outcome_up IN (0,1)
                               THEN incumbent_brier ELSE 0 END) AS incumbent_loss,
                           COUNT(DISTINCT CASE WHEN settled_at IS NOT NULL
+                              AND outcome_up IN (0,1)
                               THEN substr(target_opened_at,1,10) END) AS days,
                           MAX(contributor_count) AS max_sources,
                           MIN(contributor_count) AS min_sources
@@ -450,7 +490,7 @@ class MultiExchangeResearch:
                           probability_up, reference_probability_up, outcome_up
                    FROM perp_multi_forward
                    WHERE asset=? AND horizon_minutes=? AND issued_at>=?
-                     AND settled_at IS NOT NULL
+                     AND settled_at IS NOT NULL AND outcome_up IN (0,1)
                    ORDER BY target_opened_at LIMIT 10000""",
                 (asset, horizon_minutes, start),
             ).fetchall()

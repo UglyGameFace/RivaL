@@ -121,7 +121,7 @@ def evaluate_promotion(
             """SELECT target_opened_at,challenger_brier,incumbent_brier
                FROM perp_multi_forward
                WHERE asset=? AND horizon_minutes=? AND model_version=?
-                 AND settled_at IS NOT NULL
+                 AND settled_at IS NOT NULL AND outcome_up IN (0,1)
                  AND issued_at>=? AND issued_at<=?
                ORDER BY target_opened_at""",
             (
@@ -141,7 +141,8 @@ def evaluate_promotion(
                 AND e.target_opened_at=q.target_opened_at
                WHERE e.asset=? AND e.horizon_minutes=?
                  AND e.model_version=? AND q.state='EXIT_QUOTED'
-                 AND e.settled_at IS NOT NULL AND e.settled_at<=?
+                 AND e.settled_at IS NOT NULL AND e.outcome_up IN (0,1)
+                 AND e.settled_at<=?
                  AND e.issued_at>=? AND e.issued_at<=?""",
             (
                 asset,

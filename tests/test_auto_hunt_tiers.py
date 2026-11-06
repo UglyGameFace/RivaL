@@ -73,6 +73,7 @@ class _Bot:
 
 def _service(bot, store, *, market=None, quotes=None):
     return auto_hunt.AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=bot, market=market, quotes=quotes, store=store,
     )
 

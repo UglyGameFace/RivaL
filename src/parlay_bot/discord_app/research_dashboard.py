@@ -22,7 +22,11 @@ from parlay_bot.perpetuals.forward_tracking import (
 )
 from parlay_bot.perpetuals.history_inventory import history_inventory
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
-from parlay_bot.perpetuals.local_first_research import LocalFirstResearch
+from parlay_bot.perpetuals.local_first_research import (
+    EVIDENCE_MODEL,
+    LOCAL_MODEL,
+    LocalFirstResearch,
+)
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.proof_progress import proof_progress, proof_progress_text
@@ -108,6 +112,15 @@ _FIELD_GROUPS = {
     },
 }
 
+
+
+def _answered_by(model: str) -> str:
+    """Which model actually produced the shown answer (not the configured one)."""
+    if model == LOCAL_MODEL:
+        return "RivaL Intelligence (LFM3 AI)"
+    if model == EVIDENCE_MODEL:
+        return "basic evidence summary (the AI was unavailable)"
+    return discord.utils.escape_markdown(str(model))[:80]
 
 class _SectionSelect(discord.ui.Select["ResearchDashboard"]):
     def __init__(self, screen: str, section: str) -> None:
@@ -1989,6 +2002,7 @@ class ResearchDashboard(discord.ui.View):
                     f"{answer.confidence} self-reported confidence\n"
                     f"Feeds: {answer.source_count} · "
                     f"{'Database cache' if answer.from_cache else 'New response'}\n"
+                    f"Answered by: **{_answered_by(answer.model)}**\n"
                     f"Reason: {discord.utils.escape_mentions(answer.thesis)}\n"
                     f"Risk: {discord.utils.escape_mentions(answer.risk)}"
                 )[:1024], inline=False,

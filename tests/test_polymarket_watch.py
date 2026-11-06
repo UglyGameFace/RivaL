@@ -151,6 +151,7 @@ def test_polymarket_alert_works_without_rival_collector(tmp_path):
     user = SimpleNamespace(dm_channel=channel)
     bot = SimpleNamespace(get_user=lambda _: user, fetch_user=AsyncMock())
     service = auto_hunt.AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=bot, market=None, quotes=None, store=hunt,
     )
     # Exercise delivery with a valid mocked window irrespective of the

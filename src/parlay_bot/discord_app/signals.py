@@ -625,7 +625,8 @@ async def signal_embed(
     venue_hit = venue_evidence.get("hit_rate") if venue_evidence else None
     measured = (
         f"{venue_hit:.1%} of {venue_count:,} finished\n"
-        f"This exchange • last 7 days"
+        + ("All exchanges (combined model) • last 7 days" if engine == "multi"
+           else "This exchange • last 7 days")
         if venue_hit is not None and venue_count >= 50
         else f"Not enough yet\n{venue_count:,} finished; needs 50"
     )

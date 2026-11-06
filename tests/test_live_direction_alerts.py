@@ -163,6 +163,7 @@ async def test_background_shift_delivery_is_opt_in_and_deduped(tmp_path):
         direction="DOWN", move_bps=-24., lookback_seconds=90,
     )
     service = AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=SimpleNamespace(), market=None, quotes=None, store=store,
     )
     service._send_dm = AsyncMock(return_value=SimpleNamespace(id=123))

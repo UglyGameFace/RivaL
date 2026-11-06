@@ -82,6 +82,7 @@ def test_hunt_user_bound_review_receipts(hunt_store):
     assert hunt_store.claim("1001", watch, now=now)
     hunt_store.finish("1001", watch, sent=True, message_id="555")
     service = auto_hunt.AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=SimpleNamespace(), market=object(), quotes=object(), store=hunt_store,
     )
     assert service.delivery_for_message("2002", "555") is None
@@ -152,6 +153,7 @@ def test_hunt_sends_once_only_after_opt_in_and_respects_stop(hunt_store, monkeyp
         fetch_user=AsyncMock(return_value=user),
     )
     service = auto_hunt.AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=bot, market=object(), quotes=object(), store=hunt_store,
     )
 
@@ -212,6 +214,7 @@ def test_a_slow_other_user_does_not_block_alert_cancellation(hunt_store):
     hunt_store.subscribe("1001")
     hunt_store.subscribe("1002")
     service = auto_hunt.AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=SimpleNamespace(), market=object(), quotes=object(),
         store=hunt_store,
     )
@@ -256,6 +259,7 @@ def test_two_opted_in_members_receive_concurrent_bounded_alerts(hunt_store, monk
         fetch_user=AsyncMock(return_value=user),
     )
     service = auto_hunt.AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=client, market=object(), quotes=object(), store=hunt_store,
     )
     assert run(service.cycle()) == 2
@@ -351,6 +355,7 @@ def test_alert_status_explains_daily_limits_and_reset(hunt_store):
     user_id = 33331
     hunt_store.subscribe(str(user_id))
     service = auto_hunt.AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=SimpleNamespace(), market=object(), quotes=object(),
         store=hunt_store,
     )
@@ -388,6 +393,7 @@ def test_capped_subscribers_do_not_trigger_expensive_external_scans(
     monkeypatch.setattr(auto_hunt, "new_forecast_watches", scans[1])
     monkeypatch.setattr(auto_hunt, "direction_change_watches", scans[3])
     service = auto_hunt.AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=SimpleNamespace(), market=object(), quotes=object(),
         store=hunt_store,
     )
@@ -426,6 +432,7 @@ def test_live_mode_only_is_reported_on_without_enabling_forecast_tiers(hunt_stor
         "research": False, "qualified": False, "polymarket": False,
     }
     service = auto_hunt.AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=SimpleNamespace(live_stream=object()),
         market=None, quotes=None, store=hunt_store,
     )

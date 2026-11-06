@@ -1458,7 +1458,7 @@ class AutoHuntActions(discord.ui.View):
 
 class AutoHuntService:
     def __init__(self, *, bot: discord.Client, market, quotes, store: AutoHuntStore,
-                 stream_shadow=None, alerts_enabled: bool = True) -> None:
+                 stream_shadow=None, alerts_enabled: bool = False) -> None:
         self.alerts_enabled = alerts_enabled
         self.bot = bot
         self.market = market

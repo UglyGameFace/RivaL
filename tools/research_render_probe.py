@@ -7,7 +7,7 @@ async def sample(store):
     from parlay_bot.discord_app.polymarket_watch import PolymarketReader
     reader = PolymarketReader(); rows = []
     keys = sorted({(a, h) for a, h in out.get("trackers_keys", [])} | {("BTC", 5)})
-    end = time.monotonic() + 330
+    end = time.monotonic() + 75
     try:
         while time.monotonic() < end:
             for a, h in keys:
@@ -22,7 +22,7 @@ async def sample(store):
                                  str(f["issued_at"])[11:19] if f else None, round(float(f["probability_up"]),3) if f else None])
                 except Exception as exc:  # noqa: BLE001
                     rows.append([datetime.now(UTC).strftime("%H:%M:%S"), a, h, "ERR", type(exc).__name__])
-            await asyncio.sleep(6)
+            await asyncio.sleep(4)
     finally:
         await reader.aclose()
     return rows

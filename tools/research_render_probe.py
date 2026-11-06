@@ -8,12 +8,9 @@ try:
     from parlay_bot.storage.hot import PostgresHotStore
     store = PostgresHotStore(Settings().rival_database_url.get_secret_value())
     with store.connect() as conn:
-        rows = conn.execute("""SELECT logger, level, template, SUM(count) AS n, MAX(last_at) AS last, MAX(text) AS text
-            FROM rival_problem_log WHERE hour>='2026-11-05T00' AND (logger ILIKE '%research_dashboard%' OR logger ILIKE '%home%'
-              OR logger ILIKE '%opportunit%' OR template ILIKE '%interaction%' OR template ILIKE '%panel%' OR template ILIKE '%dashboard%'
-              OR logger ILIKE '%discord%')
-            GROUP BY logger, level, template ORDER BY n DESC LIMIT 40""").fetchall()
-        out["problems"] = [[r["logger"][-30:], r["level"], str(r["template"])[:120], int(r["n"]), str(r["last"])[5:16], str(r["text"])[:220]] for r in rows]
+        rows = conn.execute("""SELECT hour, template, count, text FROM rival_problem_log
+            WHERE hour>='2026-11-05T00' AND logger ILIKE '%loop_watch%' ORDER BY hour DESC LIMIT 80""").fetchall()
+        out["rows"] = [[str(r["hour"])[5:13], int(r["count"]), str(r["text"])[:400]] for r in rows]
     store.close()
 except Exception as exc:  # noqa: BLE001
     out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"

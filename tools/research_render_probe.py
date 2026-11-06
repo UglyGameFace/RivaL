@@ -37,7 +37,7 @@ try:
         tr = conn.execute("SELECT asset, horizon, enabled, updated_at FROM rival_polymarket_live_board ORDER BY updated_at DESC").fetchall()
         out["trackers"] = [[r["asset"], int(r["horizon"]), int(r["enabled"]), str(r["updated_at"])[:19]] for r in tr]
         out["trackers_keys"] = [[r["asset"], int(r["horizon"])] for r in tr if int(r["enabled"]) == 1]
-        cols = [r[0] for r in conn.execute("SELECT column_name FROM information_schema.columns WHERE table_name='rival_problem_log'").fetchall()]
+        cols = [r["column_name"] for r in conn.execute("SELECT column_name FROM information_schema.columns WHERE table_name='rival_problem_log'").fetchall()]
         out["problem_cols"] = cols
         probs = conn.execute("""SELECT * FROM rival_problem_log WHERE hour>='2026-11-05T12' AND
               (template ILIKE '%polymarket%' OR template ILIKE '%board%') ORDER BY hour DESC LIMIT 40""").fetchall()

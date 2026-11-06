@@ -204,6 +204,67 @@ class PooledModelSet:
                 if (doc := self.active(horizon, now=now, context=context,
                                        lineage=name)) is not None]
 
+    def contest_contenders(self, horizon: int, *, context: bool = True,
+                           now: datetime | None = None) -> list[dict]:
+        """Keep frozen test artifacts available through nightly retraining.
+
+        Two most recently enrolled recipes at each batch boundary, plus the
+        previous batch's pair for serving during the next test, and today's
+        two lineages for future enrollment. Selection uses enrollment times,
+        never outcomes. At most six artifacts are evaluated per horizon.
+        """
+        import time
+
+        from parlay_bot.perpetuals.model_league import POLICY_START, WINDOW_DAYS
+
+        stamp = now or datetime.now(UTC)
+        current = self.serving(horizon, now=stamp, context=context)
+        epoch = max(0, (stamp-POLICY_START).days//WINDOW_DAYS)
+        saved = getattr(self, "_contest_cache", {}).get(horizon)
+        if saved and saved[0] == epoch and time.monotonic()-saved[1] < self.REFRESH_SECONDS:
+            frozen = saved[2]
+        else:
+            from datetime import timedelta
+
+            with self.store.connect() as conn:
+                rows = conn.execute(
+                    "SELECT c.model,c.enrolled_at,p.model_sha256 FROM rival_poly_contest_models c "
+                    "JOIN rival_pooled_models p ON c.model LIKE 'pooled:%@' || p.model_sha256 "
+                    "WHERE p.horizon_minutes=? AND p.gates_passed=1 ORDER BY c.enrolled_at DESC,c.model",
+                    (horizon,),
+                ).fetchall()
+                selected = set()
+                for boundary in (epoch, max(0, epoch-1)):
+                    cutoff = (POLICY_START+timedelta(days=boundary*WINDOW_DAYS)).isoformat()
+                    recipes = set()
+                    for row in rows:
+                        recipe = row["model"].split("@")[0]
+                        if row["enrolled_at"] <= cutoff and recipe not in recipes:
+                            recipes.add(recipe)
+                            selected.add(row["model_sha256"])
+                        if len(recipes) == 2:
+                            break
+                frozen = []
+                for sha in sorted(selected):
+                    row = conn.execute("SELECT document FROM rival_pooled_models WHERE model_sha256=?",
+                                       (sha,)).fetchone()
+                    if row is None:
+                        continue
+                    try:
+                        doc = validate(json.loads(row["document"]))
+                        if model_sha256(doc) != sha or not usable(doc, now=stamp):
+                            continue
+                    except (ValueError, TypeError, KeyError):
+                        continue
+                    doc["_family"], doc["_sha256"] = family(doc), sha
+                    frozen.append(doc)
+            if not hasattr(self, "_contest_cache"):
+                self._contest_cache = {}
+            self._contest_cache[horizon] = epoch, time.monotonic(), frozen
+        docs = {d["_sha256"]: d for d in (*frozen, *current)
+                if context or d.get("feature_version") == FEATURE_VERSION}
+        return list(docs.values())
+
     def _reload(self, now) -> None:
         import time
 

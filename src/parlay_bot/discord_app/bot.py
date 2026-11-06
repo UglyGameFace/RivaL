@@ -587,10 +587,10 @@ class RivalDiscordClient(discord.Client):
         self._poly_board_task: asyncio.Task[None] | None = None
         self._poly_research_task: asyncio.Task[None] | None = None
         # Locked test of the Up/Down price formula vs Polymarket's price.
-        from parlay_bot.perpetuals.coinbase_reference import CoinbaseReference
         from parlay_bot.perpetuals.polymarket_formula_test import FormulaTest
+        from parlay_bot.perpetuals.spot_reference import SpotReference
         self.formula_test = FormulaTest(self.store)
-        self.coinbase_reference = CoinbaseReference()
+        self.spot_reference = SpotReference()
         self.polymarket_board.formula = self.formula_test
         self._formula_task: asyncio.Task[None] | None = None
 
@@ -1392,6 +1392,7 @@ class RivalDiscordClient(discord.Client):
         await asyncio.to_thread(self.auto_hunt.store.initialize)
         await asyncio.to_thread(self.polymarket_board.store.initialize)
         await asyncio.to_thread(self.polymarket_research.initialize)
+        await asyncio.to_thread(self.formula_test.initialize)
         await asyncio.to_thread(self.kalshi_forward.initialize)
         _LOG.info(
             "RivaL Polymarket contract AI wired free_key_configured=%s; "
@@ -1990,36 +1991,32 @@ class RivalDiscordClient(discord.Client):
         """Every ~10 s: the price formula's chance for each open contract.
 
         Reads Polymarket's verified quotes (shared, capped reader) and
-        Coinbase's live price. Writes at most one frozen bet per contract to
-        the locked scorecard; never sends a message.
+        three independent USD spot references. All candidates share one frozen
+        checkpoint and cost receipt per contract; never sends a message.
         """
-        from parlay_bot.perpetuals.price_formula import per_second_sigma
+        from parlay_bot.perpetuals.model_league import ASSETS, settlement_schema
+        from parlay_bot.perpetuals.spot_reference import combine
 
         await self.wait_until_ready()
         while not self.is_closed():
             started = time.monotonic()
             try:
-                notices = await asyncio.wait_for(
-                    self.auto_hunt.polymarket.active(), timeout=12,
+                await asyncio.gather(self.spot_reference.prepare(ASSETS),
+                                     self.spot_reference.prepare_native(ASSETS))
+                notices, sources, native = await asyncio.gather(
+                    asyncio.wait_for(self.auto_hunt.polymarket.active(), timeout=12),
+                    self.spot_reference.snapshots(ASSETS),
+                    self.spot_reference.native_snapshots(ASSETS),
                 )
-                assets = sorted({n.asset for n in notices})
-                prices, candles = await asyncio.gather(
-                    asyncio.gather(*(self.coinbase_reference.price(a) for a in assets)),
-                    asyncio.gather(*(self.coinbase_reference.candles(a) for a in assets)),
-                )
-                by_asset = {a: (p, c) for a, p, c in zip(assets, prices, candles, strict=True)}
                 considered = 0
                 for notice in notices:
-                    price, rows = by_asset.get(notice.asset, (None, None))
-                    if price is None or not rows:
-                        continue
-                    opened = self.coinbase_reference.open_at(rows, notice.issued)
-                    sigma = per_second_sigma([close for _, _, close in rows[-61:]])
-                    if opened is None or sigma is None:
-                        continue
+                    schema = settlement_schema(notice)
+                    reference = (native.get(notice.asset) if schema and "binance.com" in schema
+                                 else combine(sources.get(notice.asset, {}), opens=notice.issued,
+                                              now=datetime.now(UTC)))
                     await asyncio.to_thread(
-                        self.formula_test.consider, notice, price=price,
-                        open_price=opened, sigma_per_second=sigma,
+                        self.formula_test.consider, notice, reference=reference,
+                        learner=self.polymarket_research.learner,
                     )
                     considered += 1
                 _LOG.debug("RivaL formula test considered=%d", considered)
@@ -3127,7 +3124,7 @@ class RivalDiscordClient(discord.Client):
             ("polymarket_board", getattr(self, "polymarket_board", None)),
             ("auto_hunt", getattr(self, "auto_hunt", None)),
             ("polymarket_research", getattr(self, "polymarket_research", None)),
-            ("coinbase_reference", getattr(self, "coinbase_reference", None)),
+            ("spot_reference", getattr(self, "spot_reference", None)),
             ("public_quotes", getattr(self, "public_quotes", None)),
             ("history_recovery", getattr(self, "history_recovery", None)),
             ("kucoin_history_recovery", getattr(self, "kucoin_history_recovery", None)),

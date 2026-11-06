@@ -290,7 +290,7 @@ def test_live_market_and_model_predictions_are_clearly_separate():
         ends_at=current.closes, status="ok",
     )
     embed = live_polymarket_embed(board, model, asset="BTC", horizon=5)
-    assert "Polymarket AI WAIT" in embed.title
+    assert "No model beats Polymarket's price" in embed.title
     assert "No current contract-specific AI call" in embed.description
     full = str(embed.to_dict())
     assert "UP $0.61" in full and "DOWN $0.45" in full
@@ -323,7 +323,7 @@ def test_15m_model_leans_up_for_a_different_five_minute_candle_only():
         ends_at=current.closes, status="ok",
     )
     embed = live_polymarket_embed(board, model, asset="BTC", horizon=15)
-    assert "Polymarket AI WAIT" in embed.title
+    assert "No model beats Polymarket's price" in embed.title
     full = str(embed.to_dict())
     assert "No current contract-specific AI call" in full
     assert "hyperliquid" not in full and "95.0%" not in full
@@ -352,7 +352,7 @@ def test_stale_or_unavailable_model_never_becomes_directional_call():
     ):
         embed = live_polymarket_embed(board, snapshot, asset="BTC", horizon=5)
         assert "No current contract-specific AI call" in embed.description
-        assert "Polymarket AI WAIT" in embed.title
+        assert "No model beats Polymarket's price" in embed.title
         assert "99.0%" not in str(embed.to_dict())
 
 
@@ -527,7 +527,8 @@ async def test_card_keeps_frozen_call_when_quote_drops_out(tmp_path):
             refresh_note=Mock(return_value=None), status=Mock(return_value=""),
         )
         embed, _ = await service._observation("BTC", 5)
-        assert "DOWN" in embed.title and "WAIT" not in embed.title
+        assert "No model beats Polymarket's price" in embed.title
+        assert any("DOWN" in f.value for f in embed.fields if "model research" in f.name)
         service.research.observe.assert_not_called()
         assert "No verified sell-side liquidity" in next(
             f.value for f in embed.fields if "share asks" in f.name)
@@ -542,7 +543,15 @@ async def test_one_ping_per_contract_only_for_fresh_up_down_calls(tmp_path, monk
         store.save(LivePolymarketTracker(str(user.id), "BTC", 5, "555", "901", "old"))
         now = datetime.now(UTC)
         current, board = _open_board(now)
-        call = _frozen_call(current, issued=now - timedelta(seconds=3))
+        from dataclasses import replace
+
+        from parlay_bot.perpetuals.model_league import settlement_schema
+        quote = replace(board.current_quote, down_cost=.5275, up_cost=.6275,
+                        resolution_source='https://data.chain.link/streams/btc-usd-twap-60s-streams',
+                        rules='Chainlink 60-second TWAP', condition_id='0x'+'a'*64)
+        board = replace(board, current_quote=quote)
+        call = replace(_frozen_call(current, issued=now - timedelta(seconds=3)),
+                       settlement_schema=settlement_schema(quote), condition_id=quote.condition_id)
         service.research = SimpleNamespace(learner=SimpleNamespace(summary=lambda **_: {
             "settled_forward_contracts": 2284, "forward_brier": 0.2134,
             "market_baseline_brier": 0.2117}))
@@ -553,13 +562,22 @@ async def test_one_ping_per_contract_only_for_fresh_up_down_calls(tmp_path, monk
 
         monkeypatch.setattr(service, "_observation", observe)
         current_call = call
+        # No proven champion for this market: the main model never pings.
+        service._league = (datetime.now(UTC), {"markets": {("BTC", 5): {
+            "models": [], "champion": None}}})
+        await service.cycle()
+        assert not [c for c in channel.send.await_args_list if "content" in c.kwargs]
+        # Once the main model is the market's proven best, it pings.
+        service._league = (datetime.now(UTC), {"markets": {("BTC", 5): {
+            "scopes": {settlement_schema(quote): {
+                "models": [], "champion": call.model}}}}})
         await service.cycle()
         await service.cycle()
         pings = [c for c in channel.send.await_args_list if "content" in c.kwargs]
         assert len(pings) == 1  # a second cycle never re-pings the same contract
         text = pings[0].kwargs["content"]
         assert "call issued: DOWN" in text and "41.7% UP" in text
-        assert "did not beat the market's own price" in text and "Not a proven edge" in text
+        assert "passed the fixed contest" in text and "Paper evidence" in text
         assert "will not flip" in text
         assert "Price check: DOWN costs" in text  # 58% DOWN vs 55¢ + fee
 
@@ -646,5 +664,62 @@ async def test_dm_tap_latency_is_logged_and_an_expired_tap_is_recorded(tmp_path,
         late.followup.send.assert_not_awaited()
         warning = next(r for r in caplog.records if "not acknowledged" in r.getMessage())
         assert warning.levelno == logging.WARNING and "receipt_ms=4" in warning.getMessage()
+    finally:
+        hot.close()
+
+
+def test_price_check_line():
+    from parlay_bot.discord_app.polymarket_live_board import value_line
+    from parlay_bot.perpetuals.polymarket_research import ContractCall
+
+    def call(direction, p):
+        return ContractCall(slug="s", asset="BTC", horizon=5, issued_at=datetime.now(UTC),
+                            expires=datetime.now(UTC) + timedelta(minutes=5), direction=direction,
+                            model="m", thesis="t", risk="r", evidence_sha256="e",
+                            kind="model", probability_up=p)
+    expensive = value_line(call("UP", 0.559), SimpleNamespace(up_ask=0.66, down_ask=0.35, up_cost=.6757, down_cost=.3659))
+    assert "costs 68¢" in expensive and "skip at this price" in expensive
+    cheap = value_line(call("DOWN", 0.436), SimpleNamespace(up_ask=0.52, down_ask=0.49, up_cost=.5375, down_cost=.5075))
+    assert "DOWN 56%" in cheap and "cheaper than the model's own chance" in cheap
+    assert value_line(call("WAIT", 0.5), SimpleNamespace(up_ask=0.5, down_ask=0.5)) == ""
+
+
+def test_price_check_never_invents_missing_costs():
+    from parlay_bot.discord_app.polymarket_live_board import value_line
+    from parlay_bot.perpetuals.polymarket_research import ContractCall
+
+    call = ContractCall(slug="s", asset="BTC", horizon=5, issued_at=datetime.now(UTC),
+                        expires=datetime.now(UTC)+timedelta(minutes=5), direction="UP", model="m",
+                        thesis="t", risk="r", evidence_sha256="e", probability_up=.8)
+    assert "unavailable" in value_line(call, SimpleNamespace(up_ask=.5, down_ask=.5))
+
+
+@pytest.mark.asyncio
+async def test_qualified_formula_can_serve_and_ping_from_its_exact_frozen_round(tmp_path):
+    from parlay_bot.perpetuals.model_league import FORMULA, Contest, settlement_schema
+    from tests.test_model_league import SHA, notice
+
+    hot, store, service, channel, user, _ = _setup(tmp_path)
+    try:
+        now = datetime.now(UTC)
+        quote = notice(start=now-timedelta(minutes=1), horizon=5)
+        contest = Contest(hot)
+        contest.initialize()
+        assert contest.capture(quote, {FORMULA:(.9,SHA)}, now=now)
+        current = PolymarketListedWindow('BTC',5,quote.slug,quote.issued,quote.expires,True,None)
+        board = PolymarketWindowBoard(now,current,None,quote)
+        service.research = SimpleNamespace(learner=SimpleNamespace(store=hot,summary=lambda **_: {}))
+        service._league = (now, {'markets': {('BTC',5): {'scopes': {
+            settlement_schema(quote): {'champion':FORMULA,'models':[]}}}}})
+        call = await service._qualified_call(board, None, 'BTC', 5)
+        assert call.model == FORMULA and call.direction == 'UP'
+        assert call.probability_up == .9 and call.condition_id == quote.condition_id
+        service._live_cache['BTC',5] = now,board,call
+        tracker = LivePolymarketTracker(str(user.id),'BTC',5,'555','901','old')
+        store.save(tracker)
+        await service._ping(tracker,board,call)
+        await service._ping(tracker,board,call)
+        pings = [x for x in channel.send.await_args_list if 'content' in x.kwargs]
+        assert len(pings) == 1 and 'call issued: UP' in pings[0].kwargs['content']
     finally:
         hot.close()

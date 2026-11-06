@@ -1,103 +1,246 @@
-"""The Up/Down price formula and its locked scorecard."""
+"""Numerical references, causal inputs and common checkpoint integration."""
 from __future__ import annotations
 
+import hashlib
+import json
 import math
-from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from dataclasses import replace
+from datetime import timedelta
+from decimal import Decimal, localcontext
+from unittest.mock import Mock
 
-from parlay_bot.perpetuals.coinbase_reference import CoinbaseReference
-from parlay_bot.perpetuals.polymarket_formula_test import (
-    MIN_BETS,
-    FormulaTest,
-    formula_record,
-    formula_text,
+import pytest
+
+from parlay_bot.perpetuals.model_league import BOOK, FORMULA, PRESSURE
+from parlay_bot.perpetuals.polymarket_formula_test import FormulaTest
+from parlay_bot.perpetuals.price_formula import (
+    chance_up,
+    jump_chance,
+    jump_parameters,
+    microprice,
+    per_second_sigma,
 )
-from parlay_bot.perpetuals.polymarket_learning import PolymarketOutcomeLearner
-from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
-from parlay_bot.perpetuals.price_formula import chance_up, per_second_sigma
-from parlay_bot.storage.hot import SQLiteHotStore
-
-NOW = datetime(2026, 11, 6, 7, tzinfo=UTC)
+from parlay_bot.perpetuals.spot_reference import VENUES, clean_candles, combine
+from tests.test_model_league import SHA, notice, setup
 
 
-@dataclass(frozen=True)
-class Notice:
-    slug: str
-    asset: str = "BTC"
-    horizon: int = 5
-    issued: datetime = NOW - timedelta(minutes=1)
-    expires: datetime = NOW + timedelta(minutes=4)
-    up_ask: float = 0.50
-    down_ask: float = 0.51
-    quote_at: datetime = NOW
-    condition_id: str = "0x" + "f" * 64
+def test_digital_gbm_uses_d2_and_rejects_bad_inputs():
+    sigma, seconds = .0002, 100.
+    price = 100 * math.exp(2*sigma*math.sqrt(seconds)+.5*sigma*sigma*seconds)
+    assert chance_up(price, 100, sigma, seconds) == pytest.approx(.977249868)
+    assert chance_up(100, 100, sigma, seconds) < .5
+    for value in (math.nan, math.inf, -1, 0):
+        assert chance_up(value, 100, sigma, seconds) is None
+        assert chance_up(100, 100, value, seconds) is None
+    assert per_second_sigma([100.]*30) is None
+    assert per_second_sigma([100.]*20+[math.nan, 101.]) is None
 
 
-def test_formula_is_the_binary_option_chance():
-    assert chance_up(100.0, 100.0, 0.001, 60) == 0.5
-    sigma, seconds = 0.0002, 100.0
-    two_sd_up = 100.0 * math.exp(2 * sigma * math.sqrt(seconds))
-    assert abs(chance_up(two_sd_up, 100.0, sigma, seconds) - 0.97725) < 1e-4
-    assert abs(chance_up(100.0 / (two_sd_up / 100.0), 100.0, sigma, seconds) - 0.02275) < 1e-4
-    assert chance_up(100.0, 100.0, 0.0, 60) is None
-    flat = [100.0] * 30
-    assert per_second_sigma(flat) is None  # no movement: no volatility estimate
-    wiggle = [100.0 * (1.001 if i % 2 else 1.0) for i in range(61)]
-    assert 0 < per_second_sigma(wiggle) < 0.001
+def test_ewma_reacts_more_to_a_recent_shock():
+    quiet = [100*math.exp(.0001*(i % 2)) for i in range(120)]
+    recent = quiet+[quiet[-1]*1.02]
+    old = [quiet[0]/1.02]+quiet
+    assert per_second_sigma(recent) > 5*per_second_sigma(old)
 
 
-def test_open_price_is_the_contract_minutes_opening_trade():
-    rows = [(int((NOW - timedelta(minutes=2)).timestamp()), 99.0, 99.5),
-            (int((NOW - timedelta(minutes=1)).timestamp()), 100.0, 101.0)]
-    assert CoinbaseReference.open_at(rows, NOW - timedelta(minutes=1)) == 100.0
-    assert CoinbaseReference.open_at(rows, NOW - timedelta(minutes=5)) is None
+def test_twap_digital_differs_from_terminal_and_requires_unaccrued_window():
+    # Moment variance tends to sigma^2*(T-2w/3); verify independent formula.
+    s, k, sigma, t, w = 100.1, 100., .0002, 240., 60
+    with localcontext() as ctx:
+        ctx.prec = 50
+        x = Decimal(str(sigma))**2*w
+        ratio = 2*(x.exp()-1-x)/(x*x)
+        v = float(Decimal(str(sigma))**2*Decimal(str(t-w))+ratio.ln())
+    expected = .5*math.erfc(-(math.log(s/k)-v/2)/math.sqrt(2*v))
+    assert chance_up(s, k, sigma, t, twap_seconds=w) == pytest.approx(expected, abs=1e-8)
+    assert chance_up(s, k, sigma, t, twap_seconds=w) != chance_up(s, k, sigma, t)
+    assert chance_up(s, k, sigma, 30, twap_seconds=w) is None
 
 
-def _store(tmp_path):
-    store = SQLiteHotStore(tmp_path / "formula.sqlite")
-    PolymarketOutcomeLearner(store).initialize()
-    PolymarketResearch(store).initialize()
-    return store
+def test_merton_zero_jump_limit_and_tail_estimation():
+    p = {'sigma': .0002, 'intensity': 0., 'mean': 0., 'variance': .01}
+    assert jump_chance(100.1, 100., 240., p) == pytest.approx(chance_up(100.1, 100., .0002, 240.))
+    assert jump_parameters([100.]*240) is None
+    closes = [100*math.exp(.0002*math.sin(i)) for i in range(240)]
+    closes[80] *= 1.02
+    closes[160] *= .98
+    fitted = jump_parameters(closes)
+    assert fitted is not None and fitted['intensity'] > 0
+    assert 0 <= jump_chance(100.1, 100., 240., fitted) <= 1
+    assert microprice(99., 101., 9., 1.) == 100.8
+    assert microprice(101., 99., 9., 1.) is None
 
 
-def _settle(store, notice, direction):
-    with store.connect() as conn:
-        conn.execute(
-            "INSERT INTO rival_polymarket_ai_outcomes (slug,condition_id,direction,resolved_at,"
-            "observed_at,receipt_sha256,receipt_json) VALUES (?,?,?,?,?,?,?)",
-            (notice.slug, notice.condition_id, direction, notice.expires.isoformat(),
-             (notice.expires + timedelta(minutes=1)).isoformat(), "r" * 64, "{}"))
+def reference(now, opens):
+    base = int(opens.timestamp())-240*60
+    rows = [(base+i*60, 100., 100*math.exp(.0002*math.sin(i))) for i in range(240)]
+    rows += [(int(opens.timestamp()), 100., 100.01)]
+    return {'price': 100.2, 'open': 100., 'closes': [c for _, _, c in rows],
+            'microprice': 100.21, 'at': now, 'quote_currency': 'USD',
+            'reference_label': 'median of 3+ USD spot exchanges', 'sources': {v: {'price': 100.2} for v in VENUES},
+            'candles': rows}
 
 
-def test_first_qualifying_moment_is_frozen_and_scored_at_the_ask(tmp_path):
-    store = _store(tmp_path)
-    try:
-        test = FormulaTest(store)
-        notice = Notice(slug="btc-updown-5m-1")
-        # Price at the open: 50/50, no bet, but the contract is counted.
-        flat = test.consider(notice, price=100.0, open_price=100.0,
-                             sigma_per_second=0.0002, now=NOW)
-        assert flat["bet"] is None and abs(flat["chance_up"] - 0.5) < 1e-9
-        # Price jumps: UP is far more likely than its 50¢ ask -> first bet frozen.
-        up = test.consider(notice, price=100.5, open_price=100.0,
-                           sigma_per_second=0.0002, now=NOW + timedelta(seconds=10))
-        assert up["bet"]["side"] == "UP"
-        # A later, different reading can never replace the frozen bet.
-        later = Notice(slug="btc-updown-5m-1", up_ask=0.10, down_ask=0.91,
-                       quote_at=NOW + timedelta(seconds=20))
-        test.consider(later, price=99.0, open_price=100.0,
-                      sigma_per_second=0.0002, now=NOW + timedelta(seconds=20))
-        with store.connect() as conn:
-            rows = conn.execute("SELECT side, ask FROM rival_polymarket_formula_bets").fetchall()
-        assert [(r["side"], r["ask"]) for r in rows] == [("UP", 0.50)]
-        # Under 90 s left: never a new bet.
-        late = Notice(slug="btc-updown-5m-2", expires=NOW + timedelta(seconds=60))
-        assert test.consider(late, price=101.0, open_price=100.0,
-                             sigma_per_second=0.0002, now=NOW) is None
-        _settle(store, notice, "DOWN")
-        record = formula_record(store, asset="BTC", horizon=5, now=NOW + timedelta(hours=1))
-        assert record["bets"] == 1 and record["wins"] == 0 and record["contracts"] == 1
-        assert record["return_per_dollar"] == -1.0 and not record["unlocked"]
-        assert "LOCKED" in formula_text(record) and str(MIN_BETS)[:1] in formula_text(record)
-    finally:
-        store.close()
+def test_median_requires_three_usd_sources_and_consecutive_closed_candles():
+    n = notice(horizon=5)
+    now = n.quote_at
+    ref = reference(now, n.issued)
+    rows = clean_candles(ref['candles'], now=now)
+    assert rows is not None
+    assert clean_candles(rows[:-2], now=now) is None
+    assert clean_candles(rows[:100]+rows[101:], now=now) is None
+    sources = {v: {'price': 100.+i*.1, 'microprice': 100.+i*.1,
+                    'at': now, 'clock': 'book', 'candles': rows}
+               for i, v in enumerate(VENUES[:3])}
+    combined = combine(sources, opens=n.issued, now=now)
+    assert combined['price'] == 100.1 and combined['open'] == 100.
+    sources.pop('gemini')
+    assert combine(sources, opens=n.issued, now=now) is None
+
+
+def test_every_model_and_wait_share_one_frozen_book(learning_store):
+    setup(learning_store)
+    n = notice(horizon=5)
+    learner = Mock()
+    learner.contest_forecasts.return_value = {BOOK: (.8, SHA)}
+    test = FormulaTest(learning_store)
+    reading = test.consider(n, reference=reference(n.quote_at, n.issued), learner=learner, now=n.quote_at)
+    assert reading['strike_source'] == 'three-spot-median-proxy'
+    original = test.contest.call(n.slug, FORMULA)
+    assert original is not None and test.contest.call(n.slug, PRESSURE) is not None
+    assert test.contest.call(n.slug, BOOK)['issued_at'] == original['issued_at']
+    assert test.contest.call(n.slug, BOOK)['market_up'] == original['market_up']
+    # Later, even an attractive quote and probability cannot rewrite the call.
+    test.consider(replace(n, up_ask=.1), reference=None, learner=learner,
+                  now=n.quote_at+timedelta(seconds=1))
+    assert test.contest.call(n.slug, FORMULA) == original
+    with learning_store.connect() as conn:
+        raw = conn.execute('SELECT evidence_json,evidence_sha256 FROM rival_poly_contest_rounds').fetchone()
+    assert hashlib.sha256(raw['evidence_json'].encode()).hexdigest() == raw['evidence_sha256']
+    assert json.loads(raw['evidence_json'])['inputs']['candle_count'] > 120
+
+
+def test_published_strike_overrides_exchange_proxy_and_unknown_rules_abstain(learning_store):
+    setup(learning_store)
+    n = replace(notice(horizon=5), price_to_beat=101.)
+    learner = Mock()
+    learner.contest_forecasts.return_value = {}
+    test = FormulaTest(learning_store)
+    reading = test.consider(n, reference=reference(n.quote_at, n.issued), learner=learner, now=n.quote_at)
+    assert reading['strike_source'] == 'published' and reading['chance_up'] < .5
+    other = replace(n, slug='unknown-rules', rules='Unknown settlement')
+    assert test.consider(other, reference=None, learner=learner, now=n.quote_at) is None
+    assert test.contest.call('unknown-rules', FORMULA) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('venue', VENUES)
+async def test_public_source_wire_formats_and_cooldown(venue):
+    from datetime import UTC, datetime
+    from email.utils import format_datetime
+
+    import httpx
+
+    from parlay_bot.perpetuals.spot_reference import SpotReference
+
+    now = datetime.now(UTC)
+    minute = int(now.timestamp())//60*60
+    rows = [(minute-i*60, 100., 100.+.01*(i % 2)) for i in range(250)]
+    requests = []
+    blocked = False
+
+    def handler(request):
+        requests.append(request)
+        if blocked:
+            return httpx.Response(429)
+        if 'candles' in request.url.path or 'ohlc' in request.url.path:
+            if venue == 'coinbase':
+                payload = [[t, o, o+.1, o, c, 1.] for t, o, c in rows]
+            elif venue == 'bitstamp':
+                payload = {'data': {'ohlc': [{'timestamp': str(t), 'open':str(o), 'close':str(c)} for t,o,c in rows]}}
+            elif venue == 'gemini':
+                payload = [[t*1000, o, o+.1, o, c, 1.] for t,o,c in rows]
+            else:
+                payload = [[t*1000, o, c, o+.1, o, 1.] for t,o,c in rows]
+        elif venue == 'coinbase':
+            payload = {'time': now.isoformat(), 'bids':[['99.99','3','1']], 'asks':[['100.01','1','1']]}
+        elif venue == 'bitstamp':
+            payload = {'timestamp': str(int(now.timestamp())), 'bids':[['99.99','3']], 'asks':[['100.01','1']]}
+        elif venue == 'bitfinex':
+            payload = [[99.99, 1, 3.], [100.01, 1, -1.]]
+        else:
+            # Documented dummy timestamp is deliberately old, never trusted.
+            payload = {'bids':[{'price':'99.99','amount':'3','timestamp':'1'}],
+                       'asks':[{'price':'100.01','amount':'1','timestamp':'1'}]}
+        return httpx.Response(200, json=payload, headers={'Date': format_datetime(now)})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        source = SpotReference(client)
+        result = await source._source(venue, 'BTC')
+        assert result is not None and result['price'] == 100.
+        assert len(result['candles']) == 240 and result['microprice'] > result['price']
+        blocked = True
+        assert await source._source(venue, 'BTC') is None
+        count = len(requests)
+        assert await source._source(venue, 'BTC') is None
+        assert len(requests) == count  # blocked provider is not hammered
+
+
+@pytest.mark.parametrize('matching', [False, True])
+def test_hourly_formula_requires_native_binance_usdt(learning_store, matching):
+    setup(learning_store)
+    n = replace(notice(horizon=60), resolution_source='https://www.binance.com/en/trade/BTC_USDT',
+                rules='Up if the Binance BTC/USDT 1 hour candle close is at or above its open.')
+    ref = reference(n.quote_at,n.issued)
+    if matching:
+        ref.update(quote_currency='USDT', native_venue='binance_spot',
+                   opens_at=int(n.issued.timestamp()), open_source='binance-hourly-open',
+                   reference_label='Binance spot (USDT)')
+    learner = Mock()
+    learner.contest_forecasts.return_value = {BOOK:(.8,SHA)}
+    test = FormulaTest(learning_store)
+    reading = test.consider(n,reference=ref,learner=learner,now=n.quote_at)
+    assert (reading is not None) is matching
+    assert test.contest.call(n.slug,BOOK) is not None
+    assert (test.contest.call(n.slug,FORMULA) is not None) is matching
+    if reading:
+        assert reading['strike_source'] == 'binance-hourly-open'
+
+
+@pytest.mark.asyncio
+async def test_native_binance_open_is_not_the_forming_hourly_close():
+    from datetime import UTC, datetime
+    from email.utils import format_datetime
+
+    import httpx
+
+    from parlay_bot.perpetuals.spot_reference import SpotReference
+
+    now=datetime.now(UTC)
+    minute=int(now.timestamp())//60*60
+    hour=minute//3600*3600
+    denied=False
+    calls=[]
+    def handler(req):
+        calls.append(req)
+        if denied:
+            return httpx.Response(451)
+        if req.url.path.endswith('/depth'):
+            payload={'bids':[['99.99','3']],'asks':[['100.01','1']]}
+        elif req.url.params['interval']=='1h':
+            payload=[[hour*1000,'101','200','90','999999',1]]
+        else:
+            payload=[[(minute-i*60)*1000,'100','101','99','100.01',1] for i in range(250)]
+        return httpx.Response(200,json=payload,headers={'Date':format_datetime(now)})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        source=SpotReference(client)
+        await source.prepare_native(('BTC',))
+        ref=(await source.native_snapshots(('BTC',)))['BTC']
+        assert ref['open']==101 and ref['price']==100
+        assert ref['quote_currency']=='USDT' and ref['native_venue']=='binance_spot'
+        assert ref['opens_at']==hour and max(ref['closes'])<200
+        denied=True
+        assert await source.native_snapshots(('BTC',)) == {}
+        before=len(calls)
+        assert await source.native_snapshots(('BTC',)) == {}
+        assert len(calls)==before

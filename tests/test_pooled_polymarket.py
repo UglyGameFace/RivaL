@@ -139,6 +139,7 @@ def test_learner_issues_pooled_forecast_once_per_contract(tmp_path):
 def test_polymarket_crypto_fee_matches_published_peak():
     from parlay_bot.perpetuals.polymarket_learning import polymarket_fee
 
-    # Peak effective rate 1.80% of the amount paid, at a 50-cent price.
-    assert polymarket_fee(0.5) / 0.5 == pytest.approx(0.018)
-    assert polymarket_fee(0.9) / 0.9 < 0.007
+    # Official crypto schedule: 100 shares at 50 cents cost $1.75 in fees.
+    assert 100 * polymarket_fee(0.5) == pytest.approx(1.75)
+    assert polymarket_fee(.3) == pytest.approx(polymarket_fee(.7))
+    assert 100 * polymarket_fee(0.9) == pytest.approx(.63)

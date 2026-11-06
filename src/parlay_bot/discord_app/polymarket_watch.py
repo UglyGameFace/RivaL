@@ -72,6 +72,12 @@ class PolymarketNotice:
     # Set exclusively by an authenticated, source-matched oracle adapter.
     # The public Gamma/CLOB reader has no such reference and leaves this None.
     oracle_reference: object | None = None
+    up_bid: float | None = None
+    down_bid: float | None = None
+    fee_rate: float | None = None
+    # Ten-share depth-weighted costs, including per-level rounded taker fees.
+    up_cost: float | None = None
+    down_cost: float | None = None
 
     @property
     def venue(self) -> str:
@@ -173,6 +179,45 @@ def _ask_levels(book: dict, *, now: datetime) -> list[tuple[float, float]]:
 def _best_ask(book: dict, *, now: datetime) -> float:
     """Top-of-book only; not a guaranteed fill price."""
     return _ask_levels(book, now=now)[0][0]
+
+
+def _best_bid(book: dict) -> float | None:
+    try:
+        values = [float(x["price"]) for x in book.get("bids", [])
+                  if float(x["size"]) > 0 and 0 < float(x["price"]) < 1]
+        return max(values, default=None)
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
+def _fee_rate(market: dict) -> float | None:
+    """Missing/unsupported market fees cannot become zero-cost evidence."""
+    if market.get("feesEnabled") is False:
+        return 0.0
+    schedule = market.get("feeSchedule")
+    if market.get("feesEnabled") is not True or not isinstance(schedule, dict):
+        return None
+    try:
+        rate = float(schedule["rate"])
+        if float(schedule["exponent"]) == 1 and math.isfinite(rate) and 0 < rate <= 1:
+            return rate
+    except (KeyError, ValueError, TypeError):
+        pass
+    return None
+
+
+def _average_cost(book: dict, *, now: datetime, rate: float | None) -> float | None:
+    if rate is None:
+        return None
+    from parlay_bot.perpetuals.polymarket_learning import polymarket_fee
+    left, spent = REFERENCE_SHARES, 0.0
+    for price, amount in _ask_levels(book, now=now):
+        taken = min(left, amount)
+        spent += taken * price + round(taken * polymarket_fee(price, rate), 5)
+        left -= taken
+        if left <= 1e-9:
+            return spent / REFERENCE_SHARES
+    return None
 
 
 def _average_ask(
@@ -547,6 +592,10 @@ class PolymarketReader:
             condition_id=condition, up_token_id=tokens[0], down_token_id=tokens[1],
             resolution_source=market.get("resolutionSource") or event.get("resolutionSource"),
             price_to_beat=window.price_to_beat,
+            up_bid=_best_bid(up_book), down_bid=_best_bid(down_book),
+            fee_rate=_fee_rate(market),
+            up_cost=_average_cost(up_book, now=received, rate=_fee_rate(market)),
+            down_cost=_average_cost(down_book, now=received, rate=_fee_rate(market)),
             rules=(market["description"][:2000]
                    if isinstance(market.get("description"), str) else None),
         )

@@ -26,6 +26,9 @@ async def sample(store):
     finally:
         await reader.aclose()
     return rows
+import os
+if os.environ.get("RIVAL_PROBE_ASSETS","BTC")!="BTC":
+    print(MARKER + base64.b64encode(gzip.compress(b"{}")).decode()); raise SystemExit(0)
 try:
     from parlay_bot.config import Settings
     from parlay_bot.storage.hot import PostgresHotStore

@@ -516,22 +516,26 @@ class LivePolymarketBoardService:
                 channel = user.dm_channel or await asyncio.wait_for(
                     user.create_dm(), timeout=5,
                 )
-                if previous is not None:
-                    # Re-target the same existing message, never send a new
-                    # notification after an ambiguous Discord edit failure.
-                    if int(previous.channel_id) != channel.id:
-                        return False, "Old tracker channel unavailable; stop first."
-                    await asyncio.wait_for(
-                        channel.get_partial_message(
-                            int(previous.message_id)
-                        ).edit(embed=embed), timeout=5,
-                    )
-                    message_id = previous.message_id
-                else:
-                    sent = await asyncio.wait_for(
-                        channel.send(embed=embed), timeout=5,
-                    )
-                    message_id = str(sent.id)
+                # Always a NEW card at the bottom of the DMs. Re-targeting the
+                # old card edited a message that could be days old and far up
+                # the chat (one was from Oct 30), so pressing Track looked
+                # like nothing happened.
+                sent = await asyncio.wait_for(
+                    channel.send(embed=embed), timeout=5,
+                )
+                message_id = str(sent.id)
+                if previous is not None and previous.message_id != message_id:
+                    try:
+                        old = self.bot.get_partial_messageable(int(previous.channel_id))
+                        await asyncio.wait_for(
+                            old.get_partial_message(int(previous.message_id)).edit(
+                                embed=discord.Embed(
+                                    description="This card moved to a newer message below.",
+                                    color=discord.Color.dark_grey(),
+                                )), timeout=5,
+                        )
+                    except (TimeoutError, discord.HTTPException):
+                        _LOG.info("Old Polymarket tracker card could not be retired")
             except (TimeoutError, discord.HTTPException) as exc:
                 _LOG.warning(
                     "Live Polymarket tracker DM unavailable user=%s reason=%s",
@@ -546,8 +550,9 @@ class LivePolymarketBoardService:
                 ),
             )
             return True, (
-                f"Auto-tracking {asset} {horizon}m in one continuously edited "
-                "DM. It updates without pressing Refresh."
+                f"Auto-tracking {asset} {horizon}m: a new card is at the bottom of "
+                "your DMs and updates every few seconds. You get a separate DM "
+                "when the call is close to flipping and when it flips."
             )
 
     async def stop(self, user_id: int) -> bool:

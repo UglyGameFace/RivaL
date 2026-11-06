@@ -87,7 +87,7 @@ def _setup(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_auto_tracking_persists_edits_one_dm_and_stops(tmp_path, monkeypatch):
+async def test_auto_tracking_persists_sends_a_fresh_card_and_stops(tmp_path, monkeypatch):
     hot, store, service, channel, user, edited = _setup(tmp_path)
     one = discord.Embed(title="Current 5m")
     two = discord.Embed(title="Next 5m")
@@ -105,11 +105,14 @@ async def test_auto_tracking_persists_edits_one_dm_and_stops(tmp_path, monkeypat
         assert await service.cycle() == 0
         assert edited.await_count == 0
 
-        # Multiple taps change the same DM rather than spamming users.
+        # Another tap sends a fresh card at the bottom of the DMs (the old
+        # one is retired), so pressing Track always visibly does something.
+        channel.send.return_value = SimpleNamespace(id=902)
         ok, message = await service.start(user, asset="XRP", horizon=15)
         assert ok and "XRP 15m" in message
-        assert channel.send.await_count == 1
-        assert edited.await_count == 1
+        assert channel.send.await_count == 2
+        assert store.get(str(user.id)).message_id == "902"
+        assert "moved to a newer message" in edited.await_args.kwargs["embed"].description
         edited.reset_mock()
         assert store.get(str(user.id)).asset == "XRP"
 

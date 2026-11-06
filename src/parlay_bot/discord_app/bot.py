@@ -2046,8 +2046,10 @@ class RivalDiscordClient(discord.Client):
             except Exception:  # noqa: BLE001
                 _LOG.exception("RivaL Polymarket live board cycle failed safely")
             # Distinct from the 1s RAM-only live direction scanner. CLOB
-            # requests are rate-bounded and grouped by asset/window.
-            await asyncio.sleep(max(0.1, 15 - (time.monotonic() - started)))
+            # requests are rate-bounded and grouped by asset/window. Every
+            # 5 s (was 15 s) so a flipped call and its alert reach tracked
+            # users within seconds; only tracked markets are read.
+            await asyncio.sleep(max(0.1, 5 - (time.monotonic() - started)))
 
     async def _target_loop(self) -> None:
         """Update user-opted-in private forecast cards without flooding DMs."""

@@ -67,11 +67,14 @@ def _custom_ids(view):
 def _guided_custom_ids(bot):
     """Every custom_id a live GuidedHome can show, across all its pages."""
     home = _home(bot)
+    # Without a research panel the Performance page hides its research
+    # buttons, and this coverage check could not see them.
+    home.research_factory = lambda _owner: None
     try:
         found: set[str] = set()
         for page in ("home", "discover", "sports", "slip", "crypto", "forecast", "quote",
                      "practice", "results", "help", "advanced", "feeds", "trust",
-                     "hunt", "live", "crypto-desk"):
+                     "hunt", "live", "crypto-desk", "performance"):
             home.navigate("home")
             home.navigate(page)
             home._buttons()

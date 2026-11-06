@@ -14,9 +14,13 @@ _LOG = logging.getLogger(__name__)
 
 RESEARCH_BUTTONS = (
     "opportunities", "math", "ai", "accuracy", "refresh",
-    "follow-target", "analyze", "models",
+    "follow-target", "analyze", "track-venue",
 )
 RESEARCH_SELECTS = ("asset", "section", "venue")
+# A view has five rows and each select fills one, so the tracker's select
+# lives in a second research fallback view (dispatch matches by custom_id
+# across every registered persistent view).
+RESEARCH_EXTRA_SELECTS = ("track-start",)
 DATA_BUTTONS = (
     "overview", "exchanges", "markets", "coverage",
     "refresh", "previous", "next",
@@ -58,18 +62,23 @@ class _RecoverSelect(discord.ui.Select["StaleDashboardView"]):
 class StaleDashboardView(discord.ui.View):
     """Persistent dispatch-only fallback, no user or message state saved."""
 
-    def __init__(self, scope: str, factory: Callable[[int], discord.ui.View]) -> None:
+    def __init__(self, scope: str, factory: Callable[[int], discord.ui.View], *,
+                 buttons: tuple[str, ...] | None = None,
+                 selects: tuple[str, ...] | None = None) -> None:
         if scope not in ("research", "data"):
             raise ValueError("unsupported stale dashboard")
         super().__init__(timeout=None)
         self.scope = scope
         self.factory = factory
-        buttons = RESEARCH_BUTTONS if scope == "research" else DATA_BUTTONS
-        selects = RESEARCH_SELECTS if scope == "research" else DATA_SELECTS
+        if buttons is None:
+            buttons = RESEARCH_BUTTONS if scope == "research" else DATA_BUTTONS
+        if selects is None:
+            selects = RESEARCH_SELECTS if scope == "research" else DATA_SELECTS
         for index, action in enumerate(buttons):
             self.add_item(_RecoverButton(scope, action, index))
+        first_select_row = (len(buttons) + 4) // 5
         for index, action in enumerate(selects):
-            self.add_item(_RecoverSelect(scope, action, index + 2))
+            self.add_item(_RecoverSelect(scope, action, first_select_row + index))
 
     async def recover(self, interaction: discord.Interaction, action: str) -> None:
         # Always acknowledge immediately; never execute the expired action,
@@ -105,8 +114,10 @@ class StaleDashboardView(discord.ui.View):
 def build_stale_dashboard_views(
     research_factory: Callable[[int], discord.ui.View],
     data_factory: Callable[[int], discord.ui.View],
-) -> tuple[StaleDashboardView, StaleDashboardView]:
+) -> tuple[StaleDashboardView, ...]:
     return (
         StaleDashboardView("research", research_factory),
+        StaleDashboardView("research", research_factory, buttons=(),
+                           selects=RESEARCH_EXTRA_SELECTS),
         StaleDashboardView("data", data_factory),
     )

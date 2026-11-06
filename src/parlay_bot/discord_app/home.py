@@ -2798,6 +2798,10 @@ _STALE_SAFE_PAGES = {
     "back": "home",
     "forecast": "forecast",
     "quote": "quote",
+    # Both open research from Bot Performance; a stale tap reopens that page
+    # (read-only) instead of silently failing or dropping to Home.
+    "track-forward": "performance",
+    "research": "performance",
 }
 
 _STALE_NOTE = (
@@ -2810,7 +2814,7 @@ _STALE_BUTTONS_A = (
     "sports", "crypto", "hunt", "practice", "results", "performance", "help", "advanced",
     "state", "zip", "refresh", "manual", "slip", "lower", "balanced",
     "aggressive", "forecast", "follow", "target", "home", "back",
-    "hunt-poly", "hunt-research", "hunt-qualified",
+    "hunt-poly", "hunt-research", "hunt-qualified", "track-forward",
 )
 _STALE_BUTTONS_B = (
     "quote", "stop", "buy", "sell", "close", "funds", "proof", "trust",

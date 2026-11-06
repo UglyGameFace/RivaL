@@ -120,10 +120,41 @@ def read_receipt() -> dict:
             "forecast": forecast,
             "learning": learning,
             "forward_proof": _future_proof(store, now),
+            "polymarket_contest": _contest_progress(store, now),
             "does_not_prove_prediction_edge": True,
         }
     finally:
         store.close()
+
+
+def _contest_progress(store, now: datetime) -> dict:
+    """Read actual new-policy capture activity, without inference or writes."""
+    from parlay_bot.perpetuals.model_league import FORMULA, POLICY
+
+    try:
+        with store.connect() as conn:
+            policy = conn.execute("SELECT started_at FROM rival_poly_contest_policies WHERE policy=?",
+                                  (POLICY,)).fetchone()
+            if policy is None:
+                return {"status": "not_started"}
+            rows = conn.execute(
+                "SELECT r.asset,r.horizon,COUNT(DISTINCT r.slug) AS captured,"
+                "MAX(r.issued_at) AS latest_at,"
+                "COUNT(DISTINCT CASE WHEN f.model IS NOT NULL THEN r.slug END) AS with_forecasts,"
+                "COUNT(DISTINCT CASE WHEN f.model=? THEN r.slug END) AS formula_forecasts,"
+                "COUNT(DISTINCT d.slug) AS pinned_for_display "
+                "FROM rival_poly_contest_rounds r "
+                "LEFT JOIN rival_poly_contest_forecasts f ON f.slug=r.slug "
+                "LEFT JOIN rival_poly_contest_display d ON d.slug=r.slug "
+                "WHERE r.issued_at>=? AND r.issued_at<=? GROUP BY r.asset,r.horizon ORDER BY r.asset,r.horizon",
+                (FORMULA, policy["started_at"], now.isoformat()),
+            ).fetchall()
+        return {"status": "recorded", "policy": POLICY, "started_at": policy["started_at"],
+                "captured": sum(r["captured"] for r in rows),
+                "with_forecasts": sum(r["with_forecasts"] for r in rows),
+                "scopes": [dict(r) for r in rows], "does_not_prove_prediction_edge": True}
+    except Exception:  # noqa: BLE001 - absent optional tables cannot mask worker health
+        return {"status": "unavailable"}
 
 
 def main() -> int:

@@ -208,18 +208,25 @@ class PooledModelSet:
                            now: datetime | None = None) -> list[dict]:
         """Keep frozen test artifacts available through nightly retraining.
 
-        Two most recently enrolled recipes at each batch boundary, plus the
-        previous batch's pair for serving during the next test, and today's
-        two lineages for future enrollment. Selection uses enrollment times,
-        never outcomes. At most six artifacts are evaluated per horizon.
+        Pin the first pair of recipes in each 301-contract enrollment period,
+        retaining the preceding pair and today's two lineages. This prevents
+        nightly imports from starving a prospective trial. Enrollment periods
+        only bound inference work; qualification never waits for their end.
         """
         import time
 
-        from parlay_bot.perpetuals.model_league import POLICY_START, WINDOW_DAYS
+        from parlay_bot.perpetuals.model_league import MIN_CONTRACTS, POLICY
 
         stamp = now or datetime.now(UTC)
         current = self.serving(horizon, now=stamp, context=context)
-        epoch = max(0, (stamp-POLICY_START).days//WINDOW_DAYS)
+        with self.store.connect() as conn:
+            row = conn.execute("SELECT started_at FROM rival_poly_contest_policies WHERE policy=?",
+                               (POLICY,)).fetchone()
+        if row is None:
+            return current
+        anchor = datetime.fromisoformat(row["started_at"])
+        period_seconds = (MIN_CONTRACTS+1)*horizon*60
+        epoch = max(0, int((stamp-anchor).total_seconds()//period_seconds))
         saved = getattr(self, "_contest_cache", {}).get(horizon)
         if saved and saved[0] == epoch and time.monotonic()-saved[1] < self.REFRESH_SECONDS:
             frozen = saved[2]
@@ -234,12 +241,25 @@ class PooledModelSet:
                     (horizon,),
                 ).fetchall()
                 selected = set()
-                for boundary in (epoch, max(0, epoch-1)):
-                    cutoff = (POLICY_START+timedelta(days=boundary*WINDOW_DAYS)).isoformat()
+                for boundary in {epoch, max(0, epoch-1)}:
+                    lower = (anchor+timedelta(seconds=boundary*period_seconds)).isoformat()
+                    upper = (anchor+timedelta(seconds=(boundary+1)*period_seconds)).isoformat()
+                    candidates = sorted((r for r in rows if lower <= r["enrolled_at"] < upper),
+                                        key=lambda r: (r["enrolled_at"], r["model"]))
+                    if boundary == 0:
+                        # Existing identities were enrolled before this policy;
+                        # freeze their latest recipe at the policy's start.
+                        prior, seen = [], set()
+                        for row in rows:
+                            recipe = row["model"].split("@")[0]
+                            if row["enrolled_at"] < lower and recipe not in seen:
+                                prior.append(row)
+                                seen.add(recipe)
+                        candidates = prior+candidates
                     recipes = set()
-                    for row in rows:
+                    for row in candidates:
                         recipe = row["model"].split("@")[0]
-                        if row["enrolled_at"] <= cutoff and recipe not in recipes:
+                        if recipe not in recipes:
                             recipes.add(recipe)
                             selected.add(row["model_sha256"])
                         if len(recipes) == 2:

@@ -408,21 +408,23 @@ def test_validator_rejects_trees_that_would_loop_forever():
 def test_contest_keeps_enrolled_artifact_while_new_nightly_model_arrives(learning_store):
     import json
 
-    from parlay_bot.perpetuals.model_league import POLICY_START, Contest
+    from parlay_bot.perpetuals.model_league import Contest
     from parlay_bot.perpetuals.pooled_model import PooledModelSet, family, model_sha256
 
+    POLICY_START = datetime(2026, 11, 7, tzinfo=UTC)
+
     contest = Contest(learning_store)
-    contest.initialize(now=POLICY_START-timedelta(days=2))
+    contest.initialize(now=POLICY_START)
     models = PooledModelSet(learning_store)
     old = _doc(through=(POLICY_START-timedelta(days=3)).isoformat())
     old_sha = model_sha256(old)
     assert models.import_document('old', json.dumps(old).encode()) == 1
     with learning_store.connect() as conn:
         conn.execute('INSERT INTO rival_poly_contest_models VALUES (?,?)',
-                     (f'pooled:{family(old)}@{old_sha}', (POLICY_START-timedelta(days=1)).isoformat()))
-    newer = _doc(through=(POLICY_START+timedelta(days=2)).isoformat())
+                     (f'pooled:{family(old)}@{old_sha}', (POLICY_START+timedelta(minutes=1)).isoformat()))
+    newer = _doc(through=(POLICY_START+timedelta(hours=12)).isoformat())
     new_sha = model_sha256(newer)
     assert models.import_document('new', json.dumps(newer).encode()) == 1
-    contenders = models.contest_contenders(5, now=POLICY_START+timedelta(days=3))
+    contenders = models.contest_contenders(5, now=POLICY_START+timedelta(days=1))
     assert {x['_sha256'] for x in contenders} == {old_sha, new_sha}
-    assert models.active(5, now=POLICY_START+timedelta(days=3))['_sha256'] == new_sha
+    assert models.active(5, now=POLICY_START+timedelta(days=1))['_sha256'] == new_sha

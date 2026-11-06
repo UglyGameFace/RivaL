@@ -4,30 +4,31 @@ from __future__ import annotations
 import math
 import random
 from dataclasses import replace
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
 from parlay_bot.discord_app.polymarket_watch import PolymarketNotice
 from parlay_bot.perpetuals.model_league import (
     ALPHA,
+    BET_FRACTIONS,
     BOOK,
     FORMULA,
-    POLICY_START,
+    MODELS,
+    POLICY,
     Contest,
-    _p_value,
-    _t_tail,
-    batch,
-    holm,
+    _log_capital,
+    _test_alpha,
+    _update,
     league,
     league_text,
     settlement_schema,
 )
 from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
 
-START = POLICY_START
-END = START + timedelta(days=28)
-NOW = END + timedelta(days=2, hours=1)
+START = datetime(2026, 11, 7, tzinfo=UTC)
+END = START + timedelta(days=14)
+NOW = END + timedelta(minutes=2)
 SHA = 'a'*64
 CONDITION = '0x' + 'b'*64
 
@@ -48,14 +49,14 @@ def notice(*, start=START, asset='BTC', horizon=60):
 def setup(store):
     PolymarketResearch(store).initialize()
     contest = Contest(store)
-    contest.initialize(now=START-timedelta(days=1))
+    contest.initialize(now=START)
     return contest
 
 
-def seed(store, contest, *, good=True, days=28, missing_model=False):
+def seed(store, contest, *, good=True, days=14, missing_model=False, horizon=60):
     rng = random.Random(19)
-    for i in range(days*24-1):
-        n = notice(start=START+timedelta(hours=i))
+    for i in range(days*24*60//horizon-1):
+        n = notice(start=START+timedelta(minutes=i*horizon), horizon=horizon)
         p = .9 if rng.random() > .5 else .1
         y = rng.random() < p
         predictions = {BOOK: (p if good else 1-p, SHA), FORMULA: (.5, SHA)}
@@ -75,18 +76,35 @@ def entry(store, n=None, now=NOW):
         settlement_schema(n), {'models': [], 'champion': None})
 
 
-def test_holm_and_t_tail_match_known_distributions():
-    assert holm({'a': .03, 'b': .5}) == set()
-    assert holm({'a': .001, 'b': .02}) == {'a', 'b'}
-    assert holm({f'm{i}': .0045 for i in range(12)}) == set()
-    assert _t_tail(1., 1) == pytest.approx(.25)
-    assert _t_tail(2.04523, 29) == pytest.approx(.025, abs=1e-6)
-    assert _t_tail(1e-15, 29) == pytest.approx(.5)
-    assert _p_value([.1]*28)[2] == 1.  # no zero-variance certainty
-    assert _p_value([.1, .2])[2] == 1.  # too few independence units
-    assert sum(ALPHA/(i*(i+1)) for i in range(1, 10000)) < ALPHA
-    assert batch(START+timedelta(days=29)) is None
-    assert batch(NOW)[0] == 1
+def test_betting_factors_have_unit_expectation_on_each_conditional_null():
+    # Exact one-step expectation, including changing forecast probabilities.
+    for p, m in ((.6, .5), (.3, .6), (.99, .01)):
+        boundary = (p+m)/2
+        g0, g1 = m*m-p*p, (1-m)**2-(1-p)**2
+        downside = -min(g0, g1)
+        for fraction in BET_FRACTIONS:
+            expected = (1-boundary)*(1+fraction*g0/downside)+boundary*(1+fraction*g1/downside)
+            assert expected == pytest.approx(1.)
+            assert min(1+fraction*g0/downside, 1+fraction*g1/downside) > 0
+    for cost in (.1, .5, .95):
+        boundary = cost+.01
+        for fraction in BET_FRACTIONS:
+            expected = (1-boundary)*(1-fraction)+boundary*(1+fraction*(1-boundary)/boundary)
+            assert expected == pytest.approx(1.)
+    logs = [0.]*len(BET_FRACTIONS)
+    assert _log_capital(logs) == 0
+    _update(logs, -.1, .1)
+    assert _log_capital(logs) < 0  # losses cannot be reset by a new look
+    assert _log_capital([10000.]*len(BET_FRACTIONS)) == 10000.
+
+
+def test_lifetime_budget_covers_all_models_markets_scopes_and_future_artifacts():
+    slots = {f'pooled:{i}': i for i in range(1, 101)}
+    total = 12*sum(_test_alpha(m, slots, scope)
+                   for m in (*MODELS, *slots) for scope in range(1, 101))
+    assert 0 < total < ALPHA
+    assert _test_alpha('pooled:unknown', slots, 1) == 0
+    assert _test_alpha(BOOK, slots, 1) == _test_alpha(FORMULA, slots, 1)
 
 
 def test_common_snapshot_is_immutable_even_on_restart(learning_store):
@@ -133,12 +151,12 @@ def test_only_prospective_matched_cost_positive_winner_qualifies(learning_store)
     assert e['champion'] == BOOK
     assert next(x for x in e['models'] if x['model'] == BOOK)['coverage'] > .99
     assert first['tests'] >= 12*4  # absent models/markets still count
-    assert first['alpha'] == ALPHA/2
+    assert first['alpha'] == ALPHA
     # A fresh refresh cannot take another statistical look or change alpha.
     again = league(learning_store, now=NOW+timedelta(minutes=10))
     assert first['markets'] == again['markets'] and first['alpha'] == again['alpha']
     assert all(v['champion'] is None for k, v in first['markets'].items() if k != ('BTC', 60))
-    assert entry(learning_store, now=END-timedelta(seconds=1))['champion'] is None
+    assert entry(learning_store, now=START+timedelta(hours=12))['champion'] is None
 
 
 def test_worse_model_and_incomplete_coverage_never_promote(learning_store):
@@ -161,7 +179,7 @@ def test_missing_fees_and_late_enrollment_cannot_qualify(learning_store):
     with learning_store.connect() as conn:
         conn.execute('UPDATE rival_poly_contest_rounds SET up_cost=.52749,down_cost=.52749')
         conn.execute('UPDATE rival_poly_contest_models SET enrolled_at=? WHERE model=?',
-                     ((START+timedelta(days=1)).isoformat(), BOOK))
+                     ((END).isoformat(), BOOK))
     assert entry(learning_store)['champion'] is None
 
 
@@ -185,3 +203,55 @@ def test_formula_only_round_reuses_authoritative_settlement_worker(learning_stor
     pending = research._unsettled(n.expires+timedelta(minutes=1))
     assert len(pending) == 1 and pending[0]['slug'] == n.slug
     assert pending[0]['condition_id'] == CONDITION
+
+
+def test_strong_five_minute_candidate_can_qualify_after_two_days_not_28(learning_store):
+    c = setup(learning_store)
+    seed(learning_store, c, days=2, horizon=5)
+    e = entry(learning_store, notice(horizon=5), now=START+timedelta(days=2))
+    assert e['champion'] == BOOK
+    best = next(m for m in e['models'] if m['model'] == BOOK)
+    assert best['contracts'] == 575  # crosses the 500-round keyset page
+    assert best['significant'] and best['trades'] >= 150
+
+
+def test_missing_early_outcome_blocks_prefix_instead_of_selecting_later_winners(learning_store):
+    c = setup(learning_store)
+    seed(learning_store, c)
+    with learning_store.connect() as conn:
+        row = dict(conn.execute('SELECT * FROM rival_polymarket_ai_outcomes WHERE slug=?', (notice().slug,)).fetchone())
+        conn.execute('DELETE FROM rival_polymarket_ai_outcomes WHERE slug=?', (notice().slug,))
+    e = entry(learning_store)
+    assert e['champion'] is None
+    assert all(m['contracts'] == 0 and m['blocked'] for m in e['models'])
+    with learning_store.connect() as conn:
+        conn.execute('INSERT INTO rival_polymarket_ai_outcomes VALUES (?,?,?,?,?,?,?)', tuple(row.values()))
+    assert entry(learning_store)['champion'] == BOOK  # no two-day settlement blackout
+
+
+def test_new_policy_never_reuses_pre_policy_results(learning_store):
+    c = setup(learning_store)
+    seed(learning_store, c)
+    with learning_store.connect() as conn:
+        conn.execute('UPDATE rival_poly_contest_policies SET started_at=? WHERE policy=?', (END.isoformat(), POLICY))
+    assert entry(learning_store)['champion'] is None
+
+
+def test_display_forecast_stays_pinned_across_promotion_and_restart(learning_store):
+    c = setup(learning_store)
+    n = notice()
+    assert c.capture(n, {BOOK: (.1, SHA), FORMULA: (.8, SHA)}, now=n.quote_at)
+    first = c.display_call(n.slug, None)
+    assert first['model'] == FORMULA and first['probability_up'] == .8
+    after = Contest(learning_store).display_call(n.slug, BOOK)
+    assert after['model'] == FORMULA and after['probability_up'] == .8
+
+
+def test_small_sample_reports_progress_without_false_qualification(learning_store):
+    c = setup(learning_store)
+    seed(learning_store, c, days=1)
+    e = entry(learning_store, now=START+timedelta(days=1))
+    assert e['champion'] is None
+    text = league_text(e, asset='BTC', horizon=60)
+    assert '23/300 settled' in text and 'No fixed day wait' in text
+    assert 'Research forecasts remain visible' in text

@@ -187,3 +187,22 @@ def test_daily_forward_proof_receipt_runs_without_manual_deployment():
     assert '"$GITHUB_EVENT_NAME" == "workflow_run"' in workflow
     assert "if: steps.gate.outputs.check == 'true'" in workflow
     assert "python tools/discloud_learning_cycle_receipt.py" in workflow
+
+
+def test_contest_receipt_reads_real_new_policy_rows_without_writing(learning_store):
+    from parlay_bot.perpetuals.model_league import FORMULA
+    from tests.test_model_league import SHA, START, notice, setup
+
+    c = setup(learning_store)
+    n = notice()
+    assert c.capture(n, {FORMULA: (.8,SHA)}, now=n.quote_at)
+    c.display_call(n.slug, None)
+    report = host._contest_progress(learning_store, START+timedelta(hours=1))
+    assert report['status'] == 'recorded'
+    assert report['captured'] == report['with_forecasts'] == 1
+    assert report['scopes'][0]['formula_forecasts'] == 1
+    assert report['scopes'][0]['pinned_for_display'] == 1
+    assert report['does_not_prove_prediction_edge'] is True
+    with learning_store.connect() as conn:
+        assert conn.execute('SELECT COUNT(*) AS n FROM rival_poly_contest_rounds').fetchone()['n'] == 1
+    assert host._contest_progress(object(), START)['status'] == 'unavailable'

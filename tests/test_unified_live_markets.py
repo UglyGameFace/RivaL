@@ -83,7 +83,7 @@ async def test_live_desk_shows_actual_verified_market_and_switches_provider_in_p
         home.navigate("live")
         home._buttons()
         poly = await home.render()
-        assert "No model beats Polymarket's price" in poly.title and "BTC" in poly.title
+        assert "Research UP" in poly.title and "unqualified" in poly.title and "BTC" in poly.title
         summary = "\n".join(f.value for f in poly.fields)
         assert "76000" in summary or "76,000" in summary
         assert "UP $0.61" in summary

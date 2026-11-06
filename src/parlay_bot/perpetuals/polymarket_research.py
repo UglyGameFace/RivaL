@@ -50,6 +50,8 @@ class ContractCall:
     probability_up: float | None = None
     settlement_schema: str | None = None
     condition_id: str | None = None
+    # None for legacy research; new contest cards persist their initial status.
+    qualified_at_issue: bool | None = None
 
 
 class PolymarketResearch:

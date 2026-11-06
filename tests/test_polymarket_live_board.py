@@ -290,7 +290,7 @@ def test_live_market_and_model_predictions_are_clearly_separate():
         ends_at=current.closes, status="ok",
     )
     embed = live_polymarket_embed(board, model, asset="BTC", horizon=5)
-    assert "No model beats Polymarket's price" in embed.title
+    assert "Forecast pending" in embed.title
     assert "No current contract-specific AI call" in embed.description
     full = str(embed.to_dict())
     assert "UP $0.61" in full and "DOWN $0.45" in full
@@ -323,7 +323,7 @@ def test_15m_model_leans_up_for_a_different_five_minute_candle_only():
         ends_at=current.closes, status="ok",
     )
     embed = live_polymarket_embed(board, model, asset="BTC", horizon=15)
-    assert "No model beats Polymarket's price" in embed.title
+    assert "Forecast pending" in embed.title
     full = str(embed.to_dict())
     assert "No current contract-specific AI call" in full
     assert "hyperliquid" not in full and "95.0%" not in full
@@ -352,7 +352,7 @@ def test_stale_or_unavailable_model_never_becomes_directional_call():
     ):
         embed = live_polymarket_embed(board, snapshot, asset="BTC", horizon=5)
         assert "No current contract-specific AI call" in embed.description
-        assert "No model beats Polymarket's price" in embed.title
+        assert "Forecast pending" in embed.title
         assert "99.0%" not in str(embed.to_dict())
 
 
@@ -527,7 +527,7 @@ async def test_card_keeps_frozen_call_when_quote_drops_out(tmp_path):
             refresh_note=Mock(return_value=None), status=Mock(return_value=""),
         )
         embed, _ = await service._observation("BTC", 5)
-        assert "No model beats Polymarket's price" in embed.title
+        assert "Research DOWN" in embed.title and "unqualified" in embed.title
         assert any("DOWN" in f.value for f in embed.fields if "model research" in f.name)
         service.research.observe.assert_not_called()
         assert "No verified sell-side liquidity" in next(
@@ -577,7 +577,7 @@ async def test_one_ping_per_contract_only_for_fresh_up_down_calls(tmp_path, monk
         assert len(pings) == 1  # a second cycle never re-pings the same contract
         text = pings[0].kwargs["content"]
         assert "call issued: DOWN" in text and "41.7% UP" in text
-        assert "passed the fixed contest" in text and "Paper evidence" in text
+        assert "passed the sequential contest" in text and "Paper evidence" in text
         assert "will not flip" in text
         assert "Price check: DOWN costs" in text  # 58% DOWN vs 55¢ + fee
 
@@ -721,5 +721,47 @@ async def test_qualified_formula_can_serve_and_ping_from_its_exact_frozen_round(
         await service._ping(tracker,board,call)
         pings = [x for x in channel.send.await_args_list if 'content' in x.kwargs]
         assert len(pings) == 1 and 'call issued: UP' in pings[0].kwargs['content']
+    finally:
+        hot.close()
+
+
+@pytest.mark.asyncio
+async def test_unqualified_checkpoint_forecast_is_visible_and_never_pings(tmp_path):
+    from parlay_bot.perpetuals.model_league import BOOK, FORMULA, Contest, settlement_schema
+    from tests.test_model_league import SHA, notice
+
+    hot, store, service, channel, user, _ = _setup(tmp_path)
+    try:
+        now = datetime.now(UTC)
+        quote = notice(start=now-timedelta(minutes=1), horizon=5)
+        contest = Contest(hot)
+        assert contest.capture(quote, {FORMULA: (.52,SHA), BOOK: (.1,SHA)}, now=now)
+        current = PolymarketListedWindow('BTC',5,quote.slug,quote.issued,quote.expires,True,None)
+        board = PolymarketWindowBoard(now,current,None,quote)
+        service.research = SimpleNamespace(learner=SimpleNamespace(store=hot))
+        service._league = (now, {'markets': {('BTC',5): {'scopes': {
+            settlement_schema(quote): {'champion':None,'models':[]}}}}})
+        call = await service._qualified_call(board, None, 'BTC', 5)
+        assert call.model == FORMULA and call.direction == 'UP'  # forecast, despite no priced edge
+        assert call.qualified_at_issue is False
+        card = live_polymarket_embed(board,call,asset='BTC',horizon=5)
+        assert 'Research UP' in card.title and 'unqualified' in card.title
+        assert '52.0% UP' in str(card.to_dict())
+        tracker = LivePolymarketTracker(str(user.id),'BTC',5,'555','901','old')
+        store.save(tracker)
+        await service._ping(tracker,board,call)
+        assert not channel.send.await_args_list
+        # A different model qualifying cannot flip this contract's UP display.
+        service._league[1]['markets']['BTC',5]['scopes'][settlement_schema(quote)]['champion'] = BOOK
+        again = await service._qualified_call(board,call,'BTC',5)
+        assert again.direction == 'UP' and again.model == FORMULA
+        service._league[1]['markets']['BTC',5]['scopes'][settlement_schema(quote)]['champion'] = FORMULA
+        promoted = await service._qualified_call(board,again,'BTC',5)
+        assert promoted.direction == 'UP' and promoted.qualified_at_issue is False
+        card = live_polymarket_embed(board,promoted,asset='BTC',horizon=5,
+                                     league={'champion':FORMULA,'models':[]})
+        assert 'Research UP' in card.title and 'unqualified' in card.title
+        await service._ping(tracker,board,again)
+        assert not channel.send.await_args_list
     finally:
         hot.close()

@@ -725,8 +725,8 @@ class PerpetualMarketStore:
         issued_at: datetime, direction: str, confidence: str,
         thesis: str, risk: str, source_count: int,
     ) -> None:
-        """Append-only Gemini paper trail; cannot rewrite existing analyses."""
-        if (asset not in ("BTC", "ETH", "SOL")
+        """Append-only AI research trail; cannot rewrite existing analyses."""
+        if (asset not in ("BTC", "ETH", "SOL", "XRP")
             or direction not in ("up", "down", "uncertain")
             or confidence not in ("low", "medium", "high")
             or len(evidence_sha256) != 64

@@ -94,6 +94,7 @@ async def test_adding_live_alerts_never_silently_enables_other_tiers(tmp_path):
     store = AutoHuntStore(hot)
     store.initialize()
     service = AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=SimpleNamespace(live_stream=object()),
         market=None, quotes=None, store=store,
     )
@@ -119,6 +120,7 @@ async def test_disabled_live_feeds_reject_false_positive_alert_enable(tmp_path):
     store = AutoHuntStore(hot)
     store.initialize()
     service = AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=SimpleNamespace(live_stream=None),
         market=None, quotes=None, store=store,
     )

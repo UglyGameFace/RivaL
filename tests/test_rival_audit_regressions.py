@@ -71,6 +71,7 @@ async def test_tier_enable_denied_if_dm_test_fails(tmp_path):
     )
     bot = SimpleNamespace(get_user=lambda uid: user, fetch_user=AsyncMock())
     service = auto_hunt.AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=bot, market=object(), quotes=object(), store=store,
     )
     try:

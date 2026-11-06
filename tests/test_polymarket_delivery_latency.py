@@ -32,6 +32,7 @@ def delivery(tmp_path):
     channel = SimpleNamespace(send=AsyncMock(return_value=SimpleNamespace(id=555)))
     user = SimpleNamespace(dm_channel=channel, create_dm=AsyncMock())
     service = auto_hunt.AutoHuntService(
+        alerts_enabled=True,  # these tests cover the retired mechanism
         bot=SimpleNamespace(get_user=lambda _: user, fetch_user=AsyncMock()),
         market=object(), quotes=object(), store=store,
     )

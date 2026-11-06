@@ -75,7 +75,7 @@ EXPLAIN = {
     "home": "Crypto and Sports let you look at markets. Bot Performance shows how often RivaL's predictions were right. Practice uses pretend money only.",
     "discover": "Pick Crypto or Practice. Nothing here places a real trade.",
     "crypto-desk": "Pick the app you actually use. Prediction markets (Polymarket, Kalshi, DraftKings Predictions) work differently from crypto exchanges (Binance, Hyperliquid, OKX and others), so each one gets its own predictions and its own score.",
-    "live": "Get one private message about a Polymarket market that updates only when something important changes. RivaL's AI opinion is labeled separately, and a market's price is not a guarantee of how it ends.",
+    "live": "Get one private message about a Polymarket market that updates only when something important changes. A market's price is not a guarantee of how it ends.",
     "hunt": "Follow a Polymarket market or an exchange prediction in your private messages. Stop All turns every personal update off.",
     "hunt-tools": "These old notifications were replaced. Use Notifications.",
     "kalshi": "Kalshi is a separate US prediction market with its own prices and rules, so RivaL scores it separately from Polymarket.",
@@ -1834,7 +1834,7 @@ class GuidedHome(discord.ui.View):
                             else "makes no call")
                 # The AI's own note is technical; it stays in Detailed Research.
                 intel_text = (
-                    f"\n**RivaL Intelligence (an AI that double-checks the model):** for "
+                    f"\n**RivaL Intelligence (an AI that reviews the model's calls):** for "
                     f"the next {self.horizon}-min candle it {now_call}. Last 7 days it "
                     f"{followed} and {abstained}."
                 )
@@ -2354,14 +2354,16 @@ class GuidedHome(discord.ui.View):
                     panel.section = "overview"
                     if panel.ai is not None and panel.ai.available and panel.market is not None:
                         try:
-                            # Explicit click only. Existing free-model budget and
-                            # independent exchange evidence gates apply unchanged.
+                            # Explicit click only; evidence gates apply unchanged.
+                            # The AI server allows 40 s for an answer and the
+                            # client 52 s, so waiting only 22 s here threw away
+                            # answers that were still coming. Outlast both.
                             panel.opinion = await asyncio.wait_for(
                                 panel.ai.ask(
                                     asset=self.coin, venues=panel.venues,
                                     requester_id=interaction.user.id,
                                 ),
-                                timeout=22,
+                                timeout=55,
                             )
                         except Exception as exc:  # noqa: BLE001
                             # No provider data, API credentials or internal paths

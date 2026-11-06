@@ -21,7 +21,8 @@ STALE_LIQUIDITY_AFTER = timedelta(minutes=15)
 # A live book stream that has delivered nothing for this long is a problem
 # (counted in the status, so the card reposts when it stops and recovers).
 STREAM_STALLED_AFTER = timedelta(minutes=2)
-STARTUP_GRACE = timedelta(minutes=5)
+# Streams need a few minutes to connect after a restart before "stalled" counts.
+STREAM_STARTUP_GRACE = timedelta(minutes=5)
 HEARTBEAT_FAILING_AFTER = 3  # consecutive failed pings
 DAILY = timedelta(hours=24)
 # A logged problem counts as "still happening" only if it repeated within
@@ -162,7 +163,7 @@ def assess(facts: StatusFacts) -> tuple[str, tuple[str, ...]]:
         for venue, state in facts.streams.items():
             if not state.get("connected"):
                 keys.append(f"stream:{venue}")
-            elif _stream_stalled(state) and now - facts.boot_at > STARTUP_GRACE:
+            elif _stream_stalled(state) and now - facts.boot_at > STREAM_STARTUP_GRACE:
                 keys.append(f"stream_stalled:{venue}")
     if facts.liquidity_last_bucket is not None or facts.streams:
         last = _parse(facts.liquidity_last_bucket)
@@ -293,7 +294,22 @@ def _field(text: str, key: str) -> str | None:
 
 
 def plain(text: str) -> str:
-    """Log text in everyday words; the exact message stays in the bot's logs."""
+    """Log text in everyday words, keeping which exchange/coin it was about.
+
+    The exact message (with its error type) stays in the bot's logs; this
+    never adds a cause the message does not state.
+    """
+    words = _plain(text)
+    t = text.removeprefix("RivaL ")
+    venue = _field(t, "venue") or _field(t, "source")
+    asset = _field(t, "asset")
+    where = "/".join(x for x in (venue, asset) if x)
+    if where and (venue or "").lower() not in words.lower():
+        words += f" ({where})"
+    return words
+
+
+def _plain(text: str) -> str:
     t = text.removeprefix("RivaL ").strip()
     low = t.lower()
     venue = _field(t, "venue") or _field(t, "source")
@@ -327,7 +343,7 @@ def plain(text: str) -> str:
     if "memory pressure" in low:
         return "Memory ran low, so extra work was paused"
     for needle, words in (
-        ("streaming forward proof failed", "After-fee check skipped (no live price)"),
+        ("streaming forward proof failed", "After-fee check failed"),
         ("candidate import from drive", "Couldn't load a new model from Google Drive"),
         ("sports settlement snapshot", "Couldn't check finished sports results"),
         ("slash command failed", "A slash command hit an error"),
@@ -341,6 +357,11 @@ def plain(text: str) -> str:
     # Drop key=value details and the technical "[ErrorType: ...]" tail.
     words = re.sub(r"\s*\[.*", "", _KV.sub("", t)).split(" | ")[0]
     return re.sub(r"\s+", " ", words).strip(" ;:,")[:120] or t[:120]
+
+
+def _said(g) -> str:
+    """Error vs warning stays visible, plus the plain-English message."""
+    return ("Error: " if g.level in ("ERROR", "CRITICAL") else "Warning: ") + plain(g.text)
 
 
 def problem_state(group, *, now: datetime, boot_at: datetime,
@@ -386,17 +407,17 @@ def problem_lines(problems, *, now: datetime, boot_at: datetime, totals: dict,
          "the last 24 h, counting restarts; the × number is how many times each happened)"),
     ]
     for g in states["active"]:
-        lines.append(f"🔴 `{g.count}×` **{plain(g.text)}** ({_ago(g.last_at, now)})")
+        lines.append(f"🔴 `{g.count}×` **{_said(g)}** ({_ago(g.last_at, now)})")
     for g in states["quiet"]:
-        lines.append(f"🟢 `{g.count}×` {plain(g.text)[:90]} (last {_ago(g.last_at, now)})")
+        lines.append(f"🟢 `{g.count}×` {_said(g)[:100]} (last {_ago(g.last_at, now)})")
     for g in states["startup"]:
-        lines.append(f"⚪ `{g.count}×` {plain(g.text)[:70]} (only right after the "
+        lines.append(f"⚪ `{g.count}×` {_said(g)[:80]} (only right after the "
                      f"{started} restart)")
     for g in states["recovered"]:
-        lines.append(f"✅ `{g.count}×` {plain(g.text)[:70]} (fixed itself; last alert "
+        lines.append(f"✅ `{g.count}×` {_said(g)[:80]} (fixed itself; last alert "
                      f"{_ago(g.last_at, now)})")
     for g in states["stopped"]:
-        lines.append(f"✅ `{g.count}×` {plain(g.text)[:70]} (not since the {started} "
+        lines.append(f"✅ `{g.count}×` {_said(g)[:80]} (not since the {started} "
                      "restart)")
     if not problems:
         lines.append("None")

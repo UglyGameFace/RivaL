@@ -83,5 +83,27 @@ async def test_accuracy_screen_reads_persisted_learning_cycle(tmp_path):
         assert "math OK" in result
         assert "0** math forecasts" in result
         assert "not** that prior predictions became more accurate" in result
+        # N5: the retired external-AI scheduler is no longer presented as a
+        # live cycle stage.
+        assert "optional AI scheduler" not in result
+        assert "retired external-AI scheduler: not run" in result
+        # The retired scheduler's legacy flag cannot fail a live cycle: flip
+        # it and the same cycle must still read as completed.
+        with store.connect() as conn:
+            conn.execute("UPDATE perp_learning_cycle_health SET gemini_ok=0")
+        panel = ResearchDashboard(
+            owner_id=42, market=market, ai=None, venues=("hyperliquid",),
+            shadow_enabled=True,
+        )
+        panel.screen = "accuracy"
+        panel.section = "engine"
+        panel._rebuild()
+        embed = await panel.render()
+        result = next(
+            field.value for field in embed.fields
+            if field.name == "Automatic learning engine · LIVE"
+        )
+        assert "Background research cycle completed" in result
+        assert "retired external-AI scheduler: not run" in result
     finally:
         store.close()

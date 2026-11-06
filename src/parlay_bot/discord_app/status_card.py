@@ -257,10 +257,19 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
         embed.add_field(
             name="Predictions",
             # _clip() of an empty list returns "—", which hid this message.
+            # State only what the four research_alerts checks actually prove:
+            # fresh forecasts, a gated 6-year model covering the last finished
+            # month, no in-use version significantly worse than a simple guess,
+            # and fresh Intelligence reviews. Anything else is checked
+            # separately on this card.
             value=(_clip([text for _, text in facts.research]) if facts.research
-                   else "✅ No problems: new predictions are coming in, the 6-year "
-                        "model is up to date, it isn't doing worse than a simple guess, "
-                        "and RivaL Intelligence is reviewing"),
+                   else "✅ These four checks passed: new predictions arrived in the "
+                        "last 20 min; the 6-year model passed its gates and covers "
+                        "the last finished month; no in-use 6-year version was "
+                        "significantly worse than a simple guess over the last 3 days "
+                        "(versions with fewer than 300 graded results get no verdict); "
+                        "and RivaL Intelligence reviewed within the last 2 hours. "
+                        "Other parts of the system are checked separately on this card."),
             inline=False)
 
     if facts.memory:

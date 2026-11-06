@@ -261,8 +261,7 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
             add_one(("Forward 5-minute evaluation",), short=True)
         else:
             add_one(("AI research · UNCALIBRATED", "Analysis status"), short=True)
-            add_one(("Private local AI & Cloudflare backup",
-                     "AI provider & request limits"), short=True)
+            add_one(("AI provider & request limits",), short=True)
     else:
         for prefix in _FIELD_GROUPS[screen].get(section, ()):
             if len(result.fields) >= 3:  # live + max two detailed metrics
@@ -1617,8 +1616,11 @@ class ResearchDashboard(discord.ui.View):
                                 health = "🔴 Stale: automatic research may be stalled"
                             elif any(not bool(latest[key]) for key in (
                                 "math_ok", "ai_settlement_ok",
-                                "model_review_ok", "gemini_ok",
+                                "model_review_ok",
                             )):
+                                # The retired external-AI scheduler's legacy
+                                # flag is not a live stage: it must never mark
+                                # a current cycle as failed.
                                 health = "🟡 Cycle ran, but a stage failed"
                             else:
                                 health = "🟢 Background research cycle completed"
@@ -1628,8 +1630,7 @@ class ResearchDashboard(discord.ui.View):
                                 + ("OK" if latest["ai_settlement_ok"] else "FAILED")
                                 + " · governance "
                                 + ("OK" if latest["model_review_ok"] else "FAILED")
-                                + " · optional AI scheduler "
-                                + ("OK" if latest["gemini_ok"] else "FAILED")
+                                + " · retired external-AI scheduler: not run"
                             )
                             heartbeat = (
                                 f"**{health}** · "

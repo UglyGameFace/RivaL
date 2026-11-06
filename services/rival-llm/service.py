@@ -825,11 +825,22 @@ class Gateway(ThreadingHTTPServer):
             if not validated_explanation(result):
                 raise ValueError("invalid model review output")
             # Stances only; RivaL derives any direction from its own models.
+            # The review's thesis/risk are raw LLM prose: replace them with
+            # the same deterministic evidence summary enforce() writes for
+            # research, so no ungrounded prose leaves the gateway. Only the
+            # thesis/risk/grounded_by fields are taken: no direction or
+            # confidence is asserted for a model review.
+            grounded = enforce_grounding({
+                "direction": "uncertain", "confidence": "low",
+                "thesis": result["thesis"].strip(), "risk": result["risk"].strip(),
+                "informational_only": True, "uncalibrated": True,
+            }, evidence, asset=asset)
             return {
                 "model": self.identity, "mode": "explain",
                 "stance_5m": result["stance_5m"], "stance_15m": result["stance_15m"],
                 "stance_60m": result["stance_60m"],
-                "thesis": result["thesis"].strip(), "risk": result["risk"].strip(),
+                "thesis": grounded["thesis"][:240], "risk": grounded["risk"][:160],
+                "grounded_by": grounded["grounded_by"],
                 "output_format_repaired": repaired_format,
                 "informational_only": True, "uncalibrated": True,
             }

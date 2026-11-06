@@ -7,6 +7,7 @@ import sys
 import threading
 import urllib.error
 import urllib.request
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -878,6 +879,15 @@ def test_explain_mode_reviews_model_calls_and_returns_only_stances(monkeypatch):
         result = server.infer("BTC", evidence, mode="explain")
         assert result["stance_5m"] == "follow" and result["stance_15m"] == "abstain"
         assert "direction" not in result  # RivaL derives direction from its models
+        # P1-10 remainder: the review's thesis/risk are raw LLM prose no
+        # longer; enforce() replaces them with deterministic evidence text.
+        assert "5m call agrees" not in result["thesis"]
+        assert "Edge is small" not in result["risk"]
+        assert result["thesis"] == (
+            "Insufficient fresh independent closed-candle evidence to "
+            "support a market direction.")
+        assert result["risk"].startswith("No verified future advantage")
+        assert result["grounded_by"] == "deterministic_historical_evidence_policy"
         user = sent[-1][1]["messages"][1]["content"]
         assert "model_live_5m:p_up=0.570,venues_up=7/9,record=0.524/n=8000" in user
         assert sent[-1][1]["response_format"]["type"] == "json_schema"
@@ -887,6 +897,73 @@ def test_explain_mode_reviews_model_calls_and_returns_only_stances(monkeypatch):
             raise AssertionError("explain without model calls must fail")
         except ValueError:
             pass
+    finally:
+        server.server_close()
+
+
+def test_explain_mode_thesis_is_grounded_in_closed_candles(monkeypatch):
+    """P1-10 remainder: with agreeing venues the explain thesis states the
+    past closed-candle returns, not the LLM's wording."""
+    server = Gateway("127.0.0.1", 0, token="x" * 48, model="lfm3")
+
+    class FakeResponse:
+        status = 200
+
+        def __init__(self, data):
+            self.data = json.dumps(data).encode("utf-8")
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _limit):
+            return self.data
+
+    def fake_urlopen(request, timeout):
+        path = request.full_url.rsplit("/", 1)[-1]
+        if path == "apply-template":
+            return FakeResponse({"prompt": "rendered"})
+        if path == "tokenize":
+            return FakeResponse({"tokens": [1] * 200})
+        return FakeResponse({"choices": [{"message": {"content": json.dumps({
+            "stance_5m": "follow", "stance_15m": "abstain", "stance_60m": "abstain",
+            "thesis": "5m call agrees on 7 of 9 exchanges; 15m is split.",
+            "risk": "Edge is small; 60m record is weak.",
+        })}}]})
+
+    now = datetime.now(UTC)
+
+    def candle(venue):
+        return {
+            "venue": venue, "quote": "USDT", "contract": "BTC-USDT-SWAP",
+            "last_candle_close": (now - timedelta(minutes=2)).isoformat(),
+            "available_bars": 289,
+            "windows": {"5m": {"return_pct": 0.4, "sample_bars": 1}},
+        }
+
+    evidence = {
+        "asset": "BTC", "analysis": "unvalidated_research", "horizon_minutes": 5,
+        "sources": [candle(v) for v in ("okx", "gate", "bitget")],
+        "model_calls": {
+            "5": {"live": {"p_up": 0.57, "venues": 9, "venues_up": 7,
+                           "record": {"hit_rate": 0.524, "graded": 8000,
+                                      "beats_basic": False}}},
+        },
+    }
+    try:
+        monkeypatch.setattr(SERVICE["urllib"].request, "urlopen", fake_urlopen)
+        result = server.infer("BTC", evidence, mode="explain")
+        assert result["stance_5m"] == "follow"
+        assert "direction" not in result
+        assert result["thesis"] == (
+            "Past 5m closed-candle returns rose across 3 independent recent "
+            "venues. This describes past movement, not a forecast of the "
+            "next interval.")
+        assert "5m call agrees" not in result["thesis"]
+        assert result["risk"].startswith("No verified future advantage")
+        assert result["grounded_by"] == "deterministic_historical_evidence_policy"
     finally:
         server.server_close()
 

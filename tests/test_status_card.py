@@ -255,7 +255,7 @@ def test_a_stalled_stream_counts_after_startup_and_clears_when_it_recovers():
     assert "stream_stalled:hyperliquid" not in assess(facts(400, boot_minutes=2))[1]
 
 
-def test_empty_prediction_health_says_no_problems():
+def test_empty_prediction_health_states_only_what_the_checks_prove():
     from datetime import UTC, datetime
 
     from parlay_bot.discord_app.status_card import StatusFacts, build_embed
@@ -265,4 +265,12 @@ def test_empty_prediction_health_says_no_problems():
         now=now, boot_at=now, ready=True, heartbeat=None, workers=[], incidents=[],
         feeds=None, streams=None, liquidity_last_bucket=None, memory=None, research=[]))
     field = next(f for f in embed.fields if f.name == "Predictions")
-    assert field.value.startswith("✅ No problems")
+    assert field.value.startswith("✅ These four checks passed")
+    # No blanket "no problems" and no unqualified "isn't doing worse": the
+    # four checks prove less than the old sentence claimed.
+    assert "No problems" not in field.value
+    assert "isn't doing worse" not in field.value
+    assert "last 20 min" in field.value
+    assert "last finished month" in field.value
+    assert "fewer than 300 graded results get no verdict" in field.value
+    assert "last 2 hours" in field.value

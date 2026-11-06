@@ -187,3 +187,67 @@ def test_a_few_lucky_results_never_outrank_a_long_record():
     assert [name for name, _ in order] == ["solid", "even", "lucky", "none"]
     # Exactly at the bar, a record is ranked on its gain.
     assert _rank_key({"graded": MIN_GRADED_TO_RANK, "brier_gain": 0.1})[0] == 0
+
+
+def _reviewed_slot(tmp_path, name, *, stance, p, outcome):
+    """Three exchanges forecast one slot; one review is saved; results settle."""
+    store = SQLiteHotStore(tmp_path / name)
+    market = PerpetualMarketStore(store)
+    ForwardAccuracyMonitor(market).initialize()
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    target = now + timedelta(minutes=1)
+    with store.connect() as conn:
+        for venue in VENUES:
+            _forecast(conn, venue=venue, issued=now - timedelta(seconds=30), target=target,
+                      p=p, outcome=outcome)
+    calls = model_calls(market, asset="BTC", now=now, summary={})
+    ledger = IntelligenceLedger(store)
+    review = {"stance_5m": stance, "stance_15m": "abstain", "stance_60m": "abstain",
+              "thesis": "t", "risk": "r"}
+    assert ledger.record(asset="BTC", calls=calls, review=review, model="lfm3",
+                         issued_at=now) == 1
+    return store, ledger, now, target
+
+
+def test_later_forecasts_cannot_rewrite_an_old_review(tmp_path):
+    store, ledger, now, target = _reviewed_slot(tmp_path, "later.sqlite", stance="follow",
+                                                p=.6, outcome=1)
+    try:
+        after = now + timedelta(minutes=12)
+        assert ledger.report(asset="BTC", horizon=5, now=after)["followed_hit_rate"] == 1.0
+        # Forecasts issued AFTER the review, on other exchanges, all wrong.
+        with store.connect() as conn:
+            for venue in ("bybit", "bitget", "mexc", "htx"):
+                _forecast(conn, venue=venue, issued=now + timedelta(seconds=40),
+                          target=target, p=.6, outcome=0)
+        graded = ledger.report(asset="BTC", horizon=5, now=after)
+        assert graded["followed"] == 1 and graded["followed_hit_rate"] == 1.0
+    finally:
+        store.close()
+
+
+def test_results_settled_after_the_report_time_are_not_counted(tmp_path):
+    store, ledger, _now, target = _reviewed_slot(tmp_path, "settle.sqlite", stance="follow",
+                                                p=.6, outcome=1)
+    try:
+        # _forecast settles at target+6 min; a report as of target+3 min is earlier.
+        early = ledger.report(asset="BTC", horizon=5, now=target + timedelta(minutes=3))
+        assert early["followed"] == 0 and early["slots_graded"] == 0
+        late = ledger.report(asset="BTC", horizon=5, now=target + timedelta(minutes=7))
+        assert late["followed"] == 1
+    finally:
+        store.close()
+
+
+def test_abstain_is_graded_with_the_same_rule_as_follow(tmp_path):
+    # Model leaned UP (p=.6 on all three); the market went DOWN on all three.
+    store, ledger, _now, target = _reviewed_slot(tmp_path, "abstain.sqlite", stance="abstain",
+                                                p=.6, outcome=0)
+    try:
+        graded = ledger.report(asset="BTC", horizon=5, now=target + timedelta(minutes=7))
+        assert graded["abstained"] == 1 and graded["followed"] == 0
+        # Following the model's lean would have been wrong: sitting out was right.
+        assert graded["model_hit_when_abstained"] == 0.0
+        assert graded["model_hit_overall"] == 0.0
+    finally:
+        store.close()

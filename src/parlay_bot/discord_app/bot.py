@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import sys
 import time
 from datetime import UTC, datetime, timedelta
 
@@ -3078,6 +3079,16 @@ class RivalDiscordClient(discord.Client):
             _LOG.exception("RivaL shutdown could not close the database pool")
         await super().close()
 
+# Background model work runs in threads. With Python's default 5 ms GIL
+# switch interval, the Discord event loop (which gives up the GIL on every
+# socket read) waits behind CPU-bound threads again and again: production
+# logged a 5.8 s stall on 2026-11-06 with features/pooled-model threads busy,
+# long enough to fail a button ("didn't respond in time"). Measured locally
+# with three CPU-bound threads, 100 small socket round trips took 931 ms at
+# 5 ms and 120 ms at 1 ms, with no measurable loss of thread throughput.
+GIL_SWITCH_INTERVAL = 0.001
+
+
 def run_discord_bot(settings: Settings | None = None) -> None:
     configured = settings or Settings()
     if configured.discord_token is None:
@@ -3087,5 +3098,6 @@ def run_discord_bot(settings: Settings | None = None) -> None:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
+    sys.setswitchinterval(GIL_SWITCH_INTERVAL)
     client = RivalDiscordClient(configured)
     client.run(configured.discord_token.get_secret_value(), log_handler=None)

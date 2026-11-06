@@ -118,7 +118,15 @@ def family(doc: dict) -> str:
 
 
 def usable(doc: dict, *, now: datetime | None = None) -> bool:
-    """Only models trained strictly before now and that passed their gates."""
+    """Only models trained strictly before now and that passed their gates.
+
+    A document labelled "backtest-only, shipped model unevaluated" is never
+    usable: its evaluation block describes weights that were refit after
+    scoring, so nothing has actually measured the shipped model. Documents
+    without the label (older artifacts, predating it) keep the old behaviour.
+    """
+    if doc.get("evaluation_status") == "backtest-only, shipped model unevaluated":
+        return False
     try:
         trained = datetime.fromisoformat(str(doc["trained_through"]))
         trained = trained if trained.utcoffset() else trained.replace(tzinfo=UTC)

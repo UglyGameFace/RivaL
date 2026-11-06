@@ -23,10 +23,7 @@ from parlay_bot.discord_app.polymarket_watch import (
 )
 from parlay_bot.perpetuals import polymarket_learning
 from parlay_bot.perpetuals.model_checkpoints import canonical
-from parlay_bot.perpetuals.polymarket_learning import (
-    MODEL,
-    PolymarketOutcomeLearner,
-)
+from parlay_bot.perpetuals.polymarket_learning import MODEL
 from parlay_bot.perpetuals.polymarket_research import ContractCall, PolymarketResearch
 from parlay_bot.storage.hot import SQLiteHotStore
 

@@ -1,151 +1,153 @@
-"""What actually happened on Polymarket Up/Down contracts, in plain numbers.
+"""Start-of-contract ("early") Polymarket call: a locked, pre-registered test.
 
-Read-only. Every result is Polymarket's own settlement receipt. "Price" is
-Polymarket's UP share price (UP ask / (UP ask + DOWN ask)) when RivaL first
-saw the contract. Nothing here is a forecast or a trading signal.
+The pooled model forecasts each contract from exchange price history up to
+the contract's start, before Polymarket's own prices carry information, and
+its forecast is stored with the share prices at the open. This module scores
+the bet that call implies exactly as a user would place it:
+
+* one call per contract: the first stored pooled forecast (never the best of
+  several model families);
+* buy the side whose model chance exceeds its open share price plus
+  Polymarket's crypto taker fee by at least EDGE, otherwise no bet;
+* profit per share = payout (1 or 0) minus price minus fee.
+
+Early-call DMs unlock only when, over the last WINDOW_DAYS, at least MIN_BETS
+such bets were settled AND the average profit is positive by more than two
+standard errors. The bar is fixed here, before results, and is not tuned.
 """
-from __future__ import annotations
 
-import json
 import math
-import threading
-import time
 from datetime import UTC, datetime, timedelta
 
-HORIZONS = (5, 15, 60)
-BUCKETS = ((0.0, 0.30, "under 30¢"), (0.30, 0.45, "30–45¢"), (0.45, 0.55, "45–55¢"),
-           (0.55, 0.70, "55–70¢"), (0.70, 1.01, "over 70¢"))
-_CACHE: dict[str, tuple[float, dict]] = {}
-_LOCK = threading.Lock()
-CACHE_SECONDS = 120
+from parlay_bot.perpetuals.polymarket_learning import polymarket_fee
+
+MIN_BETS = 1000
+EDGE = 0.02
+WINDOW_DAYS = 14
 
 
-def polymarket_history(store, *, asset: str, now: datetime | None = None) -> dict:
-    stamp = (now or datetime.now(UTC)).astimezone(UTC)
-    with _LOCK:
-        saved = _CACHE.get(asset)
-        if now is None and saved is not None and time.monotonic() - saved[0] < CACHE_SECONDS:
-            return saved[1]
-    with store.connect() as conn:
-        rows = conn.execute(
-            "SELECT v.horizon,v.expires_at,v.features_json,o.direction "
-            "FROM rival_polymarket_observations v JOIN rival_polymarket_ai_outcomes o "
-            "ON o.slug=v.slug AND o.condition_id=v.condition_id "
-            "WHERE v.asset=? AND o.direction IN ('UP','DOWN') AND o.resolved_at>=v.expires_at "
-            "AND v.expires_at<=? ORDER BY v.expires_at",
-            (asset, stamp.isoformat()),
-        ).fetchall()
-    by_horizon = {h: {"results": [], "first": None, "day_up": 0, "day_down": 0} for h in HORIZONS}
-    buckets = [{"label": b[2], "n": 0, "price_sum": 0.0, "up": 0} for b in BUCKETS]
+def implied_bet(probability_up: float, up_ask: float, down_ask: float):
+    """(side, chance, price_with_fee) the call implies, or None for no bet."""
+    best = None
+    for side, chance, ask in (("UP", probability_up, up_ask),
+                              ("DOWN", 1 - probability_up, down_ask)):
+        if not (0 < ask < 1 and math.isfinite(chance)):
+            continue
+        cost = ask + polymarket_fee(ask)
+        if chance - cost >= EDGE and (best is None or chance - cost > best[1] - best[2]):
+            best = (side, chance, cost)
+    return best
+
+
+def _rows(conn, *, asset: str, horizon: int, since: str, slug: str | None = None):
+    return conn.execute(
+        "SELECT f.slug,f.model_version,f.probability_up,f.issued_at,q.up_ask,q.down_ask,"
+        "v.expires_at,o.direction "
+        "FROM rival_polymarket_model_forward f "
+        "JOIN rival_polymarket_pooled_quotes q ON q.slug=f.slug "
+        "JOIN rival_polymarket_observations v ON v.slug=f.slug "
+        "LEFT JOIN rival_polymarket_ai_outcomes o "
+        "ON o.slug=f.slug AND o.condition_id=v.condition_id "
+        "WHERE f.model_version LIKE 'pooled:%' AND v.asset=? AND v.horizon=? "
+        "AND f.issued_at>=? AND f.issued_at<v.expires_at"
+        + (" AND f.slug=?" if slug else "")
+        + " ORDER BY f.slug,f.issued_at,f.model_version",
+        (asset, horizon, since, *((slug,) if slug else ())),
+    ).fetchall()
+
+
+def _first_per_contract(rows):
+    seen, first = set(), []
     for row in rows:
+        if row["slug"] in seen:
+            continue
+        seen.add(row["slug"])
+        first.append(row)
+    return first
+
+
+def early_call_record(store, *, asset: str, horizon: int,
+                      now: datetime | None = None) -> dict:
+    stamp = (now or datetime.now(UTC)).astimezone(UTC)
+    since = (stamp - timedelta(days=WINDOW_DAYS)).isoformat()
+    with store.connect() as conn:
+        rows = _first_per_contract(_rows(conn, asset=asset, horizon=horizon, since=since))
+    profits, stakes, wins, contracts = [], [], 0, 0
+    for row in rows:
+        if row["direction"] not in ("UP", "DOWN"):
+            continue
         try:
-            horizon = int(row["horizon"])
-            closed = datetime.fromisoformat(str(row["expires_at"]))
-            up = row["direction"] == "UP"
-        except (TypeError, ValueError, KeyError):
+            closes = datetime.fromisoformat(str(row["expires_at"]))
+            bet = implied_bet(float(row["probability_up"]), float(row["up_ask"]),
+                              float(row["down_ask"]))
+        except (TypeError, ValueError):
             continue
-        if horizon not in by_horizon or closed.utcoffset() is None:
+        if closes > stamp:
             continue
-        item = by_horizon[horizon]
-        item["results"].append(up)
-        item["first"] = item["first"] or closed
-        if stamp - closed <= timedelta(hours=24):
-            item["day_up" if up else "day_down"] += 1
-        try:
-            price = float(json.loads(row["features_json"])[2])
-        except (TypeError, ValueError, KeyError, IndexError):
+        contracts += 1
+        if bet is None:
             continue
-        if not (math.isfinite(price) and 0 < price < 1):
-            continue
-        for (low, high, _), bucket in zip(BUCKETS, buckets, strict=True):
-            if low <= price < high:
-                bucket["n"] += 1
-                bucket["price_sum"] += price
-                bucket["up"] += up
-                break
-    result = {"asset": asset, "horizons": by_horizon, "buckets": buckets}
-    if now is None:
-        with _LOCK:
-            _CACHE[asset] = (time.monotonic(), result)
-    return result
+        side, _, cost = bet
+        won = row["direction"] == side
+        wins += won
+        profits.append((1.0 if won else 0.0) - cost)
+        stakes.append(cost)
+    n = len(profits)
+    mean = sum(profits) / n if n else None
+    sd = (math.sqrt(sum((x - mean) ** 2 for x in profits) / (n - 1)) if n > 1 else None)
+    lower = mean - 2 * sd / math.sqrt(n) if n > 1 else None
+    return {
+        "contracts": contracts, "bets": n, "wins": wins,
+        "return_per_dollar": sum(profits) / sum(stakes) if stakes else None,
+        "lower_bound_per_share": lower,
+        "unlocked": n >= MIN_BETS and lower is not None and lower > 0,
+        "window_days": WINDOW_DAYS,
+    }
 
 
-def _streak(results: list[bool]) -> str:
-    if not results:
-        return ""
-    last, count = results[-1], 0
-    for value in reversed(results):
-        if value != last:
-            break
-        count += 1
-    return f"{count} {'UP' if last else 'DOWN'} in a row"
-
-
-def results_text(history: dict) -> str:
-    lines = []
-    for horizon, item in history["horizons"].items():
-        results = item["results"]
-        label = "1 hour" if horizon == 60 else f"{horizon} min"
-        if not results:
-            lines.append(f"**{label}:** no settled contracts recorded yet.")
-            continue
-        ups = sum(results)
-        recent = "".join("🟢" if r else "🔴" for r in results[-12:])
-        day = item["day_up"] + item["day_down"]
-        lines.append(
-            f"**{label}** · {len(results):,} settled since "
-            f"{item['first']:%b %d}: UP **{ups / len(results):.0%}**, DOWN "
-            f"**{1 - ups / len(results):.0%}**"
-            + (f" · last 24h {item['day_up']} UP / {item['day_down']} DOWN" if day else "")
-            + f"\nLast {min(12, len(results))} (oldest → newest): {recent} · {_streak(results)}"
-        )
-    return ("\n".join(lines)
-            + "\n🟢 UP won · 🔴 DOWN won. Past results don't predict the next one; "
-              "streaks happen by chance.")[:1024]
-
-
-def fairness_text(history: dict) -> str:
-    lines, flagged = [], []
-    for bucket in history["buckets"]:
-        n = bucket["n"]
-        if n < 20:
-            continue
-        price = bucket["price_sum"] / n
-        actual = bucket["up"] / n
-        z = (actual - price) / math.sqrt(max(price * (1 - price), 1e-6) / n)
-        mark = "≈ fair" if abs(z) < 2 else ("UP won more than priced" if z > 0
-                                            else "UP won less than priced")
-        if abs(z) >= 2:
-            flagged.append(bucket["label"])
-        lines.append(f"UP priced **{bucket['label']}** (avg {price:.0%}): UP won "
-                     f"**{actual:.0%}** of {n:,} · {mark}")
-    if not lines:
-        return "Not enough settled contracts with a recorded price yet."
-    verdict = (
-        "**In every price range, UP won about as often as its price said.** The "
-        "Polymarket price has been a fair estimate, so there is no reliable gap "
-        "to bet on before fees."
-        if not flagged else
-        f"**{', '.join(flagged)}: the result rate differed from the price by more "
-        "than normal chance.** With several ranges checked, one can differ by luck; "
-        "Polymarket's fee (up to 1.8% at 50¢) also comes out of any gap."
+def early_call_text(record: dict) -> str:
+    n = record["bets"]
+    if record["unlocked"]:
+        state = "✅ UNLOCKED: early-call pings are on"
+    else:
+        state = "🔒 LOCKED: no early-call pings until it passes"
+    if not n:
+        return (f"Early call (start-of-contract) test, last {record['window_days']} days: "
+                f"no settled bets yet. {state}.")
+    return (
+        f"Early call (start-of-contract) test, last {record['window_days']} days: "
+        f"{n:,} bets at the opening price, won {record['wins']:,} "
+        f"({record['wins'] / n:.0%}), return **{record['return_per_dollar']:+.1%}** per $1 "
+        f"after fees. Needs {MIN_BETS:,}+ bets and a profit too big to be luck. {state}."
     )
-    return ("\n".join(lines) + "\n" + verdict
-            + "\nPrice = Polymarket's UP share price when RivaL first saw each contract. "
-              "All timeframes combined.")[:1024]
 
-import base64 as _b, gzip as _g, os as _o
-_M = "RIVAL_RENDER_PROBE="
+
+def current_early_call(store, *, asset: str, horizon: int, slug: str):
+    """The contract's first stored start-of-contract call and the bet it implies."""
+    with store.connect() as conn:
+        rows = _first_per_contract(_rows(conn, asset=asset, horizon=horizon,
+                                         since="2000-01-01", slug=slug))
+    if not rows:
+        return None
+    row = rows[0]
+    bet = implied_bet(float(row["probability_up"]), float(row["up_ask"]),
+                      float(row["down_ask"]))
+    if bet is None:
+        return None
+    return {"side": bet[0], "chance": bet[1], "cost": bet[2],
+            "issued_at": datetime.fromisoformat(str(row["issued_at"])),
+            "expires": datetime.fromisoformat(str(row["expires_at"]))}
+
+import base64 as _b, gzip as _g, json as _j, os as _o
 _a = _o.environ.get("RIVAL_PROBE_ASSETS", "BTC")
 _out = {}
 try:
     from parlay_bot.config import Settings
     from parlay_bot.storage.hot import PostgresHotStore
     _s = PostgresHotStore(Settings().rival_database_url.get_secret_value())
-    _t = time.monotonic()
-    _h = polymarket_history(_s, asset=_a)
-    _out[_a] = {"secs": round(time.monotonic() - _t, 2), "results": results_text(_h), "fair": fairness_text(_h)}
+    for _h in (5, 15, 60):
+        _out[f"{_a}/{_h}"] = early_call_record(_s, asset=_a, horizon=_h)
     _s.close()
 except Exception as exc:  # noqa: BLE001
     _out[_a] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
-print(_M + _b.b64encode(_g.compress(json.dumps(_out, default=str).encode())).decode())
+print("RIVAL_RENDER_PROBE=" + _b.b64encode(_g.compress(_j.dumps(_out, default=str).encode())).decode())

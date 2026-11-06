@@ -1,20 +1,29 @@
-import base64, gzip, json
+import base64, gzip, json, os
 MARKER = "RIVAL_RENDER_PROBE="
-out = {}
+keys = ("RIVAL_ARCHIVE_ENABLED", "RIVAL_PERP_ARCHIVE_ENABLED", "RIVAL_ARCHIVE_AUTOSTART_WHEN_CONFIGURED")
+out = {"env": {k: os.environ.get(k, "<unset>") for k in keys}}
+try:
+    from dotenv import dotenv_values  # noqa
+except Exception:
+    pass
+for name in (".env",):
+    try:
+        lines = [l.split("=", 1)[0].strip() for l in open(name) if "=" in l]
+        out["dotenv_has"] = {k: (k in lines) for k in keys}
+        vals = {}
+        for l in open(name):
+            k, _, v = l.partition("=")
+            if k.strip() in keys:
+                vals[k.strip()] = v.strip()
+        out["dotenv_values"] = vals
+    except OSError:
+        out["dotenv"] = "none"
 try:
     from parlay_bot.config import Settings
-    from parlay_bot.storage.hot import PostgresHotStore
-    store = PostgresHotStore(Settings().rival_database_url.get_secret_value())
-    with store.connect() as conn:
-        rows = conn.execute("""SELECT horizon, resolution_source, COUNT(*) AS n, MIN(observed_at) AS first,
-                               MAX(observed_at) AS last FROM rival_polymarket_observations
-                               GROUP BY horizon, resolution_source ORDER BY horizon, n DESC""").fetchall()
-        out["sources"] = [[int(r["horizon"]), str(r["resolution_source"])[:120], int(r["n"]),
-                           str(r["first"])[:16], str(r["last"])[:16]] for r in rows]
-        sample = conn.execute("""SELECT horizon, evidence_json FROM rival_polymarket_observations
-                                 WHERE horizon IN (5,15) ORDER BY observed_at DESC LIMIT 2""").fetchall()
-        out["rules_sample"] = [[int(r["horizon"]), str(json.loads(r["evidence_json"]).get("rules", ""))[:600]] for r in sample]
-    store.close()
+    s = Settings()
+    out["settings"] = {"archive_enabled": s.rival_archive_enabled, "perp": s.rival_perp_archive_enabled,
+                       "autostart": s.rival_archive_autostart_when_configured,
+                       "explicit": sorted(f for f in s.model_fields_set if "archive" in f)}
 except Exception as exc:  # noqa: BLE001
-    out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
-print(MARKER + base64.b64encode(gzip.compress(json.dumps(out, default=str).encode())).decode())
+    out["error"] = type(exc).__name__
+print(MARKER + base64.b64encode(gzip.compress(json.dumps(out).encode())).decode())

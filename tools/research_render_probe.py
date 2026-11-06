@@ -8,25 +8,25 @@ try:
     from parlay_bot.storage.hot import PostgresHotStore
     store = PostgresHotStore(Settings().rival_database_url.get_secret_value())
     with store.connect() as conn:
-        rows = conn.execute("""SELECT v.horizon, f.issued_at, f.probability_up p, f.market_baseline m, o.direction y
-          FROM rival_polymarket_model_forward f JOIN rival_polymarket_observations v ON v.slug=f.slug
-          JOIN rival_polymarket_ai_outcomes o ON o.slug=f.slug AND o.condition_id=v.condition_id
-          WHERE f.model_version='polymarket-terminal-book-logistic-v1' AND f.issued_at>='2026-10-30'
-            AND o.direction IN ('UP','DOWN')""").fetchall()
-        st = conn.execute("SELECT asset,horizon,updates,trained_at FROM rival_polymarket_model_state WHERE model_version='polymarket-terminal-book-logistic-v1' ORDER BY asset,horizon").fetchall()
-        out["state"] = [[r["asset"], int(r["horizon"]), int(r["updates"]), str(r["trained_at"])[:16]] for r in st]
+        rows = conn.execute("""SELECT c.model, c.direction, c.evidence_json, c.issued_at, c.horizon, o.direction AS y
+          FROM rival_polymarket_ai_calls c LEFT JOIN rival_polymarket_ai_outcomes o ON o.slug=c.slug AND o.condition_id=c.condition_id""").fetchall()
+        tables = conn.execute("""SELECT table_name FROM information_schema.tables WHERE table_name ILIKE '%intelligence%' OR table_name ILIKE '%ai_research%' OR table_name ILIKE '%llm%' OR table_name ILIKE '%ai_%'""").fetchall()
+        out["tables"] = sorted(r["table_name"] for r in tables)
     store.close()
     agg = {}
+    from parlay_bot.perpetuals.polymarket_learning import polymarket_fee
     for r in rows:
-        day = str(r["issued_at"])[:10]
-        # ET-ish bucket by UTC day; also split today's last 6 hours
-        k = f'{r["horizon"]}|{day}'
-        a = agg.setdefault(k, [0, 0., 0., 0, 0, 0, 0])
-        p, m, y = float(r["p"]), float(r["m"]), int(r["y"] == "UP")
-        a[0] += 1; a[1] += (p-y)**2; a[2] += (m-y)**2
-        if abs(p-.5) >= .05: a[3] += 1; a[4] += int((p > .5) == (y == 1))
-        if abs(m-.5) >= .05: a[5] += 1; a[6] += int((m > .5) == (y == 1))
-    out["days"] = {k: [a[0], round(a[1]/a[0], 4), round(a[2]/a[0], 4), a[3], round(a[4]/a[3], 3) if a[3] else None, round(a[6]/a[5], 3) if a[5] else None] for k, a in sorted(agg.items())}
+        k = f'{r["model"]}'[:40]
+        a = agg.setdefault(k, {"calls": 0, "settled": 0, "picks": 0, "right": 0, "stake": 0., "pnl": 0., "first": str(r["issued_at"])[:10], "last": ""})
+        a["calls"] += 1; a["last"] = max(a["last"], str(r["issued_at"])[:10])
+        if r["y"] not in ("UP", "DOWN"): continue
+        a["settled"] += 1
+        if r["direction"] not in ("UP", "DOWN"): continue
+        a["picks"] += 1; win = r["direction"] == r["y"]; a["right"] += win
+        ev = json.loads(r["evidence_json"]); ask = ev.get("up_ask" if r["direction"] == "UP" else "down_ask")
+        if isinstance(ask, (int, float)) and 0 < ask < 1:
+            c = ask + polymarket_fee(ask); a["stake"] += c; a["pnl"] += (1. if win else 0.) - c
+    out["ai"] = agg
 except Exception as exc:  # noqa: BLE001
     out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
 print(MARKER + base64.b64encode(gzip.compress(json.dumps(out, default=str).encode())).decode())

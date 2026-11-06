@@ -1,40 +1,31 @@
-"""Read-only: time every Research section render, as users open them."""
-import asyncio, base64, gzip, json, os, time
+import base64, gzip, json, os
 MARKER = "RIVAL_RENDER_PROBE="
-from parlay_bot.discord_app.research_dashboard import _SECTIONS
-ALL = [(s, k) for s in ("opportunities", "math", "accuracy") for k, _ in _SECTIONS[s] if (s, k) != ("math", "ai")]
-part = {"BTC": 0, "ETH": 1, "SOL": 2, "XRP": 3}[os.environ.get("RIVAL_PROBE_ASSETS", "BTC")]
-PART = ALL[part::4]
-async def main():
+if os.environ.get("RIVAL_PROBE_ASSETS", "BTC") != "BTC":
+    print(MARKER + base64.b64encode(gzip.compress(b"{}")).decode()); raise SystemExit(0)
+out = {}
+try:
     from parlay_bot.config import Settings
-    from parlay_bot.discord_app.research_dashboard import ResearchDashboard
-    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
     from parlay_bot.storage.hot import PostgresHotStore
     store = PostgresHotStore(Settings().rival_database_url.get_secret_value())
-    out = {}
-    try:
-        market = PerpetualMarketStore(store)
-        venues = ('bitget', 'deribit', 'dydx', 'gate', 'hyperliquid', 'kucoin', 'lighter', 'okx', 'phemex')
-        for screen, section in PART:
-            view = ResearchDashboard(owner_id=1, market=market, ai=None, venues=venues, shadow_enabled=True)
-            view.asset, view.screen, view.section = "BTC", screen, section
-            view._rebuild()
-            t = time.monotonic()
-            try:
-                e = await asyncio.wait_for(view.render(), timeout=20)
-                out[f"{screen}/{section}"] = [round(time.monotonic()-t, 1), len(e.fields)]
-            except Exception as exc:  # noqa: BLE001
-                out[f"{screen}/{section}"] = [round(time.monotonic()-t, 1), type(exc).__name__]
-            finally:
-                view.stop()
-        with store.connect() as conn:
-            r = conn.execute("SELECT template, SUM(count) AS n, MAX(last_at) AS l FROM rival_problem_log WHERE hour>='2026-11-05T00' AND template ILIKE '%render timed out%' GROUP BY template").fetchall()
-            out[f"timeouts{part}"] = [[x["template"][:60], int(x["n"]), str(x["l"])[5:16]] for x in r]
-    finally:
-        store.close()
-    return out
-try:
-    report = asyncio.run(main())
+    with store.connect() as conn:
+        rows = conn.execute("""SELECT v.asset, v.horizon, v.expires_at, v.observed_at, v.features_json, o.direction
+            FROM rival_polymarket_observations v JOIN rival_polymarket_ai_outcomes o
+              ON o.slug=v.slug AND o.condition_id=v.condition_id
+            WHERE o.direction IN ('UP','DOWN') ORDER BY v.expires_at""").fetchall()
+    store.close()
+    from datetime import datetime, timedelta
+    agg = {}
+    for r in rows:
+        k = f'{r["asset"]}|{r["horizon"]}'
+        a = agg.setdefault(k, {"n": 0, "up": 0, "first": str(r["expires_at"])[:16], "seq": "", "cal": {}, "early": 0})
+        y = r["direction"] == "UP"; a["n"] += 1; a["up"] += y; a["seq"] = (a["seq"] + ("U" if y else "D"))[-20:]
+        f = json.loads(r["features_json"]); m = float(f[2])
+        exp = datetime.fromisoformat(str(r["expires_at"])); obs = datetime.fromisoformat(str(r["observed_at"]))
+        frac = (exp - obs).total_seconds() / (int(r["horizon"]) * 60)
+        if frac >= 0.8: a["early"] += 1
+        b = min(9, int(m * 10)); c = a["cal"].setdefault(b, [0, 0]); c[0] += 1; c[1] += y
+        a["last"] = str(r["expires_at"])[:16]
+    out["agg"] = agg
 except Exception as exc:  # noqa: BLE001
-    report = {f"error{part}": f"{type(exc).__name__}: {str(exc)[:200]}"}
-print(MARKER + base64.b64encode(gzip.compress(json.dumps(report, default=str).encode())).decode())
+    out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+print(MARKER + base64.b64encode(gzip.compress(json.dumps(out, default=str).encode())).decode())

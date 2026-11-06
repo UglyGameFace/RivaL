@@ -138,7 +138,7 @@ async def test_auto_tracking_persists_sends_a_fresh_card_and_stops(tmp_path, mon
         assert await restarted.stop(user.id) is True
         assert store.get(str(user.id)) is None
         assert await restarted.cycle() == 0
-        assert channel.send.await_count == 1
+        assert channel.send.await_count == 2  # stop/cycles send nothing new
         assert not await restarted.stop(user.id)
     finally:
         hot.close()

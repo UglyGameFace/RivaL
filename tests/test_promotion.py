@@ -367,6 +367,50 @@ def test_multi_summary_needs_fifty_settled(tmp_path):
         store.close()
 
 
+def test_withdrawn_fusion_outcomes_do_not_count_toward_promotion(tmp_path):
+    # P1-8 remainder: NULL outcome_up rows (withdrawn no-trade labels) must
+    # never count as Brier evidence or quote windows for promotion.
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
+    store = SQLiteHotStore(tmp_path / "withdrawn-promo.sqlite")
+    try:
+        seed_multi_settled(store, now, count=100)
+        seed_quote_closes(store, now, count=20)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE perp_multi_forward SET outcome_up=NULL,"
+                " challenger_brier=NULL, incumbent_brier=NULL"
+            )
+        row = evaluate_promotion(store, asset="BTC", horizon=5, now=now)
+        assert row["status"] == "held"
+        assert row["unique_target_windows"] == 0
+        assert row["quote_windows"] == 0
+        assert promoted_engine(store, asset="BTC", horizon=5, now=now) == "live"
+    finally:
+        store.close()
+
+
+def test_one_withdrawn_window_does_not_poison_promotion(tmp_path):
+    # A single withdrawn fusion row must not fail the 21-day proof: the
+    # report's calibration read skips NULL outcomes instead of failing
+    # closed on them, so the remaining genuine windows still promote.
+    now = datetime(2026, 10, 30, 14, 0, tzinfo=UTC)
+    store = SQLiteHotStore(tmp_path / "one-withdrawn.sqlite")
+    try:
+        seed_strict_21_day_paired_proof(store, now)
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE perp_multi_forward SET outcome_up=NULL,"
+                " challenger_brier=NULL, incumbent_brier=NULL"
+                " WHERE target_opened_at=(SELECT MIN(target_opened_at)"
+                " FROM perp_multi_forward)"
+            )
+        row = evaluate_promotion(store, asset="BTC", horizon=5, now=now)
+        assert row["status"] == "promoted"
+        assert promoted_engine(store, asset="BTC", horizon=5, now=now) == "multi"
+    finally:
+        store.close()
+
+
 def test_unsettled_quote_windows_are_not_used_for_promotion(tmp_path):
     # Historical quote rows without verified finalized outcomes must never
     # inflate the short-horizon trade sample used for automatic promotion.

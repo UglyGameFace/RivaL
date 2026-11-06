@@ -129,6 +129,66 @@ def test_research_challenger_needs_actual_paired_forward_proof_and_rolls_back(le
     hot.close()
 
 
+def test_history_settle_records_no_outcome_from_zero_trade_candle(tmp_path):
+    # P1-8 remainder: a target candle with no trades repeats the previous
+    # price, so grading it would mint a NOT UP label from no market
+    # activity. _settle() records no outcome for it, while a traded
+    # candle on the same terms still settles normally.
+    hot = SQLiteHotStore(tmp_path / "history-notrade.sqlite")
+    PerpetualMarketStore(hot).initialize()
+    now = datetime.now(UTC).replace(second=0, microsecond=0)
+    monitor = HistoricalChallengers(hot, LiveModelCheckpoints(hot))
+    monitor.initialize()
+    cases = (
+        # (sha, target, trades, expected outcome)
+        ("a" * 64, now - timedelta(minutes=11), 0, None),
+        ("b" * 64, now - timedelta(minutes=6), 12, 1),
+    )
+    with hot.connect() as conn:
+        for sha, target, trades, _expected in cases:
+            issued = target - timedelta(minutes=4)
+            conn.execute(
+                """INSERT INTO rival_history_forward
+                   (model_sha256,venue,contract,quote,horizon_minutes,reference_opened_at,reference_close,
+                    issued_at,target_opened_at,probability_up,incumbent_up,weights_sha256,outcome_up,settled_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (sha, "binance", "BTCUSDT", "USDT", 5,
+                 (target - timedelta(minutes=5)).isoformat(), 100.0,
+                 issued.isoformat(), target.isoformat(), 0.9, 0.5, "c" * 64, None, None),
+            )
+            conn.execute(
+                """INSERT INTO perp_market_candles
+                   (venue,contract,quote,interval_minutes,opened_at,closed_at,
+                    first_observed_at,open_price,high_price,low_price,close_price,
+                    volume_base,trades)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("binance", "BTCUSDT", "USDT", 5, target.isoformat(),
+                 (target + timedelta(minutes=5, milliseconds=-1)).isoformat(),
+                 (target + timedelta(minutes=5, seconds=4)).isoformat(),
+                 100, 103, 99, 102.0, 2, trades),
+            )
+    monitor._settle(now)
+    with hot.connect() as conn:
+        rows = {
+            row["model_sha256"]: row
+            for row in conn.execute(
+                "SELECT model_sha256,outcome_up,settled_at FROM rival_history_forward"
+            ).fetchall()
+        }
+    assert rows["a" * 64]["outcome_up"] is None
+    assert rows["a" * 64]["settled_at"] is not None  # processed, never graded
+    assert rows["b" * 64]["outcome_up"] == 1
+    assert rows["b" * 64]["settled_at"] is not None
+    # A second pass leaves the withdrawn row untouched and finds nothing new.
+    monitor._settle(now)
+    with hot.connect() as conn:
+        assert conn.execute(
+            "SELECT outcome_up FROM rival_history_forward WHERE model_sha256=?",
+            ("a" * 64,),
+        ).fetchone()["outcome_up"] is None
+    hot.close()
+
+
 @pytest.mark.parametrize('backend',['sqlite','postgres'])
 def test_polymarket_learns_only_receipts_reuses_weights_and_freezes_forward_forecast(tmp_path,backend):
     if backend == 'postgres' and not os.getenv('RIVAL_TEST_DATABASE_URL'):

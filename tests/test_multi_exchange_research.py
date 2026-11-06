@@ -243,6 +243,58 @@ def test_postgres_causal_fusion_persists_on_restart():
         store.close()
 
 
+def test_fusion_withdraws_outcomes_copied_from_withdrawn_incumbent(tmp_path):
+    # P1-8 remainder: fusion rows settled from an incumbent result that was
+    # later withdrawn (zero-trade target candle) must lose their outcome
+    # too, while rows whose incumbent outcome still stands are untouched.
+    store = SQLiteHotStore(tmp_path / "fusion-withdraw.sqlite")
+    now = datetime.now(UTC).replace(microsecond=0)
+    try:
+        first = seed(store, now)
+        a = MultiExchangeResearch(store)
+        assert a.issue(now=now) == 1
+        # Seed the second target only after issuing the first: seeding
+        # overwrites feed health with the later attempt time, which would
+        # make the earlier issue look like it ran before any success.
+        second = seed(store, now + timedelta(minutes=10))
+        assert a.issue(now=now + timedelta(minutes=10)) == 1
+        settle_anchor(store, now, first)
+        settle_anchor(store, now + timedelta(minutes=10), second)
+        assert a.settle(now=now + timedelta(minutes=19)) == 2
+        with store.connect() as conn:
+            assert [
+                r["outcome_up"]
+                for r in conn.execute(
+                    "SELECT outcome_up FROM perp_multi_forward ORDER BY target_opened_at"
+                ).fetchall()
+            ] == [1, 1]
+        # The incumbent withdraws the first result: its target candle had
+        # no trades, so the label it carried is revoked upstream.
+        with store.connect() as conn:
+            conn.execute(
+                "UPDATE perp_forward_audit SET outcome_up=NULL, model_brier=NULL,"
+                " baseline_brier=NULL WHERE venue='hyperliquid' AND target_opened_at=?",
+                (first.isoformat(),),
+            )
+        # A fresh instance runs the withdrawal on initialize().
+        MultiExchangeResearch(store).initialize()
+        with store.connect() as conn:
+            rows = conn.execute(
+                "SELECT target_opened_at,settled_at,outcome_up,challenger_brier,"
+                " incumbent_brier FROM perp_multi_forward ORDER BY target_opened_at"
+            ).fetchall()
+        assert rows[0]["outcome_up"] is None
+        assert rows[0]["challenger_brier"] is None
+        assert rows[0]["incumbent_brier"] is None
+        assert rows[0]["settled_at"] is not None  # row kept, outcome revoked
+        assert rows[1]["outcome_up"] == 1  # valid incumbent outcome untouched
+        assert rows[1]["challenger_brier"] is not None
+        # The withdrawn row never settles again.
+        assert MultiExchangeResearch(store).settle(now=now + timedelta(minutes=20)) == 0
+    finally:
+        store.close()
+
+
 def test_stale_but_accepted_source_gets_less_influence(tmp_path):
     now = datetime(2026, 10, 30, 14, tzinfo=UTC)
     store = SQLiteHotStore(tmp_path / "freshweights.sqlite")

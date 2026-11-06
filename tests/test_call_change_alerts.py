@@ -49,8 +49,9 @@ def _notice() -> PolymarketNotice:
 def test_book_quote_and_new_weights_cannot_flip_the_first_saved_forecast(tmp_path, monkeypatch):
     hot = SQLiteHotStore(tmp_path / "first.sqlite")
     hot.initialize()
-    learner = PolymarketOutcomeLearner(hot)
-    learner.initialize()
+    research = PolymarketResearch(hot)
+    research.initialize()  # Creates the shared terminal-outcome receipt table.
+    learner = research.learner
     # First issuance with zero-valued weights is neutral. Then simulate
     # a newly trained model and an enormous live price shift.
     monkeypatch.setattr(polymarket_learning, "MIN_LABELS", 0)

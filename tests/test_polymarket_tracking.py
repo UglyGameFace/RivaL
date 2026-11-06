@@ -77,3 +77,18 @@ def test_only_calls_after_start_count_and_results_are_priced_honestly(learning_s
     assert "after Polymarket fees" in text and "no real trades" in text
     # Another user's view is separate.
     assert tracker.report(owner_id=2, asset="BTC")["status"] == "not_started"
+
+
+def test_opportunities_lead_with_open_polymarket_calls(learning_store):
+    from parlay_bot.discord_app.opportunities import polymarket_call_fields
+    _store(learning_store)
+    _contract(learning_store, 0, p=0.40, up_ask=0.48, down_ask=0.53, outcome=None)  # open
+    _contract(learning_store, -2, p=0.80, up_ask=0.5, down_ask=0.5, outcome="UP")   # closed
+    now = START + timedelta(minutes=2)
+    fields = polymarket_call_fields(learning_store, asset="BTC", now=now)
+    assert len(fields) == 1
+    name, value = fields[0]
+    assert name == "🎰 Polymarket • 5 min • call: DOWN"
+    assert "40.0% UP" in value and "btc-updown-5m-0" in value and "Not a proven edge" in value
+    # Before the call is issued nothing is shown, never a guessed call.
+    assert polymarket_call_fields(learning_store, asset="BTC", now=START + timedelta(seconds=2)) == []

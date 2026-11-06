@@ -101,7 +101,8 @@ async def test_auto_tracking_persists_sends_a_fresh_card_and_stops(tmp_path, mon
         assert channel.send.await_args.kwargs["view"] is service.dm_view
         assert service.dm_view.timeout is None
         assert {button.custom_id for button in service.dm_view.children} == {
-            "rival:poly:dm:refresh", "rival:poly:dm:stop",
+            "rival:poly:dm:refresh", "rival:poly:dm:stop", "rival:poly:dm:pings",
+            "rival:poly:dm:record", "rival:poly:dm:market",
         }
         tracker = store.get(str(user.id))
         assert tracker is not None
@@ -482,5 +483,141 @@ async def test_live_boards_bound_quote_reads_but_do_not_hold_dm_edits(tmp_path, 
         assert len(observed) == len(ASSETS) * len(HORIZONS)
         assert edited.await_count == 12
         assert all(tracker.fingerprint == "new" for tracker in store.active())
+    finally:
+        hot.close()
+
+
+def _frozen_call(current, *, direction="DOWN", issued=None, p=0.417):
+    from parlay_bot.perpetuals.polymarket_research import ContractCall
+    return ContractCall(
+        slug=current.slug, asset=current.asset, horizon=current.horizon,
+        issued_at=issued or current.opens, expires=current.closes,
+        direction=direction, model="book", thesis="frozen", risk="research",
+        evidence_sha256="e" * 64, kind="model", probability_up=p,
+    )
+
+
+def _open_board(now, *, quote=True):
+    current = PolymarketListedWindow(
+        asset="BTC", horizon=5, slug="btc-updown-5m-77",
+        opens=now - timedelta(seconds=5), closes=now + timedelta(seconds=295),
+        accepting_orders=True, price_to_beat=None,
+    )
+    book = PolymarketNotice(
+        asset="BTC", horizon=5, issued=current.opens, expires=current.closes,
+        slug=current.slug, up_ask=0.46, down_ask=0.55, quote_at=now,
+    ) if quote else None
+    return current, PolymarketWindowBoard(
+        checked_at=now, current=current, next_window=None, current_quote=book,
+        quote_unavailable_reason=None if quote else "no_liquidity",
+    )
+
+
+@pytest.mark.asyncio
+async def test_card_keeps_frozen_call_when_quote_drops_out(tmp_path):
+    """Production 2026-11-06: an empty ask side (no_liquidity) near the close
+    removed the quote and the card fell back to WAIT despite a stored call."""
+    hot, _store, service, *_ = _setup(tmp_path)
+    try:
+        current, board = _open_board(datetime.now(UTC), quote=False)
+        call = _frozen_call(current)
+        service.reader = SimpleNamespace(window_board=AsyncMock(return_value=board))
+        service.research = SimpleNamespace(
+            peek=Mock(return_value=call), observe=Mock(),
+            refresh_note=Mock(return_value=None), status=Mock(return_value=""),
+        )
+        embed, _ = await service._observation("BTC", 5)
+        assert "DOWN" in embed.title and "WAIT" not in embed.title
+        service.research.observe.assert_not_called()
+        assert "No verified sell-side liquidity" in next(
+            f.value for f in embed.fields if "share asks" in f.name)
+    finally:
+        hot.close()
+
+
+@pytest.mark.asyncio
+async def test_one_ping_per_contract_only_for_fresh_up_down_calls(tmp_path, monkeypatch):
+    hot, store, service, channel, user, _edited = _setup(tmp_path)
+    try:
+        store.save(LivePolymarketTracker(str(user.id), "BTC", 5, "555", "901", "old"))
+        now = datetime.now(UTC)
+        current, board = _open_board(now)
+        call = _frozen_call(current, issued=now - timedelta(seconds=3))
+        service.research = SimpleNamespace(learner=SimpleNamespace(summary=lambda **_: {
+            "settled_forward_contracts": 2284, "forward_brier": 0.2134,
+            "market_baseline_brier": 0.2117}))
+
+        async def observe(asset, horizon):
+            service._live_cache[(asset, horizon)] = (datetime.now(UTC), board, current_call)
+            return discord.Embed(title="card"), "fp"
+
+        monkeypatch.setattr(service, "_observation", observe)
+        current_call = call
+        await service.cycle()
+        await service.cycle()
+        pings = [c for c in channel.send.await_args_list if "content" in c.kwargs]
+        assert len(pings) == 1  # a second cycle never re-pings the same contract
+        text = pings[0].kwargs["content"]
+        assert "call issued: DOWN" in text and "41.7% UP" in text
+        assert "did not beat the market's own price" in text and "Not a proven edge" in text
+        assert "will not flip" in text
+
+        # WAIT, an old call (e.g. after a restart) and the final minute never ping.
+        for current_call in (
+            _frozen_call(current, direction="WAIT", issued=now, p=0.48),
+            _frozen_call(current, issued=now - timedelta(seconds=90)),
+        ):
+            service._pinged.clear()
+            await service.cycle()
+        late = PolymarketListedWindow(
+            asset="BTC", horizon=5, slug="btc-updown-5m-78",
+            opens=now - timedelta(seconds=250), closes=now + timedelta(seconds=50),
+            accepting_orders=True, price_to_beat=None,
+        )
+        board = PolymarketWindowBoard(checked_at=now, current=late, next_window=None,
+                                      current_quote=None)
+        current_call = _frozen_call(late, issued=now - timedelta(seconds=2))
+        await service.cycle()
+        assert len([c for c in channel.send.await_args_list if "content" in c.kwargs]) == 1
+    finally:
+        hot.close()
+
+
+@pytest.mark.asyncio
+async def test_dm_card_switches_market_in_place_and_toggles_pings(tmp_path, monkeypatch):
+    hot, store, service, channel, user, edited = _setup(tmp_path)
+    try:
+        seen = []
+
+        async def observe(asset, horizon):
+            seen.append((asset, horizon))
+            return discord.Embed(title=f"{asset} {horizon}"), f"{asset}{horizon}"
+
+        monkeypatch.setattr(service, "_observation", observe)
+        assert (await service.start(user, asset="BTC", horizon=5))[0]
+        followup = SimpleNamespace(send=AsyncMock())
+        interaction = SimpleNamespace(
+            user=user, message=SimpleNamespace(id=901), channel_id=555,
+            response=SimpleNamespace(defer=AsyncMock()), followup=followup,
+        )
+        await service.handle_dm_action(interaction, "market:ETH:15")
+        assert "now tracks ETH 15m" in followup.send.await_args.args[0]
+        tracker = store.get(str(user.id))
+        assert (tracker.asset, tracker.horizon, tracker.message_id) == ("ETH", 15, "901")
+        assert edited.await_args.kwargs["embed"].title == "ETH 15"
+        assert channel.send.await_count == 1  # same card, no new message
+
+        assert store.pings_on(str(user.id))
+        await service.handle_dm_action(interaction, "pings")
+        assert "Pings OFF" in followup.send.await_args.args[0]
+        assert not store.pings_on(str(user.id))
+        await service.handle_dm_action(interaction, "pings")
+        assert "Pings ON" in followup.send.await_args.args[0]
+
+        # An old card cannot retarget or toggle the active tracker.
+        interaction.message.id = 777
+        await service.handle_dm_action(interaction, "market:SOL:60")
+        assert "older or inactive panel" in followup.send.await_args.args[0]
+        assert store.get(str(user.id)).asset == "ETH"
     finally:
         hot.close()

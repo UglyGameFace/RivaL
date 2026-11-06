@@ -101,7 +101,8 @@ async def test_auto_tracking_persists_sends_a_fresh_card_and_stops(tmp_path, mon
         assert channel.send.await_args.kwargs["view"] is service.dm_view
         assert service.dm_view.timeout is None
         assert {button.custom_id for button in service.dm_view.children} == {
-            "rival:poly:dm:refresh", "rival:poly:dm:stop",
+            "rival:poly:dm:refresh", "rival:poly:dm:stop", "rival:poly:dm:pings",
+            "rival:poly:dm:record", "rival:poly:dm:market",
         }
         tracker = store.get(str(user.id))
         assert tracker is not None
@@ -578,5 +579,45 @@ async def test_one_ping_per_contract_only_for_fresh_up_down_calls(tmp_path, monk
         current_call = _frozen_call(late, issued=now - timedelta(seconds=2))
         await service.cycle()
         assert len([c for c in channel.send.await_args_list if "content" in c.kwargs]) == 1
+    finally:
+        hot.close()
+
+
+@pytest.mark.asyncio
+async def test_dm_card_switches_market_in_place_and_toggles_pings(tmp_path, monkeypatch):
+    hot, store, service, channel, user, edited = _setup(tmp_path)
+    try:
+        seen = []
+
+        async def observe(asset, horizon):
+            seen.append((asset, horizon))
+            return discord.Embed(title=f"{asset} {horizon}"), f"{asset}{horizon}"
+
+        monkeypatch.setattr(service, "_observation", observe)
+        assert (await service.start(user, asset="BTC", horizon=5))[0]
+        followup = SimpleNamespace(send=AsyncMock())
+        interaction = SimpleNamespace(
+            user=user, message=SimpleNamespace(id=901), channel_id=555,
+            response=SimpleNamespace(defer=AsyncMock()), followup=followup,
+        )
+        await service.handle_dm_action(interaction, "market:ETH:15")
+        assert "now tracks ETH 15m" in followup.send.await_args.args[0]
+        tracker = store.get(str(user.id))
+        assert (tracker.asset, tracker.horizon, tracker.message_id) == ("ETH", 15, "901")
+        assert edited.await_args.kwargs["embed"].title == "ETH 15"
+        assert channel.send.await_count == 1  # same card, no new message
+
+        assert store.pings_on(str(user.id))
+        await service.handle_dm_action(interaction, "pings")
+        assert "Pings OFF" in followup.send.await_args.args[0]
+        assert not store.pings_on(str(user.id))
+        await service.handle_dm_action(interaction, "pings")
+        assert "Pings ON" in followup.send.await_args.args[0]
+
+        # An old card cannot retarget or toggle the active tracker.
+        interaction.message.id = 777
+        await service.handle_dm_action(interaction, "market:SOL:60")
+        assert "older or inactive panel" in followup.send.await_args.args[0]
+        assert store.get(str(user.id)).asset == "ETH"
     finally:
         hot.close()

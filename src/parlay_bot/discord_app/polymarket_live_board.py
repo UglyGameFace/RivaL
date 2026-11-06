@@ -60,6 +60,10 @@ class LivePolymarketBoardStore:
                     fingerprint TEXT NOT NULL,
                     enabled INTEGER NOT NULL DEFAULT 1,
                     updated_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS rival_polymarket_ping_optout (
+                    user_id TEXT PRIMARY KEY,
+                    updated_at TEXT NOT NULL
                 );"""
             )
 
@@ -121,6 +125,42 @@ class LivePolymarketBoardStore:
                 (fingerprint, datetime.now(UTC).isoformat(), tracker.user_id,
                  tracker.channel_id, tracker.message_id),
             )
+
+    def pings_on(self, user_id: str) -> bool:
+        with self.store.connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM rival_polymarket_ping_optout WHERE user_id=?", (user_id,),
+            ).fetchone()
+        return row is None
+
+    def toggle_pings(self, user_id: str) -> bool:
+        """Flip the user's call pings; returns whether pings are now on."""
+        with self.store.connect() as conn:
+            gone = conn.execute(
+                "DELETE FROM rival_polymarket_ping_optout WHERE user_id=?", (user_id,),
+            )
+            if gone.rowcount:
+                return True
+            conn.execute(
+                "INSERT INTO rival_polymarket_ping_optout (user_id,updated_at) VALUES (?,?) "
+                "ON CONFLICT(user_id) DO NOTHING",
+                (user_id, datetime.now(UTC).isoformat()),
+            )
+        return False
+
+    def retarget(self, tracker: LivePolymarketTracker, asset: str, horizon: int) -> bool:
+        """Change the market of this exact card in place."""
+        if asset not in ASSETS or horizon not in HORIZONS:
+            raise ValueError("Invalid live Polymarket tracker")
+        with self.store.connect() as conn:
+            done = conn.execute(
+                "UPDATE rival_polymarket_live_board SET asset=?,horizon=?,fingerprint='',"
+                "updated_at=? WHERE user_id=? AND channel_id=? AND message_id=? "
+                "AND enabled=1",
+                (asset, horizon, datetime.now(UTC).isoformat(), tracker.user_id,
+                 tracker.channel_id, tracker.message_id),
+            )
+        return done.rowcount == 1
 
     def stop(self, user_id: str) -> bool:
         with self.store.connect() as conn:
@@ -234,12 +274,34 @@ def live_polymarket_embed(
     return embed
 
 
+class _DMMarketSelect(discord.ui.Select["LivePolymarketDMView"]):
+    """Switch this card to another coin/timeframe without opening /rival."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            placeholder="Switch coin & timeframe",
+            custom_id="rival:poly:dm:market", row=1,
+            options=[
+                discord.SelectOption(
+                    label=f"{asset} • {'1 hour' if horizon == 60 else f'{horizon} min'}",
+                    value=f"{asset}:{horizon}",
+                )
+                for asset in ASSETS for horizon in HORIZONS
+            ],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        assert self.view is not None
+        await self.view.service.handle_dm_action(interaction, "market:" + self.values[0])
+
+
 class LivePolymarketDMView(discord.ui.View):
     """Restart-persistent DM controls; authorize against the active tracker."""
 
     def __init__(self, service: LivePolymarketBoardService) -> None:
         super().__init__(timeout=None)
         self.service = service
+        self.add_item(_DMMarketSelect())
 
     @discord.ui.button(
         label="Refresh now", emoji="🔄",
@@ -258,6 +320,24 @@ class LivePolymarketDMView(discord.ui.View):
         self, interaction: discord.Interaction, _button: discord.ui.Button,
     ) -> None:
         await self.service.handle_dm_action(interaction, "stop")
+
+    @discord.ui.button(
+        label="Pings on/off", emoji="🔔",
+        style=discord.ButtonStyle.secondary, custom_id="rival:poly:dm:pings",
+    )
+    async def pings_button(
+        self, interaction: discord.Interaction, _button: discord.ui.Button,
+    ) -> None:
+        await self.service.handle_dm_action(interaction, "pings")
+
+    @discord.ui.button(
+        label="Track record", emoji="📊",
+        style=discord.ButtonStyle.secondary, custom_id="rival:poly:dm:record",
+    )
+    async def record_button(
+        self, interaction: discord.Interaction, _button: discord.ui.Button,
+    ) -> None:
+        await self.service.handle_dm_action(interaction, "record")
 
 
 class LivePolymarketBoardService:
@@ -456,6 +536,36 @@ class LivePolymarketBoardService:
                 )
                 notice = ("Live panel refreshed." if updated
                           else "This is an older or inactive panel. Use /rival → Live Panel.")
+            elif action in ("pings", "record") or action.startswith("market:"):
+                tracker = await asyncio.to_thread(self.store.get, user_id)
+                if (tracker is None or tracker.channel_id != channel_id
+                        or tracker.message_id != message_id):
+                    notice = "This is an older or inactive panel. Use /rival → Live Panel."
+                elif action == "pings":
+                    on = await asyncio.to_thread(self.store.toggle_pings, user_id)
+                    notice = ("🔔 Pings ON: you get one new message when each contract's "
+                              "UP/DOWN call is issued." if on else
+                              "🔕 Pings OFF: the card still updates, but no new messages.")
+                elif action == "record":
+                    notice = (f"**{tracker.asset} {tracker.horizon}m on Polymarket**\n"
+                              + await self._record_line(tracker.asset, tracker.horizon)
+                              + "\nFor your own next-calls scorecard: /rival → Bot Performance "
+                              "→ Track Next Predictions.")
+                else:
+                    asset, _, horizon_text = action.removeprefix("market:").partition(":")
+                    horizon = int(horizon_text) if horizon_text.isdecimal() else 0
+                    if asset not in ASSETS or horizon not in HORIZONS:
+                        notice = "Unsupported market."
+                    else:
+                        async with self._user_locks.setdefault(user_id, asyncio.Lock()):
+                            moved = await asyncio.to_thread(
+                                self.store.retarget, tracker, asset, horizon)
+                        updated = moved and await asyncio.wait_for(
+                            self.refresh_dm(user_id, channel_id, message_id), timeout=13,
+                        )
+                        notice = (f"This card now tracks {asset} "
+                                  f"{'1h' if horizon == 60 else f'{horizon}m'}."
+                                  if updated else "Could not switch this card. Try again.")
             else:
                 notice = "Unsupported panel action."
         except (TimeoutError, discord.HTTPException):
@@ -705,6 +815,8 @@ class LivePolymarketBoardService:
             self._pinged = {tracker.user_id: call.slug}
         current = await asyncio.to_thread(self.store.get, tracker.user_id)
         if current is None or (current.asset, current.horizon) != (tracker.asset, tracker.horizon):
+            return
+        if not await asyncio.to_thread(self.store.pings_on, tracker.user_id):
             return
         chance = (f" (model: {call.probability_up * 100:.1f}% UP)"
                   if call.probability_up is not None else "")

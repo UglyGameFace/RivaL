@@ -352,13 +352,16 @@ class LocationView(RivalView):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
+        # Acknowledge first: a slow database read must not outlive
+        # Discord's 3-second window and fail the button.
+        await interaction.response.defer()
         saved = await asyncio.to_thread(
             self.service.get_saved,
             platform="discord",
             user_id=str(interaction.user.id),
         )
         if saved is None:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=onboarding_embed(),
                 view=OnboardingView(
                     service=self.service,
@@ -368,7 +371,7 @@ class LocationView(RivalView):
             )
             return
 
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             embed=location_embed(saved),
             view=LocationView(
                 service=self.service,
@@ -458,13 +461,16 @@ class ParlayResultView(RivalView):
         interaction: discord.Interaction,
         _button: discord.ui.Button,
     ) -> None:
+        # Acknowledge first: a slow database read must not outlive
+        # Discord's 3-second window and fail the button.
+        await interaction.response.defer()
         saved = await asyncio.to_thread(
             self.service.get_saved,
             platform="discord",
             user_id=str(interaction.user.id),
         )
         if saved is None:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=onboarding_embed(),
                 view=OnboardingView(
                     service=self.service,
@@ -474,7 +480,7 @@ class ParlayResultView(RivalView):
             )
             return
 
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             embed=location_embed(saved),
             view=LocationView(
                 service=self.service,

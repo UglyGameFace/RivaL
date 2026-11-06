@@ -15,6 +15,8 @@ from parlay_bot.research.free_history import HistoryImportError
 from parlay_bot.research.history_priority import EARLIEST_ARCHIVE_MONTH, window
 from parlay_bot.research.publish import _drive
 
+_SHA64 = re.compile(r"[0-9a-f]{64}")
+
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
 # Match the actual first supported month in the authoritative downloaders.
 # Do not invent pre-publication OKX history for January-June 2023.
@@ -197,7 +199,19 @@ async def list_names(drive, *, max_pages: int = 100) -> list[str]:
     raise HistoryImportError("warehouse listing incomplete; cannot report coverage")
 
 
-def summarize(names: list[str], *, now: datetime) -> dict:
+def summarize(names: list[str], *, now: datetime,
+                byte_readback: dict | None = None) -> dict:
+    """Name inventory plus exactly what this census byte re-verified.
+
+    ``byte_readback`` is ``{"verified": {(venue, asset, family, month), ...},
+    "sampled": [manifest names attempted], "failed": [{"manifest_name",
+    "reason"}]}``. A scope may only report ``name_inventory_complete`` when
+    its names are complete AND at least one of its months was actually byte
+    re-verified in this census -- a names-only run can never claim a scope
+    complete. ``bytes_reverified_in_this_census`` is True only for scopes
+    with a verified month, and ``byte_readback_months_verified`` names it.
+    """
+    verified = set((byte_readback or {}).get("verified") or ())
     streams = defaultdict(lambda: defaultdict(set))
     page_streams = defaultdict(lambda: defaultdict(set))
     name_counts = defaultdict(int)
@@ -277,6 +291,11 @@ def summarize(names: list[str], *, now: datetime) -> dict:
                          if len(collected.get(month, ())) > 1]
             duplicate_names = [month for month in required
                                if month in duplicate_scopes[(venue, asset, family)]]
+            readback_months = sorted(
+                month for month in collected
+                if (venue, asset, family, month) in verified
+            )
+            bytes_reverified = bool(readback_months)
             scopes.append({
                 "venue": venue, "asset": asset, "family": family,
                 "source_first_month": floor,
@@ -287,8 +306,15 @@ def summarize(names: list[str], *, now: datetime) -> dict:
                 "first_not_listed": missing[:12],
                 "conflicting_months": conflicts[:12],
                 "duplicate_name_months": duplicate_names[:12],
-                "name_inventory_complete": not missing and not conflicts and not duplicate_names,
-                "bytes_reverified_in_this_census": False,
+                # Complete by name AND byte re-verified in this census.
+                # A names-only run reports False here, however full the
+                # listing looks: names are not content validation.
+                "name_inventory_complete": (
+                    not missing and not conflicts and not duplicate_names
+                    and bytes_reverified
+                ),
+                "bytes_reverified_in_this_census": bytes_reverified,
+                "byte_readback_months_verified": readback_months,
                 "model_training_qualified": False,
             })
     partial_pages = [{
@@ -380,25 +406,126 @@ def summarize(names: list[str], *, now: datetime) -> dict:
     }
 
 
-async def run(output: Path, *, now: datetime | None = None) -> dict:
+async def run(output: Path, *, now: datetime | None = None,
+              sample_size: int = 8) -> dict:
     drive = _drive(Settings())
     try:
         names = await list_names(drive)
+        readback = await sampled_byte_readback(
+            drive, names, sample_size=sample_size,
+        )
     finally:
         await drive.aclose()
-    report = summarize(names, now=now or datetime.now(UTC))
+    report = summarize(names, now=now or datetime.now(UTC),
+                       byte_readback=readback)
+    # State exactly what this census re-verified: sampled manifest bytes
+    # only. Normalized data files and provider originals are NOT re-read
+    # here (history_byte_audit does the full Binance 5m readback).
+    report["byte_readback_sample_size"] = len(readback["sampled"])
+    report["byte_readback_sampled_manifest_names"] = readback["sampled"]
+    report["byte_readback_months_verified"] = sorted(
+        [list(key) for key in readback["verified"]]
+    )
+    report["byte_readback_failed"] = readback["failed"]
+    report["byte_readback_scope"] = (
+        "sampled manifest bytes only, SHA-verified against Drive "
+        "appProperties.rival_sha256 and tied to the listed name; normalized "
+        "data files and provider originals are NOT re-read by this census"
+    )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(report, sort_keys=True, indent=2) + "\n",
                       encoding="utf-8")
     return report
 
 
+def choose_readback_sample(names: list[str], *, sample_size: int = 8) -> list[str]:
+    """Deterministic stride sample of parseable month manifests to re-read.
+
+    Bounded (1..16) and reproducible: the same listing always samples the
+    same names, spread across the whole listing rather than one venue.
+    """
+    if not 1 <= sample_size <= 16:
+        raise ValueError("bounded byte-readback sample required")
+    candidates = sorted({name for name in names if parse_name(name) is not None})
+    if len(candidates) <= sample_size:
+        return candidates
+    step = len(candidates) / sample_size
+    picked = [candidates[min(len(candidates) - 1, int(i * step))]
+              for i in range(sample_size)]
+    return sorted(set(picked))
+
+
+def _check_readback_manifest(info: dict, parsed: tuple) -> None:
+    """Tie one re-read manifest's content to its listed name.
+
+    Publisher suffix conventions differ (data digest for Binance/Bitget,
+    compressed-archive hash for Gate), so no single suffix rule is assumed.
+    What is checked: the manifest is an object, its venue/contract/month
+    (when present) match the name, its ``file`` (when present) carries the
+    name's short hash, and at least one content hash it declares is a valid
+    SHA-256 (any hash it declares must be valid).
+    """
+    venue, asset, _family, month, short_sha = parsed
+    if not isinstance(info, dict):
+        raise HistoryImportError("remote source manifest must be an object")
+    if "venue" in info and info["venue"] != venue:
+        raise HistoryImportError("remote manifest venue differs from its name")
+    contract = info.get("contract")
+    if isinstance(contract, str) and asset not in contract:
+        raise HistoryImportError("remote manifest contract differs from its name")
+    if "month" in info and info["month"] != month:
+        raise HistoryImportError("remote manifest month differs from its name")
+    filename = info.get("file")
+    if isinstance(filename, str) and not filename.endswith(
+        "--" + short_sha + ".ndjson"
+    ):
+        raise HistoryImportError("remote manifest file differs from its name")
+    declared = [info.get(key) for key in
+                ("data_sha256", "source_sha256", "raw_sha256")]
+    present = [sha for sha in declared if sha is not None]
+    if (not present or any(
+        not isinstance(sha, str) or _SHA64.fullmatch(sha) is None
+        for sha in present
+    )):
+        raise HistoryImportError("remote manifest declares no valid content hash")
+
+
+async def sampled_byte_readback(drive, names: list[str], *,
+                               sample_size: int = 8) -> dict:
+    """Re-read a bounded sample of listed manifests and SHA-verify them.
+
+    Each sampled manifest's bytes are downloaded through the trusted
+    manifest path (bytes SHA-checked against Drive ``appProperties``) and
+    tied to its listed name. Returns ``{"verified": {(venue, asset, family,
+    month), ...}, "sampled": [names attempted], "failed": [{"manifest_name",
+    "reason"}]}``. A failed readback is recorded, never treated as verified,
+    and never aborts the census: the report states exactly what was verified.
+    """
+    # Deferred import: source_manifests imports list_names from this module.
+    from parlay_bot.research.source_manifests import _download_manifest
+
+    sampled = choose_readback_sample(names, sample_size=sample_size)
+    verified, failed = set(), []
+    for name in sampled:
+        parsed = parse_name(name)
+        try:
+            info = await _download_manifest(drive, name=name)
+            _check_readback_manifest(info, parsed)
+        except Exception as exc:  # noqa: BLE001 - a failed readback is data
+            failed.append({"manifest_name": name, "reason": str(exc)[:180]})
+            continue
+        verified.add(parsed[:4])
+    return {"verified": verified, "sampled": sampled, "failed": failed}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Read actual cumulative warehouse manifest names")
     parser.add_argument("--out", type=Path,
                         default=Path("data/native-reports/drive-source-census.json"))
+    parser.add_argument("--sample-size", type=int, default=8,
+                        help="manifests byte re-read in this census (1-16)")
     args = parser.parse_args(argv)
-    report = asyncio.run(run(args.out))
+    report = asyncio.run(run(args.out, sample_size=args.sample_size))
     print(json.dumps({
         "total_manifest_names": report["all_manifest_objects_listed"],
         "per_asset_5m": [{
@@ -418,7 +545,11 @@ def main(argv: list[str] | None = None) -> int:
         "gate_hourly_l2_source_month_scopes": len(
             report["gate_hourly_l2_not_full_months"]
         ),
-        "verified_byte_readbacks_in_this_census": 0,
+        "verified_byte_readbacks_in_this_census": len(
+            report["byte_readback_months_verified"]
+        ),
+        "byte_readback_sampled": report["byte_readback_sample_size"],
+        "byte_readback_failed": len(report["byte_readback_failed"]),
         "live_approved": False,
     }, sort_keys=True))
     return 0

@@ -113,9 +113,21 @@ def test_okx_census_uses_actual_official_first_supported_month():
     assert btc["expected_completed_months"] == 1
     assert btc["listed_manifest_months"] == 1
     assert btc["not_listed_months"] == 0
-    assert btc["name_inventory_complete"] is True
+    # Names alone never certify a scope: no byte was re-read in this census.
+    assert btc["name_inventory_complete"] is False
     assert btc["bytes_reverified_in_this_census"] is False
+    assert btc["byte_readback_months_verified"] == []
     assert report["out_of_supported_month_range"] == 1
+    # The same complete listing WITH a byte readback of that month certifies.
+    verified = census.summarize(
+        names, now=datetime(2023, 8, 1, tzinfo=UTC),
+        byte_readback={"verified": {("okx", "BTC", "candles_5m", "2023-07")}},
+    )
+    btc = next(row for row in verified["month_scopes"]
+               if row["venue"] == "okx" and row["asset"] == "BTC")
+    assert btc["name_inventory_complete"] is True
+    assert btc["bytes_reverified_in_this_census"] is True
+    assert btc["byte_readback_months_verified"] == ["2023-07"]
 
 
 def test_bitget_all_four_source_families_remain_separate_and_unqualified():
@@ -234,3 +246,150 @@ def test_source_native_older_name_index_is_not_a_cross_venue_listing_claim():
     assert not matches[0]["contract_listing_verified"]
     assert not any(r["venue"] == "bitget"
                    for r in report["all_completed_scope_name_hints"])
+
+
+def test_readback_sample_is_bounded_deterministic_and_spread():
+    names = [f"BTCUSDT-5m-2021-{m:02d}--" + "a" * 16 + ".manifest.json"
+             for m in range(1, 21)]
+    first = census.choose_readback_sample(names, sample_size=4)
+    assert len(first) == 4
+    assert first == sorted(first)
+    assert first == census.choose_readback_sample(names, sample_size=4)
+    assert first == [names[0], names[5], names[10], names[15]]
+    assert census.choose_readback_sample(names[:5], sample_size=8) == names[:5]
+    assert census.choose_readback_sample(["not-a-manifest"], sample_size=8) == []
+    with pytest.raises(ValueError):
+        census.choose_readback_sample(names, sample_size=0)
+    with pytest.raises(ValueError):
+        census.choose_readback_sample(names, sample_size=17)
+
+
+def test_summarize_ignores_readback_for_unlisted_months():
+    report = census.summarize(
+        ["BTCUSDT-5m-2021-01--" + "a" * 16 + ".manifest.json"], now=NOW,
+        byte_readback={"verified": {("binance", "BTC", "candles_5m", "2021-02")}},
+    )
+    btc = next(x for x in report["month_scopes"]
+               if x["venue"] == "binance" and x["asset"] == "BTC")
+    assert btc["bytes_reverified_in_this_census"] is False
+    assert btc["byte_readback_months_verified"] == []
+    assert btc["name_inventory_complete"] is False
+
+
+class _FakeReadbackStream:
+    def __init__(self, payload):
+        self.payload = payload
+        self.status_code = 200
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def aiter_bytes(self):
+        yield self.payload
+
+
+class _FakeReadbackClient:
+    """Minimal Drive client: exact-name manifest lookup + media download."""
+
+    def __init__(self, manifests):
+        self.manifests = manifests
+
+    async def get(self, url, *, params, headers, follow_redirects=False):
+        import re
+
+        match = re.search(r"name = '([^']+)'", params.get("q", ""))
+        name = match.group(1) if match else ""
+        payload = self.manifests.get(name)
+        if payload is None:
+            return httpx.Response(200, json={"files": []})
+        import hashlib
+
+        return httpx.Response(200, json={"files": [{
+            "id": "file-1", "name": name, "size": len(payload),
+            "parents": ["trusted"], "trashed": False,
+            "appProperties": {
+                "rival_kind": "manifest",
+                "rival_sha256": hashlib.sha256(payload).hexdigest(),
+            },
+        }]})
+
+    def stream(self, method, url, *, params, headers, follow_redirects=False):
+        file_id = url.rsplit("/", 1)[-1]
+        assert file_id == "file-1"
+        payload = next(iter(self.manifests.values()))
+        return _FakeReadbackStream(payload)
+
+
+class _FakeReadbackDrive:
+    DRIVE_URL = "https://www.googleapis.com/drive/v3"
+    folders = SimpleNamespace(manifests="trusted")
+
+    def __init__(self, manifests):
+        self._client = _FakeReadbackClient(manifests)
+
+    async def _verify_folder_boundary(self):
+        pass
+
+    async def _headers(self):
+        return {}
+
+    @staticmethod
+    def _escape_query(s):
+        return s
+
+
+def _manifest_bytes(*, month, short, data_sha="d" * 64, source_sha="e" * 64):
+    import json
+
+    info = {
+        "venue": "binance", "contract": "BTCUSDT", "quote": "USDT",
+        "interval_minutes": 5, "data_sha256": data_sha,
+        "source_sha256": source_sha,
+        "file": f"BTCUSDT-5m-{month}--{short}.ndjson",
+    }
+    return (json.dumps(info, sort_keys=True) + "\n").encode()
+
+
+@pytest.mark.asyncio
+async def test_sampled_byte_readback_verifies_only_what_it_read():
+    # The fake client serves one manifest payload for every media download,
+    # so keep exactly one good manifest in the store and drive the failure
+    # cases through names the lookup cannot resolve or content that fails
+    # the name/content tie. A bad-hash manifest is served via a second
+    # drive whose single stored payload is the bad one.
+    good_name = "BTCUSDT-5m-2021-01--" + "a" * 16 + ".manifest.json"
+    good = _FakeReadbackDrive({good_name: _manifest_bytes(month="2021-01", short="a" * 16)})
+    result = await census.sampled_byte_readback(
+        good, [good_name, "not-a-manifest.json"], sample_size=8,
+    )
+    assert result["sampled"] == [good_name]
+    assert result["verified"] == {("binance", "BTC", "candles_5m", "2021-01")}
+    assert result["failed"] == []
+    report = census.summarize([good_name], now=NOW, byte_readback=result)
+    btc = next(x for x in report["month_scopes"]
+               if x["venue"] == "binance" and x["asset"] == "BTC")
+    assert btc["bytes_reverified_in_this_census"] is True
+    assert btc["byte_readback_months_verified"] == ["2021-01"]
+    assert btc["name_inventory_complete"] is False  # most months unlisted
+
+    missing_name = "BTCUSDT-5m-2021-02--" + "b" * 16 + ".manifest.json"
+    result = await census.sampled_byte_readback(
+        good, [missing_name], sample_size=8,
+    )
+    assert result["verified"] == set()
+    assert [f["manifest_name"] for f in result["failed"]] == [missing_name]
+
+    bad_name = "BTCUSDT-5m-2021-03--" + "c" * 16 + ".manifest.json"
+    bad = _FakeReadbackDrive({
+        bad_name: _manifest_bytes(
+            month="2021-03", short="c" * 16, data_sha="not-a-hash",
+            source_sha=None,
+        ),
+    })
+    result = await census.sampled_byte_readback(bad, [bad_name], sample_size=8)
+    assert result["verified"] == set()
+    assert [f["manifest_name"] for f in result["failed"]] == [bad_name]
+    assert "no valid content hash" in result["failed"][0]["reason"]

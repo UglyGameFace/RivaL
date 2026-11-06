@@ -209,6 +209,9 @@ def evaluate_ablation(manifests: list[Path], sidecars: list[Path], *, horizon: i
         "feature_names": AUX_FEATURES[module],
         "horizon_minutes": horizon,
         "source_sha256_by_month": provenance["source_sha256_by_month"],
+        "provider_sha256_by_month": provenance.get("provider_sha256_by_month", {}),
+        "months_without_provider_hash": provenance.get(
+            "months_without_provider_hash", []),
         "auxiliary_receipts_sha256": [
             hashlib.sha256(p.read_bytes()).hexdigest() for p in sidecars],
         "paired_coverage": round(coverage, 6),

@@ -11,6 +11,7 @@ import hashlib
 import itertools
 import json
 import math
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -23,6 +24,23 @@ HORIZON_MINUTES = (5, 15, 60, 240, 1440, 10080)
 MIN_TRAIN = 300
 MIN_HOLDOUT = 100
 EPS = 1e-8
+_SHA64 = re.compile(r"[0-9a-f]{64}")
+
+
+def provider_source_sha256(meta: dict) -> str | None:
+    """Provider-original hash for a manifest, or None when none exists.
+
+    Binance manifests carry the provider ZIP hash in ``source_sha256``
+    (verified against Binance's ``.CHECKSUM`` at ingest). Bitget/Gate native
+    manifests carry the raw provider archive hash in ``source_sha256``
+    (equal to ``source_archive_sha256``). Postgres-ledger months have no
+    provider original at all -- their ``source_sha256`` is a hash of the
+    ledger-derived records -- so they honestly report None here.
+    """
+    if meta.get("source_integrity") == "postgres-first-observed-at-v1":
+        return None
+    sha = meta.get("source_sha256")
+    return sha if isinstance(sha, str) and _SHA64.fullmatch(sha) else None
 
 
 def _sigmoid(v: float) -> float:
@@ -117,6 +135,8 @@ def assemble(manifests: list[Path]) -> tuple[dict, list[dict], dict]:
     months: set[str] = set()
     rows: list[dict] = []
     sources: dict[str, str] = {}
+    providers: dict[str, str] = {}
+    without_provider: list[str] = []
     for path in manifests:
         meta, records = _rows(path)
         key = (meta.get("venue"), meta.get("contract"),
@@ -142,7 +162,19 @@ def assemble(manifests: list[Path]) -> tuple[dict, list[dict], dict]:
         if first_month in months:
             raise HistoryImportError("duplicate monthly dataset")
         months.add(first_month)
-        sources[first_month] = meta["data_sha256"]
+        # Record the manifest's DECLARED source hash, never the normalized
+        # NDJSON hash: for Binance/Bitget/Gate this is the provider-original
+        # bytes' hash; for Postgres-ledger months it is the ledger digest
+        # and the month is listed as having no provider original.
+        source_sha = meta.get("source_sha256")
+        if not isinstance(source_sha, str) or not _SHA64.fullmatch(source_sha):
+            raise HistoryImportError("historical manifest lacks a valid source hash")
+        sources[first_month] = source_sha
+        provider_sha = provider_source_sha256(meta)
+        if provider_sha is None:
+            without_provider.append(first_month)
+        else:
+            providers[first_month] = provider_sha
         rows.extend(records)
     rows.sort(key=lambda r: r["opened_at"])
     interval = int(identity[3])
@@ -172,6 +204,8 @@ def assemble(manifests: list[Path]) -> tuple[dict, list[dict], dict]:
         "venue": identity[0], "contract": identity[1],
         "quote": identity[2], "interval_minutes": interval,
     }, rows, {"months": sorted(months), "source_sha256_by_month": sources,
+              "provider_sha256_by_month": providers,
+              "months_without_provider_hash": sorted(without_provider),
               "gaps_between_rows": gaps}
 
 
@@ -294,6 +328,8 @@ def evaluate(
         "weights": [round(w, 12) for w in weights],
         "train_base_rate": round(baseline, 12),
         "source_sha256_by_month": provenance["source_sha256_by_month"],
+        "provider_sha256_by_month": provenance["provider_sha256_by_month"],
+        "months_without_provider_hash": provenance["months_without_provider_hash"],
     }
     model_sha = hashlib.sha256(
         json.dumps(model_spec, sort_keys=True, separators=(",", ":")).encode()

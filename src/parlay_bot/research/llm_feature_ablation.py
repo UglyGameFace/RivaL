@@ -201,6 +201,10 @@ def evaluate_hypothesis_ablations(root, *, qualified_streams, proposals, candida
                     s[1] for s in _sealed_test
                 ).isoformat(),
                 "source_sha256_by_month": provenance["source_sha256_by_month"],
+                "provider_sha256_by_month": provenance.get(
+                    "provider_sha256_by_month", {}),
+                "months_without_provider_hash": provenance.get(
+                    "months_without_provider_hash", []),
                 "lfm3_proposal_sha256": suggestion["record_sha256"],
                 "lfm3_model": MODEL,
             }

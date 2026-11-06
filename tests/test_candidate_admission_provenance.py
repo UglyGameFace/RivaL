@@ -147,3 +147,151 @@ def test_native_contract_selection_is_visible_but_not_approved(tmp_path):
     assert summary["reason"] == "Insufficient future evidence"
     assert summary["active_offline_model"] is False
     store.close()
+
+
+def _claimed_months():
+    return {
+        f"2026-{month:02d}": hashlib.sha256(str(month).encode()).hexdigest()
+        for month in range(1, 7)
+    }
+
+
+def _manifests_for(months, *, source=None, data=None):
+    return {
+        ("binance", "BTCUSDT", "USDT", month): {
+            "source_sha256": (source(month) if callable(source) else source),
+            "data_sha256": (data(month) if callable(data) else data),
+        }
+        for month in months
+    }
+
+
+def test_verify_source_months_statuses():
+    from parlay_bot.research.candidate_registry import verify_source_months
+
+    spec = {"identity": {"venue": "binance", "contract": "BTCUSDT", "quote": "USDT"},
+            "source_sha256_by_month": _claimed_months()}
+    claimed = _claimed_months()
+    matching = _manifests_for(
+        claimed, source=lambda m: claimed[m], data=lambda m: "f" * 64,
+    )
+    assert verify_source_months(spec, matching) == (True, "provider_verified")
+    mismatched = _manifests_for(claimed, source="a" * 64, data="b" * 64)
+    verified, status = verify_source_months(spec, mismatched)
+    assert verified is False
+    assert status.startswith("mismatch:")
+    normalized = _manifests_for(
+        claimed, source="a" * 64, data=lambda m: claimed[m],
+    )
+    assert verify_source_months(spec, normalized) == (False, "normalized_bytes_only")
+    missing = {k: v for k, v in matching.items()
+               if k[3] != "2026-03"}
+    verified, status = verify_source_months(spec, missing)
+    assert verified is False
+    assert status == "manifest_missing:2026-03"
+
+
+def _compatible_artifact():
+    """The local fixture model is legacy-isolated; a live-contract model is
+    needed to observe seeding at all, so provenance is the only variable."""
+    from parlay_bot.perpetuals.model_checkpoints import (
+        FEATURE_CONTRACT,
+        TARGET_CONTRACT,
+        canonical,
+    )
+
+    source = json.loads(artifact())
+    spec = source["model_spec"]
+    spec.update(
+        model="offline-live-contract-logistic-v3", weights=[0.1] * 11,
+        feature_contract=FEATURE_CONTRACT, target_contract=TARGET_CONTRACT,
+        training_count=500,
+        training_cutoff="2026-05-01T00:00:00+00:00",
+        validation_cutoff="2026-07-01T00:00:00+00:00",
+        evaluation_completed_through="2026-09-30T23:59:59+00:00",
+    )
+    for key in ("validation", "out_of_sample_test"):
+        source[key].update(days=30)
+    source["model_sha256"] = hashlib.sha256(canonical(spec).encode()).hexdigest()
+    return json.dumps(source).encode()
+
+
+def test_mismatched_candidate_is_held_and_never_active(tmp_path):
+    store = SQLiteHotStore(tmp_path / "held.sqlite")
+    store.initialize()
+    registry = ResearchCandidateRegistry(store)
+    claimed = _claimed_months()
+    manifests = _manifests_for(claimed, source="a" * 64, data="b" * 64)
+    result = registry.import_verified(
+        "badFile", _compatible_artifact(), source_manifests=manifests,
+    )
+    assert result["source_verified"] is False
+    assert result["source_verification"].startswith("mismatch:")
+    with store.connect() as con:
+        con.execute(
+            "INSERT INTO rival_history_selection "
+            "(venue,contract,quote,horizon_minutes,evaluated_at,"
+            "selected_sha256,reason,evidence_json) VALUES (?,?,?,?,?,?,?,?)",
+            ("binance", "BTCUSDT", "USDT", 5,
+             datetime.now(UTC).isoformat(), result["model_sha256"],
+             "paired-forward selection", "{}"),
+        )
+    summary = registry.summary(asset="BTC", horizon=5)
+    assert summary["slot_live_source_matched"] == 0
+    assert summary["active_offline_model"] is False
+    assert summary["candidate"]["source_verification"].startswith("mismatch:")
+    store.close()
+
+
+def test_matching_candidate_is_provider_verified_and_can_be_active(tmp_path):
+    store = SQLiteHotStore(tmp_path / "verified.sqlite")
+    store.initialize()
+    registry = ResearchCandidateRegistry(store)
+    claimed = _claimed_months()
+    manifests = _manifests_for(
+        claimed, source=lambda m: claimed[m], data=lambda m: "f" * 64,
+    )
+    result = registry.import_verified(
+        "goodFile", _compatible_artifact(), source_manifests=manifests,
+    )
+    assert result["source_verified"] is True
+    assert result["source_verification"] == "provider_verified"
+    with store.connect() as con:
+        con.execute(
+            "INSERT INTO rival_history_selection "
+            "(venue,contract,quote,horizon_minutes,evaluated_at,"
+            "selected_sha256,reason,evidence_json) VALUES (?,?,?,?,?,?,?,?)",
+            ("binance", "BTCUSDT", "USDT", 5,
+             datetime.now(UTC).isoformat(), result["model_sha256"],
+             "paired-forward selection", "{}"),
+        )
+    summary = registry.summary(asset="BTC", horizon=5)
+    assert summary["slot_live_source_matched"] == 1
+    assert summary["active_offline_model"] is True
+    store.close()
+
+
+def test_prefixed_normalized_candidate_is_never_provider_verified(tmp_path):
+    store = SQLiteHotStore(tmp_path / "normalized.sqlite")
+    store.initialize()
+    registry = ResearchCandidateRegistry(store)
+    claimed = _claimed_months()
+    manifests = _manifests_for(
+        claimed, source="a" * 64, data=lambda m: claimed[m],
+    )
+    result = registry.import_verified(
+        "oldFile", artifact(), source_manifests=manifests,
+    )
+    assert result["source_verified"] is False
+    assert result["source_verification"] == "normalized_bytes_only"
+    store.close()
+
+
+def test_import_without_drive_check_is_explicitly_not_checked(tmp_path):
+    store = SQLiteHotStore(tmp_path / "unchecked.sqlite")
+    store.initialize()
+    registry = ResearchCandidateRegistry(store)
+    result = registry.import_verified("plainFile", artifact())
+    assert result["source_verified"] is False
+    assert result["source_verification"] == "not_checked"
+    store.close()

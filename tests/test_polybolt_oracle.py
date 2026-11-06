@@ -176,3 +176,39 @@ def test_polybolt_health_reports_real_twap_not_just_configuration():
     feed.accept({"op": "error", "code": "unsupported-provider-message"}, received_at=now)
     assert feed.status(now=now)["last_error"] == "provider_error"
     assert feed.status(now=now)["connected"] is False
+
+
+def test_rejected_credentials_mid_stream_clear_authentication():
+    now = datetime(2026, 11, 5, 12, 0, tzinfo=UTC)
+    feed = stream()
+    feed.accept({"op": "authed"}, received_at=now)
+    feed.accept({"op": "error", "code": "auth_invalid"}, received_at=now)
+    status = feed.status(now=now)
+    assert status["authenticated"] is False and status["connected"] is False
+    assert status["auth_rejected"] is True and feed.auth_rejected is True
+
+
+@pytest.mark.asyncio
+async def test_worker_marks_itself_terminal_when_login_is_rejected(monkeypatch):
+    import json as _json
+
+    from parlay_bot.perpetuals import polybolt_twap
+
+    class Socket:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def send(self, _):
+            return None
+
+        async def recv(self):
+            return _json.dumps({"op": "error", "code": "auth_invalid"})
+
+    monkeypatch.setattr(polybolt_twap, "connect", lambda *a, **k: Socket())
+    feed = stream()
+    await feed.run()  # returns: retrying the same credentials cannot help
+    assert feed.auth_rejected is True
+    assert feed.status()["last_error"] == "PolyBolt authentication rejected"

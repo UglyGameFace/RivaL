@@ -204,3 +204,53 @@ def test_recovery_lines_are_plain():
         {**base, "venue": "okx", "status": "progress",
          "started_from": "2026-10-28T19:45:00+00:00",
          "next_opened_at": "2026-05-01T00:00:00+00:00"}, now=now)
+
+
+def test_recovery_line_never_reports_failed_or_incomplete_as_done():
+    """Round-5 P1-3 remainder: a recently-failed or incomplete venue must
+    never render as done, even when its 6h cursor looks caught up."""
+    from parlay_bot.discord_app.research_dashboard import _recovery_line
+
+    now = datetime(2026, 11, 3, 18, tzinfo=UTC)
+    base = {"inserted_bars": 100, "started_from": "2026-04-01T00:00:00+00:00",
+            # Cursor one hour ago: inside the old 6h-cursor done shortcut.
+            "next_opened_at": "2026-11-03T17:00:00+00:00"}
+
+    # (i) Caught up but incomplete: audit-proven missing bars, queued gaps,
+    # or an in-progress repair all render as partial, never done.
+    incomplete = _recovery_line(
+        {**base, "venue": "kucoin", "status": "caught_up"},
+        now=now, missing_bars=12)
+    assert "✅ done" not in incomplete
+    assert "incomplete" in incomplete and "12 missing bars" in incomplete
+    gaps_pending = _recovery_line(
+        {**base, "venue": "gate", "status": "gaps_pending"}, now=now)
+    assert "✅ done" not in gaps_pending
+    assert "incomplete" in gaps_pending
+    repairing = _recovery_line(
+        {**base, "venue": "bitget", "status": "gap_repair"}, now=now)
+    assert "✅ done" not in repairing
+    assert "repairing gaps" in repairing
+
+    # (ii) Caught up and complete still renders as done, with or without
+    # an audit row (no audit yet means no known gaps to report).
+    assert "✅ done" in _recovery_line(
+        {**base, "venue": "kucoin", "status": "caught_up"},
+        now=now, missing_bars=0)
+    assert "✅ done" in _recovery_line(
+        {**base, "venue": "kucoin", "status": "caught_up"}, now=now)
+
+    # (iii) Recently failed: retry / blocked / source-limited venues keep
+    # their failure wording instead of the cursor shortcut's done.
+    failed = _recovery_line(
+        {**base, "venue": "deribit", "status": "retry"}, now=now)
+    assert "✅ done" not in failed
+    assert "last attempt failed" in failed
+    blocked = _recovery_line(
+        {**base, "venue": "dydx", "status": "blocked"}, now=now)
+    assert "✅ done" not in blocked
+    assert "blocked by the exchange" in blocked
+    limited = _recovery_line(
+        {**base, "venue": "gate", "status": "source_recent_limit"}, now=now)
+    assert "✅ done" not in limited
+    assert "only serves recent candles" in limited

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.ai_types import ResearchUnavailable
-from parlay_bot.perpetuals.polymarket_learning import PolymarketOutcomeLearner
+from parlay_bot.perpetuals.polymarket_learning import MIN_LABELS, PolymarketOutcomeLearner
 from parlay_bot.perpetuals.polymarket_oracle import (
     OracleReference,
     PolymarketOracleChallenger,
@@ -167,7 +167,7 @@ class PolymarketResearch:
         if slug in self._pending:
             return "Analyzing this Polymarket contract with free AI…"
         saved = self._status.get(slug)
-        return saved[1] if saved else "No contract-specific AI call has been issued yet."
+        return saved[1] if saved else "Awaiting a verified model forecast for this contract."
 
     def refresh_note(self, slug: str) -> str | None:
         return self.status(slug) if slug in self._pending or slug in self._status else None
@@ -203,26 +203,51 @@ class PolymarketResearch:
             and notice.resolution_source
             and all(math.isfinite(p) and 0 < p < 1 for p in (notice.up_ask, notice.down_ask))
         ):
-            self._status[notice.slug] = (now + timedelta(seconds=15), "Verified contract inputs are incomplete or stale.")
+            reason = (
+                "Settlement source missing from the contract; no model call issued."
+                if not notice.resolution_source
+                else "Contract identifiers, live asks or source timestamp are unverified."
+            )
+            self._status[notice.slug] = (now + timedelta(seconds=15), reason)
             return None
         if notice.slug not in self._learning_tasks and len(self._learning_tasks) < 4:
             async def learn():
                 try:
                     await asyncio.to_thread(self.initialize)
                     result = await asyncio.to_thread(self.study, notice)
+                    if result is None and not self._closed:
+                        count = await asyncio.to_thread(
+                            self.learner.scoped_training_count, notice,
+                        )
+                        reason = (
+                            f"Book model not qualified for this asset/timeframe/"
+                            f"settlement source: {count}/{MIN_LABELS} "
+                            "verified training outcomes. Research continues."
+                            if count < MIN_LABELS else
+                            "No fresh source-matched model forecast issued; retrying."
+                        )
+                        self._status[notice.slug] = (
+                            datetime.now(UTC) + timedelta(seconds=30), reason,
+                        )
                     if result is not None and not self._closed:
                         self._math_calls[notice.slug] = ContractCall(
                             slug=notice.slug, asset=notice.asset, horizon=notice.horizon,
                             issued_at=result["issued_at"], expires=notice.expires,
                             direction=result["direction"], model=result["model"],
                             thesis="First model forecast, frozen for this contract; trained on verified Polymarket outcomes.",
-                            risk=("Research only. A near-even model probability yields WAIT; "
+                            risk=("Research-only directional lean, not a trading signal. "
+                                  "A near-even probability is weak evidence; "
                                   "calibrated accuracy and after-fee edge are unverified."),
                             evidence_sha256=result["evidence_sha256"], input_up_ask=notice.up_ask,
                             input_down_ask=notice.down_ask, kind="model",
                             probability_up=result.get("probability_up"),
                         )
-                except Exception:  # noqa: BLE001 - learning failures never block live quotes
+                        self._status.pop(notice.slug, None)
+                except Exception as exc:  # noqa: BLE001 - learning failures never block live quotes
+                    self._status[notice.slug] = (
+                        datetime.now(UTC) + timedelta(seconds=30),
+                        f"Model unavailable ({type(exc).__name__}); retrying automatically.",
+                    )
                     _LOG.exception("Polymarket contract learning unavailable")
             learning = asyncio.create_task(learn(), name="rival-polymarket-outcome-learning")
             self._learning_tasks[notice.slug] = learning

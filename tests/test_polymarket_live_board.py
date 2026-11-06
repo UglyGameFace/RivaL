@@ -622,3 +622,29 @@ async def test_dm_card_switches_market_in_place_and_toggles_pings(tmp_path, monk
         assert store.get(str(user.id)).asset == "ETH"
     finally:
         hot.close()
+
+
+@pytest.mark.asyncio
+async def test_dm_tap_latency_is_logged_and_an_expired_tap_is_recorded(tmp_path, caplog):
+    import logging
+
+    hot, _store, service, *_ = _setup(tmp_path)
+
+    class Expired(discord.HTTPException):
+        def __init__(self):
+            pass
+
+    try:
+        late = SimpleNamespace(
+            user=SimpleNamespace(id=1), message=SimpleNamespace(id=1), channel_id=1,
+            created_at=datetime.now(UTC) - timedelta(seconds=4),
+            response=SimpleNamespace(defer=AsyncMock(side_effect=Expired())),
+            followup=SimpleNamespace(send=AsyncMock()),
+        )
+        with caplog.at_level(logging.INFO, logger="parlay_bot.discord_app.polymarket_live_board"):
+            await service.handle_dm_action(late, "refresh")
+        late.followup.send.assert_not_awaited()
+        warning = next(r for r in caplog.records if "not acknowledged" in r.getMessage())
+        assert warning.levelno == logging.WARNING and "receipt_ms=4" in warning.getMessage()
+    finally:
+        hot.close()

@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
@@ -312,6 +313,14 @@ def live_polymarket_embed(
     return embed
 
 
+def _receipt_ms(interaction) -> int | None:
+    """Milliseconds between the user's tap (Discord's clock) and now."""
+    created = getattr(interaction, "created_at", None)
+    if not isinstance(created, datetime):
+        return None
+    return int((datetime.now(UTC) - created).total_seconds() * 1000)
+
+
 class _DMMarketSelect(discord.ui.Select["LivePolymarketDMView"]):
     """Switch this card to another coin/timeframe without opening /rival."""
 
@@ -565,7 +574,17 @@ class LivePolymarketBoardService:
         self, interaction: discord.Interaction, action: str,
     ) -> None:
         """Acknowledge quickly and authorize by user, channel, and current card."""
-        await interaction.response.defer(ephemeral=True, thinking=True)
+        started = time.monotonic()
+        try:
+            await interaction.response.defer(ephemeral=True, thinking=True)
+        except discord.HTTPException as exc:
+            # Discord already gave up (10062): record how late the tap arrived.
+            _LOG.warning("RivaL DM control not acknowledged action=%s receipt_ms=%s reason=%s",
+                         action, _receipt_ms(interaction), type(exc).__name__)
+            return
+        receipt, ack = _receipt_ms(interaction), int((time.monotonic() - started) * 1000)
+        (_LOG.warning if (receipt or 0) + ack > 2000 else _LOG.info)(
+            "RivaL DM control action=%s receipt_ms=%s ack_ms=%d", action, receipt, ack)
         message = interaction.message
         message_id = str(message.id) if message is not None else ""
         channel_id = str(interaction.channel_id)

@@ -1377,6 +1377,13 @@ class RivalDiscordClient(discord.Client):
         # the current user and message ID against the persisted tracker.
         self.add_view(self.polymarket_board.dm_view)
         install_owner_gate(self.tree, self.owner_gate)
+        # Resolve the owner now, not inside the first button tap after a
+        # restart, where Discord's application lookup counts against the
+        # 3-second acknowledgement window.
+        try:
+            await asyncio.wait_for(self.owner_gate.owner_ids(), timeout=10)
+        except Exception:  # noqa: BLE001 - the gate retries on the next tap
+            _LOG.warning("RivaL owner lookup at startup failed; will retry on first tap")
         _LOG.info("RivaL guided, research, data and hunt recovery views registered")
         await asyncio.to_thread(self.auto_hunt.store.initialize)
         await asyncio.to_thread(self.polymarket_board.store.initialize)

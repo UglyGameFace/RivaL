@@ -630,3 +630,19 @@ def test_crypto_card_restores_four_visible_metrics_without_fake_accuracy():
     assert "WAIT" in stale.title
     assert "98.0%" not in str(stale.to_dict())
     assert "Unavailable" == stale.fields[0].value
+
+
+@pytest.mark.asyncio
+async def test_polymarket_live_page_can_refresh_to_the_next_contract(tmp_path):
+    bot = _client(tmp_path)
+    home = _home(bot)
+    try:
+        home.live_source = "polymarket"
+        home.navigate("live")
+        home._buttons()
+        assert "Refresh" in _labels(home)
+    finally:
+        home.stop()
+        await bot.zip_resolver.aclose()
+        await bot.public_quotes.aclose()
+        bot.store.close()

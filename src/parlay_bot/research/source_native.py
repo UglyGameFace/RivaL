@@ -618,9 +618,14 @@ async def restore_verified_source_months(
     imported = []
     unique = set()
     for entry in found:
-        if (not isinstance(entry, dict)
-            or not str(entry.get("name", "")).startswith(venue + "-")):
+        if not isinstance(entry, dict) or not isinstance(entry.get("name"), str):
             raise HistoryImportError("unexpected native manifest listing record")
+        # Drive's "name contains 'gate-'" also returns other data families
+        # whose names only contain the venue, such as the Gate bulk archive
+        # ("gatebulk-futures_usdt-..."). Those are not this source: skip them
+        # instead of failing the whole research run.
+        if not entry["name"].startswith(venue + "-"):
+            continue
         # Native 5m month snapshots have exact, immutable -5m-YYYY-MM-- names
         # for every venue. Filter the Drive metadata *before* downloading each
         # manifest, so another data family's manifests for the same venue

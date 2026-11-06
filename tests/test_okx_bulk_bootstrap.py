@@ -365,3 +365,51 @@ async def test_other_data_family_manifests_do_not_block_candle_research(tmp_path
     )
     assert rows == []
     assert downloads == []
+
+
+def _listing_drive(files):
+    class Client:
+        async def get(self, url, *, params, headers):
+            return httpx.Response(200, json={"files": files})
+
+    class Drive:
+        DRIVE_URL = "https://www.googleapis.com/drive/v3"
+        folders = SimpleNamespace(manifests="private-manifests")
+        _client = Client()
+
+        async def _verify_folder_boundary(self):
+            return None
+
+        async def _headers(self):
+            return {}
+
+        @staticmethod
+        def _escape_query(s):
+            return s
+
+    return Drive()
+
+
+@pytest.mark.asyncio
+async def test_other_data_families_named_like_the_venue_are_skipped(tmp_path):
+    # Real Nov 5 listing: Drive's "name contains 'gate-'" returned 537 Gate
+    # bulk-archive manifests ("gatebulk-..."), which used to abort research.
+    files = [
+        {"name": "gatebulk-futures_usdt-BTC_USDT-mark_prices-2025-02--ae250827a60c6230.manifest.json"},
+        {"name": "gatebulk-futures_usdt-ETH_USDT-funding_updates-2025-01--073603aba01bd2b7.manifest.json"},
+    ]
+    rows = await restore_verified_source_months(
+        _listing_drive(files), venue="gate", months=["2025-02"], root=tmp_path,
+    )
+    assert rows == []
+
+
+@pytest.mark.asyncio
+async def test_malformed_listing_records_still_fail_closed(tmp_path):
+    from parlay_bot.research.free_history import HistoryImportError
+
+    for bad in (["not-a-dict"], [{"name": None}], [{}]):
+        with pytest.raises(HistoryImportError, match="unexpected native manifest listing record"):
+            await restore_verified_source_months(
+                _listing_drive(bad), venue="gate", months=["2025-02"], root=tmp_path,
+            )

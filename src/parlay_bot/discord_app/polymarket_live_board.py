@@ -237,7 +237,7 @@ def live_polymarket_embed(
 class LivePolymarketDMView(discord.ui.View):
     """Restart-persistent DM controls; authorize against the active tracker."""
 
-    def __init__(self, service: "LivePolymarketBoardService") -> None:
+    def __init__(self, service: LivePolymarketBoardService) -> None:
         super().__init__(timeout=None)
         self.service = service
 

@@ -1,5 +1,7 @@
 # RivaL Auto-Hunt: choose your alert source
 
+> **Retirement notice (2026-11-06):** The flow below describes the pre-retirement Auto-Hunt; the old paths were retired and tiered watches are live. Treat the flow below as historical, not current behavior.
+
 The ordinary member flow is **/rival → Auto-Hunt**. Choose exactly one:
 **Follow Polymarket** (read-only current listed markets) or **Follow RivaL
 Forecasts** (new genuine forecast direction research). The selection is opt-in,

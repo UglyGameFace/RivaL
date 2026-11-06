@@ -1,5 +1,7 @@
 # Continuous selected-contract calls and persistent learning
 
+> **Retirement notice (2026-11-06):** Gemini, OpenRouter and Cloudflare inference were retired from RivaL; the private local LFM3 gateway is the sole AI provider (see [local-only Intelligence](RIVAL_INTELLIGENCE_LOCAL_ONLY.md)). The "Free-only OpenRouter … 18-request daily cap" line below describes a retired provider: there is no OpenRouter client, key or quota anywhere in RivaL.
+
 ## Behavior
 
 - Selecting Polymarket requests exact-contract research, including the verified condition, tokens, closing window, settlement source, published rules and source quote times. Bitget/exchange forecasts are excluded from this path.

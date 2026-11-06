@@ -446,3 +446,38 @@ async def test_interactive_ask_never_waits_but_background_ask_retries(monkeypatc
     assert opinion.model == module.LOCAL_MODEL
     assert len(seen) == 3
     assert len(market.saved) == 1
+
+
+@pytest.mark.asyncio
+async def test_explain_models_grounds_thesis_and_risk(monkeypatch):
+    """P1-10 remainder: the bot re-enforces explain reviews, so an outdated
+    gateway cannot store or display raw LLM prose."""
+    market = Market()
+    monkeypatch.setattr(module, "build_evidence", market_evidence)
+
+    def handler(request):
+        assert request.url.path == "/v1/explain"
+        return httpx.Response(200, json={
+            "model": module.LOCAL_MODEL, "mode": "explain",
+            "stance_5m": "follow", "stance_15m": "abstain", "stance_60m": "abstain",
+            "thesis": "All three exchanges lean up; buy the breakout.",
+            "risk": "Small edge, but looks safe.",
+            "informational_only": True, "uncalibrated": True,
+        })
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        ai = module.LocalFirstResearch(market, local_key="local-key", client=client)
+        review = await ai.explain_models(
+            asset="BTC", venues=("okx", "gate", "bitget"),
+            calls={"5": {"live": {"p_up": 0.6, "venues": 3, "venues_up": 3}}},
+        )
+    assert review["stance_5m"] == "follow"
+    assert review["stance_15m"] == "abstain"
+    assert "direction" not in review
+    assert "lean up" not in review["thesis"] and "breakout" not in review["thesis"]
+    assert "looks safe" not in review["risk"]
+    assert review["thesis"] == (
+        "Insufficient fresh independent closed-candle evidence to "
+        "support a market direction.")
+    assert review["risk"].startswith("No verified future advantage")
+    assert review["grounded_by"] == "deterministic_historical_evidence_policy"

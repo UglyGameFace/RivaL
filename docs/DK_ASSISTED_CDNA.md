@@ -1,5 +1,7 @@
 # RivaL DraftKings Assisted Mode and CDNA public data boundary
 
+> **Retirement notice (2026-11-06):** Gemini, OpenRouter and Cloudflare inference were retired from RivaL; the private local LFM3 gateway is the sole AI provider (see [local-only Intelligence](RIVAL_INTELLIGENCE_LOCAL_ONLY.md)). Step 3 ("Independent AI") below describes a feature that does not exist: there is no AI button or call in the CDNA flow.
+
 Updated 2026-10-31. Owner objective: research DraftKings Predictions crypto
 contracts inside the existing RivaL menu, reuse RivaL's independent exchange
 mathematics/free AI, and do not place bets.

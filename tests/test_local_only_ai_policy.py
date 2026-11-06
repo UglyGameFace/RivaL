@@ -36,3 +36,29 @@ def test_retired_api_keys_do_not_enter_settings(monkeypatch):
         "rival_cloudflare_ai_token",
     ):
         assert not hasattr(settings, attr)
+
+
+def test_retired_provider_labels_are_gone_from_the_dashboard():
+    """N5: no Cloudflare-label string remains in the dashboard path, and the
+    retired Gemini scheduler flag no longer drives any dashboard wording."""
+    code = (ROOT / "src/parlay_bot/discord_app/research_dashboard.py").read_text()
+    assert "Cloudflare backup" not in code
+    assert "Cloudflare" not in code
+    assert "optional AI scheduler" not in code
+    assert "gemini_ok" not in code
+
+
+def test_stale_docs_carry_a_retirement_banner():
+    """N5: the five stale docs (plus auto-hunt, same pre-retirement rot)
+    each state the named providers are retired."""
+    for name in (
+        "PERPETUALS_LEARNING.md",
+        "RIVAL_CONTINUOUS_LEARNING.md",
+        "OPPORTUNITY_DESK.md",
+        "DK_ASSISTED_CDNA.md",
+        "RIVAL_LOCAL_INTELLIGENCE_ENGINE.md",
+        "auto-hunt.md",
+    ):
+        text = (ROOT / "docs" / name).read_text()
+        assert "Retirement notice (2026-11-06)" in text, name
+        assert "retired" in text.lower(), name

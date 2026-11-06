@@ -275,7 +275,19 @@ class LocalFirstResearch:
                     and isinstance(data.get("risk"), str)
                     and 0 < len(data["risk"].strip()) <= 160):
                 raise ResearchUnavailable("RivaL Intelligence returned an invalid review.")
-            return data
+            # Repeat the guard in RivaL: valid JSON from an outdated gateway
+            # still cannot store or display ungrounded review prose. The
+            # gateway already enforces this; re-apply here so an old gateway
+            # cannot leak raw LLM thesis/risk into rival_intelligence_calls.
+            # Stances, model and mode pass through unchanged; no direction
+            # or confidence is asserted for a model review.
+            grounded = enforce_grounding(data, evidence, asset=asset)
+            return {
+                **data,
+                "thesis": grounded["thesis"][:240],
+                "risk": grounded["risk"][:160],
+                "grounded_by": grounded["grounded_by"],
+            }
 
     async def propose_feature_hypothesis(
         self, *, asset: str, venues: tuple[str, ...],

@@ -1,5 +1,7 @@
 # RivaL multi-venue forecast/learning core
 
+> **Retirement notice (2026-11-06):** Gemini, OpenRouter and Cloudflare inference were retired from RivaL; the private local LFM3 gateway is the sole AI provider (see [local-only Intelligence](RIVAL_INTELLIGENCE_LOCAL_ONLY.md)). The Gemini research path, 4-hourly auto worker, 18/day cap and Gemini forward ledger described below were retired with it (`auto_ai=False`); only the mathematical prospective-audit loop still runs. Do not treat the Gemini sections as current behavior.
+
 **Status: foundational domain layer, not a live perpetuals prediction bot.**
 The existing Discord sports interface and deployment are intentionally unchanged.
 This uses the existing PostgreSQL connection via `RelationalHotStore` when

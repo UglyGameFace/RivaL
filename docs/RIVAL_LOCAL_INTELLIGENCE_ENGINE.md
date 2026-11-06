@@ -1,5 +1,7 @@
 # RivaL private local intelligence engine
 
+> **Retirement notice (2026-11-06):** Gemini, OpenRouter and Cloudflare inference were retired from RivaL; the private local LFM3 gateway is the sole AI provider (see [local-only Intelligence](RIVAL_INTELLIGENCE_LOCAL_ONLY.md)). The Cloudflare backup described below as "implemented" was never implemented, the `RIVAL_CLOUDFLARE_AI_TOKEN`, `RIVAL_OPENROUTER_DAILY_MAX` and `RIVAL_GEMINI_AUTO_ENABLED` settings are retired, and the original RivaL app no longer runs at 512 MB (actual RAM=1280; Intelligence RAM=2450). This document is a historical handoff, not current production guidance.
+
 ## Current production handoff
 
 - **GitHub:** The RivaL Intelligence Python entrypoint, separate Discloud ZIP, private gateway, and Cloudflare backup are implemented. The published standalone ZIP passed local packaging and GitHub clean-download checks.

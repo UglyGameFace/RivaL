@@ -104,6 +104,32 @@ def test_first_model_call_keeps_priority_over_a_later_opposite_ai_review(tmp_pat
         hot.close()
 
 
+def test_optional_ai_review_also_keeps_the_first_saved_direction(tmp_path):
+    hot = SQLiteHotStore(tmp_path / "ai.sqlite")
+    hot.initialize()
+    research = PolymarketResearch(hot)
+    notice = _notice()
+    research.initialize()
+    first = ContractCall(
+        slug=notice.slug, asset="BTC", horizon=5,
+        issued_at=notice.issued + timedelta(seconds=10),
+        expires=notice.expires, direction="DOWN", model="independent-review",
+        thesis="initial research", risk="not proven",
+        evidence_sha256="a" * 64,
+    )
+    second = replace(
+        first, direction="UP",
+        issued_at=first.issued_at + timedelta(seconds=30),
+        evidence_sha256="b" * 64,
+    )
+    try:
+        assert research._save(first, notice, {"up_ask": .4}).direction == "DOWN"
+        assert research._save(second, notice, {"up_ask": .6}).direction == "DOWN"
+        assert research._saved(notice.slug).issued_at == first.issued_at
+    finally:
+        hot.close()
+
+
 @pytest.mark.asyncio
 async def test_quote_refreshes_edit_only_one_dm_and_send_no_flip_alerts(tmp_path, monkeypatch):
     hot = SQLiteHotStore(tmp_path / "panel.sqlite")

@@ -926,3 +926,21 @@ def test_backend_threads_follow_the_container_cpu_quota(tmp_path, monkeypatch):
     command, _ = SERVICE["backend_command"](tmp_path / "llama-server", tmp_path / "m.gguf", 4096)
     assert command[command.index("--threads") + 1] == "3"
     assert command[command.index("--batch-size") + 1] == "512"
+
+
+def test_memory_snapshot_reports_cache_and_anonymous_memory_from_the_kernel(tmp_path):
+    mb = 1024 * 1024
+    (tmp_path / "memory.current").write_text(f"{2300 * mb}\n")
+    (tmp_path / "memory.max").write_text(f"{2450 * mb}\n")
+    (tmp_path / "memory.stat").write_text(
+        f"anon {900 * mb}\nfile {1350 * mb}\nfile_mapped {1100 * mb}\n")
+    (tmp_path / "memory.events").write_text("low 0\nhigh 0\nmax 3\noom 1\noom_kill 1\n")
+    snap = SERVICE["memory_snapshot"](None, cgroup=tmp_path)
+    assert (snap["current_mb"], snap["limit_mb"], snap["anon_mb"], snap["file_mb"]) == (
+        2300, 2450, 900, 1350)
+    assert snap["file_mapped_mb"] == 1100 and snap["oom_kills"] == 1
+    assert snap["gateway_rss_mb"] is None or snap["gateway_rss_mb"] > 0
+    unlimited = tmp_path / "u"
+    unlimited.mkdir()
+    (unlimited / "memory.max").write_text("max\n")
+    assert SERVICE["memory_snapshot"](None, cgroup=unlimited)["limit_mb"] is None

@@ -458,6 +458,80 @@ def compact_evidence(asset: str, evidence: dict, *, extended: bool = False) -> s
     return header + "\n" + "\n".join(lines)
 
 
+def _read_int(path: Path) -> int | None:
+    try:
+        text = path.read_text().strip()
+    except OSError:
+        return None
+    return int(text) if text.isdigit() else None
+
+
+def _keyed(path: Path) -> dict[str, int]:
+    try:
+        rows = path.read_text().split("\n")
+    except OSError:
+        return {}
+    out = {}
+    for row in rows:
+        key, _, value = row.partition(" ")
+        if value.strip().isdigit():
+            out[key] = int(value)
+    return out
+
+
+def _rss_mb(pid: int | str) -> int | None:
+    for row in _keyed_status(Path(f"/proc/{pid}/status")):
+        if row[0] == "VmRSS:":
+            return row[1] // 1024
+    return None
+
+
+def _keyed_status(path: Path):
+    try:
+        for line in path.read_text().splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[1].isdigit():
+                yield parts[0], int(parts[1])
+    except OSError:
+        return
+
+
+def memory_snapshot(backend_pid: int | None = None,
+                    cgroup: Path = Path("/sys/fs/cgroup")) -> dict:
+    """Where this container's memory actually is (MB), from the kernel.
+
+    ``file`` is page cache (the memory-mapped model counts here and can be
+    reclaimed); ``anon`` is memory that cannot. A host that kills on total
+    usage sees both, so both are reported.
+    """
+    mb = 1024 * 1024
+    current, limit = _read_int(cgroup / "memory.current"), _read_int(cgroup / "memory.max")
+    peak = _read_int(cgroup / "memory.peak")
+    stat, events = _keyed(cgroup / "memory.stat"), _keyed(cgroup / "memory.events")
+    return {
+        "current_mb": current // mb if current is not None else None,
+        "limit_mb": limit // mb if limit is not None else None,
+        "peak_mb": peak // mb if peak is not None else None,
+        "anon_mb": stat["anon"] // mb if "anon" in stat else None,
+        "file_mb": stat["file"] // mb if "file" in stat else None,
+        "file_mapped_mb": stat["file_mapped"] // mb if "file_mapped" in stat else None,
+        "oom_kills": events.get("oom_kill"),
+        "gateway_rss_mb": _rss_mb("self"),
+        "backend_rss_mb": _rss_mb(backend_pid) if backend_pid else None,
+    }
+
+
+MEMORY_LOG_SECONDS = 300
+
+
+def log_memory(snapshot: dict) -> None:
+    current, limit = snapshot.get("current_mb"), snapshot.get("limit_mb")
+    level = (logging.WARNING if current and limit and current >= 0.85 * limit
+             else logging.INFO)
+    LOG.log(level, "memory_receipt %s",
+            " ".join(f"{k}={v}" for k, v in snapshot.items()))
+
+
 def verified_file_digest(path: Path) -> str:
     """Constant-memory content fingerprint for the known-good local runtime."""
     h = hashlib.sha256()
@@ -845,6 +919,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                             "ready": self.server.backend_ready(),
                             "source_sha": source_sha,
                             "repair_state": self.server.repair_state,
+                            "memory": memory_snapshot(
+                                getattr(getattr(self.server, "process", None), "pid", None)),
                             "repair_count": self.server.repair_count,
                              "runtime_context_tokens": self.server.context_tokens,
                              "profiles": {
@@ -998,10 +1074,14 @@ def launch_server():
     supervisor = BackendRepair(
         process, command, env, binary=binary, model=model_path,
     )
+    next_memory_log = 0.0
     try:
         while True:
             supervisor.tick(gateway)
             process = supervisor.process
+            if time.monotonic() >= next_memory_log:
+                log_memory(memory_snapshot(process.pid))
+                next_memory_log = time.monotonic() + MEMORY_LOG_SECONDS
             time.sleep(3)
     finally:
         stopped.set()

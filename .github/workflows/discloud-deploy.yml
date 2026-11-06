@@ -70,6 +70,15 @@ jobs:
           grep -q '^TYPE=bot$' discloud.config
           grep -q '^MAIN=main.py$' discloud.config
 
+      - name: Stamp the deployed commit for error reports
+        if: steps.access.outputs.ready == 'true'
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          printf '%s\n' "$SOURCE_SHA" > src/parlay_bot/RELEASE_SHA
+
       - name: Deploy tested RivaL app without replacing its host environment
         if: steps.access.outputs.ready == 'true'
         uses: discloud/deploy-action@fae7024653d941a19daa2b6f56d2ae208e008c54  # v1 (pinned: holds DISCLOUD_TOKEN)

@@ -20,6 +20,7 @@ SERVICE_FILES = (
     "build.sh",
     "discloud.config",
     "discovery.py",
+    "error_report.py",
     "main.py",
     "model_download.py",
     "requirements.txt",

@@ -16,6 +16,7 @@ APP_FILES = {
     "requirements.txt",
     "service.py",
     "discovery.py",
+    "error_report.py",
     "evidence_policy.py",
     "model_download.py",
     "build.sh",

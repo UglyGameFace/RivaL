@@ -47,6 +47,7 @@ from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
 from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
 from parlay_bot.jurisdiction.registry import JurisdictionRegistry
 from parlay_bot.jurisdiction.zip_lookup import ZipStateResolver
+from parlay_bot.observability import heartbeat
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals import host_memory
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
@@ -2022,6 +2023,8 @@ class RivalDiscordClient(discord.Client):
                     )
                     considered += 1
                 _LOG.debug("RivaL formula test considered=%d", considered)
+                if considered:
+                    heartbeat("rival-formula-test")
             except asyncio.CancelledError:
                 raise
             except TimeoutError:
@@ -2083,6 +2086,8 @@ class RivalDiscordClient(discord.Client):
                         "notifications=0 ai_requests=0",
                         len(notices), sum(studied),
                     )
+                    if any(studied):
+                        heartbeat("rival-polymarket-learning")
                 self.polymarket_research.maybe_settle(self.auto_hunt.polymarket)
             except asyncio.CancelledError:
                 raise
@@ -2341,6 +2346,8 @@ class RivalDiscordClient(discord.Client):
                     model=str(review.get("model")), issued_at=datetime.now(UTC),
                 )
                 _LOG.info("RivaL Intelligence reviewed %s saved=%d", asset, saved)
+                if saved:
+                    heartbeat("rival-intelligence-reviews")
                 outcome = "reviewed" if saved else "nothing_saved"
             except asyncio.CancelledError:
                 raise
@@ -2512,6 +2519,7 @@ class RivalDiscordClient(discord.Client):
                 "RivaL 5-minute cycle took %.0fs (%s)", total,
                 " ".join(f"{k}={v:.0f}s" for k, v in stages.items()),
             )
+            heartbeat("rival-5m-model-cycle")
             await asyncio.sleep(
                 next_collection_delay(
                     datetime.now(UTC),

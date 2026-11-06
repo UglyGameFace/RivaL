@@ -44,3 +44,29 @@ def test_release_is_the_stamped_commit(tmp_path, monkeypatch):
     assert observability.release() is None
     (tmp_path / "RELEASE_SHA").write_text("63b91ab" + "0" * 33 + "\n")
     assert observability.release() == "63b91ab" + "0" * 33
+
+
+def test_handled_task_errors_are_not_reported_but_real_crashes_are():
+    observability._recent.clear()
+
+    def task_error(kind, mechanism="asyncio"):
+        return {"exception": {"values": [{"type": kind, "mechanism": {"type": mechanism},
+                                          "stacktrace": {"frames": [{"lineno": 1}]}}]}}
+    assert observability.before_send(task_error("MarketUnavailable"), {}) is None
+    assert observability.before_send(task_error("HTTPStatusError"), {}) is None
+    assert observability.before_send(task_error("KeyError"), {}) is not None
+    # The same handled type logged by our own _LOG.exception still reports.
+    assert observability.before_send(task_error("HTTPStatusError", "logging"), {}) is not None
+
+
+def test_heartbeat_is_throttled_and_never_raises(monkeypatch):
+    calls = []
+    from sentry_sdk import crons
+    monkeypatch.setattr(crons, "capture_checkin", lambda **kw: calls.append(kw))
+    monkeypatch.setattr(observability, "_beats", {})
+    import sentry_sdk
+    monkeypatch.setattr(sentry_sdk, "get_client",
+                        lambda: type("C", (), {"is_active": lambda self: True})())
+    observability.heartbeat("rival-test")
+    observability.heartbeat("rival-test")
+    assert calls == [{"monitor_slug": "rival-test", "status": "ok"}]

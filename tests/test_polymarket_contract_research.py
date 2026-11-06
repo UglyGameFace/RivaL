@@ -135,7 +135,7 @@ def test_issued_call_only_matches_its_exact_source_window():
     for foreign in (replace(call, slug="other-market"),
                     replace(call, horizon=15), replace(call, expires=datetime.now(UTC)-timedelta(seconds=1))):
         rejected = live_polymarket_embed(board, foreign, asset="BTC", horizon=5)
-        assert "AI WAIT" in rejected.title
+        assert "model NO FORECAST" in rejected.title
 
 
 @pytest.mark.asyncio

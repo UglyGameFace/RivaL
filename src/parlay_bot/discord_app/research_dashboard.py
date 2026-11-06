@@ -161,8 +161,16 @@ _VENUE_NAMES = {
 }
 
 
-def _recovery_line(row: dict, *, now: datetime | None = None) -> str:
-    """One plain backfill status per exchange, without internal codes."""
+def _recovery_line(row: dict, *, now: datetime | None = None,
+                   missing_bars: int | None = None) -> str:
+    """One plain backfill status per exchange, without internal codes.
+
+    ``missing_bars`` is the latest gap-audit count for this venue when one
+    exists (``None`` when no audit has completed yet). A venue only renders
+    as done when its recovery status says caught up AND the audit knows of
+    no missing bars. A recently-failed venue never renders as done, even
+    when its cursor happens to be recent.
+    """
     name = _VENUE_NAMES.get(str(row["venue"]), str(row["venue"]))
     clock = now or datetime.now(UTC)
     imported = int(row.get("inserted_bars") or 0)
@@ -175,9 +183,23 @@ def _recovery_line(row: dict, *, now: datetime | None = None) -> str:
     backward = start > cursor  # OKX walks back from where it started
     if status == "pending" and not imported:
         return f"**{name}**: not started yet"
-    if status in ("caught_up", "gaps_pending", "gap_repair") or (
-            not backward and clock - cursor <= timedelta(hours=6)):
-        state = "✅ done" + (" (re-checking a few gaps)" if status == "gaps_pending" else "")
+    # Failure states keep their own wording below; the 6h-cursor shortcut
+    # must never promote one to done.
+    failed = status in (
+        "blocked", "retry", "source_recent_limit", "upstream_empty",
+    )
+    known_gaps = missing_bars is not None and int(missing_bars) > 0
+    if status == "caught_up" and not known_gaps:
+        state = "✅ done"
+    elif status == "caught_up":
+        # The gap audit found missing bars the cursor alone cannot see.
+        state = f"⏳ caught up, incomplete — {int(missing_bars):,} missing bars"
+    elif status == "gaps_pending":
+        state = "⏳ caught up, incomplete — re-checking a few gaps"
+    elif status == "gap_repair":
+        state = "⏳ repairing gaps"
+    elif not failed and not backward and clock - cursor <= timedelta(hours=6):
+        state = "✅ done"
     elif status == "source_recent_limit":
         state = "⛔ this exchange's API only serves recent candles"
     elif status == "upstream_empty":
@@ -1092,7 +1114,18 @@ class ResearchDashboard(discord.ui.View):
                                 del bitget  # every venue is listed below
                                 rows = await asyncio.to_thread(self._all_history_progress)
                                 seen = {str(row["venue"]) for row in rows}
-                                lines = [_recovery_line(row) for row in rows] + [
+                                missing_by_venue = {
+                                    str(audit["venue"]): int(audit.get("missing_bars") or 0)
+                                    for audit in audits
+                                }
+                                lines = [
+                                    _recovery_line(
+                                        row,
+                                        missing_bars=missing_by_venue.get(
+                                            str(row["venue"])),
+                                    )
+                                    for row in rows
+                                ] + [
                                     f"**{_VENUE_NAMES.get(v, v)}**: not started"
                                     for v in self.venues if v not in seen
                                 ]

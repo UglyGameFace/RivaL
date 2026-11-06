@@ -585,6 +585,13 @@ class RivalDiscordClient(discord.Client):
         )
         self._poly_board_task: asyncio.Task[None] | None = None
         self._poly_research_task: asyncio.Task[None] | None = None
+        # Locked test of the Up/Down price formula vs Polymarket's price.
+        from parlay_bot.perpetuals.coinbase_reference import CoinbaseReference
+        from parlay_bot.perpetuals.polymarket_formula_test import FormulaTest
+        self.formula_test = FormulaTest(self.store)
+        self.coinbase_reference = CoinbaseReference()
+        self.polymarket_board.formula = self.formula_test
+        self._formula_task: asyncio.Task[None] | None = None
 
         self._register_commands()
 
@@ -1418,6 +1425,10 @@ class RivalDiscordClient(discord.Client):
             self._poly_research_task = asyncio.create_task(
                 self._poly_research_loop(), name="rival-silent-polymarket-learning",
             )
+        if self._formula_task is None:
+            self._formula_task = asyncio.create_task(
+                self._formula_loop(), name="rival-polymarket-formula-test",
+            )
         if self._kalshi_research_task is None:
             self._kalshi_research_task = asyncio.create_task(
                 self._kalshi_research_loop(), name="rival-silent-kalshi-research",
@@ -1963,6 +1974,51 @@ class RivalDiscordClient(discord.Client):
                     exc_info=True,
                 )
             await asyncio.sleep(max(1, 120 - (time.monotonic() - started)))
+
+    async def _formula_loop(self) -> None:
+        """Every ~10 s: the price formula's chance for each open contract.
+
+        Reads Polymarket's verified quotes (shared, capped reader) and
+        Coinbase's live price. Writes at most one frozen bet per contract to
+        the locked scorecard; never sends a message.
+        """
+        from parlay_bot.perpetuals.price_formula import per_second_sigma
+
+        await self.wait_until_ready()
+        while not self.is_closed():
+            started = time.monotonic()
+            try:
+                notices = await asyncio.wait_for(
+                    self.auto_hunt.polymarket.active(), timeout=12,
+                )
+                assets = sorted({n.asset for n in notices})
+                prices, candles = await asyncio.gather(
+                    asyncio.gather(*(self.coinbase_reference.price(a) for a in assets)),
+                    asyncio.gather(*(self.coinbase_reference.candles(a) for a in assets)),
+                )
+                by_asset = {a: (p, c) for a, p, c in zip(assets, prices, candles, strict=True)}
+                considered = 0
+                for notice in notices:
+                    price, rows = by_asset.get(notice.asset, (None, None))
+                    if price is None or not rows:
+                        continue
+                    opened = self.coinbase_reference.open_at(rows, notice.issued)
+                    sigma = per_second_sigma([close for _, _, close in rows[-61:]])
+                    if opened is None or sigma is None:
+                        continue
+                    await asyncio.to_thread(
+                        self.formula_test.consider, notice, price=price,
+                        open_price=opened, sigma_per_second=sigma,
+                    )
+                    considered += 1
+                _LOG.debug("RivaL formula test considered=%d", considered)
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                _LOG.info("RivaL formula test: Polymarket listing slow; retrying")
+            except Exception:  # noqa: BLE001 - research only, never blocks the bot
+                _LOG.exception("RivaL formula test cycle failed")
+            await asyncio.sleep(max(1, 10 - (time.monotonic() - started)))
 
     async def _poly_research_loop(self) -> None:
         """Study genuine listed contracts silently, without consuming AI quota.
@@ -2743,6 +2799,8 @@ class RivalDiscordClient(discord.Client):
                  "rival-silent-polymarket-learning"),
                 ("_poly_board_task", self._poly_board_loop,
                  "rival-auto-polymarket-board"),
+                ("_formula_task", self._formula_loop,
+                 "rival-polymarket-formula-test"),
                 ("_polybolt_task", self.polybolt.run, "rival-read-only-chainlink-twap"),
                 ("_target_task", self._target_loop, "rival-personal-direction-updates"),
             )
@@ -3019,7 +3077,7 @@ class RivalDiscordClient(discord.Client):
     # a worker that is being stopped.
     _WORKER_TASK_ATTRS = (
         "_health_task", "_polybolt_task", "_kalshi_research_task",
-        "_poly_board_task", "_poly_research_task", "_stream_shadow_task",
+        "_poly_board_task", "_poly_research_task", "_formula_task", "_stream_shadow_task",
         "_liquidity_task",
         "_target_task", "_sports_results_task", "_sports_task",
         "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
@@ -3051,6 +3109,7 @@ class RivalDiscordClient(discord.Client):
             ("polymarket_board", getattr(self, "polymarket_board", None)),
             ("auto_hunt", getattr(self, "auto_hunt", None)),
             ("polymarket_research", getattr(self, "polymarket_research", None)),
+            ("coinbase_reference", getattr(self, "coinbase_reference", None)),
             ("public_quotes", getattr(self, "public_quotes", None)),
             ("history_recovery", getattr(self, "history_recovery", None)),
             ("kucoin_history_recovery", getattr(self, "kucoin_history_recovery", None)),

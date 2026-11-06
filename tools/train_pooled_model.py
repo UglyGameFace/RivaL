@@ -121,12 +121,17 @@ def main() -> int:
     # Evaluate on the most recent ~10 months, validate on the year before.
     test_start = pd.Timestamp(trained_through).tz_convert("UTC").normalize() - pd.Timedelta(days=300)
     train_end = test_start - pd.Timedelta(days=365)
+    # What training was asked to cover: the monthly Binance originals from
+    # the first month through --last-month. Each artifact reports which of
+    # these months it actually loaded (see pooled_training.frame_coverage).
+    months_requested = source.months(source.FIRST_MONTH, args.last_month)
     args.out.mkdir(parents=True, exist_ok=True)
     summary, published = {}, []
     for horizon in (5, 15, 60):
         candidates = [train_horizon(frames, horizon, train_end=train_end,
                                     test_start=test_start, trained_through=trained_through,
-                                    feature_version=version)
+                                    feature_version=version,
+                                    months_requested=months_requested)
                       for version in (FEATURE_VERSION, FEATURE_VERSION_V2)]
         for c in candidates:
             print(json.dumps({f"{horizon}m/{c['feature_version']}": {
@@ -155,6 +160,7 @@ def main() -> int:
             "gates_passed": doc["gates_passed"], "bytes": size,
             "validation": doc["evaluation"]["validation"], "test": doc["evaluation"]["test"],
             "portable_max_error": doc["portable_max_error"],
+            "coverage": doc["coverage"],
         }
         if doc["gates_passed"] and size <= 2_200_000:
             published.append(path)
@@ -167,7 +173,8 @@ def main() -> int:
                                 test_start=test_start,
                                 trained_through=max(trained_through, max(
                                     k.index.max() for k, _ in venues.values())),
-                                feature_version=FEATURE_VERSION)
+                                feature_version=FEATURE_VERSION,
+                                months_requested=months_requested)
             aug["training_sources"] = ["binance_um_originals", VENUE_SOURCE]
             aug["venue_streams"] = sorted(venues)
             holdout = venue_holdout(frames, venues, horizon)
@@ -182,6 +189,7 @@ def main() -> int:
             summary[f"{horizon}m_venues"] = {
                 "family": family(aug), "gates_passed": aug["gates_passed"],
                 "venue_holdout": holdout, "published": bool(ok),
+                "coverage": aug["coverage"],
                 "test": aug["evaluation"]["test"]}
             print(json.dumps({f"{horizon}m_venues": summary[f"{horizon}m_venues"]},
                              default=str), flush=True)
@@ -191,6 +199,9 @@ def main() -> int:
     elif not published:
         print("no model passed its gates; nothing published", flush=True)
     summary["warehouse"] = warehouse_stats
+    # What load_asset actually loaded per asset (months requested/loaded/
+    # missing per family), from the frames' own coverage accounting.
+    summary["coverage"] = {asset: raw[asset].attrs.get("coverage") for asset in ASSETS}
     print("TRAINING_SUMMARY=" + json.dumps(summary, default=str))
     return 0
 

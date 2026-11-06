@@ -201,8 +201,42 @@ def metrics(p, y, base: float, index) -> dict:
     }
 
 
+def frame_coverage(frames: dict, *, months_requested=None) -> dict:
+    """What the frames actually cover, per stream and overall.
+
+    months_requested: the YYYY-MM months training was asked to cover (the
+    Binance originals). A month in that list but in no stream's index is
+    missing from training entirely; each stream's months_missing names the
+    streams that lack it. Nothing here is inferred: months and days come
+    from the bar timestamps the frames actually contain.
+    """
+    import pandas as pd
+
+    requested = sorted(set(months_requested)) if months_requested else None
+    streams = {}
+    loaded: set[str] = set()
+    for key, (k, _f) in frames.items():
+        idx = pd.DatetimeIndex(k.index)
+        months = sorted(set(idx.strftime("%Y-%m")))
+        loaded.update(months)
+        streams[str(key)] = {
+            "bars": len(idx),
+            "days": len(set(idx.normalize())),
+            "months": months,
+            "months_missing": (sorted(set(requested) - set(months)) if requested else None),
+            "first_bar": str(idx.min()),
+            "last_bar": str(idx.max()),
+        }
+    return {
+        "months_requested": requested,
+        "months_loaded": sorted(loaded),
+        "months_missing": (sorted(set(requested) - loaded) if requested else None),
+        "streams": streams,
+    }
+
+
 def train_horizon(frames: dict, horizon: int, *, train_end, test_start, trained_through,
-                  feature_version: str = FEATURE_VERSION) -> dict:
+                  feature_version: str = FEATURE_VERSION, months_requested=None) -> dict:
     """frames: asset -> (candles DataFrame, features DataFrame)."""
     import lightgbm as lgb
     import numpy as np
@@ -218,6 +252,11 @@ def train_horizon(frames: dict, horizon: int, *, train_end, test_start, trained_
     train = data[data.index < train_end - purge]
     val = data[(data.index >= train_end) & (data.index < test_start - purge)]
     test = data[data.index >= test_start]
+    coverage = frame_coverage(frames, months_requested=months_requested)
+    # The weights saw only the train slice: name the months/days in it,
+    # distinct from the months merely loaded into frames.
+    coverage["months_in_train"] = sorted(set(train.index.strftime("%Y-%m")))
+    coverage["days_in_train"] = len(set(train.index.normalize()))
     cols = list(FEATURE_SETS[feature_version])
     model = lgb.LGBMClassifier(**PARAMS).fit(train[cols], train["y"])
     base = float(train["y"].mean())
@@ -244,6 +283,7 @@ def train_horizon(frames: dict, horizon: int, *, train_end, test_start, trained_
         "evaluation_status": "held-out evaluated",
         "trained_from": str(data.index.min()), "trained_through": str(trained_through),
         "training_rows": len(train), "evaluation": evaluation,
+        "coverage": coverage,
         "created_at": datetime.now(UTC).isoformat(),
         "trees": export_lightgbm(model),
     }

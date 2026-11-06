@@ -789,6 +789,7 @@ class GuidedHome(discord.ui.View):
                 self.add_item(_PolymarketHorizon(self.horizon))
                 self._add("Track in DMs", "poly-start", 2, "🔔", True)
                 self._add("Stop Tracking", "poly-stop", 2, "🔕")
+                self._add("Refresh", "live", 2, "🔄")
             elif self.live_source == "kalshi":
                 self._add("Refresh Kalshi", "kalshi-refresh", 2, "🔄", True)
             self._add("Analysis & Markets", "crypto-desk", 3, "📊")
@@ -1091,6 +1092,21 @@ class GuidedHome(discord.ui.View):
                     else:
                         details += "\n" + unavailable_text(board.quote_unavailable_reason)
                     embed.add_field(name="📈 Verified market", value=details, inline=False)
+                    if board.next_window is not None:
+                        upcoming = board.next_window
+                        # A call needs that contract's live order book and its
+                        # opening price, so it cannot exist before it opens.
+                        embed.add_field(
+                            name="⏭️ Next contract",
+                            value=(
+                                f"[Next {self.horizon}-min contract]({upcoming.url}) • opens "
+                                f"{discord.utils.format_dt(upcoming.opens, style='R')}\n"
+                                "RivaL's call for it appears shortly after it opens (it needs that "
+                                "contract's live prices). Track in DMs switches to it "
+                                "automatically; here, tap Refresh once it has opened."
+                            ),
+                            inline=False,
+                        )
                     if matching_call(board, call, asset=self.coin, horizon=self.horizon):
                         embed.description = (
                             f"**RivaL {call.kind} call: {call.direction}** "
@@ -2484,6 +2500,10 @@ class GuidedHome(discord.ui.View):
         elif action == "live" and self.live_source is None:
             # Legacy Live Mode buttons must not silently choose Polymarket.
             self.navigate("crypto-desk")
+        elif action == "live":
+            # Refresh on the live page: re-read the current (and next) contract.
+            self.navigate("live")
+            self.note = None
         elif action == "back":
             self.page = self.back_stack.pop() if self.back_stack else "home"
             self.note = None

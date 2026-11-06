@@ -47,3 +47,20 @@ def test_memory_holders_names_the_attribute_that_holds_the_bytes():
     assert any(name == "Holder.big_cache" for name in names), names
     assert names["Holder.big_cache"] > 512 * 1024
     del holder, hot
+
+
+def test_memory_holders_does_not_loop_on_test_doubles():
+    from unittest.mock import MagicMock
+
+    from parlay_bot.discord_app.memory_receipt import memory_holders
+
+    class Holder:
+        pass
+
+    Holder.__module__ = "parlay_bot.test_fixture"
+    holder = Holder()
+    holder.double = MagicMock()
+    holder.cache = {i: list(range(50)) for i in range(2000)}
+    names = dict(memory_holders(top=20))  # must finish, not walk the mock forever
+    assert "Holder.cache" in names
+    del holder

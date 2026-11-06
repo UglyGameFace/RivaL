@@ -50,6 +50,10 @@ def _deep_size(root, seen: set, budget: list) -> int:
             continue
         seen.add(oid)
         budget[0] -= 1
+        # A test double's __sizeof__ is itself a mock: calling it records a
+        # call (new objects) on every visit, so the walk never ends. Skip.
+        if getattr(type(obj), "__module__", None) == "unittest.mock":
+            continue
         try:
             total += sys.getsizeof(obj)
         except TypeError:

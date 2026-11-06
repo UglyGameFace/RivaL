@@ -4,18 +4,18 @@ if os.environ.get("RIVAL_PROBE_ASSETS", "BTC") != "BTC":
     print(MARKER + base64.b64encode(gzip.compress(b"{}")).decode()); raise SystemExit(0)
 out = {}
 try:
+    import httpx
     from parlay_bot.config import Settings
-    from parlay_bot.storage.hot import PostgresHotStore
-    s = Settings()
-    out["owner_ids_configured"] = bool(str(getattr(s, "rival_owner_user_ids", "") or "").strip())
-    store = PostgresHotStore(s.rival_database_url.get_secret_value())
-    with store.connect() as conn:
-        rows = conn.execute("""SELECT hour, logger, level, template, count, last_at, text FROM rival_problem_log
-            WHERE hour>='2026-11-06T07' AND (logger ILIKE '%live_board%' OR logger ILIKE '%loop_watch%' OR template ILIKE '%interaction%') ORDER BY last_at DESC LIMIT 40""").fetchall()
-        out["rows"] = [[str(r["last_at"])[11:19], r["level"], r["logger"][-28:], int(r["count"]), str(r["text"])[:230]] for r in rows]
-        tr = conn.execute("SELECT user_id, asset, horizon, message_id, updated_at FROM rival_polymarket_live_board WHERE enabled=1").fetchall()
-        out["trackers"] = [[r["asset"], int(r["horizon"]), str(r["message_id"])[-6:], str(r["updated_at"])[11:19]] for r in tr]
-    store.close()
+    tok = Settings().discord_token.get_secret_value()
+    h = {"Authorization": f"Bot {tok}", "User-Agent": "RivaL (probe, 1)"}
+    r = httpx.get("https://discord.com/api/v10/channels/1568264700247150684", headers=h, timeout=10)
+    out["status"] = r.status_code
+    if r.status_code == 200:
+        d = r.json(); out["channel"] = {"type": d.get("type"), "name": d.get("name"), "guild_id": d.get("guild_id")}
+        me = httpx.get("https://discord.com/api/v10/users/@me", headers=h, timeout=10).json()
+        out["bot_id"] = me.get("id")
+    else:
+        out["body"] = r.text[:200]
 except Exception as exc:  # noqa: BLE001
-    out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
+    out["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
 print(MARKER + base64.b64encode(gzip.compress(json.dumps(out, default=str).encode())).decode())

@@ -21,7 +21,7 @@ from parlay_bot.discord_app.cdna_ui import (
 )
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
-from parlay_bot.discord_app.polymarket_live_board import changes_text, matching_call
+from parlay_bot.discord_app.polymarket_live_board import matching_call
 from parlay_bot.discord_app.polymarket_watch import unavailable_text
 from parlay_bot.discord_app.presentation import (
     parlay_embed,
@@ -735,6 +735,7 @@ class GuidedHome(discord.ui.View):
                 ("Notifications", "hunt", 1, "🔔"),
                 ("Bot Performance", "performance", 1, "📊"),
                 ("Practice", "practice", 2, "💵"),
+                ("Live Panel", "live-poly", 2, "📡"),
             ):
                 self._add(title, action, row, emoji, action == "live")
             self._add("Help", "help", 3, "❓")
@@ -751,6 +752,7 @@ class GuidedHome(discord.ui.View):
             if self.live_source == "polymarket":
                 self._add("View Contract Call", "desk-call", 3, "🎯", True)
                 self._add("Track Market", "desk-track", 3, "🔔")
+                self._add("Live Panel", "live-poly", 4, "📡")
             elif self.live_source == "exchange":
                 self._add("Get Exchange Forecast", "desk-call", 3, "🎯", True)
                 self._add("Follow Forecast", "desk-track", 3, "🔔")
@@ -787,7 +789,7 @@ class GuidedHome(discord.ui.View):
             self.add_item(_Coin(self.coin))
             if self.live_source == "polymarket":
                 self.add_item(_PolymarketHorizon(self.horizon))
-                self._add("Track in DMs", "poly-start", 2, "🔔", True)
+                self._add("Show DM Panel", "poly-start", 2, "📡", True)
                 self._add("Stop Tracking", "poly-stop", 2, "🔕")
                 self._add("Refresh", "live", 2, "🔄")
             elif self.live_source == "kalshi":
@@ -1055,12 +1057,20 @@ class GuidedHome(discord.ui.View):
                         _LOG.info("Tracker status unavailable")
                 if tracker is not None:
                     tracking = (
-                        "ON • This market updates in one DM"
+                        "ON • A single live DM panel updates this market"
                         if tracker.asset == self.coin and tracker.horizon == self.horizon
-                        else f"ON • {tracker.asset} {tracker.horizon}m instead"
+                        else f"ON • Tracking {tracker.asset} {tracker.horizon}m instead"
                     )
+                    channel_id = str(getattr(tracker, "channel_id", ""))
+                    message_id = str(getattr(tracker, "message_id", ""))
+                    if channel_id.isdecimal() and message_id.isdecimal():
+                        tracking += (
+                            "\n[Open your live DM panel]"
+                            f"(https://discord.com/channels/@me/{channel_id}/{message_id})"
+                        )
+                    tracking += "\nUse Show DM Panel to bring it to the bottom of your chat."
                 else:
-                    tracking = "OFF"
+                    tracking = "OFF • Use Show DM Panel to create your updating card."
                 embed.add_field(name="🔔 Your tracking", value=tracking, inline=False)
                 cached = None
                 if service is not None and callable(getattr(service, "preview", None)):
@@ -1117,18 +1127,11 @@ class GuidedHome(discord.ui.View):
                             value=(
                                 f"{call.thesis[:450]}\n"
                                 f"Issued {discord.utils.format_dt(call.issued_at, style='R')} "
-                                "for this exact contract. It is re-made from live prices "
-                                "while the contract runs, so it can change; Track in DMs "
-                                "sends a new alert when it does."
+                                "for this exact contract. The original model forecast "
+                                "does not change; live Polymarket quotes update separately. "
+                                "The panel stays accessible without flip-alert spam."
                             ), inline=False,
                         )
-                        changes = (service.call_changes(board)
-                                   if callable(getattr(service, "call_changes", None)) else [])
-                        if changes:
-                            embed.add_field(
-                                name=f"⚠️ Call changed {len(changes)}× during this contract",
-                                value=changes_text(changes), inline=False,
-                            )
                     else:
                         research = getattr(service, "research", None)
                         reason = (

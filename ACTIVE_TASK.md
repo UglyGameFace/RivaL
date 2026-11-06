@@ -1,3 +1,14 @@
+## 2026-11-06: Remove the Polymarket calendar blackout; surface frozen research forecasts
+
+- **Objective / branch:** `fix/evidence-driven-polymarket-calls`; correct PR #418's unrequested 28-day/21-day/48-hour calendar gates. Main inspected at `3299bf5`, no overlapping open PRs or local user changes.
+- **Root cause:** The fixed November 7 anchor and completed 28-day batch made every market unable to qualify until December 7 UTC. The shared card also hid available forecasts behind a no-model headline, and qualification progress was empty before the first batch.
+- **Changes:** A fresh durable policy start on deployment; prospective betting e-processes for Brier dominance AND stressed net payout; fixed summable lifetime alpha allocations across all algorithms/artifacts, 12 markets and source scopes. No repeated-look reset, historical evidence reuse, iid/t-test or minimum elapsed-day requirement. Retain >=300 settled pairs, >=150 priced entries, >=80% expected-window and fee/depth coverage, chronological settlement prefix and freshness. Pin pooled inference recipes for sample-based retention periods independent of qualification. Research UP/DOWN forecasts appear prominently with probabilities, checkpoint status and qualification progress; unqualified cards do not ping. Pin model AND initial qualification for each displayed contract across restarts and promotions. Existing read-only hosted receipt gains actual contest activity counts, without inferring predictive skill.
+- **Compatibility / cleanup:** Existing learning/outcome ledgers and original contract fee/source logic preserved. Additive idempotent tables only; retire the obsolete batch/HAC/Holm implementation and calendar roster dependency. Main menu and DM card continue using one renderer and the existing opt-in alerts. Broader perpetual 21-day policies remain unchanged.
+- **Validation:** Focused contest/pricing/pooled/Discord tests passed before the final pin-status and receipt additions. Full lint, SQLite/Postgres CI, release and host receipt remain to be verified on the final head. Synthetic model wins test mechanics only.
+- **Issues / delivery:** #6/#138/#151/#299 remain open. One cohesive corrective PR; integrate after exact-head CI, verify main/release and actual contest capture receipts, then retire only the preserved feature branch. Real model edge and Discord delivery remain unverified until actual evidence exists.
+
+---
+
 ## 2026-11-06: Evidence-governed Polymarket model contest (PR #418)
 
 - **Objective / branch:** Extend existing `feat/model-league` / PR #418 for all BTC/ETH/SOL/XRP 5m/15m/60m markets. No parallel task lock; no other open RivaL PR overlaps this work at inspection.

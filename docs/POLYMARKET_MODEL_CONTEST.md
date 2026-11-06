@@ -87,55 +87,92 @@ The jump challenger uses an explicitly approximate averaging-weight duration
 has already accrued, the formula abstains without its observed path. Unknown
 or conflicting settlement rules abstain.
 
-## Fixed qualification policy
+## Continuous qualification policy (sequential-betting-v2)
 
-The policy anchor is 2026-11-07 00:00 UTC. Tests use disjoint 28-day batches
-and only outcomes independently observed by two days after batch end.
-A model must enroll before the batch starts. A new artifact enrolls for a
-future full batch; it cannot inherit the older artifact's results. The contest retains the two latest enrolled recipes at each batch boundary
-and the preceding batch's pair, alongside the current two lineages for future
-enrollment (at most six artifacts per horizon). Nightly retraining therefore
-cannot starve the frozen artifacts under evaluation. Missing coverage remains
-unqualified.
+There is no 28-day batch, 21-day minimum, future calendar anchor, or mandatory
+48-hour settlement delay. A versioned policy start is saved once when this
+version initializes on the host. Only forecasts issued after that start can
+qualify; old outcomes are never reused to select a more favorable new test.
+Restarts preserve the policy, enrollment slots, source scopes and forecasts.
 
-Requirements are at least 300 matched resolved contracts, 21 observed UTC
-days, 80% of expected contract windows (including downtime), 80% depth/fee
-coverage, and 150 predetermined paper entries. Eligible models and the
-market are compared on their common contract intersection. Missing models
-and markets still consume multiple-testing slots.
+Requirements remain at least 300 matched resolved contracts, 150 predetermined
+priced paper entries, 80% forecast coverage over expected contract windows,
+80% known fee/depth coverage, positive Brier improvement, positive stressed net
+paper payout, and both statistical tests passing. These are sample requirements,
+not a promise that a model will qualify at a particular time. For continuous
+coverage, 300 contracts take about 25 hours at 5m, 75 hours at 15m, and 12.5 days
+at 60m. Weaker evidence can take longer or never qualify. No synthetic or older
+legacy calls count toward these minimums.
 
-Primary score: paired Brier improvement `(market-y)^2 - (model-y)^2`.
-A single paper side is chosen only if its forecast probability exceeds its
-recorded all-in cost by 0.03; otherwise WAIT. Stressed net paper payout
-subtracts a further 0.01/share for adverse price movement. Both positive
-Brier skill and positive stressed net performance are required.
+Each model is paired with the exact market snapshot for every contract on which
+that model issued a forecast. An absent new challenger cannot retroactively
+remove another model's observations by changing a common intersection. Within
+each settlement scope, consume the model's resolved contracts chronologically;
+a missing or invalid earlier outcome blocks later scores until it is resolved.
+Overlapping contracts fail closed. Outcomes require matching condition IDs,
+resolution at/after expiry, and observation at/after resolution and by now.
+Missing forecast windows and downtime reduce coverage. Source scopes start at
+their first observed checkpoint, with model enrollment and the policy start
+also bounding eligibility. Evidence over two hours out of date cannot qualify.
 
-Average the paired improvements and net payoffs by UTC day. A DM-style mean
-test uses Newey-West/Bartlett covariance with three daily lags and a Student-t
-reference. This is approximate under short-memory/stationarity assumptions;
-it is not a finite-sample or distribution-free guarantee. Degenerate variance
-and insufficient evidence cannot pass. The joint p-value is the larger of
-the Brier and economic p-values, followed by Holm across all enrolled models,
-12 markets and observed settlement scopes. Batch k spends
-`0.05 / (k*(k+1))`, whose lifetime sum is at most 0.05. Restarts and ten-minute
-cache refreshes cannot create another look or reset that budget. Late outcome
-receipts beyond the fixed cutoff cannot alter a completed test.
+The primary proper score is Brier improvement `g = (market-y)^2 - (model-y)^2`.
+A paper side is chosen once if its probability exceeds the recorded all-in cost
+by 0.03; otherwise WAIT. Stressed net payout is `z = correct - cost - 0.01` for
+that side and zero for WAIT. Prices and fees are never chosen after the result.
 
-Among qualifying candidates, the largest observed Brier improvement selects
-the serving model. This establishes evidence against the price benchmark;
-it does not establish pairwise superiority to every other qualifying model.
-Qualification expires at the next batch decision. It is paper evidence, not
-proof of actual fills, trading access, or future profit.
+For each sequence, use a fixed equal mixture of six betting capital processes,
+with fractions `(0.01, 0.03, 0.1, 0.3, 0.5, 0.8)`. Each component multiplies
+`1 + fraction * value / downside`. Brier downside is the exact worst negative
+score difference from the issued probability pair. Economic downside is the
+recorded `cost + 0.01`; WAIT leaves capital unchanged. All factors are positive.
+Capital is mixed, never selected by the best observed fraction. Log arithmetic
+avoids overflow. Under the conditional null that expected score improvement
+(or stressed net payout) is nonpositive given the information available before
+the outcome, each process is a nonnegative supermartingale. Ville's inequality
+therefore allows repeated checks at arbitrary stopping times without spending
+another significance level per refresh. No iid assumption or normal/t-reference
+approximation is used. This tests conditional forecast dominance; it does not
+prove stationary unconditional alpha or performance in every future regime.
+
+Both Brier and net capital must exceed `1 / allocated_alpha`. This is an
+intersection-union test: either null being true bounds a joint false pass.
+The total lifetime error budget is 0.05. Half is divided equally among the four
+declared algorithms; the other half is reserved for pooled artifacts. Artifact
+slot j receives weight `0.5 / (j*(j+1))`, fixed before its new-policy outcomes.
+Divide each model's budget equally among all twelve markets. Source scope k
+within a market receives `1 / (k*(k+1))`, allocated atomically at first capture.
+These summable weights and a union bound cover missing markets, future models,
+future source scopes and all repeated checks. Existing weights never increase
+when other models disappear. Allocation uses enrollment only, never accuracy.
+
+The qualified candidate with greatest observed Brier improvement serves future
+cards. A displayed contract's model and initial qualification status are pinned
+durably, so a promotion cannot change its direction or upgrade an unqualified
+research card into an alert halfway through. Qualification is reevaluated as evidence
+arrives and can be lost; stale state expires after twenty minutes. Paper test
+success is not verified fills or a guarantee of future profit.
+
+Pooled inference retains the first two enrolled recipes in each period of 301
+expected contracts, the preceding pair, and the current two lineages (at most
+six artifacts per horizon). These are inference retention periods only; a test
+can pass at any point. Selection is independent of outcomes and nightly imports
+cannot displace an ongoing trial before enough observations can accumulate.
 
 ## Serving and failure behavior
 
-The main menu and persistent DM panel share one card renderer. Both displays
-and the optional ping use the selected model's immutable
-checkpoint call. With no qualifying model, the card says
-"No model beats Polymarket's price here" and no prediction ping is sent.
-The separate early-call ping route and independent formula unlock were
-removed along with their orphaned modules; there is one qualification authority. Research forecasts
-can still be inspected with an explicit unqualified label.
+The main menu and persistent DM panel share one card renderer. An available
+frozen forecast appears prominently as `Research UP/DOWN • unqualified` until
+its model qualifies. The direction reflects which outcome the model considers
+more likely; it is not a fee-qualified entry recommendation. Probability and
+qualification progress are shown separately. The fixed research display order
+is formula, book logistic, then other model IDs, without ranking by results.
+There is no preference in qualification or the error budget for this display
+order. Before the 20%-elapsed checkpoint, the card shows its expected time;
+a missed checkpoint is explicitly unavailable rather than a generic WAIT.
+
+The card still says "No model beats Polymarket's price here" in its qualification
+field until a candidate passes. No unqualified prediction ping is sent. The
+separate early-call route and independent formula unlock remain retired.
 
 A ping additionally needs a fresh current book, known current costs, the same
 source/payoff, at least 0.03 estimated edge after the extra 0.01/share stress,
@@ -149,9 +186,6 @@ and loads one market at a time without raw evidence blobs to bound memory.
 - Market fee metadata: https://docs.polymarket.com/market-data/market-details
 - Gneiting & Raftery (2007), proper scoring rules:
   https://sites.stat.washington.edu/people/raftery/Research/PDF/Gneiting2007jasa.pdf
-- Diebold & Mariano (1995), predictive accuracy:
-  https://doi.org/10.1080/07350015.1995.10524599
-- Holm (1979), multiplicity: https://doi.org/10.2307/4615733
 - RiskMetrics (1996): https://www.msci.com/research-and-insights/paper/1996-riskmetrics-technical-document
 - Merton (1976), discontinuous returns: https://doi.org/10.1016/0304-405X(76)90022-2
 - Cont, Kukanov & Stoikov, order-book events: https://arxiv.org/abs/1011.6402
@@ -162,3 +196,13 @@ and loads one market at a time without raw evidence blobs to bound memory.
 - Bitfinex USD books/candles: https://docs.bitfinex.com/reference/rest-public-book
 
 - Binance spot order book and candles: https://developers.binance.com/en/docs/catalog/core-trading-spot-trading/api/rest-api/market
+
+- Henzi & Ziegel, *Valid sequential inference on probability forecast performance*,
+  Biometrika (2022): https://arxiv.org/abs/2103.08402
+- Waudby-Smith & Ramdas, *Estimating means of bounded random variables by betting*,
+  JRSS B (2024), Section 4: https://doi.org/10.1093/jrsssb/qkad009
+
+The existing read-only hosted learning receipt now includes `polymarket_contest`:
+policy start, per-market capture/forecast counts, last checkpoint and pinned
+card counts. These distinguish capture failures from unqualified forecasts;
+a pinned record is not proof of Discord delivery or profitable predictions.

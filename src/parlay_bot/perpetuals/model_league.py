@@ -1,10 +1,10 @@
 """Prospective, source-specific model contest on one immutable contract snapshot.
 
 Brier vs contemporaneous normalized CLOB midpoints; economics at recorded
-10-share ask depth + exact published fee. Fixed disjoint 28-day tests, daily
-Newey-West loss differences, Holm across ALL enrolled models x 12 markets x
-settlement schemas, and summable alpha spending across batches. No legacy
-rows can be upgraded into matched evidence. See POLYMARKET_MODEL_CONTEST.md.
+10-share ask depth + exact published fee. Prospective betting e-processes
+permit continuous evaluation without a calendar blackout. A fixed lifetime
+error budget covers all models, twelve markets and settlement schemas.
+No legacy rows become new-policy evidence. See POLYMARKET_MODEL_CONTEST.md.
 """
 from __future__ import annotations
 
@@ -13,19 +13,16 @@ import json
 import math
 import re
 import threading
-from collections import defaultdict
 from datetime import UTC, datetime, timedelta
+from itertools import groupby
 from urllib.parse import urlsplit
 
 ALPHA = .05
 MIN_CONTRACTS = 300
-MIN_DAYS = 21
 MIN_TRADES = 150
 MIN_COVERAGE = .8
-WINDOW_DAYS = 28
-# Prospective policy anchor, fixed before any eligible outcome is observed.
-POLICY_START = datetime(2026, 11, 7, tzinfo=UTC)
-SETTLEMENT_GRACE = timedelta(days=2)
+POLICY = "sequential-betting-v2"
+BET_FRACTIONS = (.01, .03, .1, .3, .5, .8)
 CHECKPOINT_ELAPSED = .20
 CHECKPOINT_WIDTH = timedelta(seconds=20)
 EDGE = .03
@@ -95,7 +92,8 @@ class Contest:
             if self._initialized:
                 return
             with self.store.connect() as conn:
-                conn.executescript("""
+                auto_id = self.store.database.auto_increment_primary_key
+                conn.executescript(f"""
                     CREATE TABLE IF NOT EXISTS rival_poly_contest_models (
                         model TEXT PRIMARY KEY, enrolled_at TEXT NOT NULL
                     );
@@ -115,12 +113,60 @@ class Contest:
                         probability_up DOUBLE PRECISION NOT NULL,
                         weights_sha256 TEXT NOT NULL, PRIMARY KEY(slug,model)
                     );
+                    CREATE TABLE IF NOT EXISTS rival_poly_contest_policies (
+                        policy TEXT PRIMARY KEY, started_at TEXT NOT NULL
+                    );
+                    CREATE TABLE IF NOT EXISTS rival_poly_contest_model_slots (
+                        id {auto_id}, model TEXT NOT NULL UNIQUE
+                    );
+                    CREATE TABLE IF NOT EXISTS rival_poly_contest_markets (
+                        asset TEXT NOT NULL, horizon INTEGER NOT NULL,
+                        next_scope INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(asset,horizon)
+                    );
+                    CREATE TABLE IF NOT EXISTS rival_poly_contest_scopes (
+                        asset TEXT NOT NULL, horizon INTEGER NOT NULL, schema_key TEXT NOT NULL,
+                        test_index INTEGER NOT NULL, started_at TEXT NOT NULL,
+                        PRIMARY KEY(asset,horizon,schema_key), UNIQUE(asset,horizon,test_index)
+                    );
+                    CREATE TABLE IF NOT EXISTS rival_poly_contest_display (
+                        slug TEXT PRIMARY KEY, model TEXT NOT NULL, qualified INTEGER NOT NULL
+                    );
                 """)
                 stamp = (now or datetime.now(UTC)).isoformat()
+                conn.execute("INSERT INTO rival_poly_contest_policies VALUES (?,?) ON CONFLICT DO NOTHING",
+                             (POLICY, stamp))
                 for model in MODELS:
                     conn.execute("INSERT INTO rival_poly_contest_models VALUES (?,?) ON CONFLICT DO NOTHING",
                                  (model, stamp))
+                for asset in ASSETS:
+                    for horizon in HORIZONS:
+                        conn.execute("INSERT INTO rival_poly_contest_markets(asset,horizon) VALUES (?,?) "
+                                     "ON CONFLICT DO NOTHING", (asset, horizon))
+                # Existing identities get slots before new-policy outcomes;
+                # enrollment order, never performance, determines the budget.
+                for row in conn.execute("SELECT model FROM rival_poly_contest_models "
+                                        "ORDER BY enrolled_at,model").fetchall():
+                    self._model_slot(conn, row["model"])
             self._initialized = True
+
+    @staticmethod
+    def _model_slot(conn, model):
+        if model not in MODELS and conn.execute(
+                "SELECT id FROM rival_poly_contest_model_slots WHERE model=?", (model,)).fetchone() is None:
+            conn.execute("INSERT INTO rival_poly_contest_model_slots(model) VALUES (?) "
+                         "ON CONFLICT DO NOTHING", (model,))
+
+    @staticmethod
+    def _scope_slot(conn, notice, schema, stamp):
+        params = notice.asset, notice.horizon, schema
+        if conn.execute("SELECT test_index FROM rival_poly_contest_scopes "
+                        "WHERE asset=? AND horizon=? AND schema_key=?", params).fetchone() is None:
+            # Atomic on both databases. Racing inserts can waste an index,
+            # which only makes later thresholds more conservative.
+            row = conn.execute("UPDATE rival_poly_contest_markets SET next_scope=next_scope+1 "
+                               "WHERE asset=? AND horizon=? RETURNING next_scope", params[:2]).fetchone()
+            conn.execute("INSERT INTO rival_poly_contest_scopes VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING",
+                         (*params, row["next_scope"], stamp.isoformat()))
 
     def capture(self, notice, forecasts: dict, *, evidence: dict | None = None,
                 now: datetime | None = None) -> bool:
@@ -172,7 +218,9 @@ class Contest:
             ).rowcount
             if not inserted:
                 return False  # no late model additions, even after a restart
+            self._scope_slot(conn, notice, schema, stamp)
             for model, (p, sha) in clean.items():
+                self._model_slot(conn, model)
                 conn.execute("INSERT INTO rival_poly_contest_forecasts VALUES (?,?,?,?)",
                              (notice.slug, model, p, sha))
         return True
@@ -192,107 +240,79 @@ class Contest:
         result["direction"] = bet[0] if bet else "WAIT"
         return result
 
-
-def _beta_fraction(a: float, b: float, x: float) -> float:
-    """Continued fraction for regularized incomplete beta (Student t tail)."""
-    tiny = 1e-300
-    c, d = 1., 1 - (a+b)*x/(a+1)
-    d = 1 / (d if abs(d) > tiny else tiny)
-    value = d
-    for m in range(1, 201):
-        for numerator in (m*(b-m)*x/((a+2*m-1)*(a+2*m)),
-                          -(a+m)*(a+b+m)*x/((a+2*m)*(a+2*m+1))):
-            d = 1 + numerator*d
-            c = 1 + numerator/c
-            d = 1 / (d if abs(d) > tiny else tiny)
-            c = c if abs(c) > tiny else tiny
-            delta = d*c
-            value *= delta
-        if abs(delta-1) < 1e-13:
-            return value
-    return math.nan
+    def display_call(self, slug: str, preferred: str | None) -> dict | None:
+        """Pin the first displayed model so a mid-contract promotion cannot flip it."""
+        self.initialize()
+        with self.store.connect() as conn:
+            conn.execute(
+                "INSERT INTO rival_poly_contest_display(slug,model,qualified) "
+                "SELECT slug,model,CASE WHEN model=? THEN 1 ELSE 0 END "
+                "FROM rival_poly_contest_forecasts WHERE slug=? "
+                "ORDER BY CASE model WHEN ? THEN 0 WHEN ? THEN 1 WHEN ? THEN 2 ELSE 3 END,model "
+                "LIMIT 1 ON CONFLICT(slug) DO NOTHING", (preferred, slug, preferred, FORMULA, BOOK))
+            row = conn.execute("SELECT model,qualified FROM rival_poly_contest_display WHERE slug=?", (slug,)).fetchone()
+        result = self.call(slug, row["model"]) if row else None
+        if result is not None:
+            result["qualified_at_issue"] = bool(row["qualified"])
+        return result
 
 
-def _t_tail(t: float, df: int) -> float:
-    if t <= 0 or df < 1:
-        return 1.
-    x = df / (df + t*t)
-    a, b = df/2, .5
-    if x >= 1:
-        return .5
-    if x == 0:
-        return 0.
-    front = math.exp(math.lgamma(a+b)-math.lgamma(a)-math.lgamma(b)
-                     + a*math.log(x) + b*math.log1p(-x))
-    beta = (front*_beta_fraction(a, b, x)/a if x < (a+1)/(a+b+2)
-            else 1-front*_beta_fraction(b, a, 1-x)/b)
-    return max(0., min(1., .5*beta)) if math.isfinite(beta) else 1.
+def _log_capital(logs: list[float]) -> float:
+    peak = max(logs)
+    return peak + math.log(sum(math.exp(x-peak) for x in logs)/len(logs))
 
 
-def _p_value(diffs: list[float]) -> tuple[float, float, float]:
-    """Daily paired DM-style mean test, Newey-West/Bartlett 3-day bandwidth.
+def _update(logs: list[float], value: float, downside: float) -> None:
+    """Fixed mixture of nonnegative betting supermartingales.
 
-    Daily clustering avoids treating hundreds of nearby contracts as iid.
-    Student-t small-sample reference is approximate under short-memory
-    stationarity, not a distribution-free guarantee. Degenerate data abstain.
+    Under E[value | information before this outcome] <= 0, each factor
+    1 + fraction*value/downside has conditional expectation <= 1. The
+    downside is known at issuance. Mixing capital, not picking the best
+    fraction after outcomes, preserves validity at arbitrary stopping times.
     """
-    n = len(diffs)
-    if n < MIN_DAYS:
-        return sum(diffs)/n if n else 0., 0., 1.
-    mean = sum(diffs)/n
-    residual = [x-mean for x in diffs]
-    var = sum(x*x for x in residual)/n
-    for lag in range(1, 4):
-        cov = sum(residual[i]*residual[i-lag] for i in range(lag, n))/n
-        var += 2*(1-lag/4)*cov
-    se = math.sqrt(max(0., var)/(n-1))
-    return mean, se, _t_tail(mean/se, n-1) if se > 1e-12 else 1.
+    if downside <= 0:
+        return
+    for i, fraction in enumerate(BET_FRACTIONS):
+        logs[i] += math.log1p(fraction*value/downside)
 
 
-def holm(pvalues: dict, alpha: float = ALPHA) -> set:
-    ordered = sorted(pvalues.items(), key=lambda kv: kv[1])
-    passed = set()
-    for rank, (key, p) in enumerate(ordered):
-        if not math.isfinite(p) or not 0 <= p <= alpha/(len(ordered)-rank):
-            break
-        passed.add(key)
-    return passed
+def _test_alpha(model: str, model_slots: dict, scope_index: int) -> float:
+    # Half the lifetime model budget is shared equally by the four declared
+    # algorithms; half is summably reserved for future artifact identities.
+    if model in MODELS:
+        weight = .5/len(MODELS)
+    else:
+        index = model_slots.get(model)
+        if not index:
+            return 0.
+        weight = .5/(index*(index+1))
+    return ALPHA*weight/(len(ASSETS)*len(HORIZONS)*scope_index*(scope_index+1))
 
 
-def batch(now: datetime):
-    number = (now - SETTLEMENT_GRACE - POLICY_START).days // WINDOW_DAYS
-    if number < 1:
-        return None
-    end = POLICY_START + timedelta(days=number*WINDOW_DAYS)
-    return number, end-timedelta(days=WINDOW_DAYS), end
-
-
-def _cohorts(store, start, end):
-    """Bound peak RAM by one market; never fetch raw evidence blobs for scoring."""
-    for asset in ASSETS:
-        for horizon in HORIZONS:
-            params = (asset, horizon, start.isoformat(), end.isoformat(), start.isoformat())
-            with store.connect() as conn:
-                rows = conn.execute(
-                    "SELECT r.slug,r.schema_key,r.issued_at,r.expires_at,r.market_up,r.up_cost,r.down_cost,"
-                    "o.direction,o.observed_at AS outcome_at,o.resolved_at "
-                    "FROM rival_poly_contest_rounds r LEFT JOIN rival_polymarket_ai_outcomes o "
-                    "ON o.slug=r.slug AND o.condition_id=r.condition_id "
-                    "WHERE r.asset=? AND r.horizon=? AND r.expires_at>=? AND r.expires_at<? "
-                    "AND r.issued_at>=? AND r.issued_at<r.expires_at ORDER BY r.issued_at", params,
-                ).fetchall()
-                forecasts = conn.execute(
-                    "SELECT f.slug,f.model,f.probability_up FROM rival_poly_contest_forecasts f "
-                    "JOIN rival_poly_contest_rounds r ON r.slug=f.slug "
-                    "WHERE r.asset=? AND r.horizon=? AND r.expires_at>=? AND r.expires_at<? "
-                    "AND r.issued_at>=?", params,
-                ).fetchall()
-            predictions = {(r["slug"], r["model"]): float(r["probability_up"]) for r in forecasts}
-            grouped = defaultdict(list)
-            for row in rows:
-                grouped[row["schema_key"]].append(row)
-            for schema, cohort in grouped.items():
-                yield (asset, horizon, schema), cohort, predictions
+def _rounds(store, asset, horizon, start, end):
+    """Keyset pages bound RAM, including when months of evidence accumulate."""
+    cursor = start.isoformat(), ""
+    while True:
+        with store.connect() as conn:
+            rows = conn.execute(
+                "SELECT r.slug,r.schema_key,r.opens_at,r.issued_at,r.expires_at,r.market_up,"
+                "r.up_cost,r.down_cost,o.direction,o.observed_at AS outcome_at,o.resolved_at,"
+                "f.model,f.probability_up FROM (SELECT * FROM rival_poly_contest_rounds "
+                "WHERE asset=? AND horizon=? AND issued_at>=? AND issued_at<expires_at "
+                "AND expires_at<=? AND (expires_at>? OR (expires_at=? AND slug>?)) "
+                "ORDER BY expires_at,slug LIMIT 500) r "
+                "LEFT JOIN rival_polymarket_ai_outcomes o ON o.slug=r.slug AND o.condition_id=r.condition_id "
+                "LEFT JOIN rival_poly_contest_forecasts f ON f.slug=r.slug "
+                "ORDER BY r.expires_at,r.slug,f.model",
+                (asset, horizon, start.isoformat(), end.isoformat(), cursor[0], cursor[0], cursor[1]),
+            ).fetchall()
+        if not rows:
+            return
+        for _, group in groupby(rows, key=lambda r: r["slug"]):
+            group = list(group)
+            row = group[0]
+            yield row, {r["model"]: float(r["probability_up"]) for r in group if r["model"] is not None}
+            cursor = row["expires_at"], row["slug"]
 
 
 def league(store, *, now: datetime | None = None) -> dict:
@@ -300,92 +320,116 @@ def league(store, *, now: datetime | None = None) -> dict:
     Contest(store).initialize(now=stamp)
     result = {(a, h): {"models": [], "champion": None, "scopes": {}}
               for a in ASSETS for h in HORIZONS}
-    period = batch(stamp)
-    if period is None:
-        return {"markets": result, "tests": 0, "computed_at": stamp,
-                "window_days": WINDOW_DAYS, "batch": None}
-    number, start, end = period
-    cutoff = end + SETTLEMENT_GRACE
     with store.connect() as conn:
-        enrolled = [r["model"] for r in conn.execute(
-            "SELECT model FROM rival_poly_contest_models WHERE enrolled_at<=? ORDER BY model",
-            (start.isoformat(),)).fetchall()]
-    # Even absent/insufficient models and markets consume a hypothesis slot.
-    tests = {(a, h, "missing", m): 1. for a in ASSETS for h in HORIZONS for m in enrolled}
+        start = datetime.fromisoformat(conn.execute(
+            "SELECT started_at FROM rival_poly_contest_policies WHERE policy=?", (POLICY,)
+        ).fetchone()["started_at"])
+        enrolled = {r["model"]: datetime.fromisoformat(r["enrolled_at"]) for r in conn.execute(
+            "SELECT model,enrolled_at FROM rival_poly_contest_models WHERE enrolled_at<=?",
+            (stamp.isoformat(),)).fetchall()}
+        slots = {r["model"]: int(r["id"]) for r in conn.execute(
+            "SELECT id,model FROM rival_poly_contest_model_slots").fetchall()}
+        scopes = {(r["asset"], int(r["horizon"]), r["schema_key"]): dict(r)
+                  for r in conn.execute("SELECT * FROM rival_poly_contest_scopes").fetchall()}
     stats = {}
-    for (asset, horizon, schema), cohort, predictions in _cohorts(store, start, end):
-        settled = [r for r in cohort if r["direction"] in ("UP", "DOWN")
-                   and r["resolved_at"] >= r["expires_at"] and r["outcome_at"] <= cutoff.isoformat()]
-        eligible = [m for m in enrolled if cohort and sum((r["slug"], m) in predictions for r in settled)/len(cohort) >= MIN_COVERAGE]
-        # Every eligible contender and the price use the identical contract set.
-        common = [r for r in settled if all((r["slug"], m) in predictions for m in eligible)]
-        # Count every expected contract window, including process downtime.
-        # A few conveniently observed contracts cannot stand in for coverage.
-        expected = WINDOW_DAYS*24*60/horizon
-        coverage = min(len(common)/expected, len(common)/len(cohort)) if cohort else 0.
-        for model in enrolled:
-            tests.pop((asset, horizon, "missing", model), None)
-            key = asset, horizon, schema, model
-            daily, gains, profits, trades = defaultdict(list), [], [], 0
-            priced = sum(r["up_cost"] is not None and r["down_cost"] is not None for r in common)
-            if model in eligible:
-                for row in common:
-                    p, m = predictions[row["slug"], model], float(row["market_up"])
+    for asset in ASSETS:
+        for horizon in HORIZONS:
+            for row, predictions in _rounds(store, asset, horizon, start, stamp):
+                schema = row["schema_key"]
+                for model, p in predictions.items():
+                    if model not in enrolled or datetime.fromisoformat(row["issued_at"]) < enrolled[model]:
+                        continue
+                    key = asset, horizon, schema, model
+                    state = stats.setdefault(key, {
+                        "contracts": 0, "trades": 0, "priced": 0, "gain": 0., "profit": 0.,
+                        "brier_logs": [0.]*len(BET_FRACTIONS), "net_logs": [0.]*len(BET_FRACTIONS),
+                        "last_expiry": None, "blocked": None,
+                    })
+                    if state["blocked"]:
+                        continue
+                    # Consume only a chronological resolved prefix. Selecting
+                    # the quickly resolved winners would invalidate the test.
+                    if (row["direction"] not in ("UP", "DOWN") or row["outcome_at"] is None
+                            or row["resolved_at"] is None or row["resolved_at"] < row["expires_at"]
+                            or row["outcome_at"] < row["resolved_at"] or row["outcome_at"] > stamp.isoformat()):
+                        state["blocked"] = "Waiting for an earlier contract settlement"
+                        continue
+                    if state["last_expiry"] and row["opens_at"] < state["last_expiry"]:
+                        state["blocked"] = "Overlapping contracts need review"
+                        continue
+                    m = float(row["market_up"])
                     if not (math.isfinite(p) and math.isfinite(m) and 0 <= p <= 1 and 0 <= m <= 1):
+                        state["blocked"] = "Invalid forecast receipt"
                         continue
                     y = float(row["direction"] == "UP")
                     gain = (m-y)**2 - (p-y)**2
+                    # Exact Brier downside is known from the two probabilities.
+                    # This avoids the unnecessary [-1,1] worst-case range.
+                    downside = -min(m*m-p*p, (1-m)**2-(1-p)**2)
+                    _update(state["brier_logs"], gain, downside)
                     bet = implied_bet(p, row["up_cost"], row["down_cost"])
                     profit = 0.
                     if bet is not None:
                         side, _, cost = bet
-                        profit = float(row["direction"] == side) - cost - STRESS
-                        trades += 1
-                    gains.append(gain)
-                    profits.append(profit)
-                    daily[row["issued_at"][:10]].append((gain, profit))
-            days = sorted(daily)
-            # Include missing days as zeros so adjacent covariance lags remain daily.
-            grid = [(start+timedelta(days=i)).date().isoformat() for i in range(WINDOW_DAYS)]
-            dg = [sum(x[0] for x in daily[d])/len(daily[d]) if daily[d] else 0. for d in grid]
-            dp = [sum(x[1] for x in daily[d])/len(daily[d]) if daily[d] else 0. for d in grid]
-            _, se, p_brier = _p_value(dg)
-            net, _, p_net = _p_value(dp)
-            valid = (len(gains) >= MIN_CONTRACTS and len(days) >= MIN_DAYS
-                     and coverage >= MIN_COVERAGE and trades >= MIN_TRADES
-                     and common and priced/len(common) >= MIN_COVERAGE
-                     and sum(gains) > 0 and net > 0)
-            tests[key] = max(p_brier, p_net) if valid else 1.
-            stats[key] = {"model": model, "label": label(model), "contracts": len(gains),
-                          "days": len(days), "coverage": coverage, "trades": trades,
-                          "improvement": sum(gains)/len(gains) if gains else 0., "se": se,
-                          "net_per_contract": sum(profits)/len(profits) if profits else 0.,
-                          "p": tests[key], "schema": schema}
-    # Sum_{k>=1} 1/(k(k+1)) = 1; restarts/repeated refreshes cannot reset alpha.
-    spent_alpha = ALPHA/(number*(number+1))
-    passed = holm(tests, spent_alpha)
-    for (asset, horizon, schema, model), item in stats.items():
+                        profit = float(row["direction"] == side)-cost-STRESS
+                        _update(state["net_logs"], profit, cost+STRESS)
+                        state["trades"] += 1
+                    state["contracts"] += 1
+                    state["priced"] += row["up_cost"] is not None and row["down_cost"] is not None
+                    state["gain"] += gain
+                    state["profit"] += profit
+                    state["last_expiry"] = row["expires_at"]
+    for (asset, horizon, schema, model), state in stats.items():
+        n = state["contracts"]
+        scope_meta = scopes.get((asset, horizon, schema))
+        since = max(start, enrolled[model], datetime.fromisoformat(scope_meta["started_at"])) if scope_meta else start
+        expected = max(1, int((stamp-since).total_seconds()/(horizon*60))-1)
+        coverage = min(1., n/expected)
+        cost_coverage = state["priced"]/n if n else 0.
+        index = int(scope_meta["test_index"]) if scope_meta else None
+        alpha = _test_alpha(model, slots, index) if index else 0.
+        log_e = min(_log_capital(state["brier_logs"]), _log_capital(state["net_logs"]))
+        fresh = (state["last_expiry"] is not None and stamp-datetime.fromisoformat(
+            state["last_expiry"]) <= timedelta(minutes=max(120, 2*horizon)))
+        valid = (not state["blocked"] and fresh and n >= MIN_CONTRACTS
+                 and state["trades"] >= MIN_TRADES and coverage >= MIN_COVERAGE
+                 and cost_coverage >= MIN_COVERAGE and state["gain"] > 0 and state["profit"] > 0)
+        significant = bool(valid and alpha > 0 and log_e >= -math.log(alpha))
+        item = {"model": model, "label": label(model), "contracts": n,
+                "trades": state["trades"], "coverage": coverage, "cost_coverage": cost_coverage,
+                "improvement": state["gain"]/n if n else 0.,
+                "net_per_contract": state["profit"]/n if n else 0.,
+                "log_e": log_e, "alpha": alpha, "significant": significant,
+                "blocked": state["blocked"], "schema": schema}
         scope = result[asset, horizon]["scopes"].setdefault(schema, {"models": [], "champion": None})
-        item["significant"] = (asset, horizon, schema, model) in passed
         scope["models"].append(item)
         result[asset, horizon]["models"].append(item)
     for entry in result.values():
         for scope in entry["scopes"].values():
-            winners = sorted((x for x in scope["models"] if x["significant"]), key=lambda x: -x["improvement"])
+            scope["models"].sort(key=lambda x: x["model"])
+            winners = sorted((x for x in scope["models"] if x["significant"]),
+                             key=lambda x: (-x["improvement"], x["model"]))
             scope["champion"] = winners[0]["model"] if winners else None
-    return {"markets": result, "tests": len(tests), "window_days": WINDOW_DAYS,
-            "computed_at": stamp, "batch": number, "alpha": spent_alpha,
-            "test_end": end, "valid_until": cutoff+timedelta(days=WINDOW_DAYS)}
+    return {"markets": result, "tests": max(12*len(enrolled), len(stats)), "alpha": ALPHA,
+            "computed_at": stamp, "started_at": start, "policy": POLICY,
+            "valid_until": stamp+timedelta(minutes=20)}
 
 
 def league_text(entry: dict | None, *, asset: str, horizon: int) -> str:
     champion = entry.get("champion") if entry else None
+    models = entry.get("models", []) if entry else []
     if champion:
-        best = next((m for m in entry.get("models", []) if m["model"] == champion), None)
+        best = next((m for m in models if m["model"] == champion), None)
         counts = (f" {best['contracts']:,} matched contracts; {best['trades']:,} paper entries."
                   if best else "")
-        return (f"**{label(champion)}** passed the fixed contest against Polymarket's price "
+        return (f"**{label(champion)}** passed the sequential contest against Polymarket's price "
                 f"and the after-fee stress test on matched contracts.{counts} Paper evidence; fills are unverified.")
-    return (f"**No model beats Polymarket's price here** ({asset} {horizon}m). "
-            "The price remains the benchmark. No model pings until a completed "
-            "prospective test passes; insufficient evidence does not prove the price is optimal.")
+    progress = max(models, key=lambda m: m["contracts"], default=None)
+    detail = (f" Best-covered candidate: {progress['contracts']:,}/{MIN_CONTRACTS} settled comparisons; "
+              f"{progress['trades']:,}/{MIN_TRADES} priced paper entries; "
+              f"{progress['coverage']:.0%} coverage (minimum {MIN_COVERAGE:.0%}). "
+              + (progress.get("blocked") or "The evidence test has not passed.") if progress else
+              " No settled checkpoint comparisons yet.")
+    return (f"**No model beats Polymarket's price here** ({asset} {horizon}m)."
+            f"{detail} Research forecasts remain visible. No fixed day wait; "
+            "alerts begin only after qualification.")

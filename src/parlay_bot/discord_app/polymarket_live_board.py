@@ -223,13 +223,10 @@ def live_polymarket_embed(
     current = board.current if board is not None else None
     valid = matching_call(board, snapshot, asset=asset, horizon=horizon)
     direction = snapshot.direction if valid else "WAIT"
-    # When the per-market contest has been computed and the main model is not
-    # its champion, the headline must not present that model's call as the pick.
     champion = league.get("champion") if league else None
-    outranked = not valid or champion != snapshot.model
-    title = (f"📡 {asset} • {horizon} min | No model beats Polymarket's price"
-             if not champion else
-             f"📡 {asset} • {horizon} min | Polymarket {snapshot.kind if valid else 'AI'} {direction}")
+    outranked = not valid or champion != snapshot.model or snapshot.qualified_at_issue is False
+    status = (f"Research {direction} • unqualified" if outranked else f"Qualified {direction}") if valid else "Forecast pending"
+    title = f"📡 Polymarket • {asset} • {horizon} min | {status}"
     embed = discord.Embed(
         title=title,
         description=(
@@ -237,7 +234,7 @@ def live_polymarket_embed(
             "The first model forecast is frozen; live prices update independently. "
             "Accuracy and profitable edge are not established."
             if valid else "**No current contract-specific AI call.** "
-            + (ai_status or "Waiting for verified contract inputs and available free AI.")
+            + (ai_status or "Waiting for the frozen forecast checkpoint and verified market inputs.")
         ), color=discord.Color.blurple() if valid else discord.Color.orange(),
     )
     quote = board.current_quote if board is not None else None
@@ -250,6 +247,16 @@ def live_polymarket_embed(
         inline=False,
     )
     if current is not None:
+        if not valid:
+            target = current.opens+timedelta(minutes=horizon*.2)
+            embed.add_field(name="Forecast status", value=(
+                f"This contract's forecast checkpoint is <t:{int(target.timestamp())}:R>. "
+                "It needs a fresh order book and model inputs at that time; "
+                "a missed checkpoint is shown as unavailable, never a guessed call."
+                if datetime.now(UTC) <= target+timedelta(seconds=20) else
+                "No frozen checkpoint forecast is available for this contract. "
+                "The next contract gets a separate attempt."
+            ), inline=False)
         embed.add_field(
             name="🎯 Exact contract",
             value=f"[Open verified event]({current.url}) • closes <t:{int(current.closes.timestamp())}:R>",
@@ -278,7 +285,7 @@ def live_polymarket_embed(
                 "Open the listed contract to check its rules."
             )
         embed.add_field(name="Settlement source", value=resolution_text, inline=False)
-    embed.add_field(name="🏆 Best model for this market",
+    embed.add_field(name="🏆 Alert qualification",
                     value=league_text(league, asset=asset, horizon=horizon), inline=False)
     if valid:
         call_label = ("🧠 First model call (frozen) • unqualified model research" if outranked
@@ -769,28 +776,32 @@ class LivePolymarketBoardService:
         entry = self._league_entry(asset, horizon, quote)
         model = entry.get("champion")
         store = getattr(getattr(self.research, "learner", None), "store", None)
-        if model is None:
-            return snapshot
         if store is None or board.current is None:
-            return None
+            return snapshot if model is None else None
         try:
             contest = self.formula.contest if self.formula is not None else Contest(store)
             row = await asyncio.wait_for(asyncio.to_thread(
-                contest.call, board.current.slug, model), timeout=3)
+                contest.display_call, board.current.slug, model), timeout=3)
         except Exception:  # noqa: BLE001 - unavailable champion cannot create a call
             return None
         if row is None or (quote is not None and (
                 row["schema_key"] != settlement_schema(quote) or row["condition_id"] != quote.condition_id)):
             return None
+        research = not row["qualified_at_issue"]
+        p = float(row["probability_up"])
+        direction = ("UP" if p > .5 else "DOWN" if p < .5 else "WAIT") if research else row["direction"]
         return ContractCall(
             slug=row["slug"], asset=asset, horizon=horizon,
             issued_at=datetime.fromisoformat(row["issued_at"]),
-            expires=datetime.fromisoformat(row["expires_at"]), direction=row["direction"],
-            model=model, thesis="Contest-qualified model; first checkpoint call is frozen.",
+            expires=datetime.fromisoformat(row["expires_at"]), direction=direction,
+            model=row["model"], thesis=(
+                f"{p:.1%} UP / {1-p:.1%} DOWN. Frozen research forecast; no verified edge."
+                if research else "Contest-qualified model; first checkpoint call is frozen."),
             risk="Prospective paper evidence; executable fills and future profit are unverified.",
             evidence_sha256=row["evidence_sha256"], kind="model",
-            probability_up=float(row["probability_up"]), settlement_schema=row["schema_key"],
+            probability_up=p, settlement_schema=row["schema_key"],
             condition_id=row["condition_id"],
+            qualified_at_issue=row["qualified_at_issue"],
         )
 
     async def _refresh_league(self) -> None:
@@ -911,6 +922,7 @@ class LivePolymarketBoardService:
         # Every model and every alert path obey the same qualified contest.
         entry = self._league_entry(tracker.asset, tracker.horizon)
         if (entry is None or entry.get("champion") != call.model
+                or call.qualified_at_issue is False
                 or call.direction not in ("UP", "DOWN")
                 or not matching_call(board, call, asset=tracker.asset, horizon=tracker.horizon)
                 or not timedelta(0) <= now - call.issued_at <= timedelta(seconds=60)

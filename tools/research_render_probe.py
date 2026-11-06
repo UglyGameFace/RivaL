@@ -4,18 +4,21 @@ if os.environ.get("RIVAL_PROBE_ASSETS", "BTC") != "BTC":
     print(MARKER + base64.b64encode(gzip.compress(b"{}")).decode()); raise SystemExit(0)
 out = {}
 try:
-    import httpx
     from parlay_bot.config import Settings
-    tok = Settings().discord_token.get_secret_value()
-    h = {"Authorization": f"Bot {tok}", "User-Agent": "RivaL (probe, 1)"}
-    r = httpx.get("https://discord.com/api/v10/channels/1568264700247150684", headers=h, timeout=10)
-    out["status"] = r.status_code
-    if r.status_code == 200:
-        d = r.json(); out["channel"] = {"type": d.get("type"), "name": d.get("name"), "guild_id": d.get("guild_id")}
-        me = httpx.get("https://discord.com/api/v10/users/@me", headers=h, timeout=10).json()
-        out["bot_id"] = me.get("id")
-    else:
-        out["body"] = r.text[:200]
+    from parlay_bot.storage.hot import PostgresHotStore
+    store = PostgresHotStore(Settings().rival_database_url.get_secret_value())
+    with store.connect() as conn:
+        rows = conn.execute("""SELECT asset, horizon_minutes h,
+              CASE WHEN family LIKE 'boosted_%' THEN 'boosted' WHEN family LIKE 'historical_%' THEN 'historical'
+                   WHEN family LIKE 'pooled_%' THEN 'pooled' WHEN family LIKE 'flow_%' THEN 'flow'
+                   WHEN family LIKE 'calib_%' THEN 'calib' ELSE family END fam,
+              COUNT(*) n, AVG(model_brier) m, AVG(incumbent_brier) i, AVG(baseline_brier) b,
+              AVG(CASE WHEN (probability_up>0.5)=(outcome_up=1) THEN 1.0 ELSE 0.0 END) hit
+            FROM rival_model_shadow_forecasts
+            WHERE settled_at IS NOT NULL AND issued_at>='2026-10-30' AND model_brier IS NOT NULL
+            GROUP BY 1,2,3 ORDER BY 1,2,5""").fetchall()
+        out["rows"] = [[r["asset"], int(r["h"]), r["fam"], int(r["n"]), round(float(r["m"]), 4), round(float(r["i"]), 4), round(float(r["b"]), 4), round(float(r["hit"]), 3)] for r in rows]
+    store.close()
 except Exception as exc:  # noqa: BLE001
-    out["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+    out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
 print(MARKER + base64.b64encode(gzip.compress(json.dumps(out, default=str).encode())).decode())

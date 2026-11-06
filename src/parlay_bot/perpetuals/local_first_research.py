@@ -5,6 +5,7 @@ No third-party AI transport, free-tier quota, token budget or daily cooldown.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import random
@@ -278,7 +279,7 @@ class LocalFirstResearch:
 
     async def propose_feature_hypothesis(
         self, *, asset: str, venues: tuple[str, ...],
-        busy_retry: bool = True,
+        busy_retry: bool = True, prior_trials: list[dict] | None = None,
     ) -> dict:
         """Use the private CPU under the existing lock, without API quotas.
 
@@ -289,16 +290,24 @@ class LocalFirstResearch:
         if not self.available:
             raise ResearchUnavailable("Private RivaL Intelligence token unavailable")
         return await _with_busy_retry(
-            lambda: self._propose_once(asset=asset, venues=venues),
+            lambda: self._propose_once(asset=asset, venues=venues,
+                                       prior_trials=prior_trials),
             retry=busy_retry, label="hypothesis",
         )
 
-    async def _propose_once(self, *, asset: str, venues: tuple[str, ...]) -> dict:
+    async def _propose_once(self, *, asset: str, venues: tuple[str, ...],
+                            prior_trials: list[dict] | None = None) -> dict:
         async with self._lock:
             evidence, digest = await asyncio.to_thread(
                 build_evidence, self.market, asset=asset, venues=venues,
                 horizon_minutes=5,
             )
+            if prior_trials:
+                # Earlier ideas' real offline scores. Part of the evidence, so
+                # its SHA covers what the model was shown.
+                evidence = {**evidence, "prior_trials": prior_trials[:12]}
+                digest = hashlib.sha256(json.dumps(
+                    evidence, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
             if (len(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode())
                     > MAX_LOCAL_EVIDENCE_BYTES):
                 raise ResearchUnavailable("Verified feature evidence is oversized")

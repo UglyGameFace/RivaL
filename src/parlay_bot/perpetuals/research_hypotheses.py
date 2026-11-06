@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 from datetime import UTC, datetime, timedelta
 
@@ -170,8 +171,13 @@ class FeatureHypothesisLab:
             result = None
         else:
             try:
+                # What earlier proposals scored on real data, so the next idea
+                # can avoid repeating ones that already failed.
+                prior = await asyncio.to_thread(trial_summary, self.store, asset=asset,
+                                                now=stamp)
                 result = await self.ai.propose_feature_hypothesis(
                     asset=asset, venues=self.venues,
+                    **({"prior_trials": prior} if prior else {}),
                 )
                 status = "proposed"
             except (InsufficientEvidence, ResearchUnavailable, ValueError):
@@ -299,3 +305,93 @@ def hypothesis_attempt_status(store, *, now: datetime | None = None) -> dict:
         "status": "recorded" if latest else "no_recent_attempts",
         "latest_by_asset": latest,
     }
+
+
+TRIALS_SCHEMA = """CREATE TABLE IF NOT EXISTS rival_llm_hypothesis_trials (
+    proposal_sha256 TEXT NOT NULL, venue TEXT NOT NULL, contract TEXT NOT NULL,
+    horizon_minutes INTEGER NOT NULL, asset TEXT NOT NULL, hypothesis TEXT NOT NULL,
+    feature_indices_json TEXT NOT NULL, baseline_brier DOUBLE PRECISION NOT NULL,
+    llm_brier DOUBLE PRECISION NOT NULL, validation_count INTEGER NOT NULL,
+    report_sha256 TEXT NOT NULL, recorded_at TEXT NOT NULL,
+    PRIMARY KEY (proposal_sha256, venue, contract, horizon_minutes))"""
+
+
+def record_trials(store, trials: list, *, report_sha256: str,
+                  now: datetime | None = None) -> int:
+    """Save offline experiment results for proposals RivaL actually made.
+
+    Every trial must name a stored proposal (its record SHA) whose asset and
+    hypothesis match; anything else is skipped, never invented. Results are
+    validation-period Brier scores only (the sealed holdout is not involved).
+    """
+    if not re.fullmatch(r"[0-9a-f]{64}", str(report_sha256)):
+        raise ValueError("report_sha256 must be a SHA-256 hex digest")
+    stamp = (now or datetime.now(UTC)).astimezone(UTC).isoformat()
+    saved = 0
+    with store.connect() as conn:
+        conn.execute(TRIALS_SCHEMA)
+        for trial in trials[:200]:
+            try:
+                sha = str(trial["proposal_sha256"])
+                horizon = int(trial["horizon_minutes"])
+                base = float(trial["baseline_validation_brier"])
+                llm = float(trial["llm_mask_validation_brier"])
+                count = int(trial["validation_count"])
+                indices = [int(i) for i in trial["feature_indices"]]
+                venue, contract = str(trial["venue"]), str(trial["contract"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if (not re.fullmatch(r"[0-9a-f]{64}", sha) or horizon not in (5, 15, 60)
+                    or not all(math.isfinite(x) and 0 <= x <= 1 for x in (base, llm))
+                    or count <= 0 or not re.fullmatch(r"[a-z0-9_-]{2,24}", venue)
+                    or not re.fullmatch(r"[A-Za-z0-9_-]{2,40}", contract)):
+                continue
+            proposal = conn.execute(
+                """SELECT asset, hypothesis FROM rival_llm_feature_hypotheses
+                   WHERE record_sha256=? AND status='proposed'""", (sha,),
+            ).fetchone()
+            if (proposal is None or proposal["hypothesis"] != trial.get("hypothesis")
+                    or proposal["asset"] != trial.get("asset")):
+                continue
+            row = conn.execute(
+                """INSERT INTO rival_llm_hypothesis_trials
+                   (proposal_sha256,venue,contract,horizon_minutes,asset,hypothesis,
+                    feature_indices_json,baseline_brier,llm_brier,validation_count,
+                    report_sha256,recorded_at)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                (sha, venue, contract, horizon, proposal["asset"], proposal["hypothesis"],
+                 json.dumps(indices, separators=(",", ":")), base, llm, count,
+                 report_sha256, stamp),
+            )
+            saved += int(row.rowcount == 1)
+    return saved
+
+
+def trial_summary(store, *, asset: str, now: datetime | None = None,
+                  days: int = 60) -> list[dict]:
+    """Per idea: how many real tests, how many beat the baseline, mean change.
+
+    ``mean_brier_gain`` is baseline minus idea on the validation period:
+    positive means the idea scored better. Bounded to 12 ideas.
+    """
+    since = ((now or datetime.now(UTC)).astimezone(UTC) - timedelta(days=days)).isoformat()
+    try:
+        with store.connect() as conn:
+            conn.execute(TRIALS_SCHEMA)
+            rows = conn.execute(
+                """SELECT hypothesis, feature_indices_json, COUNT(*) AS tests,
+                          SUM(CASE WHEN baseline_brier > llm_brier THEN 1 ELSE 0 END) AS better,
+                          AVG(baseline_brier - llm_brier) AS gain
+                   FROM rival_llm_hypothesis_trials
+                   WHERE asset=? AND recorded_at>=?
+                   GROUP BY hypothesis, feature_indices_json
+                   ORDER BY COUNT(*) DESC, hypothesis LIMIT 12""",
+                (asset, since),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - feedback is optional; never blocks proposals
+        _LOG.warning("RivaL hypothesis trial summary unavailable", exc_info=True)
+        return []
+    return [{"hypothesis": str(r["hypothesis"]),
+             "feature_indices": json.loads(r["feature_indices_json"]),
+             "tests": int(r["tests"]), "better": int(r["better"]),
+             "mean_brier_gain": round(float(r["gain"]), 6)} for r in rows]

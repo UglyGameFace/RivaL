@@ -295,6 +295,8 @@ def test_live_market_and_model_predictions_are_clearly_separate():
     assert "UP $0.61" in full and "DOWN $0.45" in full
     assert "hyperliquid" not in full and "59.0%" not in full
     assert next_window.slug in full
+    assert "Next contract • forecast pending" in full
+    assert "WAIT / not issued" in full
     assert "First model call frozen" in embed.footer.text
 
 

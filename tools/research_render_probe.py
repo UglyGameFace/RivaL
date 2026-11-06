@@ -1,15 +1,20 @@
-import base64, gzip, json, os, re, time, subprocess
+import base64, gzip, json
 MARKER = "RIVAL_RENDER_PROBE="
 out = {}
 try:
-    st = open("/proc/1/status").read()
-    out["rss_mb"] = int(re.search(r"VmRSS:\s+(\d+)", st).group(1)) // 1024
-    boot = float(open("/proc/1/stat").read().split()[21]) / os.sysconf("SC_CLK_TCK")
-    up = float(open("/proc/uptime").read().split()[0])
-    out["bot_running_minutes"] = round((up - boot) / 60, 1)
-    src = open("src/parlay_bot/research/source_native.py").read()
-    out["gate_fix_present"] = "gatebulk" in src
-    out["grading_fix_present"] = "f.issued_at<=c.issued_at" in open("src/parlay_bot/perpetuals/intelligence.py").read()
+    from parlay_bot.config import Settings
+    from parlay_bot.storage.hot import PostgresHotStore
+    store = PostgresHotStore(Settings().rival_database_url.get_secret_value())
+    with store.connect() as conn:
+        rows = conn.execute("""SELECT horizon, resolution_source, COUNT(*) AS n, MIN(observed_at) AS first,
+                               MAX(observed_at) AS last FROM rival_polymarket_observations
+                               GROUP BY horizon, resolution_source ORDER BY horizon, n DESC""").fetchall()
+        out["sources"] = [[int(r["horizon"]), str(r["resolution_source"])[:120], int(r["n"]),
+                           str(r["first"])[:16], str(r["last"])[:16]] for r in rows]
+        sample = conn.execute("""SELECT horizon, evidence_json FROM rival_polymarket_observations
+                                 WHERE horizon IN (5,15) ORDER BY observed_at DESC LIMIT 2""").fetchall()
+        out["rules_sample"] = [[int(r["horizon"]), str(json.loads(r["evidence_json"]).get("rules", ""))[:600]] for r in sample]
+    store.close()
 except Exception as exc:  # noqa: BLE001
     out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
-print(MARKER + base64.b64encode(gzip.compress(json.dumps(out).encode())).decode())
+print(MARKER + base64.b64encode(gzip.compress(json.dumps(out, default=str).encode())).decode())

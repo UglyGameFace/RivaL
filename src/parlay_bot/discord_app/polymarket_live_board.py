@@ -29,6 +29,7 @@ from parlay_bot.perpetuals.early_call import (
     early_call_record,
     early_call_text,
 )
+from parlay_bot.perpetuals.polymarket_formula_test import formula_record, formula_text
 from parlay_bot.perpetuals.polymarket_research import ContractCall, PolymarketResearch
 from parlay_bot.storage.hot import RelationalHotStore
 
@@ -224,6 +225,7 @@ def matching_call(board, call, *, asset: str, horizon: int) -> bool:
 def live_polymarket_embed(
     board: PolymarketWindowBoard | None, snapshot: ContractCall | None, *,
     asset: str, horizon: int, ai_status: str | None = None,
+    formula: dict | None = None,
 ) -> discord.Embed:
     current = board.current if board is not None else None
     valid = matching_call(board, snapshot, asset=asset, horizon=horizon)
@@ -288,6 +290,15 @@ def live_polymarket_embed(
         embed.add_field(name="Research limitation", value=snapshot.risk, inline=False)
         if ai_status:
             embed.add_field(name="AI refresh", value=ai_status, inline=False)
+    if formula is not None and current is not None and formula.get("slug") == current.slug:
+        chance = formula["chance_up"]
+        embed.add_field(name="📐 Price formula (testing)", value=(
+            f"**{chance:.0%} UP / {1 - chance:.0%} DOWN** from Coinbase's live price vs. the "
+            f"open, time left and recent volatility "
+            f"(<t:{int(formula['at'].timestamp())}:R>). Polymarket: UP "
+            f"${formula['up_ask']:.2f} • DOWN ${formula['down_ask']:.2f}. "
+            "Locked test: not a proven edge."
+        ), inline=False)
     if board is not None and board.next_window is not None:
         next_window = board.next_window
         embed.add_field(name="⏭️ Next contract • forecast pending", value=(
@@ -396,6 +407,8 @@ class LivePolymarketBoardService:
         # Start-of-contract call test: (asset, horizon) -> (computed_at, record).
         self._early: dict[tuple[str, int], tuple[datetime, dict]] = {}
         self._early_pinged: dict[str, str] = {}
+        # Optional: the price-formula test (set by the bot) for the card line.
+        self.formula = None
 
     def peek(self, asset: str, horizon: int) -> tuple[PolymarketWindowBoard, ContractCall | None] | None:
         saved = self._live_cache.get((asset, horizon))
@@ -531,8 +544,13 @@ class LivePolymarketBoardService:
                 # showing the stored call instead of falling back to WAIT.
                 snapshot = self.research.peek(board.current.slug)
             self._live_cache[(asset, horizon)] = (datetime.now(UTC), board, snapshot)
+        reading = None
+        if self.formula is not None and board is not None and board.current is not None:
+            latest = self.formula.latest.get(board.current.slug)
+            if latest is not None and datetime.now(UTC) - latest["at"] <= timedelta(seconds=30):
+                reading = latest
         embed = live_polymarket_embed(
-            board, snapshot, asset=asset, horizon=horizon,
+            board, snapshot, asset=asset, horizon=horizon, formula=reading,
             ai_status=(self.research.refresh_note(board.current.slug) if snapshot is not None
                        else self.research.status(board.current.slug)
                        if self.research is not None and board is not None and board.current is not None else None),
@@ -578,9 +596,11 @@ class LivePolymarketBoardService:
                               "🔕 Pings OFF: the card still updates, but no new messages.")
                 elif action == "record":
                     early = await self._early_record(tracker.asset, tracker.horizon)
+                    formula_line = await self._formula_line(tracker.asset, tracker.horizon)
                     notice = (f"**{tracker.asset} {tracker.horizon}m on Polymarket**\n"
                               + await self._record_line(tracker.asset, tracker.horizon)
                               + ("\n" + early_call_text(early) if early else "")
+                              + ("\n" + formula_line if formula_line else "")
                               + "\nFor your own next-calls scorecard: /rival → Bot Performance "
                               "→ Track Next Predictions.")
                 else:
@@ -931,3 +951,13 @@ class LivePolymarketBoardService:
         except (discord.HTTPException, TimeoutError) as exc:
             _LOG.warning("Early call ping failed user=%s reason=%s",
                          tracker.user_id, type(exc).__name__)
+
+    async def _formula_line(self, asset: str, horizon: int) -> str | None:
+        if self.formula is None:
+            return None
+        try:
+            record = await asyncio.wait_for(asyncio.to_thread(
+                formula_record, self.formula.store, asset=asset, horizon=horizon), timeout=5)
+        except Exception:  # noqa: BLE001 - locked unless proven
+            return None
+        return formula_text(record)

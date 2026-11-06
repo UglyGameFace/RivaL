@@ -414,9 +414,10 @@ class LivePolymarketBoardService:
         return embed, digest
 
     def call_changes(self, board) -> list:
-        if self.research is None or board is None or board.current is None:
+        changes = getattr(self.research, "changes", None)
+        if not callable(changes) or board is None or board.current is None:
             return []
-        return self.research.changes(board.current.slug)
+        return changes(board.current.slug)
 
     async def _alert_change(self, tracker, board, snapshot, changes) -> None:
         """A NEW DM (edits don't notify) when the call flips mid-contract."""

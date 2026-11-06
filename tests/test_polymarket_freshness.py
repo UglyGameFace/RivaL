@@ -39,7 +39,7 @@ def source(monkeypatch):
                 "endDate": (start + timedelta(minutes=5)).isoformat(),
                 "markets": [{"closed": False, "active": True,
                              "enableOrderBook": True, "acceptingOrders": True,
-                             "outcomes": '["Up","Down"]', "conditionId": CONDITION,
+                             "resolutionSource": f"https://data.chain.link/streams/{slug.split('-')[0]}-usd-twap-60s-streams", "description": "Resolves on the Chainlink 60-second TWAP data stream.", "outcomes": '["Up","Down"]', "conditionId": CONDITION,
                              "clobTokenIds": json.dumps(TOKENS)}],
             }
             controls["mutate_event"](event)

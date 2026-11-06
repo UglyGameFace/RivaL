@@ -23,7 +23,11 @@ def build_cold_archive_runtime(
     *,
     store: RelationalHotStore | None = None,
 ) -> ColdArchiveRuntime | None:
-    """Build the archive runtime only when explicitly enabled."""
+    """Build the archive runtime when enabled (explicitly, or by the bot's
+    autostart when Drive is configured and the switch is unset).
+
+    Raises RuntimeError on a misconfiguration; the bot catches it and runs
+    without the archive."""
 
     if settings.rival_perp_archive_enabled and not settings.rival_archive_enabled:
         raise RuntimeError(

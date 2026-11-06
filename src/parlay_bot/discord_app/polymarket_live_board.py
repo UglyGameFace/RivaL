@@ -223,8 +223,12 @@ def live_polymarket_embed(
             embed.add_field(name="AI refresh", value=ai_status, inline=False)
     if board is not None and board.next_window is not None:
         next_window = board.next_window
-        embed.add_field(name="⏭️ Next verified contract", value=(
-            f"[Next event]({next_window.url}) • opens <t:{int(next_window.opens.timestamp())}:R>"
+        embed.add_field(name="⏭️ Next contract • forecast pending", value=(
+            f"[Next event]({next_window.url}) • opens <t:{int(next_window.opens.timestamp())}:R>\n"
+            "Next model call: **WAIT / not issued**. The current contract's "
+            "forecast is not reused for the next contract. A separate frozen "
+            "forecast appears here when that contract opens and its verified "
+            "order book is available."
         ), inline=False)
     embed.set_footer(text="Live market quotes • First model call frozen • No orders")
     return embed

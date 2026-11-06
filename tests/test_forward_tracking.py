@@ -140,6 +140,15 @@ async def test_tracking_controls_are_available_without_triggering_sessions(learn
         ids = {child.custom_id: child for child in panel.children}
         assert "rival:research:track-start" in ids
         assert len(ids["rival:research:track-start"].options) == 18
+        # Polymarket is the default platform; the exchange picker appears
+        # only after switching to exchange futures.
+        assert ids["rival:research:track-platform"].label == "Platform: Polymarket"
+        assert "rival:research:track-venue" not in ids
+        polymarket = await panel.render()
+        assert "Platform: Polymarket" in polymarket.fields[-1].value
+        panel.track_platform = "exchange"
+        panel._rebuild()
+        ids = {child.custom_id: child for child in panel.children}
         assert "rival:research:track-venue" in ids
         assert tracker.report(owner_id=42, asset="BTC", venue="hyperliquid")[
             "status"] == "not_started"

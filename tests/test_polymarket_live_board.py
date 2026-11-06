@@ -98,6 +98,11 @@ async def test_auto_tracking_persists_sends_a_fresh_card_and_stops(tmp_path, mon
         ok, message = await service.start(user, asset="BTC", horizon=5)
         assert ok and "Auto-tracking BTC" in message
         channel.send.assert_awaited_once()
+        assert channel.send.await_args.kwargs["view"] is service.dm_view
+        assert service.dm_view.timeout is None
+        assert {button.custom_id for button in service.dm_view.children} == {
+            "rival:poly:dm:refresh", "rival:poly:dm:stop",
+        }
         tracker = store.get(str(user.id))
         assert tracker is not None
         assert tracker.message_id == "901"
@@ -113,6 +118,7 @@ async def test_auto_tracking_persists_sends_a_fresh_card_and_stops(tmp_path, mon
         assert channel.send.await_count == 2
         assert store.get(str(user.id)).message_id == "902"
         assert "moved to a newer message" in edited.await_args.kwargs["embed"].description
+        assert edited.await_args.kwargs["view"] is None
         edited.reset_mock()
         assert store.get(str(user.id)).asset == "XRP"
 
@@ -145,10 +151,10 @@ async def test_auto_tracking_persists_sends_a_fresh_card_and_stops(tmp_path, mon
 
 
 @pytest.mark.asyncio
-async def test_auto_tracker_disallows_unsupported_window_and_stops_deleted_card(
+async def test_deleted_panel_is_recreated_and_keeps_tracking(
     tmp_path, monkeypatch,
 ):
-    hot, store, service, _channel, user, _edited = _setup(tmp_path)
+    hot, store, service, channel, user, _edited = _setup(tmp_path)
     try:
         ok, _message = await service.start(user, asset="XRP", horizon=60)
         assert not ok and store.active() == []
@@ -167,14 +173,88 @@ async def test_auto_tracker_disallows_unsupported_window_and_stops_deleted_card(
             async def edit(self, **_kw):
                 raise discord.NotFound(
                     SimpleNamespace(status=404, reason="Not Found"),
-                    "Unknown Message",
+                    {"code": 10008, "message": "Unknown Message"},
                 )
 
-        service.bot.get_partial_messageable = lambda _id: SimpleNamespace(
-            get_partial_message=lambda _id: MissingMessage(),
-        )
+        channel.get_partial_message = lambda _id: MissingMessage()
+        channel.send.return_value = SimpleNamespace(id=902)
+        assert await service.cycle() == 1
+        assert store.get(str(user.id)).message_id == "902"
+        assert store.get(str(user.id)).fingerprint == "b"
+        assert channel.send.await_count == 2
+        assert channel.send.await_args.kwargs["view"] is service.dm_view
         assert await service.cycle() == 0
-        assert store.active() == []
+    finally:
+        hot.close()
+
+
+@pytest.mark.asyncio
+async def test_unknown_dm_destination_does_not_disable_tracking(tmp_path, monkeypatch):
+    hot, store, service, channel, user, _edited = _setup(tmp_path)
+    try:
+        monkeypatch.setattr(
+            service, "_observation",
+            AsyncMock(return_value=(discord.Embed(title="Current"), "a")),
+        )
+        ok, _ = await service.start(user, asset="BTC", horizon=5)
+        assert ok
+        monkeypatch.setattr(
+            service, "_observation",
+            AsyncMock(return_value=(discord.Embed(title="Next"), "b")),
+        )
+
+        class MissingChannel:
+            async def edit(self, **_kw):
+                raise discord.NotFound(
+                    SimpleNamespace(status=404, reason="Not Found"),
+                    {"code": 10003, "message": "Unknown Channel"},
+                )
+
+        channel.get_partial_message = lambda _id: MissingChannel()
+        assert await service.cycle() == 0
+        assert store.get(str(user.id)).message_id == "901"
+        channel.send.assert_awaited_once()  # never publish into unknown destination
+    finally:
+        hot.close()
+
+
+@pytest.mark.asyncio
+async def test_dm_panel_actions_authorized_to_current_card(tmp_path, monkeypatch):
+    hot, store, service, _channel, user, edited = _setup(tmp_path)
+    try:
+        monkeypatch.setattr(
+            service, "_observation",
+            AsyncMock(return_value=(discord.Embed(title="Current"), "a")),
+        )
+        ok, _ = await service.start(user, asset="BTC", horizon=5)
+        assert ok
+        response = SimpleNamespace(defer=AsyncMock())
+        followup = SimpleNamespace(send=AsyncMock())
+        interaction = SimpleNamespace(
+            user=user, message=SimpleNamespace(id=901), channel_id=555,
+            response=response, followup=followup,
+        )
+        await service.handle_dm_action(interaction, "refresh")
+        response.defer.assert_awaited_once()
+        followup.send.assert_awaited_once()
+        assert "refreshed" in followup.send.await_args.args[0]
+        assert edited.await_args.kwargs["view"] is service.dm_view
+
+        # Old panels and another channel cannot stop an active tracker.
+        assert not await service.stop(user.id, expected_message_id="902",
+                                      expected_channel_id="555")
+        assert not await service.stop(user.id, expected_message_id="901",
+                                      expected_channel_id="666")
+        assert store.get(str(user.id)) is not None
+
+        interaction.message.id = 902
+        await service.handle_dm_action(interaction, "stop")
+        assert "older panel" in followup.send.await_args.args[0]
+        assert store.get(str(user.id)) is not None
+        interaction.message.id = 901
+        await service.handle_dm_action(interaction, "stop")
+        assert store.get(str(user.id)) is None
+        assert edited.await_args.kwargs["view"] is None
     finally:
         hot.close()
 
@@ -215,6 +295,8 @@ def test_live_market_and_model_predictions_are_clearly_separate():
     assert "UP $0.61" in full and "DOWN $0.45" in full
     assert "hyperliquid" not in full and "59.0%" not in full
     assert next_window.slug in full
+    assert "Next contract • forecast pending" in full
+    assert "WAIT / not issued" in full
     assert "First model call frozen" in embed.footer.text
 
 

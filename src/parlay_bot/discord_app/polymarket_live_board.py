@@ -223,11 +223,41 @@ def live_polymarket_embed(
             embed.add_field(name="AI refresh", value=ai_status, inline=False)
     if board is not None and board.next_window is not None:
         next_window = board.next_window
-        embed.add_field(name="⏭️ Next verified contract", value=(
-            f"[Next event]({next_window.url}) • opens <t:{int(next_window.opens.timestamp())}:R>"
+        embed.add_field(name="⏭️ Next contract • forecast pending", value=(
+            f"[Next event]({next_window.url}) • opens <t:{int(next_window.opens.timestamp())}:R>\n"
+            "Next model call: **WAIT / not issued**. The current contract's "
+            "forecast is not reused for the next contract. A separate frozen "
+            "forecast appears here when that contract opens and its verified "
+            "order book is available."
         ), inline=False)
     embed.set_footer(text="Live market quotes • First model call frozen • No orders")
     return embed
+
+
+class LivePolymarketDMView(discord.ui.View):
+    """Restart-persistent DM controls; authorize against the active tracker."""
+
+    def __init__(self, service: LivePolymarketBoardService) -> None:
+        super().__init__(timeout=None)
+        self.service = service
+
+    @discord.ui.button(
+        label="Refresh now", emoji="🔄",
+        style=discord.ButtonStyle.secondary, custom_id="rival:poly:dm:refresh",
+    )
+    async def refresh_button(
+        self, interaction: discord.Interaction, _button: discord.ui.Button,
+    ) -> None:
+        await self.service.handle_dm_action(interaction, "refresh")
+
+    @discord.ui.button(
+        label="Stop tracking", emoji="🔕",
+        style=discord.ButtonStyle.danger, custom_id="rival:poly:dm:stop",
+    )
+    async def stop_button(
+        self, interaction: discord.Interaction, _button: discord.ui.Button,
+    ) -> None:
+        await self.service.handle_dm_action(interaction, "stop")
 
 
 class LivePolymarketBoardService:
@@ -242,6 +272,7 @@ class LivePolymarketBoardService:
         self.market = market
         self.research = research
         self._closed = False
+        self.dm_view = LivePolymarketDMView(self)
         self._lock = asyncio.Lock()
         self._cycle_lock = asyncio.Lock()
         self._user_locks: dict[str, asyncio.Lock] = {}
@@ -388,9 +419,58 @@ class LivePolymarketBoardService:
         )
         # No live clock in the fingerprint: unchanged markets never spam edits.
         digest = hashlib.sha256(
-            str(embed.to_dict()).encode("utf-8"),
+            ("dm-controls-v1|" + str(embed.to_dict())).encode("utf-8"),
         ).hexdigest()
         return embed, digest
+
+    async def handle_dm_action(
+        self, interaction: discord.Interaction, action: str,
+    ) -> None:
+        """Acknowledge quickly and authorize by user, channel, and current card."""
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        message = interaction.message
+        message_id = str(message.id) if message is not None else ""
+        channel_id = str(interaction.channel_id)
+        user_id = str(interaction.user.id)
+        try:
+            if action == "stop":
+                stopped = await asyncio.wait_for(
+                    self.stop(int(user_id), expected_message_id=message_id,
+                              expected_channel_id=channel_id), timeout=8,
+                )
+                notice = ("Tracking stopped. Your DM card is now inactive."
+                          if stopped else "This is an older panel. Open /rival → Live Panel.")
+            elif action == "refresh":
+                updated = await asyncio.wait_for(
+                    self.refresh_dm(user_id, channel_id, message_id), timeout=13,
+                )
+                notice = ("Live panel refreshed." if updated
+                          else "This is an older or inactive panel. Use /rival → Live Panel.")
+            else:
+                notice = "Unsupported panel action."
+        except (TimeoutError, discord.HTTPException):
+            _LOG.warning("RivaL live DM control failed action=%s user=%s",
+                         action, user_id)
+            notice = "Live panel action unavailable. The next automatic update will retry."
+        await interaction.followup.send(notice, ephemeral=True)
+
+    async def refresh_dm(
+        self, user_id: str, channel_id: str, message_id: str,
+    ) -> bool:
+        async with self._user_locks.setdefault(user_id, asyncio.Lock()):
+            tracker = await asyncio.to_thread(self.store.get, user_id)
+            if (tracker is None or tracker.channel_id != channel_id
+                    or tracker.message_id != message_id):
+                return False
+            embed, fingerprint = await self._observation(tracker.asset, tracker.horizon)
+            channel = self.bot.get_partial_messageable(int(channel_id))
+            await asyncio.wait_for(
+                channel.get_partial_message(int(message_id)).edit(
+                    embed=embed, view=self.dm_view,
+                ), timeout=5,
+            )
+            await asyncio.to_thread(self.store.changed, tracker, fingerprint)
+            return True
 
     async def start(self, user: discord.abc.User, *,
                     asset: str, horizon: int) -> tuple[bool, str]:
@@ -415,7 +495,7 @@ class LivePolymarketBoardService:
                 # the panel to the bottom of the DM without retaining stale
                 # panels or sending mid-contract flip notifications.
                 sent = await asyncio.wait_for(
-                    channel.send(embed=embed), timeout=5,
+                    channel.send(embed=embed, view=self.dm_view), timeout=5,
                 )
                 message_id = str(sent.id)
                 if previous is not None and previous.message_id != message_id:
@@ -426,7 +506,7 @@ class LivePolymarketBoardService:
                                 embed=discord.Embed(
                                     description="This card moved to a newer message below.",
                                     color=discord.Color.dark_grey(),
-                                )), timeout=5,
+                                ), view=None), timeout=5,
                         )
                     except (TimeoutError, discord.HTTPException):
                         _LOG.info("Old Polymarket tracker card could not be retired")
@@ -449,9 +529,16 @@ class LivePolymarketBoardService:
                 "frozen model call; no flip-alert DMs."
             )
 
-    async def stop(self, user_id: int) -> bool:
+    async def stop(
+        self, user_id: int, *, expected_message_id: str | None = None,
+        expected_channel_id: str | None = None,
+    ) -> bool:
         async with self._user_locks.setdefault(str(user_id), asyncio.Lock()):
             previous = await asyncio.to_thread(self.store.get, str(user_id))
+            if (expected_message_id is not None and
+                    (previous is None or previous.message_id != expected_message_id
+                     or previous.channel_id != expected_channel_id)):
+                return False
             ended = await asyncio.to_thread(self.store.stop, str(user_id))
             if previous is not None and ended:
                 try:
@@ -466,7 +553,7 @@ class LivePolymarketBoardService:
                             description="This card is no longer updating. "
                                         "Use /rival → Live Mode to restart.",
                             color=discord.Color.orange(),
-                        )), timeout=5,
+                        ), view=None), timeout=5,
                     )
                 except (TimeoutError, discord.HTTPException):
                     _LOG.info("Stopped tracker; original DM could not be edited")
@@ -497,11 +584,38 @@ class LivePolymarketBoardService:
                     try:
                         channel = self.bot.get_partial_messageable(int(tracker.channel_id))
                         await asyncio.wait_for(
-                            channel.get_partial_message(int(tracker.message_id)).edit(embed=embed),
-                            timeout=5,
+                            channel.get_partial_message(int(tracker.message_id)).edit(
+                                embed=embed, view=self.dm_view,
+                            ), timeout=5,
                         )
-                    except discord.NotFound:
-                        await asyncio.to_thread(self.store.stop, tracker.user_id)
+                    except discord.NotFound as exc:
+                        if exc.code != 10008:
+                            # Unknown channel, not an erased message: do not
+                            # send into an unverified destination or opt out.
+                            _LOG.warning("Live Polymarket DM destination missing user=%s code=%s",
+                                         tracker.user_id, exc.code)
+                            return 0
+                        try:
+                            # A deleted card should not silently disable tracking.
+                            # This user lock also prevents Stop/re-target races.
+                            sent = await asyncio.wait_for(
+                                channel.send(embed=embed, view=self.dm_view), timeout=5,
+                            )
+                            await asyncio.to_thread(
+                                self.store.save,
+                                LivePolymarketTracker(
+                                    user_id=tracker.user_id, asset=tracker.asset,
+                                    horizon=tracker.horizon, channel_id=tracker.channel_id,
+                                    message_id=str(sent.id), fingerprint=fingerprint,
+                                ),
+                            )
+                            _LOG.info("Recovered deleted live Polymarket DM panel user=%s",
+                                      tracker.user_id)
+                            return 1
+                        except (TimeoutError, discord.HTTPException):
+                            _LOG.warning("Could not restore deleted Polymarket DM user=%s",
+                                         tracker.user_id)
+                            return 0
                     except (discord.HTTPException, TimeoutError) as exc:
                         _LOG.warning(
                             "Live Polymarket DM update failed user=%s reason=%s",

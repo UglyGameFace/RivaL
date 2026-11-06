@@ -1365,6 +1365,9 @@ class RivalDiscordClient(discord.Client):
         ):
             self.add_view(stale_view)
         self.add_view(AutoHuntActions())
+        # DM panel controls must survive process restarts. Dispatch still checks
+        # the current user and message ID against the persisted tracker.
+        self.add_view(self.polymarket_board.dm_view)
         install_owner_gate(self.tree, self.owner_gate)
         _LOG.info("RivaL guided, research, data and hunt recovery views registered")
         await asyncio.to_thread(self.auto_hunt.store.initialize)

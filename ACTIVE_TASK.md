@@ -1,3 +1,11 @@
+## 2026-11-06: Persistent interactive Polymarket DM panel follow-up
+
+- **User-reported gap:** PR #404 added a menu shortcut, but the DM card itself had no interactive controls; a deleted card disabled tracking. The next verified event appeared without an explicit forecast status.
+- **Fix:** Persistent Discord DM view with Refresh now / Stop tracking; registered during startup, with user + active channel/message ID authorization and proper interaction acknowledgment. A deleted card (Discord error 10008) is recreated and its tracked message ID updated without changing subscriptions. Unknown channels (10003) do not trigger blind sends. Next event on the same DM card explicitly says pre-open WAIT pending verified book data, never borrows the current prediction.
+- **Acceptance:** CI lint, focused and full tests, correct legacy Stop/Track behavior and restart, no duplicate notifications, actual post-deployment interaction check. Deployment not verified until release succeeds.
+
+---
+
 ## In progress: frozen Polymarket first calls and accessible live panel (2026-11-06 UTC)
 
 - **Observed failure:** PR #403 re-evaluated a book-based UP/DOWN direction as often as every 5 seconds; the Discord card and separate flip notifications could say DOWN → UP → DOWN in one contract even though the scored forward ledger kept only the first call.

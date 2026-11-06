@@ -125,7 +125,7 @@ class PolymarketResearch:
         self.initialize()
         with self.store.connect() as conn:
             row = conn.execute(
-                "SELECT * FROM rival_polymarket_ai_calls WHERE slug=? ORDER BY issued_at ASC LIMIT 1", (slug,),
+                "SELECT * FROM rival_polymarket_ai_calls WHERE slug=? ORDER BY issued_at DESC LIMIT 1", (slug,),
             ).fetchone()
         if row is None:
             return None
@@ -237,8 +237,8 @@ class PolymarketResearch:
             # Existing validated model research still runs above.
             return self.peek(notice.slug)
         cached = self._calls.get(notice.slug)
-        if cached is not None and cached.expires > now:
-            return cached
+        if cached is not None and not self._needs_refresh(cached, notice, now):
+            return cached or self.peek(notice.slug)
         if notice.slug in self._pending:
             return cached or self.peek(notice.slug)
         previous = self._status.get(notice.slug)
@@ -258,10 +258,23 @@ class PolymarketResearch:
         task.add_done_callback(done)
         return cached or self.peek(notice.slug)
 
+    @staticmethod
+    def _needs_refresh(call: ContractCall, notice, now: datetime) -> bool:
+        """Optional independent AI research may publish a labeled revision.
+
+        Revisions do not alter the book-model's frozen, scored first forecast.
+        """
+        return (
+            now - call.issued_at >= timedelta(seconds=60)
+            and call.input_up_ask is not None and call.input_down_ask is not None
+            and max(abs(notice.up_ask-call.input_up_ask),
+                    abs(notice.down_ask-call.input_down_ask)) >= 0.05
+        )
+
     async def _produce(self, notice) -> None:
         try:
             saved = await asyncio.to_thread(self._saved, notice.slug)
-            if saved is not None:
+            if saved is not None and not self._needs_refresh(saved, notice, datetime.now(UTC)):
                 if saved.expires > datetime.now(UTC):
                     self._calls[notice.slug] = saved
                 return

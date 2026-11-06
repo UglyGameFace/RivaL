@@ -35,24 +35,25 @@ class ConfirmLimitView(discord.ui.View):
 
     @discord.ui.button(label="Confirm safety limit", style=discord.ButtonStyle.success)
     async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.defer()  # acknowledge before the database write
         try:
             await asyncio.to_thread(
                 self.store.save_if_unchanged, self.setting, expected=self.previous,
             )
         except ValueError as exc:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content=f"Not saved: {exc}", embed=None, view=None,
             )
             self.stop()
             return
         except Exception:  # noqa: BLE001
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 content="Could not save API limit; no confirmation recorded.",
                 embed=None, view=None,
             )
             self.stop()
             return
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             content=(
                 f"Saved **{self.setting.provider}** ({self.setting.plan}) with "
                 f"{self.setting.maximum_units:,} total units and "

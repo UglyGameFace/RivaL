@@ -25,6 +25,8 @@ _LOG = logging.getLogger(__name__)
 
 TICK = 0.25
 STALL_AFTER = 1.0
+# Discord's acknowledgement window is 3 s; a stall this long can fail taps.
+SLOW_STALL = 2.5
 FRAMES = 4
 
 
@@ -99,13 +101,23 @@ class LoopStallWatch:
 
     def _watch(self) -> None:
         reported_for = None
+        longest = 0.0
         while not self._stop.wait(self.tick):
             beat = self._beat
             late = time.monotonic() - beat
+            if reported_for is not None and reported_for != beat:
+                # The stall ended: record how long it really lasted. Discord
+                # fails an unacknowledged interaction after 3 seconds, so a
+                # stall near that length is a warning, not just a sample.
+                total = round(max(longest, beat - reported_for), 1)
+                self.stalls = (self.stalls[:-1] + [(total, self.stalls[-1][1])]
+                               if self.stalls else [])
+                (_LOG.warning if total >= SLOW_STALL else _LOG.info)(
+                    "RivaL event loop stall lasted %.1fs", total)
+                reported_for, longest = None, 0.0
             if late < self.stall_after:
-                if reported_for is not None and reported_for != beat:
-                    reported_for = None
                 continue
+            longest = max(longest, late)
             if reported_for == beat or self._loop_thread is None:
                 continue
             reported_for = beat

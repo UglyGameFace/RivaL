@@ -382,3 +382,24 @@ def test_imported_file_ids_lists_drive_files_already_in_the_registry(tmp_path):
         assert models.imported_file_ids() == frozenset({"driveA"})
     finally:
         store.close()
+
+
+def test_validator_rejects_trees_that_would_loop_forever():
+    from parlay_bot.perpetuals.pooled_features import FEATURE_VERSION
+
+    def doc(tree):
+        return {"schema": "rival-pooled-model-v1", "feature_version": FEATURE_VERSION,
+                "features": list(FEATURES), "horizon_minutes": 5, "trees": [tree]}
+
+    # Node 1 sends its left child back to node 1: raw_score would never stop.
+    self_loop = [[0, 0.5, 1, 2, 1, 2], [0, 0.5, 1, 2, 1, 3], [0.1], [0.2]]
+    # Node 2 points back up to the root.
+    back_to_root = [[0, 0.5, 1, 2, 1, 2], [0.1], [0, 0.5, 1, 2, 3, 0], [0.2]]
+    for bad in (self_loop, back_to_root):
+        with pytest.raises(ValueError, match="invalid pooled split"):
+            validate(doc(bad))
+    # A float child index is also refused.
+    with pytest.raises(ValueError, match="invalid pooled split"):
+        validate(doc([[0, 0.5, 1, 2, 1.0, 2], [0.1], [0.2]]))
+    # A real exported shape (children after their parent) still validates.
+    validate(doc([[0, 0.5, 1, 2, 1, 2], [0.1], [0.2]]))

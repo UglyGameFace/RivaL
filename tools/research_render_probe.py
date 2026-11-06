@@ -1,38 +1,33 @@
-"""Read-only follow-up check: problem log, cycles, Intelligence saves, bot RSS."""
+"""Read-only: do the stored six-year models pass the stricter tree check? + RSS."""
 import base64, gzip, json, os, re
-from datetime import UTC, datetime, timedelta
 MARKER = "RIVAL_RENDER_PROBE="
 out = {}
 try:
-    rss = {}
-    for pid in os.listdir("/proc"):
-        if pid.isdigit():
-            try:
-                cmd = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode()[:80]
-                st = open(f"/proc/{pid}/status").read()
-                m = re.search(r"VmRSS:\s+(\d+)", st); h = re.search(r"VmHWM:\s+(\d+)", st)
-                if m and int(m.group(1)) > 20000:
-                    rss[pid] = {"cmd": cmd, "rss_mb": int(m.group(1)) // 1024,
-                                "peak_mb": int(h.group(1)) // 1024 if h else None}
-            except OSError:
-                pass
-    out["processes"] = rss
-    for p in ("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory.peak", "/sys/fs/cgroup/memory.events"):
-        try:
-            out[p] = open(p).read().strip()[:300]
-        except OSError:
-            pass
+    st = open("/proc/1/status").read()
+    out["rss_mb"] = int(re.search(r"VmRSS:\s+(\d+)", st).group(1)) // 1024
+    out["peak_mb"] = int(re.search(r"VmHWM:\s+(\d+)", st).group(1)) // 1024
     from parlay_bot.config import Settings
     from parlay_bot.storage.hot import PostgresHotStore
     store = PostgresHotStore(Settings().rival_database_url.get_secret_value())
-    since = "2026-11-05T19"
     with store.connect() as conn:
-        rows = conn.execute(
-            """SELECT hour, template, text, count, last_at FROM rival_problem_log WHERE hour>=?
-               AND (template LIKE '%memory%' OR template LIKE '%event loop blocked%')
-               ORDER BY last_at""", (since,)).fetchall()
-        out["texts"] = [[str(r["last_at"])[:19], int(r["count"]), str(r["text"])[:400]] for r in rows]
+        rows = conn.execute("SELECT family, horizon_minutes, model_sha256, document FROM rival_pooled_models").fetchall()
+        mem = conn.execute("""SELECT last_at, text FROM rival_problem_log WHERE template LIKE '%memory receipt%'
+                              ORDER BY last_at DESC LIMIT 3""").fetchall()
+        out["receipts"] = [[str(r["last_at"])[:19], str(r["text"])[:150]] for r in mem]
     store.close()
+    models = []
+    for r in rows:
+        doc = json.loads(r["document"])
+        bad = 0
+        for tree in doc["trees"]:
+            for pos, node in enumerate(tree):
+                if len(node) != 1:
+                    left, right = node[4], node[5]
+                    if not (type(left) is int and type(right) is int and pos < left < len(tree) and pos < right < len(tree)):
+                        bad += 1
+        models.append({"family": r["family"], "h": r["horizon_minutes"], "sha": str(r["model_sha256"])[:12],
+                       "trees": len(doc["trees"]), "bad_splits": bad})
+    out["models"] = models
 except Exception as exc:  # noqa: BLE001
     out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
 print(MARKER + base64.b64encode(gzip.compress(json.dumps(out, default=str).encode())).decode())

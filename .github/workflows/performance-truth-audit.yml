@@ -78,7 +78,7 @@ jobs:
               raise SystemExit(0)
           if os.environ["MODE"] == "render":
               merged = {}
-              for asset in ("BTC",):
+              for asset in ("BTC", "ETH", "SOL", "XRP"):
                   shell = run(f"RIVAL_PROBE_ASSETS={asset} ")
                   for line in str(shell.get("stdout", "")).splitlines():
                       if line.startswith("RIVAL_RENDER_PROBE="):

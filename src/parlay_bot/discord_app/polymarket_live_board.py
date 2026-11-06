@@ -160,15 +160,16 @@ def live_polymarket_embed(
 ) -> discord.Embed:
     current = board.current if board is not None else None
     valid = matching_call(board, snapshot, asset=asset, horizon=horizon)
-    direction = snapshot.direction if valid else "WAIT"
+    direction = snapshot.direction if valid else "NO FORECAST"
     embed = discord.Embed(
-        title=f"📡 {asset} • {horizon} min | Polymarket {snapshot.kind if valid else 'AI'} {direction}",
+        title=(f"📡 {asset} • {horizon} min | Polymarket "
+               f"{snapshot.kind if valid else 'model'} {direction}"),
         description=(
             f"**Experimental contract-specific {snapshot.kind} research.** "
-            "The first model forecast is frozen; live prices update independently. "
+            "The original forecast is frozen; live prices update independently. "
             "Accuracy and profitable edge are not established."
-            if valid else "**No current contract-specific AI call.** "
-            + (ai_status or "Waiting for verified contract inputs and available free AI.")
+            if valid else "**No eligible contract-specific model forecast issued.** "
+            + (ai_status or "Waiting for source-verified model data.")
         ), color=discord.Color.blurple() if valid else discord.Color.orange(),
     )
     quote = board.current_quote if board is not None else None
@@ -213,6 +214,14 @@ def live_polymarket_embed(
         call_label = ("🧠 First model call (frozen)"
                       if snapshot.kind == "model" else f"🧠 {snapshot.kind} contract research")
         embed.add_field(name=call_label, value=f"**{direction}** • {snapshot.thesis}", inline=False)
+        if snapshot.kind == "model" and snapshot.probability_up is not None:
+            p = snapshot.probability_up
+            embed.add_field(
+                name="Model probabilities (not calibrated)",
+                value=(f"UP {p:.1%} • DOWN {1 - p:.1%}. "
+                       "This is a frozen research estimate, not proven winning odds."),
+                inline=False,
+            )
         embed.add_field(name="Call timing", value=(
             f"First issued <t:{int(snapshot.issued_at.timestamp())}:R> for this contract. "
             "New quotes never change the first model call or its score. "
@@ -225,7 +234,7 @@ def live_polymarket_embed(
         next_window = board.next_window
         embed.add_field(name="⏭️ Next contract • forecast pending", value=(
             f"[Next event]({next_window.url}) • opens <t:{int(next_window.opens.timestamp())}:R>\n"
-            "Next model call: **WAIT / not issued**. The current contract's "
+            "Next model call: **not issued yet**. The current contract's "
             "forecast is not reused for the next contract. A separate frozen "
             "forecast appears here when that contract opens and its verified "
             "order book is available."
@@ -411,11 +420,19 @@ class LivePolymarketBoardService:
             if self.research is not None and board.current_quote is not None:
                 snapshot = self.research.observe(board.current_quote)
             self._live_cache[(asset, horizon)] = (datetime.now(UTC), board, snapshot)
+        model_status = None
+        if board is not None and board.current is not None:
+            if board.current_quote is None:
+                model_status = ("No eligible live order book: "
+                                + unavailable_text(board.quote_unavailable_reason))
+            elif self.research is not None:
+                model_status = (
+                    self.research.refresh_note(board.current.slug) if snapshot is not None
+                    else self.research.status(board.current.slug)
+                )
         embed = live_polymarket_embed(
             board, snapshot, asset=asset, horizon=horizon,
-            ai_status=(self.research.refresh_note(board.current.slug) if snapshot is not None
-                       else self.research.status(board.current.slug)
-                       if self.research is not None and board is not None and board.current is not None else None),
+            ai_status=model_status,
         )
         # No live clock in the fingerprint: unchanged markets never spam edits.
         digest = hashlib.sha256(

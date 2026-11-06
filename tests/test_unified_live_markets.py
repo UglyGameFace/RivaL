@@ -183,7 +183,7 @@ async def test_concurrent_gamma_listing_uses_one_shared_request(monkeypatch):
                 "eventStartTime": opened.isoformat(),
                 "active": True, "closed": False,
                 "acceptingOrders": True, "enableOrderBook": True,
-                "outcomes": '["Up","Down"]',
+                "resolutionSource": f"https://data.chain.link/streams/{slug.split('-')[0]}-usd-twap-60s-streams", "description": "Resolves on the Chainlink 60-second TWAP data stream.", "outcomes": '["Up","Down"]',
             }],
         })
 

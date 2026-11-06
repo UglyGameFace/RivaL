@@ -218,6 +218,9 @@ def evaluate_compatible(manifests, *, horizon, prepared=None):
         "validation_cutoff": test_start.isoformat(),
         "evaluation_completed_through": max(s[1] for s in test).isoformat(),
         "source_sha256_by_month": provenance["source_sha256_by_month"],
+        "provider_sha256_by_month": provenance.get("provider_sha256_by_month", {}),
+        "months_without_provider_hash": provenance.get(
+            "months_without_provider_hash", []),
     }
     passed = (len(provenance["months"]) >= 6 and all(
         s["brier_gain"] > .005 and s["ece_10"] <= .10 and s["days"] >= 7

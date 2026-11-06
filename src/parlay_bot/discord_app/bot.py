@@ -2671,6 +2671,21 @@ class RivalDiscordClient(discord.Client):
                 pages = 0
                 cursor = self._candidate_inventory_cursor
                 seen_cursors = set()
+                # One manifest-name listing per cycle backs the provenance
+                # cross-check below. When it is unavailable the imports
+                # still run, labelled not_checked -- never silently verified.
+                manifest_names = None
+                try:
+                    from parlay_bot.research.drive_source_census import list_names
+
+                    manifest_names = await asyncio.wait_for(
+                        list_names(self.research_drive), timeout=60,
+                    )
+                except Exception:  # noqa: BLE001 - cross-check is best-effort
+                    _LOG.warning(
+                        "RivaL source-manifest listing unavailable; candidate "
+                        "imports this cycle will be labelled not_checked"
+                    )
                 # A single latest-ten listing can exclude every older coin,
                 # timeframe and trained model when new artifacts are published.
                 # Bound the scan, keep all existing candidates immutable, and
@@ -2703,15 +2718,39 @@ class RivalDiscordClient(discord.Client):
                                 _LOG.warning("RivaL pooled model failed verification")
                             continue
                         try:
+                            # Cross-check the candidate's claimed source
+                            # months against the Drive manifests before
+                            # admitting it. A failed check defers this file
+                            # to the next cycle; it is never imported as
+                            # source-verified on a failed or skipped check.
+                            source_manifests = None
+                            if manifest_names is not None:
+                                from parlay_bot.research.source_manifests import (
+                                    fetch_manifests_for_payload,
+                                )
+
+                                source_manifests = await asyncio.wait_for(
+                                    fetch_manifests_for_payload(
+                                        self.research_drive, payload,
+                                        names=manifest_names,
+                                    ),
+                                    timeout=90,
+                                )
                             imported = await asyncio.to_thread(
                                 self.offline_registry.import_document,
                                 file_id, payload,
+                                source_manifests=source_manifests,
                             )
                             saved += imported
                         except ValueError:
                             _LOG.warning(
                                 "RivaL offline research candidate failed "
                                 "model-contract verification"
+                            )
+                        except Exception:  # noqa: BLE001 - defer, never admit unchecked
+                            _LOG.warning(
+                                "RivaL source-manifest cross-check failed for "
+                                "%s; deferring import this cycle", file_id,
                             )
                     if not next_cursor:
                         break

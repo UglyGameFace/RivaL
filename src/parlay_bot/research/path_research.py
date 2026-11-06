@@ -243,6 +243,9 @@ def evaluate_path(manifests: list[Path], *, horizon: int, side: str,
         "validation_outcomes_through": max(s.expires_at for s in validation).isoformat(),
         "test_outcomes_through": max(s.expires_at for s in test).isoformat(),
         "source_sha256_by_month": provenance["source_sha256_by_month"],
+        "provider_sha256_by_month": provenance.get("provider_sha256_by_month", {}),
+        "months_without_provider_hash": provenance.get(
+            "months_without_provider_hash", []),
     }
     digest = hashlib.sha256(
         json.dumps(spec, sort_keys=True, separators=(",", ":")).encode()

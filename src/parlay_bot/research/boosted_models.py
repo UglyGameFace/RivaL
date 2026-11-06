@@ -150,6 +150,9 @@ def evaluate_compatible_boosters(manifests, *, horizon, prepared=None, estimator
         "identity": identity, "horizon_minutes": horizon,
         "feature_contract": FEATURE_CONTRACT, "target_contract": TARGET_CONTRACT,
         "source_sha256_by_month": provenance["source_sha256_by_month"],
+        "provider_sha256_by_month": provenance.get("provider_sha256_by_month", {}),
+        "months_without_provider_hash": provenance.get(
+            "months_without_provider_hash", []),
         "training_count": len(fitted),
         "train_cutoff": train[-1][1].isoformat(),
         "validation_cutoff": test[0][0].isoformat(),
@@ -188,6 +191,10 @@ def evaluate_compatible_boosters(manifests, *, horizon, prepared=None, estimator
                     "validation_cutoff": test[0][0].isoformat(),
                     "evaluation_completed_through": test[-1][1].isoformat(),
                     "source_sha256_by_month": provenance["source_sha256_by_month"],
+                    "provider_sha256_by_month": provenance.get(
+                        "provider_sha256_by_month", {}),
+                    "months_without_provider_hash": provenance.get(
+                        "months_without_provider_hash", []),
                 }
                 candidate_sha = hashlib.sha256(canonical(portable_spec).encode()).hexdigest()
                 artifact = {

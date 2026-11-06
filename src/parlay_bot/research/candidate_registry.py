@@ -22,6 +22,63 @@ class CandidateValidationError(ValueError):
     """External research candidate cannot be trusted or is unsupported."""
 
 
+def verify_source_months(spec: dict, manifests: dict) -> tuple[bool, str]:
+    """Cross-check claimed source months against Drive manifests.
+
+    ``manifests`` maps (venue, contract, quote, month) to the Drive
+    manifest's parsed JSON for that month. Returns (source_verified, status):
+    - ``provider_verified`` -- every claimed month hash equals the manifest's
+      declared source hash, and every claimed provider hash equals the
+      manifest's provider archive hash.
+    - ``normalized_bytes_only`` -- every claimed month hash equals the
+      manifest's normalized-data hash instead: the training bytes are proven
+      to be the published normalized bytes, but provider provenance is NOT
+      proven. Pre-fix rows carry exactly this shape and must never be
+      relabelled as provider-verified.
+    - ``mismatch:<months>`` / ``manifest_missing:<months>`` -- a claimed
+      month matches neither manifest hash, or has no Drive manifest at all.
+      Such a candidate is held: it may sit in the inventory, but it must
+      never seed research or promote.
+    """
+    identity = spec.get("identity") or {}
+    key_base = (identity.get("venue"), identity.get("contract"),
+                identity.get("quote"))
+    claimed = spec.get("source_sha256_by_month") or {}
+    provider = spec.get("provider_sha256_by_month") or {}
+    missing, mismatch, normalized = [], [], []
+    for month in sorted(claimed):
+        manifest = manifests.get((*key_base, month))
+        if not isinstance(manifest, dict):
+            missing.append(month)
+            continue
+        claimed_sha = claimed[month]
+        source_sha = manifest.get("source_sha256")
+        data_sha = manifest.get("data_sha256")
+        archive_sha = manifest.get("source_archive_sha256") or source_sha
+        if claimed_sha == source_sha:
+            provider_sha = provider.get(month)
+            if provider_sha is not None and provider_sha != archive_sha:
+                mismatch.append(month)
+        elif claimed_sha == data_sha:
+            normalized.append(month)
+        else:
+            mismatch.append(month)
+    if missing:
+        return False, "manifest_missing:" + ",".join(missing)
+    if mismatch:
+        return False, "mismatch:" + ",".join(mismatch)
+    if normalized:
+        return False, "normalized_bytes_only"
+    return True, "provider_verified"
+
+
+def _source_held(verification: str | None) -> bool:
+    """Proven-bad provenance: a mismatched month or a missing manifest."""
+    return isinstance(verification, str) and verification.startswith(
+        ("mismatch:", "manifest_missing:")
+    )
+
+
 def verified_candidate(payload: bytes) -> dict:
     if len(payload) > 2_200_000 or not payload:
         raise CandidateValidationError("oversized or missing candidate")
@@ -41,6 +98,8 @@ def verified_candidate(payload: bytes) -> dict:
         boosted = spec.get("model") == "portable-boosted-binary-v1"
         weights = spec.get("weights")
         months = spec["source_sha256_by_month"]
+        provider_months = spec.get("provider_sha256_by_month")
+        without_provider = spec.get("months_without_provider_hash")
         declared = str(source["model_sha256"])
         canonical = json.dumps(
             spec, sort_keys=True, separators=(",", ":"),
@@ -102,6 +161,26 @@ def verified_candidate(payload: bytes) -> dict:
                 or any(ch not in "0123456789abcdef" for ch in sha)
                 for m, sha in months.items()
             )
+            # Provider hashes are optional (pre-fix specs lack them) but,
+            # when present, must name a subset of the claimed months with
+            # valid hashes, and must not overlap the no-provider list.
+            or (provider_months is not None and (
+                not isinstance(provider_months, dict)
+                or any(
+                    not isinstance(m, str) or m not in months
+                    or not isinstance(sha, str) or len(sha) != 64
+                    or any(ch not in "0123456789abcdef" for ch in sha)
+                    for m, sha in provider_months.items()
+                )
+            ))
+            or (without_provider is not None and (
+                not isinstance(without_provider, list)
+                or any(
+                    not isinstance(m, str) or m not in months
+                    or m in (provider_months or {})
+                    for m in without_provider
+                )
+            ))
             or declared != actual
             or not isinstance(validation, dict)
             or not isinstance(holdout, dict)
@@ -162,6 +241,12 @@ def verified_candidate(payload: bytes) -> dict:
             "retrospective_screen": "passed" if passed else "insufficient",
             "compatible": compatible or boosted,
             "model_spec": spec,
+            "provider_sha256_by_month": dict(provider_months or {}),
+            "months_without_provider_hash": list(without_provider or []),
+            # Shape validation alone never proves provenance. The Drive
+            # cross-check at import time sets the real status; without it
+            # the candidate stays explicitly not_checked.
+            "source_verification": "not_checked",
         }
     except (KeyError, TypeError, ValueError, OverflowError, AttributeError) as exc:
         raise CandidateValidationError(
@@ -198,6 +283,8 @@ class ResearchCandidateRegistry:
                     holdout_brier REAL,
                     retrospective_screen TEXT NOT NULL,
                     admission_reason TEXT,
+                    source_verified INTEGER NOT NULL DEFAULT 0,
+                    source_verification TEXT,
                     first_imported_at TEXT NOT NULL,
                     active_live INTEGER NOT NULL DEFAULT 0
                 )"""
@@ -209,6 +296,20 @@ class ResearchCandidateRegistry:
                 conn.execute(
                     "ALTER TABLE rival_offline_candidates "
                     "ADD COLUMN admission_reason TEXT"
+                )
+            if "source_verified" not in self.store.database.column_names(
+                conn, "rival_offline_candidates",
+            ):
+                conn.execute(
+                    "ALTER TABLE rival_offline_candidates "
+                    "ADD COLUMN source_verified INTEGER NOT NULL DEFAULT 0"
+                )
+            if "source_verification" not in self.store.database.column_names(
+                conn, "rival_offline_candidates",
+            ):
+                conn.execute(
+                    "ALTER TABLE rival_offline_candidates "
+                    "ADD COLUMN source_verification TEXT"
                 )
             conn.execute("""CREATE TABLE IF NOT EXISTS rival_offline_model_artifacts (
                 model_sha256 TEXT PRIMARY KEY, model_spec_json TEXT NOT NULL,
@@ -222,9 +323,26 @@ class ResearchCandidateRegistry:
             )""")
 
     def import_verified(self, file_id: str, payload: bytes, *,
-                        now: datetime | None = None) -> dict:
+                        now: datetime | None = None,
+                        source_manifests: dict | None = None) -> dict:
+        """Admit a checksum-verified candidate, cross-checking provenance.
+
+        ``source_manifests`` maps (venue, contract, quote, month) to the
+        Drive manifest's parsed JSON for that month. When supplied, the
+        candidate's claimed source months are checked against the actual
+        Drive manifests; a mismatch or a missing manifest marks the row
+        held (never seedable). When omitted -- no Drive check was performed
+        -- the row is stored as ``not_checked``: explicitly unverified,
+        never silently relabelled as provider-verified.
+        """
         self.initialize()
         candidate = verified_candidate(payload)
+        if source_manifests is not None:
+            verified, status = verify_source_months(
+                candidate["model_spec"], source_manifests,
+            )
+        else:
+            verified, status = False, "not_checked"
         if (
             not file_id or len(file_id) > 200
             or any(ch not in
@@ -239,15 +357,17 @@ class ResearchCandidateRegistry:
                     model_sha256,drive_file_id,asset,horizon_minutes,
                     source_months,data_version,holdout_accuracy,holdout_brier,
                     retrospective_screen,admission_reason,
+                    source_verified,source_verification,
                     first_imported_at,active_live
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,0)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0)
                 ON CONFLICT(model_sha256) DO NOTHING""",
                 (candidate["model_sha256"], file_id, candidate["asset"],
                  candidate["horizon"], candidate["source_months"],
                  candidate["data_version"], candidate["holdout_accuracy"],
                  candidate["holdout_brier"],
                  candidate["retrospective_screen"],
-                 candidate["admission_reason"], timestamp),
+                 candidate["admission_reason"], int(verified), status,
+                 timestamp),
             )
             # Replaying the original verified file may fill a missing legacy
             # reason; never rewrite historical screening, scores or weights.
@@ -259,6 +379,18 @@ class ResearchCandidateRegistry:
                     (candidate["admission_reason"], candidate["model_sha256"],
                      file_id, candidate["retrospective_screen"]),
                 )
+                # A replay WITH a Drive cross-check may fill in a missing
+                # verification; a performed check is never overwritten.
+                if source_manifests is not None:
+                    conn.execute(
+                        """UPDATE rival_offline_candidates
+                           SET source_verified=?, source_verification=?
+                           WHERE model_sha256=? AND drive_file_id=?
+                             AND (source_verification IS NULL
+                                  OR source_verification='not_checked')""",
+                        (int(verified), status, candidate["model_sha256"],
+                         file_id),
+                    )
             conn.execute(
                 "INSERT INTO rival_offline_model_artifacts "
                 "(model_sha256,model_spec_json,compatible,imported_at) VALUES (?,?,?,?) "
@@ -267,28 +399,42 @@ class ResearchCandidateRegistry:
                  sort_keys=True, separators=(",", ":"), allow_nan=False),
                  int(candidate["compatible"]), timestamp),
             )
+            # Report the stored verification: on replay the stored check
+            # stands, even when this call carried no Drive map.
+            stored = conn.execute(
+                "SELECT source_verified, source_verification "
+                "FROM rival_offline_candidates WHERE model_sha256=?",
+                (candidate["model_sha256"],),
+            ).fetchone()
+            stored_verified = bool(stored["source_verified"])
+            stored_status = stored["source_verification"]
         if inserted.rowcount == 1:
             identity = candidate["model_spec"]["identity"]
             logging.getLogger(__name__).info(
                 "RivaL verified model imported sha256=%s venue=%s "
                 "contract=%s quote=%s horizon=%d model=%s "
-                "feature_contract=%s retrospective_screen=%s reason=%s",
+                "feature_contract=%s retrospective_screen=%s reason=%s "
+                "source_verification=%s",
                 candidate["model_sha256"], identity["venue"],
                 identity["contract"], identity["quote"], candidate["horizon"],
                 candidate["model_spec"]["model"],
                 candidate["model_spec"].get("feature_contract", "legacy"),
                 candidate["retrospective_screen"], candidate["admission_reason"],
+                stored_status,
             )
-        return candidate
+        return {**candidate, "source_verified": stored_verified,
+                "source_verification": stored_status}
 
-    def import_document(self, file_id: str, payload: bytes, *, now=None) -> int:
+    def import_document(self, file_id: str, payload: bytes, *, now=None,
+                        source_manifests: dict | None = None) -> int:
         """Accept the original checksummed 42-model bundle or individual files."""
         if len(payload) > 2_200_000:
             raise CandidateValidationError("oversized candidate document")
         try:
             source = json.loads(payload)
             if "candidate_models" not in source:
-                self.import_verified(file_id, payload, now=now)
+                self.import_verified(file_id, payload, now=now,
+                                     source_manifests=source_manifests)
                 return 1
             if (source.get("schema_version") != "rival-offline-candidate-registry-v1"
                 or source.get("historical_only") is not True
@@ -303,7 +449,8 @@ class ResearchCandidateRegistry:
             for doc in documents:
                 verified_candidate(json.dumps(doc).encode())
             for doc in documents:
-                self.import_verified(file_id, json.dumps(doc).encode(), now=now)
+                self.import_verified(file_id, json.dumps(doc).encode(), now=now,
+                                     source_manifests=source_manifests)
             return len(documents)
         except (ValueError, KeyError, TypeError, AttributeError) as exc:
             raise CandidateValidationError("invalid historical model document") from exc
@@ -361,6 +508,15 @@ class ResearchCandidateRegistry:
                 "rival_offline_candidates c JOIN rival_offline_model_artifacts a "
                 "ON a.model_sha256=c.model_sha256 WHERE a.compatible=1 "
                 "AND c.retrospective_screen='passed' AND c.horizon_minutes=? AND c.asset=? "
+                # Proven-bad provenance never seeds: a candidate whose claimed
+                # source months mismatch the Drive manifests, or whose months
+                # have no Drive manifest at all, is held out of research.
+                # Rows never cross-checked (NULL / not_checked) and rows
+                # proven to be the published normalized bytes stay eligible;
+                # both are labelled unverified, never provider-verified.
+                "AND (c.source_verification IS NULL "
+                "OR (c.source_verification NOT LIKE 'mismatch%' "
+                "AND c.source_verification NOT LIKE 'manifest_missing%')) "
                 "ORDER BY c.first_imported_at DESC,c.model_sha256 LIMIT 30",
                 (horizon, asset_for_contract(contract)),
             ).fetchall()
@@ -391,6 +547,10 @@ class ResearchCandidateRegistry:
                 "rival_offline_candidates c JOIN rival_offline_model_artifacts a "
                 "ON a.model_sha256=c.model_sha256 WHERE a.compatible=1 "
                 "AND c.retrospective_screen='passed' AND c.horizon_minutes=? AND c.asset=? "
+                # Proven-bad provenance never seeds (see compatible_candidates).
+                "AND (c.source_verification IS NULL "
+                "OR (c.source_verification NOT LIKE 'mismatch%' "
+                "AND c.source_verification NOT LIKE 'manifest_missing%')) "
                 "ORDER BY c.first_imported_at DESC,c.model_sha256 LIMIT 60",
                 (horizon, asset_for_contract(contract)),
             ).fetchall()
@@ -434,7 +594,8 @@ class ResearchCandidateRegistry:
             row = conn.execute(
                 """SELECT model_sha256,source_months,data_version,
                           holdout_accuracy,holdout_brier,
-                          retrospective_screen,admission_reason,first_imported_at
+                          retrospective_screen,admission_reason,
+                          source_verified,source_verification,first_imported_at
                    FROM rival_offline_candidates
                    WHERE asset=? AND horizon_minutes=?
                    ORDER BY first_imported_at DESC LIMIT 1""",
@@ -444,7 +605,8 @@ class ResearchCandidateRegistry:
                 "SELECT COUNT(*) AS n FROM rival_offline_candidates",
             ).fetchone()["n"]
             inventory = conn.execute(
-                "SELECT c.model_sha256,c.retrospective_screen,a.compatible,a.model_spec_json "
+                "SELECT c.model_sha256,c.retrospective_screen,a.compatible,a.model_spec_json,"
+                "c.source_verification "
                 "FROM rival_offline_candidates c LEFT JOIN rival_offline_model_artifacts a "
                 "ON a.model_sha256=c.model_sha256 WHERE c.asset=? AND c.horizon_minutes=?",
                 (asset, horizon),
@@ -475,6 +637,10 @@ class ResearchCandidateRegistry:
         passed = [r for r in compatible if r["retrospective_screen"] == "passed"]
         matched = [r for r in passed if live_venues is None or
                    json.loads(r["model_spec_json"])["identity"]["venue"] in live_venues]
+        # Proven-bad provenance can never be the active offline model, even
+        # when an earlier selection row still names it.
+        matched = [r for r in matched
+                   if not _source_held(r["source_verification"])]
         # A selection for a disabled or different source is not an active
         # historical seed, even if its previous result remains in the ledger.
         active = bool(

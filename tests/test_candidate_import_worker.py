@@ -21,7 +21,10 @@ async def test_optional_model_import_recovers_startup_pool_failure(monkeypatch):
             if self.initializations == 1:
                 raise RuntimeError("temporary PostgreSQL pool pressure")
 
-        def import_document(self, file_id, payload):
+        def import_document(self, file_id, payload, *, source_manifests=None):
+            # The listing is unavailable for this fake Drive, so the worker
+            # must import labelled not_checked -- never silently verified.
+            assert source_manifests is None
             self.imported.append((file_id, payload))
             return 1
 

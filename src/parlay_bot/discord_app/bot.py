@@ -279,10 +279,14 @@ class RivalDiscordClient(discord.Client):
             settings.rival_drive_oauth_refresh_token,
         ))
         archive_settings = settings
+        # An operator's explicit RIVAL_ARCHIVE_ENABLED=false is a decision,
+        # not a default: autostart only fills in when the value is unset.
+        archive_explicit = "rival_archive_enabled" in settings.model_fields_set
         if (
             settings.rival_archive_autostart_when_configured
             and has_drive_config
             and not settings.rival_archive_enabled
+            and not archive_explicit
         ):
             archive_settings = settings.model_copy(update={
                 "rival_archive_enabled": True,
@@ -290,6 +294,9 @@ class RivalDiscordClient(discord.Client):
             })
             _LOG.info("RivaL private Drive archiving auto-configured; "
                       "remote authorization remains subject to actual upload checks")
+        elif has_drive_config and not settings.rival_archive_enabled and archive_explicit:
+            _LOG.warning("RivaL cold archive OFF: RIVAL_ARCHIVE_ENABLED=false is set "
+                         "explicitly, so autostart is not applied")
         self._sports_task: asyncio.Task[None] | None = None
         self.sports_results = (
             SportsResultStore(self.store) if self.current_provider is not None
@@ -301,10 +308,18 @@ class RivalDiscordClient(discord.Client):
         self.command_synced_at: datetime | None = None
         self.command_sync_count = 0
         self.discord_ready_at: datetime | None = None
-        self.archive_runtime: ColdArchiveRuntime | None = build_cold_archive_runtime(
-            archive_settings,
-            store=self.store,
-        )
+        # The archive is optional: a misconfiguration must not stop the bot
+        # from starting (it used to raise here, before Discord login, and
+        # Discloud restarted straight back into the same crash).
+        try:
+            self.archive_runtime: ColdArchiveRuntime | None = build_cold_archive_runtime(
+                archive_settings,
+                store=self.store,
+            )
+        except RuntimeError as exc:
+            # The message names missing setting keys only, never values.
+            _LOG.error("RivaL cold archive not started: %s", exc)
+            self.archive_runtime = None
         self._archive_task: asyncio.Task[None] | None = None
         # Keep the offline candidate reader separate from the working
         # hourly archive uploader. A blocked models folder MUST NOT stop

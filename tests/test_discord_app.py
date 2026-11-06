@@ -314,8 +314,7 @@ async def test_archive_autostarts_only_when_full_private_bot_drive_config_exists
         _env_file=None,
         rival_storage_backend="sqlite",
         rival_db_path=str(tmp_path / "rival.sqlite"),
-        rival_archive_enabled=False,
-        rival_perp_archive_enabled=False,
+        # Archive switch left unset, so autostart applies.
         rival_archive_autostart_when_configured=True,
         rival_drive_root_folder_id="test-root",
         rival_drive_history_folder_id="test-history",
@@ -341,6 +340,32 @@ async def test_archive_autostarts_only_when_full_private_bot_drive_config_exists
         assert missing.archive_runtime is None
     finally:
         await missing.close()
+
+    # An explicit RIVAL_ARCHIVE_ENABLED=false wins over autostart.
+    explicit_off = Settings(**{
+        **{k: getattr(settings, k) for k in settings.model_fields_set},
+        "_env_file": None, "rival_archive_enabled": False,
+        "rival_db_path": str(tmp_path / "explicit-off.sqlite"),
+    })
+    turned_off = RivalDiscordClient(explicit_off)
+    try:
+        assert turned_off.archive_runtime is None
+    finally:
+        await turned_off.close()
+
+    # A misconfigured archive no longer crashes startup: perp archive on
+    # without the main archive used to raise inside the constructor.
+    broken = Settings(**{
+        **{k: getattr(settings, k) for k in settings.model_fields_set},
+        "_env_file": None, "rival_archive_enabled": False,
+        "rival_perp_archive_enabled": True,
+        "rival_db_path": str(tmp_path / "broken.sqlite"),
+    })
+    survived = RivalDiscordClient(broken)
+    try:
+        assert survived.archive_runtime is None
+    finally:
+        await survived.close()
 
     disabled = settings.model_copy(update={
         "rival_archive_autostart_when_configured": False,

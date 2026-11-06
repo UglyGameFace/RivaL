@@ -34,6 +34,10 @@ from parlay_bot.perpetuals.polymarket_history import (
     polymarket_history,
     results_text,
 )
+from parlay_bot.perpetuals.polymarket_tracking import (
+    PolymarketTracking,
+    polymarket_tracking_text,
+)
 from parlay_bot.perpetuals.proof_progress import proof_progress, proof_progress_text
 from parlay_bot.perpetuals.readiness import explain_venue_readiness, forecast_readiness
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
@@ -442,8 +446,34 @@ class _TrackStartSelect(discord.ui.Select["ResearchDashboard"]):
         dashboard = self.view
         assert dashboard is not None
         await interaction.response.defer()
-        if dashboard.market is None or not dashboard.selected_venue:
+        polymarket = dashboard.track_platform == "polymarket"
+        if dashboard.market is None or (not polymarket and not dashboard.selected_venue):
             dashboard.message = "No saved exchange feed available for tracking."
+        elif polymarket:
+            horizon, target = map(int, self.values[0].split(":"))
+            try:
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        PolymarketTracking(dashboard.market.store).start,
+                        owner_id=dashboard.owner_id, asset=dashboard.asset,
+                        horizon=horizon, target=target,
+                    ),
+                    timeout=8,
+                )
+                dashboard.message = (
+                    f"Tracking RivaL's next {result['target']} Polymarket "
+                    f"{dashboard.asset} {horizon}m calls."
+                    if result["status"] == "started" else
+                    "A Polymarket tracking session for this coin and timeframe is "
+                    "still running. It will not be reset."
+                )
+            except TrackingUnavailable as exc:
+                dashboard.message = str(exc)
+            except Exception:  # noqa: BLE001 - preserve original Discord controls
+                _LOG.exception("Could not start RivaL Polymarket tracking session")
+                dashboard.message = (
+                    "Could not record this session. No past calls were counted."
+                )
         else:
             horizon, target = map(int, self.values[0].split(":"))
             try:
@@ -472,6 +502,29 @@ class _TrackStartSelect(discord.ui.Select["ResearchDashboard"]):
                     "were counted or tracked retroactively."
                 )
         await dashboard.redraw(interaction, acknowledged=True)
+
+
+class _TrackPlatformButton(discord.ui.Button["ResearchDashboard"]):
+    """Which platform's predictions to follow: Polymarket or exchange futures."""
+
+    def __init__(self, platform: str):
+        polymarket = platform == "polymarket"
+        super().__init__(
+            label=("Platform: Polymarket" if polymarket else "Platform: exchange futures"),
+            emoji="🎰" if polymarket else "📈",
+            custom_id="rival:research:track-platform",
+            style=discord.ButtonStyle.success if polymarket else discord.ButtonStyle.secondary,
+            row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        dashboard.track_platform = (
+            "exchange" if dashboard.track_platform == "polymarket" else "polymarket"
+        )
+        dashboard.message = None
+        await dashboard.redraw(interaction)
 
 
 class _TrackVenueButton(discord.ui.Button["ResearchDashboard"]):
@@ -615,6 +668,8 @@ class ResearchDashboard(discord.ui.View):
         self.screen = "opportunities"
         self.section = "overview"
         self.selected_venue = venues[0] if venues else ""
+        # Track Next defaults to Polymarket: that is where users place bets.
+        self.track_platform = "polymarket"
         self.opinion: AiResearch | None = None
         self.message: str | None = None
         # Six-month inventory is an expensive historical aggregate. Cache it
@@ -652,7 +707,9 @@ class ResearchDashboard(discord.ui.View):
         self.add_item(_SectionSelect(self.screen, self.section))
         if self.screen == "accuracy" and self.section == "tracker":
             self.add_item(_TrackStartSelect())
-            self.add_item(_TrackVenueButton())
+            self.add_item(_TrackPlatformButton(self.track_platform))
+            if self.track_platform != "polymarket":
+                self.add_item(_TrackVenueButton())
         if self.screen == "opportunities" and self.target_service is not None:
             self.add_item(_QuickTargetButton())
         if (((self.screen == "accuracy" and self.section == "venue")
@@ -1236,8 +1293,19 @@ class ResearchDashboard(discord.ui.View):
             return embed
 
         if self.screen == "accuracy" and self.section == "tracker":
+            polymarket = self.track_platform == "polymarket"
             if self.market is None:
                 text = "Database unavailable. No tracking can be checked."
+            elif polymarket:
+                try:
+                    result = await asyncio.to_thread(
+                        PolymarketTracking(self.market.store).report,
+                        owner_id=self.owner_id, asset=self.asset,
+                    )
+                    text = polymarket_tracking_text(result)
+                except Exception:  # noqa: BLE001 - do not invent past calls
+                    _LOG.exception("RivaL Polymarket tracking report unavailable")
+                    text = "Could not read Polymarket tracking records; no results inferred."
             elif not self.selected_venue:
                 text = "Choose a configured exchange before tracking."
             else:
@@ -1255,7 +1323,9 @@ class ResearchDashboard(discord.ui.View):
                 text = (f"{self.message}\n\n{text}")[:1024]
             embed.add_field(name="Prediction tracking", value=text, inline=False)
             embed.set_footer(
-                text=f"Next predictions only · {self.selected_venue} · No real P&L"
+                text=("Next calls only · Polymarket · paper results, no real trades"
+                      if polymarket else
+                      f"Next predictions only · {self.selected_venue} · No real P&L")
             )
             return embed
 
@@ -2062,6 +2132,7 @@ class ResearchDashboard(discord.ui.View):
         fresh.screen = self.screen
         fresh.section = self.section
         fresh.selected_venue = self.selected_venue
+        fresh.track_platform = self.track_platform
         fresh.opinion = self.opinion
         fresh.message = self.message
         fresh._history_cache = self._history_cache

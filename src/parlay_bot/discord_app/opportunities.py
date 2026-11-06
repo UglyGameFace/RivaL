@@ -5,6 +5,7 @@ probabilities as approved profitable trades or executable market prices.
 """
 from __future__ import annotations
 
+import logging
 import math
 from datetime import UTC, datetime, timedelta
 
@@ -335,6 +336,64 @@ def recent_multi_watches(
     return list(by_horizon.values())[:limit]
 
 
+def polymarket_call_fields(store, *, asset: str, now: datetime) -> list[tuple[str, str]]:
+    """The open Polymarket contracts' frozen first calls, with the measured record.
+
+    Read-only. Shows only contracts still open whose first call was issued
+    before now; never a guessed or recomputed call.
+    """
+    from parlay_bot.perpetuals.polymarket_learning import (
+        MIN_DIRECTIONAL_MARGIN,
+        MODEL,
+        PolymarketOutcomeLearner,
+    )
+
+    with store.connect() as conn:
+        rows = conn.execute(
+            "SELECT f.slug,f.issued_at,f.probability_up,f.market_baseline,"
+            "v.horizon,v.expires_at FROM rival_polymarket_model_forward f "
+            "JOIN rival_polymarket_observations v ON v.slug=f.slug "
+            "WHERE v.asset=? AND f.model_version=? AND v.expires_at>? "
+            "ORDER BY v.expires_at LIMIT 12",
+            (asset, MODEL, now.isoformat()),
+        ).fetchall()
+    learner = PolymarketOutcomeLearner(store)
+    fields, seen = [], set()
+    for row in rows:
+        try:
+            horizon = int(row["horizon"])
+            issued = datetime.fromisoformat(str(row["issued_at"]))
+            closes = datetime.fromisoformat(str(row["expires_at"]))
+            p, market = float(row["probability_up"]), float(row["market_baseline"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if horizon in seen or not issued <= now < closes:
+            continue
+        seen.add(horizon)
+        side = ("WAIT" if abs(p - .5) < MIN_DIRECTIONAL_MARGIN else "UP" if p > .5 else "DOWN")
+        try:
+            summary = learner.summary(asset=asset, horizon=horizon)
+            n = int(summary.get("settled_forward_contracts") or 0)
+            model, base = summary.get("forward_brier"), summary.get("market_baseline_brier")
+            record = (f"Last 7 days, {n:,} settled calls: the model "
+                      f"{'beat' if model < base else 'did not beat'} the market's own price "
+                      f"(error {model:.4f} vs {base:.4f}, lower is better)."
+                      if n and model is not None and base is not None
+                      else "No settled calls to score yet.")
+        except Exception:  # noqa: BLE001 - the record is context, never required
+            record = "Track record unavailable right now."
+        label = "1 hour" if horizon == 60 else f"{horizon} min"
+        fields.append((
+            horizon,
+            f"🎰 Polymarket • {label} • call: {side}",
+            (f"Frozen first call: **{side}** (model {p:.1%} UP; the market priced UP at "
+            f"{market:.0%} at that moment). Closes {discord.utils.format_dt(closes, style='R')}. "
+            f"[Open contract](https://polymarket.com/event/{row['slug']})\n"
+            f"{record} **Not a proven edge.**"),
+        ))
+    return [(name, value) for _, name, value in sorted(fields)]
+
+
 def crypto_desk_embed(
     market: PerpetualMarketStore | None, *, asset: str = "BTC",
     proof: bool = False, now: datetime | None = None,
@@ -367,6 +426,12 @@ def crypto_desk_embed(
             inline=False,
         )
         return embed
+    # Polymarket first: it is where users actually place Up/Down bets.
+    try:
+        for name, value in polymarket_call_fields(market.store, asset=asset, now=stamp):
+            embed.add_field(name=name, value=value[:1024], inline=False)
+    except Exception:  # noqa: BLE001 - tables may not exist yet; exchange watch still shows
+        logging.getLogger(__name__).info("Polymarket calls unavailable for Opportunities")
     if not watches:
         embed.add_field(
             name="⏳ Nothing to watch right now",

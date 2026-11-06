@@ -14,7 +14,7 @@ _LOG = logging.getLogger(__name__)
 
 RESEARCH_BUTTONS = (
     "opportunities", "math", "ai", "accuracy", "refresh",
-    "follow-target", "analyze", "track-venue",
+    "follow-target", "analyze", "track-venue", "track-platform",
 )
 RESEARCH_SELECTS = ("asset", "section", "venue")
 # A view has five rows and each select fills one, so the tracker's select

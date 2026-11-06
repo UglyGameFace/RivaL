@@ -27,39 +27,10 @@ on:
         required: false
         type: string
         default: ""
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/source-native-research.yml"
-      - "src/parlay_bot/research/source_native.py"
-      - "src/parlay_bot/research/source_native_offline.py"
-      - "src/parlay_bot/research/live_training.py"
-      - "src/parlay_bot/research/llm_feature_ablation.py"
-      - "tools/discloud_feature_hypotheses.py"
-      - "src/parlay_bot/research/boosted_models.py"
-      - "src/parlay_bot/research/boosted_portable.py"
-      - "src/parlay_bot/research/candidate_registry.py"
-      - "src/parlay_bot/research/bitget_source_bridge.py"
-      - "tests/test_bitget_source_bridge.py"
-      - "tools/native_acceptance_status.py"
-      - "tests/test_native_acceptance_status.py"
-  schedule:
-    # One bounded venue per day, rather than nine full retrains at once.
-    - cron: "43 5 * * *"
-
-permissions:
-  contents: read
-  issues: write
-
-concurrency:
-  group: rival-source-native-research
-  cancel-in-progress: false
-
 jobs:
   offline-venue-research:
-    if: vars.RIVAL_NATIVE_RESEARCH_ENABLED != 'false'
     runs-on: ubuntu-latest
-    timeout-minutes: 85
+    timeout-minutes: 15
     env:
       SELECTED_FIRST_MONTH: ${{ inputs.first_month || '' }}
       SELECTED_ASSET: ${{ inputs.asset || '' }}
@@ -79,178 +50,38 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Install offline research libraries
-        run: python -m pip install -e ".[dev,ml-research]"
-      - name: Research ONE live venue on verified private source bytes
-        shell: bash
-        run: |
-          set -euo pipefail
-          for name in RIVAL_DRIVE_ROOT_FOLDER_ID RIVAL_DRIVE_HISTORY_FOLDER_ID \
-            RIVAL_DRIVE_MANIFESTS_FOLDER_ID RIVAL_DRIVE_STAGING_FOLDER_ID \
-            RIVAL_DRIVE_MODELS_FOLDER_ID RIVAL_DRIVE_REPORTS_FOLDER_ID \
-            RIVAL_DRIVE_OAUTH_CLIENT_ID RIVAL_DRIVE_OAUTH_CLIENT_SECRET \
-            RIVAL_DRIVE_OAUTH_REFRESH_TOKEN; do
-            if [[ -z "${!name}" ]]; then
-              echo "::error::Private Drive authorization is not configured ($name)."
-              exit 1
-            fi
-          done
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            VENUE="${{ github.event.inputs.venue }}"
-          elif [[ "${{ github.event_name }}" == "push" ]]; then
-            # The old push path repeatedly chose the hardest incomplete Bitget
-            # source even though the other venues can research independently.
-            VENUE="okx"
-          else
-            VENUE="$(python - <<'PY'
-          from datetime import UTC, datetime
-          venues = ("hyperliquid","dydx","gate","okx",
-                    "kucoin","deribit","lighter","phemex")
-          print(venues[datetime.now(UTC).date().toordinal() % len(venues)])
-          PY
-          )"
-          fi
-          echo "Researching actual warehouse source: $VENUE"
-          args=(--venue "$VENUE" --months 6 --publish)
-          # Read private post-issuance LFM3 feature proposals from the real
-          # Discloud PostgreSQL bot, never from GitHub branch text or a guess.
-          # Missing/disabled local AI leaves ordinary ML training intact.
-          proposal_file="data/native-reports/llm-proposals-${VENUE}.json"
-          python tools/discloud_feature_hypotheses.py --venue "$VENUE" \
-            --output "$proposal_file"
-          args+=(--llm-hypotheses-file "$proposal_file")
-          if [[ -n "$SELECTED_FIRST_MONTH" ]]; then
-            args+=(--first-month "$SELECTED_FIRST_MONTH")
-          fi
-          if [[ -n "$SELECTED_ASSET" && "$VENUE" != "bitget" ]]; then
-            echo "::error::Exact coin selection applies only to Bitget"
-            exit 2
-          fi
-          if [[ "$VENUE" == "bitget" ]]; then
-            # Bounded one-asset job; daily venue rotation keeps the other
-            # sources scheduled. This is OFFLINE ONLY.
-            assets=(BTC ETH SOL XRP)
-            slot=$(( $(date -u +%s) / 86400 % 4 ))
-            args+=(--asset "${SELECTED_ASSET:-${assets[$slot]}}")
-          fi
-          # A known incomplete venue must not waste the only unattended
-          # daily training slot. Retry ONE independent, better-covered source
-          # after its real source-months-incomplete report. No blind fallback
-          # for auth, network, checksum, import or model-evaluation failures.
-          set +e
-          python -m parlay_bot.research.source_native_offline "${args[@]}"
-          exit_code=$?
-          set -e
-          if (( exit_code != 0 )); then
-            # Reports are content-addressed: source-<venue>-research-<sha20>.json
-            # (research.production._report). The old exact-name check never
-            # matched, so the OKX fallback never ran after an incomplete venue.
-            if [[ "${{ github.event_name }}" != "workflow_dispatch" && "$VENUE" != "okx" ]] &&
-                python -c 'import json,sys; from pathlib import Path; sys.exit(0 if any(json.loads(p.read_text()).get("status") == "source_months_incomplete" for p in Path("data/native-reports").glob(f"source-{sys.argv[1]}-research*.json")) else 1)' "$VENUE"; then
-              echo "Unverified complete months blocked $VENUE; trying independent OKX research once."
-              proposal_file="data/native-reports/llm-proposals-okx.json"
-              python tools/discloud_feature_hypotheses.py --venue okx \
-                --output "$proposal_file"
-              python -m parlay_bot.research.source_native_offline --venue okx --months 6 --publish \
-                --llm-hypotheses-file "$proposal_file"
-            else
-              exit "$exit_code"
-            fi
-          fi
-      - name: Summarize verified source-native acceptance
-        if: always()
-        shell: bash
+      - run: python -m pip install -q -e .
+      - name: READ-ONLY list Gate manifest names (TEMP probe, never merge)
         run: |
           python - <<'PY'
-          import json
-          import os
-          from pathlib import Path
-
-          reports = sorted(Path("data/native-reports").glob("source-*-research*.json"))
-          lines = ["### Source-native acceptance", ""]
-          if not reports:
-              lines.append("No source-native report was produced. Check workflow authorization and errors.")
-          for report in reports:
-              data = json.loads(report.read_text(encoding="utf-8"))
-              lines.extend([
-                  f"Venue: `{data.get('venue', 'unknown')}`",
-                  f"Status: `{data.get('status', 'missing')}`",
-                  f"Restored monthly manifests: {data.get('restored_manifests', 0)}",
-                  f"Screened model artifacts published: {data.get('published_models', 0)}",
-                  f"Rejected research artifacts archived: {data.get('archived_rejected_models', 0)}",
-              ])
-              screening = data.get("actual_registry_screening") or {}
-              if screening:
-                  lines.append(
-                      "Actual importer screen: "
-                      f"{screening.get('retrospective_passed', 0)}/"
-                      f"{screening.get('evaluated', 0)} retrospective passes"
-                  )
-                  for rejected in screening.get("rejected_by_reason", [])[:8]:
-                      lines.append(
-                          f"- Importer rejected {rejected['count']}: "
-                          f"{rejected['reason']}"
-                      )
-                  # Descriptive, validation-only comparison. Never rank or
-                  # select from the sealed holdout test after inspecting it.
-                  by_scope = {}
-                  for row in screening.get("source_specific_outcomes", []):
-                      key = (row.get("asset"), row.get("horizon"))
-                      gain = row.get("validation_brier_gain")
-                      if (isinstance(gain, (int, float))
-                          and row.get("screen") != "retrospective_pass"):
-                          by_scope.setdefault(key, []).append(gain)
-                  for (asset, horizon), gains in sorted(by_scope.items()):
-                      if asset and horizon and gains:
-                          lines.append(
-                              f"- {asset} {horizon}m: {len(gains)} rejected "
-                              f"candidates; best *validation-only* Brier gain "
-                              f"{max(gains):+.6f} vs required >+0.005000"
-                          )
-                  lines.append(
-                      "Retrospective passes are NOT live promotion, "
-                      "future accuracy, or after-cost trading proof."
-                  )
-              llm = data.get("llm_hypothesis_research") or {}
-              lines.append(
-                  "Private LFM3 feature research: "
-                  f"{llm.get('status', 'not_checked')}; "
-                  f"{llm.get('received_proposals', 0)} proposals; "
-                  f"{llm.get('evaluated', 0)} chronological validation tests; "
-                  f"{llm.get('screened_forward_candidate_count', 0)} eligible "
-                  "source-native challenger artifacts (not future approvals)"
-              )
-              for trial in llm.get("experiments", [])[:18]:
-                  lines.append(
-                      f"- {trial['asset']} {trial['horizon_minutes']}m "
-                      f"{trial['venue']} {trial['hypothesis']}: "
-                      f"validation Brier improvement vs ordinary logit "
-                      f"{trial['validation_brier_delta']:+.6f}; "
-                      "holdout NOT viewed, model NOT imported"
-                  )
-              for stream in data.get("source_scopes", [])[:24]:
-                  if "missing_or_incomplete_months" not in stream:
-                      continue
-                  missing = ", ".join(stream["missing_or_incomplete_months"])
-                  lines.append(
-                      f"- {stream['contract']}/{stream['quote']}: "
-                      f"{stream['verified_full_months']}/6 full months; "
-                      f"missing/incomplete: {missing}"
-                  )
-          lines.extend(["", "Research is NOT live model promotion, forward accuracy, or verified real trading profit."])
-          with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
-              summary.write("\n".join(lines) + "\n")
+          import asyncio
+          from collections import Counter
+          from parlay_bot.config import Settings
+          from parlay_bot.research.publish import _drive
+          async def main():
+              drive = _drive(Settings())
+              await drive._verify_folder_boundary()
+              venue = "gate"
+              q = (f"'{drive._escape_query(drive.folders.manifests)}' in parents and trashed = false "
+                   f"and name contains '{drive._escape_query(venue + '-')}' "
+                   "and appProperties has { key='rival_kind' and value='manifest' }")
+              found, token = [], None
+              for _ in range(20):
+                  params = {"q": q, "spaces": "drive", "pageSize": 100,
+                            "fields": "nextPageToken,files(name,appProperties)"}
+                  if token: params["pageToken"] = token
+                  r = await drive._client.get(f"{drive.DRIVE_URL}/files", params=params,
+                                              headers=await drive._headers())
+                  print("status", r.status_code)
+                  data = r.json(); found += data.get("files", [])
+                  token = data.get("nextPageToken")
+                  if not token: break
+              print("total", len(found))
+              bad = [f for f in found if not isinstance(f, dict) or not str(f.get("name","")).startswith(venue + "-")]
+              print("not starting with gate-:", len(bad))
+              for f in bad[:40]:
+                  print("BAD", repr(f.get("name") if isinstance(f, dict) else f),
+                        (f.get("appProperties") or {}).get("rival_source") if isinstance(f, dict) else "")
+              print("prefixes", Counter(str(f.get("name",""))[:12] for f in found).most_common(15))
+          asyncio.run(main())
           PY
-      - name: Persist actual acceptance result without duplicate issue notifications
-        if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: python tools/native_acceptance_status.py
-      - name: Preserve research-only evidence, never provider raw files
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: source-native-offline-reports
-          path: data/native-reports/*.json
-          if-no-files-found: ignore
-          retention-days: 14

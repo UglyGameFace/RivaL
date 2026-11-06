@@ -215,7 +215,7 @@ def test_live_market_and_model_predictions_are_clearly_separate():
     assert "UP $0.61" in full and "DOWN $0.45" in full
     assert "hyperliquid" not in full and "59.0%" not in full
     assert next_window.slug in full
-    assert "~15s" in embed.footer.text
+    assert "First model call frozen" in embed.footer.text
 
 
 def test_15m_model_leans_up_for_a_different_five_minute_candle_only():

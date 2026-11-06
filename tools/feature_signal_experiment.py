@@ -26,6 +26,7 @@ import asyncio
 import hashlib
 import io
 import json
+import logging
 import sys
 import zipfile
 from datetime import UTC, date, datetime, timedelta
@@ -70,10 +71,23 @@ def _maybe_unpublished(url: str) -> bool:
     return False
 
 
+_LOG = logging.getLogger(__name__)
+
+
 async def fetch(client: httpx.AsyncClient, url: str, cache: Path, sem) -> bytes | None:
     path = cache / hashlib.sha1(url.encode()).hexdigest()
     if path.exists():
-        return path.read_bytes() or None
+        cached = path.read_bytes()
+        if not cached:
+            return None  # an empty file is a 404 cached at download time
+        # A cache hit is trusted only when its bytes check out. Every file
+        # fetched here is a zip, so a hit that is not a valid zip is a
+        # stale/corrupt cache: drop it and re-download below instead of
+        # silently training on the wrong bytes.
+        if zipfile.is_zipfile(io.BytesIO(cached)):
+            return cached
+        _LOG.warning("stale local cache for %s; re-downloading", url)
+        path.unlink(missing_ok=True)
     async with sem:
         for attempt in range(4):
             try:
@@ -141,8 +155,10 @@ async def load_asset(client, asset: str, last_month: str, cache: Path, sem,
     # Binance posts a month's file a few days after it ends; cover any
     # trailing months it has not posted yet with that month's daily files.
     daily_from = last_month  # daily files start the month AFTER this one
+    months_fell_back_to_daily = []
     while (through_day is not None and monthly_k and not monthly_k[-1]
            and len(monthly_k) > 1):
+        months_fell_back_to_daily.append(ms[-1])
         monthly_k.pop()
         kl_urls.pop()
         pr_urls.pop()
@@ -176,6 +192,37 @@ async def load_asset(client, asset: str, last_month: str, cache: Path, sem,
     raws = [*monthly_k, *await asyncio.gather(*(get(client, u, cache, sem)
                                                for u in pr_urls + fu_urls + me_urls))]
     n1, n2, n3 = len(kl_urls), len(kl_urls) + len(pr_urls), len(kl_urls) + len(pr_urls) + len(fu_urls)
+    # Month/coverage accounting: a month whose file was not returned is
+    # missing from training, and used to be filtered out silently below
+    # (``if r``). Record it per family so the report says what was trained
+    # on instead of implying full coverage.
+    def _family_coverage(raws_part):
+        loaded = [m for m, r in zip(ms, raws_part, strict=True) if r]
+        return {"months_requested": list(ms), "months_loaded": loaded,
+                "months_missing": [m for m in ms if m not in loaded]}
+
+    metrics_missing = [d for d, r in zip(days, raws[n3:], strict=True) if not r]
+    coverage = {
+        "asset": asset,
+        "months_requested": list(ms),
+        "months_fell_back_to_daily": months_fell_back_to_daily,
+        "klines": _family_coverage(monthly_k),
+        "premium": _family_coverage(raws[n1:n2]),
+        "funding": _family_coverage(raws[n2:n3]),
+        "metrics": {"days_requested": len(days),
+                    "days_loaded": len(days) - len(metrics_missing),
+                    "days_missing": len(metrics_missing),
+                    "first_missing_day": (metrics_missing[0].isoformat()
+                                          if metrics_missing else None),
+                    "last_missing_day": (metrics_missing[-1].isoformat()
+                                         if metrics_missing else None)},
+        "recent_days": {"days_requested": [d.isoformat() for d in recent],
+                        "days_loaded": [d.isoformat() for d in recent[:len(recent_k)]],
+                        "stopped_at_first_missing_day": (
+                            recent[len(recent_k)].isoformat()
+                            if recent and len(recent_k) < len(recent) else None)},
+        "covered_through": covered_through.isoformat() if covered_through else None,
+    }
     kl = [read_zip_csv(r, KLINE) for r in [*raws[:n1], *recent_k] if r]
     pr = [read_zip_csv(r, KLINE[:5]) for r in [*raws[n1:n2], *recent_p] if r]
     fu = [read_zip_csv(r, ["calc_time", "funding_interval_hours", "last_funding_rate"])
@@ -229,6 +276,10 @@ async def load_asset(client, asset: str, last_month: str, cache: Path, sem,
     else:
         for col in ("oi", "toptrader_ls_position", "ls_count", "taker_ls_vol"):
             k[col] = np.nan
+    coverage["bars"] = len(k)
+    coverage["first_bar"] = str(k.index.min())
+    coverage["last_bar"] = str(k.index.max())
+    k.attrs["coverage"] = coverage
     return k
 
 
@@ -368,7 +419,9 @@ async def main_async(args) -> dict:
     report = {"schema": "rival-feature-signal-experiment-v1",
               "created_at": datetime.now(UTC).isoformat(),
               "split": {"train_before": str(TRAIN_END), "test_from": str(TEST_START)},
-              "research_only": True, "results": {}}
+              "research_only": True,
+              "coverage": {asset: data[asset].attrs.get("coverage") for asset in ASSETS},
+              "results": {}}
     pooled: dict[int, list] = {h: [] for h in HORIZONS}
     for asset in ASSETS:
         feats, price_cols, extra = features(data[asset], None if asset == "BTC" else data["BTC"])

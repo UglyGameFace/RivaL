@@ -10,8 +10,10 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import logging
 import re
+import zipfile
 from pathlib import Path
 
 _LOG = logging.getLogger(__name__)
@@ -47,7 +49,7 @@ class TrainingWarehouse:
         self.max_uploads = max_uploads
         self.index: dict[str, tuple[str, str, int]] = {}
         self.stats = {"indexed_files": 0, "from_warehouse": 0, "already_cached": 0, "official_saved": 0, "official_not_saved": 0,
-                      "missing_at_source": 0, "save_failed": 0}
+                      "missing_at_source": 0, "save_failed": 0, "cache_stale": 0, "warehouse_fallback": 0}
         self._upload_lock = asyncio.Semaphore(4)
 
     async def load_index(self) -> None:
@@ -131,16 +133,36 @@ class TrainingWarehouse:
         finally:
             path.unlink(missing_ok=True)
 
+    def _is_stale_cache(self, url: str, raw: bytes) -> bool:
+        """A local cache hit is trusted only when its bytes check out: the
+        warehouse index's MD5 when the file is warehoused, else a valid zip
+        (every file fetched here is one). Anything else is a stale/corrupt
+        cache, never silently trained on."""
+        hit = self._lookup(url)
+        if hit is not None:
+            (_file_id, md5, _size), _checksum = hit
+            return hashlib.md5(raw, usedforsecurity=False).hexdigest() != md5
+        return not zipfile.is_zipfile(io.BytesIO(raw))
+
     def fetcher(self, official_fetch):
         """A drop-in for feature_signal_experiment.fetch (warehouse first)."""
         async def fetch(client, url, cache, sem):
             local = cache / hashlib.sha1(url.encode()).hexdigest()
             if local.exists():
                 raw = local.read_bytes() or None
-                self.stats["already_cached"] += 1
-                if raw is not None and self._lookup(url) is None:
-                    await self._save(url, raw)  # cached official bytes -> warehouse
-                return raw
+                if raw is None:
+                    self.stats["already_cached"] += 1
+                    return None  # an empty file is a 404 cached at download time
+                if self._is_stale_cache(url, raw):
+                    self.stats["cache_stale"] += 1
+                    _LOG.warning("stale local cache for %s; re-fetching instead "
+                                 "of training on it", url)
+                    local.unlink(missing_ok=True)
+                else:
+                    self.stats["already_cached"] += 1
+                    if self._lookup(url) is None:
+                        await self._save(url, raw)  # cached official bytes -> warehouse
+                    return raw
             hit = self._lookup(url)
             if hit is not None:
                 try:
@@ -157,6 +179,7 @@ class TrainingWarehouse:
                     self.stats["from_warehouse"] += 1
                     return raw
                 except Exception:  # noqa: BLE001 - fall back to the official original
+                    self.stats["warehouse_fallback"] += 1
                     _LOG.warning("warehouse read failed for %s; using official file", url)
             raw = await official_fetch(client, url, cache, sem)  # checksum-verified
             if raw is None:
@@ -203,7 +226,30 @@ class TrainingWarehouse:
         out = []
         local_dir = self.cache / "records"
         local_dir.mkdir(parents=True, exist_ok=True)
-        for name in sorted(found)[-max_files:]:
+        # The cap silently dropped every day older than the newest
+        # ``max_files``. State it: which days were found, how many the cap
+        # dropped, and the dropped range — a model trained on this list must
+        # be able to say how much history it never saw.
+        all_days = sorted(found)
+        dropped = all_days[:-max_files] if len(all_days) > max_files else []
+        kept = all_days[-max_files:]
+
+        def _day_of(name: str) -> str:
+            return name[len(prefix):-len(".ndjson.gz")]
+
+        self.stats[f"records_{table}_coverage"] = {
+            "cap_days": max_files,
+            "days_found": len(all_days),
+            "days_returned": len(kept),
+            "days_dropped_by_cap": len(dropped),
+            "dropped_first_day": _day_of(dropped[0]) if dropped else None,
+            "dropped_last_day": _day_of(dropped[-1]) if dropped else None,
+        }
+        if dropped:
+            _LOG.warning("records %s: %d of %d days dropped by the %d-day cap "
+                         "(%s..%s)", table, len(dropped), len(all_days), max_files,
+                         _day_of(dropped[0]), _day_of(dropped[-1]))
+        for name in kept:
             file_id, md5 = found[name]
             local = local_dir / name
             raw = local.read_bytes() if local.exists() else b""

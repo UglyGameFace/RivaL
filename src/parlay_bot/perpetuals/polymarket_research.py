@@ -46,8 +46,10 @@ class ContractCall:
     input_up_ask: float | None = None
     input_down_ask: float | None = None
     kind: str = "AI"
-    # The model's own UP probability, when it has one (book model only).
+    # Original probability and contract identity for a frozen model call.
     probability_up: float | None = None
+    settlement_schema: str | None = None
+    condition_id: str | None = None
 
 
 class PolymarketResearch:
@@ -99,6 +101,8 @@ class PolymarketResearch:
                 """)
             self.learner.initialize()
             self.oracle_challenger.initialize()
+            from parlay_bot.perpetuals.model_league import Contest
+            Contest(self.store).initialize()
             self._initialized = True
 
     def study(self, notice):
@@ -341,7 +345,8 @@ class PolymarketResearch:
             rows = conn.execute(
                 "SELECT c.slug,c.condition_id,c.expires_at FROM ("
                 "SELECT slug,condition_id,expires_at FROM rival_polymarket_ai_calls UNION "
-                "SELECT slug,condition_id,expires_at FROM rival_polymarket_observations) c "
+                "SELECT slug,condition_id,expires_at FROM rival_polymarket_observations UNION "
+                "SELECT slug,condition_id,expires_at FROM rival_poly_contest_rounds) c "
                 "LEFT JOIN rival_polymarket_ai_outcomes o ON o.slug=c.slug "
                 "LEFT JOIN rival_polymarket_resolution_attempts a ON a.slug=c.slug "
                 "WHERE o.slug IS NULL AND c.expires_at<? "

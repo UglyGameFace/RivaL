@@ -25,14 +25,7 @@ from parlay_bot.discord_app.polymarket_watch import (
     PolymarketWindowBoard,
     unavailable_text,
 )
-from parlay_bot.perpetuals.early_call import (
-    current_early_call,
-    early_call_record,
-    early_call_text,
-)
-from parlay_bot.perpetuals.model_league import BOOK as BOOK_MODEL
-from parlay_bot.perpetuals.model_league import league, league_text
-from parlay_bot.perpetuals.polymarket_formula_test import formula_record, formula_text
+from parlay_bot.perpetuals.model_league import Contest, league, league_text, settlement_schema
 from parlay_bot.perpetuals.polymarket_research import ContractCall, PolymarketResearch
 from parlay_bot.storage.hot import RelationalHotStore
 
@@ -200,15 +193,12 @@ def value_line(call: ContractCall, quote) -> str:
     Uses Polymarket's crypto taker fee. The model's chance is its own
     estimate, not a proven probability, and the line says so.
     """
-    from parlay_bot.perpetuals.polymarket_learning import polymarket_fee
-
     if quote is None or call.probability_up is None or call.direction not in ("UP", "DOWN"):
         return ""
     chance = call.probability_up if call.direction == "UP" else 1 - call.probability_up
-    ask = quote.up_ask if call.direction == "UP" else quote.down_ask
-    if not 0 < ask < 1:
-        return ""
-    cost = ask + polymarket_fee(ask)
+    cost = getattr(quote, "up_cost" if call.direction == "UP" else "down_cost", None)
+    if cost is None:
+        return "Price check unavailable: exact fees or ten-share depth are missing.\n"
     gap = chance - cost
     verdict = ("✅ cheaper than the model's own chance" if gap > 0
                else "⛔ costs more than the model's own chance — skip at this price")
@@ -235,9 +225,10 @@ def live_polymarket_embed(
     direction = snapshot.direction if valid else "WAIT"
     # When the per-market contest has been computed and the main model is not
     # its champion, the headline must not present that model's call as the pick.
-    outranked = league is not None and league.get("champion") != BOOK_MODEL
+    champion = league.get("champion") if league else None
+    outranked = not valid or champion != snapshot.model
     title = (f"📡 {asset} • {horizon} min | No model beats Polymarket's price"
-             if valid and outranked else
+             if not champion else
              f"📡 {asset} • {horizon} min | Polymarket {snapshot.kind if valid else 'AI'} {direction}")
     embed = discord.Embed(
         title=title,
@@ -287,11 +278,10 @@ def live_polymarket_embed(
                 "Open the listed contract to check its rules."
             )
         embed.add_field(name="Settlement source", value=resolution_text, inline=False)
-    if league is not None:
-        embed.add_field(name="🏆 Best model for this market",
-                        value=league_text(league, asset=asset, horizon=horizon), inline=False)
+    embed.add_field(name="🏆 Best model for this market",
+                    value=league_text(league, asset=asset, horizon=horizon), inline=False)
     if valid:
-        call_label = ("🧠 Main model call (not better than the price)" if outranked
+        call_label = ("🧠 First model call (frozen) • unqualified model research" if outranked
                       else "🧠 First model call (frozen)"
                       if snapshot.kind == "model" else f"🧠 {snapshot.kind} contract research")
         embed.add_field(name=call_label, value=f"**{direction}** • {snapshot.thesis}", inline=False)
@@ -305,12 +295,13 @@ def live_polymarket_embed(
             embed.add_field(name="AI refresh", value=ai_status, inline=False)
     if formula is not None and current is not None and formula.get("slug") == current.slug:
         chance = formula["chance_up"]
-        embed.add_field(name="📐 Price formula (testing)", value=(
-            f"**{chance:.0%} UP / {1 - chance:.0%} DOWN** from Coinbase's live price vs. the "
-            f"open, time left and recent volatility "
-            f"(<t:{int(formula['at'].timestamp())}:R>). Polymarket: UP "
+        embed.add_field(name="📐 Price formula checkpoint (frozen)", value=(
+            f"**{chance:.0%} UP / {1 - chance:.0%} DOWN** from a median of 3+ USD spot exchanges vs. the "
+            f"reference, time left and EWMA volatility "
+            f"(<t:{int(formula['at'].timestamp())}:R>). Snapshot asks: UP "
             f"${formula['up_ask']:.2f} • DOWN ${formula['down_ask']:.2f}. "
-            "Locked test: not a proven edge."
+            f"{formula.get('payoff', 'Research approximation')}; strike: {formula.get('strike_source', 'unverified')}. "
+            "Testing only; no proven edge."
         ), inline=False)
     if board is not None and board.next_window is not None:
         next_window = board.next_window
@@ -423,11 +414,6 @@ class LivePolymarketBoardService:
         self._prime_pending: dict[tuple[str, int], asyncio.Task] = {}
         # user_id -> slug already pinged, so each contract pings once.
         self._pinged: dict[str, str] = {}
-        # (asset, horizon) -> (computed_at, record line) for the ping text.
-        self._records: dict[tuple[str, int], tuple[datetime, str]] = {}
-        # Start-of-contract call test: (asset, horizon) -> (computed_at, record).
-        self._early: dict[tuple[str, int], tuple[datetime, dict]] = {}
-        self._early_pinged: dict[str, str] = {}
         # Optional: the price-formula test (set by the bot) for the card line.
         self.formula = None
         # (computed_at, model_league result): which model, if any, beats the price.
@@ -449,11 +435,8 @@ class LivePolymarketBoardService:
                 checked_at=board.checked_at, current=board.current,
                 next_window=board.next_window, current_quote=None,
                 quote_unavailable_reason="book_stale",
-            ), (self.research.peek(board.current.slug)
-                if self.research is not None and board.current is not None else saved[2])
-        call = (self.research.peek(board.current.slug)
-                if self.research is not None and board.current is not None else saved[2])
-        return board, call
+            ), saved[2]
+        return board, saved[2]
 
     async def preview(self, asset: str, horizon: int) -> tuple[PolymarketWindowBoard, ContractCall | None] | None:
         """One short warmup read; never block menu on the model DB pool."""
@@ -566,15 +549,16 @@ class LivePolymarketBoardService:
                 # the quote drops out for seconds at a time; the card must keep
                 # showing the stored call instead of falling back to WAIT.
                 snapshot = self.research.peek(board.current.slug)
+            snapshot = await self._qualified_call(board, snapshot, asset, horizon)
             self._live_cache[(asset, horizon)] = (datetime.now(UTC), board, snapshot)
         reading = None
         if self.formula is not None and board is not None and board.current is not None:
             latest = self.formula.latest.get(board.current.slug)
-            if latest is not None and datetime.now(UTC) - latest["at"] <= timedelta(seconds=30):
+            if latest is not None and latest["slug"] == board.current.slug:
                 reading = latest
         embed = live_polymarket_embed(
             board, snapshot, asset=asset, horizon=horizon, formula=reading,
-            league=self._league_entry(asset, horizon),
+            league=self._league_entry(asset, horizon, board.current_quote if board else None),
             ai_status=(self.research.refresh_note(board.current.slug) if snapshot is not None
                        else self.research.status(board.current.slug)
                        if self.research is not None and board is not None and board.current is not None else None),
@@ -625,16 +609,13 @@ class LivePolymarketBoardService:
                     notice = "This is an older or inactive panel. Use /rival → Live Panel."
                 elif action == "pings":
                     on = await asyncio.to_thread(self.store.toggle_pings, user_id)
-                    notice = ("🔔 Pings ON: you get one new message when each contract's "
-                              "UP/DOWN call is issued." if on else
+                    notice = ("🔔 Pings ON: one message for a qualified model's frozen "
+                              "call with a current after-fee edge." if on else
                               "🔕 Pings OFF: the card still updates, but no new messages.")
                 elif action == "record":
-                    early = await self._early_record(tracker.asset, tracker.horizon)
-                    formula_line = await self._formula_line(tracker.asset, tracker.horizon)
                     notice = (f"**{tracker.asset} {tracker.horizon}m on Polymarket**\n"
-                              + await self._record_line(tracker.asset, tracker.horizon)
-                              + ("\n" + early_call_text(early) if early else "")
-                              + ("\n" + formula_line if formula_line else "")
+                              + league_text(self._league_entry(tracker.asset, tracker.horizon),
+                                                   asset=tracker.asset, horizon=tracker.horizon)
                               + "\nFor your own next-calls scorecard: /rival → Bot Performance "
                               "→ Track Next Predictions.")
                 else:
@@ -765,11 +746,52 @@ class LivePolymarketBoardService:
                     _LOG.info("Stopped tracker; original DM could not be edited")
             return ended
 
-    def _league_entry(self, asset: str, horizon: int) -> dict | None:
-        if self._league is None:
+    def _league_entry(self, asset: str, horizon: int, quote=None) -> dict:
+        empty = {"models": [], "champion": None}
+        if self._league is None or datetime.now(UTC)-self._league[0] > timedelta(minutes=20):
+            return empty
+        result = self._league[1]
+        valid_until = result.get("valid_until")
+        if valid_until is not None and datetime.now(UTC) >= valid_until:
+            return empty
+        entry = result["markets"].get((asset, horizon), empty)
+        if quote is None:
+            saved = self._live_cache.get((asset, horizon))
+            quote = saved[1].current_quote if saved else None
+        schema = settlement_schema(quote) if quote is not None else None
+        if schema is None:
+            saved = self._live_cache.get((asset, horizon))
+            schema = getattr(saved[2], "settlement_schema", None) if saved else None
+        return entry.get("scopes", {}).get(schema, empty)
+
+    async def _qualified_call(self, board, snapshot, asset, horizon):
+        quote = board.current_quote
+        entry = self._league_entry(asset, horizon, quote)
+        model = entry.get("champion")
+        store = getattr(getattr(self.research, "learner", None), "store", None)
+        if model is None:
+            return snapshot
+        if store is None or board.current is None:
             return None
-        return self._league[1]["markets"].get((asset, horizon),
-                                              {"models": [], "champion": None})
+        try:
+            contest = self.formula.contest if self.formula is not None else Contest(store)
+            row = await asyncio.wait_for(asyncio.to_thread(
+                contest.call, board.current.slug, model), timeout=3)
+        except Exception:  # noqa: BLE001 - unavailable champion cannot create a call
+            return None
+        if row is None or (quote is not None and (
+                row["schema_key"] != settlement_schema(quote) or row["condition_id"] != quote.condition_id)):
+            return None
+        return ContractCall(
+            slug=row["slug"], asset=asset, horizon=horizon,
+            issued_at=datetime.fromisoformat(row["issued_at"]),
+            expires=datetime.fromisoformat(row["expires_at"]), direction=row["direction"],
+            model=model, thesis="Contest-qualified model; first checkpoint call is frozen.",
+            risk="Prospective paper evidence; executable fills and future profit are unverified.",
+            evidence_sha256=row["evidence_sha256"], kind="model",
+            probability_up=float(row["probability_up"]), settlement_schema=row["schema_key"],
+            condition_id=row["condition_id"],
+        )
 
     async def _refresh_league(self) -> None:
         """Recompute the per-market contest at most every 10 minutes."""
@@ -868,10 +890,6 @@ class LivePolymarketBoardService:
                         await asyncio.gather(*(
                             self._ping(tracker, saved[1], saved[2]) for tracker in members
                         ))
-                    if saved is not None:
-                        await asyncio.gather(*(
-                            self._early_ping(tracker, saved[1]) for tracker in members
-                        ))
                     return changed
                 except Exception:  # noqa: BLE001 - independent markets stay live
                     _LOG.exception("Live Polymarket board update failed asset=%s horizon=%s", *key)
@@ -880,32 +898,6 @@ class LivePolymarketBoardService:
             return sum(await asyncio.gather(*(
                 observe(key, members) for key, members in by_key.items()
             )))
-
-    async def _record_line(self, asset: str, horizon: int) -> str:
-        """The model's measured 7-day record against the market's own price."""
-        now = datetime.now(UTC)
-        saved = self._records.get((asset, horizon))
-        if saved is not None and now - saved[0] < timedelta(minutes=10):
-            return saved[1]
-        line = "Track record unavailable right now. Not a proven edge."
-        learner = getattr(self.research, "learner", None)
-        if learner is not None:
-            try:
-                summary = await asyncio.wait_for(asyncio.to_thread(
-                    learner.summary, asset=asset, horizon=horizon), timeout=3)
-                n = int(summary.get("settled_forward_contracts") or 0)
-                model, market = summary.get("forward_brier"), summary.get("market_baseline_brier")
-                if n and model is not None and market is not None:
-                    verdict = ("beat" if model < market else "did not beat")
-                    line = (f"Last 7 days, {n:,} settled {asset} {horizon}m calls: the model "
-                            f"{verdict} the market's own price (error {model:.4f} vs "
-                            f"{market:.4f}, lower is better). Not a proven edge.")
-                else:
-                    line = "No settled calls to score yet. Not a proven edge."
-            except Exception:  # noqa: BLE001 - the ping never waits on a slow record
-                _LOG.info("Polymarket ping record unavailable asset=%s horizon=%s", asset, horizon)
-        self._records[(asset, horizon)] = (now, line)
-        return line
 
     async def _ping(self, tracker: LivePolymarketTracker, board, call: ContractCall) -> None:
         """One new DM (which notifies) when a contract's frozen UP/DOWN call is issued.
@@ -916,15 +908,25 @@ class LivePolymarketBoardService:
         do not notify on Discord, so this is a separate short message.
         """
         now = datetime.now(UTC)
-        # Only the market's proven best model may ping. Today no model beats
-        # Polymarket's price, so there is nothing worth interrupting you for.
+        # Every model and every alert path obey the same qualified contest.
         entry = self._league_entry(tracker.asset, tracker.horizon)
-        if (entry is None or entry.get("champion") != BOOK_MODEL
+        if (entry is None or entry.get("champion") != call.model
                 or call.direction not in ("UP", "DOWN")
                 or not matching_call(board, call, asset=tracker.asset, horizon=tracker.horizon)
-                or now - call.issued_at > timedelta(seconds=60)
+                or not timedelta(0) <= now - call.issued_at <= timedelta(seconds=60)
                 or call.expires - now <= timedelta(seconds=60)
                 or self._pinged.get(tracker.user_id) == call.slug):
+            return
+        quote = board.current_quote
+        if (quote is None or not quote.condition_id or call.condition_id != quote.condition_id
+                or call.settlement_schema != settlement_schema(quote)
+                or not timedelta(0) <= now-quote.quote_at <= timedelta(seconds=25)):
+            return
+        from parlay_bot.perpetuals.model_league import EDGE, STRESS
+        p = call.probability_up
+        cost = quote.up_cost if call.direction == "UP" else quote.down_cost
+        chance_now = p if call.direction == "UP" else 1-p if p is not None else None
+        if (cost is None or chance_now is None or chance_now-cost-STRESS < EDGE):
             return
         self._pinged[tracker.user_id] = call.slug
         if len(self._pinged) > 2 * MAX_TRACKERS:
@@ -946,7 +948,7 @@ class LivePolymarketBoardService:
             f"{value_line(call, quote)}"
             f"Closes <t:{int(call.expires.timestamp())}:R>. This call is frozen for the "
             f"whole contract and will not flip.\n"
-            f"{await self._record_line(tracker.asset, tracker.horizon)}\n"
+            f"{league_text(entry, asset=tracker.asset, horizon=tracker.horizon)}\n"
             f"[Open live card](https://discord.com/channels/@me/{tracker.channel_id}/"
             f"{tracker.message_id})"
         )
@@ -956,68 +958,3 @@ class LivePolymarketBoardService:
         except (discord.HTTPException, TimeoutError) as exc:
             _LOG.warning("Live Polymarket call ping failed user=%s reason=%s",
                          tracker.user_id, type(exc).__name__)
-
-    async def _early_record(self, asset: str, horizon: int) -> dict | None:
-        """The locked start-of-contract call test, recomputed at most every 10 min."""
-        now = datetime.now(UTC)
-        saved = self._early.get((asset, horizon))
-        if saved is not None and now - saved[0] < timedelta(minutes=10):
-            return saved[1]
-        learner = getattr(self.research, "learner", None)
-        store = getattr(learner, "store", None)
-        if store is None:
-            return None
-        try:
-            record = await asyncio.wait_for(asyncio.to_thread(
-                early_call_record, store, asset=asset, horizon=horizon), timeout=5)
-        except Exception:  # noqa: BLE001 - locked unless proven; never guess
-            _LOG.info("Early call record unavailable asset=%s horizon=%s", asset, horizon)
-            return None
-        self._early[(asset, horizon)] = (now, record)
-        return record
-
-    async def _early_ping(self, tracker: LivePolymarketTracker, board) -> None:
-        """Ping the start-of-contract call ONLY after the locked test has passed."""
-        current = board.current if board is not None else None
-        if current is None or self._early_pinged.get(tracker.user_id) == current.slug:
-            return
-        record = await self._early_record(tracker.asset, tracker.horizon)
-        if not record or not record["unlocked"]:
-            return
-        store = self.research.learner.store
-        try:
-            call = await asyncio.wait_for(asyncio.to_thread(
-                current_early_call, store, asset=tracker.asset, horizon=tracker.horizon,
-                slug=current.slug), timeout=5)
-        except Exception:  # noqa: BLE001
-            return
-        now = datetime.now(UTC)
-        if (call is None or now - call["issued_at"] > timedelta(seconds=60)
-                or call["expires"] - now <= timedelta(seconds=60)):
-            return
-        self._early_pinged[tracker.user_id] = current.slug
-        if len(self._early_pinged) > 2 * MAX_TRACKERS:
-            self._early_pinged = {tracker.user_id: current.slug}
-        if not await asyncio.to_thread(self.store.pings_on, tracker.user_id):
-            return
-        text = (
-            f"⚡ **{tracker.asset} {tracker.horizon}m — early call: {call['side']}** "
-            f"(model {call['chance']:.0%}; opening price {call['cost'] * 100:.0f}¢ with fee)\n"
-            f"Closes <t:{int(call['expires'].timestamp())}:R>.\n{early_call_text(record)}"
-        )
-        try:
-            channel = self.bot.get_partial_messageable(int(tracker.channel_id))
-            await asyncio.wait_for(channel.send(content=text), timeout=5)
-        except (discord.HTTPException, TimeoutError) as exc:
-            _LOG.warning("Early call ping failed user=%s reason=%s",
-                         tracker.user_id, type(exc).__name__)
-
-    async def _formula_line(self, asset: str, horizon: int) -> str | None:
-        if self.formula is None:
-            return None
-        try:
-            record = await asyncio.wait_for(asyncio.to_thread(
-                formula_record, self.formula.store, asset=asset, horizon=horizon), timeout=5)
-        except Exception:  # noqa: BLE001 - locked unless proven
-            return None
-        return formula_text(record)

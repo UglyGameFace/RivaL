@@ -58,19 +58,21 @@ class PolymarketPooledForecaster:
         return bars if bars and bar_close(bars[-1]) == start else None
 
     def forecast(self, *, asset: str, horizon: int, opens_at: datetime,
-                 now: datetime | None = None) -> dict | None:
+                 now: datetime | None = None, document: dict | None = None,
+                 checkpoint: bool = False) -> dict | None:
         """{'probability', 'family', 'venues'} or None when not computable."""
         if horizon not in (5, 15, 60):
             return None
         feed = getattr(self.market, "binance_context", None)
         context = feed.bundle(asset) if feed else None
-        doc = self.models.active(horizon, context=context is not None)
+        doc = document or self.models.active(horizon, context=context is not None)
         if doc is None:
             return None
         clock = now or datetime.now(UTC)
         start = opens_at.astimezone(UTC)
         # Only before the first post-start bar would add information.
-        if not start <= clock < start + timedelta(minutes=5):
+        limit = timedelta(minutes=horizon*.3) if checkpoint else timedelta(minutes=5)
+        if not start <= clock < start + limit:
             return None
         streams, btc = self._streams(asset, start - timedelta(minutes=15))
         probabilities = []
@@ -93,3 +95,23 @@ class PolymarketPooledForecaster:
         return {"probability": sum(probabilities) / len(probabilities),
                 "family": doc["_family"], "model_sha256": doc["_sha256"],
                 "venues": len(probabilities)}
+
+    def contest_forecasts(self, *, asset: str, horizon: int, opens_at: datetime) -> dict:
+        """Both reviewed training lineages compete without old opening quotes.
+
+        Each immutable artifact has its own contest ID; no mixing nightly
+        retrained weights into an older candidate's measured track record.
+        Features still stop at opens_at. Ignoring newer information is part
+        of this start-feature hypothesis, not a head start against the price.
+        """
+        feed = getattr(self.market, "binance_context", None)
+        context = feed.bundle(asset) if feed else None
+        docs = self.models.contest_contenders(horizon, context=context is not None)
+        results = {}
+        for doc in docs:
+            result = self.forecast(asset=asset, horizon=horizon, opens_at=opens_at,
+                                   document=doc, checkpoint=True)
+            if result is not None:
+                sha = result["model_sha256"]
+                results[f"pooled:{result['family']}@{sha}"] = (result["probability"], sha)
+        return results

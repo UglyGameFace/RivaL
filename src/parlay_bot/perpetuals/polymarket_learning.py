@@ -38,13 +38,16 @@ START_PRICE_WINDOW = timedelta(seconds=90)
 # which could be minutes into the contract; such rows count only if issued
 # within START_PRICE_WINDOW of the start.
 START_PRICE_FROZEN_FROM = datetime(2026, 11, 4, 3, 15, tzinfo=UTC)
-# Polymarket crypto taker fee per share: FEE_RATE * p * p * (1 - p)
-# (fee = C * p * feeRate * (p(1-p))^1; peak effective 1.80% at p = 0.5).
-POLYMARKET_CRYPTO_FEE_RATE = 0.072
+# Published crypto schedule as of 2026-11-06. New contest receipts require
+# the exact market's feeSchedule; this default serves legacy research only.
+POLYMARKET_CRYPTO_FEE_RATE = 0.07
 
 
-def polymarket_fee(price: float) -> float:
-    return POLYMARKET_CRYPTO_FEE_RATE * price * price * (1 - price)
+def polymarket_fee(price: float, rate: float = POLYMARKET_CRYPTO_FEE_RATE) -> float:
+    """USDC per taker share, before order-level five-decimal rounding."""
+    if not all(math.isfinite(x) for x in (price, rate)) or not 0 <= price <= 1 or rate < 0:
+        raise ValueError("invalid fee inputs")
+    return rate * price * (1 - price)
 
 
 class PolymarketOutcomeLearner:
@@ -95,6 +98,36 @@ class PolymarketOutcomeLearner:
                     down_ask DOUBLE PRECISION NOT NULL
                 );""")
             self._initialized = True
+
+    def contest_forecasts(self, notice) -> dict:
+        """Fresh algorithm forecasts on ONE checkpoint book, never older calls.
+
+        Read existing learned state without training or rewriting any forward
+        call. The online logistic algorithm is fixed; pooled artifacts have
+        separate immutable identities and must enroll before their test batch.
+        """
+        self.initialize()
+        result = {}
+        with self._lock, self.store.connect() as conn:
+            state = conn.execute(
+                "SELECT * FROM rival_polymarket_model_state WHERE asset=? AND horizon=? "
+                "AND resolution_source=? AND model_version=?",
+                (notice.asset, notice.horizon, notice.resolution_source, MODEL),
+            ).fetchone()
+        if state is not None and int(state["updates"]) >= MIN_LABELS:
+            weights = json.loads(state["weights_json"])
+            if (len(weights) == 11 and all(math.isfinite(w) for w in weights)
+                    and hashlib.sha256(canonical(weights).encode()).hexdigest() == state["weights_sha256"]):
+                p = _sigmoid(sum(w*x for w, x in zip(weights, (1., *book_features(notice)))))
+                result[MODEL] = (p, state["weights_sha256"])
+        if self.pooled_forecaster is not None:
+            try:
+                result.update(self.pooled_forecaster.contest_forecasts(
+                    asset=notice.asset, horizon=notice.horizon, opens_at=notice.issued))
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning("Pooled contest candidate unavailable", exc_info=True)
+        return result
 
     def _issue_pooled(self, notice, now):
         """One pooled-model forecast per contract, from data up to its start."""

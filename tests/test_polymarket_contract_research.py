@@ -129,13 +129,15 @@ def test_issued_call_only_matches_its_exact_source_window():
                         datetime.now(UTC), current.expires, "DOWN", "test:free",
                         "Exact-contract assessment", "Unvalidated", "a" * 64)
     correct = live_polymarket_embed(board, call, asset="BTC", horizon=5)
-    assert "AI DOWN" in correct.title
+    assert "No model beats Polymarket's price" in correct.title
+    assert any("DOWN" in f.value for f in correct.fields if "unqualified" in f.name)
     assert "Experimental" in correct.description
     assert "calibrated" not in correct.description
     for foreign in (replace(call, slug="other-market"),
                     replace(call, horizon=15), replace(call, expires=datetime.now(UTC)-timedelta(seconds=1))):
         rejected = live_polymarket_embed(board, foreign, asset="BTC", horizon=5)
-        assert "AI WAIT" in rejected.title
+        assert "No model beats Polymarket's price" in rejected.title
+        assert not any("model call" in f.name for f in rejected.fields)
 
 
 @pytest.mark.asyncio

@@ -553,6 +553,14 @@ async def test_one_ping_per_contract_only_for_fresh_up_down_calls(tmp_path, monk
 
         monkeypatch.setattr(service, "_observation", observe)
         current_call = call
+        # No proven champion for this market: the main model never pings.
+        service._league = (datetime.now(UTC), {"markets": {("BTC", 5): {
+            "models": [], "champion": None}}})
+        await service.cycle()
+        assert not [c for c in channel.send.await_args_list if "content" in c.kwargs]
+        # Once the main model is the market's proven best, it pings.
+        service._league = (datetime.now(UTC), {"markets": {("BTC", 5): {
+            "models": [], "champion": "polymarket-terminal-book-logistic-v1"}}})
         await service.cycle()
         await service.cycle()
         pings = [c for c in channel.send.await_args_list if "content" in c.kwargs]

@@ -30,6 +30,8 @@ from parlay_bot.perpetuals.early_call import (
     early_call_record,
     early_call_text,
 )
+from parlay_bot.perpetuals.model_league import BOOK as BOOK_MODEL
+from parlay_bot.perpetuals.model_league import league, league_text
 from parlay_bot.perpetuals.polymarket_formula_test import formula_record, formula_text
 from parlay_bot.perpetuals.polymarket_research import ContractCall, PolymarketResearch
 from parlay_bot.storage.hot import RelationalHotStore
@@ -226,13 +228,19 @@ def matching_call(board, call, *, asset: str, horizon: int) -> bool:
 def live_polymarket_embed(
     board: PolymarketWindowBoard | None, snapshot: ContractCall | None, *,
     asset: str, horizon: int, ai_status: str | None = None,
-    formula: dict | None = None,
+    formula: dict | None = None, league: dict | None = None,
 ) -> discord.Embed:
     current = board.current if board is not None else None
     valid = matching_call(board, snapshot, asset=asset, horizon=horizon)
     direction = snapshot.direction if valid else "WAIT"
+    # When the per-market contest has been computed and the main model is not
+    # its champion, the headline must not present that model's call as the pick.
+    outranked = league is not None and league.get("champion") != BOOK_MODEL
+    title = (f"📡 {asset} • {horizon} min | No model beats Polymarket's price"
+             if valid and outranked else
+             f"📡 {asset} • {horizon} min | Polymarket {snapshot.kind if valid else 'AI'} {direction}")
     embed = discord.Embed(
-        title=f"📡 {asset} • {horizon} min | Polymarket {snapshot.kind if valid else 'AI'} {direction}",
+        title=title,
         description=(
             f"**Experimental contract-specific {snapshot.kind} research.** "
             "The first model forecast is frozen; live prices update independently. "
@@ -279,8 +287,12 @@ def live_polymarket_embed(
                 "Open the listed contract to check its rules."
             )
         embed.add_field(name="Settlement source", value=resolution_text, inline=False)
+    if league is not None:
+        embed.add_field(name="🏆 Best model for this market",
+                        value=league_text(league, asset=asset, horizon=horizon), inline=False)
     if valid:
-        call_label = ("🧠 First model call (frozen)"
+        call_label = ("🧠 Main model call (not better than the price)" if outranked
+                      else "🧠 First model call (frozen)"
                       if snapshot.kind == "model" else f"🧠 {snapshot.kind} contract research")
         embed.add_field(name=call_label, value=f"**{direction}** • {snapshot.thesis}", inline=False)
         embed.add_field(name="Call timing", value=(
@@ -418,6 +430,8 @@ class LivePolymarketBoardService:
         self._early_pinged: dict[str, str] = {}
         # Optional: the price-formula test (set by the bot) for the card line.
         self.formula = None
+        # (computed_at, model_league result): which model, if any, beats the price.
+        self._league: tuple[datetime, dict] | None = None
 
     def peek(self, asset: str, horizon: int) -> tuple[PolymarketWindowBoard, ContractCall | None] | None:
         saved = self._live_cache.get((asset, horizon))
@@ -560,6 +574,7 @@ class LivePolymarketBoardService:
                 reading = latest
         embed = live_polymarket_embed(
             board, snapshot, asset=asset, horizon=horizon, formula=reading,
+            league=self._league_entry(asset, horizon),
             ai_status=(self.research.refresh_note(board.current.slug) if snapshot is not None
                        else self.research.status(board.current.slug)
                        if self.research is not None and board is not None and board.current is not None else None),
@@ -750,8 +765,30 @@ class LivePolymarketBoardService:
                     _LOG.info("Stopped tracker; original DM could not be edited")
             return ended
 
+    def _league_entry(self, asset: str, horizon: int) -> dict | None:
+        if self._league is None:
+            return None
+        return self._league[1]["markets"].get((asset, horizon),
+                                              {"models": [], "champion": None})
+
+    async def _refresh_league(self) -> None:
+        """Recompute the per-market contest at most every 10 minutes."""
+        now = datetime.now(UTC)
+        if self._league is not None and now - self._league[0] < timedelta(minutes=10):
+            return
+        store = getattr(getattr(self.research, "learner", None), "store", None)
+        if store is None:
+            return
+        try:
+            result = await asyncio.wait_for(asyncio.to_thread(league, store), timeout=20)
+        except Exception:  # noqa: BLE001 - keep the last result; never guess a champion
+            _LOG.info("Model league refresh unavailable")
+            return
+        self._league = (now, result)
+
     async def cycle(self) -> int:
         """Deliver each shared market when ready; slow peers cannot delay it."""
+        await self._refresh_league()
         async with self._cycle_lock:
             trackers = await asyncio.to_thread(self.store.active)
             by_key: dict[tuple[str, int], list[LivePolymarketTracker]] = {}
@@ -879,7 +916,11 @@ class LivePolymarketBoardService:
         do not notify on Discord, so this is a separate short message.
         """
         now = datetime.now(UTC)
-        if (call.direction not in ("UP", "DOWN")
+        # Only the market's proven best model may ping. Today no model beats
+        # Polymarket's price, so there is nothing worth interrupting you for.
+        entry = self._league_entry(tracker.asset, tracker.horizon)
+        if (entry is None or entry.get("champion") != BOOK_MODEL
+                or call.direction not in ("UP", "DOWN")
                 or not matching_call(board, call, asset=tracker.asset, horizon=tracker.horizon)
                 or now - call.issued_at > timedelta(seconds=60)
                 or call.expires - now <= timedelta(seconds=60)

@@ -25,6 +25,7 @@ from parlay_bot.perpetuals.polymarket_learning import polymarket_fee
 from parlay_bot.perpetuals.price_formula import chance_up
 
 EDGE = 0.03
+CHECKPOINT_ELAPSED = 0.20
 MIN_BETS = 1000
 WINDOW_DAYS = 14
 
@@ -36,6 +37,7 @@ class FormulaTest:
         self._lock = threading.Lock()
         self._seen: set[str] = set()
         self._bet: set[str] = set()
+        self._checkpointed: set[str] = set()
         # slug -> latest live reading, for the DM card (in memory only).
         self.latest: dict[str, dict] = {}
 
@@ -58,6 +60,13 @@ class FormulaTest:
                     open_price DOUBLE PRECISION NOT NULL,
                     sigma_per_second DOUBLE PRECISION NOT NULL,
                     seconds_left DOUBLE PRECISION NOT NULL, quote_at TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS rival_polymarket_formula_checkpoint (
+                    slug TEXT PRIMARY KEY, condition_id TEXT NOT NULL,
+                    asset TEXT NOT NULL, horizon INTEGER NOT NULL,
+                    issued_at TEXT NOT NULL, expires_at TEXT NOT NULL,
+                    chance_up DOUBLE PRECISION NOT NULL,
+                    market_up DOUBLE PRECISION NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_rival_poly_formula_scope
                     ON rival_polymarket_formula_bets(asset,horizon,issued_at);
@@ -99,6 +108,26 @@ class FormulaTest:
             if len(self.latest) > 64:
                 self.latest = {k: v for k, v in self.latest.items()
                                if v["at"] > stamp - timedelta(hours=2)}
+        # League checkpoint: the formula's probability once 20% of the contract
+        # has elapsed, frozen with the market's implied probability at that
+        # same moment, so it can be scored exactly like every other model.
+        elapsed = 1 - left / (notice.horizon * 60)
+        new_checkpoint = (elapsed >= CHECKPOINT_ELAPSED
+                          and notice.slug not in self._checkpointed
+                          and notice.up_ask + notice.down_ask > 0)
+        if new_checkpoint:
+            with self._lock:
+                self._checkpointed.add(notice.slug)
+                if len(self._checkpointed) > 5000:
+                    self._checkpointed = {notice.slug}
+            with self.store.connect() as conn:
+                conn.execute(
+                    "INSERT INTO rival_polymarket_formula_checkpoint (slug,condition_id,asset,"
+                    "horizon,issued_at,expires_at,chance_up,market_up) VALUES (?,?,?,?,?,?,?,?) "
+                    "ON CONFLICT(slug) DO NOTHING",
+                    (notice.slug, notice.condition_id, notice.asset, notice.horizon,
+                     stamp.isoformat(), notice.expires.isoformat(), chance,
+                     notice.up_ask / (notice.up_ask + notice.down_ask)))
         if new_seen or new_bet:
             with self.store.connect() as conn:
                 if new_seen:

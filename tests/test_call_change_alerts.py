@@ -105,6 +105,90 @@ def test_first_model_call_keeps_priority_over_a_later_opposite_ai_review(tmp_pat
 
 
 
+
+@pytest.mark.parametrize(("bias", "direction"), [(0.08, "UP"), (-0.08, "DOWN")])
+def test_small_first_model_lean_is_not_suppressed_into_wait(
+    tmp_path, bias, direction,
+):
+    """The original 5% WAIT cutoff hid issued 52/48% model forecasts."""
+    hot = SQLiteHotStore(tmp_path / "lean.sqlite")
+    hot.initialize()
+    research = PolymarketResearch(hot)
+    research.initialize()
+    learner = research.learner
+    notice = _notice()
+    weights = canonical([bias] + [0.0] * 10)
+    digest = hashlib.sha256(weights.encode()).hexdigest()
+    scope = (notice.asset, notice.horizon, notice.resolution_source, MODEL)
+    try:
+        with hot.connect() as conn:
+            conn.execute(
+                "INSERT INTO rival_polymarket_model_state "
+                "(asset,horizon,resolution_source,model_version,weights_json,"
+                "weights_sha256,updates,trained_at) VALUES (?,?,?,?,?,?,?,?)",
+                (*scope, weights, digest, 100, datetime.now(UTC).isoformat()),
+            )
+        issued = learner.observe(notice)
+        assert issued is not None
+        assert issued["direction"] == direction
+        assert 0.45 < issued["probability_up"] < 0.55
+        # New prices and model weights may not rewrite the first call.
+        opposite_weights = canonical([-bias] + [0.0] * 10)
+        with hot.connect() as conn:
+            conn.execute(
+                "UPDATE rival_polymarket_model_state SET weights_json=?,"
+                "weights_sha256=? WHERE asset=? AND horizon=? "
+                "AND resolution_source=? AND model_version=?",
+                (opposite_weights,
+                 hashlib.sha256(opposite_weights.encode()).hexdigest(),
+                 *scope),
+            )
+        later = replace(
+            notice, quote_at=datetime.now(UTC),
+            up_ask=.07 if direction == "UP" else .94,
+            down_ask=.94 if direction == "UP" else .07,
+        )
+        frozen = learner.observe(later)
+        assert frozen is not None
+        assert frozen["direction"] == direction
+        assert frozen["issued_at"] == issued["issued_at"]
+        assert frozen["probability_up"] == issued["probability_up"]
+    finally:
+        hot.close()
+
+
+@pytest.mark.asyncio
+async def test_unqualified_source_reports_actual_training_gap(tmp_path):
+    hot = SQLiteHotStore(tmp_path / "unqualified.sqlite")
+    hot.initialize()
+    research = PolymarketResearch(hot)
+    research.initialize()
+    notice = _notice()
+    try:
+        assert research.observe(notice) is None
+        task = research._learning_tasks.get(notice.slug)
+        if task is not None:
+            await task
+        assert "0/100" in research.status(notice.slug)
+        assert "asset/timeframe/settlement source" in research.status(notice.slug)
+        assert research.peek(notice.slug) is None
+    finally:
+        await research.aclose()
+        hot.close()
+
+
+def test_missing_settlement_source_has_specific_no_forecast_reason(tmp_path):
+    hot = SQLiteHotStore(tmp_path / "source.sqlite")
+    research = PolymarketResearch(hot)
+    notice = replace(_notice(), resolution_source=None)
+    try:
+        assert research.observe(notice) is None
+        assert "Settlement source missing" in research.status(notice.slug)
+        assert research.peek(notice.slug) is None
+    finally:
+        hot.close()
+
+
 @pytest.mark.asyncio
 async def test_quote_refreshes_edit_only_one_dm_and_send_no_flip_alerts(tmp_path, monkeypatch):
     hot = SQLiteHotStore(tmp_path / "panel.sqlite")

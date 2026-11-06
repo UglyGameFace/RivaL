@@ -46,6 +46,8 @@ class ContractCall:
     input_up_ask: float | None = None
     input_down_ask: float | None = None
     kind: str = "AI"
+    # The model's own UP probability, when it has one (book model only).
+    probability_up: float | None = None
 
 
 class PolymarketResearch:
@@ -238,6 +240,7 @@ class PolymarketResearch:
                             risk="Experimental model score; calibrated accuracy and after-fee edge are unverified.",
                             evidence_sha256=result["evidence_sha256"], input_up_ask=notice.up_ask,
                             input_down_ask=notice.down_ask, kind="model",
+                            probability_up=result.get("probability_up"),
                         )
                         self._note_change(notice.slug, before)
                 except Exception:  # noqa: BLE001 - learning failures never block live quotes

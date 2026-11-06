@@ -155,6 +155,10 @@ def matching_call(board, call, *, asset: str, horizon: int) -> bool:
 
 
 MAX_CHANGE_ALERTS = 3  # per tracker per contract; after that the card says it keeps changing
+# Heads-up BEFORE a flip: the call sits this close to 50/50, so a small move
+# in Polymarket's prices flips it. A starting threshold, not a measured one.
+EDGE_MARGIN = 0.05
+HEADS_UP_MIN_LEFT = timedelta(seconds=60)  # less than this: too late to act on
 
 
 def changes_text(changes) -> str:
@@ -420,6 +424,7 @@ class LivePolymarketBoardService:
                 or not matching_call(board, snapshot, asset=tracker.asset,
                                      horizon=tracker.horizon)):
             return
+        await self._heads_up(tracker, board, snapshot)
         key = (tracker.user_id, board.current.slug)
         if key not in self._alerted:
             # First look at this contract: earlier flips are on the card;
@@ -455,6 +460,33 @@ class LivePolymarketBoardService:
                          tracker.user_id, type(exc).__name__)
         if len(self._alerted) > 2000:
             self._alerted = dict(list(self._alerted.items())[-1000:])
+
+    async def _heads_up(self, tracker, board, snapshot) -> None:
+        """Warn early, once per contract, while the call is close to flipping."""
+        p = snapshot.probability_up
+        left = board.current.closes - datetime.now(UTC)
+        key = (tracker.user_id, board.current.slug, "edge")
+        if (p is None or abs(p - 0.5) >= EDGE_MARGIN or left < HEADS_UP_MIN_LEFT
+                or key in self._alerted):
+            return
+        self._alerted[key] = 1
+        detail = (
+            f"[Open contract]({board.current.url}) • closes "
+            f"<t:{int(board.current.closes.timestamp())}:R>\n"
+            f"The model is only {max(p, 1 - p):.0%} sure of {snapshot.direction}: a small "
+            "move in Polymarket's prices can flip this call before the contract ends. "
+            "You'll get another message if it does flip. Not a trading signal."
+        )
+        try:
+            channel = self.bot.get_partial_messageable(int(tracker.channel_id))
+            await asyncio.wait_for(channel.send(
+                content=(f"🟡 **Heads-up: RivaL's {tracker.asset} {tracker.horizon}m "
+                         f"Polymarket call ({snapshot.direction}) could flip**"),
+                embed=discord.Embed(description=detail, color=discord.Color.gold()),
+            ), timeout=5)
+        except (discord.HTTPException, TimeoutError) as exc:
+            _LOG.warning("Polymarket heads-up failed user=%s reason=%s",
+                         tracker.user_id, type(exc).__name__)
 
     async def start(self, user: discord.abc.User, *,
                     asset: str, horizon: int) -> tuple[bool, str]:

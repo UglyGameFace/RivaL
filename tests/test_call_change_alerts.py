@@ -69,3 +69,34 @@ async def test_tracker_gets_a_new_dm_for_each_flip_up_to_the_cap():
     assert "changed its BTC 5m Polymarket call: DOWN → UP" in first["content"]
     assert "Not a trading signal" in first["embed"].description
     assert "no more alerts" in channel.send.await_args_list[-1].kwargs["embed"].description
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("p,minutes_left,expected", [
+    (0.52, 3, 1),   # close to 50/50 with time left: warn once, before any flip
+    (0.70, 3, 0),   # a clear lean: no heads-up
+    (0.52, 0.5, 0), # under a minute left: too late to act on
+])
+async def test_heads_up_comes_before_a_flip_and_only_once(p, minutes_left, expected):
+    from dataclasses import replace
+
+    now = datetime.now(UTC)
+    closes = now + timedelta(minutes=minutes_left)
+    window = PolymarketListedWindow(asset="BTC", horizon=5, slug="btc-updown-5m-2",
+                                    opens=closes - timedelta(minutes=5), closes=closes,
+                                    accepting_orders=True, price_to_beat=None)
+    board = PolymarketWindowBoard(checked_at=now, current=window, next_window=None,
+                                  current_quote=None)
+    channel = SimpleNamespace(send=AsyncMock())
+    service = LivePolymarketBoardService(
+        bot=SimpleNamespace(get_partial_messageable=lambda _id: channel),
+        store=None, reader=None, market=None)
+    tracker = LivePolymarketTracker(user_id="7", asset="BTC", horizon=5, channel_id="1",
+                                    message_id="2", fingerprint="f")
+    call = replace(_call(window.slug, closes, "UP", now - timedelta(seconds=1)),
+                   probability_up=p)
+    for _ in range(3):
+        await service._alert_change(tracker, board, call, [])
+    assert channel.send.await_count == expected
+    if expected:
+        assert "could flip" in channel.send.await_args.kwargs["content"]

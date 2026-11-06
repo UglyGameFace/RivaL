@@ -225,7 +225,7 @@ class PolymarketOutcomeLearner:
                 (notice.slug, MODEL, issued.isoformat(), weight_sha, p, notice.up_ask/(notice.up_ask+notice.down_ask)),
             )
         return {"direction": "UP" if p > .5 else "DOWN" if p < .5 else "WAIT",
-                "issued_at": issued, "model": MODEL, "evidence_sha256": evidence,
+                "probability_up": p, "issued_at": issued, "model": MODEL, "evidence_sha256": evidence,
                 "training_labels": updates, "weights_sha256": weight_sha}
 
     def pooled_summary(self, *, asset, horizon, days=7, edge=0.05):

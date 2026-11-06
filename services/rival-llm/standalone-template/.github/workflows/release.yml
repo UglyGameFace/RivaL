@@ -29,7 +29,7 @@ jobs:
         run: |
           set -euo pipefail
           grep -Eq '^[0-9a-f]{40}$' UPSTREAM_COMMIT
-          python -m py_compile main.py service.py discovery.py evidence_policy.py model_download.py benchmark.py verify_live.py validate_package.py
+          python -m py_compile main.py service.py discovery.py error_report.py evidence_policy.py model_download.py benchmark.py verify_live.py validate_package.py
           bash -n build.sh
           if [[ -z "$DISCLOUD_TOKEN" || -z "$DISCLOUD_LLM_APP_ID" ]]; then
             echo "::error::Set DISCLOUD_TOKEN and DISCLOUD_LLM_APP_ID for the existing standalone RivaL-Intelligence app; main bot credentials are not used."
@@ -55,7 +55,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/intelligence-upload/runtime"
-          cp discloud.config main.py requirements.txt service.py discovery.py evidence_policy.py model_download.py benchmark.py benchmark_cases.json build.sh UPSTREAM_COMMIT "$RUNNER_TEMP/intelligence-upload/"
+          cp discloud.config main.py requirements.txt service.py discovery.py error_report.py evidence_policy.py model_download.py benchmark.py benchmark_cases.json build.sh UPSTREAM_COMMIT "$RUNNER_TEMP/intelligence-upload/"
           cp -R runtime/bin "$RUNNER_TEMP/intelligence-upload/runtime/bin"
           python validate_package.py "$RUNNER_TEMP/intelligence-upload"
           (cd "$RUNNER_TEMP/intelligence-upload" && zip -q -r "$RUNNER_TEMP/intelligence-validated.zip" .)
@@ -71,6 +71,7 @@ jobs:
             requirements.txt
             service.py
             discovery.py
+            error_report.py
             evidence_policy.py
             model_download.py
             benchmark.py

@@ -10,8 +10,10 @@ import logging
 import os
 import re
 import stat
+import time
 from pathlib import Path
 
+from error_report import install as install_error_report
 from service import launch_server
 
 SECRET_NAME = "RIVAL_LLM_SHARED_TOKEN"
@@ -62,7 +64,14 @@ def main() -> None:
     if binary.is_file() and not os.access(binary, os.X_OK):
         binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    launch_server()
+    reporter = install_error_report()
+    try:
+        launch_server()
+    except BaseException:
+        logging.getLogger("rival-llm").exception("RivaL Intelligence stopped")
+        if reporter is not None:
+            time.sleep(3)  # let the crash report leave before the process exits
+        raise
 
 
 if __name__ == "__main__":

@@ -55,8 +55,31 @@ def _scrub(value, depth: int = 0):
     return value
 
 
+# Exceptions that RivaL code raises on purpose and handles (an empty order
+# book, a region-blocked exchange, a slow third party). Sentry's asyncio
+# integration reports them when they leave a task even though the awaiting
+# code catches them, which is noise, not a crash. Real failures of these
+# loops are still logged with _LOG.exception and reported through logging.
+EXPECTED_IN_TASKS = frozenset({
+    "MarketUnavailable", "QuoteUnavailable", "HTTPStatusError", "ConnectError",
+    "ConnectTimeout", "ReadTimeout", "ReadError", "RemoteProtocolError",
+    "PoolTimeout", "TimeoutError", "CancelledError",
+})
+
+
+def _expected_task_error(event) -> bool:
+    values = (event.get("exception") or {}).get("values") or []
+    if not values:
+        return False
+    last = values[-1]
+    return ((last.get("mechanism") or {}).get("type") == "asyncio"
+            and last.get("type") in EXPECTED_IN_TASKS)
+
+
 def before_send(event, hint):
     """Scrub credentials and drop repeats of the same error within 10 minutes."""
+    if _expected_task_error(event):
+        return None
     key = "|".join(str(p) for p in (
         event.get("logger"),
         (event.get("logentry") or {}).get("message"),
@@ -110,3 +133,27 @@ def init_sentry() -> bool:
         return False
     _LOG.info("Sentry error reporting on release=%s", release() or "unknown")
     return True
+
+
+_beats: dict[str, float] = {}
+HEARTBEAT_SECONDS = 60
+
+
+def heartbeat(slug: str) -> None:
+    """Tell a Sentry cron monitor this loop just completed a cycle.
+
+    At most one check-in per minute per monitor. A loop that stops or hangs
+    misses its check-ins and Sentry opens an issue. Never raises.
+    """
+    now = time.monotonic()
+    if now - _beats.get(slug, -HEARTBEAT_SECONDS) < HEARTBEAT_SECONDS:
+        return
+    _beats[slug] = now
+    try:
+        import sentry_sdk
+        from sentry_sdk.crons import capture_checkin
+
+        if sentry_sdk.get_client().is_active():
+            capture_checkin(monitor_slug=slug, status="ok")
+    except Exception:  # noqa: BLE001 - monitoring must never break a loop
+        _LOG.debug("Sentry heartbeat failed slug=%s", slug, exc_info=True)

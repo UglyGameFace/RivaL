@@ -24,6 +24,11 @@ from parlay_bot.discord_app.polymarket_watch import (
     PolymarketWindowBoard,
     unavailable_text,
 )
+from parlay_bot.perpetuals.early_call import (
+    current_early_call,
+    early_call_record,
+    early_call_text,
+)
 from parlay_bot.perpetuals.polymarket_research import ContractCall, PolymarketResearch
 from parlay_bot.storage.hot import RelationalHotStore
 
@@ -183,6 +188,28 @@ class LivePolymarketBoardStore:
                 "WHERE enabled=1",
             ).fetchone()
             return int(count["n"]) < MAX_TRACKERS
+
+
+def value_line(call: ContractCall, quote) -> str:
+    """Is the called side's share price below the model's own chance for it?
+
+    Uses Polymarket's crypto taker fee. The model's chance is its own
+    estimate, not a proven probability, and the line says so.
+    """
+    from parlay_bot.perpetuals.polymarket_learning import polymarket_fee
+
+    if quote is None or call.probability_up is None or call.direction not in ("UP", "DOWN"):
+        return ""
+    chance = call.probability_up if call.direction == "UP" else 1 - call.probability_up
+    ask = quote.up_ask if call.direction == "UP" else quote.down_ask
+    if not 0 < ask < 1:
+        return ""
+    cost = ask + polymarket_fee(ask)
+    gap = chance - cost
+    verdict = ("✅ cheaper than the model's own chance" if gap > 0
+               else "⛔ costs more than the model's own chance — skip at this price")
+    return (f"Price check: {call.direction} costs {cost * 100:.0f}¢ with fee; model gives "
+            f"{call.direction} {chance:.0%} → {verdict} (model estimate, unproven).\n")
 
 
 def matching_call(board, call, *, asset: str, horizon: int) -> bool:
@@ -366,6 +393,9 @@ class LivePolymarketBoardService:
         self._pinged: dict[str, str] = {}
         # (asset, horizon) -> (computed_at, record line) for the ping text.
         self._records: dict[tuple[str, int], tuple[datetime, str]] = {}
+        # Start-of-contract call test: (asset, horizon) -> (computed_at, record).
+        self._early: dict[tuple[str, int], tuple[datetime, dict]] = {}
+        self._early_pinged: dict[str, str] = {}
 
     def peek(self, asset: str, horizon: int) -> tuple[PolymarketWindowBoard, ContractCall | None] | None:
         saved = self._live_cache.get((asset, horizon))
@@ -547,8 +577,10 @@ class LivePolymarketBoardService:
                               "UP/DOWN call is issued." if on else
                               "🔕 Pings OFF: the card still updates, but no new messages.")
                 elif action == "record":
+                    early = await self._early_record(tracker.asset, tracker.horizon)
                     notice = (f"**{tracker.asset} {tracker.horizon}m on Polymarket**\n"
                               + await self._record_line(tracker.asset, tracker.horizon)
+                              + ("\n" + early_call_text(early) if early else "")
                               + "\nFor your own next-calls scorecard: /rival → Bot Performance "
                               "→ Track Next Predictions.")
                 else:
@@ -760,6 +792,10 @@ class LivePolymarketBoardService:
                         await asyncio.gather(*(
                             self._ping(tracker, saved[1], saved[2]) for tracker in members
                         ))
+                    if saved is not None:
+                        await asyncio.gather(*(
+                            self._early_ping(tracker, saved[1]) for tracker in members
+                        ))
                     return changed
                 except Exception:  # noqa: BLE001 - independent markets stay live
                     _LOG.exception("Live Polymarket board update failed asset=%s horizon=%s", *key)
@@ -827,6 +863,7 @@ class LivePolymarketBoardService:
             f"🔔 **{tracker.asset} {tracker.horizon}m on Polymarket — call issued: "
             f"{call.direction}**{chance}\n"
             f"{price}"
+            f"{value_line(call, quote)}"
             f"Closes <t:{int(call.expires.timestamp())}:R>. This call is frozen for the "
             f"whole contract and will not flip.\n"
             f"{await self._record_line(tracker.asset, tracker.horizon)}\n"
@@ -838,4 +875,59 @@ class LivePolymarketBoardService:
             await asyncio.wait_for(channel.send(content=text), timeout=5)
         except (discord.HTTPException, TimeoutError) as exc:
             _LOG.warning("Live Polymarket call ping failed user=%s reason=%s",
+                         tracker.user_id, type(exc).__name__)
+
+    async def _early_record(self, asset: str, horizon: int) -> dict | None:
+        """The locked start-of-contract call test, recomputed at most every 10 min."""
+        now = datetime.now(UTC)
+        saved = self._early.get((asset, horizon))
+        if saved is not None and now - saved[0] < timedelta(minutes=10):
+            return saved[1]
+        learner = getattr(self.research, "learner", None)
+        store = getattr(learner, "store", None)
+        if store is None:
+            return None
+        try:
+            record = await asyncio.wait_for(asyncio.to_thread(
+                early_call_record, store, asset=asset, horizon=horizon), timeout=5)
+        except Exception:  # noqa: BLE001 - locked unless proven; never guess
+            _LOG.info("Early call record unavailable asset=%s horizon=%s", asset, horizon)
+            return None
+        self._early[(asset, horizon)] = (now, record)
+        return record
+
+    async def _early_ping(self, tracker: LivePolymarketTracker, board) -> None:
+        """Ping the start-of-contract call ONLY after the locked test has passed."""
+        current = board.current if board is not None else None
+        if current is None or self._early_pinged.get(tracker.user_id) == current.slug:
+            return
+        record = await self._early_record(tracker.asset, tracker.horizon)
+        if not record or not record["unlocked"]:
+            return
+        store = self.research.learner.store
+        try:
+            call = await asyncio.wait_for(asyncio.to_thread(
+                current_early_call, store, asset=tracker.asset, horizon=tracker.horizon,
+                slug=current.slug), timeout=5)
+        except Exception:  # noqa: BLE001
+            return
+        now = datetime.now(UTC)
+        if (call is None or now - call["issued_at"] > timedelta(seconds=60)
+                or call["expires"] - now <= timedelta(seconds=60)):
+            return
+        self._early_pinged[tracker.user_id] = current.slug
+        if len(self._early_pinged) > 2 * MAX_TRACKERS:
+            self._early_pinged = {tracker.user_id: current.slug}
+        if not await asyncio.to_thread(self.store.pings_on, tracker.user_id):
+            return
+        text = (
+            f"⚡ **{tracker.asset} {tracker.horizon}m — early call: {call['side']}** "
+            f"(model {call['chance']:.0%}; opening price {call['cost'] * 100:.0f}¢ with fee)\n"
+            f"Closes <t:{int(call['expires'].timestamp())}:R>.\n{early_call_text(record)}"
+        )
+        try:
+            channel = self.bot.get_partial_messageable(int(tracker.channel_id))
+            await asyncio.wait_for(channel.send(content=text), timeout=5)
+        except (discord.HTTPException, TimeoutError) as exc:
+            _LOG.warning("Early call ping failed user=%s reason=%s",
                          tracker.user_id, type(exc).__name__)

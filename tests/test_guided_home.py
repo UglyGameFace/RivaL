@@ -70,7 +70,7 @@ async def test_beginner_home_begins_simple_and_keeps_advanced_features(tmp_path)
         assert home.page == "home"
         assert set(_labels(home)) == {
             "Crypto", "Sports", "Notifications", "Bot Performance",
-            "Practice", "Help",
+            "Practice", "Live Panel", "Help",
         }
         assert len(home.children) <= 25
         assert max(item.row for item in home.children) <= 4

@@ -29,6 +29,11 @@ from parlay_bot.perpetuals.local_first_research import (
 )
 from parlay_bot.perpetuals.market_pulse import calculate_market_pulse
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.polymarket_history import (
+    fairness_text,
+    polymarket_history,
+    results_text,
+)
 from parlay_bot.perpetuals.polymarket_tracking import (
     PolymarketTracking,
     polymarket_tracking_text,
@@ -52,12 +57,13 @@ _SECTIONS = {
         ("proof", "Verified results"),
     ),
     "math": (
-        ("overview", "Overview"),
-        ("pulse", "Market pulse"),
+        ("overview", "Polymarket results"),
+        ("fair", "Is the price fair?"),
+        ("pulse", "Price momentum now"),
         ("spikes", "Spikes & volume"),
-        ("history", "History & gaps"),
-        ("recovery", "Backfill progress"),
-        ("learning", "Learning status"),
+        ("learning", "Is RivaL learning?"),
+        ("history", "Data health (technical)"),
+        ("recovery", "Backfill progress (technical)"),
         ("ai", "AI Review"),
     ),
     "accuracy": (
@@ -87,6 +93,7 @@ _FIELD_GROUPS = {
     "math": {
         "ai": ("AI research · UNCALIBRATED", "Analysis status",
                "Private LFM3 Intelligence", "Intelligence status"),
+        "fair": ("Is the Polymarket price fair?",),
         "pulse": ("Current market pulse",),
         "spikes": ("Spike watch analytics", "Recent spike events"),
         "history": ("Source-native training readiness", "Historical gap audit"),
@@ -213,7 +220,7 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
     result = discord.Embed(
         title=full.title,
         description={
-            "math": "Live market observations and historical research. No approved trade.",
+            "math": "What really happened on past contracts. Not a prediction or a trade signal.",
             "accuracy": "Predictions checked against what really happened. Profit is not yet proven.",
             "ai": "Read-only AI research on source-verified market data.",
         }[screen] + f"\n**{label}** · Choose a section below for details.",
@@ -247,8 +254,8 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
 
     if section == "overview":
         if screen == "math":
+            add_one(("Polymarket results",))
             add_one(("Current market pulse",), short=True)
-            add_one(("Six-month history target", "History"), short=True)
         elif screen == "accuracy":
             add_one(("Research verdict", "Accuracy tracking"), short=True)
             add_one(("Forward 5-minute evaluation",), short=True)
@@ -929,6 +936,26 @@ class ResearchDashboard(discord.ui.View):
             )
         embed.timestamp = datetime.now(UTC)
 
+        if self.screen == "math" and self.section in ("overview", "fair"):
+            if self.market is None:
+                embed.add_field(name="Polymarket results",
+                                value="Database unavailable.", inline=False)
+            else:
+                try:
+                    history = await asyncio.to_thread(
+                        polymarket_history, self.market.store, asset=self.asset,
+                    )
+                    if self.section == "overview":
+                        embed.add_field(name=f"Polymarket results · {self.asset} Up/Down",
+                                        value=results_text(history), inline=False)
+                    else:
+                        embed.add_field(name=f"Is the Polymarket price fair? · {self.asset}",
+                                        value=fairness_text(history), inline=False)
+                except Exception:  # noqa: BLE001 - never invent results
+                    _LOG.exception("RivaL Polymarket history unavailable")
+                    embed.add_field(name="Polymarket results",
+                                    value="Settled Polymarket results could not be read.",
+                                    inline=False)
         if self.screen == "math" and self.section != "ai":
             if self.section == "history" and self.market is not None:
                 try:
@@ -970,7 +997,7 @@ class ResearchDashboard(discord.ui.View):
                               "No source-native model training is proven.",
                         inline=False,
                     )
-            if self.section in ("overview", "history", "recovery"):
+            if self.section in ("history", "recovery"):
                 if self.market is None:
                     embed.add_field(
                         name="Mathematical analysis",

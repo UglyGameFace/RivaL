@@ -99,7 +99,9 @@ async def test_live_health_is_fresh_without_invalidating_history_on_every_live_r
         assert "1/2" in next(
             f.value for f in first.fields if f.name == "Live market feeds"
         )
-        assert len(calls) == 1
+        # The Math & History landing page (Polymarket results) never runs
+        # the slow six-month aggregation.
+        assert len(calls) == 0
         market.record_feed_health(
             venue="dydx", asset="BTC", status="ok",
             attempted_at=datetime.now(UTC),
@@ -110,14 +112,14 @@ async def test_live_health_is_fresh_without_invalidating_history_on_every_live_r
         assert "2/2" in next(
             f.value for f in second.fields if f.name == "Live market feeds"
         )
-        assert len(calls) == 1
+        assert len(calls) == 0
         button = controls(dashboard)["rival:research:refresh"]
         interaction = Interaction()
         await button.callback(interaction)
         assert interaction.response.deferred
         assert button.view is None  # old control detached on redraw
         assert interaction.view is dashboard
-        assert len(calls) == 1  # Live refresh does not run a six-month aggregation.
+        assert len(calls) == 0  # Live refresh does not run a six-month aggregation.
         assert "2/2" in next(
             f.value for f in interaction.embed.fields
             if f.name == "Live market feeds"
@@ -127,7 +129,9 @@ async def test_live_health_is_fresh_without_invalidating_history_on_every_live_r
         dashboard.section = "history"
         dashboard._rebuild()
         await controls(dashboard)["rival:research:refresh"].callback(Interaction())
-        assert len(calls) == 2
+        assert len(calls) == 1
+        await dashboard.render()  # cached between refreshes
+        assert len(calls) == 1
     finally:
         dashboard.stop()
         store.close()

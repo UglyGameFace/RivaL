@@ -21,8 +21,7 @@ from parlay_bot.discord_app.cdna_ui import (
 )
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
-from parlay_bot.discord_app.polymarket_live_board import matching_call
-from parlay_bot.discord_app.polymarket_watch import unavailable_text
+from parlay_bot.discord_app.polymarket_live_board import live_polymarket_embed
 from parlay_bot.discord_app.presentation import (
     parlay_embed,
 )
@@ -1041,11 +1040,6 @@ class GuidedHome(discord.ui.View):
                     getattr(self.auto_hunt, "bot", None),
                     "polymarket_board", None,
                 )
-                embed = discord.Embed(
-                    title=f"🎯 Polymarket | {self.coin} {self.horizon}m",
-                    description="**RivaL call: WAIT** • No verified contract-specific call yet.",
-                    color=discord.Color.orange(),
-                )
                 tracker = None
                 if service is not None:
                     try:
@@ -1071,7 +1065,6 @@ class GuidedHome(discord.ui.View):
                     tracking += "\nUse Show DM Panel to bring it to the bottom of your chat."
                 else:
                     tracking = "OFF • Use Show DM Panel to create your updating card."
-                embed.add_field(name="🔔 Your tracking", value=tracking, inline=False)
                 cached = None
                 if service is not None and callable(getattr(service, "preview", None)):
                     try:
@@ -1079,71 +1072,18 @@ class GuidedHome(discord.ui.View):
                     except Exception:  # noqa: BLE001
                         _LOG.info("Exact Polymarket preview unavailable")
                 board, call = cached if cached is not None else (None, None)
-                if board is None or board.current is None:
-                    embed.add_field(
-                        name="Contract",
-                        value="No verified current contract. No market price or call was guessed.",
-                        inline=False,
-                    )
-                else:
-                    event, quote = board.current, board.current_quote
-                    details = (
-                        f"[Open contract]({event.url}) • "
-                        f"Closes {discord.utils.format_dt(event.closes, style='R')}"
-                    )
-                    if event.price_to_beat is not None:
-                        details += f"\nPrice to beat: USD {event.price_to_beat:,.4f}"
-                    if quote is not None:
-                        details += (
-                            f"\nUP ask USD {quote.up_ask:.2f} • "
-                            f"DOWN ask USD {quote.down_ask:.2f} "
-                            f"({discord.utils.format_dt(quote.quote_at, style='R')})"
-                        )
-                    else:
-                        details += "\n" + unavailable_text(board.quote_unavailable_reason)
-                    embed.add_field(name="📈 Verified market", value=details, inline=False)
-                    if board.next_window is not None:
-                        upcoming = board.next_window
-                        # A call needs that contract's live order book and its
-                        # opening price, so it cannot exist before it opens.
-                        embed.add_field(
-                            name="⏭️ Next contract",
-                            value=(
-                                f"[Next {self.horizon}-min contract]({upcoming.url}) • opens "
-                                f"{discord.utils.format_dt(upcoming.opens, style='R')}\n"
-                                "RivaL's call for it appears shortly after it opens (it needs that "
-                                "contract's live prices). Track in DMs switches to it "
-                                "automatically; here, tap Refresh once it has opened."
-                            ),
-                            inline=False,
-                        )
-                    if matching_call(board, call, asset=self.coin, horizon=self.horizon):
-                        embed.description = (
-                            f"**RivaL {call.kind} call: {call.direction}** "
-                            "• experimental, NOT a verified profitable edge."
-                        )
-                        embed.add_field(
-                            name="🧠 Why RivaL called it",
-                            value=(
-                                f"{call.thesis[:450]}\n"
-                                f"Issued {discord.utils.format_dt(call.issued_at, style='R')} "
-                                "for this exact contract. The original model forecast "
-                                "does not change; live Polymarket quotes update separately. "
-                                "The panel stays accessible without flip-alert spam."
-                            ), inline=False,
-                        )
-                    else:
-                        research = getattr(service, "research", None)
-                        reason = (
-                            research.status(event.slug) if research is not None
-                            else "Free contract AI or verified inputs unavailable."
-                        )
-                        embed.add_field(
-                            name="🧠 Why no call?",
-                            value=str(reason)[:320],
-                            inline=False,
-                        )
-                embed.set_footer(text="Share prices are not winning odds • No orders")
+                lookup = getattr(service, "_league_entry", None)
+                entry = (lookup(self.coin, self.horizon, board.current_quote if board else None)
+                         if callable(lookup) else None)
+                formula = getattr(service, "formula", None)
+                reading = (formula.latest.get(board.current.slug)
+                           if formula is not None and board is not None and board.current is not None
+                           else None)
+                embed = live_polymarket_embed(
+                    board, call, asset=self.coin, horizon=self.horizon,
+                    league=entry, formula=reading,
+                )
+                embed.add_field(name="🔔 Your tracking", value=tracking, inline=False)
             elif source == "kalshi":
                 embed = discord.Embed(
                     title=f"🔎 Kalshi | {self.coin}",

@@ -55,7 +55,7 @@ The published identity-exponent fee is `shares * rate * p * (1-p)`, not
   order-flow imbalance; the cited microstructure results do not establish
   crypto prediction skill for RivaL.
 
-Formula inputs require at least three independent USD spot references from
+Chainlink/USD formula inputs require at least three independent USD spot references from
 Coinbase, Bitstamp, Gemini and Bitfinex. Use a median of fresh books and aligned closed minute bars;
 reject gaps, stale bars and >1% cross-source divergence. No futures or USDT
 price is silently labeled USD spot. Gemini explicitly marks level timestamps
@@ -67,7 +67,16 @@ The displayed formula probability is the frozen checkpoint, restored after resta
 later live ticks do not replace it. The published exact-contract price to beat takes priority. Otherwise the
 median of at least three exchanges' opening-minute prices is explicitly a proxy,
 not a Chainlink receipt. Raw source clocks and a candle digest accompany the
-input receipt. The public reference is never used to settle outcomes.
+input receipt. Hourly Binance contracts are a different source and denomination. They require
+Binance **spot USDT** books and closed one-minute bars, plus the original O
+from that exact hourly candle (or the contract's published price to beat).
+Only its already-known opening value is read from the forming hourly candle;
+its forming/future close never enters features. USD medians, perpetuals and
+other exchanges cannot fill in for these inputs. A blocked/denied Binance
+endpoint enters cooldown and leaves the hourly formula absent; book and
+other available contestants can continue. Reference currency and venue are
+validated and frozen with every formula receipt.
+The public reference is never used to settle outcomes.
 
 Trailing 60-second TWAP is an Asian payoff. Before averaging begins, GBM uses
 a lognormal match to the exact first two arithmetic-average moments:
@@ -120,7 +129,8 @@ proof of actual fills, trading access, or future profit.
 
 ## Serving and failure behavior
 
-The persistent DM card and optional ping use the selected model's immutable
+The main menu and persistent DM panel share one card renderer. Both displays
+and the optional ping use the selected model's immutable
 checkpoint call. With no qualifying model, the card says
 "No model beats Polymarket's price here" and no prediction ping is sent.
 The separate early-call ping route and independent formula unlock were
@@ -150,3 +160,5 @@ and loads one market at a time without raw evidence blobs to bound memory.
 - Gemini books/candles: https://developer.gemini.com/trading/rest-api/market-data
 
 - Bitfinex USD books/candles: https://docs.bitfinex.com/reference/rest-public-book
+
+- Binance spot order book and candles: https://developers.binance.com/en/docs/catalog/core-trading-spot-trading/api/rest-api/market

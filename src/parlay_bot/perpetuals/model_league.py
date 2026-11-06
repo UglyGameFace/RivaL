@@ -59,7 +59,9 @@ def settlement_schema(notice) -> str | None:
             kind = "terminal"
         else:
             return None
-    elif host in ("www.binance.com", "binance.com") and not twap and "binance" in rules:
+    elif (host in ("www.binance.com", "binance.com") and not twap and "binance" in rules
+          and notice.horizon == 60 and f"/{notice.asset.lower()}_usdt" in source
+          and f"{notice.asset.lower()}/usdt" in rules):
         kind = "terminal"
     else:
         return None

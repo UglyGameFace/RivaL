@@ -76,7 +76,8 @@ def reference(now, opens):
     rows = [(base+i*60, 100., 100*math.exp(.0002*math.sin(i))) for i in range(240)]
     rows += [(int(opens.timestamp()), 100., 100.01)]
     return {'price': 100.2, 'open': 100., 'closes': [c for _, _, c in rows],
-            'microprice': 100.21, 'at': now, 'sources': {v: {'price': 100.2} for v in VENUES},
+            'microprice': 100.21, 'at': now, 'quote_currency': 'USD',
+            'reference_label': 'median of 3+ USD spot exchanges', 'sources': {v: {'price': 100.2} for v in VENUES},
             'candles': rows}
 
 
@@ -183,3 +184,63 @@ async def test_public_source_wire_formats_and_cooldown(venue):
         count = len(requests)
         assert await source._source(venue, 'BTC') is None
         assert len(requests) == count  # blocked provider is not hammered
+
+
+@pytest.mark.parametrize('matching', [False, True])
+def test_hourly_formula_requires_native_binance_usdt(learning_store, matching):
+    setup(learning_store)
+    n = replace(notice(horizon=60), resolution_source='https://www.binance.com/en/trade/BTC_USDT',
+                rules='Up if the Binance BTC/USDT 1 hour candle close is at or above its open.')
+    ref = reference(n.quote_at,n.issued)
+    if matching:
+        ref.update(quote_currency='USDT', native_venue='binance_spot',
+                   opens_at=int(n.issued.timestamp()), open_source='binance-hourly-open',
+                   reference_label='Binance spot (USDT)')
+    learner = Mock()
+    learner.contest_forecasts.return_value = {BOOK:(.8,SHA)}
+    test = FormulaTest(learning_store)
+    reading = test.consider(n,reference=ref,learner=learner,now=n.quote_at)
+    assert (reading is not None) is matching
+    assert test.contest.call(n.slug,BOOK) is not None
+    assert (test.contest.call(n.slug,FORMULA) is not None) is matching
+    if reading:
+        assert reading['strike_source'] == 'binance-hourly-open'
+
+
+@pytest.mark.asyncio
+async def test_native_binance_open_is_not_the_forming_hourly_close():
+    from datetime import UTC, datetime
+    from email.utils import format_datetime
+
+    import httpx
+
+    from parlay_bot.perpetuals.spot_reference import SpotReference
+
+    now=datetime.now(UTC)
+    minute=int(now.timestamp())//60*60
+    hour=minute//3600*3600
+    denied=False
+    calls=[]
+    def handler(req):
+        calls.append(req)
+        if denied:
+            return httpx.Response(451)
+        if req.url.path.endswith('/depth'):
+            payload={'bids':[['99.99','3']],'asks':[['100.01','1']]}
+        elif req.url.params['interval']=='1h':
+            payload=[[hour*1000,'101','200','90','999999',1]]
+        else:
+            payload=[[(minute-i*60)*1000,'100','101','99','100.01',1] for i in range(250)]
+        return httpx.Response(200,json=payload,headers={'Date':format_datetime(now)})
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        source=SpotReference(client)
+        await source.prepare_native(('BTC',))
+        ref=(await source.native_snapshots(('BTC',)))['BTC']
+        assert ref['open']==101 and ref['price']==100
+        assert ref['quote_currency']=='USDT' and ref['native_venue']=='binance_spot'
+        assert ref['opens_at']==hour and max(ref['closes'])<200
+        denied=True
+        assert await source.native_snapshots(('BTC',)) == {}
+        before=len(calls)
+        assert await source.native_snapshots(('BTC',)) == {}
+        assert len(calls)==before

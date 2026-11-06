@@ -296,7 +296,7 @@ def live_polymarket_embed(
     if formula is not None and current is not None and formula.get("slug") == current.slug:
         chance = formula["chance_up"]
         embed.add_field(name="📐 Price formula checkpoint (frozen)", value=(
-            f"**{chance:.0%} UP / {1 - chance:.0%} DOWN** from a median of 3+ USD spot exchanges vs. the "
+            f"**{chance:.0%} UP / {1 - chance:.0%} DOWN** from {formula.get('reference_label', 'source-matched spot')} vs. the "
             f"reference, time left and EWMA volatility "
             f"(<t:{int(formula['at'].timestamp())}:R>). Snapshot asks: UP "
             f"${formula['up_ask']:.2f} • DOWN ${formula['down_ask']:.2f}. "

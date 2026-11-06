@@ -64,6 +64,7 @@ class FormulaTest:
                            "at": datetime.fromisoformat(first["issued_at"]),
                            "up_ask": inputs["up_ask"], "down_ask": inputs["down_ask"],
                            "strike_source": inputs["inputs"].get("strike_source", "unverified"),
+                           "reference_label": inputs["inputs"].get("reference_label", "source-matched spot"),
                            "payoff": "TWAP moment approximation" if first["schema_key"].endswith("twap60") else "terminal digital"}
                 with self._lock:
                     self.latest[notice.slug] = reading
@@ -75,6 +76,16 @@ class FormulaTest:
             return None
         forecasts, evidence, reading = {}, {}, None
         if reference is not None:
+            native = "binance.com" in schema
+            valid_reference = (
+                reference.get("quote_currency") == ("USDT" if native else "USD")
+                and timedelta(0) <= stamp-reference["at"] <= timedelta(seconds=15)
+                and (not native or (reference.get("native_venue") == "binance_spot"
+                                    and reference.get("opens_at") == int(notice.issued.timestamp())))
+            )
+            if not valid_reference:
+                reference = None
+        if reference is not None:
             price = reference["price"]
             published = notice.price_to_beat
             strike = published if published is not None else reference["open"]
@@ -85,7 +96,9 @@ class FormulaTest:
                 p = chance_up(price, strike, sigma, left, twap_seconds=twap)
                 if p is not None:
                     evidence = {"sources": reference["sources"], "price": price,
-                                "strike": strike, "strike_source": "published" if published is not None else "three-spot-median-proxy",
+                                "strike": strike, "strike_source": "published" if published is not None else reference.get("open_source", "three-spot-median-proxy"),
+                                "quote_currency": reference["quote_currency"],
+                                "reference_label": reference["reference_label"],
                                 "sigma": sigma, "twap_seconds": twap,
                                 "candle_sha256": _digest(reference["candles"]),
                                 "last_closed_minute": reference["candles"][-1][0],
@@ -106,6 +119,7 @@ class FormulaTest:
                     reading = {"slug": notice.slug, "chance_up": p, "at": stamp,
                                "up_ask": notice.up_ask, "down_ask": notice.down_ask,
                                "strike_source": evidence["strike_source"],
+                               "reference_label": reference["reference_label"],
                                "payoff": "TWAP moment approximation" if twap else "terminal digital"}
         # All contestants use this book NOW. Never substitute a start-time
         # pooled price, a previous main-model call, or a later formula tick.

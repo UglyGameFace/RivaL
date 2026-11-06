@@ -58,6 +58,7 @@ def combine(sources: dict, *, opens: datetime, now: datetime) -> dict | None:
     # Never substitute the latest minute for the contract's opening minute.
     pressure = [v["microprice"] for v in usable.values() if v["microprice"] is not None]
     return {"price": price, "open": opening, "closes": [c for _, _, c in rows],
+            "quote_currency": "USD", "reference_label": "median of 3+ USD spot exchanges",
             "microprice": median(pressure) if len(pressure) >= QUORUM else None,
             "at": min(v["at"] for v in usable.values()),
             "sources": {k: {"price": v["price"], "at": v["at"].isoformat(),
@@ -71,6 +72,7 @@ class SpotReference:
         self._own = client is None
         self._candles: dict[tuple, tuple[float, list]] = {}
         self._blocked: dict[tuple, float] = {}
+        self._native_opens: dict[tuple, float] = {}
 
     def _http(self):
         if self._client is None:
@@ -118,6 +120,16 @@ class SpotReference:
                 bid, ask = book["bids"][0], book["asks"][0]
                 values = (float(bid[0]), float(ask[0]), float(bid[1]), float(ask[1]))
                 clock = "book"
+            elif venue == "binance_spot":
+                response = await self._get(venue, asset, "https://api.binance.com/api/v3/depth",
+                                           params={"symbol": asset+"USDT", "limit": 5})
+                book = response.json()
+                bid, ask = book["bids"][0], book["asks"][0]
+                values = (float(bid[0]), float(ask[0]), float(bid[1]), float(ask[1]))
+                at = parsedate_to_datetime(response.headers["Date"])
+                if int(response.headers.get("Age", "0")) != 0:
+                    return None
+                clock = "http-snapshot"
             elif venue == "gemini":
                 response = await self._get(venue, asset, f"https://api.gemini.com/v1/book/{symbol}",
                                            params={"limit_bids": 1, "limit_asks": 1})
@@ -175,6 +187,10 @@ class SpotReference:
                     response = await self._get(venue, asset, f"https://www.bitstamp.net/api/v2/ohlc/{symbol}/",
                                                params={"step": 60, "limit": 300, "exclude_current_candle": "true"})
                     rows = [(r["timestamp"], r["open"], r["close"]) for r in response.json()["data"]["ohlc"]]
+                elif venue == "binance_spot":
+                    response = await self._get(venue, asset, "https://api.binance.com/api/v3/klines",
+                                               params={"symbol": asset+"USDT", "interval": "1m", "limit": 300})
+                    rows = [(int(r[0])//1000, r[1], r[4]) for r in response.json()]
                 elif venue == "gemini":
                     response = await self._get(venue, asset, f"https://api.gemini.com/v2/candles/{symbol}/1m")
                     rows = [(int(r[0]) // 1000, r[1], r[4]) for r in response.json()]
@@ -204,3 +220,55 @@ class SpotReference:
         for (asset, venue, _), result in zip(ready, results, strict=True):
             out[asset][venue] = result
         return out
+
+    async def _hour_open(self, asset: str, opened: int) -> float | None:
+        key = (asset, opened)
+        if key in self._native_opens:
+            return self._native_opens[key]
+        try:
+            response = await self._get("binance_spot", asset, "https://api.binance.com/api/v3/klines",
+                                       params={"symbol": asset+"USDT", "interval": "1h",
+                                               "startTime": opened*1000, "limit": 1})
+            rows = response.json()
+            if not rows or int(rows[0][0]) != opened*1000:
+                return None
+            value = float(rows[0][1])  # original O only; NEVER its forming/future close
+            if not math.isfinite(value) or value <= 0:
+                return None
+            self._native_opens[key] = value
+            self._native_opens = {k: v for k, v in self._native_opens.items() if k[1] >= opened-7200}
+            return value
+        except (httpx.HTTPError, ValueError, TypeError, KeyError, IndexError, OverflowError):
+            return None
+
+    async def prepare_native(self, assets):
+        opened = int(datetime.now(UTC).timestamp())//3600*3600
+        return await asyncio.gather(
+            *(self._bars("binance_spot", a) for a in assets),
+            *(self._hour_open(a, opened) for a in assets),
+        )
+
+    async def native_snapshots(self, assets) -> dict:
+        """Exact Binance SPOT/USDT inputs for its hourly O/C contracts.
+
+        No cross-venue USD median, futures substitution, proxy rotation or
+        geographic bypass. Provider denial enters the normal source cooldown.
+        """
+        opened = int(datetime.now(UTC).timestamp())//3600*3600
+        bars = await asyncio.gather(*(self._bars("binance_spot", a) for a in assets))
+        ready = [(a, b) for a, b in zip(assets, bars, strict=True)
+                 if b is not None and (a, opened) in self._native_opens]
+        books = await asyncio.gather(*(self._source("binance_spot", a, candles=b) for a, b in ready))
+        result = {}
+        for (asset, rows), book in zip(ready, books, strict=True):
+            if book is None:
+                continue
+            result[asset] = {"price": book["price"], "microprice": book["microprice"],
+                             "open": self._native_opens[asset, opened], "opens_at": opened,
+                             "quote_currency": "USDT", "native_venue": "binance_spot",
+                             "open_source": "binance-hourly-open", "reference_label": "Binance spot (USDT)",
+                             "closes": [r[2] for r in rows], "candles": rows,
+                             "at": book["at"], "sources": {"binance_spot": {
+                                 "price": book["price"], "at": book["at"].isoformat(),
+                                 "clock": book["clock"], "quote_currency": "USDT"}}}
+        return result

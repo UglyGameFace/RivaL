@@ -1994,22 +1994,26 @@ class RivalDiscordClient(discord.Client):
         three independent USD spot references. All candidates share one frozen
         checkpoint and cost receipt per contract; never sends a message.
         """
-        from parlay_bot.perpetuals.model_league import ASSETS
+        from parlay_bot.perpetuals.model_league import ASSETS, settlement_schema
         from parlay_bot.perpetuals.spot_reference import combine
 
         await self.wait_until_ready()
         while not self.is_closed():
             started = time.monotonic()
             try:
-                await self.spot_reference.prepare(ASSETS)
-                notices, sources = await asyncio.gather(
+                await asyncio.gather(self.spot_reference.prepare(ASSETS),
+                                     self.spot_reference.prepare_native(ASSETS))
+                notices, sources, native = await asyncio.gather(
                     asyncio.wait_for(self.auto_hunt.polymarket.active(), timeout=12),
                     self.spot_reference.snapshots(ASSETS),
+                    self.spot_reference.native_snapshots(ASSETS),
                 )
                 considered = 0
                 for notice in notices:
-                    reference = combine(sources.get(notice.asset, {}), opens=notice.issued,
-                                        now=datetime.now(UTC))
+                    schema = settlement_schema(notice)
+                    reference = (native.get(notice.asset) if schema and "binance.com" in schema
+                                 else combine(sources.get(notice.asset, {}), opens=notice.issued,
+                                              now=datetime.now(UTC)))
                     await asyncio.to_thread(
                         self.formula_test.consider, notice, reference=reference,
                         learner=self.polymarket_research.learner,

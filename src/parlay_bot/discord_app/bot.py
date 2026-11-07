@@ -2136,8 +2136,10 @@ class RivalDiscordClient(discord.Client):
                         "notifications=0 ai_requests=0",
                         len(notices), sum(studied),
                     )
-                    if any(studied):
-                        heartbeat("rival-polymarket-learning")
+                # Liveness check-in, not a result signal: the loop completed
+                # a pass, so Sentry hears from it even when every study
+                # timed out or was cap-rejected.
+                heartbeat("rival-polymarket-learning")
                 self.polymarket_research.maybe_settle(self.auto_hunt.polymarket)
             except asyncio.CancelledError:
                 raise

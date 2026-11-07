@@ -105,6 +105,10 @@ from parlay_bot.research.database_integrity import (
     sports_settlement_exclusions,
 )
 from parlay_bot.research.dkex_reports import DKeXPublicReports
+from parlay_bot.research.research_loop_driver import (
+    DRIVER_TICK_SECONDS,
+    drive_research_loop_tick,
+)
 from parlay_bot.research.sports_results import (
     ResultIntegrityError,
     SportsResultStore,
@@ -513,6 +517,7 @@ class RivalDiscordClient(discord.Client):
             else None
         )
         self._hypothesis_task: asyncio.Task[None] | None = None
+        self._research_loop_task: asyncio.Task[None] | None = None
         self.autonomous: AutonomousResearch | None = (
             AutonomousResearch(
                 self.perp_collector.market,
@@ -1566,6 +1571,11 @@ class RivalDiscordClient(discord.Client):
                 and llm_background_enabled(self.settings)):
             self._hypothesis_task = asyncio.create_task(
                 self._hypothesis_loop(), name="rival-llm-feature-research",
+            )
+        if self._research_loop_task is None and llm_background_enabled(
+                self.settings):
+            self._research_loop_task = asyncio.create_task(
+                self._research_loop_driver(), name="rival-research-loop-driver",
             )
         if self.shadow_monitor is not None and self._shadow_task is None:
             _LOG.info(
@@ -2680,6 +2690,39 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL independent AI feature laboratory unavailable")
             await asyncio.sleep(300)
 
+    async def _research_loop_driver(self) -> None:
+        """Autonomous loop Phase 1: advance research experiments, unassisted.
+
+        Runs only with the background opt-in (same gate as the hypothesis
+        loop). One experiment, one stage per 30-minute tick; a tick with
+        nothing to advance does nothing. The driver holds no AI client
+        and spends no LLM calls — it only advances experiments the lab
+        already proposed, from the numeric output of the existing gates.
+        """
+        if not llm_background_enabled(self.settings):
+            _LOG.info("RivaL research loop driver disabled: "
+                      "rival_llm_background_opt_in=False; loop not running")
+            return
+        await self.wait_until_ready()
+        await asyncio.sleep(60)
+        while not self.is_closed():
+            try:
+                result = await drive_research_loop_tick(
+                    self.store, drive=self.research_drive,
+                    memory_pressure=host_memory.snapshot().pressure,
+                )
+                if result.get("status") == "advanced":
+                    _LOG.info(
+                        "RivaL research loop driver advanced experiment=%s %s->%s",
+                        result.get("advanced"), result.get("from"),
+                        result.get("to"),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - optional research only
+                _LOG.exception("RivaL research loop driver tick failed safely")
+            await asyncio.sleep(DRIVER_TICK_SECONDS)
+
     async def _shadow_loop(self) -> None:
         await self.wait_until_ready()
         assert self.shadow_monitor is not None
@@ -2918,6 +2961,8 @@ class RivalDiscordClient(discord.Client):
                 ("_shadow_task", self._shadow_loop, "rival-shadow-learning"),
                 ("_hypothesis_task", self._hypothesis_loop,
                  "rival-llm-feature-research"),
+                ("_research_loop_task", self._research_loop_driver,
+                 "rival-research-loop-driver"),
                 ("_history_task", self._history_loop, "rival-perp-history-recovery"),
                 ("_candidate_task", self._candidate_import_loop,
                  "rival-verified-offline-candidate-import"),
@@ -2944,7 +2989,7 @@ class RivalDiscordClient(discord.Client):
                 task = getattr(self, attr)
                 if task is None or not task.done():
                     continue
-                if (attr == "_hypothesis_task"
+                if (attr in ("_hypothesis_task", "_research_loop_task")
                         and not llm_background_enabled(self.settings)):
                     # Stopped on purpose: background LLM use is opted out
                     # (batch 2 §3.4). Do not restart it; it needs an opt-in.
@@ -3222,7 +3267,8 @@ class RivalDiscordClient(discord.Client):
         "_liquidity_task",
         "_target_task", "_sports_results_task", "_sports_task",
         "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
-        "_hypothesis_task", "_candidate_task", "_archive_task", "_context_task",
+        "_hypothesis_task", "_research_loop_task", "_candidate_task",
+        "_archive_task", "_context_task",
         "_records_task", "_kalshi_updown_task",
         "_heartbeat_task", "_status_task", "_benefit_task", "_intelligence_task",
         "_loop_watch_task", "_memory_task",

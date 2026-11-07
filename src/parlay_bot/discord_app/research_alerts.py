@@ -6,6 +6,7 @@ unreadable table becomes its own alert instead of a guess.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 from datetime import UTC, datetime, timedelta
@@ -227,5 +228,46 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
                                  f"({row['hypothesis']}): {summary}")))
     except Exception as exc:  # noqa: BLE001 - experiments must never break the card
         _LOG.warning("Research alert: research experiments unreadable (%s)",
+                     type(exc).__name__)
+
+    # 7. Research-loop driver counts (autonomous loop Phase 1, spec §2.5):
+    # open experiments and outcomes closed in the last 7 days, counts
+    # only. A closed experiment counts by the time its terminal
+    # transition was recorded (the outcome_json event log), not by
+    # creation time. Discarded/failed are never surfaced as wins; the
+    # line appears only when there is loop activity to report, and its
+    # key carries no counters so the card does not re-post on count
+    # changes alone.
+    try:
+        rows = conn.execute(
+            """SELECT status, outcome_json FROM rival_research_experiments
+               WHERE created_at>=?""",
+            ((stamp - timedelta(days=90)).isoformat(),),
+        ).fetchall()
+        open_count = 0
+        closed = {"promoted": 0, "discarded": 0, "failed": 0}
+        for row in rows:
+            status = str(row["status"])
+            if status not in closed:
+                open_count += 1
+                continue
+            try:
+                events = json.loads(row["outcome_json"] or "[]")
+            except (ValueError, TypeError):
+                continue
+            closed_at = None
+            for event in events or []:
+                if isinstance(event, dict) and event.get("stage") == status:
+                    closed_at = _utc(event.get("at"))
+            if closed_at is not None and stamp - closed_at <= timedelta(days=7):
+                closed[status] += 1
+        if open_count or any(closed.values()):
+            alerts.append(("research-loop:counts",
+                           (f"🔬 Research loop: {open_count} open experiment(s); "
+                            f"last 7 days: {closed['promoted']} promoted, "
+                            f"{closed['discarded']} discarded, "
+                            f"{closed['failed']} failed")))
+    except Exception as exc:  # noqa: BLE001 - counts must never break the card
+        _LOG.warning("Research alert: research loop counts unreadable (%s)",
                      type(exc).__name__)
     return alerts

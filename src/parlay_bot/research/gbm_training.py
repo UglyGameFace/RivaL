@@ -64,6 +64,7 @@ from parlay_bot.research.archive_features import (
     GROUPS,
 )
 from parlay_bot.research.archive_training import (
+    TrainingDataUnavailable,
     build_labels,
     census_summary,
     chronological_splits,
@@ -195,19 +196,21 @@ def train_run(
         parts.append(part)
         coverage_frames[key] = (k, f)
     if not parts:
-        raise ValueError("no frames to train on")
+        raise TrainingDataUnavailable("no frames to train on")
     data = pd.concat(parts).sort_index()
     # Anchor groups must be present; context groups may be missing (NaN
     # is a real LightGBM input here, not a value to fill).
     data = data.dropna(subset=["y", *[FEATURES[i] for i in anchor]])
     if len(data) < 300:
-        raise ValueError(f"not enough labelled rows: {len(data)}")
+        raise TrainingDataUnavailable(f"not enough labelled rows: {len(data)}")
     train_mask, val_mask, test_mask = chronological_splits(
         data.index, train_end=train_end, test_start=test_start, horizon=horizon
     )
     train, val, test = data[train_mask], data[val_mask], data[test_mask]
     if len(train) < 300 or len(val) < 100 or len(test) < 100:
-        raise ValueError(f"split too small: train={len(train)} val={len(val)} test={len(test)}")
+        raise TrainingDataUnavailable(
+            f"split too small: train={len(train)} val={len(val)} test={len(test)}"
+        )
     cols = list(FEATURES)
     model = lgb.LGBMClassifier(**params).fit(train[cols], train["y"])
     base = float(train["y"].mean())

@@ -89,6 +89,12 @@ OFFLINE_POOL_STATUSES = ("proposed", "ablating", "screened")
 OFFLINE_POOL_MAX = 4
 SHADOW_POOL_MAX = 4
 PROPOSERS = ("llm", "human", "scheduled")
+# Phase 3 (spec D9): the hypothesis the deterministic scheduled grid
+# opens under. It is deliberately NOT in the LLM's HYPOTHESES enum —
+# validate_proposal() refuses it, so the LLM can never propose a
+# scheduled variant. Only open_scheduled_variant() (scheduled_variants)
+# creates experiments with it.
+SCHEDULED_HYPOTHESES = ("scheduled_variant",)
 FINDING_KINDS = ("discovery", "mistake", "negative_result")
 RECORDED_BY = ("llm", "human", "system")
 # Actors allowed to drive a status transition. "llm" is deliberately
@@ -175,14 +181,16 @@ def create_experiment(store, *, proposer: str, hypothesis: str,
     """Open one experiment in status='proposed' (loop step 1).
 
     ``hypothesis`` is constrained to the fixed enum the LLM may propose
-    from (spec §3.2 step 1); ``design`` carries the train/validation/
-    holdout windows, model shape, and calibration method. The caller
-    that stores the LLM proposal in ``rival_llm_feature_hypotheses``
-    (``FeatureHypothesisLab``) passes its ``proposal_sha256``.
+    from (spec §3.2 step 1), plus the scheduled grid's hypothesis
+    (spec D9), which only open_scheduled_variant() may use. ``design``
+    carries the train/validation/holdout windows, model shape, and
+    calibration method. The caller that stores the LLM proposal in
+    ``rival_llm_feature_hypotheses`` (``FeatureHypothesisLab``) passes
+    its ``proposal_sha256``.
     """
     if proposer not in PROPOSERS:
         raise ValueError(f"unknown proposer: {proposer!r}")
-    if hypothesis not in HYPOTHESES:
+    if hypothesis not in HYPOTHESES + SCHEDULED_HYPOTHESES:
         raise ValueError(f"hypothesis outside the fixed enum: {hypothesis!r}")
     if feature_indices is not None and not valid_feature_indices(feature_indices):
         raise ValueError("feature_indices must be 2-8 sorted unique indices 0-9")
@@ -349,7 +357,13 @@ def transition(store, experiment_id: str, to_status: str, *,
         event["idempotency_key"] = idempotency_key
     events.append(event)
     with store.connect() as conn:
-        if finding is not None:
+        updated = conn.execute(
+            """UPDATE rival_research_experiments
+               SET status=?, outcome_json=? WHERE experiment_id=? AND status=?""",
+            (to_status, json.dumps(events, sort_keys=True, separators=(",", ":")),
+             experiment_id, current),
+        )
+        if updated.rowcount == 1 and finding is not None:
             conn.execute(
                 """INSERT INTO rival_research_findings
                    (finding_id, experiment_id, recorded_at, kind, summary,
@@ -358,14 +372,12 @@ def transition(store, experiment_id: str, to_status: str, *,
                  finding["kind"], finding["summary"], finding["evidence_ref"],
                  finding["recorded_by"]),
             )
-        conn.execute(
-            """UPDATE rival_research_experiments
-               SET status=?, outcome_json=? WHERE experiment_id=?""",
-            (to_status,
-             json.dumps(events, sort_keys=True, separators=(",", ":")),
-             experiment_id),
-        )
-    return get_experiment(store, experiment_id)
+    latest = get_experiment(store, experiment_id)
+    if updated.rowcount != 1 and not (idempotency_key is not None and any(
+        event.get("idempotency_key") == idempotency_key for event in latest["outcome_json"]
+    )):
+        raise ValueError(f"experiment {experiment_id} changed during transition")
+    return latest
 
 
 def record_stage_outcome(store, experiment_id: str, *, stage: str,
@@ -672,12 +684,15 @@ def run_ablation(store, experiment_id: str, *, trials: list[dict] | None = None,
             default=None),
     }
     if not passed:
+        summary = "Offline ablation did not pass the candidate gates."
+        if trials and all(t.get("retrospective_candidate_status") == "validation_rejected"
+                          for t in trials):
+            summary = f"All {len(trials)} offline trial(s) failed validation. Holdout unopened."
         return transition(
             store, experiment_id, "discarded", actor="system",
             outcome=numeric,
             finding={"kind": "negative_result",
-                     "summary": "Offline ablation did not beat the baseline "
-                                "on the sealed holdout; idea discarded.",
+                     "summary": summary,
                      "evidence_ref": f"rival_research_experiments:{experiment_id}",
                      "recorded_by": "system"},
             idempotency_key=idempotency_key, now=stamp)
@@ -688,6 +703,7 @@ def run_ablation(store, experiment_id: str, *, trials: list[dict] | None = None,
 
 def run_screen(store, experiment_id: str, *, artifact: bytes | None = None,
                screen=None, eligible: bool = False,
+               shadow_identity: dict | None = None,
                now: datetime | None = None) -> dict:
     """Loop step 4: retrospective screen, wired to the existing gate.
 
@@ -744,6 +760,8 @@ def run_screen(store, experiment_id: str, *, artifact: bytes | None = None,
                      "evidence_ref": f"rival_research_experiments:{experiment_id}",
                      "recorded_by": "system"},
             now=stamp)
+    if shadow_identity is not None:
+        outcome["shadow_identity"] = shadow_identity
     return transition(store, experiment_id, "shadow", actor="system",
                       outcome=outcome, now=stamp)
 

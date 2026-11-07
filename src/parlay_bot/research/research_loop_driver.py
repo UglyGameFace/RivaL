@@ -28,10 +28,8 @@ enforces that, not the driver.
 
 Cadence and safety (spec D2): 30-minute tick, one experiment one stage,
 skip the tick on memory pressure. A tick that finds nothing to advance
-does nothing. The master switch is the existing
-`rival_llm_background_opt_in`: off stops the task at creation, at the
-loop head, and in the watchdog; experiments freeze mid-state and resume
-when re-enabled.
+does nothing. `rival_research_loop_enabled` controls this deterministic
+worker independently of the optional LFM3 proposal lab.
 """
 
 from __future__ import annotations
@@ -50,6 +48,16 @@ from parlay_bot.perpetuals.research_loop import (
     ResearchLoop,
     pool_counts,
     record_stage_outcome,
+)
+from parlay_bot.research.scheduled_variants import (
+    design_sha256,
+    lookup_variant,
+    open_scheduled_variant,
+    publish_scheduled_request,
+    read_scheduled_result,
+    scheduled_request,
+    scheduled_shadow_identity,
+    screen_scheduled_artifact,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -96,9 +104,10 @@ def _is_sha256(value: object) -> bool:
 def list_open_experiments(store, *, now: datetime | None = None) -> list[dict]:
     """Non-terminal experiments with a lab proposal, oldest first.
 
-    Only experiments carrying a ``proposal_sha256`` are drivable: those are
-    the ones the hypothesis lab opened. Human-driven experiments (no
-    proposal SHA, e.g. the archive driver's) are driven by their own
+    Only experiments carrying a ``proposal_sha256`` are drivable: those
+    are the ones the hypothesis lab opened, plus scheduled variants
+    (whose proposal SHA is their design hash). Human-driven experiments
+    (no proposal SHA, e.g. the archive driver's) are driven by their own
     caller and are left alone. The 90-day read window is the loop's own
     (``research_loop.EXPERIMENT_READ_DAYS``); an experiment stalled
     longer than that drops out of the driver's view by design.
@@ -227,6 +236,42 @@ def _proposal_expired(store, experiment: dict, *, now: datetime) -> bool:
     return (now - slot) > timedelta(days=PROPOSAL_FRESHNESS_DAYS)
 
 
+def _advance_verify_scheduled(loop: ResearchLoop, experiment: dict, *,
+                              now: datetime) -> dict:
+    """Verify a scheduled variant against the registered grid (spec D9).
+
+    A scheduled design is a deterministic proposal: the driver checks
+    the experiment's design hash is a registered grid entry and the
+    stored design hashes to it, then moves the experiment to ablating.
+    An unregistered design — or a stored design that no longer hashes
+    to its proposal SHA — fails closed to failed with a finding. No LLM
+    receipt is involved: the grid, not a model, is the proposal.
+    """
+    experiment_id = experiment["experiment_id"]
+    proposal_sha = experiment.get("proposal_sha256") or ""
+    design = experiment.get("design_json") or {}
+    entry = lookup_variant(proposal_sha)
+    if entry is None or design_sha256(design) != proposal_sha:
+        return loop.transition(
+            experiment_id, "failed", actor="system",
+            outcome={"stage": "verification",
+                     "reason": "scheduled design is not a registered "
+                               "grid entry",
+                     "proposal_sha256": proposal_sha},
+            finding={"kind": "negative_result",
+                     "summary": ("Scheduled variant failed verification: "
+                                 "its design is not a registered grid entry."),
+                     "evidence_ref": f"rival_research_experiments:{experiment_id}",
+                     "recorded_by": "system"},
+            now=now)
+    return loop.transition(
+        experiment_id, "ablating", actor="system",
+        outcome={"stage": "verification",
+                 "scheduled_variant": entry["variant_id"],
+                 "design_sha256": proposal_sha},
+        now=now)
+
+
 def _advance_verify(loop: ResearchLoop, experiment: dict, *,
                     now: datetime) -> dict:
     """Stage proposed -> ablating (or discarded/failed, with a finding).
@@ -235,6 +280,8 @@ def _advance_verify(loop: ResearchLoop, experiment: dict, *,
     the expiry (spec D15); any other unverifiable receipt fails closed
     through run_verify, as before.
     """
+    if experiment.get("proposer") == "scheduled":
+        return _advance_verify_scheduled(loop, experiment, now=now)
     if _proposal_expired(loop.store, experiment, now=now):
         return loop.transition(
             experiment["experiment_id"], "discarded", actor="system",
@@ -336,7 +383,17 @@ def _advance_ablation(loop: ResearchLoop, experiment: dict, *,
     proposal_sha = experiment.get("proposal_sha256") or ""
     entry = trial_reports.get(proposal_sha)
     if entry is None:
-        return _advance_blocked(loop, experiment, now=now)
+        blocked = _advance_blocked(loop, experiment, now=now)
+        if blocked is not None or not _proposal_expired(loop.store, experiment, now=now):
+            return blocked
+        return loop.transition(
+            experiment["experiment_id"], "discarded", actor="system",
+            outcome={"stage": "ablation", "blocked": True, "reason": "proposal_expired"},
+            finding={"kind": "negative_result",
+                     "summary": "No verified offline trial arrived before the proposal expired.",
+                     "evidence_ref": f"rival_research_experiments:{experiment['experiment_id']}",
+                     "recorded_by": "system"}, now=now,
+        )
     report_sha = entry["report_sha256"]
     if is_report_consumed(loop.store, proposal_sha, report_sha):
         return None
@@ -378,6 +435,101 @@ def shadow_family_for_candidate(payload: bytes) -> tuple[str, dict]:
     }
 
 
+def _shadow_pool_full(loop: ResearchLoop, experiment: dict, *,
+                      now: datetime) -> bool:
+    """True when the shadow pool is full (spec D16).
+
+    A screened candidate waits at screened while the shadow pool is
+    full — the wait is a stage outcome noting capacity, not a finding.
+    Recorded once per distinct shadow count so the event log is not
+    spammed every tick.
+    """
+    counts = pool_counts(loop.store, now=now)
+    if counts["shadow"] < SHADOW_POOL_MAX:
+        return False
+    events = experiment.get("outcome_json") or []
+    last = events[-1] if events else {}
+    last_outcome = last.get("outcome") or {}
+    if not (last.get("stage") == "shadow-capacity"
+            and last_outcome.get("shadow_open") == counts["shadow"]):
+        record_stage_outcome(
+            loop.store, experiment["experiment_id"],
+            stage="shadow-capacity",
+            outcome={"waiting": "shadow_pool_full",
+                     "shadow_open": counts["shadow"],
+                     "shadow_max": SHADOW_POOL_MAX},
+            now=now)
+    return True
+
+
+def _hold_new_family(loop: ResearchLoop, experiment: dict, design: dict, *,
+                     now: datetime) -> None:
+    """Hold a new-family scheduled variant at screened (spec D10).
+
+    A new family name is a human decision: the driver never invents
+    one. The hold is recorded once as a stage outcome plus a single
+    finding (kind ``negative_result`` — the kinds enum has no
+    held/needs-human value, and the summary states the hold
+    explicitly). The experiment stays open at screened, so its design
+    is not re-proposed, and the driver moves on to the next experiment.
+    A held variant occupies one offline pool slot until a human acts.
+    """
+    experiment_id = experiment["experiment_id"]
+    current = loop.get(experiment_id) or experiment
+    for event in current.get("outcome_json") or []:
+        if (event.get("outcome") or {}).get("new_family_hold"):
+            return
+    variant_id = design.get("variant_id")
+    record_stage_outcome(
+        loop.store, experiment_id, stage="screened",
+        outcome={"stage": "screen", "new_family_hold": True,
+                 "variant_id": variant_id,
+                 "model_shape": design.get("model_shape")},
+        now=now)
+    loop.finding(
+        experiment_id=experiment_id, kind="negative_result",
+        summary=(f"Scheduled variant {variant_id} held at screened: its "
+                 "shadow mode is new_family and a new family name is a "
+                 "human decision."),
+        evidence_ref=f"rival_research_experiments:{experiment_id}",
+        recorded_by="system", now=now)
+
+
+def _advance_screen_scheduled(loop: ResearchLoop, experiment: dict, *,
+                              artifact: bytes, eligible: bool,
+                              now: datetime) -> dict | None:
+    """Screen a scheduled variant's artifact (spec D9/D10/D13).
+
+    A new-family design never enters shadow: a passing artifact holds
+    at screened (see ``_hold_new_family``); a failing artifact is
+    discarded by the shared screen. An artifact-mode design shadows
+    as its own family (archive_v1 / gbm_v1), so the shadow pool
+    capacity gate applies exactly as it does to LLM variants, and the
+    family + scope + weights SHA are recorded for the shadow step to
+    match against the pinned fit (D14).
+    """
+    design = experiment.get("design_json") or {}
+    experiment_id = experiment["experiment_id"]
+    if design.get("shadow_mode") == "new_family":
+        check = screen_scheduled_artifact(artifact)
+        if check["retrospective_screen"] != "passed":
+            return loop.screen(
+                experiment_id, artifact=artifact, eligible=eligible,
+                screen=screen_scheduled_artifact, now=now,
+            )
+        _hold_new_family(loop, experiment, design, now=now)
+        return None
+    if _shadow_pool_full(loop, experiment, now=now):
+        return None
+    check = screen_scheduled_artifact(artifact)
+    identity = (scheduled_shadow_identity(design, artifact)
+                if check["retrospective_screen"] == "passed" else None)
+    return loop.screen(
+        experiment_id, artifact=artifact, eligible=eligible,
+        screen=lambda _: check, shadow_identity=identity, now=now,
+    )
+
+
 def _advance_screen(loop: ResearchLoop, experiment: dict, *,
                     candidates: dict, now: datetime) -> dict | None:
     """Stage screened -> shadow (or discarded, with a finding).
@@ -390,24 +542,15 @@ def _advance_screen(loop: ResearchLoop, experiment: dict, *,
     found = candidates.get(experiment.get("proposal_sha256") or "")
     if found is None:
         return None
+    if experiment.get("proposer") == "scheduled":
+        return _advance_screen_scheduled(
+            loop, experiment, artifact=found[0], eligible=found[1], now=now,
+        )
     # Spec D16: a screened candidate waits at screened while the shadow
     # pool is full — the wait is a stage outcome noting capacity, not a
     # finding. Recorded once per distinct shadow count so the event log
     # is not spammed every tick.
-    counts = pool_counts(loop.store, now=now)
-    if counts["shadow"] >= SHADOW_POOL_MAX:
-        events = experiment.get("outcome_json") or []
-        last = events[-1] if events else {}
-        last_outcome = last.get("outcome") or {}
-        if not (last.get("stage") == "shadow-capacity"
-                and last_outcome.get("shadow_open") == counts["shadow"]):
-            record_stage_outcome(
-                loop.store, experiment["experiment_id"],
-                stage="shadow-capacity",
-                outcome={"waiting": "shadow_pool_full",
-                         "shadow_open": counts["shadow"],
-                         "shadow_max": SHADOW_POOL_MAX},
-                now=now)
+    if _shadow_pool_full(loop, experiment, now=now):
         return None
     payload, eligible = found
     result = loop.screen(
@@ -463,6 +606,9 @@ def read_promotion_evaluation(store, *, asset: str, venue: str, contract: str,
 def _shadow_scope(experiment: dict) -> dict | None:
     """Family + scope recorded when the experiment entered shadow."""
     for event in reversed(experiment.get("outcome_json") or []):
+        identity = (event.get("outcome") or {}).get("shadow_identity")
+        if isinstance(identity, dict):
+            return identity
         if event.get("stage") == "shadow-family":
             outcome = event.get("outcome") or {}
             if outcome.get("family") and outcome.get("asset"):
@@ -489,6 +635,28 @@ def _last_shadow_observation_at(experiment: dict) -> datetime | None:
     return latest
 
 
+def _scheduled_shadow_clock(store, scope: dict) -> tuple[datetime | None, bool]:
+    from parlay_bot.perpetuals.offline_model_pins import initialize
+
+    initialize(store)
+    with store.connect() as conn:
+        pin = conn.execute(
+            """SELECT verdict FROM rival_offline_model_pins
+               WHERE family=? AND asset=? AND horizon_minutes=? AND model_sha256=?""",
+            (scope["family"], scope["asset"], scope["horizon_minutes"], scope["model_sha256"]),
+        ).fetchone()
+        if pin is None:
+            return None, False
+        issued = conn.execute(
+            """SELECT MIN(issued_at) AS first_issued FROM rival_model_shadow_forecasts
+               WHERE family=? AND asset=? AND venue=? AND contract=? AND quote=?
+               AND horizon_minutes=? AND training_sha256=?""",
+            (scope["family"], scope["asset"], scope["venue"], scope["contract"],
+             scope["quote"], scope["horizon_minutes"], scope["model_sha256"]),
+        ).fetchone()
+    return _parse_time(issued["first_issued"]), pin["verdict"] == "rejected"
+
+
 def _advance_shadow(loop: ResearchLoop, experiment: dict, *,
                     promoter=None, now: datetime) -> dict | None:
     """Stage shadow -> promoted / discarded, or wait for new evidence.
@@ -512,7 +680,10 @@ def _advance_shadow(loop: ResearchLoop, experiment: dict, *,
     )
     entry_at = _shadow_entry_at(experiment)
     anchor = entry_at or _parse_time(experiment.get("created_at"))
-    lookback_expired = anchor is not None and (now - anchor) > SHADOW_LOOKBACK
+    rejected_pin = False
+    if scope.get("model_sha256"):
+        anchor, rejected_pin = _scheduled_shadow_clock(loop.store, scope)
+    lookback_expired = rejected_pin or (anchor is not None and now - anchor > SHADOW_LOOKBACK)
     if evaluation is None:
         if not lookback_expired:
             return None
@@ -526,6 +697,33 @@ def _advance_shadow(loop: ResearchLoop, experiment: dict, *,
             and evaluated_at is not None
             and evaluated_at <= last_observed
         ):
+            return None
+    if experiment.get("proposer") == "scheduled":
+        # Spec D14: the variant shadows as its family, but a new fit
+        # queues behind the pinned fit. The verdict belongs to the
+        # variant's own artifact — the pinned fit's weights SHA must
+        # match the variant's, or the variant waits (a stage outcome,
+        # not a finding) until a newer evaluation pins its fit. The
+        # wait is observed once per evaluation: the stage outcome
+        # updates the last-observed time, so the same evaluation is
+        # not re-read every tick.
+        family_evaluation = (evaluation.get("families") or {}).get(family) or {}
+        artifact = family_evaluation.get("artifact")
+        identity_key = "model_sha256" if scope.get("model_sha256") else "weights_sha256"
+        pinned_sha = artifact.get(identity_key) if isinstance(artifact, dict) else None
+        variant_sha = scope.get(identity_key)
+        if pinned_sha != variant_sha:
+            if lookback_expired:
+                return loop.shadow(
+                    experiment["experiment_id"], family=family,
+                    lookback_expired=True, now=now,
+                )
+            record_stage_outcome(
+                loop.store, experiment["experiment_id"], stage="shadow",
+                outcome={"queued": True, "family": family,
+                         "variant_weights_sha256": variant_sha,
+                         "pinned_weights_sha256": pinned_sha},
+                now=now)
             return None
     if promoter is None:
         promoter = FamilyPromotion(loop.store)
@@ -672,7 +870,14 @@ def _trials_from_report(payload: bytes) -> list[dict]:
 
 
 def _candidate_from_payload(payload: bytes) -> str | None:
-    """Proposal SHA of a published candidate artifact, or None."""
+    """Proposal SHA of a published candidate artifact, or None.
+
+    LLM candidates carry ``lfm3_proposal_sha256`` in their model spec.
+    Scheduled-variant artifacts carry ``scheduled_design_sha256`` —
+    top-level, or in the model spec — naming the grid design they were
+    trained for (spec D9). The training job records it when it trains
+    a variant; an artifact without either key is not a loop candidate.
+    """
     try:
         source = json.loads(payload)
     except (ValueError, TypeError, UnicodeDecodeError):
@@ -680,9 +885,12 @@ def _candidate_from_payload(payload: bytes) -> str | None:
     if not isinstance(source, dict):
         return None
     spec = source.get("model_spec")
-    if not isinstance(spec, dict):
-        return None
-    sha = spec.get("lfm3_proposal_sha256")
+    if isinstance(spec, dict):
+        sha = (spec.get("lfm3_proposal_sha256")
+               or spec.get("scheduled_design_sha256"))
+        if _is_sha256(sha):
+            return sha
+    sha = source.get("scheduled_design_sha256")
     return sha if _is_sha256(sha) else None
 
 
@@ -716,7 +924,8 @@ async def fetch_loop_inputs(drive, *, report_pages: int = TRIAL_REPORT_SCAN_PAGE
                         continue
                     entry = trial_reports.setdefault(
                         sha, {"trials": [], "report_sha256": report_sha})
-                    entry["trials"].append(trial)
+                    if entry["report_sha256"] == report_sha:
+                        entry["trials"].append(trial)
                 sha = _candidate_from_payload(payload)
                 if sha is not None and sha not in candidates:
                     candidates[sha] = (payload, False)
@@ -742,10 +951,44 @@ async def fetch_loop_inputs(drive, *, report_pages: int = TRIAL_REPORT_SCAN_PAGE
     return trial_reports, candidates
 
 
+def _apply_scheduled_result(store, experiment: dict, result: tuple, *, now: datetime):
+    doc, payload, eligible = result
+    loop = ResearchLoop(store)
+    if experiment["status"] == "screened":
+        return _advance_screen_scheduled(
+            loop, experiment, artifact=payload, eligible=eligible, now=now,
+        )
+    experiment_id = experiment["experiment_id"]
+    status = doc["scheduled_trial"]["status"]
+    if status == "passed" and screen_scheduled_artifact(payload)["retrospective_screen"] != "passed":
+        status = "rejected"
+    evaluation = doc.get("evaluation") or {}
+    outcome = {
+        "stage": "ablation", "blocked": status == "blocked", "trial_status": status,
+        "validation_brier_delta": (evaluation.get("validation") or {}).get("brier_gain"),
+        "holdout_brier_delta": (evaluation.get("test") or {}).get("brier_gain"),
+    }
+    finding = None
+    if status != "passed":
+        reasons = doc.get("gate_failures") or ["artifact did not pass verification"]
+        reason = ", ".join(str(value) for value in reasons)
+        outcome["reason"] = reason
+        finding = {"kind": "negative_result",
+                   "summary": f"Scheduled trial {status}: {reason}"[:280],
+                   "evidence_ref": f"rival_research_experiments:{experiment_id}",
+                   "recorded_by": "system"}
+    return loop.transition(
+        experiment_id, "screened" if finding is None else "discarded", actor="system",
+        outcome=outcome, finding=finding,
+        idempotency_key=f"scheduled-result:{experiment_id}:{hashlib.sha256(payload).hexdigest()}",
+        now=now,
+    )
+
+
 async def drive_research_loop_tick(store, *, drive=None,
                                    now: datetime | None = None,
                                    memory_pressure: bool = False) -> dict:
-    """One driver tick: advance at most one experiment one stage.
+    """One driver tick: advance at most one experiment one stage, or open one.
 
     Async orchestrator for the bot task. Drive reads happen here (the
     Drive client is async) and only when the experiment being advanced
@@ -753,19 +996,47 @@ async def drive_research_loop_tick(store, *, drive=None,
     never blocks a verify; all store work runs on a worker thread so a
     slow pool checkout never freezes the Discord gateway heartbeat. A
     Drive failure skips the Drive-dependent stages for this tick — the
-    experiments wait, nothing is invented.
+    experiments wait, nothing is invented. When nothing advances, the
+    tick tries opening the next scheduled variant (spec D9/D10/D16):
+    one action per tick, an advance OR an open.
     """
     stamp = _stamp(now)
     if memory_pressure:
         return {"status": "skipped_memory_pressure", "advanced": None}
     experiments = await asyncio.to_thread(list_open_experiments, store, now=stamp)
-    if not experiments:
-        return {"status": "nothing_to_advance", "advanced": None}
     trial_reports: dict = {}
     candidates: dict = {}
     inputs_fetched = False
     drive_failed = False
     for experiment in experiments:
+        if experiment["proposer"] == "scheduled" and experiment["status"] in (
+            "ablating", "screened",
+        ):
+            if drive is None:
+                continue
+            try:
+                result_doc = await read_scheduled_result(drive, scheduled_request(experiment))
+                if result_doc is None and not any(
+                    event.get("stage") == "offline-request" for event in experiment["outcome_json"]
+                ):
+                    await publish_scheduled_request(drive, experiment)
+                    await asyncio.to_thread(
+                        record_stage_outcome, store, experiment["experiment_id"],
+                        stage="offline-request", outcome={"submitted": True}, now=stamp,
+                    )
+                    return {"status": "submitted", "advanced": None}
+            except Exception:  # noqa: BLE001 - retry the handoff without closing the experiment
+                _LOG.warning("RivaL scheduled research handoff unavailable", exc_info=True)
+                drive_failed = True
+                continue
+            if result_doc is not None:
+                result = await asyncio.to_thread(
+                    _apply_scheduled_result, store, experiment, result_doc, now=stamp,
+                )
+                if result is not None:
+                    return {"status": "advanced", "advanced": experiment["experiment_id"],
+                            "from": experiment["status"], "to": result["status"]}
+            continue
         if (
             experiment["status"] in ("ablating", "screened")
             and drive is not None
@@ -790,4 +1061,12 @@ async def drive_research_loop_tick(store, *, drive=None,
             return result
     if drive_failed:
         return {"status": "drive_unavailable", "advanced": None}
+    # Nothing advanced this tick: try opening the next scheduled variant
+    # (spec D9/D10/D16). An exhausted grid, a full offline pool, or a
+    # spent weekly budget is a normal nothing-to-do, not an error.
+    opened = await asyncio.to_thread(open_scheduled_variant, store, now=stamp)
+    if opened is not None:
+        return {"status": "opened", "opened": opened["experiment_id"],
+                "variant_id": (opened.get("design_json") or {}).get("variant_id"),
+                "proposal_sha256": opened.get("proposal_sha256")}
     return {"status": "nothing_to_advance", "advanced": None}

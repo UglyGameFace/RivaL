@@ -1,3 +1,13 @@
+## 2026-11-07 — Close the autonomous perpetuals research loop
+
+- **Integration** — [PR #448](https://github.com/UglyGameFace/RivaL/pull/448) extends the existing driver, scheduled grid, and pinned archive/LightGBM challengers. [PR #449](https://github.com/UglyGameFace/RivaL/pull/449) restored main CI and the [Discloud release](https://github.com/UglyGameFace/RivaL/actions/runs/42411467968).
+- **Root cause** — The driver received a model-only Drive client. The scheduled grid also lacked a producer, so a verified scheduled experiment could wait for a report that no job created.
+- **Behavior** — RivaL publishes a private Drive request for the exact experiment. The existing weekly archive command loads verified frames once per scope, runs archive logistic and LightGBM, and returns a single outcome for any eligible queued request. Missing verified history gets its own receipt. A shadow trial earns evidence against its exact artifact and scope, starting at its first issuance. The independent `RIVAL_RESEARCH_LOOP_ENABLED` setting controls the driver.
+- **Evidence** — Replayed the November 7 OKX Actions artifact into a disposable database. The 12 trials closed four experiments with validation findings and a restart replay added zero findings. Regression coverage exercises the weekly runner, artifact import and shadow settlement with fixture data.
+- **Production acceptance** — Check exact-head CI and the subsequent Discloud receipt. Read the first weekly archive run and observe its Drive result, actual import, and settled prospective row before reporting live shadow success.
+
+---
+
 ## 2026-11-06: Remove the Polymarket calendar blackout; surface frozen research forecasts
 
 - **Objective / branch / PR:** `fix/evidence-driven-polymarket-calls` / [#419](https://github.com/UglyGameFace/RivaL/pull/419); correct PR #418's unrequested 28-day/21-day/48-hour calendar gates. Main inspected at `3299bf5`, no overlapping open PRs or local user changes.

@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import ast
 import json
-import math
 import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -376,8 +375,11 @@ def test_lean_never_substitutes_another_family(tmp_path):
         seed_candles(market, now)
         seed_checkpoint(store, now)
         # A substituted family with no read-only recompute path has no lean,
-        # even though the incumbent's lean is computable.
-        for family in ("gaussian_nb_v1", "knn21_v1", "boosted_v1", "calib_v1"):
+        # even though the incumbent's lean is computable. flow_v3 is retired
+        # (Nov 7, 2026, PR #439): it has no lean either, never the
+        # incumbent's.
+        for family in ("gaussian_nb_v1", "knn21_v1", "boosted_v1", "calib_v1",
+                       "flow_v3"):
             assert live_lean(
                 market, asset="BTC", horizon=5, venue="hyperliquid",
                 contract="BTC", quote="USDC", now=now,
@@ -388,11 +390,6 @@ def test_lean_never_substitutes_another_family(tmp_path):
             market, asset="BTC", horizon=5, venue="hyperliquid",
             contract="BTC", quote="USDC", now=now,
         ) is not None
-        # flow_v3 with no persisted state or inputs has no lean either.
-        assert live_lean(
-            market, asset="BTC", horizon=5, venue="hyperliquid",
-            contract="BTC", quote="USDC", now=now, model_version="flow_v3",
-        ) is None
     finally:
         store.close()
 
@@ -630,7 +627,7 @@ def test_flow_v3_first_serve_receipt_is_the_only_display_write(tmp_path):
         store.close()
 
 
-def test_flow_v3_lean_from_persisted_state(tmp_path):
+def test_flow_v3_lean_is_gone_after_retirement(tmp_path):
     now = datetime.now(UTC).replace(microsecond=0)
     store = SQLiteHotStore(tmp_path / "flowlean.sqlite")
     market = PerpetualMarketStore(store)
@@ -665,19 +662,13 @@ def test_flow_v3_lean_from_persisted_state(tmp_path):
                      2.0, 1000.0, 1000.0, 2000.0, 2000.0,
                      5, 5, 100.0, 100.0, now.isoformat()),
                 )
-        lean = live_lean(
+        # Retired Nov 7, 2026 (PR #439): persisted state and inputs are still
+        # there, but there is no flow_v3 lean any more — frozen weights must
+        # never render as a live lean.
+        assert live_lean(
             market, asset="BTC", horizon=5, venue="hyperliquid",
             contract="BTC", quote="USDC", now=now, model_version="flow_v3",
-        )
-        assert lean is not None
-        # Independent expectation from the documented shrinkage formula:
-        # base=(0+5)/(1+10), trust=1/(1+300), raw=sigmoid(0.5).
-        base = 5 / 11
-        trust = 1 / 301
-        raw = 1.0 / (1.0 + math.exp(-0.5))
-        assert lean["probability"] == pytest.approx(base + trust * (raw - base), abs=1e-9)
-        assert lean["calibrated"] is False  # Platt fit never evaluated here
-        assert lean["engine"] == "live"
+        ) is None
     finally:
         store.close()
 

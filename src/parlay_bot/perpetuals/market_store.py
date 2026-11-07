@@ -708,16 +708,28 @@ class PerpetualMarketStore:
     def pause_ai_requests(
         self, *, model: str, now: datetime, seconds: int = 3600,
     ) -> None:
-        """Persist a model-wide circuit breaker for upstream quota denials."""
+        """Persist a model-wide circuit breaker for upstream quota denials.
+
+        Inserts the day's quota row when none exists yet: an UPDATE-only
+        pause was a silent no-op on a fresh day, so a breaker set before
+        the first request of the day never took effect. The inserted row
+        records zero usage and no last call (epoch sentinel), so it blocks
+        only through blocked_until and never invents spacing or usage.
+        """
         if seconds < 60:
             raise ValueError("invalid AI cooldown")
         instant = utc(now)
+        self.initialize()
         with self.store.connect() as conn:
             conn.execute(
-                """UPDATE perp_ai_quota SET blocked_until=?
-                   WHERE model=? AND utc_day=?""",
-                ((instant + timedelta(seconds=seconds)).isoformat(),
-                 model, instant.date().isoformat()),
+                """INSERT INTO perp_ai_quota
+                   (model,utc_day,used,last_called_at,blocked_until)
+                   VALUES (?,?,0,?,?)
+                   ON CONFLICT(model,utc_day) DO UPDATE SET
+                     blocked_until=excluded.blocked_until""",
+                (model, instant.date().isoformat(),
+                 "1970-01-01T00:00:00+00:00",
+                 (instant + timedelta(seconds=seconds)).isoformat()),
             )
 
     def save_ai_research(

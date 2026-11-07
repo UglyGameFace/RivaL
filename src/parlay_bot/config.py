@@ -64,6 +64,14 @@ class Settings(BaseSettings):
     # One private, research-only feature suggestion every six hours at most.
     # Requires the already-configured RIVAL_AI_PROVIDER=local and shared token.
     rival_llm_hypotheses_enabled: bool = Field(default=True)
+    # Local LFM3 budget (batch 2 §3.4, D5): the persisted quota tables in
+    # market_store.py enforce these numbers on every LLM call. Daily cap
+    # default 18/day, per-requester cap min(3, daily_max), 60 s spacing.
+    rival_llm_daily_max: int = Field(default=18, ge=1)
+    # Automatic LLM loops (_intelligence_loop, _hypothesis_loop) run only
+    # when Felix opts in. User-initiated asks still reserve quota but do
+    # not need the opt-in.
+    rival_llm_background_opt_in: bool = Field(default=False)
     rival_shadow_eval_seconds: int = Field(default=3600, ge=900, le=21600)
 
     # Sole private RivaL Intelligence provider. Old environment strings are

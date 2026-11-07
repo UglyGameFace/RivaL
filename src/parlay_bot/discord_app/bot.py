@@ -152,6 +152,17 @@ def candidate_import_delay(*, backlog: bool, failed: bool = False) -> int:
     return 300 if failed else 900 if backlog else 3600
 
 
+def llm_background_enabled(settings) -> bool:
+    """Automatic LLM loops run only with an explicit operator opt-in.
+
+    Batch 2 §3.4 / D5: rival_llm_background_opt_in defaults False. The
+    gate is checked at task creation, at each loop head, and in the
+    watchdog, so a loop never starts — or restarts — while opted out.
+    User-initiated asks do not consult this flag; they reserve quota.
+    """
+    return bool(getattr(settings, "rival_llm_background_opt_in", False))
+
+
 class RivalDiscordClient(discord.Client):
     def __init__(self, settings: Settings) -> None:
         # Guilds is a non-privileged gateway intent needed for guild state,
@@ -482,6 +493,7 @@ class RivalDiscordClient(discord.Client):
                     settings.rival_local_ai_token.get_secret_value()
                     if settings.rival_local_ai_token is not None else None
                 ),
+                daily_max=settings.rival_llm_daily_max,
             )
             if settings.rival_ai_provider != "disabled" else None
         )
@@ -1523,7 +1535,8 @@ class RivalDiscordClient(discord.Client):
                 )
             if (self._intelligence_task is None
                     and isinstance(self.intelligence_research, LocalFirstResearch)
-                    and self.intelligence_research.available):
+                    and self.intelligence_research.available
+                    and llm_background_enabled(self.settings)):
                 self._intelligence_task = asyncio.create_task(
                     self._intelligence_loop(), name="rival-intelligence-review",
                 )
@@ -1545,7 +1558,8 @@ class RivalDiscordClient(discord.Client):
                 self._history_loop(), name="rival-perp-history-recovery"
             )
 
-        if self.hypothesis_lab is not None and self._hypothesis_task is None:
+        if (self.hypothesis_lab is not None and self._hypothesis_task is None
+                and llm_background_enabled(self.settings)):
             self._hypothesis_task = asyncio.create_task(
                 self._hypothesis_loop(), name="rival-llm-feature-research",
             )
@@ -2279,7 +2293,15 @@ class RivalDiscordClient(discord.Client):
         One coin per slot (rotating), 2.5 minutes after the slot opens so the
         models' forecasts for it already exist. Each stance is stored against
         that slot's forecasts and graded later.
+
+        Runs only with the background opt-in (batch 2 §3.4). A cap hit
+        inside explain_models raises ResearchUnavailable; the slot is
+        skipped and logged, never retried unmetered.
         """
+        if not llm_background_enabled(self.settings):
+            _LOG.info("RivaL Intelligence background reviews disabled: "
+                      "rival_llm_background_opt_in=False; loop not running")
+            return
         from parlay_bot.perpetuals.ai_types import ResearchUnavailable
         from parlay_bot.perpetuals.intelligence import (
             IntelligenceLedger,
@@ -2350,7 +2372,11 @@ class RivalDiscordClient(discord.Client):
                 raise
             except ResearchUnavailable as exc:
                 outcome = "busy" if isinstance(exc, LocalBusy) else "unavailable"
-                if "needs the review update" in str(exc):
+                if "budget exhausted" in str(exc):
+                    # Batch 2 §3.4: cap hit — skip the slot and log it.
+                    outcome = "budget_exhausted"
+                    _LOG.info("RivaL Intelligence review skipped %s: %s", asset, exc)
+                elif "needs the review update" in str(exc):
                     _LOG.warning("RivaL Intelligence service lacks the model-review "
                                  "endpoint; upload the latest LLM package")
                     await asyncio.sleep(3600)
@@ -2601,7 +2627,16 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(self.settings.rival_history_recovery_seconds)
 
     async def _hypothesis_loop(self) -> None:
-        """Optional low-priority LFM3 feature ideas, no impact on live forecasts."""
+        """Optional low-priority LFM3 feature ideas, no impact on live forecasts.
+
+        Runs only with the background opt-in (batch 2 §3.4). A cap hit
+        inside run_once returns status "unavailable"; the slot is skipped
+        and logged, never retried unmetered.
+        """
+        if not llm_background_enabled(self.settings):
+            _LOG.info("RivaL hypothesis background loop disabled: "
+                      "rival_llm_background_opt_in=False; loop not running")
+            return
         await self.wait_until_ready()
         await asyncio.sleep(40)
         assert self.hypothesis_lab is not None
@@ -2615,6 +2650,11 @@ class RivalDiscordClient(discord.Client):
                     _LOG.info(
                         "RivaL bounded AI hypothesis recorded asset=%s kind=%s",
                         result["asset"], result["hypothesis"],
+                    )
+                else:
+                    _LOG.info(
+                        "RivaL hypothesis slot skipped status=%s asset=%s",
+                        result["status"], result["asset"],
                     )
             except asyncio.CancelledError:
                 raise
@@ -2861,6 +2901,11 @@ class RivalDiscordClient(discord.Client):
             for attr, method, name in workers:
                 task = getattr(self, attr)
                 if task is None or not task.done():
+                    continue
+                if (attr == "_hypothesis_task"
+                        and not llm_background_enabled(self.settings)):
+                    # Stopped on purpose: background LLM use is opted out
+                    # (batch 2 §3.4). Do not restart it; it needs an opt-in.
                     continue
                 if attr == "_polybolt_task" and self.polybolt.auth_rejected:
                     # Stopped on purpose: Polymarket rejected the credentials.

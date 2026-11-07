@@ -2106,8 +2106,12 @@ class ResearchDashboard(discord.ui.View):
                     value=(
                         f"Model: **{discord.utils.escape_markdown(state['model'])}**\n"
                         + (
-                            "Configured for on-demand inference. **No paid tokens, "
-                            "daily AI budget, cooldown, or external fallback.**\n"
+                            "Configured for on-demand inference. **No paid tokens "
+                            "or external fallback.**\n"
+                            f"Local LFM3 budget: **{state['requests_today']}/"
+                            f"{state['rival_daily_limit']} requests today**, "
+                            "60 s minimum spacing, 3 per requester per day. "
+                            "Background loops run only with operator opt-in.\n"
                             "The inference service queues/limits CPU work. "
                             "Live host readiness is not checked on this screen."
                             if configured else

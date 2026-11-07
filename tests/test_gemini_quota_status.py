@@ -57,6 +57,40 @@ def test_ai_quota_status_explains_remaining_wait_and_daily_usage(tmp_path):
         store.close()
 
 
+def test_pause_without_prior_row_blocks_until_expiry(tmp_path):
+    """Batch 2: pause_ai_requests inserts the day's row when none exists.
+
+    Previously the pause was UPDATE-only, so a breaker set before the
+    first request of the day was a silent no-op. The inserted row records
+    zero usage and no last call, so it blocks only through blocked_until.
+    """
+    store = SQLiteHotStore(tmp_path / "pause-fresh.sqlite")
+    market = PerpetualMarketStore(store)
+    now = datetime(2026, 10, 28, 13, 25, tzinfo=UTC)
+    try:
+        market.pause_ai_requests(
+            model="gemini-3.8-flash", now=now, seconds=3600,
+        )
+        blocked = market.ai_request_status(
+            model="gemini-3.8-flash", now=now,
+            daily_max=24, cooldown_seconds=900,
+        )
+        assert not blocked["ready"]
+        assert blocked["reasons"] == ("provider_error_pause",)
+        assert blocked["requests_today"] == 0
+        assert blocked["retry_at"] == now + timedelta(hours=1)
+        assert not market.reserve_ai_request(
+            model="gemini-3.8-flash", now=now,
+            daily_max=24, cooldown_seconds=900,
+        )
+        assert market.ai_request_status(
+            model="gemini-3.8-flash", now=now + timedelta(hours=1),
+            daily_max=24, cooldown_seconds=900,
+        )["ready"]
+    finally:
+        store.close()
+
+
 def test_day_cap_is_shown_as_next_midnight_utc(tmp_path):
     store = SQLiteHotStore(tmp_path / "daily.sqlite")
     market = PerpetualMarketStore(store)

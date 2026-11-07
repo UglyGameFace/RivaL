@@ -44,7 +44,9 @@ jobs:
           python-version: "3.11"
           cache: pip
       - name: Install
-        run: python -m pip install -e ".[dev,archive]"
+        # LightGBM trains the gbm_v1 test fixtures (tests/test_gbm_v1_shadow.py).
+        # Only LightGBM from the ml-research extra: the bot host never imports it.
+        run: python -m pip install -e ".[dev,archive]" "lightgbm>=4.5,<5"
       - name: Lint
         run: ruff check .
       - name: Source-verification, spike causality and LFM3 repair regressions

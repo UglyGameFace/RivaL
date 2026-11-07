@@ -1,8 +1,12 @@
-"""Reproducible read-only LFM3 vs Qwen benchmark. No trades or cloud API calls.
+"""Reproducible read-only LFM3 benchmark. No trades or cloud API calls.
 
 Use the same synthetic cases against ONE local-model deployment at a time.
 Results are scored for evidence fidelity, structured output and latency, not
 historical backtest returns or prospective forecast performance.
+
+LFM3 is the only catalogued model. A Qwen comparison was never run and no
+benchmark artifact was ever produced, so the dead Qwen catalog entry was
+removed instead of presenting an unrun comparison as a live option.
 """
 from __future__ import annotations
 

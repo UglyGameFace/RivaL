@@ -450,7 +450,7 @@ def crypto_desk_embed(
                 f"Price at the last finished candle: **{_cash(watch['price'])}** "
                 f"({discord.utils.format_dt(watch['price_observed_at'], style='R')})\n"
                 f"How sure it is: **{watch['direction_probability']:.1%}** chance of "
-                f"{watch['direction']} (its own estimate; not proven accurate)\n"
+                f"{watch['direction']} (its own estimate; raw, uncalibrated — not proven accurate)\n"
                 f"Made {discord.utils.format_dt(watch['issued'], style='R')} · "
                 f"Answer known {discord.utils.format_dt(watch['target'] + timedelta(minutes=5), style='R')}\n"
                 "**Just watch: this is not a signal to trade.**"

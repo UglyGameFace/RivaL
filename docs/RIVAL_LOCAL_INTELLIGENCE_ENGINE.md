@@ -73,14 +73,13 @@ A valid token is required even for local access because private VLAN access is n
 - Model-produced directional notes and low/medium/high confidence are **uncalibrated** and informational only. Never treat this as independently proved forecast accuracy or trading edge.
 - Cloudflare's existing `rival-ai-research` Worker is a separate optional backup with its own D1 daily limit. Its inference allowance is shared across the Cloudflare account and paid settings require separate confirmation.
 - The exact `RIVAL-LLM-UPLOAD-THIS-ZIP` artifact is generated in `.github/workflows/local-llm-discloud-package.yml` with an independent clean-download smoke test. Never embed `.env`, GGUF weights, source build tree or nested ZIPs.
-- To compare LFM3-1.7B against Qwen3.5-2B Q4, benchmark sequentially on Ruby using `services/rival-llm/benchmark.py` and `benchmark_cases.json`. Compare evidence fidelity, refusals, latency, RAM and CPU. This is **research-quality measurement**, not future market performance or model promotion evidence.
+- The gateway serves LFM3-1.7B only. A Qwen comparison was never run and no benchmark artifact was ever produced, so the dead Qwen catalog entry was removed (round-5 batch 9) instead of presenting an unrun comparison as a live option. Use `services/rival-llm/benchmark.py` and `benchmark_cases.json` to measure the LFM3 deployment itself: evidence fidelity, refusals, latency, RAM and CPU. This is **research-quality measurement**, not future market performance or model promotion evidence.
 
 ## References
 
 - [Discloud Python deployment](https://docs.discloud.com/en/how-to-host-using/dashboard)
 - [Discloud private environment guidance](https://docs.discloud.com/en/faq/general-questions/.env-file)
 - [LFM3 official GGUF](https://huggingface.co/LiquidAI/LFM3-1.7B-GGUF)
-- [Qwen3.5-2B GGUF](https://huggingface.co/gguf/Qwen3.5-2B-GGUF/tree/main)
 - [llama.cpp](https://github.com/ggml-org/llama.cpp)
 
 ## Production inference incident, November 1, 2026

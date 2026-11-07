@@ -140,7 +140,7 @@ def test_model_output_validation():
 
 
 def test_select_only_allowlisted_quantized_model():
-    assert sorted(SERVICE["MODEL_CATALOG"]) == ["lfm3", "qwen2b"]
+    assert sorted(SERVICE["MODEL_CATALOG"]) == ["lfm3"]
     assert all(file.endswith(".gguf") for _, file in SERVICE["MODEL_CATALOG"].values())
 
 def test_context_overflow_returns_non_fallback_422(gateway):

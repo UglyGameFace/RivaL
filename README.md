@@ -41,7 +41,7 @@ See [local-only Intelligence](docs/RIVAL_INTELLIGENCE_LOCAL_ONLY.md) and [contin
 - Source-balanced forward probability scoring, calibration and accuracy screens; disagreements or missing/late data remain visible rather than becoming artificial wins.
 - Lightweight [autonomous price/volume spike observations](docs/RIVAL_SPIKE_ANALYTICS.md), with immutable source evidence and future-only *research* outcomes. Spike detections are descriptive, not trade calls.
 - Paper quote/cost comparisons and conditional read-only model-family selection/rollback. Research qualification is deliberately strict; hypothetical spread, fees, slippage, and funding stress are **not authenticated real fills**.
-- Optional, separately hosted private **RivaL Intelligence** LLM gateway (LFM3 or another configured supported model) for bounded explanations of verified evidence. The mathematical decision and NO CALL rule remain authoritative; running an LLM does not train missing market history or establish predictive improvement.
+- Optional, separately hosted private **RivaL Intelligence** LLM gateway (LFM3, the sole configured model) for bounded explanations of verified evidence. The mathematical decision and NO CALL rule remain authoritative; running an LLM does not train missing market history or establish predictive improvement.
 
 For mathematical admission requirements see [source-specific challenger promotion](docs/RIVAL_FAMILY_COST_PROMOTION.md). The intended research proof includes **150 genuinely future outcomes across 21 UTC days**, at least **80% matched-quote coverage**, calibrated performance against baselines and an independently positive hypothetical after-cost comparison. These are *requirements*, not results already achieved.
 

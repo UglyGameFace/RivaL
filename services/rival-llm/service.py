@@ -33,7 +33,6 @@ from model_download import ensure_model
 LOG = logging.getLogger("rival_llm")
 MODEL_CATALOG = {
     "lfm3": ("LiquidAI/LFM3-1.7B-GGUF", "LFM3-1.7B-Q4_K_M.gguf"),
-    "qwen2b": ("gguf/Qwen3.5-2B-GGUF", "qwen3.5-2b-Q4_K_M.gguf"),
 }
 MAX_BODY = 30_000
 MAX_EVIDENCE_CHARS = 24_000

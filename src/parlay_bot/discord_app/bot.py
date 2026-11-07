@@ -825,7 +825,7 @@ class RivalDiscordClient(discord.Client):
                     ), inline=False,
                 )
                 embed.set_footer(
-                    text="Source: verified provider-final scores • Not a profitable entry signal"
+                    text="Source: verified provider-final scores • Live odds are not a model input • Not a profitable entry signal"
                 )
                 await interaction.edit_original_response(embed=embed)
             except Exception:  # noqa: BLE001

@@ -22,9 +22,9 @@ This module is display-only by construction, not by convention:
   appear here.
 - The live lean reads persisted weights, never fits: the incumbent lean
   reads the latest ``rival_live_model_checkpoints`` row and validates it
-  with ``LiveModelCheckpoints._restore`` (digest-checked, read-only); the
-  flow_v3 lean reads its persisted state and the persisted liquidity
-  buckets/contexts. A lean that cannot be recomputed from persisted state
+  with ``LiveModelCheckpoints._restore`` (digest-checked, read-only).
+  flow_v3 is retired (Nov 7, 2026): it has no live lean, like every other
+  substituted family. A lean that cannot be recomputed from persisted state
   is reported unavailable, never approximated from a different model.
 - Confidence is ``max(p, 1-p) x 100`` in whole percent (the mapping every
   existing display string already uses). 50% is a coin flip, never a call.
@@ -39,11 +39,7 @@ import math
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.features import feature_vector, persisted_candles
-from parlay_bot.perpetuals.flow_challenger_v3 import (
-    N_FLOW_RAW,
-    FlowChallengerV3,
-    _standardize,
-)
+from parlay_bot.perpetuals.flow_challenger_v3 import FlowChallengerV3
 from parlay_bot.perpetuals.fusion import (
     SourceForecast,
     SourceSkill,
@@ -192,78 +188,6 @@ def _incumbent_lean(market, *, venue: str, contract: str, quote: str,
     }
 
 
-def _flow_v3_lean(market, *, asset: str, horizon: int, venue: str,
-                  contract: str, quote: str, now: datetime) -> dict | None:
-    """Current flow_v3 probability from persisted state + persisted inputs.
-
-    Read-only: state and liquidity buckets/contexts are SELECTs; the
-    in-memory Binance bundle is used only when the market already has one
-    (mirrors asset_inputs; a missing bundle is a 0 flag, not a crash).
-    ``FlowChallengerV3.call`` / ``learn`` / ``initialize`` are never called.
-    """
-    stamp = now.astimezone(UTC)
-    try:
-        challenger = FlowChallengerV3(market.store)
-        with market.store.connect() as conn:
-            state = challenger._state(conn, asset, horizon)
-            buckets: dict[str, list] = {}
-            for source in ("hyperliquid", "okx", "coinbase"):
-                buckets[source] = conn.execute(
-                    """SELECT bucket_start, complete, spread_bps_mean,
-                              bid_depth_10bps_mean, ask_depth_10bps_mean,
-                              bid_depth_25bps_mean, ask_depth_25bps_mean,
-                              buy_volume, sell_volume,
-                              long_liq_volume, short_liq_volume
-                       FROM perp_liquidity_5m
-                       WHERE venue=? AND asset=? AND recorded_at<=?
-                         AND bucket_start>=?
-                       ORDER BY bucket_start DESC LIMIT 3""",
-                    (source, asset, stamp.isoformat(),
-                     (stamp - timedelta(minutes=25)).isoformat()),
-                ).fetchall()
-            contexts = conn.execute(
-                """SELECT observed_at, mark_price, oracle_price, funding_rate,
-                          open_interest_base
-                   FROM perp_market_contexts
-                   WHERE venue='hyperliquid' AND contract=? AND observed_at<=?
-                     AND observed_at>=?
-                   ORDER BY observed_at DESC LIMIT 40""",
-                (asset, stamp.isoformat(),
-                 (stamp - timedelta(minutes=80)).isoformat()),
-            ).fetchall()
-        bundle = None
-        context = getattr(market, "binance_context", None)
-        if context is not None:
-            try:
-                bundle = context.bundle(asset)
-            except Exception:  # noqa: BLE001 - stale/missing bundle is a flag
-                bundle = None
-        vector = FlowChallengerV3._vector(buckets, contexts, bundle, stamp)
-        if not any(vector[N_FLOW_RAW:]):
-            return None
-        got = _latest_candles(
-            market, venue=venue, contract=contract, quote=quote, now=now,
-        )
-        if got is None:
-            return None
-        _, price_features, observed_at = got
-        raw = (*price_features, *vector[:N_FLOW_RAW])
-        inputs = (*_standardize(raw, state["stats"]), *vector[N_FLOW_RAW:])
-        probability = FlowChallengerV3.probability(state, inputs)
-    except Exception:  # noqa: BLE001 - an unavailable lean is None, never an error
-        return None
-    if not 0 < probability < 1 or not math.isfinite(probability):
-        return None
-    calibrated = (state.get("calibration") or {}).get("status") == "evaluated"
-    return {
-        "probability": probability,
-        "as_of": observed_at,
-        "weights_trained_at": state.get("trained_through"),
-        "calibrated": calibrated,
-        "engine": "live",
-    }
-
-
 def _fused_lean(market, *, asset: str, horizon: int,
                 now: datetime) -> dict | None:
     """Current fused probability: fuse the per-venue incumbent live leans.
@@ -382,10 +306,10 @@ def live_lean(market, *, asset: str, horizon: int, venue: str,
 
     Returns ``{"probability", "as_of", "weights_trained_at", "calibrated",
     "engine"}`` or None when the lean cannot be recomputed from persisted
-    state (no checkpoint, stale candles, no flow inputs, fusion quorum
-    unmet, or a family with no read-only recompute path). Never raises,
-    never writes, never approximates one model with another: a substituted
-    family other than flow_v3 has no lean here by design.
+    state (no checkpoint, stale candles, fusion quorum unmet, or a family
+    with no read-only recompute path). Never raises, never writes, never
+    approximates one model with another: a substituted family has no lean
+    here by design. flow_v3 is retired (Nov 7, 2026) and has no lean.
     """
     stamp = now or datetime.now(UTC)
     if stamp.utcoffset() is None:
@@ -398,11 +322,6 @@ def live_lean(market, *, asset: str, horizon: int, venue: str,
             return _fused_lean(market, asset=asset, horizon=horizon, now=stamp)
         if contract is None or quote is None:
             contract, quote = _source_identity(venue, asset)
-        if model_version == "flow_v3":
-            return _flow_v3_lean(
-                market, asset=asset, horizon=horizon, venue=venue,
-                contract=contract, quote=quote, now=stamp,
-            )
         from parlay_bot.perpetuals.forward_audit import MODEL as LIVE_MODEL
         from parlay_bot.perpetuals.model_competition import (
             CHALLENGER_PREFIXES,

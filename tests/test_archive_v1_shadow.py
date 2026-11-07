@@ -2,10 +2,11 @@
 
 Covers: the Drive import validation (provenance, gates, calibration),
 shadow issuance through ``issue()`` with the ``archive_`` prefix, generic
-settlement copying the incumbent outcome, the ``selected()`` continuity
-branch (feature digest, trained-through / graded-count monotone, no
-frozen SHA), the ``evaluate()`` artifact recording, and the kill switch
-in the 5-minute cycle.
+settlement copying the incumbent outcome, the ``selected()`` D14 pin
+branch (exact weights-SHA match; a queued fit waits behind the pinned
+fit; rejection advances the queue), the ``evaluate()`` artifact
+recording (pinned-sha row filter), and the kill switch in the 5-minute
+cycle.
 """
 from __future__ import annotations
 
@@ -82,7 +83,7 @@ def _store(tmp_path, name="archive.sqlite"):
 
 
 def _insert_shadow_row(conn, *, p=0.6, y=1, settled=True, ref=None,
-                       issued=None, target=None, family=FAMILY):
+                       issued=None, target=None, family=FAMILY, sha=None):
     ref = ref or (NOW - timedelta(minutes=30))
     issued = issued or (NOW - timedelta(minutes=25))
     target = target or (NOW - timedelta(minutes=25))
@@ -97,7 +98,7 @@ def _insert_shadow_row(conn, *, p=0.6, y=1, settled=True, ref=None,
            VALUES ('hyperliquid','BTC','USDC','BTC',5,?,?,?,?,?,?,?,100,?,
                    ?,?,?,?,?)""",
         (family, ref.isoformat(), issued.isoformat(), target.isoformat(),
-         p, 0.6, 0.45, "a" * 64, settled_at, y if settled else None,
+         p, 0.6, 0.45, sha or "a" * 64, settled_at, y if settled else None,
          (p - y) ** 2 if settled else None,
          (0.6 - y) ** 2 if settled else None,
          (0.45 - y) ** 2 if settled else None),
@@ -302,7 +303,13 @@ def test_shadow_rows_settle_from_incumbent_outcome(tmp_path):
         store.close()
 
 
-def test_selected_continuity_branch(tmp_path):
+def test_selected_pin_branch(tmp_path):
+    """D14 pinning (autonomous loop §11): the pinned fit holds the slot;
+    a queued fit waits; rejection advances the queue; the promotion
+    never transfers. (Replaces the Phase 2 continuity branch: a retrain
+    no longer inherits the promotion -- it queues behind the pin.)"""
+    from parlay_bot.perpetuals import offline_model_pins
+
     store = _store(tmp_path)
     try:
         model_set = ArchiveModelSet(store)
@@ -333,26 +340,39 @@ def test_selected_continuity_branch(tmp_path):
         _promotion_row(store, family="archive_v1", evaluated_at=NOW,
                        artifact=identity1)
         assert promoter.selected(**kwargs) == "archive_v1"
-        # One graded row, then a retrain: new weights + later
-        # trained-through, graded count advanced -- the retrain serves.
+        # One graded row under the pinned fit's hash, then a retrain: the
+        # pinned fit holds the slot, the new fit queues behind it.
+        sha1 = model_sha256(doc1)
         with store.connect() as conn:
-            _insert_shadow_row(conn, p=0.7, y=1)
+            _insert_shadow_row(conn, p=0.7, y=1, sha=sha1)
+        assert artifact_identity(store, "BTC", 5)["graded_count"] == 1
         doc2 = _valid_doc(
             trained_through=NOW - timedelta(hours=1),
             weights=[0.02 * ((i % 5) - 2) for i in range(33)],
         )
-        assert model_sha256(doc2) != model_sha256(doc1)
+        assert model_sha256(doc2) != sha1
         model_set.import_document("file-2", _payload(doc2))
-        identity2 = artifact_identity(store, "BTC", 5)
-        assert identity2["graded_count"] == 1
-        assert identity2["weights_sha256"] != identity1["weights_sha256"]
+        model_set._loaded_at = None  # force a real reload, not the cache
+        active = model_set.active("BTC", 5, now=NOW)
+        assert active is not None
+        assert active["_sha256"] == sha1  # pinned fit holds the slot
+        assert model_set.queue_depth("BTC", 5, now=NOW) == 1
+        identity_still1 = artifact_identity(store, "BTC", 5)
+        assert identity_still1["weights_sha256"] == identity1["weights_sha256"]
+        assert identity_still1["graded_count"] == 1
         assert promoter.selected(**kwargs) == "archive_v1"
-        # A reset (graded rows gone, count back to 0) with the new weights
-        # never serves on the name alone.
-        with store.connect() as conn:
-            conn.execute(
-                "DELETE FROM rival_model_shadow_forecasts WHERE family='archive_v1'")
-        assert artifact_identity(store, "BTC", 5)["graded_count"] == 0
+        # Reject the pinned fit: the queued fit is admitted and starts
+        # from zero; the promotion does not transfer to it.
+        offline_model_pins.set_verdict(
+            store, FAMILY, "BTC", 5, sha1, "rejected", now=NOW)
+        model_set._loaded_at = None
+        active2 = model_set.active("BTC", 5, now=NOW)
+        assert active2 is not None
+        assert active2["_sha256"] == model_sha256(doc2)
+        assert model_set.queue_depth("BTC", 5, now=NOW) == 0
+        identity2 = artifact_identity(store, "BTC", 5)
+        assert identity2["weights_sha256"] != identity1["weights_sha256"]
+        assert identity2["graded_count"] == 0  # no rows under the new fit
         assert promoter.selected(**kwargs) is None
         # No imported artifact at all: no identity, no serve.
         with store.connect() as conn:
@@ -370,9 +390,12 @@ def test_evaluate_records_archive_artifact(tmp_path):
         model_set = ArchiveModelSet(store)
         doc = _valid_doc()
         model_set.import_document("file-1", _payload(doc))
+        sha = model_sha256(doc)
         with store.connect() as conn:
-            _insert_shadow_row(conn, p=0.7, y=1)
-            _insert_shadow_row(conn, p=0.4, y=0,
+            # Seeded rows must carry the pinned doc's hash: evaluate()
+            # filters archive_v1 rows by the pinned artifact (D14).
+            _insert_shadow_row(conn, p=0.7, y=1, sha=sha)
+            _insert_shadow_row(conn, p=0.4, y=0, sha=sha,
                                ref=NOW - timedelta(minutes=60),
                                issued=NOW - timedelta(minutes=55),
                                target=NOW - timedelta(minutes=55))

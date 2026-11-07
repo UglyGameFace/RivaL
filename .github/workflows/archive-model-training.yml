@@ -1,0 +1,105 @@
+name: RivaL archive model weekly training
+
+# Trains the archive_v1 offline logistic (spec §2.3-§2.7, D1/D4) on the
+# verified Drive archive and publishes artifacts that pass their offline
+# gates to the private Drive models folder. A run that fails its gates
+# publishes a kind="report" only -- no model artifact. The bot imports a
+# published artifact only through the existing manifest cross-check, and
+# it serves only through the existing Route B promotion gates (Phase 2).
+# Never on every push: weekly retrain + manual dispatch only.
+on:
+  schedule:
+    - cron: "30 7 * * 0"
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Publish passing models (and failing reports) to Drive"
+        type: boolean
+        default: true
+      asset:
+        description: "Asset to train (empty = all four)"
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rival-archive-model-training
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    strategy:
+      matrix:
+        asset: [BTC, ETH, SOL, XRP]
+      fail-fast: false
+    env:
+      RIVAL_DRIVE_ROOT_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_ROOT_FOLDER_ID }}
+      RIVAL_DRIVE_HISTORY_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_HISTORY_FOLDER_ID }}
+      RIVAL_DRIVE_MANIFESTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MANIFESTS_FOLDER_ID }}
+      RIVAL_DRIVE_STAGING_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_STAGING_FOLDER_ID }}
+      RIVAL_DRIVE_MODELS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_MODELS_FOLDER_ID }}
+      RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+      RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+      RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/cache@v4
+        with:
+          path: binance-cache
+          key: archive-v1-binance-cache-${{ matrix.asset }}-${{ github.run_id }}
+          restore-keys: archive-v1-binance-cache-${{ matrix.asset }}-
+      - name: Install
+        run: python -m pip install -e ".[ml-research]" "pandas>=2.2" "numpy>=1.26"
+      # Step 1 (spec §2.3): measure what exists before training. The census
+      # is names-only; every month still has to pass restore verification.
+      - name: Drive census (measure first)
+        run: python -m parlay_bot.research.drive_source_census
+      # Step 2: restore verified months (Bitget/OKX/Gate bridges re-prove
+      # bytes per month). A month failing verification is excluded and
+      # listed in the restore report, never silently skipped.
+      - name: Restore verified months
+        run: |
+          python tools/restore_archive_months.py --asset ${{ matrix.asset }} \
+            --root data/archive-v1-restore
+      # Step 3: train per (asset, horizon). Binance 5m loads from official
+      # Vision ZIPs via the pooled-training loader (SHA verified against
+      # the provider .CHECKSUM at fetch). Splits are fixed per run: the
+      # last 28 days are the test slice, the 28 days before that are
+      # validation; both purged by one horizon.
+      - name: Train (all horizons)
+        run: |
+          last_month="$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)"
+          through_day="$(date -u -d yesterday +%Y-%m-%d)"
+          test_start="$(date -u -d "-28 days" +%Y-%m-%dT00:00:00+00:00)"
+          train_end="$(date -u -d "-56 days" +%Y-%m-%dT00:00:00+00:00)"
+          trained_through="$(date -u -d yesterday +%Y-%m-%dT23:55:00+00:00)"
+          publish_flag=""
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ inputs.publish }}" == "true" ]]; then
+            publish_flag="--publish"
+          fi
+          for horizon in 5 15 60; do
+            python tools/train_archive_model.py \
+              --asset ${{ matrix.asset }} --horizon "$horizon" \
+              --manifests-dir data/archive-v1-restore \
+              --census data/native-reports/drive-source-census.json \
+              --binance-cache binance-cache \
+              --binance-last-month "$last_month" \
+              --binance-through-day "$through_day" \
+              --train-end "$train_end" --test-start "$test_start" \
+              --trained-through "$trained_through" \
+              --out archive-v1-models $publish_flag || echo "horizon ${horizon}m gates failed (report only)"
+          done
+      - name: Upload run reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: archive-v1-${{ matrix.asset }}-${{ github.run_id }}
+          path: archive-v1-models/
+          if-no-files-found: error

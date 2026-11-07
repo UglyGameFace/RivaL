@@ -369,6 +369,17 @@ class RivalDiscordClient(discord.Client):
             ResearchCandidateRegistry(self.store)
             if self.research_drive is not None else None
         )
+        self.research_loop_drive: GoogleDriveArchiveClient | None = None
+        if self.research_drive is not None and settings.rival_drive_reports_folder_id:
+            from parlay_bot.research.publish import _drive
+
+            try:
+                self.research_loop_drive = _drive(settings)
+            except (RuntimeError, ValueError) as exc:
+                _LOG.warning("RivaL research loop Drive configuration is invalid (%s)",
+                             type(exc).__name__)
+        elif settings.rival_research_loop_enabled:
+            _LOG.warning("RivaL research loop needs the private Drive models and reports folders")
         self.candidate_sync_checked_at: datetime | None = None
         self.candidate_sync_status = (
             "pending_first_verified_drive_read"
@@ -1573,8 +1584,8 @@ class RivalDiscordClient(discord.Client):
             self._hypothesis_task = asyncio.create_task(
                 self._hypothesis_loop(), name="rival-llm-feature-research",
             )
-        if self._research_loop_task is None and llm_background_enabled(
-                self.settings):
+        if (self._research_loop_task is None and self.settings.rival_research_loop_enabled
+                and self.research_loop_drive is not None):
             self._research_loop_task = asyncio.create_task(
                 self._research_loop_driver(), name="rival-research-loop-driver",
             )
@@ -2703,22 +2714,22 @@ class RivalDiscordClient(discord.Client):
     async def _research_loop_driver(self) -> None:
         """Autonomous loop Phase 1: advance research experiments, unassisted.
 
-        Runs only with the background opt-in (same gate as the hypothesis
-        loop). One experiment, one stage per 30-minute tick; a tick with
-        nothing to advance does nothing. The driver holds no AI client
-        and spends no LLM calls — it only advances experiments the lab
-        already proposed, from the numeric output of the existing gates.
+        Uses the research-loop setting independently of LFM3. One
+        experiment, one stage per 30-minute tick; a tick with
+        nothing to advance tries opening the next scheduled variant
+        (Phase 3 grid) and otherwise does nothing. The driver holds no
+        AI client and spends no LLM calls — it only advances experiments
+        the lab already proposed, and opens variants the grid already
+        registered, from the numeric output of the existing gates.
         """
-        if not llm_background_enabled(self.settings):
-            _LOG.info("RivaL research loop driver disabled: "
-                      "rival_llm_background_opt_in=False; loop not running")
+        if not self.settings.rival_research_loop_enabled:
             return
         await self.wait_until_ready()
         await asyncio.sleep(60)
         while not self.is_closed():
             try:
                 result = await drive_research_loop_tick(
-                    self.store, drive=self.research_drive,
+                    self.store, drive=self.research_loop_drive,
                     memory_pressure=host_memory.snapshot().pressure,
                 )
                 if result.get("status") == "advanced":
@@ -2726,6 +2737,12 @@ class RivalDiscordClient(discord.Client):
                         "RivaL research loop driver advanced experiment=%s %s->%s",
                         result.get("advanced"), result.get("from"),
                         result.get("to"),
+                    )
+                elif result.get("status") == "opened":
+                    _LOG.info(
+                        "RivaL research loop driver opened scheduled variant "
+                        "experiment=%s variant=%s",
+                        result.get("opened"), result.get("variant_id"),
                     )
             except asyncio.CancelledError:
                 raise
@@ -3024,10 +3041,9 @@ class RivalDiscordClient(discord.Client):
                 task = getattr(self, attr)
                 if task is None or not task.done():
                     continue
-                if (attr in ("_hypothesis_task", "_research_loop_task")
-                        and not llm_background_enabled(self.settings)):
-                    # Stopped on purpose: background LLM use is opted out
-                    # (batch 2 §3.4). Do not restart it; it needs an opt-in.
+                if attr == "_hypothesis_task" and not llm_background_enabled(self.settings):
+                    continue
+                if attr == "_research_loop_task" and not self.settings.rival_research_loop_enabled:
                     continue
                 if attr == "_polybolt_task" and self.polybolt.auth_rejected:
                     # Stopped on purpose: Polymarket rejected the credentials.
@@ -3340,6 +3356,7 @@ class RivalDiscordClient(discord.Client):
             ("perp_collector", getattr(self, "perp_collector", None)),
             ("intelligence_research", getattr(self, "intelligence_research", None)),
             ("research_drive", getattr(self, "research_drive", None)),
+            ("research_loop_drive", getattr(self, "research_loop_drive", None)),
             ("archive_drive", archive_drive),
             ("current_provider", getattr(self, "current_provider", None)),
             ("oddspapi_provider", getattr(self, "oddspapi_provider", None)),

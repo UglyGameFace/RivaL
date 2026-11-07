@@ -113,6 +113,30 @@ def _frames(n_bars: int = 17280, **kwargs):
     return out
 
 
+def test_restored_altcoin_uses_btc_as_reference_only(tmp_path, monkeypatch):
+    from parlay_bot.research import archive_training, learning
+
+    for coin in ("BTC", "ETH"):
+        identity = {"venue": "okx", "contract": f"{coin}-USDT-SWAP", "quote": "USDT"}
+        (tmp_path / f"{coin}.manifest.json").write_text(json.dumps(identity), encoding="utf-8")
+
+    def assemble(paths):
+        identity = json.loads(paths[0].read_text(encoding="utf-8"))
+        btc = identity["contract"].startswith("BTC-")
+        candles = _synthetic_frame(450, 1 if btc else 2).rename(columns={"volume": "volume_base"})
+        candles["closed_at"] = candles.index
+        return identity, candles.to_dict("records"), {
+            "provider_sha256_by_month": {"2025-01": ("a" if btc else "b") * 64},
+        }
+
+    monkeypatch.setattr(learning, "assemble", assemble)
+    frames, provenance = archive_training.load_frames_manifests(tmp_path, target_asset="ETH")
+    assert list(frames) == ["okx|ETH-USDT-SWAP|USDT"]
+    assert math.isfinite(frames["okx|ETH-USDT-SWAP|USDT"][1]["btc_ret_12"].iloc[-1])
+    assert provenance["provider_sha256_by_month"] == {"okx:2025-01": "b" * 64}
+    assert provenance["reference_provider_sha256_by_month"] == {"okx:2025-01": "a" * 64}
+
+
 def _splits():
     # 60 days of bars: train ~40d, validation ~10d, test ~10d.
     train_end = datetime(2025, 2, 10, tzinfo=UTC)

@@ -141,10 +141,11 @@ def recent_days(last_month: str, through_day: date | None) -> list[date]:
 
 
 async def load_asset(client, asset: str, last_month: str, cache: Path, sem,
-                     fetcher=None, through_day: date | None = None) -> pd.DataFrame:
+                     fetcher=None, through_day: date | None = None,
+                     first_month: str | None = None) -> pd.DataFrame:
     get = fetcher or fetch
     sym = f"{asset}USDT"
-    ms = months(FIRST_MONTH, last_month)
+    ms = months(first_month or FIRST_MONTH, last_month)
     kl_urls = [f"{BASE}/monthly/klines/{sym}/5m/{sym}-5m-{m}.zip" for m in ms]
     pr_urls = [f"{BASE}/monthly/premiumIndexKlines/{sym}/5m/{sym}-5m-{m}.zip" for m in ms]
     fu_urls = [f"{BASE}/monthly/fundingRate/{sym}/{sym}-fundingRate-{m}.zip" for m in ms]

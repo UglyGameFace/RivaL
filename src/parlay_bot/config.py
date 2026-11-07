@@ -72,6 +72,8 @@ class Settings(BaseSettings):
     # when Felix opts in. User-initiated asks still reserve quota but do
     # not need the opt-in.
     rival_llm_background_opt_in: bool = Field(default=False)
+    # Deterministic research reconciliation uses Drive and never calls the LLM.
+    rival_research_loop_enabled: bool = Field(default=True)
     rival_shadow_eval_seconds: int = Field(default=3600, ge=900, le=21600)
 
     # Sole private RivaL Intelligence provider. Old environment strings are

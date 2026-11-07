@@ -291,7 +291,7 @@ def artifact_identity(store, asset: str, horizon: int) -> dict | None:
         graded = int(row["n"]) if row is not None else 0
     except Exception:  # noqa: BLE001 - fail closed to the incumbent
         return None
-    return {**identity, "graded_count": graded}
+    return {**identity, "model_sha256": doc["_sha256"], "graded_count": graded}
 
 
 def calibration_status(store, asset: str, horizon: int) -> dict:

@@ -386,9 +386,11 @@ async def test_async_tick_drives_the_full_chain(tmp_path):
         out = await drive_research_loop_tick(store, drive=drive, now=NOW)
         assert out["status"] == "advanced" and out["to"] == "shadow", out
         # No evaluation row yet: the shadow tick waits, it does not invent
-        # an outcome.
+        # an outcome — but the tick's one action is then opening the
+        # next scheduled variant (Phase 3: advance OR open per tick).
         out = await drive_research_loop_tick(store, drive=drive, now=NOW)
-        assert out["status"] == "nothing_to_advance", out
+        assert out["status"] == "opened", out
+        assert out["variant_id"] == "archive-premium-off", out
     finally:
         store.close()
 
@@ -454,20 +456,21 @@ def test_status_card_counts_line(tmp_path):
         store.close()
 
 
-def _bare_bot(*, opt_in: bool):
+def _bare_bot(*, research_enabled: bool):
     from parlay_bot.config import Settings
     from parlay_bot.discord_app.bot import RivalDiscordClient
 
     bot = object.__new__(RivalDiscordClient)
     bot.settings = Settings(
-        _env_file=None, rival_llm_background_opt_in=opt_in,
+        _env_file=None, rival_llm_background_opt_in=False,
+        rival_research_loop_enabled=research_enabled,
     )
     return bot
 
 
 @pytest.mark.asyncio
-async def test_driver_loop_does_not_run_without_opt_in():
-    bot = _bare_bot(opt_in=False)
+async def test_driver_loop_does_not_run_when_disabled():
+    bot = _bare_bot(research_enabled=False)
     waited = []
 
     async def fake_wait():
@@ -479,8 +482,8 @@ async def test_driver_loop_does_not_run_without_opt_in():
 
 
 @pytest.mark.asyncio
-async def test_driver_loop_proceeds_past_head_when_opted_in():
-    bot = _bare_bot(opt_in=True)
+async def test_driver_loop_proceeds_with_llm_opted_out():
+    bot = _bare_bot(research_enabled=True)
     waited = []
 
     async def fake_wait():
@@ -493,11 +496,12 @@ async def test_driver_loop_proceeds_past_head_when_opted_in():
     assert waited == [True]
 
 
-def test_driver_wiring_requires_opt_in():
+def test_driver_wiring_requires_research_enabled():
     """Task creation, loop head, and watchdog all check the gate."""
     code = (ROOT / "src/parlay_bot/discord_app/bot.py").read_text()
     assert "_research_loop_task" in code
     assert "self._research_loop_driver(), name=\"rival-research-loop-driver\"" in code
     assert "(\"_research_loop_task\", self._research_loop_driver," in code
     assert "\"_research_loop_task\", \"_candidate_task\"" in code
-    assert "attr in (\"_hypothesis_task\", \"_research_loop_task\")" in code
+    assert 'attr == "_research_loop_task" and not self.settings.rival_research_loop_enabled' in code
+    assert "drive=self.research_loop_drive" in code

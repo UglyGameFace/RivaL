@@ -47,9 +47,14 @@ def notice(*, start=START, asset='BTC', horizon=60):
 
 
 def setup(store):
-    PolymarketResearch(store).initialize()
+    # Anchor the contest policy at START first. PolymarketResearch.initialize()
+    # also initializes the contest, but with a wall-clock anchor, and the policy
+    # row is first-write-wins (ON CONFLICT DO NOTHING) — so calling it first
+    # would anchor the policy at the test run's wall-clock time and silently
+    # exclude every seeded round issued before that instant.
     contest = Contest(store)
     contest.initialize(now=START)
+    PolymarketResearch(store).initialize()
     return contest
 
 

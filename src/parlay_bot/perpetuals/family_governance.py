@@ -32,6 +32,32 @@ FRESH_FOR = timedelta(hours=48)
 BLOCKED_FAMILIES: set[str] = set()
 
 
+def _pinned_identity_matches(recorded, current) -> bool:
+    """D14 pin check (autonomous loop §11): the served family must be the
+    pinned artifact that earned promotion -- exact weights-SHA match, same
+    feature digest, trained-through and graded count (under that
+    artifact's hash) monotone. A different fit never inherits the
+    promotion; a rejected pin advances the queue (offline_model_pins)."""
+    if not recorded or not current:
+        return False
+    try:
+        recorded_sha = str(recorded["weights_sha256"])
+        recorded_digest = str(recorded["feature_digest"])
+        recorded_through = utc(datetime.fromisoformat(
+            str(recorded["trained_through"])))
+        recorded_count = int(recorded["graded_count"])
+        current_through = utc(datetime.fromisoformat(
+            str(current["trained_through"])))
+        current_count = int(current["graded_count"])
+    except (ValueError, TypeError, KeyError):
+        return False
+    return (len(recorded_sha) == 64
+            and recorded_digest == current["feature_digest"]
+            and str(current["weights_sha256"]) == recorded_sha
+            and current_through >= recorded_through
+            and current_count >= recorded_count)
+
+
 def _day_stress(pairs):
     buckets = {}
     for day, net, incumbent in pairs:
@@ -112,6 +138,23 @@ class FamilyPromotion:
                  (stamp-LOOKBACK).isoformat(),stamp.isoformat()),
             ).fetchall()
         scored={}
+        # D14 pinning: for the offline families, only rows issued by the
+        # pinned artifact count as that family's evidence. A queued fit's
+        # rows never inherit the pinned fit's record. No pin (no usable
+        # artifact) means no attributable rows for the family.
+        pinned_shas: dict[str, str | None] = {}
+        try:
+            from parlay_bot.perpetuals.archive_model import ArchiveModelSet
+            _doc = ArchiveModelSet(self.store).active(asset, horizon, now=stamp)
+            pinned_shas["archive_v1"] = (_doc or {}).get("_sha256")
+        except Exception:  # noqa: BLE001 - no pin means no attributable rows
+            pinned_shas["archive_v1"] = None
+        try:
+            from parlay_bot.perpetuals.gbm_model import GbmModelSet
+            _doc = GbmModelSet(self.store).active(asset, horizon, now=stamp)
+            pinned_shas["gbm_v1"] = (_doc or {}).get("_sha256")
+        except Exception:  # noqa: BLE001 - no pin means no attributable rows
+            pinned_shas["gbm_v1"] = None
         # Distinct immutable boosted artifacts compete only on their own
         # source-specific future records, never as one pooled model family.
         observed_families = sorted({
@@ -134,6 +177,11 @@ class FamilyPromotion:
             invalid=0
             for row in forecasts:
                 if row["family"]!=family:
+                    continue
+                if family in pinned_shas and str(row["training_sha256"]) != pinned_shas[family]:
+                    # D14: a row from a non-pinned fit is not this
+                    # family's evidence (it belongs to a queued fit, or
+                    # to no pin at all).
                     continue
                 # A single target outcome is one independent observation,
                 # regardless of how many overlapping reference candles issued
@@ -297,6 +345,13 @@ class FamilyPromotion:
                     self.store, asset, horizon)
             except Exception:  # noqa: BLE001 - a missing state row records as no artifact
                 scored["archive_v1"]["artifact"] = None
+        if "gbm_v1" in scored:
+            try:
+                from parlay_bot.perpetuals.gbm_model import artifact_identity
+                scored["gbm_v1"]["artifact"] = artifact_identity(
+                    self.store, asset, horizon)
+            except Exception:  # noqa: BLE001 - a missing state row records as no artifact
+                scored["gbm_v1"]["artifact"] = None
         if "liq_v1" in scored:
             try:
                 from parlay_bot.perpetuals.liquidity_challenger_v1 import (
@@ -392,6 +447,38 @@ class FamilyPromotion:
                     now=stamp)
             except Exception:  # noqa: BLE001 - a receipt must never block governance
                 _LOG.exception("RivaL liq_v1 promotion receipt unavailable")
+        # First promoted_paper write for gbm_v1: same pattern, same
+        # dedupe (one receipt per family/scope/kind, ON CONFLICT DO NOTHING).
+        if selected == "gbm_v1" and not (
+                previous and previous["status"] == "promoted_paper"
+                and previous["selected_family"] == "gbm_v1"):
+            try:
+                from parlay_bot.perpetuals.gbm_model import calibration_status
+                from parlay_bot.perpetuals.promotion_receipts import (
+                    record_promotion_receipt,
+                )
+                record_promotion_receipt(
+                    self.store, family="gbm_v1", venue=venue, contract=contract,
+                    quote=quote, horizon=horizon, kind="promoted",
+                    evidence={**scored["gbm_v1"],
+                              "evaluated_at": stamp.isoformat()},
+                    calibration=calibration_status(self.store, asset, horizon),
+                    now=stamp)
+            except Exception:  # noqa: BLE001 - a receipt must never block governance
+                _LOG.exception("RivaL gbm_v1 promotion receipt unavailable")
+        # D14 pin verdicts: a selected offline family is promoted; a pinned
+        # fit whose evidence is exhausted without a promotion is rejected.
+        # The next queued fit is admitted on the next reload
+        # (offline_model_pins).
+        for _family in ("archive_v1", "gbm_v1"):
+            try:
+                from parlay_bot.perpetuals import offline_model_pins
+                offline_model_pins.resolve_pin(
+                    self.store, _family, asset, horizon,
+                    selected=(selected == _family), now=stamp,
+                    min_windows=MIN_WINDOWS, lookback=LOOKBACK)
+            except Exception:  # noqa: BLE001 - a pin verdict never blocks governance
+                _LOG.exception("RivaL %s pin verdict unavailable", _family)
         return {"status":status,"selected_family":selected,"families":scored,
                 "market":(venue,contract,quote,horizon),
                 "real_fills_verified":False}
@@ -468,44 +555,33 @@ class FamilyPromotion:
                 return None
             return selected
         if selected == "archive_v1":
-            # Same continuity check as flow_v3, on the archive artifact
-            # (spec §2.2, D3): the served family must be the continuation
-            # of the artifact that earned promotion -- same feature
-            # contract, training only moved forward, weights moved only by
-            # a retrain that kept being graded. A refit/reset (digest
-            # change, cursor/count regression, or unexplained weight
-            # change) blocks serve until the family re-earns promotion.
-            # Graded count here is the settled archive_v1 shadow rows for
-            # this (asset, horizon), read live from the shadow ledger.
+            # D14 pinning (autonomous loop §11): the served family must be
+            # the pinned artifact that earned promotion -- exact weights-SHA
+            # match, same feature digest, trained-through and graded count
+            # (under that artifact's hash) monotone. A retrain queues
+            # behind the pinned fit and never inherits its promotion; a
+            # rejected pin advances the queue (offline_model_pins).
             try:
                 from parlay_bot.perpetuals.archive_model import artifact_identity
                 recorded = json.loads(row["evidence_json"])["archive_v1"]["artifact"]
                 current = artifact_identity(self.store, asset, horizon)
             except (ValueError, TypeError, KeyError, AttributeError):
                 return None
-            if not recorded or not current:
-                return None
+            return selected if _pinned_identity_matches(recorded, current) else None
+        if selected == "gbm_v1":
+            # Same D14 pin check as archive_v1, on the GBM artifact
+            # (spec §3.4): the served family must be the pinned artifact
+            # that earned promotion -- exact weights-SHA match, same
+            # feature digest, trained-through and graded count (under that
+            # artifact's hash) monotone. A queued fit never inherits the
+            # promotion; a rejected pin advances the queue.
             try:
-                recorded_sha = str(recorded["weights_sha256"])
-                recorded_digest = str(recorded["feature_digest"])
-                recorded_through = utc(datetime.fromisoformat(
-                    str(recorded["trained_through"])))
-                recorded_count = int(recorded["graded_count"])
-                current_through = utc(datetime.fromisoformat(
-                    str(current["trained_through"])))
-                current_count = int(current["graded_count"])
-            except (ValueError, TypeError, KeyError):
+                from parlay_bot.perpetuals.gbm_model import artifact_identity
+                recorded = json.loads(row["evidence_json"])["gbm_v1"]["artifact"]
+                current = artifact_identity(self.store, asset, horizon)
+            except (ValueError, TypeError, KeyError, AttributeError):
                 return None
-            if (len(recorded_sha) != 64
-                    or recorded_digest != current["feature_digest"]
-                    or current_through < recorded_through
-                    or current_count < recorded_count):
-                return None
-            if (str(current["weights_sha256"]) != recorded_sha
-                    and not (current_count > recorded_count
-                             and current_through >= recorded_through)):
-                return None
-            return selected
+            return selected if _pinned_identity_matches(recorded, current) else None
         if selected == "liq_v1":
             # Same continuity check as flow_v3, on the liq_v1 artifact
             # (spec §2.10.2, D13): the served family must be the

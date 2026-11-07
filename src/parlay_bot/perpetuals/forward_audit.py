@@ -25,6 +25,7 @@ from parlay_bot.perpetuals.features import (
 from parlay_bot.perpetuals.flow_challenger import FlowChallenger, FlowChallengerV2
 from parlay_bot.perpetuals.flow_challenger_v3 import FlowChallengerV3
 from parlay_bot.perpetuals.fusion import utc
+from parlay_bot.perpetuals.gbm_model import GbmModelSet, gbm_calls
 from parlay_bot.perpetuals.historical_challengers import HistoricalChallengers
 from parlay_bot.perpetuals.liquidity_challenger_v1 import LiquidityChallengerV1
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -90,6 +91,13 @@ ISSUE_ARCHIVE_V1_CHALLENGERS = True
 # serving is gated separately by promotion. Existing rows keep settling
 # either way.
 ISSUE_LIQ_V1_CHALLENGERS = True
+# gbm_v1 shadow issuance (autonomous loop Phase 2, spec §3.4): the
+# offline-trained GBM model issues shadow forecasts beside the incumbent
+# once an artifact is imported; it never serves until Route B promotes
+# it. Kill switch for issuance; serving is gated separately by
+# promotion. Existing rows keep settling either way. It shares the
+# archive vector (same 32-feature contract, same restored bytes).
+ISSUE_GBM_V1_CHALLENGERS = True
 
 # The incumbent's fast settlement covers the last 2 days; a day of margin.
 SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
@@ -221,6 +229,19 @@ class ForwardAccuracyMonitor:
                 self.market.archive_models = current
             except Exception:  # noqa: BLE001 - optional challenger only
                 _LOG.exception("RivaL archive model registry unavailable")
+                return None
+        return current
+
+    def _gbm_models(self):
+        """The bot-wide GBM model set (None if its table is unavailable)."""
+        current = getattr(self.market, "gbm_models", None)
+        if current is None:
+            try:
+                current = GbmModelSet(self.store)
+                current.initialize()
+                self.market.gbm_models = current
+            except Exception:  # noqa: BLE001 - optional challenger only
+                _LOG.exception("RivaL GBM model registry unavailable")
                 return None
         return current
 
@@ -807,6 +828,7 @@ class ForwardAccuracyMonitor:
         # BTC-lead inputs. Read each venue's BTC candles at most once.
         pooled_set = self._pooled_models()
         archive_set = self._archive_models()
+        gbm_set = self._gbm_models()
         btc_streams = {v: (c, q) for v, c, q in eligible if asset_for_contract(c) == "BTC"}
         btc_cache: dict[str, list] = {}
         # Order-flow challenger inputs: one causal snapshot per asset per cycle.
@@ -914,15 +936,19 @@ class ForwardAccuracyMonitor:
                     except Exception:  # noqa: BLE001 - optional challenger only
                         _LOG.exception("RivaL pooled model inputs unavailable")
                 self._lap("pooled", mark)
-                # Archive-serving model (Phase 2, spec §2.8): one 32-feature
-                # vector per stream, shared by its three horizons (the
-                # artifact differs per horizon; the features do not). The
-                # Binance bundle is in-memory only; without it the premium /
-                # funding / tape groups flag 0 and the artifact still issues
-                # from its candle groups (Track C context-absent gate).
-                # Fewer than 420 contiguous bars means no vector that cycle.
+                # Archive-serving model (Phase 2, spec §2.8) and GBM
+                # challenger (autonomous loop Phase 2, spec §3.4): one
+                # 32-feature vector per stream, shared by both families'
+                # three horizons (the artifact differs per horizon; the
+                # features do not). The Binance bundle is in-memory only;
+                # without it the premium / funding / tape groups flag 0 and
+                # the artifact still issues from its candle groups (Track C
+                # context-absent gate). Fewer than 420 contiguous bars means
+                # no vector that cycle. Each family issues under its own
+                # kill switch below.
                 archive_vector = None
-                if ISSUE_ARCHIVE_V1_CHALLENGERS and archive_set is not None:
+                if ((ISSUE_ARCHIVE_V1_CHALLENGERS or ISSUE_GBM_V1_CHALLENGERS)
+                        and (archive_set is not None or gbm_set is not None)):
                     mark = self._mark()
                     try:
                         coin = asset_for_contract(contract)
@@ -1022,11 +1048,18 @@ class ForwardAccuracyMonitor:
                     # fixed at issuance: compute before the transaction
                     # opens, like boosters. Empty when no artifact is
                     # imported, the vector is unavailable, or every feature
-                    # group flagged 0 for this stream.
+                    # group flagged 0 for this stream. Each family issues
+                    # under its own kill switch; the vector is shared.
                     archive_items = ()
-                    if archive_vector is not None:
+                    if archive_vector is not None and ISSUE_ARCHIVE_V1_CHALLENGERS:
                         archive_items = archive_calls(
                             archive_set, asset=asset, horizon=horizon,
+                            vector=archive_vector, now=stamp,
+                        )
+                    gbm_items = ()
+                    if archive_vector is not None and ISSUE_GBM_V1_CHALLENGERS:
+                        gbm_items = gbm_calls(
+                            gbm_set, asset=asset, horizon=horizon,
                             vector=archive_vector, now=stamp,
                         )
                     mark = self._mark()
@@ -1143,7 +1176,7 @@ class ForwardAccuracyMonitor:
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
-                                    challengers=(*flow_calls, *archive_items),
+                                    challengers=(*flow_calls, *archive_items, *gbm_items),
                                     prepared=shadow_prepared,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger

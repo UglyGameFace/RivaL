@@ -24,6 +24,7 @@ import logging
 import time
 from datetime import UTC, datetime
 
+from parlay_bot.perpetuals import offline_model_pins
 from parlay_bot.research import archive_training
 
 _LOG = logging.getLogger(__name__)
@@ -45,12 +46,11 @@ def is_archive_document(payload: bytes) -> bool:
 
 
 class ArchiveModelSet:
-    """Imported archive models in the database; serves the newest usable one.
+    """Imported archive models in the database; serves the pinned one.
 
-    Mirrors ``PooledModelSet``: one stored row per trained file, newest
-    usable document per (asset, horizon) wins. A retrain is a new row under
-    the same stable family name; the ``selected()`` continuity check
-    (``artifact_identity``) is what lets it keep serving.
+    Mirrors ``PooledModelSet``: one stored row per trained file. Import
+    takes the newest usable artifact, but the shadow slot serves the
+    pinned artifact (D14) -- see ``offline_model_pins`` for the pin rules.
     """
 
     REFRESH_SECONDS = 600
@@ -76,6 +76,7 @@ class ArchiveModelSet:
                     PRIMARY KEY(asset, horizon_minutes, model_sha256)
                 )"""
             )
+        offline_model_pins.initialize(self.store)
         self._ready = True
 
     def imported_file_ids(self) -> frozenset[str]:
@@ -112,7 +113,7 @@ class ArchiveModelSet:
 
     def active(self, asset: str, horizon: int, *,
                now: datetime | None = None) -> dict | None:
-        """Newest usable artifact for (asset, horizon), or None."""
+        """Pinned artifact for (asset, horizon), or None."""
         if (self._loaded_at is None
                 or time.monotonic() - self._loaded_at > self.REFRESH_SECONDS):
             self._reload(now)
@@ -122,6 +123,56 @@ class ArchiveModelSet:
                 now: datetime | None = None) -> list[dict]:
         doc = self.active(asset, horizon, now=now)
         return [doc] if doc is not None else []
+
+    def usable_docs(self, asset: str, horizon: int, *,
+                    now: datetime | None = None) -> list[dict]:
+        """Usable artifacts for (asset, horizon), newest first, annotated."""
+        self.initialize()
+        order = """FROM rival_archive_models
+                   WHERE asset=? AND horizon_minutes=? AND gates_passed=1
+                   ORDER BY trained_through DESC, imported_at DESC"""
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                "SELECT document " + order, (asset, int(horizon))
+            ).fetchall()
+        docs = []
+        for row in rows:
+            try:
+                doc = archive_training.validate(json.loads(row["document"]))
+            except (ValueError, TypeError, KeyError):
+                continue
+            if not archive_training.usable(doc, now=now):
+                continue
+            clean = {k: v for k, v in doc.items() if not k.startswith("_")}
+            # Hash the canonical document BEFORE annotating it: the
+            # stored _sha256 must equal the hash of the document as
+            # published (the pooled precedent).
+            sha = model_sha256(clean)
+            clean["_family"] = FAMILY
+            clean["_sha256"] = sha
+            docs.append(clean)
+        return docs
+
+    def queued(self, asset: str, horizon: int, *,
+               now: datetime | None = None) -> list[dict]:
+        """Usable artifacts waiting behind the pinned one, newest first.
+
+        A rejected fit is not queued: it will never be admitted again.
+        """
+        active = self.active(asset, horizon, now=now)
+        docs = self.usable_docs(asset, horizon, now=now)
+        rejected = offline_model_pins.rejected_shas(
+            self.store, FAMILY, asset, horizon)
+        if active is None:
+            return [d for d in docs if d["_sha256"] not in rejected]
+        return [d for d in docs
+                if d["_sha256"] != active["_sha256"]
+                and d["_sha256"] not in rejected]
+
+    def queue_depth(self, asset: str, horizon: int, *,
+                    now: datetime | None = None) -> int:
+        """Number of usable fits waiting behind the pinned one."""
+        return len(self.queued(asset, horizon, now=now))
 
     def _reload(self, now) -> None:
         self.initialize()
@@ -135,7 +186,7 @@ class ArchiveModelSet:
                 for r in conn.execute(
                     "SELECT asset, horizon_minutes, model_sha256 " + order
                 ).fetchall()
-            )
+            ) + offline_model_pins.pin_signature(self.store, FAMILY)
             if (signature == self._signature and not self._pending_usable):
                 self._loaded_at = time.monotonic()
                 return
@@ -143,11 +194,9 @@ class ArchiveModelSet:
                 "SELECT asset, horizon_minutes, document " + order
             ).fetchall()
         pending_usable = False
-        active: dict[tuple[str, int], dict] = {}
+        usable_by_key: dict[tuple[str, int], list[dict]] = {}
         for row in rows:
             key = (str(row["asset"]), int(row["horizon_minutes"]))
-            if key in active:
-                continue
             try:
                 doc = archive_training.validate(json.loads(row["document"]))
             except (ValueError, TypeError, KeyError):
@@ -164,7 +213,13 @@ class ArchiveModelSet:
             sha = model_sha256(clean)
             clean["_family"] = FAMILY
             clean["_sha256"] = sha
-            active[key] = clean
+            usable_by_key.setdefault(key, []).append(clean)
+        active: dict[tuple[str, int], dict] = {}
+        for (asset, horizon), docs in usable_by_key.items():
+            chosen = offline_model_pins.select_pinned(
+                self.store, FAMILY, asset, horizon, docs, now=now)
+            if chosen is not None:
+                active[(asset, horizon)] = chosen
         self._active = active
         self._signature = signature
         self._pending_usable = pending_usable
@@ -205,14 +260,14 @@ def archive_calls(model_set, *, asset, horizon, vector,
 
 
 def artifact_identity(store, asset: str, horizon: int) -> dict | None:
-    """Currently-imported artifact for (asset, horizon), or None.
+    """Pinned artifact for (asset, horizon), or None.
 
-    The continuity identity for the ``selected()`` branch (spec §2.2):
+    The pinning identity for the ``selected()`` branch (spec §3.4, D14):
     feature digest, weights SHA recomputed from the stored weights (never
     trusted from a stored column), trained-through, and the graded count
     read live from the shadow ledger -- the number of settled archive_v1
-    rows for this (asset, horizon). A retrained artifact is accepted only
-    when that count actually advanced since promotion.
+    rows for this (asset, horizon) under the pinned artifact's document
+    hash only. A queued fit's rows never count toward the pinned fit.
     """
     try:
         doc = ArchiveModelSet(store).active(asset, horizon)
@@ -229,8 +284,9 @@ def artifact_identity(store, asset: str, horizon: int) -> dict | None:
             row = conn.execute(
                 """SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts
                    WHERE family=? AND asset=? AND horizon_minutes=?
+                   AND training_sha256=?
                    AND settled_at IS NOT NULL AND outcome_up IN (0,1)""",
-                (FAMILY, asset, int(horizon)),
+                (FAMILY, asset, int(horizon), doc["_sha256"]),
             ).fetchone()
         graded = int(row["n"]) if row is not None else 0
     except Exception:  # noqa: BLE001 - fail closed to the incumbent

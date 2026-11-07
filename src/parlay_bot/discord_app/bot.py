@@ -62,6 +62,7 @@ from parlay_bot.perpetuals.deribit_history_recovery import DeribitHistoryRecover
 from parlay_bot.perpetuals.dydx_history_recovery import DydxHistoryRecovery
 from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.gbm_model import GbmModelSet, is_gbm_document
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
 from parlay_bot.perpetuals.hyperliquid_history_recovery import (
@@ -2315,6 +2316,15 @@ class RivalDiscordClient(discord.Client):
             market.archive_models = ArchiveModelSet(self.store)
         return market.archive_models
 
+    def _gbm_model_set(self):
+        """The same GBM model set the forecast cycle serves from."""
+        if self.perp_collector is None:
+            return None
+        market = self.perp_collector.market
+        if getattr(market, "gbm_models", None) is None:
+            market.gbm_models = GbmModelSet(self.store)
+        return market.gbm_models
+
     async def _intelligence_loop(self) -> None:
         """RivaL Intelligence reviews the models' calls every 5-minute slot.
 
@@ -2800,6 +2810,9 @@ class RivalDiscordClient(discord.Client):
                 archive_set = self._archive_model_set()
                 if archive_set is not None:
                     known |= await asyncio.to_thread(archive_set.imported_file_ids)
+                gbm_set = self._gbm_model_set()
+                if gbm_set is not None:
+                    known |= await asyncio.to_thread(gbm_set.imported_file_ids)
                 for _ in range(12):
                     items, next_cursor = await asyncio.wait_for(
                         self.research_drive.read_verified_research_candidates(
@@ -2841,6 +2854,28 @@ class RivalDiscordClient(discord.Client):
                                         _LOG.info("RivaL imported archive model %s", file_id)
                             except (ValueError, UnicodeError):
                                 _LOG.warning("RivaL archive model failed verification")
+                            continue
+                        if is_gbm_document(payload):
+                            # GBM artifacts are verified by
+                            # gbm_training.validate(): provider hashes (never
+                            # normalized hashes), feature contract and digest,
+                            # calibration evaluated, offline gates passed,
+                            # trees valid and matching their weights SHA.
+                            # The Drive-manifest byte cross-check does not
+                            # apply here: its machinery only understands
+                            # historical-candidate documents, and the missing
+                            # byte check is a known Phase 2 limitation (same
+                            # as archive_v1).
+                            try:
+                                gbm = self._gbm_model_set()
+                                if gbm is not None:
+                                    added = await asyncio.to_thread(
+                                        gbm.import_document, file_id, payload,
+                                    )
+                                    if added:
+                                        _LOG.info("RivaL imported GBM model %s", file_id)
+                            except (ValueError, UnicodeError):
+                                _LOG.warning("RivaL GBM model failed verification")
                             continue
                         try:
                             # Cross-check the candidate's claimed source

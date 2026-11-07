@@ -204,17 +204,18 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
             alerts.append(("intelligence:unreadable",
                            "⚠️ Couldn't read RivaL Intelligence's reviews; will try again"))
 
-    # 5. flow_v3 / liq_v1 / archive_v1 promotion receipts (batch 2, spec §2.7;
-    # Phase 3 adds liq_v1; autonomous-loop D18 adds archive_v1, closing the
-    # Phase 2 carryover): the first promoted_paper write and first serve for a
-    # family + stream are Discord receipts, delivered through this card (it
-    # posts to rival_status_channel_id when its alert set changes). A
-    # missing receipts table means no promotion happened, not an alert.
+    # 5. flow_v3 / liq_v1 / archive_v1 / gbm_v1 promotion receipts (batch 2,
+    # spec §2.7; Phase 3 adds liq_v1; autonomous-loop D18 adds archive_v1,
+    # closing the Phase 2 carryover; Phase 2 of the loop adds gbm_v1): the
+    # first promoted_paper write and first serve for a family + stream are
+    # Discord receipts, delivered through this card (it posts to
+    # rival_status_channel_id when its alert set changes). A missing
+    # receipts table means no promotion happened, not an alert.
     try:
         rows = conn.execute(
             """SELECT family,venue,contract,quote,horizon_minutes,kind,receipt_text
                FROM rival_family_promotion_receipts
-               WHERE family IN ('flow_v3','liq_v1','archive_v1') AND recorded_at>=?
+               WHERE family IN ('flow_v3','liq_v1','archive_v1','gbm_v1') AND recorded_at>=?
                ORDER BY recorded_at""",
             ((stamp - timedelta(hours=48)).isoformat(),),
         ).fetchall()
@@ -334,6 +335,49 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
                   f"{targets}/{MIN_WINDOWS} windows")))
     except Exception as exc:  # noqa: BLE001 - progress must never break the card
         _LOG.warning("Research alert: shadow progress unreadable (%s)",
+                     type(exc).__name__)
+    # Queue depth for the pinned offline families (autonomous loop D14/D18):
+    # a usable fit waiting behind the pinned one is not lost work -- it is
+    # a queued fit that starts its own 21 days / 150 targets from zero when
+    # admitted. Only the pinned fit's rows count (family_governance).
+    # Counted on this shared connection (no new checkout): usable rows
+    # are gates_passed=1 with trained_through past; rejected pins are
+    # excluded; exactly one usable fit serves per scope, so the queue is
+    # the usable count minus one. This mirrors the model sets' selection
+    # (offline_model_pins.select_pinned); the model set's usable() check
+    # is the authority, this line is a count only.
+    try:
+        from parlay_bot.perpetuals.offline_model_pins import PINS_SCHEMA
+        conn.execute(PINS_SCHEMA)
+        for family, table in (("archive_v1", "rival_archive_models"),
+                              ("gbm_v1", "rival_gbm_models")):
+            try:
+                rows = conn.execute(
+                    f"""SELECT asset, horizon_minutes, COUNT(*) AS n
+                        FROM {table}
+                        WHERE gates_passed=1 AND trained_through < ?
+                        AND model_sha256 NOT IN (
+                            SELECT model_sha256
+                            FROM rival_offline_model_pins
+                            WHERE family=? AND verdict='rejected')
+                        GROUP BY asset, horizon_minutes""",
+                    (stamp.isoformat(), family),
+                ).fetchall()
+            except Exception as exc:  # noqa: BLE001 - no table yet: no fits imported
+                _LOG.debug("Research alert: offline queue table %s unreadable (%s)",
+                           table, type(exc).__name__)
+                continue
+            for row in rows:
+                depth = max(0, int(row["n"]) - 1)
+                if depth:
+                    asset = str(row["asset"])
+                    horizon = int(row["horizon_minutes"])
+                    alerts.append((
+                        f"offline-queue:{family}:{asset}:{horizon}m",
+                        (f"⏳ {family} {asset} {horizon}m: {depth} queued "
+                         f"fit(s) waiting behind the pinned fit")))
+    except Exception as exc:  # noqa: BLE001 - queue depth must never break the card
+        _LOG.warning("Research alert: offline queue unreadable (%s)",
                      type(exc).__name__)
     try:
         rows = conn.execute(

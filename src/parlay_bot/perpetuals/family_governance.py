@@ -52,6 +52,16 @@ def _day_stress(pairs):
             "days":len(differences)}
 
 
+FAMILY_PROMOTION_SCHEMA = """CREATE TABLE IF NOT EXISTS rival_family_promotion (
+    venue TEXT NOT NULL,contract TEXT NOT NULL,quote TEXT NOT NULL,
+    asset TEXT NOT NULL,horizon_minutes INTEGER NOT NULL,
+    evaluated_at TEXT NOT NULL,selected_family TEXT,
+    status TEXT NOT NULL,reason TEXT NOT NULL,
+    evidence_json TEXT NOT NULL,
+    PRIMARY KEY(venue,contract,quote,horizon_minutes)
+)"""
+
+
 class FamilyPromotion:
     def __init__(self, store):
         self.store = store
@@ -61,15 +71,10 @@ class FamilyPromotion:
         if self._initialized:
             return
         with self.store.connect() as conn:
-            conn.executescript("""CREATE TABLE IF NOT EXISTS rival_family_promotion (
-                venue TEXT NOT NULL,contract TEXT NOT NULL,quote TEXT NOT NULL,
-                asset TEXT NOT NULL,horizon_minutes INTEGER NOT NULL,
-                evaluated_at TEXT NOT NULL,selected_family TEXT,
-                status TEXT NOT NULL,reason TEXT NOT NULL,
-                evidence_json TEXT NOT NULL,
-                PRIMARY KEY(venue,contract,quote,horizon_minutes)
-            );
-            """)
+            # One statement, so plain execute (not executescript): the
+            # status card also runs this DDL on its shared connection,
+            # and name-keyed row wrappers expose execute only.
+            conn.execute(FAMILY_PROMOTION_SCHEMA)
         self._initialized = True
 
     def evaluate(self, *, asset, venue, contract, quote, horizon, now=None):

@@ -43,9 +43,12 @@ import logging
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.markets import asset_for_contract
+from parlay_bot.perpetuals.research_hypotheses import PROPOSAL_FRESHNESS_DAYS
 from parlay_bot.perpetuals.research_loop import (
+    SHADOW_POOL_MAX,
     TERMINAL_STATUSES,
     ResearchLoop,
+    pool_counts,
     record_stage_outcome,
 )
 
@@ -120,9 +123,11 @@ def _verify_receipt(store, experiment: dict, *, now: datetime) -> dict | None:
     is rebuilt into a proposal dict and its digest is recomputed the
     same way ``recent_hypotheses`` does it — a digest mismatch means a
     corrupt row, not a verified proposal. Returns None when the row is
-    absent, not proposed, corrupt, or outside the 7-day window the
+    absent, not proposed, corrupt, or outside the freshness window the
     verify gate enforces; the verify step then fails the experiment
     with a finding, which is the honest outcome for a stale proposal.
+    An expired proposal is instead closed as discarded by
+    ``_advance_verify`` (spec D15) — this helper only reports the row.
     """
     from parlay_bot.perpetuals.research_hypotheses import (
         MODEL,
@@ -192,9 +197,59 @@ def _verify_receipt(store, experiment: dict, *, now: datetime) -> dict | None:
     }
 
 
+def _proposal_expired(store, experiment: dict, *, now: datetime) -> bool:
+    """True when this experiment's proposal aged past the freshness window.
+
+    Spec D15: a proposal that expires untested is a ledger row, not a
+    silent absence. Reads the hypotheses-table row by record SHA and
+    compares its slot_utc against PROPOSAL_FRESHNESS_DAYS. Any read or
+    parse failure returns False — the normal verify path then fails the
+    experiment closed, which is the safe outcome for a row that cannot
+    be read at all.
+    """
+    proposal_sha = experiment.get("proposal_sha256")
+    if not _is_sha256(proposal_sha):
+        return False
+    try:
+        with store.connect() as conn:
+            row = conn.execute(
+                """SELECT slot_utc FROM rival_llm_feature_hypotheses
+                   WHERE record_sha256=?""",
+                (proposal_sha,),
+            ).fetchone()
+    except Exception:  # noqa: BLE001 - unreadable row is not an expiry
+        return False
+    if row is None:
+        return False
+    slot = _parse_time(row["slot_utc"])
+    if slot is None:
+        return False
+    return (now - slot) > timedelta(days=PROPOSAL_FRESHNESS_DAYS)
+
+
 def _advance_verify(loop: ResearchLoop, experiment: dict, *,
                     now: datetime) -> dict:
-    """Stage proposed -> ablating (or failed, with a finding)."""
+    """Stage proposed -> ablating (or discarded/failed, with a finding).
+
+    An expired proposal is closed as discarded with a finding naming
+    the expiry (spec D15); any other unverifiable receipt fails closed
+    through run_verify, as before.
+    """
+    if _proposal_expired(loop.store, experiment, now=now):
+        return loop.transition(
+            experiment["experiment_id"], "discarded", actor="system",
+            outcome={"stage": "verify", "expired": True,
+                     "freshness_days": PROPOSAL_FRESHNESS_DAYS,
+                     "proposal_sha256": experiment.get("proposal_sha256")},
+            finding={"kind": "negative_result",
+                     "summary": (
+                         "Proposal expired untested after "
+                         f"{PROPOSAL_FRESHNESS_DAYS} days; the loop never "
+                         "ablated it."),
+                     "evidence_ref": ("rival_research_experiments:"
+                                      f"{experiment['experiment_id']}"),
+                     "recorded_by": "system"},
+            now=now)
     receipt = _verify_receipt(loop.store, experiment, now=now)
     design = experiment.get("design_json") or {}
     venues = design.get("venues") or []
@@ -213,24 +268,87 @@ def _advance_verify(loop: ResearchLoop, experiment: dict, *,
     return loop.verify(experiment["experiment_id"], receipt, venue=venue, now=now)
 
 
+def _advance_blocked(loop: ResearchLoop, experiment: dict, *,
+                     now: datetime) -> dict | None:
+    """Close an experiment whose every venue reported incomplete months.
+
+    Spec D17: a blocked run writes a receipt (venue, asset, requested
+    months, missing months, report_sha256); the driver consumes it by
+    closing the affected experiment with a finding naming the missing
+    months. "Affected" means every venue in the experiment's design has
+    a blocked receipt recorded since the experiment was created — a
+    single blocked venue never closes the experiment, because another
+    venue's run may still ablate it. Returns None when the experiment
+    is not fully blocked: it waits, it is not failed on absence.
+    """
+    from parlay_bot.perpetuals.research_hypotheses import (
+        list_blocked_receipts,
+    )
+
+    design = experiment.get("design_json") or {}
+    venues = [v for v in (design.get("venues") or []) if isinstance(v, str)]
+    if not venues:
+        return None
+    created = _parse_time(experiment.get("created_at"))
+    covering: dict[str, dict] = {}
+    for receipt in list_blocked_receipts(loop.store):
+        venue = receipt.get("venue")
+        if venue not in venues or venue in covering:
+            continue
+        recorded = _parse_time(receipt.get("recorded_at"))
+        if created is not None and (recorded is None or recorded < created):
+            continue
+        covering[venue] = receipt
+    if len(covering) != len(venues):
+        return None
+    missing = sorted({m for receipt in covering.values()
+                      for m in receipt.get("missing_months") or []})
+    shown = ", ".join(missing[:4])
+    if len(missing) > 4:
+        shown += ", …"
+    return loop.transition(
+        experiment["experiment_id"], "discarded", actor="system",
+        outcome={"stage": "ablation", "blocked": True,
+                 "missing_months": missing, "venues": venues},
+        finding={"kind": "negative_result",
+                 "summary": ("Research blocked: "
+                             f"{shown or 'months'} missing; proposal never "
+                             "ablated."),
+                 "evidence_ref": ("rival_research_experiments:"
+                                  f"{experiment['experiment_id']}"),
+                 "recorded_by": "system"},
+        now=now)
+
+
 def _advance_ablation(loop: ResearchLoop, experiment: dict, *,
                       trial_reports: dict, now: datetime) -> dict | None:
     """Stage ablating -> screened (or discarded, with a finding).
 
     Returns None when no trial report for this proposal has been
-    published yet: the experiment waits, it is not failed on absence.
+    published yet: the experiment waits, it is not failed on absence —
+    unless every venue in its design reported incomplete months, in
+    which case it is closed as blocked (see ``_advance_blocked``).
     A report naming a different proposal SHA is ignored by the caller
-    (trial_reports is keyed by proposal SHA).
+    (trial_reports is keyed by proposal SHA). A re-delivered report
+    (spec D17) is skipped before the ablation runs: its consumed key
+    is already recorded, so re-applying would only duplicate the event.
     """
-    entry = trial_reports.get(experiment.get("proposal_sha256") or "")
+    proposal_sha = experiment.get("proposal_sha256") or ""
+    entry = trial_reports.get(proposal_sha)
     if entry is None:
+        return _advance_blocked(loop, experiment, now=now)
+    report_sha = entry["report_sha256"]
+    if is_report_consumed(loop.store, proposal_sha, report_sha):
         return None
-    return loop.ablate(
+    result = loop.ablate(
         experiment["experiment_id"],
         trials=entry["trials"],
-        report_sha256=entry["report_sha256"],
+        report_sha256=report_sha,
+        idempotency_key=f"ablation:{proposal_sha}:{report_sha}",
         now=now,
     )
+    record_consumed_report(loop.store, proposal_sha, report_sha, now=now)
+    return result
 
 
 def shadow_family_for_candidate(payload: bytes) -> tuple[str, dict]:
@@ -271,6 +389,25 @@ def _advance_screen(loop: ResearchLoop, experiment: dict, *,
     """
     found = candidates.get(experiment.get("proposal_sha256") or "")
     if found is None:
+        return None
+    # Spec D16: a screened candidate waits at screened while the shadow
+    # pool is full — the wait is a stage outcome noting capacity, not a
+    # finding. Recorded once per distinct shadow count so the event log
+    # is not spammed every tick.
+    counts = pool_counts(loop.store, now=now)
+    if counts["shadow"] >= SHADOW_POOL_MAX:
+        events = experiment.get("outcome_json") or []
+        last = events[-1] if events else {}
+        last_outcome = last.get("outcome") or {}
+        if not (last.get("stage") == "shadow-capacity"
+                and last_outcome.get("shadow_open") == counts["shadow"]):
+            record_stage_outcome(
+                loop.store, experiment["experiment_id"],
+                stage="shadow-capacity",
+                outcome={"waiting": "shadow_pool_full",
+                         "shadow_open": counts["shadow"],
+                         "shadow_max": SHADOW_POOL_MAX},
+                now=now)
         return None
     payload, eligible = found
     result = loop.screen(
@@ -459,6 +596,51 @@ def advance_one(store, *, trial_reports: dict | None = None,
         if result is not None:
             return result
     return {"status": "nothing_to_advance", "advanced": None}
+
+
+# --- Consumed trial reports (spec D17) ---------------------------------------
+#
+# Every handoff outcome is recorded once. A trial report re-delivered
+# after a restart (the Drive scan returns the same file on later ticks)
+# must be a provable no-op, not a re-apply. The key is
+# (proposal_sha256, report_sha256) with ON CONFLICT DO NOTHING; the
+# driver records it only after the ablation transition commits.
+
+CONSUMED_REPORTS_SCHEMA = """CREATE TABLE IF NOT EXISTS rival_research_consumed_reports (
+    proposal_sha256 TEXT NOT NULL,
+    report_sha256 TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (proposal_sha256, report_sha256))"""
+
+
+def is_report_consumed(store, proposal_sha256: str, report_sha256: str) -> bool:
+    """True when this trial report was already applied to its experiment."""
+    try:
+        with store.connect() as conn:
+            conn.execute(CONSUMED_REPORTS_SCHEMA)
+            row = conn.execute(
+                """SELECT 1 FROM rival_research_consumed_reports
+                   WHERE proposal_sha256=? AND report_sha256=?""",
+                (proposal_sha256, report_sha256),
+            ).fetchone()
+    except Exception:  # noqa: BLE001 - no ledger yet means not consumed
+        return False
+    return row is not None
+
+
+def record_consumed_report(store, proposal_sha256: str, report_sha256: str, *,
+                           now: datetime | None = None) -> bool:
+    """Record one applied trial report. True when newly recorded."""
+    stamp = _stamp(now).isoformat()
+    with store.connect() as conn:
+        conn.execute(CONSUMED_REPORTS_SCHEMA)
+        row = conn.execute(
+            """INSERT INTO rival_research_consumed_reports
+               (proposal_sha256, report_sha256, recorded_at)
+               VALUES (?,?,?) ON CONFLICT DO NOTHING""",
+            (proposal_sha256, report_sha256, stamp),
+        )
+        return bool(row.rowcount == 1)
 
 
 # --- Drive handoff (spec §2.4, D3) -------------------------------------------

@@ -255,7 +255,7 @@ def analytics_snapshot(
         "model_governance": governance,
         "math_pending": int(pending["n"]),
         "issued_after_window_opened_7d": late,
-        "gemini": {
+        "historical_external_ai": {
             "issued": len(recent_ai),
             "settled": len(settled),
             "decided": len(decided),

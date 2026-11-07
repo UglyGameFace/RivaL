@@ -106,9 +106,9 @@ async def test_background_ai_prediction_is_unique_persisted_and_later_settled(
         report = analytics_snapshot(
             market, asset="BTC", now=target + timedelta(minutes=6),
         )
-        assert report["gemini"]["issued"] == 1
-        assert report["gemini"]["settled"] == 1
-        assert report["gemini"]["directional_accuracy"] == 1.
+        assert report["historical_external_ai"]["issued"] == 1
+        assert report["historical_external_ai"]["settled"] == 1
+        assert report["historical_external_ai"]["directional_accuracy"] == 1.
     finally:
         store.close()
 
@@ -210,7 +210,7 @@ def test_zero_scores_are_not_claimed_as_predictive_skill(tmp_path):
         assert report["math"][5]["last_7d"]["events"] == 0
         assert report["math"][5]["trend"] == "insufficient"
         assert report["math"][5]["last_7d"]["simulated_net_bps"] is None
-        assert report["gemini"]["directional_accuracy"] is None
+        assert report["historical_external_ai"]["directional_accuracy"] is None
         assert report["model_governance"] == {}
     finally:
         store.close()

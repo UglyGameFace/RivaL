@@ -39,7 +39,7 @@ def test_rows_settlement_rejects_are_not_called_recoverable(tmp_path):
                 completed_at TEXT NOT NULL, math_issued INTEGER NOT NULL,
                 math_settled INTEGER NOT NULL, ai_issued INTEGER NOT NULL,
                 math_ok INTEGER NOT NULL, ai_settlement_ok INTEGER NOT NULL,
-                model_review_ok INTEGER NOT NULL, gemini_ok INTEGER NOT NULL)""")
+                model_review_ok INTEGER NOT NULL, auto_ai_ok INTEGER NOT NULL)""")
         target = NOW - timedelta(minutes=40)
         with store.connect() as conn:
             _forecast(conn, "okx", target - timedelta(minutes=1), target)  # recoverable
@@ -71,7 +71,7 @@ def test_regression_verdict_is_reused_for_ten_minutes_then_rechecked(tmp_path):
                 completed_at TEXT NOT NULL, math_issued INTEGER NOT NULL,
                 math_settled INTEGER NOT NULL, ai_issued INTEGER NOT NULL,
                 math_ok INTEGER NOT NULL, ai_settlement_ok INTEGER NOT NULL,
-                model_review_ok INTEGER NOT NULL, gemini_ok INTEGER NOT NULL)""")
+                model_review_ok INTEGER NOT NULL, auto_ai_ok INTEGER NOT NULL)""")
             for i in range(60):
                 at = (NOW - timedelta(minutes=300 - 5 * i)).isoformat()
                 conn.execute(
@@ -113,7 +113,7 @@ def test_a_retired_challenger_keeps_its_record_but_raises_no_incident(tmp_path):
                 completed_at TEXT NOT NULL, math_issued INTEGER NOT NULL,
                 math_settled INTEGER NOT NULL, ai_issued INTEGER NOT NULL,
                 math_ok INTEGER NOT NULL, ai_settlement_ok INTEGER NOT NULL,
-                model_review_ok INTEGER NOT NULL, gemini_ok INTEGER NOT NULL)""")
+                model_review_ok INTEGER NOT NULL, auto_ai_ok INTEGER NOT NULL)""")
             for i in range(60):  # losing badly, but last issued 3 hours ago
                 at = (NOW - timedelta(hours=8, minutes=-5 * i)).isoformat()
                 conn.execute(
@@ -147,7 +147,7 @@ def test_an_outcome_that_just_arrived_is_not_a_backlog_until_two_cycles_pass(tmp
                 completed_at TEXT NOT NULL, math_issued INTEGER NOT NULL,
                 math_settled INTEGER NOT NULL, ai_issued INTEGER NOT NULL,
                 math_ok INTEGER NOT NULL, ai_settlement_ok INTEGER NOT NULL,
-                model_review_ok INTEGER NOT NULL, gemini_ok INTEGER NOT NULL)""")
+                model_review_ok INTEGER NOT NULL, auto_ai_ok INTEGER NOT NULL)""")
             target = NOW - timedelta(minutes=40)
             _forecast(conn, "okx", target - timedelta(minutes=1), target)
             # The outcome candle reached RivaL late: 2 minutes ago.

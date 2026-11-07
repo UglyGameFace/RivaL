@@ -19,7 +19,7 @@ paired proofs, both on the challenger's own settled history:
   gross minus the house conservative per-trade cost, with cash windows
   contributing zero, averaged over all paired windows.
 
-Promotion is per (asset, horizon): six independent slots. A slot serves
+Promotion is per (asset, horizon): twelve independent slots. A slot serves
 the challenger only while its latest promotion row says "promoted", for
 the current challenger model version, and fresh (evaluated within 48h).
 Anything else serves the incumbent live model. A stale or failed

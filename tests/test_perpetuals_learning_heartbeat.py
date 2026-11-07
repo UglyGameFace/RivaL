@@ -28,7 +28,7 @@ async def test_automatic_cycle_records_real_restart_safe_heartbeat(tmp_path):
         assert latest["math_ok"] == 1
         assert latest["ai_settlement_ok"] == 1
         assert latest["model_review_ok"] == 1
-        assert latest["gemini_ok"] == 1
+        assert latest["auto_ai_ok"] == 1
         assert latest["math_issued"] == 0
         assert latest["math_settled"] == 0
         assert latest["ai_issued"] == 0
@@ -54,7 +54,7 @@ async def test_learning_cycle_stage_failure_is_visible_not_silenced(tmp_path, mo
         assert result is not None
         assert result["math_ok"] == 0
         assert result["ai_settlement_ok"] == 1
-        assert result["gemini_ok"] == 1
+        assert result["auto_ai_ok"] == 1
         assert result["math_issued"] == 0
     finally:
         store.close()
@@ -90,7 +90,7 @@ async def test_accuracy_screen_reads_persisted_learning_cycle(tmp_path):
         # The retired scheduler's legacy flag cannot fail a live cycle: flip
         # it and the same cycle must still read as completed.
         with store.connect() as conn:
-            conn.execute("UPDATE perp_learning_cycle_health SET gemini_ok=0")
+            conn.execute("UPDATE perp_learning_cycle_health SET auto_ai_ok=0")
         panel = ResearchDashboard(
             owner_id=42, market=market, ai=None, venues=("hyperliquid",),
             shadow_enabled=True,

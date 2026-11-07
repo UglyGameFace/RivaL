@@ -2044,7 +2044,7 @@ class ResearchDashboard(discord.ui.View):
                                 ).replace("\\n", "\n")[:1024],
                                 inline=False,
                             )
-                        ai_status = details["gemini"]
+                        ai_status = details["historical_external_ai"]
                         quality = (
                             f"{ai_status['directional_accuracy'] * 100:.1f}%"
                             if ai_status["directional_accuracy"] is not None

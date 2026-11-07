@@ -14,13 +14,13 @@ sys.path.insert(0, os.path.abspath("src"))
 from parlay_bot.config import Settings
 from parlay_bot.storage.hot import PostgresHotStore
 s = Settings()
-# Paid background AI settings were removed with Gemini (private LFM3 only);
-# read them defensively so a removed setting reports False instead of
-# crashing this receipt before it prints.
+# The retired Gemini auto-AI setting was removed; automatic AI research is
+# hardcoded off (bot.py: auto_ai=False), so this receipt field is always
+# False. It stays in the schema so older receipts still parse.
 r = {"schema":"llm-edge-v1", "model":"LiquidAI/LFM3-1.7B-GGUF:Q4_K_M",
      "provider":getattr(s, "rival_ai_provider", "local"),
      "background_opt_in":bool(getattr(s, "rival_ai_background_opt_in", False)),
-     "auto_ai_setting":bool(getattr(s, "rival_gemini_auto_enabled", False)),
+     "auto_ai_setting":False,
      "rows":[], "cycle":None}
 if s.rival_storage_backend != "postgres" or s.rival_database_url is None:
     r["error"] = "postgres_unavailable"

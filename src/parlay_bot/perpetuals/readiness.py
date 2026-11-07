@@ -2,7 +2,7 @@
 
 Explain why a source can collect 5m bars yet have zero trustworthy forward
 predictions. Never treat bulk historical backfill as live training evidence.
-This does not issue predictions, change weights or call any exchange/Gemini API.
+This does not issue predictions, change weights or call any exchange/external-AI API.
 """
 from __future__ import annotations
 

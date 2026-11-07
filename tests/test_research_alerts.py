@@ -285,3 +285,79 @@ def test_a_gap_within_random_noise_is_not_called_decay(tmp_path):
         assert "× bigger than chance" in alerts["decay:15m"]
     finally:
         store.close()
+
+
+def test_live_clock_reuses_decay_scores_but_explicit_now_reads_fresh(tmp_path, monkeypatch):
+    """The 3-day decay aggregate (5-8 s on production, every card render)
+    runs at most once per DECAY_RECHECK on the live clock; the alert it
+    produces is unchanged, and the in-use filter still uses the current time."""
+    import parlay_bot.discord_app.research_alerts as module
+
+    store = SQLiteHotStore(tmp_path / "decay_cache.sqlite")
+    try:
+        with store.connect() as conn:
+            conn.execute("""CREATE TABLE rival_model_shadow_forecasts (
+                            family TEXT, horizon_minutes INTEGER, settled_at TEXT,
+                            model_brier REAL, baseline_brier REAL, venue TEXT,
+                            training_sha256 TEXT, issued_at TEXT, target_opened_at TEXT)""")
+            for i in range(400):
+                conn.execute("INSERT INTO rival_model_shadow_forecasts VALUES (?,?,?,?,?,?,?,?,?)",
+                             ("pooled_5m_abc", 5, (NOW - timedelta(hours=1)).isoformat(),
+                              .27, .25, "okx", "b" * 64,
+                              (NOW - timedelta(minutes=5)).isoformat(),
+                              (NOW - timedelta(minutes=5 * i)).isoformat()))
+        clock = [NOW]
+
+        class Clock(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock[0]
+
+        calls = []
+        real = module._decay_rows
+        monkeypatch.setattr(module, "datetime", Clock)
+        monkeypatch.setattr(module, "_decay_rows",
+                            lambda conn, stamp: calls.append(stamp) or real(conn, stamp))
+        fresh = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
+        assert "decay:5m" in fresh and len(calls) == 1
+
+        first = dict(research_alerts(store, intelligence_enabled=False))
+        clock[0] = NOW + timedelta(minutes=9)
+        second = dict(research_alerts(store, intelligence_enabled=False))
+        assert len(calls) == 2  # one live read, then reused
+        assert first["decay:5m"] == second["decay:5m"] == fresh["decay:5m"]
+
+        clock[0] = NOW + timedelta(minutes=10)
+        research_alerts(store, intelligence_enabled=False)
+        assert len(calls) == 3  # re-read after DECAY_RECHECK
+        clock[0] = NOW + timedelta(minutes=19)
+        stale = dict(research_alerts(store, intelligence_enabled=False))
+        assert len(calls) == 3 and "decay:5m" in stale
+        # Explicit `now` never uses the cache.
+        research_alerts(store, now=NOW, intelligence_enabled=False)
+        assert len(calls) == 4
+    finally:
+        store.close()
+
+
+def test_cached_decay_rows_are_judged_against_the_current_clock():
+    """A cached version that stopped issuing drops out without a re-read."""
+    import parlay_bot.discord_app.research_alerts as module
+
+    cache = module._DecayCache()
+    cache.put(NOW, [{"last_issued": (NOW - timedelta(minutes=25)).isoformat(),
+                     "n": 400, "m": .27, "b": .25, "d2": .0004, "targets": 400,
+                     "horizon_minutes": 5, "model": "bbbbbbbbbbbb"}])
+
+    class NoConn:
+        def execute(self, *a, **k):
+            raise AssertionError("cached rows must not be re-read")
+
+    def run(stamp):
+        alerts = module._checks(NoConn(), stamp, False, cache)
+        return {key for key, _ in alerts}
+
+    assert "decay:5m" in run(NOW + timedelta(minutes=4))
+    # 25 + 6 = 31 min since its last forecast: no longer in use.
+    assert "decay:5m" not in run(NOW + timedelta(minutes=6))
+    assert cache.get(NOW - timedelta(seconds=1)) is None  # clock went backwards

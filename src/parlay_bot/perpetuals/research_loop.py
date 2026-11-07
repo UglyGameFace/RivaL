@@ -69,8 +69,11 @@ STATUSES = (
 )
 TERMINAL_STATUSES = ("promoted", "discarded", "failed")
 # Every legal step of the loop, in order. No other transition exists.
+# "proposed" -> "discarded" is the D15 expiry close: a proposal that
+# aged past the freshness window is discarded with a finding naming the
+# expiry, rather than failing verification as a corrupt receipt.
 ALLOWED_TRANSITIONS = {
-    "proposed": ("ablating", "failed"),
+    "proposed": ("ablating", "discarded", "failed"),
     "ablating": ("screened", "discarded", "failed"),
     "screened": ("shadow", "discarded"),
     "shadow": ("promoted", "discarded"),
@@ -79,6 +82,12 @@ ALLOWED_TRANSITIONS = {
     "discarded": (),
     "failed": (),
 }
+# Split capacity pools (spec D16, overrides D10): the offline pool is
+# proposed/ablating/screened, the shadow pool is shadow. Each caps at 4,
+# so four 21-day shadow trials cannot starve the fast offline stage.
+OFFLINE_POOL_STATUSES = ("proposed", "ablating", "screened")
+OFFLINE_POOL_MAX = 4
+SHADOW_POOL_MAX = 4
 PROPOSERS = ("llm", "human", "scheduled")
 FINDING_KINDS = ("discovery", "mistake", "negative_result")
 RECORDED_BY = ("llm", "human", "system")
@@ -291,6 +300,7 @@ def _require_finding(store, experiment_id: str, finding: dict | None,
 def transition(store, experiment_id: str, to_status: str, *,
                actor: str, outcome: dict | None = None,
                finding: dict | None = None,
+               idempotency_key: str | None = None,
                now: datetime | None = None) -> dict:
     """Move an experiment one legal step, appending the event.
 
@@ -300,6 +310,14 @@ def transition(store, experiment_id: str, to_status: str, *,
     status require a finding (see ``_require_finding``). The event is
     appended to ``outcome_json``; prior events are never removed or
     rewritten, so the row's history is append-only.
+
+    ``idempotency_key`` (spec D17): when given, the key is stored with
+    the appended event, and a retry with the same key returns the
+    experiment as it already stands instead of appending a second event
+    — a restart between the commit and the caller's bookkeeping is a
+    confirmed no-op, not an error. The key is checked after actor and
+    status validation, before the legality check, because a retried
+    transition has already moved the status past the step it repeats.
     """
     if actor not in TRANSITION_ACTORS:
         raise ValueError(
@@ -312,6 +330,11 @@ def transition(store, experiment_id: str, to_status: str, *,
     experiment = get_experiment(store, experiment_id)
     if experiment is None:
         raise ValueError(f"unknown experiment: {experiment_id!r}")
+    if idempotency_key is not None:
+        for event in experiment["outcome_json"] or []:
+            if (isinstance(event, dict)
+                    and event.get("idempotency_key") == idempotency_key):
+                return experiment
     current = experiment["status"]
     if to_status not in ALLOWED_TRANSITIONS[current]:
         raise ValueError(
@@ -320,8 +343,11 @@ def transition(store, experiment_id: str, to_status: str, *,
         )
     _require_finding(store, experiment_id, finding, to_status=to_status, now=stamp)
     events = list(experiment["outcome_json"] or [])
-    events.append({"stage": to_status, "from": current, "at": stamp.isoformat(),
-                   "actor": actor, "outcome": outcome or {}})
+    event = {"stage": to_status, "from": current, "at": stamp.isoformat(),
+             "actor": actor, "outcome": outcome or {}}
+    if idempotency_key is not None:
+        event["idempotency_key"] = idempotency_key
+    events.append(event)
     with store.connect() as conn:
         if finding is not None:
             conn.execute(
@@ -418,6 +444,24 @@ def recent_experiments(store, *, now: datetime | None = None,
                 continue
         out.append(experiment)
     return out
+
+
+def pool_counts(store, *, now: datetime | None = None) -> dict:
+    """Open experiments per capacity pool (spec D16).
+
+    Counts non-terminal experiments in the same 90-day read window the
+    driver sees: the offline pool (proposed/ablating/screened) and the
+    shadow pool (shadow). An experiment stalled past the window drops
+    out of the driver's view and out of the count by the same design.
+    """
+    counts = {"offline": 0, "shadow": 0}
+    for experiment in recent_experiments(store, now=now):
+        status = experiment["status"]
+        if status in OFFLINE_POOL_STATUSES:
+            counts["offline"] += 1
+        elif status == "shadow":
+            counts["shadow"] += 1
+    return counts
 
 
 def _numeric_outcomes(experiment: dict) -> dict:
@@ -560,6 +604,7 @@ def _ablation_passed(trial: dict) -> bool:
 def run_ablation(store, experiment_id: str, *, trials: list[dict] | None = None,
                  ablate=None, ablate_kwargs: dict | None = None,
                  report_sha256: str | None = None,
+                 idempotency_key: str | None = None,
                  now: datetime | None = None) -> dict:
     """Loop step 3: offline ablation, wired to the existing machinery.
 
@@ -569,6 +614,8 @@ def run_ablation(store, experiment_id: str, *, trials: list[dict] | None = None,
     recorded in ``rival_llm_hypothesis_trials`` via ``record_trials()``
     when ``report_sha256`` is given. A pass moves the experiment to
     ``screened``; any failure moves it to ``discarded`` with a finding.
+    ``idempotency_key`` (spec D17) is passed through to the transition,
+    so a re-delivered trial report re-applies as a no-op.
     """
     from parlay_bot.perpetuals.research_hypotheses import record_trials
     from parlay_bot.research.llm_feature_ablation import (
@@ -599,7 +646,7 @@ def run_ablation(store, experiment_id: str, *, trials: list[dict] | None = None,
                                     "a result; idea discarded.",
                          "evidence_ref": f"rival_research_experiments:{experiment_id}",
                          "recorded_by": "system"},
-                now=stamp)
+                idempotency_key=idempotency_key, now=stamp)
     trials = list(trials or [])
     if report_sha256 is not None:
         try:
@@ -633,9 +680,10 @@ def run_ablation(store, experiment_id: str, *, trials: list[dict] | None = None,
                                 "on the sealed holdout; idea discarded.",
                      "evidence_ref": f"rival_research_experiments:{experiment_id}",
                      "recorded_by": "system"},
-            now=stamp)
+            idempotency_key=idempotency_key, now=stamp)
     return transition(store, experiment_id, "screened", actor="system",
-                      outcome=numeric, now=stamp)
+                      outcome=numeric, idempotency_key=idempotency_key,
+                      now=stamp)
 
 
 def run_screen(store, experiment_id: str, *, artifact: bytes | None = None,

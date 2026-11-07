@@ -22,6 +22,14 @@ ASSETS = ("BTC", "ETH", "SOL", "XRP")
 HYPOTHESES = ("trend_only", "momentum_only", "volatility_only", "volume_only",
               "feature_subset_v2")
 MODEL = "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
+# Proposal freshness window (spec D15, amended 2026-11-07): 9 days, not 7.
+# The GHA venue rotation is 8 days, so a 7-day window strands a proposal
+# made just after its venue's visit day. 9 exceeds the 8-day rotation (and
+# the 4-day Bitget asset cycle) with a day to spare. This constant is the
+# single source of truth: recent_hypotheses(), verify_proposals(), and the
+# driver's expiry close must agree, or the job would pull proposals the
+# verifier then rejects as stale.
+PROPOSAL_FRESHNESS_DAYS = 9
 
 
 def valid_feature_indices(value: object) -> bool:
@@ -99,6 +107,20 @@ class FeatureHypothesisLab:
                 )
         self._initialized = True
 
+    def _slot_proposed(self, asset: str, slot: datetime) -> bool:
+        """True when this exact slot already produced a proposal.
+
+        Read before the D16 capacity check: capacity gates NEW
+        proposals, not duplicate polls of a slot that already has one.
+        """
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT status FROM rival_llm_feature_hypotheses
+                   WHERE asset=? AND slot_utc=?""",
+                (asset, slot.isoformat()),
+            ).fetchone()
+        return bool(row) and row["status"] == "proposed"
+
     def _claim_slot(self, asset: str, slot: datetime, stamp: datetime) -> bool:
         with self.store.connect() as conn:
             claimed = conn.execute(
@@ -162,6 +184,25 @@ class FeatureHypothesisLab:
                              second=0, microsecond=0)
         asset = ASSETS[slot.hour // 6]
         await asyncio.to_thread(self.initialize)
+        # A slot that already produced a proposal reports already_attempted
+        # regardless of pool capacity: D16 gates NEW proposals, not
+        # duplicate polls of a slot that already has one.
+        if await asyncio.to_thread(self._slot_proposed, asset, slot):
+            return {"status": "already_attempted", "asset": asset}
+        # Spec D16: refuse a new LLM proposal while the offline pool
+        # (proposed/ablating/screened) is full. Checked before claiming
+        # the slot and before any LLM call, so a refused attempt burns
+        # neither the 6-hour slot nor the LLM budget. The slot stays
+        # claimable: the next poll retries once capacity frees.
+        from parlay_bot.perpetuals.research_loop import (
+            OFFLINE_POOL_MAX,
+            pool_counts,
+        )
+
+        counts = await asyncio.to_thread(pool_counts, self.store, now=stamp)
+        if counts["offline"] >= OFFLINE_POOL_MAX:
+            return {"status": "capacity_full", "asset": asset,
+                    "offline_open": counts["offline"]}
         # Database work runs on a worker thread: a slow pool checkout must
         # never freeze the Discord gateway heartbeat on the event loop.
         if not await asyncio.to_thread(self._claim_slot, asset, slot, stamp):
@@ -249,14 +290,19 @@ class FeatureHypothesisLab:
 
 
 def recent_hypotheses(store, *, venue: str, now: datetime | None = None) -> list[dict]:
-    """Read bounded, genuine prior proposals for one exact source venue."""
+    """Read bounded, genuine prior proposals for one exact source venue.
+
+    Oldest first (spec D15): the one-per-asset dedupe keeps the oldest
+    eligible proposal per asset, so an older idea is never silently
+    dropped in favour of a newer one for the same asset.
+    """
     current = (now or datetime.now(UTC)).astimezone(UTC)
     with store.connect() as conn:
         rows = conn.execute(
             """SELECT * FROM rival_llm_feature_hypotheses
                WHERE status='proposed' AND attempted_at>=?
-               ORDER BY attempted_at DESC LIMIT 96""",
-            ((current - timedelta(days=7)).isoformat(),),
+               ORDER BY attempted_at ASC LIMIT 96""",
+            ((current - timedelta(days=PROPOSAL_FRESHNESS_DAYS)).isoformat(),),
         ).fetchall()
     results = []
     seen = set()
@@ -338,7 +384,112 @@ TRIALS_SCHEMA = """CREATE TABLE IF NOT EXISTS rival_llm_hypothesis_trials (
     feature_indices_json TEXT NOT NULL, baseline_brier DOUBLE PRECISION NOT NULL,
     llm_brier DOUBLE PRECISION NOT NULL, validation_count INTEGER NOT NULL,
     report_sha256 TEXT NOT NULL, recorded_at TEXT NOT NULL,
+    outcome_status TEXT, outcome_reason TEXT,
     PRIMARY KEY (proposal_sha256, venue, contract, horizon_minutes))"""
+
+# Rejection status -> short human-readable reason (spec D17). The status
+# itself is the machine-readable code; the reason is what the card and
+# the finding show. An admission reason the map does not know is stored
+# verbatim (truncated), never dropped.
+_TRIAL_OUTCOME_REASONS = {
+    "validation_rejected": "purged validation gates not passed",
+    "ordinary_holdout_not_beaten": "sealed holdout Brier delta <= 0.005",
+    "screened_for_future_shadow": "passed validation and holdout; screened for shadow",
+}
+
+BLOCKED_REPORTS_SCHEMA = """CREATE TABLE IF NOT EXISTS rival_research_blocked_reports (
+    venue TEXT NOT NULL,
+    asset TEXT,
+    requested_months INTEGER NOT NULL,
+    missing_months_json TEXT NOT NULL,
+    report_sha256 TEXT NOT NULL,
+    recorded_at TEXT NOT NULL,
+    PRIMARY KEY (venue, report_sha256))"""
+
+
+def initialize_blocked_reports(store) -> None:
+    """Create the blocked-run receipts table if it does not exist (D17)."""
+    with store.connect() as conn:
+        conn.execute(BLOCKED_REPORTS_SCHEMA)
+
+
+def record_blocked_receipt(store, *, venue: str, asset: str | None,
+                           requested_months: int, missing_months: list,
+                           report_sha256: str,
+                           now: datetime | None = None) -> int:
+    """Record one blocked offline run, once (spec D17).
+
+    A run that produces zero trials (incomplete months) previously
+    recorded nothing anywhere; this receipt is the record. Keyed by
+    (venue, report_sha256) with ON CONFLICT DO NOTHING, so a re-delivered
+    report is a provable no-op. Returns 1 when newly recorded, 0 on a
+    duplicate. ``missing_months`` is the sorted union of the report's
+    missing_or_incomplete_months, as "YYYY-MM" strings.
+    """
+    if not re.fullmatch(r"[a-z0-9_-]{2,24}", str(venue)):
+        raise ValueError("venue must be a lowercase slug")
+    if not re.fullmatch(r"[0-9a-f]{64}", str(report_sha256)):
+        raise ValueError("report_sha256 must be a SHA-256 hex digest")
+    if asset is not None and asset not in ASSETS:
+        raise ValueError(f"unknown asset: {asset!r}")
+    if int(requested_months) < 0:
+        raise ValueError("requested_months must be >= 0")
+    missing = sorted({str(m) for m in missing_months})
+    if not all(re.fullmatch(r"\d{4}-\d{2}", m) for m in missing):
+        raise ValueError("missing_months must be YYYY-MM strings")
+    stamp = (now or datetime.now(UTC)).astimezone(UTC).isoformat()
+    with store.connect() as conn:
+        conn.execute(BLOCKED_REPORTS_SCHEMA)
+        row = conn.execute(
+            """INSERT INTO rival_research_blocked_reports
+               (venue, asset, requested_months, missing_months_json,
+                report_sha256, recorded_at)
+               VALUES (?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+            (venue, asset, int(requested_months),
+             json.dumps(missing, separators=(",", ":")), report_sha256, stamp),
+        )
+        return int(row.rowcount == 1)
+
+
+def list_blocked_receipts(store, *, since: datetime | None = None) -> list[dict]:
+    """Blocked-run receipts, newest first (spec D17/D18).
+
+    The driver consumes these (all of an experiment's venues blocked ->
+    close with a finding naming the missing months); the status card
+    surfaces the latest per venue as the actual blocker.
+    """
+    with store.connect() as conn:
+        conn.execute(BLOCKED_REPORTS_SCHEMA)
+        if since is None:
+            rows = conn.execute(
+                """SELECT venue, asset, requested_months,
+                          missing_months_json, report_sha256, recorded_at
+                   FROM rival_research_blocked_reports
+                   ORDER BY recorded_at DESC"""
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT venue, asset, requested_months,
+                          missing_months_json, report_sha256, recorded_at
+                   FROM rival_research_blocked_reports
+                   WHERE recorded_at>=? ORDER BY recorded_at DESC""",
+                (since.astimezone(UTC).isoformat(),),
+            ).fetchall()
+    out = []
+    for row in rows:
+        try:
+            missing = json.loads(row["missing_months_json"] or "[]")
+        except (ValueError, TypeError):
+            missing = []
+        out.append({
+            "venue": str(row["venue"]),
+            "asset": row["asset"],
+            "requested_months": int(row["requested_months"]),
+            "missing_months": [str(m) for m in missing if isinstance(m, str)],
+            "report_sha256": str(row["report_sha256"]),
+            "recorded_at": str(row["recorded_at"]),
+        })
+    return out
 
 
 def record_trials(store, trials: list, *, report_sha256: str,
@@ -355,6 +506,15 @@ def record_trials(store, trials: list, *, report_sha256: str,
     saved = 0
     with store.connect() as conn:
         conn.execute(TRIALS_SCHEMA)
+        # Spec D17: outcome columns on rows created before this change.
+        for column, definition in (("outcome_status", "TEXT"),
+                                   ("outcome_reason", "TEXT")):
+            if column not in store.database.column_names(
+                    conn, "rival_llm_hypothesis_trials"):
+                conn.execute(
+                    "ALTER TABLE rival_llm_hypothesis_trials "
+                    f"ADD COLUMN {column} {definition}"
+                )
         for trial in trials[:200]:
             try:
                 sha = str(trial["proposal_sha256"])
@@ -371,6 +531,18 @@ def record_trials(store, trials: list, *, report_sha256: str,
                     or count <= 0 or not re.fullmatch(r"[a-z0-9_-]{2,24}", venue)
                     or not re.fullmatch(r"[A-Za-z0-9_-]{2,40}", contract)):
                 continue
+            # Spec D17: rejection status/reason as data on the trial
+            # record, so a rejection is queryable in Postgres instead of
+            # living only in the 14-day GHA report JSON. Absent on trials
+            # produced without a candidate sink (no screen ran).
+            raw_status = trial.get("retrospective_candidate_status")
+            if isinstance(raw_status, str) and raw_status:
+                outcome_status = raw_status[:120]
+                outcome_reason = _TRIAL_OUTCOME_REASONS.get(
+                    raw_status, raw_status[:120])
+            else:
+                outcome_status = None
+                outcome_reason = None
             proposal = conn.execute(
                 """SELECT asset, hypothesis FROM rival_llm_feature_hypotheses
                    WHERE record_sha256=? AND status='proposed'""", (sha,),
@@ -382,11 +554,11 @@ def record_trials(store, trials: list, *, report_sha256: str,
                 """INSERT INTO rival_llm_hypothesis_trials
                    (proposal_sha256,venue,contract,horizon_minutes,asset,hypothesis,
                     feature_indices_json,baseline_brier,llm_brier,validation_count,
-                    report_sha256,recorded_at)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+                    report_sha256,recorded_at,outcome_status,outcome_reason)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
                 (sha, venue, contract, horizon, proposal["asset"], proposal["hypothesis"],
                  json.dumps(indices, separators=(",", ":")), base, llm, count,
-                 report_sha256, stamp),
+                 report_sha256, stamp, outcome_status, outcome_reason),
             )
             saved += int(row.rowcount == 1)
     return saved

@@ -26,7 +26,8 @@ FAMILIES = ("gaussian_nb_v1", "knn21_v1")
 # flow_ online challengers must be quote-shadowed like every other family:
 # without it they could never meet the 80% matched-quote promotion gate, and
 # their unquoted forecasts dragged the live quote_coverage check to ~55%.
-CHALLENGER_PREFIXES = ("boosted_", "historical_", "pooled_", "flow_", "calib_")
+CHALLENGER_PREFIXES = ("boosted_", "historical_", "pooled_", "flow_", "calib_",
+                       "archive_", "liq_", "gbm_")
 MIN_TRAIN = 80
 MAX_TRAIN = 480
 SETTLE_BATCH = 240
@@ -282,7 +283,9 @@ class ShadowModelCompetition:
         for item in (*pooled, *challengers):
             try:
                 name, probability_up = str(item["family"]), float(item["probability"])
-                if (not name.startswith(("pooled_", "flow_", "calib_")) or len(name) > 64
+                if (not name.startswith(
+                        ("pooled_", "flow_", "calib_", "archive_", "liq_", "gbm_"))
+                        or len(name) > 64
                         or not math.isfinite(probability_up) or not 0 < probability_up < 1):
                     continue
                 predictions[name] = probability_up

@@ -51,6 +51,10 @@ from parlay_bot.observability import heartbeat
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals import host_memory
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
+from parlay_bot.perpetuals.archive_model import (
+    ArchiveModelSet,
+    is_archive_document,
+)
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
@@ -58,6 +62,7 @@ from parlay_bot.perpetuals.deribit_history_recovery import DeribitHistoryRecover
 from parlay_bot.perpetuals.dydx_history_recovery import DydxHistoryRecovery
 from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+from parlay_bot.perpetuals.gbm_model import GbmModelSet, is_gbm_document
 from parlay_bot.perpetuals.history_quality import SixMonthQualityAudit
 from parlay_bot.perpetuals.history_recovery import GateHistoryRecovery
 from parlay_bot.perpetuals.hyperliquid_history_recovery import (
@@ -101,6 +106,10 @@ from parlay_bot.research.database_integrity import (
     sports_settlement_exclusions,
 )
 from parlay_bot.research.dkex_reports import DKeXPublicReports
+from parlay_bot.research.research_loop_driver import (
+    DRIVER_TICK_SECONDS,
+    drive_research_loop_tick,
+)
 from parlay_bot.research.sports_results import (
     ResultIntegrityError,
     SportsResultStore,
@@ -509,6 +518,7 @@ class RivalDiscordClient(discord.Client):
             else None
         )
         self._hypothesis_task: asyncio.Task[None] | None = None
+        self._research_loop_task: asyncio.Task[None] | None = None
         self.autonomous: AutonomousResearch | None = (
             AutonomousResearch(
                 self.perp_collector.market,
@@ -1563,6 +1573,11 @@ class RivalDiscordClient(discord.Client):
             self._hypothesis_task = asyncio.create_task(
                 self._hypothesis_loop(), name="rival-llm-feature-research",
             )
+        if self._research_loop_task is None and llm_background_enabled(
+                self.settings):
+            self._research_loop_task = asyncio.create_task(
+                self._research_loop_driver(), name="rival-research-loop-driver",
+            )
         if self.shadow_monitor is not None and self._shadow_task is None:
             _LOG.info(
                 "RivaL automatic shadow learning ENABLED interval=%ds "
@@ -2292,6 +2307,24 @@ class RivalDiscordClient(discord.Client):
             market.pooled_models = PooledModelSet(self.store)
         return market.pooled_models
 
+    def _archive_model_set(self):
+        """The same archive model set the forecast cycle serves from."""
+        if self.perp_collector is None:
+            return None
+        market = self.perp_collector.market
+        if getattr(market, "archive_models", None) is None:
+            market.archive_models = ArchiveModelSet(self.store)
+        return market.archive_models
+
+    def _gbm_model_set(self):
+        """The same GBM model set the forecast cycle serves from."""
+        if self.perp_collector is None:
+            return None
+        market = self.perp_collector.market
+        if getattr(market, "gbm_models", None) is None:
+            market.gbm_models = GbmModelSet(self.store)
+        return market.gbm_models
+
     async def _intelligence_loop(self) -> None:
         """RivaL Intelligence reviews the models' calls every 5-minute slot.
 
@@ -2667,6 +2700,39 @@ class RivalDiscordClient(discord.Client):
                 _LOG.exception("RivaL independent AI feature laboratory unavailable")
             await asyncio.sleep(300)
 
+    async def _research_loop_driver(self) -> None:
+        """Autonomous loop Phase 1: advance research experiments, unassisted.
+
+        Runs only with the background opt-in (same gate as the hypothesis
+        loop). One experiment, one stage per 30-minute tick; a tick with
+        nothing to advance does nothing. The driver holds no AI client
+        and spends no LLM calls — it only advances experiments the lab
+        already proposed, from the numeric output of the existing gates.
+        """
+        if not llm_background_enabled(self.settings):
+            _LOG.info("RivaL research loop driver disabled: "
+                      "rival_llm_background_opt_in=False; loop not running")
+            return
+        await self.wait_until_ready()
+        await asyncio.sleep(60)
+        while not self.is_closed():
+            try:
+                result = await drive_research_loop_tick(
+                    self.store, drive=self.research_drive,
+                    memory_pressure=host_memory.snapshot().pressure,
+                )
+                if result.get("status") == "advanced":
+                    _LOG.info(
+                        "RivaL research loop driver advanced experiment=%s %s->%s",
+                        result.get("advanced"), result.get("from"),
+                        result.get("to"),
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - optional research only
+                _LOG.exception("RivaL research loop driver tick failed safely")
+            await asyncio.sleep(DRIVER_TICK_SECONDS)
+
     async def _shadow_loop(self) -> None:
         await self.wait_until_ready()
         assert self.shadow_monitor is not None
@@ -2741,6 +2807,12 @@ class RivalDiscordClient(discord.Client):
                 pooled_set = self._pooled_model_set()
                 if pooled_set is not None:
                     known |= await asyncio.to_thread(pooled_set.imported_file_ids)
+                archive_set = self._archive_model_set()
+                if archive_set is not None:
+                    known |= await asyncio.to_thread(archive_set.imported_file_ids)
+                gbm_set = self._gbm_model_set()
+                if gbm_set is not None:
+                    known |= await asyncio.to_thread(gbm_set.imported_file_ids)
                 for _ in range(12):
                     items, next_cursor = await asyncio.wait_for(
                         self.research_drive.read_verified_research_candidates(
@@ -2761,6 +2833,49 @@ class RivalDiscordClient(discord.Client):
                                         _LOG.info("RivaL imported pooled model %s", file_id)
                             except (ValueError, UnicodeError):
                                 _LOG.warning("RivaL pooled model failed verification")
+                            continue
+                        if is_archive_document(payload):
+                            # Archive artifacts are verified by
+                            # archive_training.validate(): provider hashes
+                            # (never normalized hashes), feature contract
+                            # and digest, calibration evaluated, offline
+                            # gates passed. The Drive-manifest byte
+                            # cross-check does not apply here: its
+                            # machinery only understands historical-
+                            # candidate documents, and the missing byte
+                            # check is a known Phase 2 limitation.
+                            try:
+                                archive = self._archive_model_set()
+                                if archive is not None:
+                                    added = await asyncio.to_thread(
+                                        archive.import_document, file_id, payload,
+                                    )
+                                    if added:
+                                        _LOG.info("RivaL imported archive model %s", file_id)
+                            except (ValueError, UnicodeError):
+                                _LOG.warning("RivaL archive model failed verification")
+                            continue
+                        if is_gbm_document(payload):
+                            # GBM artifacts are verified by
+                            # gbm_training.validate(): provider hashes (never
+                            # normalized hashes), feature contract and digest,
+                            # calibration evaluated, offline gates passed,
+                            # trees valid and matching their weights SHA.
+                            # The Drive-manifest byte cross-check does not
+                            # apply here: its machinery only understands
+                            # historical-candidate documents, and the missing
+                            # byte check is a known Phase 2 limitation (same
+                            # as archive_v1).
+                            try:
+                                gbm = self._gbm_model_set()
+                                if gbm is not None:
+                                    added = await asyncio.to_thread(
+                                        gbm.import_document, file_id, payload,
+                                    )
+                                    if added:
+                                        _LOG.info("RivaL imported GBM model %s", file_id)
+                            except (ValueError, UnicodeError):
+                                _LOG.warning("RivaL GBM model failed verification")
                             continue
                         try:
                             # Cross-check the candidate's claimed source
@@ -2881,6 +2996,8 @@ class RivalDiscordClient(discord.Client):
                 ("_shadow_task", self._shadow_loop, "rival-shadow-learning"),
                 ("_hypothesis_task", self._hypothesis_loop,
                  "rival-llm-feature-research"),
+                ("_research_loop_task", self._research_loop_driver,
+                 "rival-research-loop-driver"),
                 ("_history_task", self._history_loop, "rival-perp-history-recovery"),
                 ("_candidate_task", self._candidate_import_loop,
                  "rival-verified-offline-candidate-import"),
@@ -2907,7 +3024,7 @@ class RivalDiscordClient(discord.Client):
                 task = getattr(self, attr)
                 if task is None or not task.done():
                     continue
-                if (attr == "_hypothesis_task"
+                if (attr in ("_hypothesis_task", "_research_loop_task")
                         and not llm_background_enabled(self.settings)):
                     # Stopped on purpose: background LLM use is opted out
                     # (batch 2 §3.4). Do not restart it; it needs an opt-in.
@@ -3185,7 +3302,8 @@ class RivalDiscordClient(discord.Client):
         "_liquidity_task",
         "_target_task", "_sports_results_task", "_sports_task",
         "_sports_manual_task", "_history_task", "_shadow_task", "_perp_task",
-        "_hypothesis_task", "_candidate_task", "_archive_task", "_context_task",
+        "_hypothesis_task", "_research_loop_task", "_candidate_task",
+        "_archive_task", "_context_task",
         "_records_task", "_kalshi_updown_task",
         "_heartbeat_task", "_status_task", "_benefit_task", "_intelligence_task",
         "_loop_watch_task", "_memory_task",

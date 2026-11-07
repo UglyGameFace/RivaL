@@ -6,6 +6,7 @@ unreadable table becomes its own alert instead of a guess.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 import threading
@@ -140,6 +141,27 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
             decay_cache: _DecayCache | None = None) -> list[tuple[str, str]]:
     alerts: list[tuple[str, str]] = []
 
+    # Check 8 reads the promotion evaluation table and the blocked-run
+    # receipts table on every render. Create both on this same shared
+    # connection (idempotent CREATE TABLE IF NOT EXISTS, plain execute so
+    # name-keyed row wrappers work) so a render before the first
+    # evaluation logs no "unreadable" warning — and the card still checks
+    # out exactly one shared connection. A failure here falls through to
+    # check 8's own unreadable alert instead of failing the whole card.
+    try:
+        from parlay_bot.perpetuals.family_governance import (
+            FAMILY_PROMOTION_SCHEMA,
+        )
+        from parlay_bot.perpetuals.research_hypotheses import (
+            BLOCKED_REPORTS_SCHEMA,
+        )
+
+        conn.execute(FAMILY_PROMOTION_SCHEMA)
+        conn.execute(BLOCKED_REPORTS_SCHEMA)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("Research alert: check-8 tables unreadable (%s)",
+                     type(exc).__name__)
+
     def scalar(sql: str, params=()):
         row = conn.execute(sql, params).fetchone()
         # PostgreSQL rows are keyed by column name (row[0] raises KeyError,
@@ -236,21 +258,23 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
             alerts.append(("intelligence:unreadable",
                            "⚠️ Couldn't read RivaL Intelligence's reviews; will try again"))
 
-    # 5. flow_v3 promotion receipts (batch 2, spec §2.7): the first
-    # promoted_paper write and first serve for a family + stream are
+    # 5. flow_v3 / liq_v1 / archive_v1 / gbm_v1 promotion receipts (batch 2,
+    # spec §2.7; Phase 3 adds liq_v1; autonomous-loop D18 adds archive_v1,
+    # closing the Phase 2 carryover; Phase 2 of the loop adds gbm_v1): the
+    # first promoted_paper write and first serve for a family + stream are
     # Discord receipts, delivered through this card (it posts to
     # rival_status_channel_id when its alert set changes). A missing
     # receipts table means no promotion happened, not an alert.
     try:
         rows = conn.execute(
-            """SELECT venue,contract,quote,horizon_minutes,kind,receipt_text
+            """SELECT family,venue,contract,quote,horizon_minutes,kind,receipt_text
                FROM rival_family_promotion_receipts
-               WHERE family='flow_v3' AND recorded_at>=?
+               WHERE family IN ('flow_v3','liq_v1','archive_v1','gbm_v1') AND recorded_at>=?
                ORDER BY recorded_at""",
             ((stamp - timedelta(hours=48)).isoformat(),),
         ).fetchall()
         for row in rows:
-            key = (f"flow-v3:{row['kind']}:{row['venue']}:"
+            key = (f"{row['family'].replace('_', '-')}:{row['kind']}:{row['venue']}:"
                    f"{row['contract']}:{row['horizon_minutes']}m")
             alerts.append((key, str(row["receipt_text"])))
     except Exception as exc:  # noqa: BLE001 - receipts must never break the card
@@ -279,5 +303,163 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
                                  f"({row['hypothesis']}): {summary}")))
     except Exception as exc:  # noqa: BLE001 - experiments must never break the card
         _LOG.warning("Research alert: research experiments unreadable (%s)",
+                     type(exc).__name__)
+
+    # 7. Research-loop driver counts (autonomous loop Phase 1, spec §2.5):
+    # open experiments and outcomes closed in the last 7 days, counts
+    # only. A closed experiment counts by the time its terminal
+    # transition was recorded (the outcome_json event log), not by
+    # creation time. Discarded/failed are never surfaced as wins; the
+    # line appears only when there is loop activity to report, and its
+    # key carries no counters so the card does not re-post on count
+    # changes alone.
+    try:
+        rows = conn.execute(
+            """SELECT status, outcome_json FROM rival_research_experiments
+               WHERE created_at>=?""",
+            ((stamp - timedelta(days=90)).isoformat(),),
+        ).fetchall()
+        open_count = 0
+        closed = {"promoted": 0, "discarded": 0, "failed": 0}
+        for row in rows:
+            status = str(row["status"])
+            if status not in closed:
+                open_count += 1
+                continue
+            try:
+                events = json.loads(row["outcome_json"] or "[]")
+            except (ValueError, TypeError):
+                continue
+            closed_at = None
+            for event in events or []:
+                if isinstance(event, dict) and event.get("stage") == status:
+                    closed_at = _utc(event.get("at"))
+            if closed_at is not None and stamp - closed_at <= timedelta(days=7):
+                closed[status] += 1
+        if open_count or any(closed.values()):
+            alerts.append(("research-loop:counts",
+                           (f"🔬 Research loop: {open_count} open experiment(s); "
+                            f"last 7 days: {closed['promoted']} promoted, "
+                            f"{closed['discarded']} discarded, "
+                            f"{closed['failed']} failed")))
+    except Exception as exc:  # noqa: BLE001 - counts must never break the card
+        _LOG.warning("Research alert: research loop counts unreadable (%s)",
+                     type(exc).__name__)
+
+    # 8. Per-family shadow progress + research blockers (autonomous loop
+    # D18): days/targets against the real Route B thresholds, read from
+    # the latest rival_family_promotion evaluation per (family, asset,
+    # horizon); and the latest blocked-run receipt per venue. Qualified
+    # families are not shown here — their promotion receipt (check 5)
+    # already announces them. Progress keys carry no counters, so the
+    # card re-posts only when the set of families being tracked changes.
+    try:
+        from parlay_bot.perpetuals.family_governance import MIN_DAYS, MIN_WINDOWS
+    except Exception:  # noqa: BLE001 - thresholds are stable; fall back
+        MIN_DAYS, MIN_WINDOWS = 21, 150
+    try:
+        rows = conn.execute(
+            """SELECT asset, horizon_minutes, evidence_json
+               FROM rival_family_promotion WHERE evaluated_at>=?
+               ORDER BY evaluated_at DESC""",
+            ((stamp - timedelta(hours=48)).isoformat(),),
+        ).fetchall()
+        best: dict[tuple[str, str, int], tuple[int, int]] = {}
+        for row in rows:
+            try:
+                families = json.loads(row["evidence_json"] or "{}")
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(families, dict):
+                continue
+            for family, info in families.items():
+                if not isinstance(info, dict) or info.get("qualified"):
+                    continue
+                targets, days = info.get("targets"), info.get("days")
+                if not isinstance(targets, int) or not isinstance(days, int):
+                    continue
+                key = (str(family), str(row["asset"]),
+                       int(row["horizon_minutes"]))
+                if key not in best:
+                    best[key] = (days, targets)
+        for (family, asset, horizon), (days, targets) in sorted(best.items())[:12]:
+            alerts.append(
+                (f"shadow-progress:{family}:{asset}:{horizon}m",
+                 (f"📊 {family} {asset} {horizon}m: {days}/{MIN_DAYS} days · "
+                  f"{targets}/{MIN_WINDOWS} windows")))
+    except Exception as exc:  # noqa: BLE001 - progress must never break the card
+        _LOG.warning("Research alert: shadow progress unreadable (%s)",
+                     type(exc).__name__)
+    # Queue depth for the pinned offline families (autonomous loop D14/D18):
+    # a usable fit waiting behind the pinned one is not lost work -- it is
+    # a queued fit that starts its own 21 days / 150 targets from zero when
+    # admitted. Only the pinned fit's rows count (family_governance).
+    # Counted on this shared connection (no new checkout): usable rows
+    # are gates_passed=1 with trained_through past; rejected pins are
+    # excluded; exactly one usable fit serves per scope, so the queue is
+    # the usable count minus one. This mirrors the model sets' selection
+    # (offline_model_pins.select_pinned); the model set's usable() check
+    # is the authority, this line is a count only.
+    try:
+        from parlay_bot.perpetuals.offline_model_pins import PINS_SCHEMA
+        conn.execute(PINS_SCHEMA)
+        for family, table in (("archive_v1", "rival_archive_models"),
+                              ("gbm_v1", "rival_gbm_models")):
+            try:
+                rows = conn.execute(
+                    f"""SELECT asset, horizon_minutes, COUNT(*) AS n
+                        FROM {table}
+                        WHERE gates_passed=1 AND trained_through < ?
+                        AND model_sha256 NOT IN (
+                            SELECT model_sha256
+                            FROM rival_offline_model_pins
+                            WHERE family=? AND verdict='rejected')
+                        GROUP BY asset, horizon_minutes""",
+                    (stamp.isoformat(), family),
+                ).fetchall()
+            except Exception as exc:  # noqa: BLE001 - no table yet: no fits imported
+                _LOG.debug("Research alert: offline queue table %s unreadable (%s)",
+                           table, type(exc).__name__)
+                continue
+            for row in rows:
+                depth = max(0, int(row["n"]) - 1)
+                if depth:
+                    asset = str(row["asset"])
+                    horizon = int(row["horizon_minutes"])
+                    alerts.append((
+                        f"offline-queue:{family}:{asset}:{horizon}m",
+                        (f"⏳ {family} {asset} {horizon}m: {depth} queued "
+                         f"fit(s) waiting behind the pinned fit")))
+    except Exception as exc:  # noqa: BLE001 - queue depth must never break the card
+        _LOG.warning("Research alert: offline queue unreadable (%s)",
+                     type(exc).__name__)
+    try:
+        rows = conn.execute(
+            """SELECT venue, missing_months_json, recorded_at
+               FROM rival_research_blocked_reports WHERE recorded_at>=?
+               ORDER BY recorded_at DESC""",
+            ((stamp - timedelta(days=7)).isoformat(),),
+        ).fetchall()
+        latest: dict[str, dict] = {}
+        for row in rows:
+            if str(row["venue"]) not in latest:
+                latest[str(row["venue"])] = {
+                    "missing_months_json": row["missing_months_json"],
+                }
+        for venue, blocked in sorted(latest.items()):
+            try:
+                missing = json.loads(blocked["missing_months_json"] or "[]")
+            except (ValueError, TypeError):
+                missing = []
+            missing = [str(m) for m in missing if isinstance(m, str)]
+            shown = ", ".join(missing[:3])
+            if len(missing) > 3:
+                shown += ", …"
+            alerts.append(
+                (f"research-blocked:{venue}",
+                 (f"⛔ Research blocked at {venue}: {len(missing)} month(s) "
+                  f"missing ({shown})")))
+    except Exception as exc:  # noqa: BLE001 - blockers must never break the card
+        _LOG.warning("Research alert: research blockers unreadable (%s)",
                      type(exc).__name__)
     return alerts

@@ -8,14 +8,15 @@ family + stream + kind) and surfaced to Discord through the status card
 (``research_alerts``), which posts to ``rival_status_channel_id`` when its
 alert set changes. No new messaging channel is invented.
 
-Two receipt kinds, both for ``flow_v3`` only in batch 2:
+Two receipt kinds, for ``flow_v3`` in batch 2 and ``liq_v1`` in Phase 3:
 - ``promoted``: the first ``promoted_paper`` write for the family + stream.
 - ``first_serve``: the first time the family actually serves through
   ``recent_watches()``.
 
 Every receipt carries the evidence summary (targets, days, trades,
 coverage, both cost scenarios, ECE, top-bucket hit rate, calibration
-status) and, for flow_v3, the OKX-only liquidation coverage disclosure.
+status) and, for flow_v3 and liq_v1, the OKX-only liquidation coverage
+disclosure (liq_v1 also discloses its Coinbase spot tape).
 """
 from __future__ import annotations
 
@@ -63,8 +64,10 @@ def format_receipt_text(*, family, venue, contract, quote, horizon,
         f"top_bucket_hit_rate={top_hit} (n={top_n})",
         f"calibration={calibration.get('status', 'unevaluated')}",
     ]
-    if family == "flow_v3":
+    if family in ("flow_v3", "liq_v1"):
         parts.append("liquidations=OKX-only coverage")
+    if family == "liq_v1":
+        parts.append("coinbase=SPOT tape (basis context only, never perp)")
     return " | ".join(parts)
 
 

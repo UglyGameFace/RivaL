@@ -13,6 +13,7 @@ import math
 import time
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals.archive_model import ArchiveModelSet, archive_calls
 from parlay_bot.perpetuals.calibrated_challenger import CalibratedIncumbent
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
 from parlay_bot.perpetuals.features import (
@@ -24,7 +25,9 @@ from parlay_bot.perpetuals.features import (
 from parlay_bot.perpetuals.flow_challenger import FlowChallenger, FlowChallengerV2
 from parlay_bot.perpetuals.flow_challenger_v3 import FlowChallengerV3
 from parlay_bot.perpetuals.fusion import utc
+from parlay_bot.perpetuals.gbm_model import GbmModelSet, gbm_calls
 from parlay_bot.perpetuals.historical_challengers import HistoricalChallengers
+from parlay_bot.perpetuals.liquidity_challenger_v1 import LiquidityChallengerV1
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS, asset_for_contract
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
@@ -42,6 +45,7 @@ from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
+from parlay_bot.research.archive_features import live_vector as archive_live_vector
 from parlay_bot.storage.database import database_clock
 
 _LOG = logging.getLogger(__name__)
@@ -74,6 +78,27 @@ ISSUE_FLOW_CHALLENGERS = False
 # serving was gated separately by promotion. Existing rows keep settling
 # either way.
 ISSUE_FLOW_V3_CHALLENGERS = False
+# archive_v1 shadow issuance (Phase 2, spec §2.8): the offline-trained
+# archive model issues shadow forecasts beside the incumbent once an
+# artifact is imported; it never serves until Route B promotes it.
+# Kill switch for issuance; serving is gated separately by promotion.
+# Existing rows keep settling either way.
+ISSUE_ARCHIVE_V1_CHALLENGERS = True
+# liq_v1 shadow issuance (Phase 3, spec §2.10.2): the live liquidity
+# challenger issues shadow forecasts from the buckets being recorded
+# right now; it never serves until Route B promotes it (and cannot
+# promote before ~21 days + 150 targets). Kill switch for issuance;
+# serving is gated separately by promotion. Existing rows keep settling
+# either way.
+ISSUE_LIQ_V1_CHALLENGERS = True
+# gbm_v1 shadow issuance (autonomous loop Phase 2, spec §3.4): the
+# offline-trained GBM model issues shadow forecasts beside the incumbent
+# once an artifact is imported; it never serves until Route B promotes
+# it. Kill switch for issuance; serving is gated separately by
+# promotion. Existing rows keep settling either way. It shares the
+# archive vector (same 32-feature contract, same restored bytes).
+ISSUE_GBM_V1_CHALLENGERS = True
+
 # The incumbent's fast settlement covers the last 2 days; a day of margin.
 SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
 
@@ -191,6 +216,32 @@ class ForwardAccuracyMonitor:
                 self.market.pooled_models = current
             except Exception:  # noqa: BLE001 - optional challenger only
                 _LOG.exception("RivaL pooled model registry unavailable")
+                return None
+        return current
+
+    def _archive_models(self):
+        """The bot-wide archive model set (None if its table is unavailable)."""
+        current = getattr(self.market, "archive_models", None)
+        if current is None:
+            try:
+                current = ArchiveModelSet(self.store)
+                current.initialize()
+                self.market.archive_models = current
+            except Exception:  # noqa: BLE001 - optional challenger only
+                _LOG.exception("RivaL archive model registry unavailable")
+                return None
+        return current
+
+    def _gbm_models(self):
+        """The bot-wide GBM model set (None if its table is unavailable)."""
+        current = getattr(self.market, "gbm_models", None)
+        if current is None:
+            try:
+                current = GbmModelSet(self.store)
+                current.initialize()
+                self.market.gbm_models = current
+            except Exception:  # noqa: BLE001 - optional challenger only
+                _LOG.exception("RivaL GBM model registry unavailable")
                 return None
         return current
 
@@ -776,6 +827,8 @@ class ForwardAccuracyMonitor:
         # Pooled multi-year challenger: needs each venue's BTC stream for its
         # BTC-lead inputs. Read each venue's BTC candles at most once.
         pooled_set = self._pooled_models()
+        archive_set = self._archive_models()
+        gbm_set = self._gbm_models()
         btc_streams = {v: (c, q) for v, c, q in eligible if asset_for_contract(c) == "BTC"}
         btc_cache: dict[str, list] = {}
         # Order-flow challenger inputs: one causal snapshot per asset per cycle.
@@ -789,6 +842,14 @@ class ForwardAccuracyMonitor:
         # read live at issuance (in-memory only, never assumed persisted).
         if ISSUE_FLOW_V3_CHALLENGERS:
             flows = (*flows, FlowChallengerV3(
+                self.store,
+                binance_context=getattr(self.market, "binance_context", None),
+            ))
+        # liq_v1 issues beside flow_v3 on its own flag and its own tables;
+        # flow_v3 code, rows, and weights are untouched. Binance bundles are
+        # read live at issuance (in-memory only, never assumed persisted).
+        if ISSUE_LIQ_V1_CHALLENGERS:
+            flows = (*flows, LiquidityChallengerV1(
                 self.store,
                 binance_context=getattr(self.market, "binance_context", None),
             ))
@@ -875,6 +936,46 @@ class ForwardAccuracyMonitor:
                     except Exception:  # noqa: BLE001 - optional challenger only
                         _LOG.exception("RivaL pooled model inputs unavailable")
                 self._lap("pooled", mark)
+                # Archive-serving model (Phase 2, spec §2.8) and GBM
+                # challenger (autonomous loop Phase 2, spec §3.4): one
+                # 32-feature vector per stream, shared by both families'
+                # three horizons (the artifact differs per horizon; the
+                # features do not). The Binance bundle is in-memory only;
+                # without it the premium / funding / tape groups flag 0 and
+                # the artifact still issues from its candle groups (Track C
+                # context-absent gate). Fewer than 420 contiguous bars means
+                # no vector that cycle. Each family issues under its own
+                # kill switch below.
+                archive_vector = None
+                if ((ISSUE_ARCHIVE_V1_CHALLENGERS or ISSUE_GBM_V1_CHALLENGERS)
+                        and (archive_set is not None or gbm_set is not None)):
+                    mark = self._mark()
+                    try:
+                        coin = asset_for_contract(contract)
+                        btc_rows = None
+                        if coin is not None and coin != "BTC":
+                            source = btc_streams.get(venue)
+                            if source is not None:
+                                if venue not in btc_cache:
+                                    btc_cache[venue] = persisted_candles(
+                                        self.market.recent_candles(
+                                            venue=venue, contract=source[0],
+                                            quote=source[1],
+                                            interval_minutes=5, count=30,
+                                            as_of=stamp,
+                                        ))
+                                btc_rows = btc_cache[venue]
+                        context = getattr(self.market, "binance_context", None)
+                        bundle = (context.bundle(coin)
+                                  if context is not None and coin is not None
+                                  else None)
+                        archive_vector = archive_live_vector(
+                            candles, asset=coin, btc_candles=btc_rows,
+                            context=bundle,
+                        ) if coin is not None else None
+                    except Exception:  # noqa: BLE001 - optional challenger only
+                        _LOG.exception("RivaL archive model inputs unavailable")
+                    self._lap("challengers", mark)
                 # Shared by this stream's three horizons AND carried to the
                 # next cycle: only the newest window is computed again.
                 stream_key = (venue, contract, quote)
@@ -943,6 +1044,24 @@ class ForwardAccuracyMonitor:
                     except Exception:  # noqa: BLE001 - optional research inputs
                         _LOG.exception("RivaL boosted artifact lookup unavailable")
                     self._lap("boosters", mark)
+                    # Archive shadow calls are CPU work on inputs already
+                    # fixed at issuance: compute before the transaction
+                    # opens, like boosters. Empty when no artifact is
+                    # imported, the vector is unavailable, or every feature
+                    # group flagged 0 for this stream. Each family issues
+                    # under its own kill switch; the vector is shared.
+                    archive_items = ()
+                    if archive_vector is not None and ISSUE_ARCHIVE_V1_CHALLENGERS:
+                        archive_items = archive_calls(
+                            archive_set, asset=asset, horizon=horizon,
+                            vector=archive_vector, now=stamp,
+                        )
+                    gbm_items = ()
+                    if archive_vector is not None and ISSUE_GBM_V1_CHALLENGERS:
+                        gbm_items = gbm_calls(
+                            gbm_set, asset=asset, horizon=horizon,
+                            vector=archive_vector, now=stamp,
+                        )
                     mark = self._mark()
                     # Store regime and model fingerprints BEFORE the target
                     # closes, in the same DB transaction as the forecast.
@@ -1057,7 +1176,7 @@ class ForwardAccuracyMonitor:
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
-                                    challengers=flow_calls,
+                                    challengers=(*flow_calls, *archive_items, *gbm_items),
                                     prepared=shadow_prepared,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger

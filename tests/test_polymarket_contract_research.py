@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -289,6 +290,48 @@ async def test_background_polymarket_board_never_uses_free_ai_budget(hot):
     assert call is not None
     reviewer.review_contract.assert_awaited_once()
     await service.aclose()
+
+
+@pytest.mark.asyncio
+async def test_study_wait_timeout_does_not_release_a_running_worker(tmp_path, monkeypatch):
+    store = SQLiteHotStore(tmp_path / "study-timeout.sqlite")
+    service = PolymarketResearch(store)
+    loop = asyncio.get_running_loop()
+    both_running = asyncio.Event()
+    release = threading.Event()
+    calls = []
+
+    def study(current):
+        calls.append(current.slug)
+        if len(calls) == 2:
+            loop.call_soon_threadsafe(both_running.set)
+        assert release.wait(timeout=5)
+
+    monkeypatch.setattr(service, "study", study)
+    current = notice()
+    second = replace(current, slug="eth-test-contract", asset="ETH")
+    third = replace(current, slug="sol-test-contract", asset="SOL")
+    try:
+        first_task = service.schedule_study(current, limit=2, cache_call=False)
+        second_task = service.schedule_study(second, limit=2, cache_call=False)
+        await asyncio.wait_for(both_running.wait(), timeout=2)
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(first_task), timeout=0)
+
+        assert not first_task.done()
+        assert service.schedule_study(current) is first_task
+        assert service.schedule_study(third, limit=2, cache_call=False) is None
+        assert sorted(calls) == sorted([current.slug, second.slug])
+
+        release.set()
+        assert await asyncio.gather(first_task, second_task) == [True, True]
+        assert await service.schedule_study(third, limit=2, cache_call=False) is True
+        assert calls.count(third.slug) == 1
+    finally:
+        release.set()
+        await service.aclose()
+        store.close()
 
 
 @pytest.mark.asyncio

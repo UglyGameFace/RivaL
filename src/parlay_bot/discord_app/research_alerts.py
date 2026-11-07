@@ -10,6 +10,9 @@ import logging
 import math
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals.promotion_receipts import initialize as _init_receipts
+from parlay_bot.perpetuals.research_loop import initialize as _init_experiments
+
 _LOG = logging.getLogger(__name__)
 
 FORECASTS_STALE_AFTER = timedelta(minutes=20)  # cycles run every 5 minutes
@@ -53,6 +56,16 @@ def research_alerts(store, *, now: datetime | None = None,
     """
     stamp = (now or datetime.now(UTC)).astimezone(UTC)
     try:
+        # The receipts and research-memory tables are created lazily (only
+        # on a first promotion / first experiment), but checks 5 and 6 read
+        # them on every render. Create them here, idempotently
+        # (CREATE TABLE IF NOT EXISTS), so a render before the first
+        # promotion does not warn about unreadable tables — and, on
+        # Postgres, does not abort the shared transaction for check 6.
+        # Inside this try on purpose: a pool checkout failure here is the
+        # same "database:busy" the shared connection reports below.
+        _init_receipts(store)
+        _init_experiments(store)
         with store.connect() as conn:
             return _checks(conn, stamp, intelligence_enabled)
     except Exception as exc:  # noqa: BLE001 - pool checkout, not a missing table

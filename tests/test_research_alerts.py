@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.discord_app.research_alerts import research_alerts
@@ -33,6 +34,47 @@ def _store(tmp_path, *, forecast_age, trained_age, review_age, pooled_scores):
                  "okx", "abc" * 21 + "d", (NOW - timedelta(minutes=10)).isoformat(),
                  (NOW - timedelta(minutes=5 * i)).isoformat()))
     return store
+
+
+def test_missing_receipt_and_experiment_tables_raise_no_unreadable_warnings(
+        tmp_path, caplog):
+    """The three lazily-created tables must not warn on every status render.
+
+    rival_family_promotion_receipts / rival_research_experiments /
+    rival_research_findings are created only on a first promotion or first
+    experiment, but research_alerts() reads them on every render. _store()
+    builds every legacy table the checks read and none of the three, so on
+    the base tree this logs "promotion receipts unreadable" and "research
+    experiments unreadable" on every call; with the fix it logs neither.
+    """
+    store = _store(tmp_path, forecast_age=timedelta(minutes=3),
+                   trained_age=timedelta(days=2), review_age=timedelta(minutes=10),
+                   pooled_scores=[(.24, .25)] * 400)
+    try:
+        with caplog.at_level(logging.WARNING,
+                             logger="parlay_bot.discord_app.research_alerts"):
+            assert research_alerts(store, now=NOW) == []
+        unreadable = [r for r in caplog.records if "unreadable" in r.getMessage()]
+        assert unreadable == []
+    finally:
+        store.close()
+
+
+def test_research_alerts_creates_receipt_and_experiment_tables(tmp_path):
+    """research_alerts() creates the three lazily-created tables it reads."""
+    store = _store(tmp_path, forecast_age=timedelta(minutes=3),
+                   trained_age=timedelta(days=2), review_age=timedelta(minutes=10),
+                   pooled_scores=[(.24, .25)] * 400)
+    try:
+        research_alerts(store, now=NOW)
+        with store.connect() as conn:
+            names = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        assert {"rival_family_promotion_receipts",
+                "rival_research_experiments",
+                "rival_research_findings"} <= names
+    finally:
+        store.close()
 
 
 def test_healthy_prediction_pipeline_raises_no_alerts(tmp_path):
@@ -108,7 +150,12 @@ def test_checks_share_a_single_connection(tmp_path):
     store.connect = counting
     try:
         assert research_alerts(store, now=NOW) == []
-        assert len(opened) == 1
+        # 3 checkouts, not 1 per check: 2 are the idempotent CREATE TABLE
+        # IF NOT EXISTS initializations (promotion receipts, research
+        # experiments) and 1 is the single shared connection all six
+        # checks run on. The regression this guards — one checkout per
+        # check, which starved the card's 15 s limit — would be 6+.
+        assert len(opened) == 3
     finally:
         store.close()
 

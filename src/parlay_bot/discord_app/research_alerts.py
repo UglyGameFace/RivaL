@@ -79,6 +79,27 @@ def research_alerts(store, *, now: datetime | None = None,
 def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str, str]]:
     alerts: list[tuple[str, str]] = []
 
+    # Check 8 reads the promotion evaluation table and the blocked-run
+    # receipts table on every render. Create both on this same shared
+    # connection (idempotent CREATE TABLE IF NOT EXISTS, plain execute so
+    # name-keyed row wrappers work) so a render before the first
+    # evaluation logs no "unreadable" warning — and the card still checks
+    # out exactly one shared connection. A failure here falls through to
+    # check 8's own unreadable alert instead of failing the whole card.
+    try:
+        from parlay_bot.perpetuals.family_governance import (
+            FAMILY_PROMOTION_SCHEMA,
+        )
+        from parlay_bot.perpetuals.research_hypotheses import (
+            BLOCKED_REPORTS_SCHEMA,
+        )
+
+        conn.execute(FAMILY_PROMOTION_SCHEMA)
+        conn.execute(BLOCKED_REPORTS_SCHEMA)
+    except Exception as exc:  # noqa: BLE001
+        _LOG.warning("Research alert: check-8 tables unreadable (%s)",
+                     type(exc).__name__)
+
     def scalar(sql: str, params=()):
         row = conn.execute(sql, params).fetchone()
         # PostgreSQL rows are keyed by column name (row[0] raises KeyError,
@@ -183,18 +204,17 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
             alerts.append(("intelligence:unreadable",
                            "⚠️ Couldn't read RivaL Intelligence's reviews; will try again"))
 
-    # 5. flow_v3 / liq_v1 promotion receipts (batch 2, spec §2.7; Phase 3
-    # adds liq_v1): the first promoted_paper write and first serve for a
+    # 5. flow_v3 / liq_v1 / archive_v1 promotion receipts (batch 2, spec §2.7;
+    # Phase 3 adds liq_v1; autonomous-loop D18 adds archive_v1, closing the
+    # Phase 2 carryover): the first promoted_paper write and first serve for a
     # family + stream are Discord receipts, delivered through this card (it
     # posts to rival_status_channel_id when its alert set changes). A
     # missing receipts table means no promotion happened, not an alert.
-    # (archive_v1 receipts are recorded but not surfaced here yet -- a
-    # Phase 2 carryover, not changed by this phase.)
     try:
         rows = conn.execute(
             """SELECT family,venue,contract,quote,horizon_minutes,kind,receipt_text
                FROM rival_family_promotion_receipts
-               WHERE family IN ('flow_v3','liq_v1') AND recorded_at>=?
+               WHERE family IN ('flow_v3','liq_v1','archive_v1') AND recorded_at>=?
                ORDER BY recorded_at""",
             ((stamp - timedelta(hours=48)).isoformat(),),
         ).fetchall()
@@ -269,5 +289,79 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
                             f"{closed['failed']} failed")))
     except Exception as exc:  # noqa: BLE001 - counts must never break the card
         _LOG.warning("Research alert: research loop counts unreadable (%s)",
+                     type(exc).__name__)
+
+    # 8. Per-family shadow progress + research blockers (autonomous loop
+    # D18): days/targets against the real Route B thresholds, read from
+    # the latest rival_family_promotion evaluation per (family, asset,
+    # horizon); and the latest blocked-run receipt per venue. Qualified
+    # families are not shown here — their promotion receipt (check 5)
+    # already announces them. Progress keys carry no counters, so the
+    # card re-posts only when the set of families being tracked changes.
+    try:
+        from parlay_bot.perpetuals.family_governance import MIN_DAYS, MIN_WINDOWS
+    except Exception:  # noqa: BLE001 - thresholds are stable; fall back
+        MIN_DAYS, MIN_WINDOWS = 21, 150
+    try:
+        rows = conn.execute(
+            """SELECT asset, horizon_minutes, evidence_json
+               FROM rival_family_promotion WHERE evaluated_at>=?
+               ORDER BY evaluated_at DESC""",
+            ((stamp - timedelta(hours=48)).isoformat(),),
+        ).fetchall()
+        best: dict[tuple[str, str, int], tuple[int, int]] = {}
+        for row in rows:
+            try:
+                families = json.loads(row["evidence_json"] or "{}")
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(families, dict):
+                continue
+            for family, info in families.items():
+                if not isinstance(info, dict) or info.get("qualified"):
+                    continue
+                targets, days = info.get("targets"), info.get("days")
+                if not isinstance(targets, int) or not isinstance(days, int):
+                    continue
+                key = (str(family), str(row["asset"]),
+                       int(row["horizon_minutes"]))
+                if key not in best:
+                    best[key] = (days, targets)
+        for (family, asset, horizon), (days, targets) in sorted(best.items())[:12]:
+            alerts.append(
+                (f"shadow-progress:{family}:{asset}:{horizon}m",
+                 (f"📊 {family} {asset} {horizon}m: {days}/{MIN_DAYS} days · "
+                  f"{targets}/{MIN_WINDOWS} windows")))
+    except Exception as exc:  # noqa: BLE001 - progress must never break the card
+        _LOG.warning("Research alert: shadow progress unreadable (%s)",
+                     type(exc).__name__)
+    try:
+        rows = conn.execute(
+            """SELECT venue, missing_months_json, recorded_at
+               FROM rival_research_blocked_reports WHERE recorded_at>=?
+               ORDER BY recorded_at DESC""",
+            ((stamp - timedelta(days=7)).isoformat(),),
+        ).fetchall()
+        latest: dict[str, dict] = {}
+        for row in rows:
+            if str(row["venue"]) not in latest:
+                latest[str(row["venue"])] = {
+                    "missing_months_json": row["missing_months_json"],
+                }
+        for venue, blocked in sorted(latest.items()):
+            try:
+                missing = json.loads(blocked["missing_months_json"] or "[]")
+            except (ValueError, TypeError):
+                missing = []
+            missing = [str(m) for m in missing if isinstance(m, str)]
+            shown = ", ".join(missing[:3])
+            if len(missing) > 3:
+                shown += ", …"
+            alerts.append(
+                (f"research-blocked:{venue}",
+                 (f"⛔ Research blocked at {venue}: {len(missing)} month(s) "
+                  f"missing ({shown})")))
+    except Exception as exc:  # noqa: BLE001 - blockers must never break the card
+        _LOG.warning("Research alert: research blockers unreadable (%s)",
                      type(exc).__name__)
     return alerts

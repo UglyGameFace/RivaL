@@ -17,6 +17,7 @@ from parlay_bot.perpetuals.research_hypotheses import (
     ASSETS,
     HYPOTHESES,
     MODEL,
+    PROPOSAL_FRESHNESS_DAYS,
     valid_feature_indices,
 )
 from parlay_bot.research.candidate_registry import verified_candidate
@@ -71,7 +72,8 @@ def verify_proposals(receipt: object, *, venue: str, now=None) -> list[dict]:
             stamp = datetime.fromisoformat(row["slot_utc"]).astimezone(UTC)
         except (TypeError, ValueError, KeyError) as exc:
             raise ValueError("invalid AI proposal timestamp") from exc
-        if not timedelta(0) <= clock.astimezone(UTC) - stamp <= timedelta(days=7):
+        if not timedelta(0) <= clock.astimezone(UTC) - stamp <= timedelta(
+                days=PROPOSAL_FRESHNESS_DAYS):
             raise ValueError("stale or future AI proposal")
         identity = {
             "asset": asset, "slot_utc": row["slot_utc"],

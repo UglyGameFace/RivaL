@@ -421,8 +421,12 @@ class EventIntelligence:
                         code = f"{code}:{exc.response.status_code}"
                     self._status(source, stamp, "unavailable")
                     summary["source_failures"].append({"source": source, "error": code})
-                    _LOG.warning("RivaL official event feed unavailable source=%s error=%s",
-                                 source, code)
+                    _LOG.warning(
+                        "RivaL official event feed unavailable source=%s error=%s",
+                        source,
+                        code,
+                        extra={"problem_group": source},
+                    )
         finally:
             if owner:
                 http.close()

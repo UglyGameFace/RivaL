@@ -51,6 +51,12 @@ class StatusFacts:
     problem_totals: dict = field(default_factory=dict)
     # Prediction health: [(stable key, text)]; None = not checked.
     research: list | None = None
+    # Whether the Intelligence review check (check 4 in research_alerts)
+    # actually ran. False when the Intelligence background task was never
+    # created (background opt-in off): an empty research list then proves
+    # only the other three checks, and the card must not claim a review.
+    # Default True keeps every existing constructor meaning "check 4 ran".
+    intelligence_checked: bool = True
 
 
 def _ago(when: datetime | None, now: datetime) -> str:
@@ -254,23 +260,34 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
         embed.add_field(name="Live order books", value=_clip(stream_lines), inline=False)
 
     if facts.research is not None:
-        embed.add_field(
-            name="Predictions",
+        if facts.research:
+            predictions = _clip([text for _, text in facts.research])
+        elif facts.intelligence_checked:
             # _clip() of an empty list returns "—", which hid this message.
             # State only what the four research_alerts checks actually prove:
             # fresh forecasts, a gated 6-year model covering the last finished
             # month, no in-use version significantly worse than a simple guess,
             # and fresh Intelligence reviews. Anything else is checked
             # separately on this card.
-            value=(_clip([text for _, text in facts.research]) if facts.research
-                   else "✅ These four checks passed: new predictions arrived in the "
-                        "last 20 min; the 6-year model passed its gates and covers "
-                        "the last finished month; no in-use 6-year version was "
-                        "significantly worse than a simple guess over the last 3 days "
-                        "(versions with fewer than 300 graded results get no verdict); "
-                        "and RivaL Intelligence reviewed within the last 2 hours. "
-                        "Other parts of the system are checked separately on this card."),
-            inline=False)
+            predictions = ("✅ These four checks passed: new predictions arrived in the "
+                           "last 20 min; the 6-year model passed its gates and covers "
+                           "the last finished month; no in-use 6-year version was "
+                           "significantly worse than a simple guess over the last 3 days "
+                           "(versions with fewer than 300 graded results get no verdict); "
+                           "and RivaL Intelligence reviewed within the last 2 hours. "
+                           "Other parts of the system are checked separately on this card.")
+        else:
+            # Check 4 never ran (Intelligence task absent), so no review was
+            # verified: claim only the three checks that did pass, and say
+            # the reviews are off instead of inventing a review time.
+            predictions = ("✅ These three checks passed: new predictions arrived in the "
+                           "last 20 min; the 6-year model passed its gates and covers "
+                           "the last finished month; and no in-use 6-year version was "
+                           "significantly worse than a simple guess over the last 3 days "
+                           "(versions with fewer than 300 graded results get no verdict). "
+                           "RivaL Intelligence reviews off (background opt-in off). "
+                           "Other parts of the system are checked separately on this card.")
+        embed.add_field(name="Predictions", value=predictions, inline=False)
 
     if facts.memory:
         memory = facts.memory

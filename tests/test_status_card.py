@@ -274,3 +274,79 @@ def test_empty_prediction_health_states_only_what_the_checks_prove():
     assert "last finished month" in field.value
     assert "fewer than 300 graded results get no verdict" in field.value
     assert "last 2 hours" in field.value
+
+
+def test_predictions_field_does_not_claim_a_review_that_never_ran(tmp_path):
+    """Check 4 skipped (Intelligence task absent / background opt-in off):
+    the card must not claim a review happened within the last 2 hours."""
+    from parlay_bot.discord_app.research_alerts import research_alerts
+    from parlay_bot.storage.hot import SQLiteHotStore
+
+    store = SQLiteHotStore(tmp_path / "card_intelligence_off.sqlite")
+    try:
+        with store.connect() as conn:
+            conn.execute("CREATE TABLE perp_forward_audit "
+                         "(asset TEXT, horizon_minutes INTEGER, issued_at TEXT)")
+            conn.execute("INSERT INTO perp_forward_audit VALUES ('BTC', 5, ?)",
+                         ((NOW - timedelta(minutes=3)).isoformat(),))
+            conn.execute("CREATE TABLE rival_pooled_models "
+                         "(trained_through TEXT, gates_passed INTEGER)")
+            conn.execute("INSERT INTO rival_pooled_models VALUES (?,1)",
+                         (str(NOW - timedelta(days=2)).replace("T", " "),))
+            # No rival_intelligence_calls rows at all: no review ever happened.
+            conn.execute("CREATE TABLE rival_intelligence_calls (issued_at TEXT)")
+            conn.execute("""CREATE TABLE rival_model_shadow_forecasts (
+                            family TEXT, horizon_minutes INTEGER, settled_at TEXT,
+                            model_brier REAL, baseline_brier REAL, venue TEXT,
+                            training_sha256 TEXT, issued_at TEXT,
+                            target_opened_at TEXT)""")
+        # The task was never created, so check 4 never ran: no alert either way.
+        assert research_alerts(store, now=NOW, intelligence_enabled=False) == []
+        embed, _, _ = build_embed(StatusFacts(
+            now=NOW, boot_at=NOW, ready=True, heartbeat=None, workers=[],
+            incidents=[], feeds=None, streams=None, liquidity_last_bucket=None,
+            memory=None, research=[], intelligence_checked=False))
+        field = next(f for f in embed.fields if f.name == "Predictions")
+        assert "reviewed within the last 2 hours" not in field.value
+        assert "RivaL Intelligence reviews off (background opt-in off)" in field.value
+        # The three checks that did run are still reported honestly.
+        assert "These three checks passed" in field.value
+        assert "last 20 min" in field.value
+    finally:
+        store.close()
+
+
+def test_predictions_field_claims_a_review_only_after_a_real_recent_one(tmp_path):
+    """Check 4 ran and saw a recent rival_intelligence_calls row: the claim
+    is then a verified fact, not an assumption."""
+    from parlay_bot.discord_app.research_alerts import research_alerts
+    from parlay_bot.storage.hot import SQLiteHotStore
+
+    store = SQLiteHotStore(tmp_path / "card_intelligence_on.sqlite")
+    try:
+        with store.connect() as conn:
+            conn.execute("CREATE TABLE perp_forward_audit "
+                         "(asset TEXT, horizon_minutes INTEGER, issued_at TEXT)")
+            conn.execute("INSERT INTO perp_forward_audit VALUES ('BTC', 5, ?)",
+                         ((NOW - timedelta(minutes=3)).isoformat(),))
+            conn.execute("CREATE TABLE rival_pooled_models "
+                         "(trained_through TEXT, gates_passed INTEGER)")
+            conn.execute("INSERT INTO rival_pooled_models VALUES (?,1)",
+                         (str(NOW - timedelta(days=2)).replace("T", " "),))
+            conn.execute("CREATE TABLE rival_intelligence_calls (issued_at TEXT)")
+            conn.execute("INSERT INTO rival_intelligence_calls VALUES (?)",
+                         ((NOW - timedelta(minutes=10)).isoformat(),))
+            conn.execute("""CREATE TABLE rival_model_shadow_forecasts (
+                            family TEXT, horizon_minutes INTEGER, settled_at TEXT,
+                            model_brier REAL, baseline_brier REAL, venue TEXT,
+                            training_sha256 TEXT, issued_at TEXT,
+                            target_opened_at TEXT)""")
+        assert research_alerts(store, now=NOW, intelligence_enabled=True) == []
+        embed, _, _ = build_embed(StatusFacts(
+            now=NOW, boot_at=NOW, ready=True, heartbeat=None, workers=[],
+            incidents=[], feeds=None, streams=None, liquidity_last_bucket=None,
+            memory=None, research=[], intelligence_checked=True))
+        field = next(f for f in embed.fields if f.name == "Predictions")
+        assert "RivaL Intelligence reviewed within the last 2 hours" in field.value
+    finally:
+        store.close()

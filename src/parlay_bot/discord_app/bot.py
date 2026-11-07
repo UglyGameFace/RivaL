@@ -1687,11 +1687,15 @@ class RivalDiscordClient(discord.Client):
                 "consecutive_problems": self.heartbeat.consecutive_problems,
             }
         research = None
+        # The Intelligence review check runs only when its background task
+        # exists; the card records the same fact so an empty alert list is
+        # never read as a review that never happened.
+        intelligence_enabled = getattr(self, "_intelligence_task", None) is not None
         try:
             from parlay_bot.discord_app.research_alerts import research_alerts
             research = await asyncio.wait_for(asyncio.to_thread(
                 research_alerts, self.store,
-                intelligence_enabled=getattr(self, "_intelligence_task", None) is not None,
+                intelligence_enabled=intelligence_enabled,
             ), timeout=15)
         except Exception:  # noqa: BLE001
             _LOG.warning("RivaL status card could not check prediction health")
@@ -1717,6 +1721,7 @@ class RivalDiscordClient(discord.Client):
             problems=problems,
             problem_totals=problem_totals,
             research=research,
+            intelligence_checked=intelligence_enabled,
         )
 
     async def _context_loop(self) -> None:

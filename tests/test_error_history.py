@@ -110,3 +110,58 @@ def test_slow_database_owners_are_counted_separately(tmp_path):
     assert counts == {"perpetual_candles._next_batch": 2,
                       "forward_audit.active_learning_evidence": 3,
                       "plain warning": 1}
+
+
+def test_event_feed_outages_are_grouped_per_source_not_merged(tmp_path):
+    """One event-feed format string must not merge every source into one count.
+
+    GDELT can be attempted at most 48x/day, so a 58x count on the card
+    necessarily included other sources; each source needs its own group so
+    the card attributes the count to the source that actually failed.
+    """
+    import httpx
+
+    from parlay_bot.perpetuals.event_intelligence import SOURCES, EventIntelligence
+
+    store = SQLiteHotStore(tmp_path / "event_sources.sqlite")
+    problems = RecentProblems(clock=lambda: NOW)
+    log = logging.getLogger("parlay_bot.perpetuals.event_intelligence")
+    log.addHandler(problems)
+    try:
+
+        def handler(request):
+            if request.url.host == "api.gdeltproject.org":
+                raise httpx.ConnectTimeout("timed out", request=request)
+            if str(request.url) == SOURCES["sec_releases"][0]:
+                return httpx.Response(503)
+            return httpx.Response(
+                200,
+                content=b"<rss version='2.0'><channel></channel></rss>"
+                if "xml" in str(request.url) or "rss" in str(request.url)
+                else b"BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n",
+            )
+
+        intel = EventIntelligence(store)
+        with httpx.Client(transport=httpx.MockTransport(handler)) as http:
+            report = intel.refresh(now=NOW, client=http)
+    finally:
+        log.removeHandler(problems)
+        store.close()
+    assert {f["source"] for f in report["source_failures"]} == {"global_news_index", "sec_releases"}
+    groups = problems.recent()
+    assert len(groups) == 2
+    assert sorted(g.count for g in groups) == [1, 1]
+    assert {g.text.split("source=")[1].split()[0] for g in groups} == {
+        "global_news_index",
+        "sec_releases",
+    }
+    # The card reads the durable history: the split must survive a restart.
+    store = SQLiteHotStore(tmp_path / "event_sources.sqlite")
+    try:
+        assert problems.flush(store) == 2
+        stored_groups, totals = problems.stored(store)
+    finally:
+        store.close()
+    assert totals == {"ERROR": 0, "WARNING": 2}
+    assert len(stored_groups) == 2
+    assert sorted(g.count for g in stored_groups) == [1, 1]

@@ -135,3 +135,27 @@ def test_unlimited_cgroup_does_not_confuse_machine_usage_with_app_rss(monkeypatc
     assert state.cgroup_bytes is None
     assert state.cgroup_peak_bytes is None
     assert not state.pressure
+
+
+def test_vm_data_heap_is_reported_beside_rss(monkeypatch):
+    """The receipt must say whether a step was heap or mmap/file-backed."""
+    fixtures = {
+        "/sys/fs/cgroup/memory.max": str(512 * host_memory.MIB),
+        "/proc/self/status": "Name:\tpython\nVmRSS:\t440000 kB\nVmData:\t380000 kB\n",
+    }
+    monkeypatch.setattr(host_memory, "_read_bytes", fixtures.get)
+    state = host_memory.snapshot()
+    assert state.vm_data_bytes == 380000 * 1024
+    assert "heap_mb=371" in state.detail
+    assert "rss_mb=429" in state.detail
+
+
+def test_missing_vm_data_reports_heap_unavailable(monkeypatch):
+    fixtures = {
+        "/sys/fs/cgroup/memory.max": str(512 * host_memory.MIB),
+        "/proc/self/status": "Name:\tpython\nVmRSS:\t440000 kB\n",
+    }
+    monkeypatch.setattr(host_memory, "_read_bytes", fixtures.get)
+    state = host_memory.snapshot()
+    assert state.vm_data_bytes is None
+    assert "heap_mb=unavailable" in state.detail

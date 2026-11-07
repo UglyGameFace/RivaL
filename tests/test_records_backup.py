@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime
 
 import pytest
 
+from parlay_bot.perpetuals import host_memory
 from parlay_bot.perpetuals.records_backup import RecordsBackup, file_name
 from parlay_bot.storage.hot import SQLiteHotStore
 
@@ -24,6 +25,37 @@ class FakeDrive:
         with gzip.open(artifact.path, "rt") as handle:
             self.saved[batch_id] = [json.loads(line) for line in handle]
         return Stored(file_id=f"id-{len(self.saved)}")
+
+
+@pytest.fixture(autouse=True)
+def _no_memory_pressure(monkeypatch):
+    # run_once pauses under host memory pressure. Pin a calm host so these
+    # tests do not depend on the test runner's RSS/cgroup usage (in CI the
+    # earlier LightGBM-trained fixtures can push the runner past 83% of the
+    # 512 MB fallback limit).
+    calm = host_memory.HostMemory(rss_bytes=0, limit_bytes=512 * host_memory.MIB,
+                                  oom_kills=0)
+    monkeypatch.setattr(host_memory, "snapshot", lambda: calm)
+
+
+@pytest.mark.asyncio
+async def test_memory_pressure_pauses_the_backup(tmp_path, monkeypatch):
+    store = SQLiteHotStore(tmp_path / "busy.sqlite")
+    try:
+        with store.connect() as conn:
+            conn.execute("CREATE TABLE rival_intelligence_calls (asset TEXT, issued_at TEXT)")
+            conn.execute("INSERT INTO rival_intelligence_calls VALUES "
+                         "('BTC', '2026-11-02T10:00:00+00:00')")
+        tight = host_memory.HostMemory(rss_bytes=500 * host_memory.MIB,
+                                       limit_bytes=512 * host_memory.MIB, oom_kills=0)
+        monkeypatch.setattr(host_memory, "snapshot", lambda: tight)
+        drive = FakeDrive()
+        backup = RecordsBackup(store, drive, tmp_path / "work")
+        now = datetime(2026, 11, 3, 12, tzinfo=UTC)
+        assert await backup.run_once(now) == {"saved": 0, "rows": 0, "failed": 0}
+        assert drive.saved == {}
+    finally:
+        store.close()
 
 
 @pytest.mark.asyncio

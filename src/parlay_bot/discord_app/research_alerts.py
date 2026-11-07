@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import math
+import threading
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.promotion_receipts import initialize as _init_receipts
@@ -27,6 +28,8 @@ DECAY_MIN_GRADED = 300
 DECAY_SIGMAS = 2.0
 # A trained version counts as in use if it issued a forecast this recently.
 IN_USE_WITHIN = timedelta(minutes=30)
+# Check 3 re-aggregates its 3-day scores at most this often (live clock only).
+DECAY_RECHECK = timedelta(minutes=10)
 
 
 def _utc(value) -> datetime | None:
@@ -66,8 +69,11 @@ def research_alerts(store, *, now: datetime | None = None,
         # same "database:busy" the shared connection reports below.
         _init_receipts(store)
         _init_experiments(store)
+        # Only the live clock reuses the decay scores; an explicit `now`
+        # (tests, replays) always reads the table fresh.
+        cache = _decay_cache(store) if now is None else None
         with store.connect() as conn:
-            return _checks(conn, stamp, intelligence_enabled)
+            return _checks(conn, stamp, intelligence_enabled, cache)
     except Exception as exc:  # noqa: BLE001 - pool checkout, not a missing table
         _LOG.warning("Research alert: no database connection for health checks (%s)",
                      type(exc).__name__)
@@ -75,7 +81,63 @@ def research_alerts(store, *, now: datetime | None = None,
                  "⚠️ Couldn't check the predictions (database busy); will try again")]
 
 
-def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str, str]]:
+def _decay_rows(conn, stamp: datetime) -> list:
+    """Check 3's per-version 3-day scores of the six-year (pooled) models."""
+    return conn.execute(
+        """SELECT horizon_minutes, family, SUBSTR(training_sha256,1,12) AS model,
+                  COUNT(*) AS n, AVG(model_brier) AS m, AVG(baseline_brier) AS b,
+                  AVG((model_brier-baseline_brier)*(model_brier-baseline_brier)) AS d2,
+                  COUNT(DISTINCT target_opened_at) AS targets,
+                  MAX(issued_at) AS last_issued
+           FROM rival_model_shadow_forecasts
+           WHERE family LIKE 'pooled%' AND settled_at IS NOT NULL
+             AND model_brier IS NOT NULL AND baseline_brier IS NOT NULL
+             AND settled_at>=?
+           GROUP BY horizon_minutes, family, SUBSTR(training_sha256,1,12)""",
+        ((stamp - DECAY_WINDOW).isoformat(),),
+    ).fetchall()
+
+
+class _DecayCache:
+    """Check 3's grouped 3-day scores, reused for DECAY_RECHECK.
+
+    The aggregate reads every settled shadow row of the last 3 days. On
+    production it took 5-8 s and ran on every status-card render (559 slow
+    operations in 24 h on Nov 7), holding a pooled connection each time. A
+    3-day average barely moves in minutes; the in-use and noise filters are
+    still applied to the cached rows against the current clock.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._entry: tuple[datetime, list] | None = None
+
+    def get(self, stamp: datetime):
+        with self._lock:
+            entry = self._entry
+        if entry is not None and timedelta(0) <= stamp - entry[0] < DECAY_RECHECK:
+            return entry[1]
+        return None
+
+    def put(self, stamp: datetime, rows: list) -> None:
+        with self._lock:
+            self._entry = (stamp, rows)
+
+
+def _decay_cache(store) -> _DecayCache | None:
+    cache = getattr(store, "_research_decay_cache", None)
+    if isinstance(cache, _DecayCache):
+        return cache
+    cache = _DecayCache()
+    try:
+        store._research_decay_cache = cache
+    except AttributeError:  # a store that forbids attributes reads fresh every time
+        return None
+    return cache
+
+
+def _checks(conn, stamp: datetime, intelligence_enabled: bool,
+            decay_cache: _DecayCache | None = None) -> list[tuple[str, str]]:
     alerts: list[tuple[str, str]] = []
 
     def scalar(sql: str, params=()):
@@ -125,19 +187,11 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
     # already replaced by nightly retraining. A version with fewer than
     # DECAY_MIN_GRADED graded results gets no verdict yet.
     try:
-        rows = conn.execute(
-            """SELECT horizon_minutes, family, SUBSTR(training_sha256,1,12) AS model,
-                      COUNT(*) AS n, AVG(model_brier) AS m, AVG(baseline_brier) AS b,
-                      AVG((model_brier-baseline_brier)*(model_brier-baseline_brier)) AS d2,
-                      COUNT(DISTINCT target_opened_at) AS targets,
-                      MAX(issued_at) AS last_issued
-               FROM rival_model_shadow_forecasts
-               WHERE family LIKE 'pooled%' AND settled_at IS NOT NULL
-                 AND model_brier IS NOT NULL AND baseline_brier IS NOT NULL
-                 AND settled_at>=?
-               GROUP BY horizon_minutes, family, SUBSTR(training_sha256,1,12)""",
-            ((stamp - DECAY_WINDOW).isoformat(),),
-        ).fetchall()
+        rows = decay_cache.get(stamp) if decay_cache is not None else None
+        if rows is None:
+            rows = _decay_rows(conn, stamp)
+            if decay_cache is not None:
+                decay_cache.put(stamp, rows)
         worst: dict[int, tuple] = {}
         for row in rows:
             last = _utc(row["last_issued"])

@@ -60,7 +60,7 @@ class PolymarketResearch:
         self.ai = ai
         self.learner = PolymarketOutcomeLearner(store)
         self.oracle_challenger = PolymarketOracleChallenger(store)
-        self._learning_tasks: dict[str, asyncio.Task] = {}
+        self._learning_tasks: dict[str, asyncio.Task[bool]] = {}
         self._math_calls: dict[str, ContractCall] = {}
         self._initialized = False
         self._closed = False
@@ -126,6 +126,50 @@ class PolymarketResearch:
                     notice.asset, notice.horizon,
                 )
         return result
+
+    def schedule_study(self, notice, *, limit: int = 4,
+                       cache_call: bool = True) -> asyncio.Task[bool] | None:
+        """Share one worker per contract until its database work actually finishes."""
+        if self._closed:
+            return None
+        pending = self._learning_tasks.get(notice.slug)
+        if pending is not None:
+            return pending
+        if len(self._learning_tasks) >= limit:
+            return None
+
+        async def learn() -> bool:
+            try:
+                result = await asyncio.to_thread(self.study, notice)
+                if cache_call and result is not None and not self._closed:
+                    self._math_calls[notice.slug] = ContractCall(
+                        slug=notice.slug, asset=notice.asset, horizon=notice.horizon,
+                        issued_at=result["issued_at"], expires=notice.expires,
+                        direction=result["direction"], model=result["model"],
+                        thesis="First model forecast, frozen for this contract; trained on verified Polymarket outcomes.",
+                        risk=("Research only. A near-even model probability yields WAIT; "
+                              "calibrated accuracy and after-fee edge are unverified."),
+                        evidence_sha256=result["evidence_sha256"], input_up_ask=notice.up_ask,
+                        input_down_ask=notice.down_ask, kind="model",
+                        probability_up=result.get("probability_up"),
+                    )
+                return True
+            except Exception:  # noqa: BLE001 - learning failures never block live quotes
+                _LOG.exception("Polymarket contract learning unavailable asset=%s horizon=%s",
+                               notice.asset, notice.horizon)
+                return False
+
+        task = asyncio.create_task(learn(), name="rival-polymarket-outcome-learning")
+        self._learning_tasks[notice.slug] = task
+
+        def learned(finished):
+            if self._learning_tasks.get(notice.slug) is finished:
+                self._learning_tasks.pop(notice.slug, None)
+            if not finished.cancelled():
+                finished.exception()
+
+        task.add_done_callback(learned)
+        return task
 
     def _saved(self, slug: str) -> ContractCall | None:
         self.initialize()
@@ -211,33 +255,7 @@ class PolymarketResearch:
         ):
             self._status[notice.slug] = (now + timedelta(seconds=15), "Verified contract inputs are incomplete or stale.")
             return None
-        if notice.slug not in self._learning_tasks and len(self._learning_tasks) < 4:
-            async def learn():
-                try:
-                    await asyncio.to_thread(self.initialize)
-                    result = await asyncio.to_thread(self.study, notice)
-                    if result is not None and not self._closed:
-                        self._math_calls[notice.slug] = ContractCall(
-                            slug=notice.slug, asset=notice.asset, horizon=notice.horizon,
-                            issued_at=result["issued_at"], expires=notice.expires,
-                            direction=result["direction"], model=result["model"],
-                            thesis="First model forecast, frozen for this contract; trained on verified Polymarket outcomes.",
-                            risk=("Research only. A near-even model probability yields WAIT; "
-                                  "calibrated accuracy and after-fee edge are unverified."),
-                            evidence_sha256=result["evidence_sha256"], input_up_ask=notice.up_ask,
-                            input_down_ask=notice.down_ask, kind="model",
-                            probability_up=result.get("probability_up"),
-                        )
-                except Exception:  # noqa: BLE001 - learning failures never block live quotes
-                    _LOG.exception("Polymarket contract learning unavailable")
-            learning = asyncio.create_task(learn(), name="rival-polymarket-outcome-learning")
-            self._learning_tasks[notice.slug] = learning
-            def learned(task):
-                if self._learning_tasks.get(notice.slug) is task:
-                    self._learning_tasks.pop(notice.slug, None)
-                if not task.cancelled():
-                    task.exception()
-            learning.add_done_callback(learned)
+        self.schedule_study(notice)
         if not request_ai:
             # Ordinary board refreshes and silent training use zero LLM tokens.
             # Existing validated model research still runs above.

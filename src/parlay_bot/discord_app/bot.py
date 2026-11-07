@@ -2107,13 +2107,21 @@ class RivalDiscordClient(discord.Client):
                                 replace(notice, oracle_reference=reference)
                                 if reference is not None else notice
                             )
-                            await asyncio.wait_for(
-                                asyncio.to_thread(
-                                    self.polymarket_research.study,
-                                    enriched,
-                                ), timeout=8,
+                            task = self.polymarket_research.schedule_study(
+                                enriched, limit=2, cache_call=False,
                             )
-                            return True
+                            if task is None:
+                                return False
+                            # The wait budget must not cancel the task that owns
+                            # the still-running thread and its database slot.
+                            try:
+                                return await asyncio.wait_for(asyncio.shield(task), timeout=8)
+                            except TimeoutError:
+                                _LOG.warning(
+                                    "RivaL silent Polymarket study still running after 8s "
+                                    "asset=%s horizon=%s", notice.asset, notice.horizon,
+                                )
+                                return False
                         except Exception:  # noqa: BLE001 - isolate source
                             _LOG.exception(
                                 "RivaL silent Polymarket study failed asset=%s horizon=%s",

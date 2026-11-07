@@ -13,6 +13,7 @@ import math
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.discord_app.research_alerts import research_alerts
+from parlay_bot.perpetuals import forward_audit
 from parlay_bot.perpetuals.family_governance import BLOCKED_FAMILIES, FamilyPromotion
 from parlay_bot.perpetuals.flow_challenger_v3 import (
     FAMILY,
@@ -22,6 +23,12 @@ from parlay_bot.perpetuals.flow_challenger_v3 import (
     calibration_gate,
     fit_platt,
 )
+from parlay_bot.perpetuals.forward_audit import MODEL as FORWARD_MODEL
+from parlay_bot.perpetuals.forward_audit import (
+    ForwardAccuracyMonitor,
+)
+from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
 from parlay_bot.perpetuals.promotion_receipts import record_promotion_receipt
 from parlay_bot.storage.hot import SQLiteHotStore
 
@@ -325,6 +332,152 @@ def test_learn_refits_calibration_from_graded_history_only(tmp_path):
         # Flat 0.5 scores, balanced labels: ECE ~0, no confident bucket.
         assert status["status"] == "evaluated" and abs(status["ece"]) < 1e-3
         assert status["liquidation_coverage"] == "OKX-only"
+    finally:
+        store.close()
+
+
+def _seed_cycle_candles(market, *, now, bars=150):
+    """150 live 5m bars on hyperliquid/BTC, as the cycle diagnostics use."""
+    boundary = now.replace(minute=now.minute // 5 * 5, second=0, microsecond=0)
+    market.initialize()
+    with market.store.connect() as conn:
+        for i in range(bars):
+            opened = boundary - timedelta(minutes=5 * (bars - i))
+            closed = opened + timedelta(minutes=5, milliseconds=-1)
+            observed = closed + timedelta(milliseconds=1)
+            p = 100 + i / 15 + (i % 9) / 8
+            conn.execute(
+                """INSERT INTO perp_market_candles
+                   (venue,contract,quote,interval_minutes,opened_at,closed_at,
+                    first_observed_at,open_price,high_price,low_price,close_price,
+                    volume_base,trades)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "hyperliquid", "BTC", "USDC", 5,
+                    opened.isoformat(), closed.isoformat(), observed.isoformat(),
+                    p, p + 2, p - 2, p + 0.5, 10, 12,
+                ),
+            )
+
+
+def test_retirement_flag_stops_flow_v3_issuance_in_cycle(tmp_path, monkeypatch):
+    """Retired Nov 7, 2026: the cycle issues no new flow_v3 forecasts.
+
+    Control first: with the flag forced back on, the same cycle issues
+    flow_v3 forecasts (features rows + shadow rows). With the flag off —
+    its production value — the same cycle issues nothing new for flow_v3,
+    while the incumbent cycle still runs.
+    """
+    assert forward_audit.ISSUE_FLOW_V3_CHALLENGERS is False
+    now = datetime.now(UTC)
+    store = SQLiteHotStore(tmp_path / "retire.sqlite")
+    market = PerpetualMarketStore(store)
+    monitor = ForwardAccuracyMonitor(market)
+    try:
+        FlowChallengerV3(store).initialize()
+        _seed_cycle_candles(market, now=now)
+        with store.connect() as conn:
+            _bucket(conn, "hyperliquid", now - timedelta(minutes=10),
+                    now - timedelta(minutes=4), buy=9, sell=1)
+            _context(conn, now - timedelta(minutes=2), funding=0.0002, oi=1100.0)
+            _context(conn, now - timedelta(minutes=60), funding=0.0002, oi=1000.0)
+
+        def _flow3_counts():
+            with store.connect() as conn:
+                features = conn.execute(
+                    "SELECT COUNT(*) AS n FROM rival_flow3_features"
+                ).fetchone()["n"]
+                shadow = conn.execute(
+                    "SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts "
+                    "WHERE family='flow_v3'"
+                ).fetchone()["n"]
+            return features, shadow
+
+        monkeypatch.setattr(forward_audit, "ISSUE_FLOW_V3_CHALLENGERS", True)
+        monitor.run_once(now=now)
+        features_on, shadow_on = _flow3_counts()
+        assert features_on >= 1  # the control proves this cycle can issue flow_v3
+        assert shadow_on >= 1
+        monkeypatch.setattr(forward_audit, "ISSUE_FLOW_V3_CHALLENGERS", False)
+        monitor.run_once(now=now)
+        assert _flow3_counts() == (features_on, shadow_on)
+    finally:
+        store.close()
+
+
+def test_retired_flow_v3_rows_still_settle(tmp_path):
+    """Already-issued flow_v3 rows keep settling after retirement.
+
+    Settlement is flag-independent: ForwardAccuracyMonitor._settle grades
+    every pending perp_forward_audit row, and ShadowModelCompetition.settle
+    grades every shadow row from its verified incumbent outcome. Neither
+    path reads ISSUE_FLOW_V3_CHALLENGERS.
+    """
+    start = datetime(2026, 11, 4, 12, 0, tzinfo=UTC)
+    now = start + timedelta(hours=2)
+    target = start + timedelta(minutes=60)
+    ref = target - timedelta(minutes=5)
+    issued = target - timedelta(seconds=40)
+    store = SQLiteHotStore(tmp_path / "retire-settle.sqlite")
+    market = PerpetualMarketStore(store)
+    monitor = ForwardAccuracyMonitor(market)
+    try:
+        market.initialize()
+        monitor.initialize()
+        challenger = FlowChallengerV3(store)
+        challenger.initialize()
+        flow = (0.5,) + (0.0,) * 16 + (1.0, 0.0, 0.0, 0.0, 0.0)
+        with store.connect() as conn:
+            call = challenger.call(
+                conn, venue="hyperliquid", contract="BTC", quote="USDC",
+                asset="BTC", horizon=5, reference_opened_at=ref, issued_at=issued,
+                features=(0.1,) * 10, flow=flow)
+            assert call is not None and call["family"] == FAMILY
+            # The incumbent audit row this forecast is graded against.
+            conn.execute(
+                """INSERT INTO perp_forward_audit
+                   (venue,contract,quote,asset,horizon_minutes,model_version,
+                    reference_opened_at,reference_close,issued_at,target_opened_at,
+                    probability_up,baseline_up,training_evaluated)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("hyperliquid", "BTC", "USDC", "BTC", 5, FORWARD_MODEL,
+                 ref.isoformat(), 100.0, issued.isoformat(), target.isoformat(),
+                 0.7, 0.5, 50))
+            # Target candle closes UP from the reference.
+            closed = target + timedelta(minutes=5) - timedelta(milliseconds=1)
+            conn.execute(
+                """INSERT INTO perp_market_candles
+                   (venue,contract,quote,interval_minutes,opened_at,closed_at,
+                    first_observed_at,open_price,high_price,low_price,close_price,
+                    volume_base,trades) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("hyperliquid", "BTC", "USDC", 5, target.isoformat(),
+                 closed.isoformat(), (target + timedelta(minutes=6)).isoformat(),
+                 101.0, 102.0, 100.0, 101.0, 10, 20))
+            # The shadow-ledger row for the same forecast.
+            ShadowModelCompetition(store).initialize()
+            conn.execute(
+                """INSERT INTO rival_model_shadow_forecasts
+                   (venue,contract,quote,asset,horizon_minutes,family,
+                    reference_opened_at,issued_at,target_opened_at,
+                    probability_up,incumbent_up,baseline_up,
+                    training_count,training_sha256)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("hyperliquid", "BTC", "USDC", "BTC", 5, "flow_v3",
+                 ref.isoformat(), issued.isoformat(), target.isoformat(),
+                 0.7, 0.7, 0.5, 1, "a" * 64))
+        assert monitor._settle(now) >= 1
+        with store.connect() as conn:
+            row = conn.execute(
+                "SELECT settled_at, outcome_up FROM perp_forward_audit"
+            ).fetchone()
+        assert row["settled_at"] is not None and row["outcome_up"] == 1
+        assert ShadowModelCompetition(store).settle(now=now) >= 1
+        with store.connect() as conn:
+            shadow = conn.execute(
+                "SELECT settled_at, outcome_up FROM rival_model_shadow_forecasts "
+                "WHERE family='flow_v3'"
+            ).fetchone()
+        assert shadow["settled_at"] is not None and shadow["outcome_up"] == 1
     finally:
         store.close()
 

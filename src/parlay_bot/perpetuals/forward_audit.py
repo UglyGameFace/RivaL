@@ -68,10 +68,12 @@ MAX_PENDING_SETTLEMENTS = 120
 # Brier) and their ~78%-UP calls came true 33-44% of the time. A calibrated,
 # input-standardized successor would be a new family, not these.
 ISSUE_FLOW_CHALLENGERS = False
-# flow_v3 is the calibrated, input-standardized successor (batch 2): shadow
-# issuance only. Kill switch for its issuance + learning; serving is gated
-# separately by promotion. Existing rows keep settling either way.
-ISSUE_FLOW_V3_CHALLENGERS = True
+# flow_v3 is retired Nov 7, 2026: it lost its first 53 graded outcomes
+# on every stream and promotion stayed gated (same honest retirement as
+# v1/v2). Shadow issuance only. Kill switch for its issuance + learning;
+# serving was gated separately by promotion. Existing rows keep settling
+# either way.
+ISSUE_FLOW_V3_CHALLENGERS = False
 # The incumbent's fast settlement covers the last 2 days; a day of margin.
 SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
 

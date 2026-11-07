@@ -182,21 +182,23 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
             alerts.append(("intelligence:unreadable",
                            "⚠️ Couldn't read RivaL Intelligence's reviews; will try again"))
 
-    # 5. flow_v3 promotion receipts (batch 2, spec §2.7): the first
-    # promoted_paper write and first serve for a family + stream are
-    # Discord receipts, delivered through this card (it posts to
-    # rival_status_channel_id when its alert set changes). A missing
-    # receipts table means no promotion happened, not an alert.
+    # 5. flow_v3 / liq_v1 promotion receipts (batch 2, spec §2.7; Phase 3
+    # adds liq_v1): the first promoted_paper write and first serve for a
+    # family + stream are Discord receipts, delivered through this card (it
+    # posts to rival_status_channel_id when its alert set changes). A
+    # missing receipts table means no promotion happened, not an alert.
+    # (archive_v1 receipts are recorded but not surfaced here yet -- a
+    # Phase 2 carryover, not changed by this phase.)
     try:
         rows = conn.execute(
-            """SELECT venue,contract,quote,horizon_minutes,kind,receipt_text
+            """SELECT family,venue,contract,quote,horizon_minutes,kind,receipt_text
                FROM rival_family_promotion_receipts
-               WHERE family='flow_v3' AND recorded_at>=?
+               WHERE family IN ('flow_v3','liq_v1') AND recorded_at>=?
                ORDER BY recorded_at""",
             ((stamp - timedelta(hours=48)).isoformat(),),
         ).fetchall()
         for row in rows:
-            key = (f"flow-v3:{row['kind']}:{row['venue']}:"
+            key = (f"{row['family'].replace('_', '-')}:{row['kind']}:{row['venue']}:"
                    f"{row['contract']}:{row['horizon_minutes']}m")
             alerts.append((key, str(row["receipt_text"])))
     except Exception as exc:  # noqa: BLE001 - receipts must never break the card

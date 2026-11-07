@@ -292,6 +292,16 @@ class FamilyPromotion:
                     self.store, asset, horizon)
             except Exception:  # noqa: BLE001 - a missing state row records as no artifact
                 scored["archive_v1"]["artifact"] = None
+        if "liq_v1" in scored:
+            try:
+                from parlay_bot.perpetuals.liquidity_challenger_v1 import (
+                    LiquidityChallengerV1,
+                )
+                scored["liq_v1"]["artifact"] = (
+                    LiquidityChallengerV1.artifact_identity(
+                        self.store, asset, horizon))
+            except Exception:  # noqa: BLE001 - a missing state row records as no artifact
+                scored["liq_v1"]["artifact"] = None
         with self.store.connect() as conn:
             previous=conn.execute(
                 """SELECT selected_family,status FROM rival_family_promotion
@@ -355,6 +365,28 @@ class FamilyPromotion:
                     now=stamp)
             except Exception:  # noqa: BLE001 - a receipt must never block governance
                 _LOG.exception("RivaL archive_v1 promotion receipt unavailable")
+        # First promoted_paper write for liq_v1: same pattern, same
+        # dedupe (one receipt per family/scope/kind, ON CONFLICT DO NOTHING).
+        if selected == "liq_v1" and not (
+                previous and previous["status"] == "promoted_paper"
+                and previous["selected_family"] == "liq_v1"):
+            try:
+                from parlay_bot.perpetuals.liquidity_challenger_v1 import (
+                    LiquidityChallengerV1,
+                )
+                from parlay_bot.perpetuals.promotion_receipts import (
+                    record_promotion_receipt,
+                )
+                record_promotion_receipt(
+                    self.store, family="liq_v1", venue=venue, contract=contract,
+                    quote=quote, horizon=horizon, kind="promoted",
+                    evidence={**scored["liq_v1"],
+                              "evaluated_at": stamp.isoformat()},
+                    calibration=LiquidityChallengerV1.calibration_status(
+                        self.store, asset, horizon),
+                    now=stamp)
+            except Exception:  # noqa: BLE001 - a receipt must never block governance
+                _LOG.exception("RivaL liq_v1 promotion receipt unavailable")
         return {"status":status,"selected_family":selected,"families":scored,
                 "market":(venue,contract,quote,horizon),
                 "real_fills_verified":False}
@@ -444,6 +476,50 @@ class FamilyPromotion:
                 from parlay_bot.perpetuals.archive_model import artifact_identity
                 recorded = json.loads(row["evidence_json"])["archive_v1"]["artifact"]
                 current = artifact_identity(self.store, asset, horizon)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                return None
+            if not recorded or not current:
+                return None
+            try:
+                recorded_sha = str(recorded["weights_sha256"])
+                recorded_digest = str(recorded["feature_digest"])
+                recorded_through = utc(datetime.fromisoformat(
+                    str(recorded["trained_through"])))
+                recorded_count = int(recorded["graded_count"])
+                current_through = utc(datetime.fromisoformat(
+                    str(current["trained_through"])))
+                current_count = int(current["graded_count"])
+            except (ValueError, TypeError, KeyError):
+                return None
+            if (len(recorded_sha) != 64
+                    or recorded_digest != current["feature_digest"]
+                    or current_through < recorded_through
+                    or current_count < recorded_count):
+                return None
+            if (str(current["weights_sha256"]) != recorded_sha
+                    and not (current_count > recorded_count
+                             and current_through >= recorded_through)):
+                return None
+            return selected
+        if selected == "liq_v1":
+            # Same continuity check as flow_v3, on the liq_v1 artifact
+            # (spec §2.10.2, D13): the served family must be the
+            # continuation of the artifact that earned promotion -- same
+            # feature contract, training only moved forward, weights moved
+            # only by graded learning. Exact weights-SHA equality with
+            # promotion time would fail closed on every routine per-cycle
+            # online-learning step, so the check verifies continuity on
+            # all three recorded fields instead of a frozen weight vector.
+            # A refit/reset (digest change, cursor/count regression, or
+            # unexplained weight change) blocks serve until the family
+            # re-earns promotion.
+            try:
+                from parlay_bot.perpetuals.liquidity_challenger_v1 import (
+                    LiquidityChallengerV1,
+                )
+                recorded = json.loads(row["evidence_json"])["liq_v1"]["artifact"]
+                current = LiquidityChallengerV1.artifact_identity(
+                    self.store, asset, horizon)
             except (ValueError, TypeError, KeyError, AttributeError):
                 return None
             if not recorded or not current:

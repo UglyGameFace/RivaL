@@ -363,6 +363,21 @@ def otg_snapshot(watch: dict, *, market=None) -> dict:
             calibrated = (status or {}).get("status") == "evaluated"
         except Exception:  # noqa: BLE001 - a failed label check reads uncalibrated
             calibrated = False
+    if market is not None and str(watch.get("model_version")) == "liq_v1":
+        # Same calibrated label as flow_v3 (spec §2.10.2, D11 rule: the OTG
+        # call only, no live lean at launch -- live_lean already returns
+        # None for any CHALLENGER_PREFIXES family, which includes liq_).
+        try:
+            from parlay_bot.perpetuals.liquidity_challenger_v1 import (
+                LiquidityChallengerV1,
+            )
+            status = LiquidityChallengerV1.calibration_status(
+                market.store, str(watch["asset"]),
+                int(watch["horizon_minutes"]),
+            )
+            calibrated = (status or {}).get("status") == "evaluated"
+        except Exception:  # noqa: BLE001 - a failed label check reads uncalibrated
+            calibrated = False
     return {
         "asset": str(watch["asset"]),
         "venue": str(watch["venue"]),

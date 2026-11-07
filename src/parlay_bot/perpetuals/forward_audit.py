@@ -26,6 +26,7 @@ from parlay_bot.perpetuals.flow_challenger import FlowChallenger, FlowChallenger
 from parlay_bot.perpetuals.flow_challenger_v3 import FlowChallengerV3
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.historical_challengers import HistoricalChallengers
+from parlay_bot.perpetuals.liquidity_challenger_v1 import LiquidityChallengerV1
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.markets import ASSETS, asset_for_contract
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
@@ -82,6 +83,13 @@ ISSUE_FLOW_V3_CHALLENGERS = False
 # Kill switch for issuance; serving is gated separately by promotion.
 # Existing rows keep settling either way.
 ISSUE_ARCHIVE_V1_CHALLENGERS = True
+# liq_v1 shadow issuance (Phase 3, spec §2.10.2): the live liquidity
+# challenger issues shadow forecasts from the buckets being recorded
+# right now; it never serves until Route B promotes it (and cannot
+# promote before ~21 days + 150 targets). Kill switch for issuance;
+# serving is gated separately by promotion. Existing rows keep settling
+# either way.
+ISSUE_LIQ_V1_CHALLENGERS = True
 
 # The incumbent's fast settlement covers the last 2 days; a day of margin.
 SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
@@ -812,6 +820,14 @@ class ForwardAccuracyMonitor:
         # read live at issuance (in-memory only, never assumed persisted).
         if ISSUE_FLOW_V3_CHALLENGERS:
             flows = (*flows, FlowChallengerV3(
+                self.store,
+                binance_context=getattr(self.market, "binance_context", None),
+            ))
+        # liq_v1 issues beside flow_v3 on its own flag and its own tables;
+        # flow_v3 code, rows, and weights are untouched. Binance bundles are
+        # read live at issuance (in-memory only, never assumed persisted).
+        if ISSUE_LIQ_V1_CHALLENGERS:
+            flows = (*flows, LiquidityChallengerV1(
                 self.store,
                 binance_context=getattr(self.market, "binance_context", None),
             ))

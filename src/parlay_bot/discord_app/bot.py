@@ -2705,9 +2705,11 @@ class RivalDiscordClient(discord.Client):
 
         Runs only with the background opt-in (same gate as the hypothesis
         loop). One experiment, one stage per 30-minute tick; a tick with
-        nothing to advance does nothing. The driver holds no AI client
-        and spends no LLM calls — it only advances experiments the lab
-        already proposed, from the numeric output of the existing gates.
+        nothing to advance tries opening the next scheduled variant
+        (Phase 3 grid) and otherwise does nothing. The driver holds no
+        AI client and spends no LLM calls — it only advances experiments
+        the lab already proposed, and opens variants the grid already
+        registered, from the numeric output of the existing gates.
         """
         if not llm_background_enabled(self.settings):
             _LOG.info("RivaL research loop driver disabled: "
@@ -2726,6 +2728,12 @@ class RivalDiscordClient(discord.Client):
                         "RivaL research loop driver advanced experiment=%s %s->%s",
                         result.get("advanced"), result.get("from"),
                         result.get("to"),
+                    )
+                elif result.get("status") == "opened":
+                    _LOG.info(
+                        "RivaL research loop driver opened scheduled variant "
+                        "experiment=%s variant=%s",
+                        result.get("opened"), result.get("variant_id"),
                     )
             except asyncio.CancelledError:
                 raise

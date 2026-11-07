@@ -386,9 +386,11 @@ async def test_async_tick_drives_the_full_chain(tmp_path):
         out = await drive_research_loop_tick(store, drive=drive, now=NOW)
         assert out["status"] == "advanced" and out["to"] == "shadow", out
         # No evaluation row yet: the shadow tick waits, it does not invent
-        # an outcome.
+        # an outcome — but the tick's one action is then opening the
+        # next scheduled variant (Phase 3: advance OR open per tick).
         out = await drive_research_loop_tick(store, drive=drive, now=NOW)
-        assert out["status"] == "nothing_to_advance", out
+        assert out["status"] == "opened", out
+        assert out["variant_id"] == "archive-premium-off", out
     finally:
         store.close()
 

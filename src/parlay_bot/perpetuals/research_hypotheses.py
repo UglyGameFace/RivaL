@@ -73,24 +73,7 @@ class FeatureHypothesisLab:
         if self._initialized:
             return
         with self.store.connect() as conn:
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS rival_llm_feature_hypotheses (
-                  asset TEXT NOT NULL,
-                  slot_utc TEXT NOT NULL,
-                  attempted_at TEXT NOT NULL,
-                  evidence_sha256 TEXT,
-                  model TEXT,
-                  hypothesis TEXT,
-                  feature_indices_json TEXT,
-                  rationale TEXT,
-                  falsification TEXT,
-                  source_venues_json TEXT,
-                  record_sha256 TEXT,
-                  status TEXT NOT NULL,
-                  attempt_count INTEGER NOT NULL DEFAULT 1,
-                  PRIMARY KEY(asset,slot_utc)
-                )"""
-            )
+            conn.execute(HYPOTHESES_SCHEMA)
             if "attempt_count" not in self.store.database.column_names(
                 conn, "rival_llm_feature_hypotheses",
             ):
@@ -378,6 +361,24 @@ def hypothesis_attempt_status(store, *, now: datetime | None = None) -> dict:
     }
 
 
+HYPOTHESES_SCHEMA = """CREATE TABLE IF NOT EXISTS rival_llm_feature_hypotheses (
+  asset TEXT NOT NULL,
+  slot_utc TEXT NOT NULL,
+  attempted_at TEXT NOT NULL,
+  evidence_sha256 TEXT,
+  model TEXT,
+  hypothesis TEXT,
+  feature_indices_json TEXT,
+  rationale TEXT,
+  falsification TEXT,
+  source_venues_json TEXT,
+  record_sha256 TEXT,
+  status TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY(asset,slot_utc)
+)"""
+
+
 TRIALS_SCHEMA = """CREATE TABLE IF NOT EXISTS rival_llm_hypothesis_trials (
     proposal_sha256 TEXT NOT NULL, venue TEXT NOT NULL, contract TEXT NOT NULL,
     horizon_minutes INTEGER NOT NULL, asset TEXT NOT NULL, hypothesis TEXT NOT NULL,
@@ -506,6 +507,10 @@ def record_trials(store, trials: list, *, report_sha256: str,
     saved = 0
     with store.connect() as conn:
         conn.execute(TRIALS_SCHEMA)
+        # Phase 3: a scheduled trial names no LLM proposal, so the
+        # lookup below must find an empty hypotheses table, not crash
+        # on a missing one (the lab may never have run on this store).
+        conn.execute(HYPOTHESES_SCHEMA)
         # Spec D17: outcome columns on rows created before this change.
         for column, definition in (("outcome_status", "TEXT"),
                                    ("outcome_reason", "TEXT")):

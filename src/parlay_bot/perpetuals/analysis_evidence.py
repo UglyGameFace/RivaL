@@ -1,6 +1,6 @@
 """Point-in-time cross-venue evidence assembled from all *healthy* RivaL feeds.
 
-No Gemini calls or exchange calls happen here. The database is authoritative.
+No external-AI calls or exchange calls happen here. The database is authoritative.
 Quantities are compared within venues; USD, USDT and USDC are never treated
 as exactly interchangeable prices or volumes.
 """

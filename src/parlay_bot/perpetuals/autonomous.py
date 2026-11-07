@@ -86,7 +86,7 @@ class AutonomousResearch:
                         math_ok INTEGER NOT NULL,
                         ai_settlement_ok INTEGER NOT NULL,
                         model_review_ok INTEGER NOT NULL,
-                        gemini_ok INTEGER NOT NULL
+                        auto_ai_ok INTEGER NOT NULL
                     );
                     CREATE TABLE IF NOT EXISTS perp_auto_ai_slots (
                         asset TEXT NOT NULL,
@@ -133,6 +133,22 @@ class AutonomousResearch:
                     );
                     """
                 )
+                # Retired-provider cleanup (2026-11-06): the heartbeat column
+                # recorded the retired Gemini auto-AI stage. Databases created
+                # before this rename still carry gemini_ok; rename it in
+                # place so old rows keep their history under the new name.
+                # Fresh databases are created with auto_ai_ok above, so this
+                # is a no-op for them. RENAME COLUMN is SQLite/PostgreSQL
+                # compatible; column_names() is the portable introspection
+                # helper the promotion/auto-hunt migrations already use.
+                columns = self.store.database.column_names(
+                    conn, "perp_learning_cycle_health",
+                )
+                if "gemini_ok" in columns and "auto_ai_ok" not in columns:
+                    conn.execute(
+                        "ALTER TABLE perp_learning_cycle_health "
+                        "RENAME COLUMN gemini_ok TO auto_ai_ok"
+                    )
             self._schema_ready = True
 
     def settle_ai(self, *, now: datetime | None = None) -> int:
@@ -289,7 +305,7 @@ class AutonomousResearch:
                     "auto_ai_disabled" if not self.auto_ai else "ai_unavailable",
                 )
             return 0
-        # Global Gemini API spacing is 15 minutes, so never dispatch BTC,
+        # Auto-AI slots are spaced 15 minutes apart, so never dispatch BTC,
         # ETH and SOL back-to-back. Use UTC minute 00/20/40 and persist
         # one attempt per asset per four-hour slot across bot restarts.
         position = current.minute // 20
@@ -452,7 +468,7 @@ class AutonomousResearch:
             row = conn.execute(
                 """SELECT slot_utc,started_at,completed_at,math_issued,
                           math_settled,ai_issued,math_ok,ai_settlement_ok,
-                          model_review_ok,gemini_ok
+                          model_review_ok,auto_ai_ok
                    FROM perp_learning_cycle_health
                    ORDER BY completed_at DESC LIMIT 1"""
             ).fetchone()
@@ -461,7 +477,7 @@ class AutonomousResearch:
     def _save_cycle(
         self, *, started: datetime, issued: int, settled: int, ai_count: int,
         math_ok: bool, ai_settlement_ok: bool, review_ok: bool,
-        gemini_ok: bool,
+        auto_ai_ok: bool,
     ) -> None:
         """A single durable UTC-slot heartbeat, not fabricated predictions."""
         ended = datetime.now(UTC)
@@ -474,7 +490,7 @@ class AutonomousResearch:
                 """INSERT INTO perp_learning_cycle_health
                    (slot_utc,started_at,completed_at,math_issued,
                     math_settled,ai_issued,math_ok,ai_settlement_ok,
-                    model_review_ok,gemini_ok)
+                    model_review_ok,auto_ai_ok)
                    VALUES (?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(slot_utc) DO UPDATE SET
                        completed_at=excluded.completed_at,
@@ -484,13 +500,13 @@ class AutonomousResearch:
                        math_ok=excluded.math_ok,
                        ai_settlement_ok=excluded.ai_settlement_ok,
                        model_review_ok=excluded.model_review_ok,
-                       gemini_ok=excluded.gemini_ok
+                       auto_ai_ok=excluded.auto_ai_ok
                    WHERE perp_learning_cycle_health.completed_at <=
                          excluded.completed_at""",
                 (
                     slot, started.isoformat(), ended.isoformat(),
                     issued, settled, ai_count, int(math_ok),
-                    int(ai_settlement_ok), int(review_ok), int(gemini_ok),
+                    int(ai_settlement_ok), int(review_ok), int(auto_ai_ok),
                 ),
             )
 
@@ -498,7 +514,7 @@ class AutonomousResearch:
         """Five-minute automatic research, with durable proof of each stage."""
         started = datetime.now(UTC)
         issued = settled = ai_count = 0
-        math_ok = settlement_ok = review_ok = gemini_ok = True
+        math_ok = settlement_ok = review_ok = auto_ai_ok = True
         stages: dict[str, float] = {}
         mark = time.perf_counter()
 
@@ -535,7 +551,7 @@ class AutonomousResearch:
             raise
         except Exception:  # noqa: BLE001
             settlement_ok = False
-            _LOG.exception("RivaL Gemini outcome settlement failed")
+            _LOG.exception("RivaL auto-AI outcome settlement failed")
         lap("ai_settle")
         if datetime.now(UTC).minute < 5:
             try:
@@ -557,15 +573,15 @@ class AutonomousResearch:
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001
-            gemini_ok = False
-            _LOG.exception("RivaL automatic Gemini research cycle failed")
+            auto_ai_ok = False
+            _LOG.exception("RivaL automatic AI research cycle failed")
         lap("auto_ai")
         try:
             await asyncio.to_thread(
                 self._save_cycle, started=started,
                 issued=issued, settled=settled, ai_count=ai_count,
                 math_ok=math_ok, ai_settlement_ok=settlement_ok,
-                review_ok=review_ok, gemini_ok=gemini_ok,
+                review_ok=review_ok, auto_ai_ok=auto_ai_ok,
             )
         except asyncio.CancelledError:
             raise

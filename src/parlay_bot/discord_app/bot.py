@@ -2434,7 +2434,7 @@ class RivalDiscordClient(discord.Client):
             # model challenge issues, otherwise it cannot be a causal input.
             # The normal source collector remains the only network reader.
             # Forward evaluation is on the same UTC 5-minute cadence as
-            # market observation. It makes no exchange or Gemini API calls.
+            # market observation. It makes no exchange or external-AI API calls.
             # Failure is isolated from both collection and Discord.
             if self.autonomous is not None:
                 _LOG.info("RivaL perp memory checkpoint stage=pre_forecast %s",
@@ -2477,7 +2477,7 @@ class RivalDiscordClient(discord.Client):
                         _LOG.exception("RivaL perpetual DB integrity unavailable")
             # Prospective execution research is strictly read-only and
             # refuses to backfill old candles as executable market quotes.
-            # Three assets × one snapshot per shared collector cycle, not
+            # Four assets × one snapshot per shared collector cycle, not
             # a REST request per subscriber or Discord guild.
             if self.quote_profit is not None:
                 try:
@@ -2487,7 +2487,7 @@ class RivalDiscordClient(discord.Client):
                     # 5-minute cross-venue quote accounting and REST polling.
                     if self.live_stream is None:
                         for asset in self.perp_collector.assets:
-                            if asset not in ("BTC", "ETH", "SOL"):
+                            if asset not in ("BTC", "ETH", "SOL", "XRP"):
                                 continue
                             try:
                                 quote = await self.public_quotes.get(asset)

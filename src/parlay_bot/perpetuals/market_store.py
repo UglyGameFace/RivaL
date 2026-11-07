@@ -564,9 +564,9 @@ class PerpetualMarketStore:
         self, *, model: str, now: datetime, daily_max: int,
         cooldown_seconds: int, requester_id: int | None = None,
     ) -> dict:
-        """Explain stored Gemini request controls without consuming quota.
+        """Explain stored auto-AI request controls without consuming quota.
 
-        The limit here is RivaL's own conservative cap, not Google's project
+        The limit here is RivaL's own conservative cap, not any provider
         quota. The same persisted row is used by the atomic reservation path.
         """
         if not model or daily_max < 1 or cooldown_seconds < 60:

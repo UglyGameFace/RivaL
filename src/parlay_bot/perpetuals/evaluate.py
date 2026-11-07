@@ -15,7 +15,7 @@ from parlay_bot.perpetuals.learning import walk_forward
 def main() -> None:
     parser = argparse.ArgumentParser(description="RivaL shadow online learning evaluation")
     parser.add_argument("--provider", choices=("hyperliquid", "dydx"), required=True)
-    parser.add_argument("--asset", choices=("BTC", "ETH", "SOL"), default="BTC")
+    parser.add_argument("--asset", choices=("BTC", "ETH", "SOL", "XRP"), default="BTC")
     parser.add_argument("--interval", choices=(5, 15, 60, 240), type=int, default=5)
     parser.add_argument("--horizon", choices=(5, 15, 60, 240), type=int, default=15)
     parser.add_argument("--count", type=int, default=5000)

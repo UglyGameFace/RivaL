@@ -13,6 +13,7 @@ import math
 import time
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals.archive_model import ArchiveModelSet, archive_calls
 from parlay_bot.perpetuals.calibrated_challenger import CalibratedIncumbent
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
 from parlay_bot.perpetuals.features import (
@@ -42,6 +43,7 @@ from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
+from parlay_bot.research.archive_features import live_vector as archive_live_vector
 from parlay_bot.storage.database import database_clock
 
 _LOG = logging.getLogger(__name__)
@@ -74,6 +76,13 @@ ISSUE_FLOW_CHALLENGERS = False
 # serving was gated separately by promotion. Existing rows keep settling
 # either way.
 ISSUE_FLOW_V3_CHALLENGERS = False
+# archive_v1 shadow issuance (Phase 2, spec §2.8): the offline-trained
+# archive model issues shadow forecasts beside the incumbent once an
+# artifact is imported; it never serves until Route B promotes it.
+# Kill switch for issuance; serving is gated separately by promotion.
+# Existing rows keep settling either way.
+ISSUE_ARCHIVE_V1_CHALLENGERS = True
+
 # The incumbent's fast settlement covers the last 2 days; a day of margin.
 SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
 
@@ -191,6 +200,19 @@ class ForwardAccuracyMonitor:
                 self.market.pooled_models = current
             except Exception:  # noqa: BLE001 - optional challenger only
                 _LOG.exception("RivaL pooled model registry unavailable")
+                return None
+        return current
+
+    def _archive_models(self):
+        """The bot-wide archive model set (None if its table is unavailable)."""
+        current = getattr(self.market, "archive_models", None)
+        if current is None:
+            try:
+                current = ArchiveModelSet(self.store)
+                current.initialize()
+                self.market.archive_models = current
+            except Exception:  # noqa: BLE001 - optional challenger only
+                _LOG.exception("RivaL archive model registry unavailable")
                 return None
         return current
 
@@ -776,6 +798,7 @@ class ForwardAccuracyMonitor:
         # Pooled multi-year challenger: needs each venue's BTC stream for its
         # BTC-lead inputs. Read each venue's BTC candles at most once.
         pooled_set = self._pooled_models()
+        archive_set = self._archive_models()
         btc_streams = {v: (c, q) for v, c, q in eligible if asset_for_contract(c) == "BTC"}
         btc_cache: dict[str, list] = {}
         # Order-flow challenger inputs: one causal snapshot per asset per cycle.
@@ -875,6 +898,42 @@ class ForwardAccuracyMonitor:
                     except Exception:  # noqa: BLE001 - optional challenger only
                         _LOG.exception("RivaL pooled model inputs unavailable")
                 self._lap("pooled", mark)
+                # Archive-serving model (Phase 2, spec §2.8): one 32-feature
+                # vector per stream, shared by its three horizons (the
+                # artifact differs per horizon; the features do not). The
+                # Binance bundle is in-memory only; without it the premium /
+                # funding / tape groups flag 0 and the artifact still issues
+                # from its candle groups (Track C context-absent gate).
+                # Fewer than 420 contiguous bars means no vector that cycle.
+                archive_vector = None
+                if ISSUE_ARCHIVE_V1_CHALLENGERS and archive_set is not None:
+                    mark = self._mark()
+                    try:
+                        coin = asset_for_contract(contract)
+                        btc_rows = None
+                        if coin is not None and coin != "BTC":
+                            source = btc_streams.get(venue)
+                            if source is not None:
+                                if venue not in btc_cache:
+                                    btc_cache[venue] = persisted_candles(
+                                        self.market.recent_candles(
+                                            venue=venue, contract=source[0],
+                                            quote=source[1],
+                                            interval_minutes=5, count=30,
+                                            as_of=stamp,
+                                        ))
+                                btc_rows = btc_cache[venue]
+                        context = getattr(self.market, "binance_context", None)
+                        bundle = (context.bundle(coin)
+                                  if context is not None and coin is not None
+                                  else None)
+                        archive_vector = archive_live_vector(
+                            candles, asset=coin, btc_candles=btc_rows,
+                            context=bundle,
+                        ) if coin is not None else None
+                    except Exception:  # noqa: BLE001 - optional challenger only
+                        _LOG.exception("RivaL archive model inputs unavailable")
+                    self._lap("challengers", mark)
                 # Shared by this stream's three horizons AND carried to the
                 # next cycle: only the newest window is computed again.
                 stream_key = (venue, contract, quote)
@@ -943,6 +1002,17 @@ class ForwardAccuracyMonitor:
                     except Exception:  # noqa: BLE001 - optional research inputs
                         _LOG.exception("RivaL boosted artifact lookup unavailable")
                     self._lap("boosters", mark)
+                    # Archive shadow calls are CPU work on inputs already
+                    # fixed at issuance: compute before the transaction
+                    # opens, like boosters. Empty when no artifact is
+                    # imported, the vector is unavailable, or every feature
+                    # group flagged 0 for this stream.
+                    archive_items = ()
+                    if archive_vector is not None:
+                        archive_items = archive_calls(
+                            archive_set, asset=asset, horizon=horizon,
+                            vector=archive_vector, now=stamp,
+                        )
                     mark = self._mark()
                     # Store regime and model fingerprints BEFORE the target
                     # closes, in the same DB transaction as the forecast.
@@ -1057,7 +1127,7 @@ class ForwardAccuracyMonitor:
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
-                                    challengers=flow_calls,
+                                    challengers=(*flow_calls, *archive_items),
                                     prepared=shadow_prepared,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger

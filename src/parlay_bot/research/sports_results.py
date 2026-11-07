@@ -3,6 +3,10 @@
 The active sportsbook snapshots are not training labels. Only provider-finalized
 events are accepted. Missing team IDs, contradictory scores, and corrections
 cannot silently modify original evidence.
+
+The models use finalized scores only. Live sportsbook odds are never a model
+input: the odds feed supplies fixture identity and start times, and the
+probabilities come from past results alone.
 """
 from __future__ import annotations
 
@@ -150,7 +154,10 @@ def soccer_home_draw_away(home_goals: float, away_goals: float) -> tuple[float, 
 def model_probabilities(
     rows: list[FinalScore], *, sport: str, league: str, home_id: str, away_id: str,
 ) -> tuple[float, ...] | None:
-    """Fixed parsimonious models; no tuning to evaluation results."""
+    """Fixed parsimonious models; no tuning to evaluation results.
+
+    Final scores only: live sportsbook odds are not an input.
+    """
     prior = [r for r in rows if r.sport == sport and r.league == league]
     if len(prior) < 50:
         return None

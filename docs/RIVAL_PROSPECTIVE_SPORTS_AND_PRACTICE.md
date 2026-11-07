@@ -22,7 +22,8 @@
   across at least 14 dates and Brier improvement over pre-observed
   league base rates are required for `HISTORICAL_SHADOW` evidence.
   It cannot claim profitability without real market price and after-cost
-  independent prospective evidence.
+  independent prospective evidence. The model uses finalized scores only;
+  live sportsbook odds are not an input to any sports probability.
 - The sportsbook collector attempts to store *genuine pregame* probability
   records when past result history qualifies. Predictions are stored
   immutably before kickoff with model ID, team/league identities, baseline,

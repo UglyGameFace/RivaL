@@ -606,8 +606,8 @@ async def signal_embed(
         verdict = (f"⏳ No call: only a slight {direction} lean" if direction != "FLAT"
                    else "⏳ No call: no direction")
         message = (
-            f"The model is only {max(probability, 1 - probability):.1%} sure, too "
-            "close to a coin flip to make a call."
+            f"The model is only {max(probability, 1 - probability):.1%} sure "
+            "(raw, uncalibrated model output), too close to a coin flip to make a call."
         )
 
     embed = discord.Embed(
@@ -643,7 +643,8 @@ async def signal_embed(
             chosen["target"] + timedelta(minutes=5), style="R",
         )),
         ("⚡ How sure the model is", (f"{max(probability, 1-probability):.1%}\n"
-                                     f"{plain_strength} (its own estimate)")),
+                                     f"{plain_strength} (raw, uncalibrated model output; "
+                                     "its own estimate)")),
         ("📊 How often it's been right", measured),
     )):
         embed.add_field(name=name, value=value, inline=True)
@@ -654,7 +655,7 @@ async def signal_embed(
         value=(
             f"**Call: {direction if is_watch else 'none'}** • leans {direction} "
             f"{max(probability, 1 - probability):.1%} "
-            f"({plain_strength})\n"
+            f"({plain_strength}; raw, uncalibrated model output)\n"
             f"Exchange: **{chosen['venue']}** • "
             f"Made {discord.utils.format_dt(chosen['issued'], style='R')}\n"
             f"Ends {discord.utils.format_dt(chosen['target'] + timedelta(minutes=5), style='R')}"

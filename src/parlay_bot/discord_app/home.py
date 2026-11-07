@@ -92,6 +92,18 @@ EXPLAIN = {
     "trust": "This screen moved to Bot Performance. Note that being busy and getting more accurate are not the same thing.",
 }
 
+# Sports & Odds page scope note. The research model reads past final scores
+# only; live sportsbook odds are never a model input, so the page must not
+# imply a market-aware sports read.
+SPORTS_MODEL_SCOPE_TEXT = (
+    "Sports & Odds shows sportsbook prices and screens, "
+    "not model predictions. The research model covers "
+    "soccer and basketball only, once a league has 130 "
+    "finalized games. NFL has odds and slips but no model "
+    "forecast. The research model reads past final scores "
+    "only; it does not use live odds."
+)
+
 
 class _Button(discord.ui.Button["GuidedHome"]):
     def __init__(self, title: str, action: str, row: int,
@@ -1259,13 +1271,7 @@ class GuidedHome(discord.ui.View):
                 )
             embed.add_field(
                 name="Model research scope",
-                value=(
-                    "Sports & Odds shows sportsbook prices and screens, "
-                    "not model predictions. The research model covers "
-                    "soccer and basketball only, once a league has 130 "
-                    "finalized games. NFL has odds and slips but no model "
-                    "forecast."
-                ),
+                value=SPORTS_MODEL_SCOPE_TEXT,
                 inline=False,
             )
             if self.collector is not None:

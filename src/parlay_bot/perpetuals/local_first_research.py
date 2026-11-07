@@ -1,6 +1,14 @@
 """Private RivaL Intelligence LFM3: local-only, cached, CPU serialized.
 
-No third-party AI transport, free-tier quota, token budget or daily cooldown.
+No third-party AI transport. Local inference is capped by the persisted
+quota tables (batch 2 §3.4, D5): 18 requests/day by default, 60 s minimum
+spacing, 3 per Discord requester per day. Every LLM call reserves quota
+first; a cap hit raises ResearchUnavailable with the reason and retry_at,
+never runs inference, and never falls back to an unmetered path. The
+deterministic evidence-only summary is not an LLM call and needs no quota.
+Background loops run only when the operator opts in
+(rival_llm_background_opt_in); user-initiated asks reserve quota but do
+not need the opt-in.
 """
 from __future__ import annotations
 
@@ -24,6 +32,15 @@ LOCAL_MODEL = "LiquidAI/LFM3-1.7B-GGUF:Q4_K_M"
 EVIDENCE_MODEL = "RivaL/verified-evidence-summary-v1"
 LOCAL_ENDPOINT = "http://rival-llm:8765/v1/research"
 MAX_LOCAL_EVIDENCE_BYTES = 24_000
+# Batch 2 §3.4 / D5 budget numbers (Felix-approved in #135, re-wired here).
+DEFAULT_DAILY_MAX = 18
+DEFAULT_COOLDOWN_SECONDS = 60
+# Circuit breaker (batch 2 §3.4): the gateway has no Postgres access, so the
+# bot mirrors its BackendRepair quarantine threshold — 3 backend failures
+# in 1800 s pauses local LLM calls for 3600 s via pause_ai_requests().
+BACKEND_FAILURE_WINDOW_SECONDS = 1800
+BACKEND_FAILURE_QUARANTINE_COUNT = 3
+BACKEND_FAILURE_PAUSE_SECONDS = 3600
 # The gateway allows model reviews 90 s of CPU; wait slightly longer.
 EXPLAIN_TIMEOUT = 100.0
 # Background callers wait for the single-slot CPU gateway instead of losing
@@ -105,21 +122,35 @@ def validated(reply: object, expected: str) -> bool:
 
 
 class LocalFirstResearch:
-    """Private AI requests use bounded concurrency, not daily paid-API caps."""
+    """Private AI requests are quota-capped, not unmetered.
+
+    Every LLM call reserves one unit from the persisted quota tables
+    before any inference runs. Cached evidence summaries cost no quota.
+    """
 
     def __init__(
         self, market, *, local_key: str | None,
         client: httpx.AsyncClient | None = None,
+        daily_max: int = DEFAULT_DAILY_MAX,
+        cooldown_seconds: int = DEFAULT_COOLDOWN_SECONDS,
     ) -> None:
+        if daily_max < 1 or cooldown_seconds < 60:
+            raise ValueError("invalid AI budget policy")
         self.market = market
         self._key = local_key
         self.model = LOCAL_MODEL
+        self._daily_max = daily_max
+        self._cooldown_seconds = cooldown_seconds
         self._lock = asyncio.Lock()
         self._client = client or httpx.AsyncClient(
             timeout=httpx.Timeout(52), follow_redirects=False,
         )
         self._owned_client = client is None
         self._peer_ip: str | None = None
+        # Consecutive gateway backend failures (timestamps, UTC). Three
+        # inside BACKEND_FAILURE_WINDOW_SECONDS quarantines the backend
+        # through pause_ai_requests(); any successful inference clears it.
+        self._backend_failures: list[datetime] = []
 
     @property
     def available(self) -> bool:
@@ -129,13 +160,125 @@ class LocalFirstResearch:
         if self._owned_client:
             await self._client.aclose()
 
+    async def _reserve_quota(self, *, requester_id: int | None = None) -> None:
+        """Reserve one LLM call from the persisted quota tables, or refuse.
+
+        Raises ResearchUnavailable carrying the stored reasons and retry_at
+        when the daily cap, per-requester cap, spacing, or circuit breaker
+        blocks the call. No inference runs after this raises.
+        """
+        now = datetime.now(UTC)
+        status = await asyncio.to_thread(
+            self.market.ai_request_status,
+            model=LOCAL_MODEL, now=now, daily_max=self._daily_max,
+            cooldown_seconds=self._cooldown_seconds, requester_id=requester_id,
+        )
+        if not status["ready"]:
+            raise ResearchUnavailable(
+                "Local AI budget exhausted "
+                f"(reasons={','.join(status['reasons'])}; "
+                f"retry_at={status['retry_at']}). No inference ran."
+            )
+        reserved = await asyncio.to_thread(
+            self.market.reserve_ai_request,
+            model=LOCAL_MODEL, now=now, daily_max=self._daily_max,
+            cooldown_seconds=self._cooldown_seconds, requester_id=requester_id,
+        )
+        if not reserved:
+            # Lost a race with another worker: re-read the stored reasons.
+            status = await asyncio.to_thread(
+                self.market.ai_request_status,
+                model=LOCAL_MODEL, now=now, daily_max=self._daily_max,
+                cooldown_seconds=self._cooldown_seconds,
+                requester_id=requester_id,
+            )
+            raise ResearchUnavailable(
+                "Local AI budget exhausted "
+                f"(reasons={','.join(status['reasons'])}; "
+                f"retry_at={status['retry_at']}). No inference ran."
+            )
+
+    async def _reserve_once(self, reservation: list[bool], *,
+                            requester_id: int | None = None) -> None:
+        """Reserve quota at most once per ask/proposal call.
+
+        Busy retries re-enter the same call; they reuse the first
+        reservation instead of spending (and spacing-blocking) a second.
+        """
+        if not reservation:
+            await self._reserve_quota(requester_id=requester_id)
+            reservation.append(True)
+
+    def _record_backend_success(self) -> None:
+        self._backend_failures.clear()
+
+    async def _record_backend_failure(self) -> None:
+        """Count a gateway backend fault toward the quarantine threshold.
+
+        Only gateway-side faults count (502/503/504, unreachable backend):
+        a busy 429 is the single-slot semaphore, and client/invalid
+        responses repeat deterministically, so neither quarantines.
+        """
+        now = datetime.now(UTC)
+        self._backend_failures = [
+            stamp for stamp in self._backend_failures
+            if (now - stamp).total_seconds() < BACKEND_FAILURE_WINDOW_SECONDS
+        ]
+        self._backend_failures.append(now)
+        if len(self._backend_failures) < BACKEND_FAILURE_QUARANTINE_COUNT:
+            return
+        self._backend_failures.clear()
+        try:
+            await asyncio.to_thread(
+                self.market.pause_ai_requests,
+                model=LOCAL_MODEL, now=now,
+                seconds=BACKEND_FAILURE_PAUSE_SECONDS,
+            )
+        except Exception:  # noqa: BLE001 - a failed pause must not mask research
+            _LOG.exception("Local AI backend quarantine pause failed")
+            return
+        _LOG.warning(
+            "Local AI backend quarantined after %d failures in %ds; "
+            "local LLM calls paused for %ds",
+            BACKEND_FAILURE_QUARANTINE_COUNT,
+            BACKEND_FAILURE_WINDOW_SECONDS, BACKEND_FAILURE_PAUSE_SECONDS,
+        )
+
+    async def pause_ai_requests(self, *, seconds: int = 3600) -> None:
+        """Operator circuit breaker: block local LLM calls for `seconds`.
+
+        Manual use (Felix) and the automatic backend quarantine both go
+        through the persisted pause; it survives bot restarts.
+        """
+        await asyncio.to_thread(
+            self.market.pause_ai_requests,
+            model=LOCAL_MODEL, now=datetime.now(UTC), seconds=seconds,
+        )
+
     async def request_status(self) -> dict:
-        """Configuration status only: does not claim the host is currently healthy."""
+        """Live quota status for the local model: usage, limits, retry_at."""
+        if not self.available:
+            return {
+                "model": LOCAL_MODEL,
+                "ready": False,
+                "reasons": ("not_configured",),
+                "requests_today": 0,
+                "rival_daily_limit": self._daily_max,
+                "retry_at": None,
+                "runtime_verified": False,
+            }
+        status = await asyncio.to_thread(
+            self.market.ai_request_status,
+            model=LOCAL_MODEL, now=datetime.now(UTC),
+            daily_max=self._daily_max, cooldown_seconds=self._cooldown_seconds,
+        )
         return {
             "model": LOCAL_MODEL,
-            "ready": self.available,
-            "reasons": () if self.available else ("not_configured",),
-            "unmetered_local": True,
+            "ready": status["ready"],
+            "reasons": status["reasons"],
+            "requests_today": status["requests_today"],
+            "rival_daily_limit": status["rival_daily_limit"],
+            "retry_at": status["retry_at"],
             "runtime_verified": False,
         }
 
@@ -156,15 +299,25 @@ class LocalFirstResearch:
                   requester_id: int | None = None,
                   busy_retry: bool = False) -> AiResearch:
         """Research one asset. Interactive clicks never wait on retries;
-        background callers pass busy_retry=True to survive a busy gateway."""
+        background callers pass busy_retry=True to survive a busy gateway.
+
+        Quota is reserved once per call, after an exact-evidence cache hit
+        (which costs no quota) and before any inference. The per-requester
+        cap applies when requester_id is given.
+        """
         if not self.available:
             raise ResearchUnavailable("Private RivaL Intelligence token not configured.")
+        reservation: list[bool] = []
         return await _with_busy_retry(
-            lambda: self._ask_once(asset=asset, venues=venues),
+            lambda: self._ask_once(asset=asset, venues=venues,
+                                   requester_id=requester_id,
+                                   _reservation=reservation),
             retry=busy_retry, label="research",
         )
 
-    async def _ask_once(self, *, asset: str, venues: tuple[str, ...]) -> AiResearch:
+    async def _ask_once(self, *, asset: str, venues: tuple[str, ...],
+                        requester_id: int | None = None,
+                        _reservation: list[bool] | None = None) -> AiResearch:
         async with self._lock:
             evidence, digest = await asyncio.to_thread(
                 build_evidence, self.market, asset=asset, venues=venues,
@@ -184,6 +337,10 @@ class LocalFirstResearch:
                         source_count=int(cached["source_count"]),
                         evidence_sha256=digest, from_cache=True,
                     )
+            await self._reserve_once(
+                _reservation if _reservation is not None else [],
+                requester_id=requester_id,
+            )
             now = datetime.now(UTC)
             result = await self._complete(evidence=evidence)
             served = result["served_model"]
@@ -229,6 +386,8 @@ class LocalFirstResearch:
             if len(json.dumps(evidence, sort_keys=True, separators=(",", ":"),
                               default=str).encode("utf-8")) > MAX_LOCAL_EVIDENCE_BYTES:
                 raise ResearchUnavailable("Model review evidence too large.")
+            # Background-only path: reserves shared quota (no requester cap).
+            await self._reserve_quota()
             headers = {"Authorization": f"Bearer {self._key}",
                        "Content-Type": "application/json"}
             payload = json.loads(json.dumps({"asset": asset, "evidence": evidence},
@@ -243,16 +402,24 @@ class LocalFirstResearch:
                 self._peer_ip = None
                 peer = await asyncio.to_thread(discover_private_llm, self._key)
                 if peer is None:
+                    await self._record_backend_failure()
                     raise ResearchUnavailable("Private RivaL Intelligence unreachable.") from None
                 self._peer_ip = peer
                 response = await self._client.post(
                     f"http://{peer}:8765/v1/explain", headers=headers, json=payload,
                     follow_redirects=False, timeout=EXPLAIN_TIMEOUT)
             except httpx.RequestError as exc:
+                await self._record_backend_failure()
                 raise ResearchUnavailable("Private RivaL Intelligence network error.") from exc
             if response.status_code == 404:
                 raise ResearchUnavailable("RivaL Intelligence service needs the review update.")
             if response.status_code == 429:
+                raise LocalBusy("RivaL Intelligence busy.")
+            if response.status_code in (502, 503, 504):
+                await self._record_backend_failure()
+                raise ResearchUnavailable(
+                    f"RivaL Intelligence review failed (HTTP {response.status_code}).")
+            if response.status_code != 200:
                 raise LocalBusy("RivaL Intelligence busy.")
             if response.status_code != 200:
                 # The gateway returns a bounded failure_kind code (never model
@@ -282,6 +449,7 @@ class LocalFirstResearch:
             # Stances, model and mode pass through unchanged; no direction
             # or confidence is asserted for a model review.
             grounded = enforce_grounding(data, evidence, asset=asset)
+            self._record_backend_success()
             return {
                 **data,
                 "thesis": grounded["thesis"][:240],
@@ -293,22 +461,39 @@ class LocalFirstResearch:
         self, *, asset: str, venues: tuple[str, ...],
         busy_retry: bool = True, prior_trials: list[dict] | None = None,
     ) -> dict:
-        """Use the private CPU under the existing lock, without API quotas.
+        """Use the private CPU under the persisted quota (batch 2 §3.4).
 
         Suggestions cannot write weights or scores. They are recorded separately
         and must compete against a no-LLM baseline on chronological source data.
         Background-only, so a busy or briefly unavailable gateway is retried.
+        Quota is reserved once per proposal call, before the first inference
+        attempt; busy retries reuse that reservation.
         """
         if not self.available:
             raise ResearchUnavailable("Private RivaL Intelligence token unavailable")
-        return await _with_busy_retry(
-            lambda: self._propose_once(asset=asset, venues=venues,
-                                       prior_trials=prior_trials),
-            retry=busy_retry, label="hypothesis",
-        )
+        reservation: list[bool] = []
+        # Set by _propose_once when the gateway backend itself faulted.
+        # The wrapper records one failure per call, not one per retry.
+        failure_state: dict[str, bool] = {"backend_failed": False}
+        try:
+            proposed = await _with_busy_retry(
+                lambda: self._propose_once(asset=asset, venues=venues,
+                                           prior_trials=prior_trials,
+                                           _reservation=reservation,
+                                           _failure_state=failure_state),
+                retry=busy_retry, label="hypothesis",
+            )
+        except ResearchUnavailable:
+            if failure_state["backend_failed"]:
+                await self._record_backend_failure()
+            raise
+        self._record_backend_success()
+        return proposed
 
     async def _propose_once(self, *, asset: str, venues: tuple[str, ...],
-                            prior_trials: list[dict] | None = None) -> dict:
+                            prior_trials: list[dict] | None = None,
+                            _reservation: list[bool] | None = None,
+                            _failure_state: dict[str, bool] | None = None) -> dict:
         async with self._lock:
             evidence, digest = await asyncio.to_thread(
                 build_evidence, self.market, asset=asset, venues=venues,
@@ -323,6 +508,9 @@ class LocalFirstResearch:
             if (len(json.dumps(evidence, sort_keys=True, separators=(",", ":")).encode())
                     > MAX_LOCAL_EVIDENCE_BYTES):
                 raise ResearchUnavailable("Verified feature evidence is oversized")
+            await self._reserve_once(
+                _reservation if _reservation is not None else [],
+            )
             now = datetime.now(UTC)
             headers = {
                 "Authorization": f"Bearer {self._key}",
@@ -349,6 +537,9 @@ class LocalFirstResearch:
                 if response.status_code != 200:
                     detail = failure_detail(response)
                     _LOG.warning("Private hypothesis research rejected %s", detail)
+                    if (response.status_code in (502, 503, 504)
+                            and _failure_state is not None):
+                        _failure_state["backend_failed"] = True
                     error = LocalBusy if _transient(response) else ResearchUnavailable
                     raise error(
                         f"Private hypothesis endpoint unavailable ({detail}); "
@@ -358,6 +549,9 @@ class LocalFirstResearch:
             except (httpx.RequestError, ValueError) as exc:
                 if isinstance(exc, ResearchUnavailable):
                     raise
+                if (isinstance(exc, httpx.RequestError)
+                        and _failure_state is not None):
+                    _failure_state["backend_failed"] = True
                 _LOG.warning("Private hypothesis research unavailable %s",
                              type(exc).__name__)
                 raise ResearchUnavailable(
@@ -420,6 +614,7 @@ class LocalFirstResearch:
             # Repeat the guard in RivaL: valid JSON from an outdated gateway
             # still cannot assert a future direction without actual proof.
             grounded = enforce_grounding(data, evidence, asset=evidence.get("asset"))
+            self._record_backend_success()
             return {
                 "direction": grounded["direction"], "confidence": grounded["confidence"],
                 "thesis": grounded["thesis"], "risk": grounded["risk"],
@@ -436,8 +631,10 @@ class LocalFirstResearch:
                     f"Local AI rejected research (HTTP {exc.response.status_code})."
                 ) from exc
             _LOG.warning("Local inference unavailable %s", detail)
+            await self._record_backend_failure()
         except httpx.RequestError:
             _LOG.warning("Private local AI network unavailable")
+            await self._record_backend_failure()
         except (ValueError, KeyError, TypeError, IndexError) as exc:
             _LOG.warning("Local AI response invalid class=%s", type(exc).__name__)
             raise ResearchUnavailable(

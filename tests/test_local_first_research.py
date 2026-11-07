@@ -1,4 +1,4 @@
-"""Private CPU inference is authenticated, serialized, unmetered and cached."""
+"""Private CPU inference is authenticated, serialized, quota-capped and cached."""
 from __future__ import annotations
 
 import json
@@ -13,11 +13,23 @@ from parlay_bot.perpetuals.ai_types import ResearchUnavailable
 class Market:
     def __init__(self):
         self.quota = []
+        self.status_calls = []
         self.saved = []
         self.pauses = []
 
     def cached_ai_research(self, **_kw):
         return None
+
+    def ai_request_status(self, **kwargs):
+        self.status_calls.append(kwargs)
+        return {
+            "model": module.LOCAL_MODEL,
+            "ready": True,
+            "reasons": (),
+            "retry_at": None,
+            "requests_today": len(self.quota),
+            "rival_daily_limit": kwargs.get("daily_max", 18),
+        }
 
     def reserve_ai_request(self, **kwargs):
         self.quota.append(kwargs)
@@ -45,7 +57,7 @@ def success(model):
 
 
 @pytest.mark.asyncio
-async def test_local_request_unmetered(monkeypatch):
+async def test_local_request_reserves_quota(monkeypatch):
     market = Market()
     monkeypatch.setattr(module, "build_evidence", market_evidence)
     seen = []
@@ -63,7 +75,14 @@ async def test_local_request_unmetered(monkeypatch):
         opinion = await ai.ask(asset="ETH", venues=("okx", "gate"), requester_id=49)
         assert opinion.model == module.LOCAL_MODEL
     assert len(seen) == 1
-    assert market.quota == []
+    # One reservation per LLM call, with the requester forwarded for the
+    # per-requester cap (batch 2 §3.4).
+    assert len(market.quota) == 1
+    reserved = market.quota[0]
+    assert reserved["model"] == module.LOCAL_MODEL
+    assert reserved["daily_max"] == 18
+    assert reserved["cooldown_seconds"] == 60
+    assert reserved["requester_id"] == 49
     assert market.saved[0]["model"] == module.LOCAL_MODEL
 
 
@@ -85,6 +104,7 @@ async def test_local_client_or_busy_failure_never_spends_backup(monkeypatch, sta
             await ai.ask(asset="SOL", venues=("okx",))
     assert seen == ["rival-llm"]
     assert market.saved == []
+    assert len(market.quota) == 1  # attempted call reserved; no backup spent
 
 
 @pytest.mark.asyncio
@@ -106,6 +126,7 @@ async def test_untrusted_invalid_local_response_does_not_fallback(monkeypatch):
             await ai.ask(asset="BTC", venues=("gate",))
     assert seen == ["rival-llm"]
     assert not market.saved
+    assert len(market.quota) == 1
 
 
 @pytest.mark.asyncio
@@ -122,9 +143,9 @@ async def test_local_failure_without_backup_yields_honest_data_only_reply(monkey
         assert opinion.model == module.EVIDENCE_MODEL
         assert opinion.direction == "uncertain"
         assert opinion.confidence == "low"
-    assert market.quota == []
+    assert len(market.quota) == 1  # one attempted call; gateway down, not unmetered
     assert market.saved[0]["model"] == module.EVIDENCE_MODEL
-    assert market.pauses == []
+    assert market.pauses == []  # a single failure does not quarantine
 
 
 @pytest.mark.asyncio
@@ -168,7 +189,7 @@ async def test_discloud_dns_failure_recovers_via_authenticated_discovery(monkeyp
         assert second.model == module.LOCAL_MODEL
     assert calls == ["rival-llm", "172.4.72.19", "172.4.72.19"]
     assert discovered == ["k" * 40]
-    assert market.quota == []
+    assert len(market.quota) == 2
 
 
 @pytest.mark.asyncio
@@ -190,6 +211,7 @@ async def test_client_rechecks_direction_if_gateway_returns_unsupported_up(monke
         assert report.confidence == "low"
         assert "Guaranteed" not in report.thesis
     assert market.saved[0]["direction"] == "uncertain"
+    assert len(market.quota) == 1
 
 @pytest.mark.asyncio
 async def test_data_only_research_uses_own_persisted_cache_without_extra_quota(monkeypatch):
@@ -216,12 +238,13 @@ async def test_data_only_research_uses_own_persisted_cache_without_extra_quota(m
         assert second.from_cache
         assert first.direction == second.direction == "uncertain"
     assert len(seen) == 1
-    assert market.quota == []
+    # First ask reserves once; the exact-evidence cache hit costs nothing.
+    assert len(market.quota) == 1
     assert len(market.saved) == 1
 
 
 @pytest.mark.asyncio
-async def test_local_hypothesis_private_unmetered(monkeypatch):
+async def test_local_hypothesis_reserves_quota(monkeypatch):
     monkeypatch.setattr(module, "build_evidence", market_evidence)
     market = Market()
     seen = []
@@ -254,7 +277,7 @@ async def test_local_hypothesis_private_unmetered(monkeypatch):
         assert proposed["venues"] == ["gate", "okx"]
         assert proposed["research_only"]
     assert len(seen) == 1
-    assert market.quota == []
+    assert len(market.quota) == 1
     assert not market.saved
 
 
@@ -279,19 +302,23 @@ async def test_unavailable_hypothesis_never_invents_proposals(
                 asset="BTC", venues=("okx",),
             )
     assert requested == ["rival-llm"]
-    assert market.quota == []
+    assert len(market.quota) == 1  # attempted call reserved; no proposal invented
     assert market.saved == []
 
 
 @pytest.mark.asyncio
-async def test_private_intelligence_has_no_daily_budget_or_external_catalog():
+async def test_private_intelligence_reports_live_budget_and_no_external_catalog():
+    """Batch 2 §3.4: request_status reports the real persisted quota, and
+    the dashboard shows the 18/day budget instead of 'no daily budget'."""
     from parlay_bot.discord_app.research_dashboard import ResearchDashboard
     ai = module.LocalFirstResearch(Market(), local_key="owner-key")
     try:
         status = await ai.request_status()
-        assert status["unmetered_local"] is True
-        assert "requests_today" not in status
-        assert "rival_daily_limit" not in status
+        assert "unmetered_local" not in status
+        assert status["ready"] is True
+        assert status["requests_today"] == 0
+        assert status["rival_daily_limit"] == 18
+        assert status["reasons"] == ()
         assert await ai.list_advertised_models() == (module.LOCAL_MODEL,)
         dashboard = ResearchDashboard(owner_id=42, market=None, ai=ai, venues=())
         dashboard.screen = "ai"
@@ -301,13 +328,15 @@ async def test_private_intelligence_has_no_daily_budget_or_external_catalog():
         fields = {field.name: field.value for field in embed.fields}
         assert "Private LFM3 Intelligence" in fields
         assert "No paid tokens" in fields["Private LFM3 Intelligence"]
+        assert "0/18 requests today" in fields["Private LFM3 Intelligence"]
+        assert "60 s minimum spacing" in fields["Private LFM3 Intelligence"]
         assert "OpenRouter" not in str(fields) and "Cloudflare" not in str(fields)
     finally:
         await ai.aclose()
 
 
 @pytest.mark.asyncio
-async def test_twenty_five_unmetered_local_requests_do_not_reserve_quota(monkeypatch):
+async def test_twenty_five_local_requests_each_reserve_quota(monkeypatch):
     market = Market()
     counter = 0
     sent = []
@@ -330,7 +359,10 @@ async def test_twenty_five_unmetered_local_requests_do_not_reserve_quota(monkeyp
             await reviewer.ask(asset="BTC", venues=("okx",))
     assert sent == ["rival-llm"] * 25
     assert len(market.saved) == 25
-    assert market.quota == []
+    # Batch 2 §3.4: every LLM call reserves quota — 25 calls, 25 reservations.
+    # (The fake market never refuses, so no cap is hit here; the cap itself
+    # is covered against the real store in test_batch2_budget_rewire.py.)
+    assert len(market.quota) == 25
 
 
 def _hypothesis_reply():
@@ -398,13 +430,16 @@ async def test_hypothesis_retries_busy_gateway_then_succeeds(monkeypatch):
         seen.append(request.url.path)
         return replies[len(seen) - 1]
 
+    market = Market()
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        ai = module.LocalFirstResearch(Market(), local_key="local-key", client=client)
+        ai = module.LocalFirstResearch(market, local_key="local-key", client=client)
         proposed = await ai.propose_feature_hypothesis(asset="XRP", venues=("okx",))
         # The lock is released between attempts and after success.
         assert not ai._lock.locked()
     assert proposed["hypothesis"] == "volume_only"
     assert seen == ["/v1/hypothesis"] * 3
+    # Busy retries reuse the one reservation; they do not spend quota twice.
+    assert len(market.quota) == 1
 
 
 @pytest.mark.asyncio
@@ -417,11 +452,13 @@ async def test_hypothesis_busy_retries_are_bounded(monkeypatch):
         seen.append(request.url.path)
         return httpx.Response(429, json={"error": "inference_busy"})
 
+    market = Market()
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        ai = module.LocalFirstResearch(Market(), local_key="local-key", client=client)
+        ai = module.LocalFirstResearch(market, local_key="local-key", client=client)
         with pytest.raises(module.LocalBusy):
             await ai.propose_feature_hypothesis(asset="BTC", venues=("okx",))
     assert len(seen) == 4  # first try plus three retries
+    assert len(market.quota) == 1  # one reservation for the whole call
 
 
 @pytest.mark.asyncio
@@ -446,6 +483,9 @@ async def test_interactive_ask_never_waits_but_background_ask_retries(monkeypatc
     assert opinion.model == module.LOCAL_MODEL
     assert len(seen) == 3
     assert len(market.saved) == 1
+    # Two ask calls, two reservations; the busy retry inside the second
+    # call reuses its reservation instead of spending a second unit.
+    assert len(market.quota) == 2
 
 
 @pytest.mark.asyncio
@@ -481,3 +521,4 @@ async def test_explain_models_grounds_thesis_and_risk(monkeypatch):
         "support a market direction.")
     assert review["risk"].startswith("No verified future advantage")
     assert review["grounded_by"] == "deterministic_historical_evidence_policy"
+    assert len(market.quota) == 1  # explain reserves quota before the POST

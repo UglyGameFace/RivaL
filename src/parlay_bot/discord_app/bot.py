@@ -51,6 +51,10 @@ from parlay_bot.observability import heartbeat
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.perpetuals import host_memory
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
+from parlay_bot.perpetuals.archive_model import (
+    ArchiveModelSet,
+    is_archive_document,
+)
 from parlay_bot.perpetuals.autonomous import AutonomousResearch
 from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
@@ -2292,6 +2296,15 @@ class RivalDiscordClient(discord.Client):
             market.pooled_models = PooledModelSet(self.store)
         return market.pooled_models
 
+    def _archive_model_set(self):
+        """The same archive model set the forecast cycle serves from."""
+        if self.perp_collector is None:
+            return None
+        market = self.perp_collector.market
+        if getattr(market, "archive_models", None) is None:
+            market.archive_models = ArchiveModelSet(self.store)
+        return market.archive_models
+
     async def _intelligence_loop(self) -> None:
         """RivaL Intelligence reviews the models' calls every 5-minute slot.
 
@@ -2741,6 +2754,9 @@ class RivalDiscordClient(discord.Client):
                 pooled_set = self._pooled_model_set()
                 if pooled_set is not None:
                     known |= await asyncio.to_thread(pooled_set.imported_file_ids)
+                archive_set = self._archive_model_set()
+                if archive_set is not None:
+                    known |= await asyncio.to_thread(archive_set.imported_file_ids)
                 for _ in range(12):
                     items, next_cursor = await asyncio.wait_for(
                         self.research_drive.read_verified_research_candidates(
@@ -2761,6 +2777,27 @@ class RivalDiscordClient(discord.Client):
                                         _LOG.info("RivaL imported pooled model %s", file_id)
                             except (ValueError, UnicodeError):
                                 _LOG.warning("RivaL pooled model failed verification")
+                            continue
+                        if is_archive_document(payload):
+                            # Archive artifacts are verified by
+                            # archive_training.validate(): provider hashes
+                            # (never normalized hashes), feature contract
+                            # and digest, calibration evaluated, offline
+                            # gates passed. The Drive-manifest byte
+                            # cross-check does not apply here: its
+                            # machinery only understands historical-
+                            # candidate documents, and the missing byte
+                            # check is a known Phase 2 limitation.
+                            try:
+                                archive = self._archive_model_set()
+                                if archive is not None:
+                                    added = await asyncio.to_thread(
+                                        archive.import_document, file_id, payload,
+                                    )
+                                    if added:
+                                        _LOG.info("RivaL imported archive model %s", file_id)
+                            except (ValueError, UnicodeError):
+                                _LOG.warning("RivaL archive model failed verification")
                             continue
                         try:
                             # Cross-check the candidate's claimed source

@@ -599,7 +599,7 @@ def load_frames_csv(frames_dir: Path) -> dict:
     return frames
 
 
-def load_frames_manifests(root: Path) -> tuple[dict, dict]:
+def load_frames_manifests(root: Path, *, target_asset: str | None = None) -> tuple[dict, dict]:
     """Load verified months restored under ``root`` via the existing
     restore paths (bitget_source_bridge / source_native), grouped per
     stream. Returns (frames, provenance). ``learning.assemble`` re-proves
@@ -611,7 +611,7 @@ def load_frames_manifests(root: Path) -> tuple[dict, dict]:
 
     manifests = sorted(Path(root).rglob("*.manifest.json"))
     if not manifests:
-        raise ValueError(f"no restored manifests under {root}")
+        raise TrainingDataUnavailable(f"no restored manifests under {root}")
     groups: dict[tuple, list[Path]] = {}
     for path in manifests:
         info = json.loads(path.read_text(encoding="utf-8"))
@@ -629,11 +629,18 @@ def load_frames_manifests(root: Path) -> tuple[dict, dict]:
         from parlay_bot.perpetuals.markets import asset_for_contract
 
         asset = asset_for_contract(contract)
+        if target_asset is not None and asset not in (target_asset, "BTC"):
+            continue
         table = pd.DataFrame(rows)
         table["time"] = pd.to_datetime(table["closed_at"], utc=True)
         table = table.rename(columns={"volume_base": "volume"})
         table = table.set_index("time").sort_index()
         tables[f"{venue}|{contract}|{quote}"] = (table, asset)
+        if target_asset is not None and asset != target_asset:
+            reference = provenance.setdefault("reference_provider_sha256_by_month", {})
+            reference.update({f"{venue}:{month}": sha
+                              for month, sha in (prov.get("provider_sha256_by_month") or {}).items()})
+            continue
         for month, sha in (prov.get("provider_sha256_by_month") or {}).items():
             provenance["provider_sha256_by_month"][f"{venue}:{month}"] = sha
         provenance["months_without_provider_hash"].extend(
@@ -645,6 +652,8 @@ def load_frames_manifests(root: Path) -> tuple[dict, dict]:
             ).get(month)
     frames = {}
     for stream_key, (table, asset) in tables.items():
+        if target_asset is not None and asset != target_asset:
+            continue
         venue = stream_key.split("|", 1)[0]
         btc = None
         if asset != "BTC":
@@ -683,21 +692,28 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path) 
         "excluded": {},
     }
     try:
-        try:
-            paths = await restore_verified_bitget_market_months(
-                drive, months=list(months), root=root, asset=asset
-            )
-            report["restored"]["bitget"] = [str(p) for p in paths]
-        except Exception as exc:  # noqa: BLE001 - record, do not skip silently
-            report["excluded"]["bitget"] = {"reason": type(exc).__name__, "detail": str(exc)[:300]}
-        for venue, contract in (("okx", f"{asset}-USDT-SWAP"), ("gate", f"{asset}_USDT")):
+        assets = (asset,) if asset == "BTC" else (asset, "BTC")
+        for coin in assets:
+            suffix = "" if coin == asset else ":BTC-reference"
             try:
-                paths = await restore_verified_source_months(
-                    drive, venue=venue, months=list(months), root=root, contract=contract
+                paths = await restore_verified_bitget_market_months(
+                    drive, months=list(months), root=root, asset=coin,
                 )
-                report["restored"][venue] = [str(p) for p in paths]
+                report["restored"]["bitget" + suffix] = [str(p) for p in paths]
             except Exception as exc:  # noqa: BLE001 - record, do not skip silently
-                report["excluded"][venue] = {"reason": type(exc).__name__, "detail": str(exc)[:300]}
+                report["excluded"]["bitget" + suffix] = {
+                    "reason": type(exc).__name__, "detail": str(exc)[:300],
+                }
+            for venue, contract in (("okx", f"{coin}-USDT-SWAP"), ("gate", f"{coin}_USDT")):
+                try:
+                    paths = await restore_verified_source_months(
+                        drive, venue=venue, months=list(months), root=root, contract=contract,
+                    )
+                    report["restored"][venue + suffix] = [str(p) for p in paths]
+                except Exception as exc:  # noqa: BLE001 - record, do not skip silently
+                    report["excluded"][venue + suffix] = {
+                        "reason": type(exc).__name__, "detail": str(exc)[:300],
+                    }
     finally:
         await drive.aclose()
     _write_json(Path(root) / "restore-report.json", report)
@@ -827,7 +843,12 @@ def main(argv: list[str] | None = None, *, weekly: bool = False) -> int:
         raise ValueError("train-end and test-start must be timezone-aware ISO")
     census = census_summary(args.census) if args.census else None
     if args.manifests_dir is not None:
-        frames, provenance = load_frames_manifests(args.manifests_dir)
+        try:
+            frames, provenance = load_frames_manifests(args.manifests_dir, target_asset=args.asset)
+        except TrainingDataUnavailable:
+            if not shared_run:
+                raise
+            frames, provenance = {}, {}
     elif args.frames_dir is not None:
         frames = load_frames_csv(args.frames_dir)
         provenance = (
@@ -841,7 +862,11 @@ def main(argv: list[str] | None = None, *, weekly: bool = False) -> int:
         )
     else:
         raise ValueError("one of --frames-dir or --manifests-dir is required")
-    if args.binance_cache is not None:
+    # Without any provider hashes the existing admission validator cannot
+    # accept a fit. The weekly job records that blocker without fetching ZIPs.
+    if args.binance_cache is not None and (
+        not shared_run or provenance.get("provider_sha256_by_month")
+    ):
         from datetime import date as _date
 
         if not args.binance_last_month:

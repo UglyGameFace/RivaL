@@ -572,7 +572,7 @@ def main(argv: list[str] | None = None) -> int:
         raise ValueError("train-end and test-start must be timezone-aware ISO")
     census = census_summary(args.census) if args.census else None
     if args.manifests_dir is not None:
-        frames, provenance = load_frames_manifests(args.manifests_dir)
+        frames, provenance = load_frames_manifests(args.manifests_dir, target_asset=args.asset)
     elif args.frames_dir is not None:
         frames = load_frames_csv(args.frames_dir)
         provenance = (

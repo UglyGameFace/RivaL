@@ -703,3 +703,23 @@ async def test_weekly_archive_job_resolves_the_requested_attempt(tmp_path, monke
         assert get_experiment(store, exp_id)["status"] == "shadow"
     finally:
         store.close()
+
+
+def test_weekly_cli_reports_empty_restore_for_both_families(tmp_path):
+    manifests = tmp_path / "manifests"
+    manifests.mkdir()
+    census = tmp_path / "census.json"
+    census.write_text("{}", encoding="utf-8")
+    out = tmp_path / "out"
+    status = archive_training.main([
+        "--asset", "BTC", "--horizon", "5", "--manifests-dir", str(manifests),
+        "--census", str(census), "--binance-cache", str(tmp_path / "binance"),
+        "--binance-last-month", "2026-10", "--train-end", "2026-09-11T00:00:00+00:00",
+        "--test-start", "2026-10-09T00:00:00+00:00",
+        "--trained-through", "2026-11-06T23:55:00+00:00", "--out", str(out),
+    ], weekly=True)
+    assert status == 0
+    for name in ("archive-v1-BTC-5m-report.json", "gbm-v1-BTC-5m-report.json"):
+        report = json.loads((out / name).read_text(encoding="utf-8"))
+        assert report["training_status"] == "blocked"
+    assert not list(out.glob("*-model.json"))

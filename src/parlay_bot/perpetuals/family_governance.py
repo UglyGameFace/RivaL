@@ -8,6 +8,7 @@ coverage. No live orders or claims of authenticated fills are introduced.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import statistics
 from datetime import UTC, datetime, timedelta
@@ -17,12 +18,18 @@ from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.perpetuals.model_competition import CHALLENGER_PREFIXES, FAMILIES
 
+_LOG = logging.getLogger(__name__)
+
 MIN_WINDOWS = 150
 MIN_DAYS = 21
 MIN_TRADES = 50
 MIN_COVERAGE = .80
 LOOKBACK = timedelta(days=30)
 FRESH_FOR = timedelta(hours=48)
+# Kill switch 2 (spec §2.8, §3.5 #6): a family in this set can never serve,
+# even with a fresh promoted_paper row. Default: empty. Changing this set
+# requires Felix's explicit approval of the specific change.
+BLOCKED_FAMILIES: set[str] = set()
 
 
 def _day_stress(pairs):
@@ -268,6 +275,16 @@ class FamilyPromotion:
         winners.sort(key=lambda name:(
             -scored[name]["cost_proof"]["severe"]["paired_gain_bps"],name))
         selected=winners[0] if winners else None
+        # Record the artifact that earned promotion, so selected() can check
+        # the served family is still that artifact (spec §2.2). Additive
+        # evidence only; no gate or threshold changes.
+        if "flow_v3" in scored:
+            try:
+                from parlay_bot.perpetuals.flow_challenger_v3 import FlowChallengerV3
+                scored["flow_v3"]["artifact"] = FlowChallengerV3.artifact_identity(
+                    self.store, asset, horizon)
+            except Exception:  # noqa: BLE001 - a missing state row records as no artifact
+                scored["flow_v3"]["artifact"] = None
         with self.store.connect() as conn:
             previous=conn.execute(
                 """SELECT selected_family,status FROM rival_family_promotion
@@ -291,6 +308,27 @@ class FamilyPromotion:
                 (venue,contract,quote,asset,horizon,stamp.isoformat(),selected,
                  status,reason,json.dumps(scored,sort_keys=True,allow_nan=False)),
             )
+        # First promoted_paper write for flow_v3: emit a Discord receipt
+        # (spec §2.7). The receipt is persisted and surfaced through the
+        # status card; a receipt failure never blocks governance.
+        if selected == "flow_v3" and not (
+                previous and previous["status"] == "promoted_paper"
+                and previous["selected_family"] == "flow_v3"):
+            try:
+                from parlay_bot.perpetuals.flow_challenger_v3 import FlowChallengerV3
+                from parlay_bot.perpetuals.promotion_receipts import (
+                    record_promotion_receipt,
+                )
+                record_promotion_receipt(
+                    self.store, family="flow_v3", venue=venue, contract=contract,
+                    quote=quote, horizon=horizon, kind="promoted",
+                    evidence={**scored["flow_v3"],
+                              "evaluated_at": stamp.isoformat()},
+                    calibration=FlowChallengerV3.calibration_status(
+                        self.store, asset, horizon),
+                    now=stamp)
+            except Exception:  # noqa: BLE001 - a receipt must never block governance
+                _LOG.exception("RivaL flow_v3 promotion receipt unavailable")
         return {"status":status,"selected_family":selected,"families":scored,
                 "market":(venue,contract,quote,horizon),
                 "real_fills_verified":False}
@@ -300,7 +338,7 @@ class FamilyPromotion:
         self.initialize()
         with self.store.connect() as conn:
             row=conn.execute(
-                """SELECT selected_family,status,evaluated_at
+                """SELECT selected_family,status,evaluated_at,evidence_json
                    FROM rival_family_promotion
                    WHERE asset=? AND venue=? AND contract=? AND quote=?
                     AND horizon_minutes=?""",
@@ -315,7 +353,56 @@ class FamilyPromotion:
         if not timedelta(0)<=stamp-tested<=FRESH_FOR:
             return None
         selected = str(row["selected_family"])
+        # Kill switch 2: a blocked family never serves, even with a fresh
+        # promoted_paper row.
+        if selected in BLOCKED_FAMILIES:
+            return None
         if selected in FAMILIES:
+            return selected
+        if selected == "flow_v3":
+            # Artifact-identity check: the served family must be the
+            # continuation of the artifact that earned promotion -- same
+            # feature contract, training only moved forward, weights moved
+            # only by graded learning. Exact weights-SHA equality with
+            # promotion time would fail closed on every routine per-cycle
+            # online-learning step (learn() runs each cycle), so the check
+            # verifies continuity on all three recorded fields instead of
+            # a frozen weight vector: digest equal, trained-through and
+            # graded count monotone, and a changed weights SHA is accepted
+            # only when graded learning actually advanced. A refit/reset
+            # (digest change, cursor/count regression, or unexplained
+            # weight change) blocks serve until the family re-earns
+            # promotion. The promotion-time weights SHA is preserved in
+            # the evidence/receipt for audit.
+            try:
+                from parlay_bot.perpetuals.flow_challenger_v3 import FlowChallengerV3
+                recorded = json.loads(row["evidence_json"])["flow_v3"]["artifact"]
+                current = FlowChallengerV3.artifact_identity(
+                    self.store, asset, horizon)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                return None
+            if not recorded or not current:
+                return None
+            try:
+                recorded_sha = str(recorded["weights_sha256"])
+                recorded_digest = str(recorded["feature_digest"])
+                recorded_through = utc(datetime.fromisoformat(
+                    str(recorded["trained_through"])))
+                recorded_count = int(recorded["graded_count"])
+                current_through = utc(datetime.fromisoformat(
+                    str(current["trained_through"])))
+                current_count = int(current["graded_count"])
+            except (ValueError, TypeError, KeyError):
+                return None
+            if (len(recorded_sha) != 64
+                    or recorded_digest != current["feature_digest"]
+                    or current_through < recorded_through
+                    or current_count < recorded_count):
+                return None
+            if (str(current["weights_sha256"]) != recorded_sha
+                    and not (current_count > recorded_count
+                             and current_through >= recorded_through)):
+                return None
             return selected
         if selected.startswith("pooled_"):
             # Serves only while it is still the active pooled model for this

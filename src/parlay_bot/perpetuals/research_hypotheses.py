@@ -73,24 +73,7 @@ class FeatureHypothesisLab:
         if self._initialized:
             return
         with self.store.connect() as conn:
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS rival_llm_feature_hypotheses (
-                  asset TEXT NOT NULL,
-                  slot_utc TEXT NOT NULL,
-                  attempted_at TEXT NOT NULL,
-                  evidence_sha256 TEXT,
-                  model TEXT,
-                  hypothesis TEXT,
-                  feature_indices_json TEXT,
-                  rationale TEXT,
-                  falsification TEXT,
-                  source_venues_json TEXT,
-                  record_sha256 TEXT,
-                  status TEXT NOT NULL,
-                  attempt_count INTEGER NOT NULL DEFAULT 1,
-                  PRIMARY KEY(asset,slot_utc)
-                )"""
-            )
+            conn.execute(HYPOTHESES_SCHEMA)
             if "attempt_count" not in self.store.database.column_names(
                 conn, "rival_llm_feature_hypotheses",
             ):
@@ -298,9 +281,16 @@ def recent_hypotheses(store, *, venue: str, now: datetime | None = None) -> list
     """
     current = (now or datetime.now(UTC)).astimezone(UTC)
     with store.connect() as conn:
+        # Legacy hosts can have hypothesis receipts without a research ledger.
+        ledger = store.database.column_names(conn, "rival_research_experiments")
+        pending = """AND NOT EXISTS (
+            SELECT 1 FROM rival_research_experiments e
+            WHERE e.proposal_sha256=h.record_sha256
+              AND e.status IN ('screened', 'shadow', 'promoted', 'discarded', 'failed')
+        )""" if "proposal_sha256" in ledger else ""
         rows = conn.execute(
-            """SELECT * FROM rival_llm_feature_hypotheses
-               WHERE status='proposed' AND attempted_at>=?
+            f"""SELECT h.* FROM rival_llm_feature_hypotheses h
+               WHERE h.status='proposed' AND h.attempted_at>=? {pending}
                ORDER BY attempted_at ASC LIMIT 96""",
             ((current - timedelta(days=PROPOSAL_FRESHNESS_DAYS)).isoformat(),),
         ).fetchall()
@@ -376,6 +366,24 @@ def hypothesis_attempt_status(store, *, now: datetime | None = None) -> dict:
         "status": "recorded" if latest else "no_recent_attempts",
         "latest_by_asset": latest,
     }
+
+
+HYPOTHESES_SCHEMA = """CREATE TABLE IF NOT EXISTS rival_llm_feature_hypotheses (
+  asset TEXT NOT NULL,
+  slot_utc TEXT NOT NULL,
+  attempted_at TEXT NOT NULL,
+  evidence_sha256 TEXT,
+  model TEXT,
+  hypothesis TEXT,
+  feature_indices_json TEXT,
+  rationale TEXT,
+  falsification TEXT,
+  source_venues_json TEXT,
+  record_sha256 TEXT,
+  status TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 1,
+  PRIMARY KEY(asset,slot_utc)
+)"""
 
 
 TRIALS_SCHEMA = """CREATE TABLE IF NOT EXISTS rival_llm_hypothesis_trials (
@@ -506,6 +514,10 @@ def record_trials(store, trials: list, *, report_sha256: str,
     saved = 0
     with store.connect() as conn:
         conn.execute(TRIALS_SCHEMA)
+        # Phase 3: a scheduled trial names no LLM proposal, so the
+        # lookup below must find an empty hypotheses table, not crash
+        # on a missing one (the lab may never have run on this store).
+        conn.execute(HYPOTHESES_SCHEMA)
         # Spec D17: outcome columns on rows created before this change.
         for column, definition in (("outcome_status", "TEXT"),
                                    ("outcome_reason", "TEXT")):

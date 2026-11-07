@@ -186,6 +186,10 @@ def _metrics(p, y, base: float, index) -> dict:
     return metrics(p, y, base, index)
 
 
+class TrainingDataUnavailable(ValueError):
+    """Verified input cannot supply the required chronological splits."""
+
+
 def train_run(
     frames: dict,
     *,
@@ -197,6 +201,7 @@ def train_run(
     provenance: dict,
     code_version: str,
     months_requested=None,
+    groups_off: tuple[str, ...] = (),
 ) -> dict:
     """Train one (asset, horizon) artifact and gate it.
 
@@ -216,6 +221,7 @@ def train_run(
         raise ValueError(f"unsupported asset: {asset!r}")
     if horizon not in HORIZONS:
         raise ValueError(f"unsupported horizon: {horizon!r}")
+    masked_features = _masked_features(groups_off)
     anchor = tuple(
         GROUPS["candle"] + GROUPS["multi_horizon"] + GROUPS["calendar"] + GROUPS["cross_asset"]
     )
@@ -228,23 +234,27 @@ def train_run(
     parts, coverage_frames = [], {}
     for key, (k, f) in frames.items():
         part = f.copy()
+        if masked_features:
+            part[list(masked_features)] = float("nan")
         part["y"] = build_labels(k, horizon)
         part["stream"] = str(key)
         parts.append(part)
         coverage_frames[key] = (k, f)
     if not parts:
-        raise ValueError("no frames to train on")
+        raise TrainingDataUnavailable("no frames to train on")
     data = pd.concat(parts).sort_index()
     # Anchor groups must be present; context groups may be missing.
     data = data.dropna(subset=["y", *[FEATURES[i] for i in anchor]])
     if len(data) < 300:
-        raise ValueError(f"not enough labelled rows: {len(data)}")
+        raise TrainingDataUnavailable(f"not enough labelled rows: {len(data)}")
     train_mask, val_mask, test_mask = chronological_splits(
         data.index, train_end=train_end, test_start=test_start, horizon=horizon
     )
     train, val, test = data[train_mask], data[val_mask], data[test_mask]
     if len(train) < 300 or len(val) < 100 or len(test) < 100:
-        raise ValueError(f"split too small: train={len(train)} val={len(val)} test={len(test)}")
+        raise TrainingDataUnavailable(
+            f"split too small: train={len(train)} val={len(val)} test={len(test)}"
+        )
     cols = list(FEATURES)
     mean, std = _standardize_fit(train[cols].to_numpy(dtype=float))
     x_train = _standardize_apply(train[cols].to_numpy(dtype=float), mean, std)
@@ -339,6 +349,8 @@ def train_run(
         "serving_capable_without_binance_context": context_absent_ok,
         "serve_clamp": list(SERVE_CLAMP),
     }
+    if groups_off:
+        report["feature_groups_off"] = list(groups_off)
     if not gates_passed:
         return {"publish_kind": "report", "artifact": None, "report": report}
     doc = {
@@ -407,6 +419,14 @@ def venue_holdout(data, test, weights, mean, std, base: float, platt: dict | Non
     return out
 
 
+def _masked_features(groups) -> tuple[str, ...]:
+    if not isinstance(groups, (list, tuple)) or any(
+        group not in ("premium", "binance_tape") for group in groups
+    ):
+        raise ValueError("unsupported archive feature ablation")
+    return tuple(FEATURES[i] for group in groups for i in GROUPS[group])
+
+
 def validate(doc: dict) -> dict:
     """Fail closed on any artifact that must not enter the import path."""
     if not isinstance(doc, dict) or doc.get("schema") != SCHEMA:
@@ -419,6 +439,7 @@ def validate(doc: dict) -> dict:
         raise ValueError("archive model built for different inputs")
     if doc.get("feature_digest") != FEATURE_DIGEST:
         raise ValueError("archive model feature digest mismatch")
+    _masked_features(doc.get("feature_groups_off", ()))
     weights = doc.get("weights")
     if not isinstance(weights, list) or len(weights) != len(FEATURES) + 1:
         raise ValueError("archive model weights have the wrong width")
@@ -485,7 +506,10 @@ def probability(doc: dict, vector) -> float:
         raise ValueError("wrong archive feature count")
     mean = np.array(doc["standardizer"]["mean"], dtype=float)
     std = np.array(doc["standardizer"]["std"], dtype=float)
-    x = _standardize_apply(np.array(vector, dtype=float), mean, std)
+    values = np.array(vector, dtype=float)
+    for name in _masked_features(doc.get("feature_groups_off", ())):
+        values[FEATURES.index(name)] = float("nan")
+    x = _standardize_apply(values, mean, std)
     raw = _sigmoid(float(np.hstack([[1.0], x]) @ np.array(doc["weights"], dtype=float)))
     calibration = doc["calibration"]
     calibrated = _sigmoid(
@@ -575,7 +599,7 @@ def load_frames_csv(frames_dir: Path) -> dict:
     return frames
 
 
-def load_frames_manifests(root: Path) -> tuple[dict, dict]:
+def load_frames_manifests(root: Path, *, target_asset: str | None = None) -> tuple[dict, dict]:
     """Load verified months restored under ``root`` via the existing
     restore paths (bitget_source_bridge / source_native), grouped per
     stream. Returns (frames, provenance). ``learning.assemble`` re-proves
@@ -587,7 +611,7 @@ def load_frames_manifests(root: Path) -> tuple[dict, dict]:
 
     manifests = sorted(Path(root).rglob("*.manifest.json"))
     if not manifests:
-        raise ValueError(f"no restored manifests under {root}")
+        raise TrainingDataUnavailable(f"no restored manifests under {root}")
     groups: dict[tuple, list[Path]] = {}
     for path in manifests:
         info = json.loads(path.read_text(encoding="utf-8"))
@@ -605,11 +629,18 @@ def load_frames_manifests(root: Path) -> tuple[dict, dict]:
         from parlay_bot.perpetuals.markets import asset_for_contract
 
         asset = asset_for_contract(contract)
+        if target_asset is not None and asset not in (target_asset, "BTC"):
+            continue
         table = pd.DataFrame(rows)
         table["time"] = pd.to_datetime(table["closed_at"], utc=True)
         table = table.rename(columns={"volume_base": "volume"})
         table = table.set_index("time").sort_index()
         tables[f"{venue}|{contract}|{quote}"] = (table, asset)
+        if target_asset is not None and asset != target_asset:
+            reference = provenance.setdefault("reference_provider_sha256_by_month", {})
+            reference.update({f"{venue}:{month}": sha
+                              for month, sha in (prov.get("provider_sha256_by_month") or {}).items()})
+            continue
         for month, sha in (prov.get("provider_sha256_by_month") or {}).items():
             provenance["provider_sha256_by_month"][f"{venue}:{month}"] = sha
         provenance["months_without_provider_hash"].extend(
@@ -621,6 +652,8 @@ def load_frames_manifests(root: Path) -> tuple[dict, dict]:
             ).get(month)
     frames = {}
     for stream_key, (table, asset) in tables.items():
+        if target_asset is not None and asset != target_asset:
+            continue
         venue = stream_key.split("|", 1)[0]
         btc = None
         if asset != "BTC":
@@ -659,28 +692,36 @@ async def restore_verified_months(*, asset: str, months: list[str], root: Path) 
         "excluded": {},
     }
     try:
-        try:
-            paths = await restore_verified_bitget_market_months(
-                drive, months=list(months), root=root, asset=asset
-            )
-            report["restored"]["bitget"] = [str(p) for p in paths]
-        except Exception as exc:  # noqa: BLE001 - record, do not skip silently
-            report["excluded"]["bitget"] = {"reason": type(exc).__name__, "detail": str(exc)[:300]}
-        for venue, contract in (("okx", f"{asset}-USDT-SWAP"), ("gate", f"{asset}_USDT")):
+        assets = (asset,) if asset == "BTC" else (asset, "BTC")
+        for coin in assets:
+            suffix = "" if coin == asset else ":BTC-reference"
             try:
-                paths = await restore_verified_source_months(
-                    drive, venue=venue, months=list(months), root=root, contract=contract
+                paths = await restore_verified_bitget_market_months(
+                    drive, months=list(months), root=root, asset=coin,
                 )
-                report["restored"][venue] = [str(p) for p in paths]
+                report["restored"]["bitget" + suffix] = [str(p) for p in paths]
             except Exception as exc:  # noqa: BLE001 - record, do not skip silently
-                report["excluded"][venue] = {"reason": type(exc).__name__, "detail": str(exc)[:300]}
+                report["excluded"]["bitget" + suffix] = {
+                    "reason": type(exc).__name__, "detail": str(exc)[:300],
+                }
+            for venue, contract in (("okx", f"{coin}-USDT-SWAP"), ("gate", f"{coin}_USDT")):
+                try:
+                    paths = await restore_verified_source_months(
+                        drive, venue=venue, months=list(months), root=root, contract=contract,
+                    )
+                    report["restored"][venue + suffix] = [str(p) for p in paths]
+                except Exception as exc:  # noqa: BLE001 - record, do not skip silently
+                    report["excluded"][venue + suffix] = {
+                        "reason": type(exc).__name__, "detail": str(exc)[:300],
+                    }
     finally:
         await drive.aclose()
     _write_json(Path(root) / "restore-report.json", report)
     return report
 
 
-async def load_binance_frame(asset: str, cache: Path, last_month: str, *, through_day=None):
+async def load_binance_frame(asset: str, cache: Path, last_month: str, *,
+                             through_day=None, first_month=None):
     """Binance 5m frame via the existing pooled-training loader.
 
     tools/feature_signal_experiment.load_asset fetches official Vision
@@ -699,14 +740,18 @@ async def load_binance_frame(asset: str, cache: Path, last_month: str, *, throug
 
     sem = asyncio.Semaphore(16)
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
-        k = await source.load_asset(client, asset, last_month, cache, sem, through_day=through_day)
+        k = await source.load_asset(
+            client, asset, last_month, cache, sem,
+            through_day=through_day, first_month=first_month,
+        )
     if "count" in k.columns and "trades" not in k.columns:
         k["trades"] = k["count"]
     btc = None
     if asset != "BTC":
         async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
             btc_k = await source.load_asset(
-                client, "BTC", last_month, cache, sem, through_day=through_day
+                client, "BTC", last_month, cache, sem,
+                through_day=through_day, first_month=first_month,
             )
         btc = btc_k[["close"]]
     coverage = dict(k.attrs.get("coverage", {}))
@@ -749,7 +794,7 @@ async def _publish(kind: str, path: Path) -> dict:
         await drive.aclose()
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, *, weekly: bool = False) -> int:
     parser = argparse.ArgumentParser(description="Train the archive_v1 offline logistic (Phase 1).")
     parser.add_argument("--asset", required=True, choices=list(ASSETS))
     parser.add_argument("--horizon", required=True, type=int, choices=list(HORIZONS))
@@ -791,13 +836,19 @@ def main(argv: list[str] | None = None) -> int:
         help="Publish kind=model (pass) or kind=report (fail) to Drive",
     )
     args = parser.parse_args(argv)
+    shared_run = weekly and args.manifests_dir is not None and args.census is not None
     train_end = datetime.fromisoformat(args.train_end)
     test_start = datetime.fromisoformat(args.test_start)
     if train_end.tzinfo is None or test_start.tzinfo is None:
         raise ValueError("train-end and test-start must be timezone-aware ISO")
     census = census_summary(args.census) if args.census else None
     if args.manifests_dir is not None:
-        frames, provenance = load_frames_manifests(args.manifests_dir)
+        try:
+            frames, provenance = load_frames_manifests(args.manifests_dir, target_asset=args.asset)
+        except TrainingDataUnavailable:
+            if not shared_run:
+                raise
+            frames, provenance = {}, {}
     elif args.frames_dir is not None:
         frames = load_frames_csv(args.frames_dir)
         provenance = (
@@ -811,7 +862,11 @@ def main(argv: list[str] | None = None) -> int:
         )
     else:
         raise ValueError("one of --frames-dir or --manifests-dir is required")
-    if args.binance_cache is not None:
+    # Without any provider hashes the existing admission validator cannot
+    # accept a fit. The weekly job records that blocker without fetching ZIPs.
+    if args.binance_cache is not None and (
+        not shared_run or provenance.get("provider_sha256_by_month")
+    ):
         from datetime import date as _date
 
         if not args.binance_last_month:
@@ -821,7 +876,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         btc_k, btc_f, btc_cov = asyncio.run(
             load_binance_frame(
-                args.asset, args.binance_cache, args.binance_last_month, through_day=through
+                args.asset, args.binance_cache, args.binance_last_month, through_day=through,
+                first_month=("2019-09" if args.asset == "XRP" and args.horizon == 5 else "2021-01")
+                if shared_run else None,
             )
         )
         frames[f"binance|{args.asset}USDT|USDT"] = (btc_k, btc_f)
@@ -831,17 +888,23 @@ def main(argv: list[str] | None = None) -> int:
             provenance.setdefault("months_without_provider_hash", []).append(f"binance:{month}")
         provenance["binance_zip_sha256_verified_at_fetch"] = True
         provenance["binance_coverage"] = btc_cov
-    result = train_run(
-        frames,
-        asset=args.asset,
-        horizon=args.horizon,
-        train_end=train_end,
-        test_start=test_start,
-        trained_through=args.trained_through,
-        provenance=provenance,
-        code_version=args.code_version or _git_sha(),
-        months_requested=None,
-    )
+    training = {
+        "asset": args.asset,
+        "horizon": args.horizon,
+        "train_end": train_end,
+        "test_start": test_start,
+        "trained_through": args.trained_through,
+        "provenance": provenance,
+        "code_version": args.code_version or _git_sha(),
+        "months_requested": None,
+    }
+    if shared_run:
+        from parlay_bot.research.weekly_archive import train_weekly_archive
+
+        return asyncio.run(train_weekly_archive(
+            frames, training=training, census=census, out=args.out, publish=args.publish,
+        ))
+    result = train_run(frames, **training)
     report = dict(result["report"])
     if census is not None:
         report["census"] = census

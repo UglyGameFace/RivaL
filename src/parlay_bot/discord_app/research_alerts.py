@@ -315,7 +315,8 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
     # changes alone.
     try:
         rows = conn.execute(
-            """SELECT status, outcome_json FROM rival_research_experiments
+            """SELECT experiment_id, proposer, status, outcome_json
+               FROM rival_research_experiments
                WHERE created_at>=?""",
             ((stamp - timedelta(days=90)).isoformat(),),
         ).fetchall()
@@ -336,6 +337,11 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
                     closed_at = _utc(event.get("at"))
             if closed_at is not None and stamp - closed_at <= timedelta(days=7):
                 closed[status] += 1
+                outcome = (events[-1].get("outcome") or {}) if events else {}
+                if row["proposer"] == "scheduled" and outcome.get("blocked"):
+                    reason = str(outcome.get("reason") or "verified inputs unavailable")[:140]
+                    alerts.append((f"research-blocked:{row['experiment_id']}",
+                                   f"⛔ Scheduled research blocked · {reason}"))
         if open_count or any(closed.values()):
             alerts.append(("research-loop:counts",
                            (f"🔬 Research loop: {open_count} open experiment(s); "

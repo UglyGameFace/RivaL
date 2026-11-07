@@ -53,6 +53,8 @@ def _pinned_identity_matches(recorded, current) -> bool:
         return False
     return (len(recorded_sha) == 64
             and recorded_digest == current["feature_digest"]
+            and (not recorded.get("model_sha256")
+                 or current.get("model_sha256") == recorded["model_sha256"])
             and str(current["weights_sha256"]) == recorded_sha
             and current_through >= recorded_through
             and current_count >= recorded_count)
@@ -324,10 +326,6 @@ class FamilyPromotion:
                 "real_fills_verified":False,
                 "qualification":"prospective_shadow_paper_only",
             }
-        winners=[f for f,v in scored.items() if v["qualified"]]
-        winners.sort(key=lambda name:(
-            -scored[name]["cost_proof"]["severe"]["paired_gain_bps"],name))
-        selected=winners[0] if winners else None
         # Record the artifact that earned promotion, so selected() can check
         # the served family is still that artifact (spec §2.2). Additive
         # evidence only; no gate or threshold changes.
@@ -362,6 +360,14 @@ class FamilyPromotion:
                         self.store, asset, horizon))
             except Exception:  # noqa: BLE001 - a missing state row records as no artifact
                 scored["liq_v1"]["artifact"] = None
+        for family, pinned_sha in pinned_shas.items():
+            evidence = scored.get(family)
+            if evidence and (evidence.get("artifact") or {}).get("model_sha256") != pinned_sha:
+                evidence["qualified"] = False
+        winners=[f for f,v in scored.items() if v["qualified"]]
+        winners.sort(key=lambda name:(
+            -scored[name]["cost_proof"]["severe"]["paired_gain_bps"],name))
+        selected=winners[0] if winners else None
         with self.store.connect() as conn:
             previous=conn.execute(
                 """SELECT selected_family,status FROM rival_family_promotion
@@ -476,7 +482,7 @@ class FamilyPromotion:
                 offline_model_pins.resolve_pin(
                     self.store, _family, asset, horizon,
                     selected=(selected == _family), now=stamp,
-                    min_windows=MIN_WINDOWS, lookback=LOOKBACK)
+                    expected_sha=pinned_shas[_family], lookback=LOOKBACK)
             except Exception:  # noqa: BLE001 - a pin verdict never blocks governance
                 _LOG.exception("RivaL %s pin verdict unavailable", _family)
         return {"status":status,"selected_family":selected,"families":scored,

@@ -14,11 +14,8 @@ Rules, stated once (spec §11, D14):
 - The graded-count query and ``evaluate()``'s shadow-row selection filter
   by the pinned artifact's document hash (``training_sha256`` on shadow
   rows), so a new fit never inherits evidence it did not earn.
-- A pinned fit is ``rejected`` when its evidence is exhausted without a
-  promotion: every issued row settled, and either at least 150 settled
-  targets or the last issuance is older than the 30-day lookback. A
-  pinned fit cannot stall the queue forever, because the lookback expiry
-  forces a verdict (discarded with a finding, by the driver).
+- A pinned fit has the full lookback to earn a promotion. Its clock starts
+  with its first issued forecast, or at pinning if no forecast can issue.
 - A ``promoted`` pin keeps the slot while the family holds a fresh
   ``promoted_paper`` row anywhere in the asset/horizon; once it stops
   serving, the next queued fit is admitted.
@@ -200,17 +197,15 @@ def queue_depth(store, family: str, asset: str, horizon: int, *,
 
 
 def resolve_pin(store, family: str, asset: str, horizon: int, *, selected: bool,
-                now: datetime | None = None, min_windows: int = 150,
+                now: datetime | None = None, expected_sha: str | None = None,
                 lookback: timedelta = timedelta(days=30)) -> dict | None:
     """Judge the current pin after an evaluation; sets verdicts only.
 
     Called from ``FamilyPromotion.evaluate()`` for the offline families.
     ``selected`` is whether this evaluation selected the family for the
-    scope just evaluated. A pinned fit is promoted when selected; it is
-    rejected when its evidence is exhausted without a promotion (every
-    issued row settled, and either >= ``min_windows`` settled targets or
-    the last issuance is older than ``lookback``). Advancement to the next
-    queued fit happens in ``select_pinned`` on the next reload, never here.
+    scope just evaluated. A pinned fit is promoted when selected. A fit
+    that used its full collection window without selection releases its
+    slot; pending rows can still settle through the existing ledger.
     Returns the current pin row, or None when there is no pin.
     """
     stamp = now or datetime.now(UTC)
@@ -218,48 +213,28 @@ def resolve_pin(store, family: str, asset: str, horizon: int, *, selected: bool,
     if pin is None or pin["verdict"] is not None:
         return pin
     sha = pin["model_sha256"]
+    if expected_sha is not None and sha != expected_sha:
+        return pin
     if selected:
         set_verdict(store, family, asset, horizon, sha, VERDICT_PROMOTED, now=stamp)
         return current_pin(store, family, asset, horizon)
     try:
         with store.connect() as conn:
-            settled = conn.execute(
-                """SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts
-                   WHERE family=? AND asset=? AND horizon_minutes=?
-                   AND training_sha256=? AND settled_at IS NOT NULL
-                   AND outcome_up IN (0,1)""",
-                (family, asset, int(horizon), sha),
-            ).fetchone()
-            unsettled = conn.execute(
-                """SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts
-                   WHERE family=? AND asset=? AND horizon_minutes=?
-                   AND training_sha256=? AND settled_at IS NULL""",
-                (family, asset, int(horizon), sha),
-            ).fetchone()
-            last = conn.execute(
-                """SELECT MAX(issued_at) AS v FROM rival_model_shadow_forecasts
+            first = conn.execute(
+                """SELECT MIN(issued_at) AS v FROM rival_model_shadow_forecasts
                    WHERE family=? AND asset=? AND horizon_minutes=?
                    AND training_sha256=?""",
                 (family, asset, int(horizon), sha),
             ).fetchone()
     except Exception:  # noqa: BLE001 - no ledger yet means no verdict
         return pin
-    settled_n = int(settled["n"]) if settled is not None else 0
-    unsettled_n = int(unsettled["n"]) if unsettled is not None else 0
-    last_issued = None
-    if last is not None and last["v"] is not None:
-        try:
-            last_issued = datetime.fromisoformat(str(last["v"]))
-            if last_issued.utcoffset() is None:
-                last_issued = last_issued.replace(tzinfo=UTC)
-        except ValueError:
-            last_issued = None
-    exhausted = (
-        settled_n >= 1 and unsettled_n == 0
-        and (settled_n >= min_windows
-             or (last_issued is not None and stamp - last_issued > lookback))
-    )
-    if exhausted:
+    try:
+        anchor = datetime.fromisoformat(str((first and first["v"]) or pin["pinned_at"]))
+        if anchor.utcoffset() is None:
+            anchor = anchor.replace(tzinfo=UTC)
+    except ValueError:
+        return pin
+    if stamp - anchor > lookback:
         set_verdict(store, family, asset, horizon, sha, VERDICT_REJECTED, now=stamp)
         return current_pin(store, family, asset, horizon)
     return pin

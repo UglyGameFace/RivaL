@@ -121,10 +121,38 @@ def read_receipt() -> dict:
             "learning": learning,
             "forward_proof": _future_proof(store, now),
             "polymarket_contest": _contest_progress(store, now),
+            "research_loop": _research_progress(store, settings),
             "does_not_prove_prediction_edge": True,
         }
     finally:
         store.close()
+
+
+def _research_progress(store, settings) -> dict:
+    result = {
+        "enabled": bool(getattr(settings, "rival_research_loop_enabled", False)),
+        "drive_folder_ids_present": bool(
+            getattr(settings, "rival_drive_models_folder_id", None)
+            and getattr(settings, "rival_drive_reports_folder_id", None)
+        ),
+    }
+    try:
+        with store.connect() as conn:
+            rows = conn.execute(
+                """SELECT status, outcome_json FROM rival_research_experiments
+                   WHERE proposer='scheduled' ORDER BY created_at DESC LIMIT 16"""
+            ).fetchall()
+        by_status = {}
+        submitted = 0
+        for row in rows:
+            status = row["status"]
+            by_status[status] = by_status.get(status, 0) + 1
+            submitted += any(event.get("stage") == "offline-request"
+                             for event in json.loads(row["outcome_json"]))
+        return {**result, "status": "recorded", "recent_by_status": by_status,
+                "recent_submitted_to_drive": submitted}
+    except Exception:  # noqa: BLE001 - an optional receipt cannot mask worker health
+        return {**result, "status": "unavailable"}
 
 
 def _contest_progress(store, now: datetime) -> dict:

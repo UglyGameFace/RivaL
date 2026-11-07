@@ -492,6 +492,27 @@ def test_resolve_pin_rejects_exhausted_fit(tmp_path, gbm_doc):
         store.close()
 
 
+def test_resolve_pin_preserves_collection_time_after_150_windows(tmp_path, gbm_doc):
+    store = _store(tmp_path, name="gbm-pin-clock.sqlite")
+    try:
+        sha = model_sha256(gbm_doc)
+        first = NOW - timedelta(days=2)
+        offline_model_pins.pin(store, FAMILY, "BTC", 5, sha, now=first)
+        with store.connect() as conn:
+            for i in range(150):
+                issued = first + timedelta(minutes=5 * i)
+                _insert_shadow_row(conn, sha=sha, family=FAMILY, issued=issued,
+                                   ref=issued - timedelta(minutes=5), target=issued)
+        pin = offline_model_pins.resolve_pin(store, FAMILY, "BTC", 5, selected=False, now=NOW)
+        assert pin["verdict"] is None
+        pin = offline_model_pins.resolve_pin(
+            store, FAMILY, "BTC", 5, selected=False, now=first + timedelta(days=31),
+        )
+        assert pin["verdict"] == "rejected"
+    finally:
+        store.close()
+
+
 def test_dry_run_cli_writes_model_and_report(tmp_path):
     """The workflow step's exact command (tools/train_gbm_model.py with
     the same flags as the logistic step) writes a model + report."""

@@ -16,6 +16,7 @@ _LOG = logging.getLogger(__name__)
 
 TRANSIENT_UPLOAD_STATUSES = frozenset({500, 502, 503, 504})
 MAX_TRANSIENT_UPLOAD_RETRIES = 5
+MAX_RESEARCH_DOCUMENT_BYTES = 2_200_000
 
 
 class DriveArchiveError(RuntimeError):
@@ -635,6 +636,7 @@ class GoogleDriveArchiveClient:
     async def read_verified_research_candidates(
         self, *, limit: int = 20, page_token: str | None = None,
         return_next_page: bool = False, known_ids: frozenset[str] = frozenset(),
+        name_prefix: str | None = None,
     ) -> list[tuple[str, bytes]] | tuple[list[tuple[str, bytes]], str | None]:
         """Bounded immutable Google Drive candidate import, NEVER live promotion.
 
@@ -657,6 +659,8 @@ class GoogleDriveArchiveClient:
             f"'{self._escape_query(folder)}' in parents and trashed = false "
             "and appProperties has { key='rival_kind' and value='model' }"
         )
+        if name_prefix:
+            query += f" and name contains '{self._escape_query(name_prefix)}'"
         response = await self._client.get(
             f"{self.DRIVE_URL}/files",
             params={
@@ -692,7 +696,7 @@ class GoogleDriveArchiveClient:
                 or not isinstance(expected, str) or len(expected) != 64
                 or any(ch not in "0123456789abcdef" for ch in expected)
                 or not isinstance(item.size_bytes, int)
-                or not 0 < item.size_bytes <= 2_200_000
+                or not 0 < item.size_bytes <= MAX_RESEARCH_DOCUMENT_BYTES
                 or props.get("rival_kind") != "model"
                 or any(ch not in
                        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
@@ -724,6 +728,7 @@ class GoogleDriveArchiveClient:
     async def read_verified_research_reports(
         self, *, limit: int = 20, page_token: str | None = None,
         return_next_page: bool = False, known_ids: frozenset[str] = frozenset(),
+        name_prefix: str | None = None,
     ) -> list[tuple[str, bytes]] | tuple[list[tuple[str, bytes]], str | None]:
         """Bounded immutable Google Drive research-report import.
 
@@ -752,6 +757,8 @@ class GoogleDriveArchiveClient:
             f"'{self._escape_query(folder)}' in parents and trashed = false "
             "and appProperties has { key='rival_kind' and value='report' }"
         )
+        if name_prefix:
+            query += f" and name contains '{self._escape_query(name_prefix)}'"
         response = await self._client.get(
             f"{self.DRIVE_URL}/files",
             params={
@@ -787,7 +794,7 @@ class GoogleDriveArchiveClient:
                 or not isinstance(expected, str) or len(expected) != 64
                 or any(ch not in "0123456789abcdef" for ch in expected)
                 or not isinstance(item.size_bytes, int)
-                or not 0 < item.size_bytes <= 2_200_000
+                or not 0 < item.size_bytes <= MAX_RESEARCH_DOCUMENT_BYTES
                 or props.get("rival_kind") != "report"
                 or any(ch not in
                        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"

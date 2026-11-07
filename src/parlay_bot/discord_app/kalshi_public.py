@@ -27,6 +27,11 @@ _SYMBOLS = {
 # discovery response determines what exists. Avoid hardcoded market IDs.
 _MAX_SERIES = 4
 _CACHE_TTL = timedelta(seconds=35)
+# Bounded retry of the single /series discovery call only. A transient
+# transport failure (e.g. ConnectTimeout) must not abort the whole browse
+# when a repeat attempt succeeds. Per-attempt timeout stays 3.0 s; only
+# transport-level failures are retried, never bad data.
+_DISCOVERY_RETRY_DELAYS = (1.0, 2.0)
 
 
 def _date(value: object) -> datetime | None:
@@ -267,7 +272,22 @@ class KalshiCryptoBrowser:
             if cached and cached[0] > now and not refresh:
                 return cached[1]
             try:
-                resp = await self._client.get(_ROOT + "/series", params={"category": "Crypto"})
+                resp = None
+                for attempt in range(len(_DISCOVERY_RETRY_DELAYS) + 1):
+                    try:
+                        resp = await self._client.get(
+                            _ROOT + "/series", params={"category": "Crypto"},
+                        )
+                        break
+                    except httpx.TransportError as exc:
+                        if attempt >= len(_DISCOVERY_RETRY_DELAYS):
+                            raise
+                        _LOG.warning(
+                            "Kalshi crypto discovery retry asset=%s attempt=%d error=%s",
+                            asset, attempt + 1, type(exc).__name__,
+                        )
+                        await asyncio.sleep(_DISCOVERY_RETRY_DELAYS[attempt])
+                assert resp is not None
                 resp.raise_for_status()
                 series = matching_series(resp.json(), asset=asset)
                 # No market listing means no invented venue / timeframe match.

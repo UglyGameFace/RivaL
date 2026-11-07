@@ -89,6 +89,12 @@ OFFLINE_POOL_STATUSES = ("proposed", "ablating", "screened")
 OFFLINE_POOL_MAX = 4
 SHADOW_POOL_MAX = 4
 PROPOSERS = ("llm", "human", "scheduled")
+# Phase 3 (spec D9): the hypothesis the deterministic scheduled grid
+# opens under. It is deliberately NOT in the LLM's HYPOTHESES enum —
+# validate_proposal() refuses it, so the LLM can never propose a
+# scheduled variant. Only open_scheduled_variant() (scheduled_variants)
+# creates experiments with it.
+SCHEDULED_HYPOTHESES = ("scheduled_variant",)
 FINDING_KINDS = ("discovery", "mistake", "negative_result")
 RECORDED_BY = ("llm", "human", "system")
 # Actors allowed to drive a status transition. "llm" is deliberately
@@ -175,14 +181,16 @@ def create_experiment(store, *, proposer: str, hypothesis: str,
     """Open one experiment in status='proposed' (loop step 1).
 
     ``hypothesis`` is constrained to the fixed enum the LLM may propose
-    from (spec §3.2 step 1); ``design`` carries the train/validation/
-    holdout windows, model shape, and calibration method. The caller
-    that stores the LLM proposal in ``rival_llm_feature_hypotheses``
-    (``FeatureHypothesisLab``) passes its ``proposal_sha256``.
+    from (spec §3.2 step 1), plus the scheduled grid's hypothesis
+    (spec D9), which only open_scheduled_variant() may use. ``design``
+    carries the train/validation/holdout windows, model shape, and
+    calibration method. The caller that stores the LLM proposal in
+    ``rival_llm_feature_hypotheses`` (``FeatureHypothesisLab``) passes
+    its ``proposal_sha256``.
     """
     if proposer not in PROPOSERS:
         raise ValueError(f"unknown proposer: {proposer!r}")
-    if hypothesis not in HYPOTHESES:
+    if hypothesis not in HYPOTHESES + SCHEDULED_HYPOTHESES:
         raise ValueError(f"hypothesis outside the fixed enum: {hypothesis!r}")
     if feature_indices is not None and not valid_feature_indices(feature_indices):
         raise ValueError("feature_indices must be 2-8 sorted unique indices 0-9")

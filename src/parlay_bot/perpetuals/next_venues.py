@@ -151,9 +151,11 @@ class OkxMarketClient(_HttpFeed):
                 if ts < earliest:
                     continue  # Bounded lookback, never import extra older data.
                 if row[8] != "1":
-                    if ts == cutoff:
-                        continue
-                    raise MarketDataError("unconfirmed historical OKX candle")
+                    # Unconfirmed candle (forming bar at the cutoff, or a
+                    # still-unconfirmed closed row): skip this row only, so
+                    # one unconfirmed candle cannot discard the valid rows
+                    # already parsed in this batch.
+                    continue
                 candle = _make_candle(
                     venue="okx", contract=contract, opened=ts, earliest=earliest,
                     cutoff=cutoff, interval=interval_minutes, now=started,

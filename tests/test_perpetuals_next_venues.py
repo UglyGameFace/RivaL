@@ -97,6 +97,34 @@ async def test_two_public_venues_store_exact_contract_and_base_volume(
 
 
 @pytest.mark.asyncio
+async def test_okx_unconfirmed_closed_candle_skipped_not_batch_discarded():
+    """One unconfirmed closed OKX row must not discard the valid rows around it."""
+    def unconfirmed_okx(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/instruments"):
+            return okx_response(request)
+        assert request.url.params["bar"] == "5m"
+        assert request.url.params["limit"] == "4"
+        c = cutoff() * 1000
+        return httpx.Response(200, json={"code": "0", "data": [
+            [str(c), "100", "110", "90", "105", "200", "2", "210", "0"],
+            [str(c - 300_000), "100", "110", "90", "105", "200", "2", "210", "1"],
+            [str(c - 600_000), "99", "110", "90", "100", "200", "2", "200", "0"],
+            [str(c - 900_000), "98", "110", "90", "99", "200", "2", "200", "1"],
+        ]})
+
+    raw = httpx.AsyncClient(transport=httpx.MockTransport(unconfirmed_okx))
+    try:
+        batch = await OkxMarketClient(raw).collect(assets=("BTC",), bars=3)
+        assert len(batch.candles) == 2
+        opened = {c.opened_at for c in batch.candles}
+        assert datetime.fromtimestamp((cutoff() - 300), UTC) in opened
+        assert datetime.fromtimestamp((cutoff() - 900), UTC) in opened
+        assert datetime.fromtimestamp((cutoff() - 600), UTC) not in opened
+    finally:
+        await raw.aclose()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("provider,reply", [
     (OkxMarketClient, okx_response), (KucoinMarketClient, kucoin_response),
 ])

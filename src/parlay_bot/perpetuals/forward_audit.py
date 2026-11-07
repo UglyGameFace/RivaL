@@ -22,6 +22,7 @@ from parlay_bot.perpetuals.features import (
     persisted_candles,
 )
 from parlay_bot.perpetuals.flow_challenger import FlowChallenger, FlowChallengerV2
+from parlay_bot.perpetuals.flow_challenger_v3 import FlowChallengerV3
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.historical_challengers import HistoricalChallengers
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
@@ -67,6 +68,10 @@ MAX_PENDING_SETTLEMENTS = 120
 # Brier) and their ~78%-UP calls came true 33-44% of the time. A calibrated,
 # input-standardized successor would be a new family, not these.
 ISSUE_FLOW_CHALLENGERS = False
+# flow_v3 is the calibrated, input-standardized successor (batch 2): shadow
+# issuance only. Kill switch for its issuance + learning; serving is gated
+# separately by promotion. Existing rows keep settling either way.
+ISSUE_FLOW_V3_CHALLENGERS = True
 # The incumbent's fast settlement covers the last 2 days; a day of margin.
 SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
 
@@ -771,6 +776,14 @@ class ForwardAccuracyMonitor:
         # and weights stay; nothing new is issued or learned.
         flows = ((FlowChallenger(self.store), FlowChallengerV2(self.store))
                  if ISSUE_FLOW_CHALLENGERS else ())
+        # flow_v3 issues beside v1/v2 on its own flag and its own tables;
+        # v1/v2 code, rows, and weights are untouched. Binance bundles are
+        # read live at issuance (in-memory only, never assumed persisted).
+        if ISSUE_FLOW_V3_CHALLENGERS:
+            flows = (*flows, FlowChallengerV3(
+                self.store,
+                binance_context=getattr(self.market, "binance_context", None),
+            ))
         flow_inputs: dict = {}
         cycle_assets = {a for _, c, _ in selection if (a := asset_for_contract(c)) is not None}
         for flow in flows:

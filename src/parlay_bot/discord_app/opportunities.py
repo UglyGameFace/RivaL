@@ -5,6 +5,7 @@ probabilities as approved profitable trades or executable market prices.
 """
 from __future__ import annotations
 
+import json
 import logging
 import math
 from datetime import UTC, datetime, timedelta
@@ -22,6 +23,8 @@ from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
 from parlay_bot.perpetuals.markets import HORIZONS
 from parlay_bot.perpetuals.model_competition import CHALLENGER_PREFIXES, FAMILIES
 from parlay_bot.perpetuals.readiness import _source_identity
+
+_LOG = logging.getLogger(__name__)
 
 ASSETS = RESEARCH_ASSETS
 
@@ -207,6 +210,40 @@ def recent_watches(
             })
         except (KeyError, ValueError, TypeError, OverflowError):
             continue
+    # First serve through this reader: emit a one-time Discord receipt
+    # (spec §2.7). Deduplicated by the receipts table; a receipt failure
+    # never blocks serving.
+    for watch in accepted:
+        if watch["model_version"] != "flow_v3":
+            continue
+        try:
+            from parlay_bot.perpetuals.flow_challenger_v3 import FlowChallengerV3
+            from parlay_bot.perpetuals.promotion_receipts import (
+                record_promotion_receipt,
+            )
+            with market.store.connect() as connection:
+                promo = connection.execute(
+                    """SELECT evaluated_at, evidence_json
+                       FROM rival_family_promotion
+                       WHERE asset=? AND venue=? AND contract=? AND quote=?
+                        AND horizon_minutes=? AND status='promoted_paper'
+                        AND selected_family='flow_v3'""",
+                    (watch["asset"], watch["venue"], watch["contract"],
+                     watch["quote"], watch["horizon_minutes"]),
+                ).fetchone()
+            if promo is None:
+                continue
+            evidence = json.loads(promo["evidence_json"])["flow_v3"]
+            record_promotion_receipt(
+                market.store, family="flow_v3", venue=watch["venue"],
+                contract=watch["contract"], quote=watch["quote"],
+                horizon=watch["horizon_minutes"], kind="first_serve",
+                evidence={**evidence, "evaluated_at": promo["evaluated_at"]},
+                calibration=FlowChallengerV3.calibration_status(
+                    market.store, watch["asset"], watch["horizon_minutes"]),
+                now=instant)
+        except Exception:  # noqa: BLE001 - a receipt must never block serving
+            _LOG.exception("RivaL flow_v3 first-serve receipt unavailable")
     # Signal selection needs all genuine venue alternatives to match a
     # forecast to an actually reachable live order book. Legacy dashboards
     # still show one candidate per horizon for a compact private screen.

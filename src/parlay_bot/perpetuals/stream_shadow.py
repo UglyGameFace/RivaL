@@ -176,6 +176,19 @@ class StreamShadowLedger:
         # Same source-timestamped book as the incumbent, but the family
         # comparison ledger is isolated: optional research cannot fail the
         # already committed live quote observation.
+        # Quote-observer driver (traced 2026-11-06, batch 2): this method is
+        # called by bot._stream_shadow_loop (bot.py, every
+        # rival_stream_shadow_seconds, default 30 s) via
+        # StreamShadowLedger.observe(book) for each venue in
+        # ("hyperliquid", "binance") x live asset, sampling the live WS
+        # book snapshot. FamilyQuoteShadow.observe() then opens/closes
+        # rival_family_quote_shadow rows generically for any
+        # rival_model_shadow_forecasts row whose family is in FAMILIES or
+        # starts with a CHALLENGER_PREFIXES prefix -- including "flow_v3"
+        # (flow_ prefix) -- issued within ENTRY_GRACE of the quote. No
+        # per-family wiring is needed: a flow_v3 shadow forecast issued by
+        # ForwardAccuracyMonitor is quote-shadowed by this loop, which is
+        # what lets it meet Route B's quote coverage/trade floors.
         try:
             self._family_quote_shadow.observe(quote, now=stamp)
         except Exception:  # independent research ledger

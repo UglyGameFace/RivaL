@@ -188,4 +188,29 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool) -> list[tuple[str
             alerts.append((key, str(row["receipt_text"])))
     except Exception as exc:  # noqa: BLE001 - receipts must never break the card
         _LOG.warning("Research alert: promotion receipts unreadable (%s)", type(exc).__name__)
+
+    # 6. Research-loop experiments (batch 2 Phase 3, spec §3.1-3.2): a
+    # recently promoted experiment's discovery finding, surfaced through
+    # the same status-card pattern as the promotion receipts. Only
+    # promoted experiments appear here; discarded/failed ones stay in
+    # the tables as the mistakes memory, not as card noise. A missing
+    # table means no experiment promoted, not an alert.
+    try:
+        rows = conn.execute(
+            """SELECT e.experiment_id, e.hypothesis, f.summary
+               FROM rival_research_experiments e
+               LEFT JOIN rival_research_findings f
+                 ON f.experiment_id = e.experiment_id AND f.kind='discovery'
+               WHERE e.status='promoted' AND e.created_at>=?
+               ORDER BY e.created_at""",
+            ((stamp - timedelta(hours=48)).isoformat(),),
+        ).fetchall()
+        for row in rows:
+            key = f"research-experiment:promoted:{row['experiment_id']}"
+            summary = str(row["summary"] or "promoted on the forward shadow record")
+            alerts.append((key, (f"🔬 Research experiment promoted "
+                                 f"({row['hypothesis']}): {summary}")))
+    except Exception as exc:  # noqa: BLE001 - experiments must never break the card
+        _LOG.warning("Research alert: research experiments unreadable (%s)",
+                     type(exc).__name__)
     return alerts

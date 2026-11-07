@@ -172,9 +172,16 @@ class FeatureHypothesisLab:
         else:
             try:
                 # What earlier proposals scored on real data, so the next idea
-                # can avoid repeating ones that already failed.
-                prior = await asyncio.to_thread(trial_summary, self.store, asset=asset,
-                                                now=stamp)
+                # can avoid repeating ones that already failed: 60d trial
+                # summaries plus 90d experiment numeric outcomes (spec §3.2
+                # step 7). Numeric summaries only — the LLM is never told
+                # whether a proposal promoted.
+                from parlay_bot.perpetuals.research_loop import (
+                    prior_trials_context,
+                )
+
+                prior = await asyncio.to_thread(
+                    prior_trials_context, self.store, asset=asset, now=stamp)
                 result = await self.ai.propose_feature_hypothesis(
                     asset=asset, venues=self.venues,
                     **({"prior_trials": prior} if prior else {}),
@@ -216,6 +223,24 @@ class FeatureHypothesisLab:
         ).hexdigest()
         await asyncio.to_thread(
             self._store_proposal, asset, slot, result, digest,
+        )
+        # Batch 2 Phase 3 (spec §3.2 step 1): open the experiment row for
+        # this proposal so the loop can track it through ablation, screen,
+        # shadow, and promotion. The hypotheses-table row stays the
+        # proposal of record; the experiment links it by record SHA.
+        from parlay_bot.perpetuals.research_loop import create_experiment
+
+        await asyncio.to_thread(
+            create_experiment, self.store, proposer="llm",
+            hypothesis=result["hypothesis"],
+            feature_indices=(result["feature_indices"]
+                             if result["hypothesis"] == "feature_subset_v2"
+                             else None),
+            design={"asset": asset, "slot_utc": slot.isoformat(),
+                    "venues": list(result["venues"]),
+                    "model_shape": "offline-live-contract-logistic-v3",
+                    "calibration_method": "platt-scaling-ece<=0.10"},
+            proposal_sha256=digest, now=stamp,
         )
         _LOG.info("RivaL Intelligence suggested bounded feature experiment asset=%s",
                   asset)

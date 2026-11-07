@@ -177,7 +177,6 @@ class ForwardAccuracyMonitor:
             self.market.historical_challengers.initialize()
             self._initialize_schema()
             ShadowModelCompetition(self.store).initialize()
-            self._withdraw_no_trade_labels()
             self.market._forward_schema_ready = True
 
     def _pooled_models(self):
@@ -616,6 +615,10 @@ class ForwardAccuracyMonitor:
         return resolved
 
     def _settle(self, now: datetime) -> int:
+        # No-trade label withdrawal lives on the settlement path only: a
+        # display read must never mutate the settlement table (out-the-gate
+        # display boundary). It runs here, every cycle, before new rows settle.
+        self._withdraw_no_trade_labels()
         # Recover the OLDEST genuinely settleable outcomes first. The old
         # DESC/LIMIT queue could repeatedly skip valid old forecasts after
         # downtime. Missing target candles and retrospectively imported
@@ -669,6 +672,9 @@ class ForwardAccuracyMonitor:
         """
         if limit < 1:
             raise ValueError("reconciliation limit must be positive")
+        # Same settlement-path-only rule as _settle: the no-trade label
+        # withdrawal never runs on a display read.
+        self._withdraw_no_trade_labels()
         with self.store.connect() as conn:
             pending = conn.execute(
                 """SELECT f.venue,f.contract,f.quote,f.asset,f.horizon_minutes,

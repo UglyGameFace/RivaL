@@ -21,6 +21,7 @@ from parlay_bot.discord_app.cdna_ui import (
 )
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
+from parlay_bot.discord_app.out_the_gate import below_line_label, lean_short
 from parlay_bot.discord_app.polymarket_live_board import live_polymarket_embed
 from parlay_bot.discord_app.presentation import (
     parlay_embed,
@@ -598,8 +599,12 @@ def crypto_snapshot_card(
     check is needed for the actual bid/ask and the measured 7-day hit rate.
     """
     stamp = checked_at or datetime.now(UTC)
+    # D1(a): a sub-threshold lean (weak_model) or an unqualified model
+    # (unqualified_model) is still a displayable prediction. The WATCH
+    # verdict is unchanged; only the card's display widens.
     current = (
-        snapshot is not None and snapshot.status == "ok"
+        snapshot is not None
+        and snapshot.status in ("ok", "weak_model", "unqualified_model")
         and snapshot.asset == asset and snapshot.horizon_minutes == horizon
         and snapshot.ends_at is not None and snapshot.ends_at > stamp
         and snapshot.issued_at is not None and snapshot.issued_at <= stamp
@@ -635,15 +640,37 @@ def crypto_snapshot_card(
         discord.utils.format_dt(snapshot.ends_at, style="R")
         if current else "No live window"
     )
-    strength = (
-        f"{snapshot.probability:.1%} raw score\n"
-        f"{model_strength(snapshot.probability)}"
-        + (
-            f" • {snapshot.training_evaluated} walk-forward examples"
-            if snapshot.training_evaluated else ""
+    strength = "Unverified"
+    if current and snapshot.probability is not None:
+        strength = (
+            f"{snapshot.probability:.1%} raw score\n"
+            f"{model_strength(snapshot.probability)}"
+            + (
+                f" • {snapshot.training_evaluated} walk-forward examples"
+                if snapshot.training_evaluated else ""
+            )
         )
-        if current and snapshot.probability is not None else "Unverified"
-    )
+        if snapshot.status == "weak_model":
+            below = below_line_label({
+                "direction": snapshot.direction,
+                "probability": snapshot.probability,
+                "confidence_pct": round(snapshot.probability * 100),
+            })
+            if below is not None:
+                strength += f"\n{below}"
+        elif snapshot.status == "unqualified_model":
+            strength += "\nNot a qualified call: not enough proof yet"
+        lean = (
+            {"probability": snapshot.live_lean_probability,
+             "as_of": snapshot.live_lean_as_of}
+            if snapshot.live_lean_probability is not None else None
+        )
+        lean_text = lean_short(lean)
+        strength += (
+            f"\nLive lean: {lean_text}"
+            if lean_text is not None
+            else "\nLive lean unavailable — data stale"
+        )
     fields = (
         ("💰 Reference price", price),
         ("⏱️ Expires", expiry),

@@ -122,7 +122,13 @@ class HuntCandidate:
 
     @property
     def direction(self) -> str:
-        return "UP" if self.probability_up > 0.5 else "DOWN"
+        # Canonical direction (spec §3): FLAT at exactly 0.5, matching
+        # signals.py:504-507. A tied forecast has no direction.
+        if self.probability_up > 0.5:
+            return "UP"
+        if self.probability_up < 0.5:
+            return "DOWN"
+        return "FLAT"
 
     @property
     def strength(self) -> float:

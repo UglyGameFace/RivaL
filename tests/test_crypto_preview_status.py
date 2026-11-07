@@ -111,9 +111,17 @@ def test_raw_probabilities_do_not_claim_verified_future_accuracy(tmp_path):
         asset="BTC", horizon_minutes=5, now=now,
     )
     assert snap.status == "unqualified_model"
-    assert snap.direction == "WAIT"
-    assert snap.probability is None
-    assert "NO CALL" in snap.detail
+    # D1(a): an unqualified 0.68 snapshot shows its lean — direction UP,
+    # 68% confidence — labelled below the watch line, never as a qualified
+    # call. The raw probability is displayed, never as verified accuracy:
+    # the detail says the model has not proved reliable and the card is
+    # watch-only, not a signal to trade.
+    assert snap.direction == "UP"
+    assert snap.probability == 0.68
+    assert "Lean: UP 68%" in snap.detail
+    assert "not a qualified call" in snap.detail
+    assert "has not proved reliable" in snap.detail
+    assert "Just watch: this is not a signal to trade." in snap.detail
 
 
 def test_status_does_not_change_follow_fingerprint():

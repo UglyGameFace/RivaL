@@ -201,7 +201,7 @@ def test_no_trade_target_candle_is_settled_but_not_graded(tmp_path):
         store.close()
 
 
-def test_startup_withdraws_old_labels_graded_from_no_trade_candles(tmp_path):
+def test_settlement_withdraws_old_labels_graded_from_no_trade_candles(tmp_path):
     store = SQLiteHotStore(tmp_path / "withdraw.sqlite")
     market = PerpetualMarketStore(store)
     target = START + timedelta(minutes=60)
@@ -219,7 +219,13 @@ def test_startup_withdraws_old_labels_graded_from_no_trade_candles(tmp_path):
                 ((target + timedelta(minutes=7)).isoformat(),),
             )
         fresh = PerpetualMarketStore(store)  # a new process start
-        ForwardAccuracyMonitor(fresh).initialize()
+        monitor = ForwardAccuracyMonitor(fresh)
+        # Withdrawal moved out of initialize() (out-the-gate display
+        # boundary): a display read must never mutate the settlement table.
+        monitor.initialize()
+        assert settled_row(store)["outcome_up"] == 0
+        # The settlement path runs the withdrawal instead.
+        monitor._settle(target + timedelta(minutes=7))
         row = settled_row(store)
         assert row["settled_at"] is not None
         assert row["outcome_up"] is None

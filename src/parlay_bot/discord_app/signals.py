@@ -21,6 +21,15 @@ from parlay_bot.discord_app.opportunities import (
     recent_multi_watches,
     recent_watches,
 )
+from parlay_bot.discord_app.out_the_gate import (
+    JUST_WATCH,
+    below_line_label,
+    lean_line,
+    lean_short,
+    live_lean,
+    otg_line,
+    otg_snapshot,
+)
 from parlay_bot.perpetuals.event_intelligence import EventIntelligence
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
 from parlay_bot.perpetuals.forward_audit import (
@@ -650,6 +659,27 @@ async def signal_embed(
         embed.add_field(name=name, value=value, inline=True)
         if index in (1, 3):
             embed.add_field(name="\u200b", value="\u200b", inline=True)
+    # Out-the-gate call (immutable issuance snapshot) + live lean (recomputed
+    # now). The OTG call is shown for every slot, including sub-threshold
+    # leans (D1(a)); the WATCH verdict above is unchanged.
+    otg = otg_snapshot(chosen, market=market)
+    lean = live_lean(
+        market, asset=asset, horizon=horizon_minutes,
+        venue=chosen["venue"], contract=chosen.get("contract"),
+        quote=chosen.get("quote"), now=stamp,
+        engine=str(chosen.get("engine") or "live"),
+        model_version=chosen.get("model_version"),
+    )
+    otg_lines = [otg_line(otg), lean_line(lean)]
+    below = below_line_label(otg)
+    if below is not None:
+        otg_lines.append(below)
+    otg_lines.append(JUST_WATCH)
+    embed.add_field(
+        name="📡 Out the gate • live lean",
+        value="\n".join(otg_lines),
+        inline=False,
+    )
     embed.add_field(
         name="Details",
         value=(
@@ -765,9 +795,18 @@ async def signal_embed(
             else "worse than a simple guess" if alt_beats is False
             else "not enough record"
         )
+        alt_lean = live_lean(
+            market, asset=asset, horizon=horizon_minutes,
+            venue=venue, contract=alt_watch.get("contract"),
+            quote=alt_watch.get("quote"), now=stamp,
+            engine=str(alt_watch.get("engine") or "live"),
+            model_version=alt_watch.get("model_version"),
+        )
+        alt_lean_text = lean_short(alt_lean)
         alternatives.append(
             f"{venue}: leans {_direction(alt_prob)} "
             f"{max(alt_prob, 1 - alt_prob):.0%} • {alt_state}"
+            + (f" • live lean {alt_lean_text}" if alt_lean_text is not None else "")
         )
     if alternatives:
         embed.add_field(

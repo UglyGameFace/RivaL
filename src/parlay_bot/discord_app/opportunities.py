@@ -12,6 +12,14 @@ from datetime import UTC, datetime, timedelta
 
 import discord
 
+from parlay_bot.discord_app.out_the_gate import (
+    JUST_WATCH,
+    below_line_label,
+    lean_line,
+    live_lean,
+    otg_line,
+    otg_snapshot,
+)
 from parlay_bot.discord_app.presentation import display_book
 from parlay_bot.parlays.builder import ParlayBuilder
 from parlay_bot.parlays.models import ParlayBuildError, RiskMode
@@ -57,7 +65,10 @@ def recent_watches(
     if current.utcoffset() is None:
         raise ValueError("current time must be aware")
     instant = current.astimezone(UTC)
-    ForwardAccuracyMonitor(market).initialize()
+    # Display-only read: never initialize the forward monitor here. Schema
+    # DDL belongs to process startup / the autonomous cycle; a display read
+    # must not run it, and the no-trade withdrawal no longer lives in
+    # initialize() at all (settlement path only).
     # A constant, bound-column predicate lets PostgreSQL use the existing
     # (asset,horizon_minutes,issued_at) index. Avoid an OR/NULL predicate,
     # which may force a scan across unrelated timeframes under load.
@@ -279,7 +290,7 @@ def recent_multi_watches(
     if current.utcoffset() is None:
         raise ValueError("current time must be aware")
     instant = current.astimezone(UTC)
-    ForwardAccuracyMonitor(market).initialize()
+    # Display-only read: no monitor initialize() here (see recent_watches).
     horizon_filter = " AND horizon_minutes=?" if horizon_minutes is not None else ""
     params = (
         asset, MULTI_MODEL,
@@ -480,6 +491,20 @@ def crypto_desk_embed(
         # comes from a different (unproven) model version.
         other = (f" • test model {str(watch.get('model_version'))[:28]} (no track record yet)"
                  if watch.get("model_version") not in (None, LIVE_MODEL) else "")
+        # Out-the-gate call (immutable issuance snapshot) + live lean
+        # (recomputed now). The OTG call is shown for every slot, including
+        # sub-threshold leans (D1(a)); the WATCH verdict is unchanged.
+        otg = otg_snapshot(watch, market=market)
+        lean = live_lean(
+            market, asset=asset, horizon=watch["horizon_minutes"],
+            venue=watch["venue"], contract=watch.get("contract"),
+            quote=watch.get("quote"), now=stamp,
+            engine="live", model_version=watch.get("model_version"),
+        )
+        otg_lines = [otg_line(otg), lean_line(lean)]
+        below = below_line_label(otg)
+        if below is not None:
+            otg_lines.append(below)
         embed.add_field(
             name=(f"👀 Leans {watch['direction']} • next {watch['horizon_minutes']} min • "
                   f"{watch['venue']}{other}")[:256],
@@ -488,9 +513,10 @@ def crypto_desk_embed(
                 f"({discord.utils.format_dt(watch['price_observed_at'], style='R')})\n"
                 f"How sure it is: **{watch['direction_probability']:.1%}** chance of "
                 f"{watch['direction']} (its own estimate; raw, uncalibrated — not proven accurate)\n"
+                + "\n".join(otg_lines) + "\n"
                 f"Made {discord.utils.format_dt(watch['issued'], style='R')} · "
                 f"Answer known {discord.utils.format_dt(watch['target'] + timedelta(minutes=5), style='R')}\n"
-                "**Just watch: this is not a signal to trade.**"
+                f"**{JUST_WATCH}**"
             ),
             inline=False,
         )

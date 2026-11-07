@@ -44,8 +44,17 @@ def test_stale_no_trade_labels_are_withdrawn_from_the_challenger_ledger(tmp_path
                     (venue, "BTC", "USDT", "BTC", 5, "knn21_v1", ref, issued,
                      target.isoformat(), .55, .6, .5, 300, "a" * 64, settled,
                      0 if outcome is None else 1, .3025, .36, .25))
-        store._shadow_competition_ready = False  # next start-up runs the correction
+        # Withdrawal moved out of initialize() (out-the-gate display
+        # boundary): a display read must never mutate the shadow ledger.
+        # initialize() alone leaves the stale label in place; settle() runs
+        # the withdrawal on the settlement path.
         ShadowModelCompetition(store).initialize()
+        with store.connect() as conn:
+            rows = {r["venue"]: r for r in conn.execute(
+                "SELECT venue, settled_at, outcome_up, model_brier FROM rival_model_shadow_forecasts"
+            ).fetchall()}
+        assert rows["okx"]["outcome_up"] == 0
+        ShadowModelCompetition(store).settle(now=target + timedelta(minutes=7))
         with store.connect() as conn:
             rows = {r["venue"]: r for r in conn.execute(
                 "SELECT venue, settled_at, outcome_up, model_brier FROM rival_model_shadow_forecasts"

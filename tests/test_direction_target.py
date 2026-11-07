@@ -105,17 +105,22 @@ def market_with_prediction(tmp_path, now):
     return store, market
 
 
-def test_targets_are_simple_and_truthful_without_fabricated_forecasts(tmp_path):
+def test_targets_show_unqualified_leans_without_fabricated_forecasts(tmp_path):
     now = datetime.now(UTC).replace(microsecond=0)
     store, market = market_with_prediction(tmp_path, now)
     try:
         ready = target_snapshot(market, asset="BTC", horizon_minutes=5, now=now)
-        assert ready.direction == "WAIT"
+        # D1(a): the lean is shown with its direction and confidence, labelled
+        # as not a qualified call. It never becomes a WATCH or a trade.
+        assert ready.direction == "UP"
         assert ready.status == "unqualified_model"
-        assert ready.price is None
-        assert ready.probability is None
-        assert "NO CALL" in ready.detail
-        assert "NO CALL" in target_embed(ready).title
+        assert ready.price == 106.0
+        assert ready.probability == pytest.approx(0.68)
+        assert "Lean: UP 68%" in ready.detail
+        assert "not a qualified call" in ready.detail
+        assert "Just watch: this is not a signal to trade." in ready.detail
+        assert ready.evidence_qualified is False
+        assert "UP LEAN • NO SIGNAL" in target_embed(ready).title
         assert target_snapshot(
             market, asset="BTC", horizon_minutes=15, now=now,
         ).direction == "WAIT"

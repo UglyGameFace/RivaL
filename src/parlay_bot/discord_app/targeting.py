@@ -24,6 +24,16 @@ from parlay_bot.discord_app.opportunities import (
     recent_multi_watches,
     recent_watches,
 )
+from parlay_bot.discord_app.out_the_gate import (
+    BELOW_WATCH_LINE,
+    JUST_WATCH,
+    below_line_label,
+    direction_of,
+    lean_line,
+    live_lean,
+    otg_line,
+    otg_snapshot,
+)
 from parlay_bot.discord_app.price_targets import (
     PriceGoal,
     PriceResult,
@@ -77,6 +87,15 @@ class TargetSnapshot:
     training_evaluated: int | None = None
     # Only real venue-specific future outcome evidence may authorize a WATCH.
     evidence_qualified: bool = False
+    # Live lean (recomputed at render, never persisted): the model's current
+    # fitted probability for this slot, or None when it cannot be recomputed
+    # from persisted state. ``calibrated`` is True only for a flow_v3 row
+    # whose Platt fit passed its gate. Both are part of the fingerprint: a
+    # changed lean is a changed observation, and a stale lean must re-edit
+    # the card (never shown as current).
+    live_lean_probability: float | None = None
+    live_lean_as_of: datetime | None = None
+    calibrated: bool = False
 
     @property
     def fingerprint(self) -> str:
@@ -93,6 +112,11 @@ class TargetSnapshot:
             "issued": self.issued_at.isoformat() if self.issued_at else None,
             "ends": self.ends_at.isoformat() if self.ends_at else None,
             "evidence_qualified": self.evidence_qualified,
+            "live_lean": (round(self.live_lean_probability, 5)
+                          if self.live_lean_probability is not None else None),
+            "lean_as_of": (self.live_lean_as_of.isoformat()
+                           if self.live_lean_as_of else None),
+            "calibrated": self.calibrated,
         }, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(raw.encode()).hexdigest()
 
@@ -144,18 +168,48 @@ def target_snapshot(
         p = float(watch["probability_up"])
         if not math.isfinite(p) or not 0 < p < 1:
             continue
-        direction = "UP" if p > 0.5 else "DOWN" if p < 0.5 else "WAIT"
-        if direction == "WAIT":
+        # Canonical direction: FLAT at exactly 0.5 (signals.py:504-507).
+        direction = direction_of(p)
+        if direction == "FLAT":
             return TargetSnapshot(
                 asset, horizon_minutes, "WAIT",
                 "NO CALL: the latest model is tied.",
                 status="tied",
             )
+        # The OTG call (immutable issuance snapshot) and the live lean
+        # (recomputed now) for this slot. The lean is display-only: it never
+        # changes the verdict, the fingerprint covers it, and an unavailable
+        # lean renders as "unavailable", never as a stale value.
+        otg = otg_snapshot(watch, market=market)
+        lean = live_lean(
+            market, asset=asset, horizon=horizon_minutes,
+            venue=str(watch["venue"]), contract=watch.get("contract"),
+            quote=watch.get("quote"), now=stamp,
+            engine=engine, model_version=watch.get("model_version"),
+        )
+        lean_fields = {
+            "live_lean_probability": (float(lean["probability"])
+                                      if lean is not None else None),
+            "live_lean_as_of": lean["as_of"] if lean is not None else None,
+            "calibrated": otg["calibrated"],
+        }
         if model_strength(p) != "directional watch":
+            # D1(a): a sub-threshold lean is still shown, labelled below the
+            # watch line, never as a qualified call.
             return TargetSnapshot(
-                asset, horizon_minutes, "WAIT",
-                "NO CALL: the latest prediction is too close to a coin flip.",
+                asset=asset, horizon_minutes=horizon_minutes,
+                direction=direction,
+                detail=(
+                    f"Lean: {direction} {otg['confidence_pct']}% \u2014 "
+                    f"{BELOW_WATCH_LINE}. {JUST_WATCH}"
+                ),
+                venue=str(watch["venue"]),
+                probability=max(p, 1 - p),
+                price=float(watch["price"]),
+                issued_at=watch["issued"],
+                ends_at=ends,
                 status="weak_model",
+                **lean_fields,
             )
         try:
             if watch.get("model_version") in FAMILIES:
@@ -178,11 +232,25 @@ def target_snapshot(
             _LOG.exception("RivaL target model qualification unavailable")
             qualified = False
         if not qualified:
+            # D1(a): an unqualified model still shows its lean, labelled as
+            # not a qualified call. Nothing below threshold fires an alert,
+            # DM, or Auto-Hunt candidate; the verdict stays a lean.
             return TargetSnapshot(
-                asset, horizon_minutes, "WAIT",
-                "NO CALL: this exchange/model has not proved reliable "
-                "on enough genuine future outcomes across multiple days.",
+                asset=asset, horizon_minutes=horizon_minutes,
+                direction=direction,
+                detail=(
+                    f"Lean: {direction} {otg['confidence_pct']}% \u2014 "
+                    "not a qualified call: this exchange/model has not proved "
+                    "reliable on enough genuine future outcomes across "
+                    f"multiple days. {JUST_WATCH}"
+                ),
+                venue=str(watch["venue"]),
+                probability=max(p, 1 - p),
+                price=float(watch["price"]),
+                issued_at=watch["issued"],
+                ends_at=ends,
                 status="unqualified_model",
+                **lean_fields,
             )
         return TargetSnapshot(
             asset=asset, horizon_minutes=horizon_minutes,
@@ -201,6 +269,7 @@ def target_snapshot(
                 if int(watch.get("training_evaluated") or 0) > 0
                 else None
             ),
+            **lean_fields,
         )
     return TargetSnapshot(
         asset, horizon_minutes, "WAIT",
@@ -219,11 +288,13 @@ def target_embed(snapshot: TargetSnapshot) -> discord.Embed:
         "UP": "📈 UP WATCH" if qualified_watch else "🟠 UP LEAN • NO SIGNAL",
         "DOWN": "📉 DOWN WATCH" if qualified_watch else "🟠 DOWN LEAN • NO SIGNAL",
         "WAIT": "⏳ WAIT • NO CALL • NO VERIFIED EDGE",
+        "FLAT": "⏳ FLAT • NO CALL • COIN FLIP",
     }
     colors = {
         "UP": discord.Color.green() if qualified_watch else discord.Color.orange(),
         "DOWN": discord.Color.red() if qualified_watch else discord.Color.orange(),
         "WAIT": discord.Color.orange(),
+        "FLAT": discord.Color.orange(),
     }
     embed = discord.Embed(
         title=f"{snapshot.asset} • {snapshot.horizon_minutes}m • {labels[snapshot.direction]}",
@@ -249,6 +320,31 @@ def target_embed(snapshot: TargetSnapshot) -> discord.Embed:
                 value=discord.utils.format_dt(snapshot.ends_at, style="R"),
                 inline=False,
             )
+        # Out-the-gate call (immutable issuance snapshot) + live lean
+        # (recomputed now). Built from the snapshot's own fields: direction
+        # and probability are the issued call; the lean is the view.
+        otg = {
+            "direction": snapshot.direction,
+            "confidence_pct": round(snapshot.probability * 100),
+            "probability": snapshot.probability,
+            "issued": snapshot.issued_at,
+            "calibrated": snapshot.calibrated,
+        }
+        lean = (
+            {"probability": snapshot.live_lean_probability,
+             "as_of": snapshot.live_lean_as_of}
+            if snapshot.live_lean_probability is not None else None
+        )
+        otg_lines = [otg_line(otg), lean_line(lean)]
+        below = below_line_label(otg)
+        if below is not None:
+            otg_lines.append(below)
+        otg_lines.append(JUST_WATCH)
+        embed.add_field(
+            name="📡 Out the gate • live lean",
+            value="\n".join(otg_lines),
+            inline=False,
+        )
     embed.set_footer(
         text="Auto-updating model watch • No verified profitable trade • /rival-stop",
     )

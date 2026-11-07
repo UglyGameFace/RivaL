@@ -115,10 +115,14 @@ class ShadowModelCompetition:
         # Schema DDL once per store per process. settle() and report() run
         # every cycle and on every status render; re-running CREATE ... IF NOT
         # EXISTS took the DDL advisory lock each time.
+        # The no-trade withdrawal used to run here: an UPDATE on the shadow
+        # ledger on first read in a process, so a display refresh could
+        # rewrite history. It now runs only at the start of settle() (the
+        # settlement path), mirroring ForwardAccuracyMonitor. initialize()
+        # must stay DDL-only; renders must never mutate history.
         if getattr(self.store, "_shadow_competition_ready", False):
             return
         self._create_schema()
-        self._withdraw_no_trade_labels()
         try:
             self.store._shadow_competition_ready = True
         except AttributeError:  # a store that forbids attributes keeps the old behavior
@@ -353,6 +357,9 @@ class ShadowModelCompetition:
         import time
 
         self.initialize()
+        # Settlement path only: withdraw shadow labels copied from no-trade
+        # candles before grading this cycle. Never on a render path.
+        self._withdraw_no_trade_labels()
         deadline = time.monotonic() + budget_seconds
         total = 0
         while True:

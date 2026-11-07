@@ -74,6 +74,57 @@ async def test_all_kalshi_series_timeouts_still_fail_closed():
 
 
 @pytest.mark.asyncio
+async def test_kalshi_discovery_retries_transient_connect_timeout():
+    calls: list[str] = []
+    now = datetime.now(UTC)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        if request.url.path.endswith("/series"):
+            if sum(url.endswith("/series?category=Crypto") for url in calls) == 1:
+                raise httpx.ConnectTimeout("transient connect timeout", request=request)
+            return httpx.Response(200, json={"series": [
+                {"ticker": "KXBTC15M", "title": "Bitcoin price in 15 minutes",
+                 "category": "Crypto"},
+            ]})
+        if request.url.path.endswith("/markets"):
+            return httpx.Response(200, json={"markets": [{
+                "ticker": "KXBTC15M-REAL", "title": "BTC market",
+                "status": "active", "close_time": (
+                    now + timedelta(minutes=15)
+                ).isoformat(), "rules_primary": "Published source settlement",
+            }]})
+        if request.url.path.endswith("/orderbook"):
+            return httpx.Response(200, json={"orderbook_fp": {
+                "yes_dollars": [["0.45", "10"]], "no_dollars": [["0.52", "10"]],
+            }})
+        raise AssertionError(f"Unexpected Kalshi request path {request.url.path}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        browser = KalshiCryptoBrowser(client=client)
+        snapshot = await browser.browse("BTC")
+        assert len(snapshot.markets) == 1
+        assert snapshot.markets[0].ticker == "KXBTC15M-REAL"
+        assert sum(url.endswith("/series?category=Crypto") for url in calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_kalshi_discovery_timeout_exhaustion_still_fails_closed():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/series"):
+            raise httpx.ConnectTimeout("no official markets", request=request)
+        raise AssertionError(f"Unexpected Kalshi request path {request.url.path}")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        browser = KalshiCryptoBrowser(client=client)
+        with pytest.raises(
+            ValueError, match="Kalshi public market data unavailable",
+        ):
+            await browser.browse("BTC")
+        assert not browser._cache
+
+
+@pytest.mark.asyncio
 async def test_discord_guild_intent_without_privileged_content_or_members(tmp_path):
     bot = RivalDiscordClient(Settings(
         _env_file=None, rival_storage_backend="sqlite",

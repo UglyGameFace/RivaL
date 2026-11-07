@@ -721,6 +721,97 @@ class GoogleDriveArchiveClient:
             candidates.append((item.file_id, payload))
         return (candidates, next_page) if return_next_page else candidates
 
+    async def read_verified_research_reports(
+        self, *, limit: int = 20, page_token: str | None = None,
+        return_next_page: bool = False, known_ids: frozenset[str] = frozenset(),
+    ) -> list[tuple[str, bytes]] | tuple[list[tuple[str, bytes]], str | None]:
+        """Bounded immutable Google Drive research-report import.
+
+        Mirror of ``read_verified_research_candidates`` for the reports
+        folder: trial reports (``rival-native-source-research-v1``) and
+        rejected candidate artifacts (kind="report") live here, while
+        eligible candidates live in the models folder. Same verification
+        discipline — folder boundary, appProperties rival_sha256 /
+        rival_kind, size cap, byte identity — and the same read-only
+        contract (no trash, uploads or arbitrary IDs). The research-loop
+        driver reads trial outcomes through this path, joined on
+        proposal SHA; a report naming no open experiment is ignored.
+        """
+        if self.folders.reports is None:
+            raise DriveArchiveError("research reports folder not configured")
+        if not 1 <= limit <= 20:
+            raise ValueError("research report import limit must be 1..20")
+        if page_token is not None and (
+            not 1 <= len(page_token) <= 1000
+            or any(not ch.isascii() or not ch.isprintable() for ch in page_token)
+        ):
+            raise ValueError("invalid Drive listing cursor")
+        await self._verify_folder_boundary()
+        folder = self.folders.reports
+        query = (
+            f"'{self._escape_query(folder)}' in parents and trashed = false "
+            "and appProperties has { key='rival_kind' and value='report' }"
+        )
+        response = await self._client.get(
+            f"{self.DRIVE_URL}/files",
+            params={
+                "q": query, "spaces": "drive", "pageSize": limit,
+                **({"pageToken": page_token} if page_token else {}),
+                "orderBy": "createdTime desc",
+                "fields": "nextPageToken,files(id,name,size,md5Checksum,parents,"
+                          "appProperties,trashed)",
+            },
+            headers=await self._headers(),
+        )
+        if response.status_code != 200:
+            raise DriveArchiveError("research report listing unavailable")
+        data = response.json()
+        files = data.get("files") if isinstance(data, dict) else None
+        if not isinstance(files, list) or len(files) > limit:
+            raise DriveArchiveError("invalid or unbounded research report listing")
+        next_page = data.get("nextPageToken")
+        if next_page is not None and (
+            not isinstance(next_page, str) or not 1 <= len(next_page) <= 1000
+            or any(not ch.isascii() or not ch.isprintable() for ch in next_page)
+        ):
+            raise DriveArchiveError("invalid research pagination cursor")
+        reports = []
+        for raw in files:
+            if not isinstance(raw, dict) or raw.get("trashed"):
+                raise DriveArchiveError("invalid research report metadata")
+            item = self._object(raw)
+            props = raw.get("appProperties") or {}
+            expected = props.get("rival_sha256") if isinstance(props, dict) else None
+            if (
+                folder not in item.parents
+                or not isinstance(expected, str) or len(expected) != 64
+                or any(ch not in "0123456789abcdef" for ch in expected)
+                or not isinstance(item.size_bytes, int)
+                or not 0 < item.size_bytes <= 2_200_000
+                or props.get("rival_kind") != "report"
+                or any(ch not in
+                       "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-"
+                       for ch in item.file_id)
+            ):
+                raise DriveArchiveError("unverified research report source")
+            if item.file_id in known_ids:
+                continue
+            media = await self._client.get(
+                f"{self.DRIVE_URL}/files/{item.file_id}",
+                params={"alt": "media"}, headers=await self._headers(),
+                follow_redirects=False,
+            )
+            if media.status_code != 200:
+                raise DriveArchiveError("research report readback unavailable")
+            payload = media.content
+            if (
+                len(payload) != item.size_bytes
+                or hashlib.sha256(payload).hexdigest() != expected
+            ):
+                raise DriveArchiveError("research report byte identity mismatch")
+            reports.append((item.file_id, payload))
+        return (reports, next_page) if return_next_page else reports
+
     async def ensure_research_output(
         self,
         *,

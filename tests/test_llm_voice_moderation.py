@@ -86,7 +86,7 @@ def test_refuse_unbounded_private_audio_and_malformed_json(server):
         {"version": 1, "transcript": "hello", "context": [], "user_id": 123},
         {"version": True, "transcript": "hello", "context": []},
         {"version": 1, "transcript": "hello", "context": ["x" * 301]},
-        {"version": 1, "transcript": "hello\\x00", "context": []},
+        {"version": 1, "transcript": "hello" + chr(0), "context": []},
         {"version": 1, "transcript": "hello", "context": "hi"},
     )
     for body in bad:

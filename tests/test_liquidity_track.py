@@ -775,6 +775,81 @@ def test_liq_v1_rows_settle_in_shadow(tmp_path):
         store.close()
 
 
+def test_liq_v1_calibration_refit_reads_only_the_newest_rows(tmp_path, monkeypatch):
+    """The Platt refit fetches only the newest MAX_CALIBRATION_ROWS graded rows.
+
+    It used to read the whole, ever-growing graded history on every cycle and
+    then keep the newest rows in Python (slow SELECT holding a pool
+    connection on the live host). The fit must be identical to the old
+    full-history-then-slice result.
+    """
+    from parlay_bot.perpetuals import liquidity_challenger_v1 as liq
+
+    monkeypatch.setattr(liq, "MAX_CALIBRATION_ROWS", 80)
+    store = _store(tmp_path)
+    challenger = LiquidityChallengerV1(store)
+    try:
+        with store.connect() as conn:
+            for i in range(130):
+                ref = NOW - timedelta(minutes=5 * (200 - i))
+                flow = ((i % 7) / 7.0,) + (0.0,) * 20 + (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+                challenger.call(conn, venue="hyperliquid", contract="BTC", quote="USDC",
+                                asset="BTC", horizon=5, reference_opened_at=ref,
+                                issued_at=ref, features=((i % 5) / 5.0,) * 10, flow=flow)
+                conn.execute("INSERT INTO perp_forward_audit VALUES "
+                             "('hyperliquid','BTC','USDC',5,?,?,?)",
+                             (ref.isoformat(), (ref + timedelta(minutes=5)).isoformat(),
+                              int(i % 3 == 0)))
+        assert challenger.learn(NOW) == 130
+        with store.connect() as conn:
+            state = challenger._state(conn, "BTC", 5)
+            # Reference: the previous full-history query, sliced in Python.
+            full = conn.execute(
+                """SELECT x.features, f.outcome_up FROM rival_liq1_features x
+                   JOIN perp_forward_audit f
+                     ON f.venue=x.venue AND f.contract=x.contract AND f.quote=x.quote
+                    AND f.horizon_minutes=x.horizon_minutes
+                    AND f.reference_opened_at=x.reference_opened_at
+                   WHERE x.asset='BTC' AND x.horizon_minutes=5 AND x.learned=1
+                     AND f.settled_at IS NOT NULL AND f.outcome_up IN (0,1)
+                   ORDER BY f.settled_at, x.issued_at""").fetchall()[-80:]
+            split = int(len(full) * 0.7)
+            expected = liq.fit_platt(
+                [(challenger.raw_probability(state, json.loads(r["features"])),
+                  int(r["outcome_up"])) for r in full[:split]],
+                [(challenger.raw_probability(state, json.loads(r["features"])),
+                  int(r["outcome_up"])) for r in full[split:]])
+
+            fetched: list[int] = []
+
+            class Counting:
+                def __init__(self, raw):
+                    self.raw = raw
+
+                def execute(self, sql, params=()):
+                    cursor = self.raw.execute(sql, params)
+                    if "SELECT features, outcome_up" in " ".join(sql.split()) or (
+                            "x.learned=1" in sql):
+                        rows = cursor.fetchall()
+                        fetched.append(len(rows))
+
+                        class Rows:
+                            def fetchall(self):
+                                return rows
+                        return Rows()
+                    return cursor
+
+            challenger._refit_calibration(Counting(conn), ("BTC", 5), state, NOW.isoformat())
+        assert fetched == [80]
+        result = dict(state["calibration"])
+        assert result["fit_window"] == {"graded_rows": 56}
+        assert result["eval_window"] == {"graded_rows": 24}
+        result.pop("fit_window"), result.pop("eval_window")
+        assert result == expected
+    finally:
+        store.close()
+
+
 # ---------- Track B: promotion continuity + receipts + OTG ----------
 
 def test_liq_v1_selected_continuity_check_and_blocked_families(tmp_path):

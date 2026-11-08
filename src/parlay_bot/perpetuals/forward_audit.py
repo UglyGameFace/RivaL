@@ -41,8 +41,10 @@ from parlay_bot.perpetuals.path_forward import (
 from parlay_bot.perpetuals.pooled_features import model_vector
 from parlay_bot.perpetuals.pooled_model import PooledModelSet
 from parlay_bot.perpetuals.pooled_model import probability as pooled_probability
+from parlay_bot.perpetuals.regime2_model import Regime2ModelSet, regime2_calls
 from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
+from parlay_bot.perpetuals.regime_gate import trending_gate
 from parlay_bot.perpetuals.regime_model import regime_calls
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
@@ -106,6 +108,13 @@ ISSUE_GBM_V1_CHALLENGERS = True
 # serving is gated separately by promotion. Existing rows keep settling
 # either way.
 ISSUE_REGIME_V1_CHALLENGERS = True
+# regime_v2 shadow issuance (spec rival-regime-v2-spec-20261108, D6):
+# the trending-subset trained logistic issues shadow forecasts only on
+# trending cycles (same frozen gate) AND only when a pinned artifact is
+# imported; it never serves until Route B promotes it. Kill switch for
+# issuance; serving is gated separately by promotion. Existing rows
+# keep settling either way. Regime_v1 keeps issuing as the control.
+ISSUE_REGIME_V2_CHALLENGERS = True
 
 # The incumbent's fast settlement covers the last 2 days; a day of margin.
 SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
@@ -250,6 +259,19 @@ class ForwardAccuracyMonitor:
                 self.market.gbm_models = current
             except Exception:  # noqa: BLE001 - optional challenger only
                 _LOG.exception("RivaL GBM model registry unavailable")
+                return None
+        return current
+
+    def _regime2_models(self):
+        """The bot-wide regime_v2 model set (None if its table is unavailable)."""
+        current = getattr(self.market, "regime2_models", None)
+        if current is None:
+            try:
+                current = Regime2ModelSet(self.store)
+                current.initialize()
+                self.market.regime2_models = current
+            except Exception:  # noqa: BLE001 - optional challenger only
+                _LOG.exception("RivaL regime_v2 model registry unavailable")
                 return None
         return current
 
@@ -820,6 +842,7 @@ class ForwardAccuracyMonitor:
             "duplicate_forecasts": 0, "issued_forecasts": 0,
             "settled_forecasts": 0,
             "regime_issued": 0, "regime_abstained": 0,
+            "regime2_issued": 0, "regime2_abstained": 0, "regime2_unavailable": 0,
         }
         # Reuse the same bounded, freshness-checked stream selection as
         # existing offline evaluation, without external HTTP requests.
@@ -838,6 +861,7 @@ class ForwardAccuracyMonitor:
         pooled_set = self._pooled_models()
         archive_set = self._archive_models()
         gbm_set = self._gbm_models()
+        regime2_set = self._regime2_models()
         btc_streams = {v: (c, q) for v, c, q in eligible if asset_for_contract(c) == "BTC"}
         btc_cache: dict[str, list] = {}
         # Order-flow challenger inputs: one causal snapshot per asset per cycle.
@@ -956,8 +980,10 @@ class ForwardAccuracyMonitor:
                 # no vector that cycle. Each family issues under its own
                 # kill switch below.
                 archive_vector = None
-                if ((ISSUE_ARCHIVE_V1_CHALLENGERS or ISSUE_GBM_V1_CHALLENGERS)
-                        and (archive_set is not None or gbm_set is not None)):
+                if ((ISSUE_ARCHIVE_V1_CHALLENGERS or ISSUE_GBM_V1_CHALLENGERS
+                        or ISSUE_REGIME_V2_CHALLENGERS)
+                        and (archive_set is not None or gbm_set is not None
+                             or regime2_set is not None)):
                     mark = self._mark()
                     try:
                         coin = asset_for_contract(contract)
@@ -1105,6 +1131,32 @@ class ForwardAccuracyMonitor:
                             metrics["regime_issued"] += 1
                         else:
                             metrics["regime_abstained"] += 1
+                    # regime_v2: the trending-subset trained logistic as a
+                    # shadow forecast, only when the gate passes AND a
+                    # pinned artifact is imported (spec
+                    # rival-regime-v2-spec-20261108, D3/D6/D8). Gate
+                    # fails and artifact/vector missing are counted
+                    # separately: a missing artifact must never read as
+                    # "market not trending". A failure here is an
+                    # abstention, counted in the cycle metrics, not a
+                    # stored row -- and never blocks the incumbent.
+                    regime2_items = ()
+                    if ISSUE_REGIME_V2_CHALLENGERS:
+                        try:
+                            regime2_items = regime2_calls(
+                                regime2_set, asset=asset, horizon=horizon,
+                                vector=archive_vector, candles=candles,
+                                now=stamp,
+                            )
+                        except Exception:  # noqa: BLE001 - a call failure abstains
+                            _LOG.exception("RivaL regime_v2 call unavailable")
+                            regime2_items = ()
+                        if regime2_items:
+                            metrics["regime2_issued"] += 1
+                        elif not trending_gate(candles):
+                            metrics["regime2_abstained"] += 1
+                        else:
+                            metrics["regime2_unavailable"] += 1
                     # Shadow-model fitting is CPU work on inputs already
                     # fixed at issuance: do it before the transaction opens.
                     try:
@@ -1206,7 +1258,7 @@ class ForwardAccuracyMonitor:
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
-                                    challengers=(*flow_calls, *archive_items, *gbm_items, *regime_items),
+                                    challengers=(*flow_calls, *archive_items, *gbm_items, *regime_items, *regime2_items),
                                     prepared=shadow_prepared,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger
@@ -1334,13 +1386,16 @@ class ForwardAccuracyMonitor:
             "RivaL forward cycle discovered=%d selected=%d short=%d "
             "stale=%d insufficient_labels=%d insufficient_training=%d "
             "expired=%d duplicate=%d issued=%d "
-            "regime_issued=%d regime_abstained=%d",
+            "regime_issued=%d regime_abstained=%d "
+            "regime2_issued=%d regime2_abstained=%d regime2_unavailable=%d",
             metrics["discovered_streams"], metrics["selected_streams"],
             metrics["short_history"], metrics["stale_last_candle"],
             metrics["insufficient_causal_labels"],
             metrics["insufficient_training"], metrics["target_expired"],
             metrics["duplicate_forecasts"], metrics["issued_forecasts"],
             metrics["regime_issued"], metrics["regime_abstained"],
+            metrics["regime2_issued"], metrics["regime2_abstained"],
+            metrics["regime2_unavailable"],
         )
         _LOG.info(
             "RivaL prospective shadow audit issued=%s settled=%s",

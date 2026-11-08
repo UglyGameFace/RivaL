@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 
 from parlay_bot.archive.drive import MAX_RESEARCH_DOCUMENT_BYTES
 from parlay_bot.config import Settings
-from parlay_bot.research import archive_training, gbm_training
+from parlay_bot.research import archive_training, gbm_training, regime2_training
 from parlay_bot.research.publish import _artifact, _drive
 from parlay_bot.research.scheduled_variants import (
     RESULT_PREFIX,
@@ -37,7 +37,14 @@ def _fit(module, frames: dict, training: dict, **variant) -> tuple[dict, dict | 
             raise archive_training.TrainingDataUnavailable("missing verified provider hashes")
         result = module.train_run(frames, **training, **variant)
     except archive_training.TrainingDataUnavailable as exc:
-        return {"gates_passed": False, "gate_failures": [str(exc)]}, None, "blocked"
+        # A floor failure still carries its census (regime_v2 attaches
+        # it to the exception): the blocked report measures the
+        # shortfall instead of merely naming it.
+        report = {"gates_passed": False, "gate_failures": [str(exc)]}
+        census = getattr(exc, "census", None)
+        if census is not None:
+            report["trending_census"] = census
+        return report, None, "blocked"
     report = result["report"]
     if result["artifact"] is None:
         return report, None, "rejected"
@@ -103,7 +110,7 @@ async def _train_variant(drive, request: dict, *, common: dict, full: dict,
 
 async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
                                out: Path, publish: bool) -> int:
-    """Train both ordinary families and at most one requested variant per scope."""
+    """Train all three ordinary families and at most one requested variant per scope."""
     asset, horizon = training["asset"], training["horizon"]
     through = training["trained_through"]
     full = _window(frames, through=through, first=None)
@@ -115,7 +122,9 @@ async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
             if request is not None:
                 await _train_variant(drive, request, common=common, full=full,
                                      training=training)
-        for prefix, module in (("archive-v1", archive_training), ("gbm-v1", gbm_training)):
+        for prefix, module in (("archive-v1", archive_training),
+                               ("gbm-v1", gbm_training),
+                               ("regime-v2", regime2_training)):
             report, model, status = _fit(module, common, training)
             report = {**report, "census": census, "training_status": status,
                       "asset": asset, "horizon_minutes": horizon, "family": module.FAMILY}

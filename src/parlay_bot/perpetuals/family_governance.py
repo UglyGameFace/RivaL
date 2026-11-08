@@ -157,6 +157,12 @@ class FamilyPromotion:
             pinned_shas["gbm_v1"] = (_doc or {}).get("_sha256")
         except Exception:  # noqa: BLE001 - no pin means no attributable rows
             pinned_shas["gbm_v1"] = None
+        try:
+            from parlay_bot.perpetuals.regime2_model import Regime2ModelSet
+            _doc = Regime2ModelSet(self.store).active(asset, horizon, now=stamp)
+            pinned_shas["regime_v2"] = (_doc or {}).get("_sha256")
+        except Exception:  # noqa: BLE001 - no pin means no attributable rows
+            pinned_shas["regime_v2"] = None
         # Distinct immutable boosted artifacts compete only on their own
         # source-specific future records, never as one pooled model family.
         observed_families = sorted({
@@ -367,6 +373,13 @@ class FamilyPromotion:
                     self.store, asset, horizon)
             except Exception:  # noqa: BLE001 - a missing state row records as no artifact
                 scored["regime_v1"]["artifact"] = None
+        if "regime_v2" in scored:
+            try:
+                from parlay_bot.perpetuals.regime2_model import artifact_identity
+                scored["regime_v2"]["artifact"] = artifact_identity(
+                    self.store, asset, horizon)
+            except Exception:  # noqa: BLE001 - a missing state row records as no artifact
+                scored["regime_v2"]["artifact"] = None
         for family, pinned_sha in pinned_shas.items():
             evidence = scored.get(family)
             if evidence and (evidence.get("artifact") or {}).get("model_sha256") != pinned_sha:
@@ -479,11 +492,32 @@ class FamilyPromotion:
                     now=stamp)
             except Exception:  # noqa: BLE001 - a receipt must never block governance
                 _LOG.exception("RivaL gbm_v1 promotion receipt unavailable")
+        # First promoted_paper write for regime_v2: same pattern, same
+        # dedupe (one receipt per family/scope/kind, ON CONFLICT DO NOTHING).
+        # Regime_v1 has no receipt block; v2 adds one rather than copying
+        # that gap (spec rival-regime-v2-spec-20261108, §1.6).
+        if selected == "regime_v2" and not (
+                previous and previous["status"] == "promoted_paper"
+                and previous["selected_family"] == "regime_v2"):
+            try:
+                from parlay_bot.perpetuals.promotion_receipts import (
+                    record_promotion_receipt,
+                )
+                from parlay_bot.perpetuals.regime2_model import calibration_status
+                record_promotion_receipt(
+                    self.store, family="regime_v2", venue=venue, contract=contract,
+                    quote=quote, horizon=horizon, kind="promoted",
+                    evidence={**scored["regime_v2"],
+                              "evaluated_at": stamp.isoformat()},
+                    calibration=calibration_status(self.store, asset, horizon),
+                    now=stamp)
+            except Exception:  # noqa: BLE001 - a receipt must never block governance
+                _LOG.exception("RivaL regime_v2 promotion receipt unavailable")
         # D14 pin verdicts: a selected offline family is promoted; a pinned
         # fit whose evidence is exhausted without a promotion is rejected.
         # The next queued fit is admitted on the next reload
         # (offline_model_pins).
-        for _family in ("archive_v1", "gbm_v1"):
+        for _family in ("archive_v1", "gbm_v1", "regime_v2"):
             try:
                 from parlay_bot.perpetuals import offline_model_pins
                 offline_model_pins.resolve_pin(
@@ -591,6 +625,22 @@ class FamilyPromotion:
             try:
                 from parlay_bot.perpetuals.gbm_model import artifact_identity
                 recorded = json.loads(row["evidence_json"])["gbm_v1"]["artifact"]
+                current = artifact_identity(self.store, asset, horizon)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                return None
+            return selected if _pinned_identity_matches(recorded, current) else None
+        if selected == "regime_v2":
+            # Same D14 pin check as archive_v1/gbm_v1, on the regime_v2
+            # artifact (spec rival-regime-v2-spec-20261108, D3/D5):
+            # the served family must be the pinned artifact that earned
+            # promotion -- exact weights-SHA match, same feature digest
+            # (which pins the trending-subset descriptor), trained-through
+            # and graded count (under that artifact's hash) monotone. A
+            # retrain queues behind the pinned fit and never inherits
+            # its promotion; a rejected pin advances the queue.
+            try:
+                from parlay_bot.perpetuals.regime2_model import artifact_identity
+                recorded = json.loads(row["evidence_json"])["regime_v2"]["artifact"]
                 current = artifact_identity(self.store, asset, horizon)
             except (ValueError, TypeError, KeyError, AttributeError):
                 return None

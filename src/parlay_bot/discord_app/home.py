@@ -469,6 +469,22 @@ def _regime_record(market: object, asset: str, horizon: int) -> dict:
     return trial_report(market.store, asset=asset, horizon=horizon)
 
 
+def _regime2_record(market: object, asset: str, horizon: int) -> dict:
+    """Live graded record of the trending-subset challenger (7 days).
+
+    Same columns as the regime_v1 trial row, measured on regime_v2's
+    issued subset only, plus the D5 decomposition with the paired gain
+    vs the incumbent as the headline (for v2 the gain is the point:
+    v1's paired gain is 0.000 by construction, v2's is the test),
+    the v2-vs-v1 head-to-head, the selection effect, coverage, and
+    the availability ratio (how often the artifact was there when the
+    gate passed).
+    """
+    from parlay_bot.perpetuals.regime2_model import trial_report
+
+    return trial_report(market.store, asset=asset, horizon=horizon)
+
+
 def _intelligence_status(market: object, asset: str, horizon: int) -> dict | None:
     """RivaL Intelligence's graded reviews of the models (None if never run)."""
     from parlay_bot.perpetuals.intelligence import IntelligenceLedger
@@ -1535,6 +1551,10 @@ class GuidedHome(discord.ui.View):
                     asyncio.to_thread(_regime_record, self.market, self.coin, self.horizon),
                     timeout=PERFORMANCE_READ_SECONDS,
                 )
+                readers["regime2"] = asyncio.wait_for(
+                    asyncio.to_thread(_regime2_record, self.market, self.coin, self.horizon),
+                    timeout=PERFORMANCE_READ_SECONDS,
+                )
                 readers["intelligence"] = asyncio.wait_for(
                     asyncio.to_thread(
                         _intelligence_status, self.market, self.coin, self.horizon,
@@ -1700,6 +1720,43 @@ class GuidedHome(discord.ui.View):
                 else:
                     exchange_text += (f"\n**Regime-gated model on trial (calls only in trending markets):** "
                                       f"{int(regime['issued']):,} predictions made, "
+                                      f"{graded:,} scored so far")
+            regime2 = reports.get("regime2")
+            if isinstance(regime2, dict) and int(regime2.get("issued") or 0):
+                graded, decided = int(regime2["graded"] or 0), int(regime2["decided"] or 0)
+                if (decided and regime2["model_brier"] is not None
+                        and regime2["incumbent_brier"] is not None
+                        and regime2["baseline_brier"] is not None):
+                    hits = int(regime2["hits"] or 0)
+                    windows = int(regime2.get("windows") or 0)
+                    gain = float(regime2["incumbent_brier"]) - float(regime2["model_brier"])
+                    gain_v1 = regime2.get("paired_gain_vs_regime_v1")
+                    sel = regime2.get("selection_effect")
+                    cov = regime2.get("coverage")
+                    avail = regime2.get("availability_ratio")
+                    # Paired gain is the headline for v2 (for v1 it is
+                    # 0.000 by construction; for v2 it is the test), so
+                    # it leads the line and survives the 1024-char field
+                    # cap even if the tail is cut.
+                    exchange_text += (
+                        f"\n**Regime-v2 model on trial (trained only on trending markets):** "
+                        f"paired gain vs current model {gain:+.3f}"
+                        + (f"; vs regime_v1 {float(gain_v1):+.3f}"
+                           if gain_v1 is not None else "")
+                        + f"; right {hits:,} of {decided:,} ({hits / decided:.1%}) over "
+                        f"{windows:,} candles. Error score {float(regime2['model_brier']):.3f} vs "
+                        f"current model {float(regime2['incumbent_brier']):.3f} vs simple "
+                        f"guess {float(regime2['baseline_brier']):.3f}, on the same candles"
+                        + (f"; selection effect {float(sel):+.3f} "
+                           f"({'harder' if float(sel) > 0 else 'easier'} subset for the current model)"
+                           if sel is not None else "")
+                        + (f"; coverage {float(cov):.0%}" if cov is not None else "")
+                        + (f"; availability {float(avail):.0%}" if avail is not None else "")
+                        + ("; too early to judge" if windows < 300 else "")
+                    )
+                else:
+                    exchange_text += (f"\n**Regime-v2 model on trial (trained only on trending markets):** "
+                                      f"{int(regime2['issued']):,} predictions made, "
                                       f"{graded:,} scored so far")
             embed.add_field(name=f"📈 {self.coin} exchange predictions (up or down?)",
                             value=exchange_text[:1024], inline=False)

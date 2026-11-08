@@ -87,6 +87,7 @@ from parlay_bot.perpetuals.polymarket_research import PolymarketResearch
 from parlay_bot.perpetuals.pooled_model import PooledModelSet
 from parlay_bot.perpetuals.price_hit_evidence import evaluate_price_hit_model
 from parlay_bot.perpetuals.profit_proof import ProspectiveQuoteProfitMonitor
+from parlay_bot.perpetuals.regime2_model import Regime2ModelSet, is_regime2_document
 from parlay_bot.perpetuals.research_hypotheses import FeatureHypothesisLab
 from parlay_bot.perpetuals.runtime_health import RuntimeHealthMonitor
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
@@ -2368,6 +2369,15 @@ class RivalDiscordClient(discord.Client):
             market.gbm_models = GbmModelSet(self.store)
         return market.gbm_models
 
+    def _regime2_model_set(self):
+        """The same regime_v2 model set the forecast cycle serves from."""
+        if self.perp_collector is None:
+            return None
+        market = self.perp_collector.market
+        if getattr(market, "regime2_models", None) is None:
+            market.regime2_models = Regime2ModelSet(self.store)
+        return market.regime2_models
+
     async def _intelligence_loop(self) -> None:
         """RivaL Intelligence reviews the models' calls every 5-minute slot.
 
@@ -2932,6 +2942,9 @@ class RivalDiscordClient(discord.Client):
                 gbm_set = self._gbm_model_set()
                 if gbm_set is not None:
                     known |= await asyncio.to_thread(gbm_set.imported_file_ids)
+                regime2_set = self._regime2_model_set()
+                if regime2_set is not None:
+                    known |= await asyncio.to_thread(regime2_set.imported_file_ids)
                 for _ in range(12):
                     items, next_cursor = await asyncio.wait_for(
                         self.research_drive.read_verified_research_candidates(
@@ -2995,6 +3008,29 @@ class RivalDiscordClient(discord.Client):
                                         _LOG.info("RivaL imported GBM model %s", file_id)
                             except (ValueError, UnicodeError):
                                 _LOG.warning("RivaL GBM model failed verification")
+                            continue
+                        if is_regime2_document(payload):
+                            # regime_v2 artifacts are verified by
+                            # regime2_training.validate(): provider hashes
+                            # (never normalized hashes), feature contract
+                            # and digest (which pins the trending-subset
+                            # descriptor), calibration evaluated, offline
+                            # gates passed. The Drive-manifest byte
+                            # cross-check does not apply here: its
+                            # machinery only understands
+                            # historical-candidate documents, and the
+                            # missing byte check is a known limitation
+                            # (same as archive_v1 / gbm_v1).
+                            try:
+                                regime2 = self._regime2_model_set()
+                                if regime2 is not None:
+                                    added = await asyncio.to_thread(
+                                        regime2.import_document, file_id, payload,
+                                    )
+                                    if added:
+                                        _LOG.info("RivaL imported regime_v2 model %s", file_id)
+                            except (ValueError, UnicodeError):
+                                _LOG.warning("RivaL regime_v2 model failed verification")
                             continue
                         try:
                             # Cross-check the candidate's claimed source

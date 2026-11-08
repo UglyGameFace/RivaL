@@ -28,8 +28,8 @@ try:
 except ModuleNotFoundError:
     # Editable repository test/developer environment imports source package.
     from parlay_bot.perpetuals.evidence_policy import enforce as enforce_grounding
-from model_download import ensure_model
 import voice_moderation
+from model_download import ensure_model
 
 LOG = logging.getLogger("rival_llm")
 MODEL_CATALOG = {
@@ -773,7 +773,7 @@ class Gateway(ThreadingHTTPServer):
             raise ValueError("local model exhausted generation token budget")
         output = choice["message"]["content"]
         if not isinstance(output, str):
-            raise ValueError("voice model returned nontext output")
+            raise TypeError("voice model returned nontext output")
         verdict = voice_moderation.validate_result(json.loads(output))
         return {"model": self.identity, **verdict}
 

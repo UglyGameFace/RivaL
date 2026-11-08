@@ -726,21 +726,30 @@ class LiquidityChallengerV1:
         return learned
 
     def _refit_calibration(self, conn, key, state: dict, stamp: str) -> None:
+        # Only the newest MAX_CALIBRATION_ROWS graded rows are ever used, so
+        # fetch just those (newest first, then back to oldest-first) instead
+        # of the whole, ever-growing graded history every cycle. Same rows,
+        # same order; the key columns only break exact timestamp ties.
         graded = conn.execute(
-            f"""SELECT x.features, f.outcome_up
-               FROM {self.features_table} x
-               JOIN perp_forward_audit f
-                 ON f.venue=x.venue AND f.contract=x.contract AND f.quote=x.quote
-                AND f.horizon_minutes=x.horizon_minutes
-                AND f.reference_opened_at=x.reference_opened_at
-               WHERE x.asset=? AND x.horizon_minutes=? AND x.learned=1
-                 AND f.settled_at IS NOT NULL AND f.outcome_up IN (0,1)
-               ORDER BY f.settled_at, x.issued_at""",
-            (key[0], key[1]),
+            f"""SELECT features, outcome_up FROM (
+                 SELECT x.features, f.outcome_up, f.settled_at AS s_at,
+                        x.issued_at AS i_at, x.venue AS v, x.contract AS c,
+                        x.quote AS q
+                 FROM {self.features_table} x
+                 JOIN perp_forward_audit f
+                   ON f.venue=x.venue AND f.contract=x.contract AND f.quote=x.quote
+                  AND f.horizon_minutes=x.horizon_minutes
+                  AND f.reference_opened_at=x.reference_opened_at
+                 WHERE x.asset=? AND x.horizon_minutes=? AND x.learned=1
+                   AND f.settled_at IS NOT NULL AND f.outcome_up IN (0,1)
+                 ORDER BY f.settled_at DESC, x.issued_at DESC, x.venue DESC,
+                          x.contract DESC, x.quote DESC
+                 LIMIT ?) recent
+               ORDER BY s_at, i_at, v, c, q""",
+            (key[0], key[1], MAX_CALIBRATION_ROWS),
         ).fetchall()
         if len(graded) < MIN_FIT_ROWS + MIN_EVAL_ROWS:
             return
-        graded = graded[-MAX_CALIBRATION_ROWS:]
         split = int(len(graded) * 0.7)
         fit_rows = [(self.raw_probability(state, json.loads(r["features"])),
                      int(r["outcome_up"])) for r in graded[:split]]

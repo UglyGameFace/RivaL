@@ -1,12 +1,16 @@
 name: RivaL archive model weekly training
 
-# Trains the archive_v1 offline logistic (spec §2.3-§2.7, D1/D4) on the
+# Trains the archive_v1 offline logistic (spec §2.3-§2.7, D1/D4) and the
+# gbm_v1 offline GBM (autonomous loop Phase 2, spec §3.4, D4/D6) on the
 # verified Drive archive and publishes artifacts that pass their offline
 # gates to the private Drive models folder. A run that fails its gates
 # publishes a kind="report" only -- no model artifact. The bot imports a
 # published artifact only through the existing manifest cross-check, and
 # it serves only through the existing Route B promotion gates (Phase 2).
-# Never on every push: weekly retrain + manual dispatch only.
+# The GBM trains as a step in this same workflow (no separate workflow
+# file): same restored bytes, same --train-end / --test-start /
+# --trained-through, same manifests dir, per-horizon + per-step failure
+# isolation. Never on every push: weekly retrain + manual dispatch only.
 on:
   schedule:
     - cron: "30 7 * * 0"
@@ -97,9 +101,45 @@ jobs:
               --trained-through "$trained_through" \
               --out archive-v1-models $publish_flag || echo "horizon ${horizon}m gates failed (report only)"
           done
+      # Step 4 (autonomous loop Phase 2, spec §3.4): train the GBM on the
+      # SAME restored bytes and the SAME splits as Step 3 (same
+      # --train-end / --test-start / --trained-through, same manifests
+      # dir, same census, same Binance cache). Per-horizon failure
+      # isolation, same as Step 3; a GBM horizon failing its gates
+      # publishes a report only and never blocks the other horizons or
+      # the logistic artifacts.
+      - name: Train GBM (all horizons)
+        run: |
+          last_month="$(date -u -d "$(date -u +%Y-%m-01) -1 day" +%Y-%m)"
+          through_day="$(date -u -d yesterday +%Y-%m-%d)"
+          test_start="$(date -u -d "-28 days" +%Y-%m-%dT00:00:00+00:00)"
+          train_end="$(date -u -d "-56 days" +%Y-%m-%dT00:00:00+00:00)"
+          trained_through="$(date -u -d yesterday +%Y-%m-%dT23:55:00+00:00)"
+          publish_flag=""
+          if [[ "${{ github.event_name }}" == "schedule" || "${{ inputs.publish }}" == "true" ]]; then
+            publish_flag="--publish"
+          fi
+          for horizon in 5 15 60; do
+            python tools/train_gbm_model.py \
+              --asset ${{ matrix.asset }} --horizon "$horizon" \
+              --manifests-dir data/archive-v1-restore \
+              --census data/native-reports/drive-source-census.json \
+              --binance-cache binance-cache \
+              --binance-last-month "$last_month" \
+              --binance-through-day "$through_day" \
+              --train-end "$train_end" --test-start "$test_start" \
+              --trained-through "$trained_through" \
+              --out gbm-v1-models $publish_flag || echo "gbm horizon ${horizon}m gates failed (report only)"
+          done
       - name: Upload run reports
         uses: actions/upload-artifact@v4
         with:
           name: archive-v1-${{ matrix.asset }}-${{ github.run_id }}
           path: archive-v1-models/
+          if-no-files-found: error
+      - name: Upload GBM run reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: gbm-v1-${{ matrix.asset }}-${{ github.run_id }}
+          path: gbm-v1-models/
           if-no-files-found: error

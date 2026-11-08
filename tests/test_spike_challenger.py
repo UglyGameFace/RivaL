@@ -121,11 +121,15 @@ def test_live_spike_evidence_is_observed_before_challenger_prediction_issue():
     # Regression for a genuine integration bug: the old cycle issued
     # forecasts before recording that candle's new spike, which left the
     # causally joined spike regime empty at every ordinary five-minute tick.
+    # The spike pass lives in _spike_stage (extracted so it can carry its
+    # own deadline); the ordering is collect -> spike stage -> forecast.
     import inspect
 
     from parlay_bot.discord_app.bot import RivalDiscordClient
 
     loop = inspect.getsource(RivalDiscordClient._perp_loop)
     assert loop.index("self.perp_collector.collect_once()") < loop.index(
-        "self.spike_watch.scan"
+        "self._spike_stage()"
     ) < loop.index("self.autonomous.cycle()")
+    stage = inspect.getsource(RivalDiscordClient._spike_stage)
+    assert "self.spike_watch.scan" in stage

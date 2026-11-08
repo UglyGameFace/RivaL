@@ -25,6 +25,7 @@ SERVICE_FILES = (
     "model_download.py",
     "requirements.txt",
     "service.py",
+    "voice_moderation.py",
     "validate_package.py",
 )
 OTHER_FILES = {

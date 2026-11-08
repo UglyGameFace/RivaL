@@ -28,6 +28,7 @@ try:
 except ModuleNotFoundError:
     # Editable repository test/developer environment imports source package.
     from parlay_bot.perpetuals.evidence_policy import enforce as enforce_grounding
+import voice_moderation
 from model_download import ensure_model
 
 LOG = logging.getLogger("rival_llm")
@@ -658,7 +659,10 @@ class Gateway(ThreadingHTTPServer):
     def __init__(self, host: str, port: int, *, token: str, model: str,
                  backend_url: str = "http://127.0.0.1:8766",
                  backend_timeout: float = 40, process=None,
-                 context_tokens: int = CONTEXT_TOKENS):
+                 context_tokens: int = CONTEXT_TOKENS,
+                 voice_token: str = "", voice_enabled: bool = False):
+        if voice_enabled and (len(voice_token) < 32 or voice_token == token):
+            raise ValueError("Voice moderation requires its own strong, distinct token")
         if len(token) < 32:
             raise ValueError("RIVAL_LLM_SHARED_TOKEN must contain at least 32 characters")
         if model not in MODEL_CATALOG:
@@ -667,6 +671,8 @@ class Gateway(ThreadingHTTPServer):
             raise ValueError("Unsupported runtime context window")
         super().__init__((host, port), GatewayHandler)
         self.token = token
+        self.voice_token = voice_token
+        self.voice_enabled = bool(voice_enabled)
         self.model = model
         self.identity = MODEL_CATALOG[model][0] + ":Q4_K_M"
         self.backend_url = backend_url
@@ -724,6 +730,52 @@ class Gateway(ThreadingHTTPServer):
         if not isinstance(tokens, list) or not all(isinstance(t, int) for t in tokens):
             raise ValueError("invalid backend token count")
         return len(tokens)
+
+
+    def infer_voice_moderation(self, data: dict) -> dict:
+        """Classify a bounded transcript with the existing CPU model, never enforce."""
+        brief = voice_moderation.validate_request(data)
+        messages = [
+            {"role": "system", "content": voice_moderation.PROMPT},
+            {"role": "user", "content": voice_moderation.user_message(brief)},
+        ]
+        if (
+            self.prompt_tokens(messages) + voice_moderation.GENERATION_TOKENS
+            + CONTEXT_SAFETY_TOKENS > CONTEXT_TOKENS
+        ):
+            raise ContextBudgetExceeded("voice brief would truncate")
+        payload = json.dumps({
+            "model": MODEL_CATALOG[self.model][0],
+            "messages": messages,
+            "temperature": 0.1,
+            "top_k": 50,
+            "repeat_penalty": 1.1,
+            "chat_template_kwargs": {"enable_thinking": False},
+            "max_tokens": voice_moderation.GENERATION_TOKENS,
+            "stream": False,
+            "response_format": voice_moderation.RESPONSE_FORMAT,
+        }).encode("utf-8")
+        request = urllib.request.Request(
+            self.backend_url + "/v1/chat/completions", data=payload,
+            headers={"Content-Type": "application/json"}, method="POST",
+        )
+        with urllib.request.urlopen(
+            request, timeout=max(self.backend_timeout, 60),
+        ) as response:
+            if response.status != 200:
+                raise ValueError("local voice inference rejected")
+            raw = response.read(16_001)
+        if len(raw) > 16_000:
+            raise ValueError("oversized voice inference output")
+        result = json.loads(raw)
+        choice = result["choices"][0]
+        if choice.get("finish_reason") == "length":
+            raise ValueError("local model exhausted generation token budget")
+        output = choice["message"]["content"]
+        if not isinstance(output, str):
+            raise TypeError("voice model returned nontext output")
+        verdict = voice_moderation.validate_result(json.loads(output))
+        return {"model": self.identity, **verdict}
 
     def infer(self, asset: str, evidence: dict, *, mode: str = "research") -> dict:
         if mode not in ("research", "hypothesis", "extended", "explain"):
@@ -934,6 +986,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
                             "repair_count": self.server.repair_count,
                              "runtime_context_tokens": self.server.context_tokens,
                              "profiles": {
+                                 "voice": {
+                                     "enabled": self.server.voice_enabled,
+                                     "generation_tokens": voice_moderation.GENERATION_TOKENS,
+                                     "advisory_only": True,
+                                 },
                                  "research": {"context_tokens": CONTEXT_TOKENS,
                                               "generation_tokens": GENERATION_TOKENS},
                                  "hypothesis": {"context_tokens": CONTEXT_TOKENS,
@@ -946,11 +1003,23 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.send_json({"error": "not_found"}, 404)
 
     def do_POST(self):
-        if self.path not in ("/v1/research", "/v1/hypothesis", "/v1/extended-research",
-                             "/v1/explain"):
+        is_voice = self.path == "/v1/moderate"
+        if not is_voice and self.path not in (
+            "/v1/research", "/v1/hypothesis", "/v1/extended-research", "/v1/explain",
+        ):
             self.send_json({"error": "not_found"}, 404)
             return
-        if not self.authorized():
+        if is_voice and not self.server.voice_enabled:
+            self.send_json({"error": "voice_moderation_disabled"}, 503)
+            return
+        authorized = (
+            self.headers.get("Authorization", "").startswith("Bearer ")
+            and hmac.compare_digest(
+                self.headers["Authorization"][7:],
+                self.server.voice_token if is_voice else self.server.token,
+            )
+        )
+        if not authorized:
             self.send_json({"error": "unauthorized"}, 401)
             return
         if not self.headers.get("Content-Type", "").lower().startswith("application/json"):
@@ -968,7 +1037,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except (UnicodeError, ValueError):
             self.send_json({"error": "invalid_json"}, 400)
             return
-        if (
+        if is_voice:
+            try:
+                voice_moderation.validate_request(body)
+            except ValueError:
+                self.send_json({"error": "invalid_voice_request"}, 400)
+                return
+        elif (
             not isinstance(body, dict) or body.get("asset") not in ("BTC", "ETH", "SOL", "XRP")
             or not isinstance(body.get("evidence"), dict)
             or len(json.dumps(body["evidence"])) > MAX_EVIDENCE_CHARS
@@ -983,7 +1058,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self.send_json({"error": "local_model_unavailable"}, 503)
                 return
             try:
-                if self.path == "/v1/hypothesis":
+                if is_voice:
+                    answer = self.server.infer_voice_moderation(body)
+                elif self.path == "/v1/hypothesis":
                     answer = self.server.infer(
                         body["asset"], body["evidence"], mode="hypothesis",
                     )
@@ -1059,6 +1136,12 @@ def launch_server():
     token = os.getenv("RIVAL_LLM_SHARED_TOKEN", "")
     if len(token) < 32:
         raise ValueError("Missing RIVAL_LLM_SHARED_TOKEN")
+    voice_enabled = os.getenv("RIVAL_LLM_VOICE_ENABLED", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    voice_token = os.getenv("RIVAL_LLM_VOICE_TOKEN", "")
+    if voice_enabled and (len(voice_token) < 32 or voice_token == token):
+        raise ValueError("Voice endpoint requires a distinct 32+ character token")
     binary = Path(os.getenv("RIVAL_LLAMA_SERVER_BIN", "runtime/bin/llama-server")).resolve()
     if not binary.is_file() or not os.access(binary, os.X_OK):
         raise FileNotFoundError("llama-server binary missing. Run build.sh before deployment.")
@@ -1071,6 +1154,7 @@ def launch_server():
         "0.0.0.0", int(os.getenv("RIVAL_LLM_PORT", "8765")),
         token=token, model=profile, process=process,
         context_tokens=context_tokens,
+        voice_token=voice_token, voice_enabled=voice_enabled,
     )
     thread = threading.Thread(target=gateway.serve_forever, daemon=True)
     thread.start()

@@ -15,6 +15,7 @@ APP_FILES = {
     "main.py",
     "requirements.txt",
     "service.py",
+    "voice_moderation.py",
     "discovery.py",
     "error_report.py",
     "evidence_policy.py",

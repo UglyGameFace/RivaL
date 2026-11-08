@@ -27,6 +27,12 @@ The authoritative RivaL repository's sync workflow can create and populate this 
 
 The sync runs on relevant RivaL/main changes, hourly reconciliation and manually. It does not overwrite unrelated owner-managed downstream files. Only the upstream-owned manifest paths are replaced or removed.
 
+## Optional private Watch Yo Mouf text classifier
+
+This service also provides an **advisory-only** POST `/v1/moderate` when `RIVAL_LLM_VOICE_ENABLED=true` and a distinct 32+ character `RIVAL_LLM_VOICE_TOKEN` are configured on the standalone Discloud application. The research token does not authorize voice review, and the voice token does not authorize market research. The JSON body must contain `version: 1`, a 3-1200-character `transcript`, and an array `context` of up to two 300-character strings. The response contains bounded `decision`, `category`, `confidence`, and flags that prohibit enforcement. No audio or transcript is logged or retained by this endpoint.
+
+The CPU service accepts one inference at a time, returning HTTP 429 if busy, without queueing voice work. This is **not** live monitoring: Watch Yo Mouf still requires verified DAVE PCM, dedicated local speech recognition, explicit individual consent, immediate revocation, a durable one-receiver-per-guild lease, and a tested staff alert path. Keep the endpoint off until integration acceptance. The LFM3 model is unchanged and verdict confidence is not calibrated. Do not attach automatic punishments to this output.
+
 ## Acceptance boundaries
 
 Passing Python/build validation proves the deployable package shape. A successful Discloud deploy step, fresh authenticated SHA-matching status, and one safely grounded synthetic inference prove that the matching service code is live, ready, and can complete a bounded private request. Neither proves that intentional backend crash recovery has been exercised in production, that model weights have improved, or that historical market data is complete. Those require separate on-host fault tests and forward-outcome evidence.

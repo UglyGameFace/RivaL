@@ -76,7 +76,8 @@ def _store(tmp_path):
     with store.connect() as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS perp_forward_audit (
             venue TEXT, contract TEXT, quote TEXT, horizon_minutes INTEGER,
-            reference_opened_at TEXT, settled_at TEXT, outcome_up INTEGER)""")
+            reference_opened_at TEXT, settled_at TEXT, outcome_up INTEGER,
+            asset TEXT)""")
     return store
 
 
@@ -162,13 +163,14 @@ def _seed_liq1_state(store):
     with store.connect() as conn:
         conn.execute("""CREATE TABLE IF NOT EXISTS perp_forward_audit (
             venue TEXT, contract TEXT, quote TEXT, horizon_minutes INTEGER,
-            reference_opened_at TEXT, settled_at TEXT, outcome_up INTEGER)""")
+            reference_opened_at TEXT, settled_at TEXT, outcome_up INTEGER,
+            asset TEXT)""")
         ref = NOW - timedelta(minutes=30)
         challenger.call(conn, venue="hyperliquid", contract="BTC", quote="USDC",
                         asset="BTC", horizon=5, reference_opened_at=ref,
                         issued_at=ref, features=(0.1,) * 10, flow=flow)
         conn.execute("INSERT INTO perp_forward_audit VALUES "
-                     "('hyperliquid','BTC','USDC',5,?,?,1)",
+                     "('hyperliquid','BTC','USDC',5,?,?,1,'BTC')",
                      (ref.isoformat(), NOW.isoformat()))
     assert challenger.learn(NOW) == 1
     return LiquidityChallengerV1.artifact_identity(store, "BTC", 5)
@@ -797,7 +799,7 @@ def test_liq_v1_calibration_refit_reads_only_the_newest_rows(tmp_path, monkeypat
                                 asset="BTC", horizon=5, reference_opened_at=ref,
                                 issued_at=ref, features=((i % 5) / 5.0,) * 10, flow=flow)
                 conn.execute("INSERT INTO perp_forward_audit VALUES "
-                             "('hyperliquid','BTC','USDC',5,?,?,?)",
+                             "('hyperliquid','BTC','USDC',5,?,?,?,'BTC')",
                              (ref.isoformat(), (ref + timedelta(minutes=5)).isoformat(),
                               int(i % 3 == 0)))
         assert challenger.learn(NOW) == 130
@@ -846,6 +848,83 @@ def test_liq_v1_calibration_refit_reads_only_the_newest_rows(tmp_path, monkeypat
         assert result["eval_window"] == {"graded_rows": 24}
         result.pop("fit_window"), result.pop("eval_window")
         assert result == expected
+    finally:
+        store.close()
+
+
+class _Capture:
+    """Connection wrapper that records the refit SELECT and its rows."""
+
+    def __init__(self, raw, captured: list):
+        self.raw, self.captured = raw, captured
+
+    def execute(self, sql, params=()):
+        cursor = self.raw.execute(sql, params)
+        if "SELECT features, outcome_up" not in " ".join(sql.split()):
+            return cursor
+        rows = cursor.fetchall()
+        self.captured.append((sql, params, rows))
+
+        class Rows:
+            def fetchall(self):
+                return rows
+        return Rows()
+
+
+def test_liq_v1_refit_scope_keeps_rows_and_uses_the_scope_index(tmp_path, monkeypatch):
+    """The refit's (asset, horizon) scope on the audit side changes no rows.
+
+    Two assets x two horizons on several venues: for every key the scoped
+    query returns exactly the rows of the previous unscoped query, and the
+    feature side has idx_rival_liq1_features_scope so Postgres need not scan
+    every stored feature row once per key.
+    """
+    from parlay_bot.perpetuals import liquidity_challenger_v1 as liq
+
+    monkeypatch.setattr(liq, "MAX_CALIBRATION_ROWS", 40)
+    store = _store(tmp_path)
+    challenger = LiquidityChallengerV1(store)
+    flow = (0.3,) + (0.0,) * 20 + (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    keys = [(a, h) for a in ("BTC", "ETH") for h in (5, 15)]
+    try:
+        with store.connect() as conn:
+            for i in range(60):
+                for venue in ("hyperliquid", "okx"):
+                    for asset, horizon in keys:
+                        ref = NOW - timedelta(minutes=5 * (200 - i))
+                        challenger.call(conn, venue=venue, contract=asset, quote="USDC",
+                                        asset=asset, horizon=horizon,
+                                        reference_opened_at=ref, issued_at=ref,
+                                        features=((i % 4) / 4.0,) * 10, flow=flow)
+                        conn.execute(
+                            "INSERT INTO perp_forward_audit VALUES (?,?,?,?,?,?,?,?)",
+                            (venue, asset, "USDC", horizon, ref.isoformat(),
+                             (ref + timedelta(minutes=horizon, seconds=i % 3)).isoformat(),
+                             int((i + horizon) % 3 == 0), asset))
+        assert challenger.learn(NOW) == 60 * 2 * len(keys)
+        with store.connect() as conn:
+            for asset, horizon in keys:
+                old = conn.execute(
+                    """SELECT x.features, f.outcome_up FROM rival_liq1_features x
+                       JOIN perp_forward_audit f
+                         ON f.venue=x.venue AND f.contract=x.contract AND f.quote=x.quote
+                        AND f.horizon_minutes=x.horizon_minutes
+                        AND f.reference_opened_at=x.reference_opened_at
+                       WHERE x.asset=? AND x.horizon_minutes=? AND x.learned=1
+                         AND f.settled_at IS NOT NULL AND f.outcome_up IN (0,1)
+                       ORDER BY f.settled_at, x.issued_at, x.venue, x.contract, x.quote""",
+                    (asset, horizon)).fetchall()[-40:]
+                captured: list = []
+                state = challenger._state(conn, asset, horizon)
+                challenger._refit_calibration(_Capture(conn, captured), (asset, horizon),
+                                              state, NOW.isoformat())
+                ((sql, params, rows),) = captured
+                assert [tuple(r) for r in rows] == [tuple(r) for r in old]
+                assert "f.asset=? AND f.horizon_minutes=?" in " ".join(sql.split())
+                assert params == (asset, horizon, asset, horizon, 40)
+            columns = [r["name"] for r in conn.execute(
+                "PRAGMA index_info(idx_rival_liq1_features_scope)").fetchall()]
+        assert columns == ["asset", "horizon_minutes", "learned"]
     finally:
         store.close()
 

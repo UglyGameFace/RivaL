@@ -1581,6 +1581,40 @@ class ResearchDashboard(discord.ui.View):
                             f"({proof['disputed_regime_targets']} disputed)\n"
                             + "\n".join(lines)
                         )
+                    # regime_v1 subset: the same per-regime split, but only
+                    # over the targets the gate actually issued on, so the
+                    # page shows whether the family won on the targets it
+                    # chose. A failure here never hides the incumbent
+                    # section above.
+                    try:
+                        subset_pieces = []
+                        for horizon in (5, 15):
+                            proof = await asyncio.to_thread(
+                                monitor.regime_summary,
+                                asset=self.asset, horizon_minutes=horizon,
+                                family="regime_v1",
+                            )
+                            lines = []
+                            for regime in ("quiet", "normal", "turbulent"):
+                                part = proof["regimes"][regime]
+                                gain = part["paired_brier_gain"]
+                                gain_text = (
+                                    f"{gain:+.4f}" if gain is not None else "none"
+                                )
+                                lines.append(
+                                    f"{regime}: **{part['unique_targets']}** "
+                                    f"UTC targets / {part['utc_days']} days · "
+                                    f"paired Brier gain {gain_text}"
+                                )
+                            subset_pieces.append(
+                                f"**{horizon}m regime_v1 subset** · "
+                                f"{proof['status'].replace('_', ' ')} "
+                                f"({proof['disputed_regime_targets']} disputed)\n"
+                                + "\n".join(lines)
+                            )
+                        pieces.extend(subset_pieces)
+                    except Exception:  # noqa: BLE001 - subset is additive only
+                        _LOG.exception("RivaL regime_v1 subset query unavailable")
                     embed.add_field(
                         name="Prospective skill by market regime",
                         value=(

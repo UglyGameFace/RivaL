@@ -2424,8 +2424,12 @@ class RivalDiscordClient(discord.Client):
                     model=str(review.get("model")), issued_at=datetime.now(UTC),
                 )
                 _LOG.info("RivaL Intelligence reviewed %s saved=%d", asset, saved)
-                if saved:
-                    heartbeat("rival-intelligence-reviews")
+                # RIVAL-B: the cron monitor measures liveness, not landing.
+                # A completed review proves the loop is alive even when the
+                # save window has closed (saved=0); the landing signal stays
+                # in the saved=%d log line and the hourly tally. Skips and
+                # failures never reach this line, so they still do not check in.
+                heartbeat("rival-intelligence-reviews")
                 outcome = "reviewed" if saved else "nothing_saved"
             except asyncio.CancelledError:
                 raise

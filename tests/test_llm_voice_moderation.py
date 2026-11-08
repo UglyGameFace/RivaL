@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1] / "services" / "rival-llm"
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT.parents[1] / "src" / "parlay_bot" / "perpetuals"))
 SERVICE = runpy.run_path(str(ROOT / "service.py"))
-from voice_moderation import validate_request, validate_result  # noqa: E402
+from voice_moderation import validate_request, validate_result
 
 VOICE = {"version": 1, "transcript": "Please stop insulting me.", "context": []}
 

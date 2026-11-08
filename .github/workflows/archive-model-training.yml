@@ -1,12 +1,15 @@
 name: RivaL archive model weekly training
 
-# Trains the archive_v1 offline logistic (spec §2.3-§2.7, D1/D4) and the
-# gbm_v1 offline GBM (autonomous loop Phase 2, spec §3.4, D4/D6) on the
-# verified Drive archive and publishes artifacts that pass their offline
-# gates to the private Drive models folder. A run that fails its gates
-# publishes a kind="report" only -- no model artifact. The bot imports a
-# published artifact only through the existing manifest cross-check, and
-# it serves only through the existing Route B promotion gates (Phase 2).
+# Trains the archive_v1 offline logistic (spec §2.3-§2.7, D1/D4), the
+# gbm_v1 offline GBM (autonomous loop Phase 2, spec §3.4, D4/D6), and the
+# regime_v2 trending-subset logistic (spec rival-regime-v2-spec-20261108,
+# D1/D3/D4: the same 32-feature logistic trained only on trending
+# candles, ER > 0.30) on the verified Drive archive and publishes
+# artifacts that pass their offline gates to the private Drive models
+# folder. A run that fails its gates publishes a kind="report" only --
+# no model artifact. The bot imports a published artifact only through
+# the existing manifest cross-check, and it serves only through the
+# existing Route B promotion gates (Phase 2).
 # The GBM trains as a step in this same workflow (no separate workflow
 # file): same restored bytes, same --train-end / --test-start /
 # --trained-through, same manifests dir, per-horizon + per-step failure
@@ -73,7 +76,10 @@ jobs:
         run: |
           python tools/restore_archive_months.py --asset ${{ matrix.asset }} \
             --root data/archive-v1-restore
-      # Step 3: train per (asset, horizon). Binance 5m loads from official
+      # Step 3: train per (asset, horizon). The shared weekly run
+      # (train_weekly_archive) trains archive-v1, gbm-v1 AND regime-v2
+      # for every (asset, horizon) on the same restored bytes, same
+      # splits, same provenance. Binance 5m loads from official
       # Vision ZIPs via the pooled-training loader (SHA verified against
       # the provider .CHECKSUM at fetch). Splits are fixed per run: the
       # last 28 days are the test slice, the 28 days before that are

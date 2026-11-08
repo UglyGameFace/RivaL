@@ -231,9 +231,12 @@ async def publish(drive, *, source: Path, asset: str, month: str,
     saved = await drive.ensure_history_file(
         artifact=data_artifact, batch_id=batch, mime_type="application/gzip",
     )
+    # The download budget allows up to MAX_COMPRESSED_BYTES; the Drive
+    # read-back must accept the same size (it streams and still checks the
+    # exact size and SHA-256), or every L2 book day over 64 MiB fails.
     await drive.verify_downloaded_artifact(
         file_id=saved.file_id, parent_id=drive.folders.history,
-        artifact=data_artifact,
+        artifact=data_artifact, max_bytes=MAX_COMPRESSED_BYTES,
     )
     stamped = await drive.ensure_manifest_file(
         artifact=proof_artifact, batch_id=batch,

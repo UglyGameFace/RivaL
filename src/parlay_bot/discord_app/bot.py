@@ -3023,6 +3023,8 @@ class RivalDiscordClient(discord.Client):
                 ("_shadow_task", self._shadow_loop, "rival-shadow-learning"),
                 ("_hypothesis_task", self._hypothesis_loop,
                  "rival-llm-feature-research"),
+                ("_intelligence_task", self._intelligence_loop,
+                 "rival-intelligence-review"),
                 ("_research_loop_task", self._research_loop_driver,
                  "rival-research-loop-driver"),
                 ("_history_task", self._history_loop, "rival-perp-history-recovery"),
@@ -3052,6 +3054,8 @@ class RivalDiscordClient(discord.Client):
                 if task is None or not task.done():
                     continue
                 if attr == "_hypothesis_task" and not llm_background_enabled(self.settings):
+                    continue
+                if attr == "_intelligence_task" and not llm_background_enabled(self.settings):
                     continue
                 if attr == "_research_loop_task" and not self.settings.rival_research_loop_enabled:
                     continue

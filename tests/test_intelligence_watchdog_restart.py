@@ -27,13 +27,32 @@ def _client(tmp_path, *, opt_in: bool) -> RivalDiscordClient:
     return RivalDiscordClient(settings)
 
 
+async def _stop(task: asyncio.Task) -> None:
+    """Cancel ``task`` until it actually finishes.
+
+    On Python 3.11 ``asyncio.wait_for`` swallows a cancel that lands in the
+    same loop iteration as its inner future completing, so a single
+    ``cancel()`` can leave ``_health_loop`` alive in ``asyncio.sleep(120)``
+    and hang the test (and the whole CI job). Re-cancel until it is done.
+    """
+    while not task.done():
+        task.cancel()
+        await asyncio.wait({task}, timeout=1)
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+
+
 async def _run_one_watchdog_pass(client, *, stub, publish_seen):
     """Run ``_health_loop`` until one pass reaches ``publish``, then stop it."""
     published: list[dict] = []
+    loop = asyncio.get_running_loop()
 
     def fake_publish(faults, now=None):
+        # Runs in a worker thread (asyncio.to_thread): wake the loop safely.
         published.append(dict(faults))
-        publish_seen.set()
+        loop.call_soon_threadsafe(publish_seen.set)
         return []
 
     client.health_monitor.inspect = lambda now, **kwargs: {}
@@ -65,11 +84,7 @@ async def _run_one_watchdog_pass(client, *, stub, publish_seen):
     try:
         await asyncio.wait_for(publish_seen.wait(), timeout=10)
     finally:
-        health.cancel()
-        try:
-            await health
-        except asyncio.CancelledError:
-            pass
+        await _stop(health)
         current = client._intelligence_task
         if current is not None and not current.done():
             current.cancel()

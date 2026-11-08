@@ -12,6 +12,7 @@ import httpx
 import pytest
 
 from parlay_bot.research.bitget_tardis_source_archive import (
+    MAX_COMPRESSED_BYTES,
     SCHEMA,
     SOURCE,
     obtain,
@@ -152,3 +153,26 @@ async def test_redirect_or_access_restriction_does_not_bypass_site(tmp_path):
                     month="2024-12", root=tmp_path, now=NOW,
                 )
     assert not list(tmp_path.glob("*.part"))
+
+
+@pytest.mark.asyncio
+async def test_drive_readback_accepts_every_size_the_download_allows(tmp_path):
+    """L2 book days above Drive's 64 MiB default must still verify on read-back."""
+    source = tmp_path / "BTCUSDT.csv.gz"
+    source.write_bytes(gzip.compress(COLUMNS["trades"].encode(), mtime=0))
+    metrics = verify_gzip_csv(
+        source, asset="BTC", family="trades", month="2024-12", now=NOW,
+    )
+    drive = SimpleNamespace(
+        folders=SimpleNamespace(history="history", manifests="manifests"),
+        ensure_history_file=AsyncMock(return_value=SimpleNamespace(file_id="h")),
+        ensure_manifest_file=AsyncMock(return_value=SimpleNamespace(file_id="m")),
+        verify_downloaded_artifact=AsyncMock(),
+    )
+    await publish(
+        drive, source=source, asset="BTC", family="trades", month="2024-12",
+        url="https://datasets.tardis.dev/x", metrics=metrics, root=tmp_path,
+    )
+    data_call = drive.verify_downloaded_artifact.await_args_list[0].kwargs
+    assert data_call["parent_id"] == "history"
+    assert data_call.get("max_bytes", 64 * 1024 * 1024) >= MAX_COMPRESSED_BYTES

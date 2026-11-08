@@ -215,3 +215,27 @@ def test_postgres_forward_quote_ledger_restart_and_idempotence():
                 ((issued - timedelta(minutes=5)).isoformat(),),
             )
         store.close()
+
+
+def test_xrp_forward_quote_profit_proof_accepted(tmp_path):
+    store = SQLiteHotStore(tmp_path / "quotes-xrp.sqlite")
+    ForwardAccuracyMonitor(PerpetualMarketStore(store)).initialize()
+    proof = ProspectiveQuoteProfitMonitor(store)
+    issued = datetime.now(UTC) - timedelta(minutes=5)
+    entry = issued + timedelta(seconds=20)
+    exit_at = issued + timedelta(minutes=5, seconds=30)
+    try:
+        _forecast(store, asset="XRP", issued=issued, probability=0.8,
+                  contract="XRPUSDT")
+        assert proof.observe(_quote("XRP", entry), now=entry)["opened"] == 1
+        closing = proof.observe(
+            _quote("XRP", exit_at, bid=1.015, ask=1.016), now=exit_at,
+        )
+        assert closing["closed"] == 1
+        result = proof.proof(asset="XRP", horizon_minutes=5,
+                             now=issued + timedelta(minutes=9))
+        assert result.eligible_forecast_windows == 1
+        assert result.verified_quote_exits == 1
+        assert result.coverage == 1
+    finally:
+        store.close()

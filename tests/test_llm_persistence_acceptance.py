@@ -163,3 +163,18 @@ def test_restart_deferral_is_retried_then_reported(monkeypatch):
     other = iter([(1, {"outcome": "deferred", "reason": "something_else"})])
     monkeypatch.setattr(RELAY, "_attempt", lambda: next(other))
     assert RELAY.main() == 1
+
+
+def test_xrp_receipt_verified_only_for_matching_xrp_asset():
+    now = datetime.now(UTC)
+    result, row = example(now)
+    result.asset = "XRP"
+    row["asset"] = "XRP"
+    assert verified_receipt(result, row, now=now, asset="XRP")
+    # The default BTC receipt must not accept an XRP row, and an XRP
+    # receipt must not accept a BTC row: the acceptance XRP ask exists
+    # precisely so an XRP save regression cannot hide behind BTC.
+    assert not verified_receipt(result, row, now=now)
+    result.asset = "BTC"
+    row["asset"] = "BTC"
+    assert not verified_receipt(result, row, now=now, asset="XRP")

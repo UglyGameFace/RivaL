@@ -525,3 +525,33 @@ def test_driver_runs_verify_ablate_finding(tmp_path):
     )
     with pytest.raises(ValueError, match="llm"):
         transition(store3, exp["experiment_id"], "ablating", actor="llm")
+
+
+def test_load_binance_frame_creates_a_missing_cache_dir(tmp_path, monkeypatch):
+    """A cold actions/cache (no directory) must not crash the first ZIP write.
+
+    The 2026-11-08 weekly archive run failed every asset and horizon with
+    FileNotFoundError on binance-cache/<sha1> because nothing created it.
+    """
+    import asyncio
+    import sys
+
+    from parlay_bot.research import archive_training
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    import feature_signal_experiment as source
+
+    seen = []
+
+    class Stop(Exception):
+        pass
+
+    async def fake_load_asset(client, asset, last_month, cache, sem, **kwargs):
+        seen.append(Path(cache).is_dir())
+        raise Stop
+
+    monkeypatch.setattr(source, "load_asset", fake_load_asset)
+    cache = tmp_path / "binance-cache"
+    with pytest.raises(Stop):
+        asyncio.run(archive_training.load_binance_frame("BTC", cache, "2026-10"))
+    assert seen == [True]

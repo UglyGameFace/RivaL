@@ -738,6 +738,10 @@ async def load_binance_frame(asset: str, cache: Path, last_month: str, *,
     sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "tools"))
     import feature_signal_experiment as source
 
+    # The workflow's actions/cache restore leaves no directory on a cache
+    # miss, and the loader writes each verified ZIP straight into it.
+    cache = Path(cache)
+    cache.mkdir(parents=True, exist_ok=True)
     sem = asyncio.Semaphore(16)
     async with httpx.AsyncClient(timeout=60, follow_redirects=True) as client:
         k = await source.load_asset(

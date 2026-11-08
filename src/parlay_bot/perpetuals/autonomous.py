@@ -28,6 +28,26 @@ from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
 _LOG = logging.getLogger(__name__)
 SLOT_HOURS = 4
 
+# Per-stage deadlines for cycle(). Each DB stage's deadline EXCEEDS the 60 s
+# cycle statement timeout (mark_background in _perp_loop), so a statement
+# parked on a lock aborts first, the thread returns promptly with
+# QueryCanceled, and the deadline only catches non-DB hangs. A timed-out
+# stage is logged, its ok flag cleared, and the cycle continues to the next
+# stage; the outer PERP_FORECAST_TIMEOUT_SECONDS cap in _perp_loop bounds
+# the whole cycle. All values are hang bounds, not performance targets.
+# Auto-AI: one LLM ask can take 100 s per POST plus a retry, so its bound
+# is 240 s. Events: official-source polls are 7 s per request, but several
+# sources are checked in sequence.
+AUTONOMOUS_FORWARD_TIMEOUT_SECONDS = 90
+AUTONOMOUS_MULTI_SETTLE_TIMEOUT_SECONDS = 90
+AUTONOMOUS_MULTI_ISSUE_TIMEOUT_SECONDS = 90
+AUTONOMOUS_AI_SETTLE_TIMEOUT_SECONDS = 90
+AUTONOMOUS_REVIEW_TIMEOUT_SECONDS = 120
+AUTONOMOUS_PROMOTION_TIMEOUT_SECONDS = 120
+AUTONOMOUS_AUTO_AI_TIMEOUT_SECONDS = 240
+AUTONOMOUS_SAVE_TIMEOUT_SECONDS = 90
+AUTONOMOUS_EVENTS_TIMEOUT_SECONDS = 120
+
 
 def _utc(value: datetime) -> datetime:
     if value.utcoffset() is None:
@@ -524,9 +544,18 @@ class AutonomousResearch:
             mark = time.perf_counter()
 
         try:
-            issued, settled = await asyncio.to_thread(self.forward.run_once)
+            issued, settled = await asyncio.wait_for(
+                asyncio.to_thread(self.forward.run_once),
+                timeout=AUTONOMOUS_FORWARD_TIMEOUT_SECONDS,
+            )
         except asyncio.CancelledError:
             raise
+        except TimeoutError:
+            math_ok = False
+            _LOG.warning(
+                "RivaL forward research stage timed out after %ds, skipping",
+                AUTONOMOUS_FORWARD_TIMEOUT_SECONDS,
+            )
         except Exception:  # noqa: BLE001
             math_ok = False
             _LOG.exception("RivaL forward mathematical research cycle failed")
@@ -534,64 +563,119 @@ class AutonomousResearch:
         # Challenge the incumbent only with forecasts genuinely issued by
         # the completed live research cycle, on shared UTC target windows.
         try:
-            paired = await asyncio.to_thread(self.multi.settle)
-            fused = await asyncio.to_thread(self.multi.issue)
+            paired = await asyncio.wait_for(
+                asyncio.to_thread(self.multi.settle),
+                timeout=AUTONOMOUS_MULTI_SETTLE_TIMEOUT_SECONDS,
+            )
+            fused = await asyncio.wait_for(
+                asyncio.to_thread(self.multi.issue),
+                timeout=AUTONOMOUS_MULTI_ISSUE_TIMEOUT_SECONDS,
+            )
             _LOG.info(
                 "RivaL multi-source shadow issued=%s paired_settled=%s "
                 "promotion=guarded_hourly_not_this_log", fused, paired,
             )
         except asyncio.CancelledError:
             raise
+        except TimeoutError:
+            _LOG.warning(
+                "RivaL multi-exchange challenger stage timed out, skipping",
+            )
         except Exception:  # noqa: BLE001 - ensemble cannot block existing bot
             _LOG.exception("RivaL multi-exchange challenger unavailable safely")
         lap("multi")
         try:
-            await asyncio.to_thread(self.settle_ai)
+            await asyncio.wait_for(
+                asyncio.to_thread(self.settle_ai),
+                timeout=AUTONOMOUS_AI_SETTLE_TIMEOUT_SECONDS,
+            )
         except asyncio.CancelledError:
             raise
+        except TimeoutError:
+            settlement_ok = False
+            _LOG.warning(
+                "RivaL auto-AI settlement stage timed out after %ds, skipping",
+                AUTONOMOUS_AI_SETTLE_TIMEOUT_SECONDS,
+            )
         except Exception:  # noqa: BLE001
             settlement_ok = False
             _LOG.exception("RivaL auto-AI outcome settlement failed")
         lap("ai_settle")
         if datetime.now(UTC).minute < 5:
             try:
-                await asyncio.to_thread(self.review_model)
+                await asyncio.wait_for(
+                    asyncio.to_thread(self.review_model),
+                    timeout=AUTONOMOUS_REVIEW_TIMEOUT_SECONDS,
+                )
             except asyncio.CancelledError:
                 raise
+            except TimeoutError:
+                review_ok = False
+                _LOG.warning(
+                    "RivaL shadow model review stage timed out after %ds, skipping",
+                    AUTONOMOUS_REVIEW_TIMEOUT_SECONDS,
+                )
             except Exception:  # noqa: BLE001
                 review_ok = False
                 _LOG.exception("RivaL shadow model gate review failed")
             try:
-                await asyncio.to_thread(self.evaluate_promotion)
+                await asyncio.wait_for(
+                    asyncio.to_thread(self.evaluate_promotion),
+                    timeout=AUTONOMOUS_PROMOTION_TIMEOUT_SECONDS,
+                )
             except asyncio.CancelledError:
                 raise
+            except TimeoutError:
+                _LOG.warning(
+                    "RivaL promotion evaluation stage timed out after %ds, skipping",
+                    AUTONOMOUS_PROMOTION_TIMEOUT_SECONDS,
+                )
             except Exception:  # noqa: BLE001
                 _LOG.exception("RivaL promotion evaluation failed")
         lap("hourly_review")
         try:
-            ai_count = await self.run_auto_ai()
+            ai_count = await asyncio.wait_for(
+                self.run_auto_ai(), timeout=AUTONOMOUS_AUTO_AI_TIMEOUT_SECONDS,
+            )
         except asyncio.CancelledError:
             raise
+        except TimeoutError:
+            auto_ai_ok = False
+            _LOG.warning(
+                "RivaL automatic AI stage timed out after %ds, skipping",
+                AUTONOMOUS_AUTO_AI_TIMEOUT_SECONDS,
+            )
         except Exception:  # noqa: BLE001
             auto_ai_ok = False
             _LOG.exception("RivaL automatic AI research cycle failed")
         lap("auto_ai")
         try:
-            await asyncio.to_thread(
-                self._save_cycle, started=started,
-                issued=issued, settled=settled, ai_count=ai_count,
-                math_ok=math_ok, ai_settlement_ok=settlement_ok,
-                review_ok=review_ok, auto_ai_ok=auto_ai_ok,
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._save_cycle, started=started,
+                    issued=issued, settled=settled, ai_count=ai_count,
+                    math_ok=math_ok, ai_settlement_ok=settlement_ok,
+                    review_ok=review_ok, auto_ai_ok=auto_ai_ok,
+                ),
+                timeout=AUTONOMOUS_SAVE_TIMEOUT_SECONDS,
             )
         except asyncio.CancelledError:
             raise
+        except TimeoutError:
+            _LOG.warning(
+                "RivaL learning-cycle save stage timed out after %ds, skipping",
+                AUTONOMOUS_SAVE_TIMEOUT_SECONDS,
+            )
         except Exception:  # noqa: BLE001
             _LOG.exception("RivaL automatic learning heartbeat failed to persist")
         # Research news AFTER recording the regular math/AI cycle, so even a
         # slow official-source server cannot delay core forecast issuance.
         # Poll attempts are durably throttled per source across restarts.
         try:
-            event_status = await asyncio.to_thread(self.events.refresh)
+            event_status = await asyncio.wait_for(
+                asyncio.to_thread(self.events.refresh),
+                timeout=AUTONOMOUS_EVENTS_TIMEOUT_SECONDS,
+            )
             if event_status["sources_checked"]:
                 _LOG.info(
                     "RivaL official event research sources_ok=%s checked=%s "
@@ -601,6 +685,11 @@ class AutonomousResearch:
                 )
         except asyncio.CancelledError:
             raise
+        except TimeoutError:
+            _LOG.warning(
+                "RivaL official event research stage timed out after %ds, skipping",
+                AUTONOMOUS_EVENTS_TIMEOUT_SECONDS,
+            )
         except Exception:  # noqa: BLE001 - preserve the independent math cycle
             _LOG.exception("RivaL official macro/event research unavailable")
         lap("events")

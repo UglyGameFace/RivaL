@@ -116,11 +116,33 @@ from parlay_bot.research.sports_results import (
 )
 from parlay_bot.storage.catalog import MarketCatalogStore
 from parlay_bot.storage.hot import PostgresHotStore, RelationalHotStore, SQLiteHotStore
+from parlay_bot.storage.query_scope import mark_background
 from parlay_bot.storage.startup import initialize_with_dns_recovery
 
 _LOG = logging.getLogger(__name__)
 # Optional bulk workers start after the post-restart burst (see _after_startup_burst).
 STARTUP_QUIET_PERIOD = timedelta(minutes=5)
+
+# Per-stage deadlines for the 5-minute perp cycle (_perp_loop). Each DB-heavy
+# stage's deadline EXCEEDS the 60 s cycle statement timeout (mark_background):
+# a statement parked on a lock aborts first, the thread returns promptly
+# with QueryCanceled, and the stage deadline only catches non-DB hangs (a
+# wedged thread, a hung compute step). If wait_for fired first on a DB
+# stage, the orphan thread would keep running and could hold the collector
+# lock or a row lock, so the next iteration's same stage would time out too
+# until it clears. A timed-out stage is logged and skipped; the iteration
+# still reaches the heartbeat. All values are hang bounds, not performance
+# targets: a healthy cycle finishes every stage in seconds.
+# Collect: venues run concurrently (semaphore 4), each venue's 4 assets are
+# sequential at up to 12 s each, so the slowest all-blocked network phase
+# is ~144 s before serial persists.
+PERP_COLLECT_TIMEOUT_SECONDS = 180
+PERP_SPIKES_TIMEOUT_SECONDS = 90
+# Forecast: the outer cap on autonomous.cycle(); its inner per-stage
+# deadlines are in parlay_bot.perpetuals.autonomous.
+PERP_FORECAST_TIMEOUT_SECONDS = 240
+PERP_INTEGRITY_TIMEOUT_SECONDS = 90
+PERP_QUOTES_TIMEOUT_SECONDS = 120
 
 
 def build_hot_store(settings: Settings) -> RelationalHotStore:
@@ -2470,9 +2492,78 @@ class RivalDiscordClient(discord.Client):
                     _LOG.exception("RivaL improvement-check refresh failed")
             await asyncio.sleep(30 * 60)
 
+    async def _spike_stage(self) -> None:
+        """One spike scan/settle pass over the collector's assets.
+
+        Extracted from _perp_loop so the stage can carry its own deadline;
+        behavior is unchanged.
+        """
+        if self.spike_watch is None or host_memory.snapshot().pressure:
+            return
+        for asset in self.perp_collector.assets:
+            if asset not in ("BTC", "ETH", "SOL", "XRP"):
+                continue
+            try:
+                result = await asyncio.to_thread(
+                    self.spike_watch.scan, asset=asset,
+                    venues=tuple(self.perp_collector.providers),
+                )
+                scored = await asyncio.to_thread(
+                    self.spike_watch.settle, asset=asset,
+                )
+                if result["event"] or scored:
+                    _LOG.info(
+                        "RivaL source-verified spike asset=%s event=%s "
+                        "future_outcomes=%d (observational, not trading)",
+                        asset, result["event"]["kind"] if result["event"] else "none",
+                        scored,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - optional research isolation
+                _LOG.exception("RivaL spike watcher retrying next cycle asset=%s", asset)
+
+    async def _quote_profit_stage(self) -> None:
+        """One quote-profit accounting pass over the collector's assets.
+
+        Extracted from _perp_loop so the stage can carry its own deadline;
+        behavior is unchanged.
+        """
+        await asyncio.to_thread(self.quote_profit.expire_unobserved)
+        # The new streaming ledger owns prospective entries/exits.
+        # Preserve historical legacy rows, but stop duplicate
+        # 5-minute cross-venue quote accounting and REST polling.
+        if self.live_stream is None:
+            for asset in self.perp_collector.assets:
+                if asset not in ("BTC", "ETH", "SOL", "XRP"):
+                    continue
+                try:
+                    quote = await self.public_quotes.get(asset)
+                    result = await asyncio.to_thread(
+                        self.quote_profit.observe, quote,
+                    )
+                    if result["opened"] or result["closed"]:
+                        _LOG.info(
+                            "RivaL paper quote forward asset=%s opened=%d "
+                            "closed=%d unverified_expired=%d",
+                            asset, result["opened"], result["closed"],
+                            result["expired"],
+                        )
+                except QuoteUnavailable:
+                    # Provider/region/geoblock makes observations
+                    # unavailable, NEVER profitable by assumption.
+                    continue
+
     async def _perp_loop(self) -> None:
         await self.wait_until_ready()
         assert self.perp_collector is not None
+        # Bound every statement on this task: a statement parked on a
+        # Postgres lock aborts after 60 s (QueryCanceled) instead of
+        # parking the iteration forever and silencing the heartbeat.
+        # SET LOCAL is per-transaction, so it cannot leak to other
+        # borrowers of the pooled connection, and it rides every
+        # to_thread in this task through the context variable.
+        mark_background()
         _LOG.info("RivaL perp automatic collector RUNNING")
         last_integrity_hour: int | None = None
         while not self.is_closed():
@@ -2485,9 +2576,17 @@ class RivalDiscordClient(discord.Client):
             _LOG.info("RivaL perp memory checkpoint stage=pre_collect %s",
                       host_memory.snapshot().detail)
             try:
-                await self.perp_collector.collect_once()
+                await asyncio.wait_for(
+                    self.perp_collector.collect_once(),
+                    timeout=PERP_COLLECT_TIMEOUT_SECONDS,
+                )
             except asyncio.CancelledError:
                 raise
+            except TimeoutError:
+                _LOG.warning(
+                    "RivaL perp collection stage timed out after %ds, skipping",
+                    PERP_COLLECT_TIMEOUT_SECONDS,
+                )
             except Exception:  # noqa: BLE001 - collector never crashes Discord
                 _LOG.exception("RivaL perp automatic collection cycle failed")
             stages["collect"], mark = time.monotonic() - mark, time.monotonic()
@@ -2495,29 +2594,17 @@ class RivalDiscordClient(discord.Client):
                       host_memory.snapshot().detail)
             # Bounded spike analytics and future-only self-evaluation: reuse
             # the existing source collector cycle and saved original bars.
-            if self.spike_watch is not None and not host_memory.snapshot().pressure:
-                for asset in self.perp_collector.assets:
-                    if asset not in ("BTC", "ETH", "SOL", "XRP"):
-                        continue
-                    try:
-                        result = await asyncio.to_thread(
-                            self.spike_watch.scan, asset=asset,
-                            venues=tuple(self.perp_collector.providers),
-                        )
-                        scored = await asyncio.to_thread(
-                            self.spike_watch.settle, asset=asset,
-                        )
-                        if result["event"] or scored:
-                            _LOG.info(
-                                "RivaL source-verified spike asset=%s event=%s "
-                                "future_outcomes=%d (observational, not trading)",
-                                asset, result["event"]["kind"] if result["event"] else "none",
-                                scored,
-                            )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception:  # noqa: BLE001 - optional research isolation
-                        _LOG.exception("RivaL spike watcher retrying next cycle asset=%s", asset)
+            try:
+                await asyncio.wait_for(
+                    self._spike_stage(), timeout=PERP_SPIKES_TIMEOUT_SECONDS,
+                )
+            except asyncio.CancelledError:
+                raise
+            except TimeoutError:
+                _LOG.warning(
+                    "RivaL perp spike stage timed out after %ds, skipping",
+                    PERP_SPIKES_TIMEOUT_SECONDS,
+                )
             stages["spikes"], mark = time.monotonic() - mark, time.monotonic()
             # Spike evidence MUST be persisted before the same candle's
             # model challenge issues, otherwise it cannot be a causal input.
@@ -2529,7 +2616,10 @@ class RivalDiscordClient(discord.Client):
                 _LOG.info("RivaL perp memory checkpoint stage=pre_forecast %s",
                           host_memory.snapshot().detail)
                 try:
-                    issued, settled, ai_issued = await self.autonomous.cycle()
+                    issued, settled, ai_issued = await asyncio.wait_for(
+                        self.autonomous.cycle(),
+                        timeout=PERP_FORECAST_TIMEOUT_SECONDS,
+                    )
                     _LOG.info(
                         "RivaL automatic research math_issued=%s "
                         "math_settled=%s ai_issued=%s",
@@ -2537,6 +2627,11 @@ class RivalDiscordClient(discord.Client):
                     )
                 except asyncio.CancelledError:
                     raise
+                except TimeoutError:
+                    _LOG.warning(
+                        "RivaL autonomous research stage timed out after %ds, skipping",
+                        PERP_FORECAST_TIMEOUT_SECONDS,
+                    )
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL autonomous research cycle failed safely")
             stages["forecast"], mark = time.monotonic() - mark, time.monotonic()
@@ -2548,8 +2643,11 @@ class RivalDiscordClient(discord.Client):
                 integrity_hour = int(datetime.now(UTC).timestamp() // 3600)
                 if integrity_hour != last_integrity_hour:
                     try:
-                        audit = await asyncio.to_thread(
-                            perpetual_evidence_backlog, self.store,
+                        audit = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                perpetual_evidence_backlog, self.store,
+                            ),
+                            timeout=PERP_INTEGRITY_TIMEOUT_SECONDS,
                         )
                         last_integrity_hour = integrity_hour
                         _LOG.info(
@@ -2562,6 +2660,11 @@ class RivalDiscordClient(discord.Client):
                         )
                     except asyncio.CancelledError:
                         raise
+                    except TimeoutError:
+                        _LOG.warning(
+                            "RivaL perpetual DB integrity stage timed out after %ds, skipping",
+                            PERP_INTEGRITY_TIMEOUT_SECONDS,
+                        )
                     except Exception:  # noqa: BLE001 - read-only audit only
                         _LOG.exception("RivaL perpetual DB integrity unavailable")
             # Prospective execution research is strictly read-only and
@@ -2570,32 +2673,17 @@ class RivalDiscordClient(discord.Client):
             # a REST request per subscriber or Discord guild.
             if self.quote_profit is not None:
                 try:
-                    await asyncio.to_thread(self.quote_profit.expire_unobserved)
-                    # The new streaming ledger owns prospective entries/exits.
-                    # Preserve historical legacy rows, but stop duplicate
-                    # 5-minute cross-venue quote accounting and REST polling.
-                    if self.live_stream is None:
-                        for asset in self.perp_collector.assets:
-                            if asset not in ("BTC", "ETH", "SOL", "XRP"):
-                                continue
-                            try:
-                                quote = await self.public_quotes.get(asset)
-                                result = await asyncio.to_thread(
-                                    self.quote_profit.observe, quote,
-                                )
-                                if result["opened"] or result["closed"]:
-                                    _LOG.info(
-                                        "RivaL paper quote forward asset=%s opened=%d "
-                                        "closed=%d unverified_expired=%d",
-                                        asset, result["opened"], result["closed"],
-                                        result["expired"],
-                                    )
-                            except QuoteUnavailable:
-                                # Provider/region/geoblock makes observations
-                                # unavailable, NEVER profitable by assumption.
-                                continue
+                    await asyncio.wait_for(
+                        self._quote_profit_stage(),
+                        timeout=PERP_QUOTES_TIMEOUT_SECONDS,
+                    )
                 except asyncio.CancelledError:
                     raise
+                except TimeoutError:
+                    _LOG.warning(
+                        "RivaL quote forward stage timed out after %ds, skipping",
+                        PERP_QUOTES_TIMEOUT_SECONDS,
+                    )
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL quote forward accounting unavailable")
             stages["rest"] = time.monotonic() - mark

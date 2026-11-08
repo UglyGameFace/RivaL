@@ -24,7 +24,8 @@ from parlay_bot.storage.hot import PostgresHotStore
 MARKER = "RIVAL_LFM3_PERSISTENCE_RECEIPT="
 
 
-def verified_receipt(result, row: dict | None, *, now: datetime) -> bool:
+def verified_receipt(result, row: dict | None, *, now: datetime,
+                     asset: str = "BTC") -> bool:
     """Only exact, fresh production database rows qualify as a receipt."""
     if row is None:
         return False
@@ -33,7 +34,7 @@ def verified_receipt(result, row: dict | None, *, now: datetime) -> bool:
         age = now - issued.astimezone(UTC)
         return (
             timedelta(0) <= age <= timedelta(minutes=10)
-            and result.asset == row["asset"] == "BTC"
+            and result.asset == row["asset"] == asset
             and result.model == row["model"] == LOCAL_MODEL
             and result.evidence_sha256 == row["evidence_sha256"]
             and len(result.evidence_sha256) == 64
@@ -47,7 +48,8 @@ def verified_receipt(result, row: dict | None, *, now: datetime) -> bool:
         return False
 
 
-async def _ask(market: PerpetualMarketStore, settings: Settings):
+async def _ask(market: PerpetualMarketStore, settings: Settings,
+             *, asset: str = "BTC"):
     ai = LocalFirstResearch(
         market,
         local_key=settings.rival_local_ai_token.get_secret_value(),
@@ -55,7 +57,7 @@ async def _ask(market: PerpetualMarketStore, settings: Settings):
     try:
         started = time.monotonic()
         result = await ai.ask(
-            asset="BTC", venues=tuple(MARKET_SYMBOLS), busy_retry=True,
+            asset=asset, venues=tuple(MARKET_SYMBOLS), busy_retry=True,
         )
         return result, round(time.monotonic() - started, 2)
     finally:
@@ -133,9 +135,53 @@ def verify_once() -> dict:
         new_or_existing = (
             report["saved_after"] > report["saved_before"] or result.from_cache
         )
-        report["outcome"] = "verified" if is_saved and new_or_existing else "failed"
-        if report["outcome"] != "verified":
+        if not (is_saved and new_or_existing):
+            report["outcome"] = "failed"
             report["reason"] = "exact_database_receipt_missing"
+            return report
+        # Batch 2 (round-3 P1-5): the BTC ask alone cannot catch an XRP
+        # regression in save_ai_research — XRP burned a full gateway
+        # inference and then failed the save for three audits. Ask XRP too
+        # and require its own exact persisted receipt before calling the
+        # deploy verified. This is a second CPU-serialized inference, so
+        # the off-host relay timeout was raised to match (see
+        # tools/discloud_llm_persistence.py).
+        with store.connect() as conn:
+            xrp_saved_before = int(conn.execute(
+                "SELECT COUNT(*) AS n FROM perp_ai_research WHERE model=?",
+                (LOCAL_MODEL,),
+            ).fetchone()["n"])
+        try:
+            xrp_result, xrp_elapsed = asyncio.run(
+                _ask(market, settings, asset="XRP"))
+        except ResearchUnavailable as exc:
+            return {**report, "outcome": "failed",
+                    "reason": "xrp_research_unavailable",
+                    "details": str(exc)[:160]}
+        except Exception as exc:  # noqa: BLE001 - host receipt fails closed
+            return {**report, "outcome": "failed",
+                    "reason": "xrp_research_exception",
+                    "error_class": type(exc).__name__}
+        xrp_row = market.cached_ai_research(
+            asset=xrp_result.asset, model=xrp_result.model,
+            evidence_sha256=xrp_result.evidence_sha256,
+        )
+        with store.connect() as conn:
+            xrp_saved_after = int(conn.execute(
+                "SELECT COUNT(*) AS n FROM perp_ai_research WHERE model=?",
+                (LOCAL_MODEL,),
+            ).fetchone()["n"])
+        report["xrp_seconds"] = xrp_elapsed
+        report["xrp_from_cache"] = bool(xrp_result.from_cache)
+        report["xrp_verified"] = bool(
+            verified_receipt(xrp_result, xrp_row, now=datetime.now(UTC),
+                             asset="XRP")
+            and (xrp_saved_after > xrp_saved_before
+                 or xrp_result.from_cache)
+        )
+        report["outcome"] = "verified" if report["xrp_verified"] else "failed"
+        if report["outcome"] != "verified":
+            report["reason"] = "xrp_exact_database_receipt_missing"
         return report
     finally:
         store.close()

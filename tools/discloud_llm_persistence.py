@@ -88,7 +88,11 @@ def _attempt() -> tuple[int, dict | None]:
     data: object = None
     stdout = ""
     try:
-        with request.urlopen(req, timeout=110) as response:
+        # Two sequential CPU inferences now (BTC, then the XRP regression
+        # ask in llm_persistence_acceptance.verify_once): each can take
+        # most of the 40 s gateway deadline, so 110 s could cut the second
+        # ask off and fail a healthy deploy.
+        with request.urlopen(req, timeout=240) as response:
             data = json.load(response)
         if not isinstance(data, dict):
             raise TypeError("unexpected console response")

@@ -264,7 +264,7 @@ class ProspectiveQuoteProfitMonitor:
         self, *, asset: str, horizon_minutes: int,
         now: datetime | None = None,
     ) -> ProfitProof:
-        if asset not in ("BTC", "ETH", "SOL") or horizon_minutes not in (5, 15):
+        if asset not in ("BTC", "ETH", "SOL", "XRP") or horizon_minutes not in (5, 15):
             raise ValueError("Invalid proof market")
         instant = now or datetime.now(UTC)
         if instant.utcoffset() is None:

@@ -360,6 +360,13 @@ class FamilyPromotion:
                         self.store, asset, horizon))
             except Exception:  # noqa: BLE001 - a missing state row records as no artifact
                 scored["liq_v1"]["artifact"] = None
+        if "regime_v1" in scored:
+            try:
+                from parlay_bot.perpetuals.regime_model import artifact_identity
+                scored["regime_v1"]["artifact"] = artifact_identity(
+                    self.store, asset, horizon)
+            except Exception:  # noqa: BLE001 - a missing state row records as no artifact
+                scored["regime_v1"]["artifact"] = None
         for family, pinned_sha in pinned_shas.items():
             evidence = scored.get(family)
             if evidence and (evidence.get("artifact") or {}).get("model_sha256") != pinned_sha:
@@ -607,6 +614,46 @@ class FamilyPromotion:
                 recorded = json.loads(row["evidence_json"])["liq_v1"]["artifact"]
                 current = LiquidityChallengerV1.artifact_identity(
                     self.store, asset, horizon)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                return None
+            if not recorded or not current:
+                return None
+            try:
+                recorded_sha = str(recorded["weights_sha256"])
+                recorded_digest = str(recorded["feature_digest"])
+                recorded_through = utc(datetime.fromisoformat(
+                    str(recorded["trained_through"])))
+                recorded_count = int(recorded["graded_count"])
+                current_through = utc(datetime.fromisoformat(
+                    str(current["trained_through"])))
+                current_count = int(current["graded_count"])
+            except (ValueError, TypeError, KeyError):
+                return None
+            if (len(recorded_sha) != 64
+                    or recorded_digest != current["feature_digest"]
+                    or current_through < recorded_through
+                    or current_count < recorded_count):
+                return None
+            if (str(current["weights_sha256"]) != recorded_sha
+                    and not (current_count > recorded_count
+                             and current_through >= recorded_through)):
+                return None
+            return selected
+        if selected == "regime_v1":
+            # Same continuity check as flow_v3/liq_v1, on the regime
+            # identity (spec rival-regime-gated-spec-20261107, D3/D5):
+            # the served call is the gated live logistic, so the check
+            # verifies the live weights the gate last served are a
+            # continuation of the promoted ones -- same feature digest,
+            # trained-through and graded count monotone. No offline
+            # artifact exists, so there is no D14 pin to check.
+            # A refit/reset (digest change, cursor/count regression, or
+            # unexplained weight change) blocks serve until the family
+            # re-earns promotion.
+            try:
+                from parlay_bot.perpetuals.regime_model import artifact_identity
+                recorded = json.loads(row["evidence_json"])["regime_v1"]["artifact"]
+                current = artifact_identity(self.store, asset, horizon)
             except (ValueError, TypeError, KeyError, AttributeError):
                 return None
             if not recorded or not current:

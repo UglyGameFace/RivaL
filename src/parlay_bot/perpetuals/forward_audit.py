@@ -43,6 +43,7 @@ from parlay_bot.perpetuals.pooled_model import PooledModelSet
 from parlay_bot.perpetuals.pooled_model import probability as pooled_probability
 from parlay_bot.perpetuals.regime_evidence import VERSION as REGIME_VERSION
 from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
+from parlay_bot.perpetuals.regime_model import regime_calls
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
 from parlay_bot.research.archive_features import live_vector as archive_live_vector
@@ -98,6 +99,13 @@ ISSUE_LIQ_V1_CHALLENGERS = True
 # promotion. Existing rows keep settling either way. It shares the
 # archive vector (same 32-feature contract, same restored bytes).
 ISSUE_GBM_V1_CHALLENGERS = True
+# regime_v1 shadow issuance (spec rival-regime-gated-spec-20261107, D6):
+# the regime-gated challenger issues the incumbent's own call as a shadow
+# forecast only on trending cycles (ER > 0.30 over 20 closed bars); it
+# never serves until Route B promotes it. Kill switch for issuance;
+# serving is gated separately by promotion. Existing rows keep settling
+# either way.
+ISSUE_REGIME_V1_CHALLENGERS = True
 
 # The incumbent's fast settlement covers the last 2 days; a day of margin.
 SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
@@ -811,6 +819,7 @@ class ForwardAccuracyMonitor:
             "insufficient_training": 0, "target_expired": 0,
             "duplicate_forecasts": 0, "issued_forecasts": 0,
             "settled_forecasts": 0,
+            "regime_issued": 0, "regime_abstained": 0,
         }
         # Reuse the same bounded, freshness-checked stream selection as
         # existing offline evaluation, without external HTTP requests.
@@ -1075,6 +1084,27 @@ class ForwardAccuracyMonitor:
                         tested.final_weights, separators=(",", ":"),
                         allow_nan=False,
                     ).encode()).hexdigest()
+                    # regime_v1: the incumbent's own call as a shadow
+                    # forecast, only when the last 20 closed bars are
+                    # trending (spec rival-regime-gated-spec-20261107,
+                    # D1/D3). The gate never raises and never blocks the
+                    # incumbent: a failure here is an abstention, counted
+                    # in the cycle metrics, not a stored row.
+                    regime_items = ()
+                    if ISSUE_REGIME_V1_CHALLENGERS:
+                        try:
+                            regime_items = regime_calls(
+                                candles=candles, probability=probability,
+                                training_rows=tested.evaluated,
+                                model_sha256=weight_hash,
+                            )
+                        except Exception:  # noqa: BLE001 - a gate failure abstains
+                            _LOG.exception("RivaL regime gate unavailable")
+                            regime_items = ()
+                        if regime_items:
+                            metrics["regime_issued"] += 1
+                        else:
+                            metrics["regime_abstained"] += 1
                     # Shadow-model fitting is CPU work on inputs already
                     # fixed at issuance: do it before the transaction opens.
                     try:
@@ -1176,7 +1206,7 @@ class ForwardAccuracyMonitor:
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
-                                    challengers=(*flow_calls, *archive_items, *gbm_items),
+                                    challengers=(*flow_calls, *archive_items, *gbm_items, *regime_items),
                                     prepared=shadow_prepared,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger
@@ -1303,12 +1333,14 @@ class ForwardAccuracyMonitor:
         _LOG.info(
             "RivaL forward cycle discovered=%d selected=%d short=%d "
             "stale=%d insufficient_labels=%d insufficient_training=%d "
-            "expired=%d duplicate=%d issued=%d",
+            "expired=%d duplicate=%d issued=%d "
+            "regime_issued=%d regime_abstained=%d",
             metrics["discovered_streams"], metrics["selected_streams"],
             metrics["short_history"], metrics["stale_last_candle"],
             metrics["insufficient_causal_labels"],
             metrics["insufficient_training"], metrics["target_expired"],
             metrics["duplicate_forecasts"], metrics["issued_forecasts"],
+            metrics["regime_issued"], metrics["regime_abstained"],
         )
         _LOG.info(
             "RivaL prospective shadow audit issued=%s settled=%s",
@@ -1335,37 +1367,66 @@ class ForwardAccuracyMonitor:
 
     def regime_summary(
         self, *, asset: str, horizon_minutes: int,
-        now: datetime | None = None,
+        family: str | None = None, now: datetime | None = None,
     ) -> dict:
-        """Prospective skill sliced by regime known when prediction was saved."""
+        """Prospective skill sliced by regime known when prediction was saved.
+
+        With family set (e.g. "regime_v1"), the slice covers that shadow
+        family's issued subset only -- its model Brier against the
+        incumbent Brier on the same targets -- so the dashboard can show
+        whether the family won on the targets it chose, not on all of
+        them. Without family, the incumbent's own rows (unchanged).
+        """
         if asset not in ASSETS or horizon_minutes not in HORIZONS:
             raise ValueError("unsupported regime query")
         stamp = utc(now or datetime.now(UTC))
         self.initialize()
         with self.store.connect() as conn:
-            rows = conn.execute(
-                """SELECT f.target_opened_at,r.regime,
-                          MIN(f.issued_at) AS issued_at,
-                          MAX(f.settled_at) AS settled_at,
-                          AVG(f.model_brier) AS model_brier,
-                          AVG(f.baseline_brier) AS baseline_brier
-                   FROM perp_forward_audit AS f
-                   JOIN perp_forward_regimes AS r
-                     ON r.venue=f.venue AND r.contract=f.contract
-                    AND r.quote=f.quote AND r.horizon_minutes=f.horizon_minutes
-                    AND r.model_version=f.model_version
-                    AND r.reference_opened_at=f.reference_opened_at
-                   WHERE f.asset=? AND f.horizon_minutes=?
-                     AND f.model_version=? AND r.method_version=?
-                     AND f.settled_at IS NOT NULL
-                     AND f.outcome_up IS NOT NULL
-                     AND f.target_opened_at>=?
-                     AND f.target_opened_at<=?
-                   GROUP BY f.target_opened_at,r.regime
-                   ORDER BY f.target_opened_at DESC LIMIT 9000""",
-                (asset, horizon_minutes, MODEL, REGIME_VERSION,
-                 (stamp - timedelta(days=35)).isoformat(), stamp.isoformat()),
-            ).fetchall()
+            if family is None:
+                rows = conn.execute(
+                    """SELECT f.target_opened_at,r.regime,
+                              MIN(f.issued_at) AS issued_at,
+                              MAX(f.settled_at) AS settled_at,
+                              AVG(f.model_brier) AS model_brier,
+                              AVG(f.baseline_brier) AS baseline_brier
+                       FROM perp_forward_audit AS f
+                       JOIN perp_forward_regimes AS r
+                         ON r.venue=f.venue AND r.contract=f.contract
+                        AND r.quote=f.quote AND r.horizon_minutes=f.horizon_minutes
+                        AND r.model_version=f.model_version
+                        AND r.reference_opened_at=f.reference_opened_at
+                       WHERE f.asset=? AND f.horizon_minutes=?
+                         AND f.model_version=? AND r.method_version=?
+                         AND f.settled_at IS NOT NULL
+                         AND f.outcome_up IS NOT NULL
+                         AND f.target_opened_at>=?
+                         AND f.target_opened_at<=?
+                       GROUP BY f.target_opened_at,r.regime
+                       ORDER BY f.target_opened_at DESC LIMIT 9000""",
+                    (asset, horizon_minutes, MODEL, REGIME_VERSION,
+                     (stamp - timedelta(days=35)).isoformat(), stamp.isoformat()),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT s.target_opened_at,r.regime,
+                              MIN(s.issued_at) AS issued_at,
+                              MAX(s.settled_at) AS settled_at,
+                              AVG(s.model_brier) AS model_brier,
+                              AVG(s.incumbent_brier) AS baseline_brier
+                       FROM rival_model_shadow_forecasts AS s
+                       JOIN perp_forward_regimes AS r
+                         ON r.venue=s.venue AND r.contract=s.contract
+                        AND r.quote=s.quote AND r.horizon_minutes=s.horizon_minutes
+                        AND r.model_version=? AND r.reference_opened_at=s.reference_opened_at
+                       WHERE s.asset=? AND s.horizon_minutes=? AND s.family=?
+                         AND s.settled_at IS NOT NULL AND s.outcome_up IS NOT NULL
+                         AND s.target_opened_at>=?
+                         AND s.target_opened_at<=?
+                       GROUP BY s.target_opened_at,r.regime
+                       ORDER BY s.target_opened_at DESC LIMIT 9000""",
+                    (MODEL, asset, horizon_minutes, family,
+                     (stamp - timedelta(days=35)).isoformat(), stamp.isoformat()),
+                ).fetchall()
         return evaluate_regimes([dict(row) for row in rows], as_of=stamp)
 
     def boosted_production_evidence(self, *, asset: str, now: datetime | None = None) -> dict:

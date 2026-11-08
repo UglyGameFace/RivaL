@@ -456,6 +456,19 @@ def _pooled_record(market: object, asset: str, horizon: int) -> dict:
                                  "first_issued")}
 
 
+def _regime_record(market: object, asset: str, horizon: int) -> dict:
+    """Live graded record of the regime-gated challenger (7 days).
+
+    Same columns as the pooled trial row, measured on regime_v1's issued
+    subset only, plus the D5 selection decomposition (paired_gain,
+    selection_effect, coverage) so the page shows whether the family won
+    on the targets it chose or only by choosing easy ones.
+    """
+    from parlay_bot.perpetuals.regime_model import trial_report
+
+    return trial_report(market.store, asset=asset, horizon=horizon)
+
+
 def _intelligence_status(market: object, asset: str, horizon: int) -> dict | None:
     """RivaL Intelligence's graded reviews of the models (None if never run)."""
     from parlay_bot.perpetuals.intelligence import IntelligenceLedger
@@ -1518,6 +1531,10 @@ class GuidedHome(discord.ui.View):
                     asyncio.to_thread(_pooled_record, self.market, self.coin, self.horizon),
                     timeout=PERFORMANCE_READ_SECONDS,
                 )
+                readers["regime"] = asyncio.wait_for(
+                    asyncio.to_thread(_regime_record, self.market, self.coin, self.horizon),
+                    timeout=PERFORMANCE_READ_SECONDS,
+                )
                 readers["intelligence"] = asyncio.wait_for(
                     asyncio.to_thread(
                         _intelligence_status, self.market, self.coin, self.horizon,
@@ -1655,6 +1672,34 @@ class GuidedHome(discord.ui.View):
                 else:
                     exchange_text += (f"\n**New model on trial (6 years of prices):** "
                                       f"{int(pooled['issued']):,} predictions made, "
+                                      f"{graded:,} scored so far")
+            regime = reports.get("regime")
+            if isinstance(regime, dict) and int(regime.get("issued") or 0):
+                graded, decided = int(regime["graded"] or 0), int(regime["decided"] or 0)
+                if (decided and regime["model_brier"] is not None
+                        and regime["incumbent_brier"] is not None
+                        and regime["baseline_brier"] is not None):
+                    hits = int(regime["hits"] or 0)
+                    windows = int(regime.get("windows") or 0)
+                    gain = float(regime["incumbent_brier"]) - float(regime["model_brier"])
+                    sel = regime.get("selection_effect")
+                    cov = regime.get("coverage")
+                    exchange_text += (
+                        f"\n**Regime-gated model on trial (calls only in trending markets):** right "
+                        f"{hits:,} of {decided:,} ({hits / decided:.1%}) over {windows:,} "
+                        f"candles. Error score {float(regime['model_brier']):.3f} vs "
+                        f"current model {float(regime['incumbent_brier']):.3f} vs simple "
+                        f"guess {float(regime['baseline_brier']):.3f}, on the same candles"
+                        f"; paired gain {gain:+.3f}"
+                        + (f"; selection effect {float(sel):+.3f} "
+                           f"({'harder' if float(sel) > 0 else 'easier'} subset for the current model)"
+                           if sel is not None else "")
+                        + (f"; coverage {float(cov):.0%}" if cov is not None else "")
+                        + ("; too early to judge" if windows < 300 else "")
+                    )
+                else:
+                    exchange_text += (f"\n**Regime-gated model on trial (calls only in trending markets):** "
+                                      f"{int(regime['issued']):,} predictions made, "
                                       f"{graded:,} scored so far")
             embed.add_field(name=f"📈 {self.coin} exchange predictions (up or down?)",
                             value=exchange_text[:1024], inline=False)

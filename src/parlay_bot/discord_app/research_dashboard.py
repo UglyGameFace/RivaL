@@ -78,7 +78,6 @@ _SECTIONS = {
         ("fifteen", "15-minute predictions"),
         ("calibration", "Are probabilities reliable?"),
         ("ledger", "Recent predictions"),
-        ("regimes", "Skill in different markets"),
         ("costs", "Profit after trading fees"),
         ("method", "How results are checked"),
         ("technical", "Technical evidence"),
@@ -104,7 +103,7 @@ _FIELD_GROUPS = {
     "accuracy": {
         "engine": ("Automatic learning engine", "Forward issue audit"),
         "readiness": ("Mathematical forecast readiness",),
-        "progress": ("Future model proof",),
+        "progress": ("Future model proof", "Prospective skill by market regime"),
         "tracker": ("Prediction tracking",),
         "lineage": ("How is RivaL learning?", "Are advanced models ready?"),
         "technical": ("Model training actually used", "Boosted model production proof"),
@@ -113,7 +112,6 @@ _FIELD_GROUPS = {
         "fifteen": ("Forward 15-minute evaluation", "Math 15m"),
         "calibration": ("Forward 5m calibration", "Forward 15m calibration"),
         "ledger": ("Prediction ledger · prospective",),
-        "regimes": ("Prospective skill by market regime",),
         "costs": ("Execution cost verification", "How accuracy is audited"),
         "method": ("How accuracy is audited",),
     },
@@ -905,6 +903,93 @@ class ResearchDashboard(discord.ui.View):
             max(recent_closes, default=None),
         )
 
+    async def _regime_field_value(self) -> str:
+        """Prospective skill by market regime, as one field value.
+
+        The incumbent per-regime split (5m/15m) plus the same split
+        over each live family's issued subset (regime_v1, the two
+        live-learning families) — the per-regime evidence that used
+        to live in the standalone "regimes" section, now merged into
+        the proof section alongside "Future model proof" (both answer
+        "is anything proving itself?"). regime_v2 is dead — never
+        issued once, flag off — so it has no subset here. A failure
+        in any subset never hides the sections above it. The value
+        stays 1024-capped (a Discord field limit); the tail — the
+        live-family subsets — may still be cut there, as before.
+        """
+        try:
+            monitor = ForwardAccuracyMonitor(self.market)
+            pieces = []
+            for horizon in (5, 15):
+                proof = await asyncio.to_thread(
+                    monitor.regime_summary,
+                    asset=self.asset, horizon_minutes=horizon,
+                )
+                lines = []
+                for regime in ("quiet", "normal", "turbulent"):
+                    part = proof["regimes"][regime]
+                    gain = part["paired_brier_gain"]
+                    gain_text = (
+                        f"{gain:+.4f}" if gain is not None else "none"
+                    )
+                    lines.append(
+                        f"{regime}: **{part['unique_targets']}** "
+                        f"UTC targets / {part['utc_days']} days · "
+                        f"paired Brier gain {gain_text}"
+                    )
+                pieces.append(
+                    f"**{horizon}m** · "
+                    f"{proof['status'].replace('_', ' ')} "
+                    f"({proof['disputed_regime_targets']} disputed)\n"
+                    + "\n".join(lines)
+                )
+            # Family subsets: the same per-regime split, but only over
+            # the targets each family actually issued on, so the page
+            # shows whether the family won on the targets it chose.
+            # v1 keeps issuing as the control, so the subsets sit beside
+            # the incumbent split; a failure here never hides the
+            # sections above.
+            for subset_family in ("regime_v1", "regime_live_v1",
+                                  "regime_live_fast_v1"):
+                try:
+                    subset_pieces = []
+                    for horizon in (5, 15):
+                        proof = await asyncio.to_thread(
+                            monitor.regime_summary,
+                            asset=self.asset, horizon_minutes=horizon,
+                            family=subset_family,
+                        )
+                        lines = []
+                        for regime in ("quiet", "normal", "turbulent"):
+                            part = proof["regimes"][regime]
+                            gain = part["paired_brier_gain"]
+                            gain_text = (
+                                f"{gain:+.4f}" if gain is not None else "none"
+                            )
+                            lines.append(
+                                f"{regime}: **{part['unique_targets']}** "
+                                f"UTC targets / {part['utc_days']} days · "
+                                f"paired Brier gain {gain_text}"
+                            )
+                        subset_pieces.append(
+                            f"**{horizon}m {subset_family} subset** · "
+                            f"{proof['status'].replace('_', ' ')} "
+                            f"({proof['disputed_regime_targets']} disputed)\n"
+                            + "\n".join(lines)
+                        )
+                    pieces.extend(subset_pieces)
+                except Exception:  # noqa: BLE001 - subset is additive only
+                    _LOG.exception("RivaL %s subset query unavailable", subset_family)
+            return (
+                "\n\n".join(pieces)
+                + "\nRegimes were stamped BEFORE outcomes. "
+                  "Multiple venues count once per target. "
+                  "A stable shadow score is not trading profit."
+            )[:1024]
+        except Exception:  # noqa: BLE001
+            _LOG.exception("RivaL regime-evidence query unavailable")
+            return "Regime proof unavailable. No improvement claimed."
+
     async def render(self) -> discord.Embed:
         if self.screen == "opportunities":
             return await asyncio.to_thread(
@@ -1375,6 +1460,17 @@ class ResearchDashboard(discord.ui.View):
                     _LOG.exception("RivaL model proof progress read unavailable")
                     value = "Proof could not be checked. No qualification is assumed."
             embed.add_field(name="Future model proof", value=value, inline=False)
+            # Merged proof section: the per-regime split answers the
+            # same question ("is anything proving itself?") as the
+            # per-family proof checks above, so it lives here now
+            # instead of in a standalone "regimes" section. Both
+            # kinds of evidence stay; a family's paired gain appears
+            # once (in the proof checks), the regime splits carry
+            # their own per-regime gains.
+            embed.add_field(
+                name="Prospective skill by market regime",
+                value=await self._regime_field_value(), inline=False,
+            )
             embed.set_footer(
                 text="Per-exchange future scores · No real fills or trading approval"
             )
@@ -1554,152 +1650,6 @@ class ResearchDashboard(discord.ui.View):
                         value="Database proof unavailable; no forecast inferred.",
                         inline=False,
                     )
-            if self.section == "regimes":
-                try:
-                    monitor = ForwardAccuracyMonitor(self.market)
-                    pieces = []
-                    for horizon in (5, 15):
-                        proof = await asyncio.to_thread(
-                            monitor.regime_summary,
-                            asset=self.asset, horizon_minutes=horizon,
-                        )
-                        lines = []
-                        for regime in ("quiet", "normal", "turbulent"):
-                            part = proof["regimes"][regime]
-                            gain = part["paired_brier_gain"]
-                            gain_text = (
-                                f"{gain:+.4f}" if gain is not None else "none"
-                            )
-                            lines.append(
-                                f"{regime}: **{part['unique_targets']}** "
-                                f"UTC targets / {part['utc_days']} days · "
-                                f"paired Brier gain {gain_text}"
-                            )
-                        pieces.append(
-                            f"**{horizon}m** · "
-                            f"{proof['status'].replace('_', ' ')} "
-                            f"({proof['disputed_regime_targets']} disputed)\n"
-                            + "\n".join(lines)
-                        )
-                    # regime_v1 subset: the same per-regime split, but only
-                    # over the targets the gate actually issued on, so the
-                    # page shows whether the family won on the targets it
-                    # chose. A failure here never hides the incumbent
-                    # section above.
-                    try:
-                        subset_pieces = []
-                        for horizon in (5, 15):
-                            proof = await asyncio.to_thread(
-                                monitor.regime_summary,
-                                asset=self.asset, horizon_minutes=horizon,
-                                family="regime_v1",
-                            )
-                            lines = []
-                            for regime in ("quiet", "normal", "turbulent"):
-                                part = proof["regimes"][regime]
-                                gain = part["paired_brier_gain"]
-                                gain_text = (
-                                    f"{gain:+.4f}" if gain is not None else "none"
-                                )
-                                lines.append(
-                                    f"{regime}: **{part['unique_targets']}** "
-                                    f"UTC targets / {part['utc_days']} days · "
-                                    f"paired Brier gain {gain_text}"
-                                )
-                            subset_pieces.append(
-                                f"**{horizon}m regime_v1 subset** · "
-                                f"{proof['status'].replace('_', ' ')} "
-                                f"({proof['disputed_regime_targets']} disputed)\n"
-                                + "\n".join(lines)
-                            )
-                        pieces.extend(subset_pieces)
-                    except Exception:  # noqa: BLE001 - subset is additive only
-                        _LOG.exception("RivaL regime_v1 subset query unavailable")
-                    # regime_v2 subset: the same per-regime split over the
-                    # targets the trending-subset model actually issued
-                    # on. v1 keeps issuing as the control, so the two
-                    # subsets sit side by side; a failure here never hides
-                    # the sections above.
-                    try:
-                        subset_pieces = []
-                        for horizon in (5, 15):
-                            proof = await asyncio.to_thread(
-                                monitor.regime_summary,
-                                asset=self.asset, horizon_minutes=horizon,
-                                family="regime_v2",
-                            )
-                            lines = []
-                            for regime in ("quiet", "normal", "turbulent"):
-                                part = proof["regimes"][regime]
-                                gain = part["paired_brier_gain"]
-                                gain_text = (
-                                    f"{gain:+.4f}" if gain is not None else "none"
-                                )
-                                lines.append(
-                                    f"{regime}: **{part['unique_targets']}** "
-                                    f"UTC targets / {part['utc_days']} days · "
-                                    f"paired Brier gain {gain_text}"
-                                )
-                            subset_pieces.append(
-                                f"**{horizon}m regime_v2 subset** · "
-                                f"{proof['status'].replace('_', ' ')} "
-                                f"({proof['disputed_regime_targets']} disputed)\n"
-                                + "\n".join(lines)
-                            )
-                        pieces.extend(subset_pieces)
-                    except Exception:  # noqa: BLE001 - subset is additive only
-                        _LOG.exception("RivaL regime_v2 subset query unavailable")
-                    # regime live-learning subsets: the same per-regime
-                    # split over the targets each family's own learner
-                    # actually issued on. v1 keeps issuing as the control,
-                    # so the live subsets sit beside the v1/v2 subsets; a
-                    # failure here never hides the sections above.
-                    for live_family in ("regime_live_v1", "regime_live_fast_v1"):
-                        try:
-                            subset_pieces = []
-                            for horizon in (5, 15):
-                                proof = await asyncio.to_thread(
-                                    monitor.regime_summary,
-                                    asset=self.asset, horizon_minutes=horizon,
-                                    family=live_family,
-                                )
-                                lines = []
-                                for regime in ("quiet", "normal", "turbulent"):
-                                    part = proof["regimes"][regime]
-                                    gain = part["paired_brier_gain"]
-                                    gain_text = (
-                                        f"{gain:+.4f}" if gain is not None else "none"
-                                    )
-                                    lines.append(
-                                        f"{regime}: **{part['unique_targets']}** "
-                                        f"UTC targets / {part['utc_days']} days · "
-                                        f"paired Brier gain {gain_text}"
-                                    )
-                                subset_pieces.append(
-                                    f"**{horizon}m {live_family} subset** · "
-                                    f"{proof['status'].replace('_', ' ')} "
-                                    f"({proof['disputed_regime_targets']} disputed)\n"
-                                    + "\n".join(lines)
-                                )
-                            pieces.extend(subset_pieces)
-                        except Exception:  # noqa: BLE001 - subset is additive only
-                            _LOG.exception("RivaL %s subset query unavailable", live_family)
-                    embed.add_field(
-                        name="Prospective skill by market regime",
-                        value=(
-                            "\n\n".join(pieces)
-                            + "\nRegimes were stamped BEFORE outcomes. "
-                              "Multiple venues count once per target. "
-                              "A stable shadow score is not trading profit."
-                        )[:1024], inline=False,
-                    )
-                except Exception:  # noqa: BLE001
-                    _LOG.exception("RivaL regime-evidence query unavailable")
-                    embed.add_field(
-                        name="Prospective skill by market regime",
-                        value="Regime proof unavailable. No improvement claimed.",
-                        inline=False,
-                    )
             if self.section == "costs":
                 embed.add_field(
                     name="Execution cost verification",
@@ -1718,9 +1668,9 @@ class ResearchDashboard(discord.ui.View):
                 )
             # The selected evidence above is already fresh and source-specific.
             # Do not run every other accuracy, analytics and readiness query
-            # for lineage, ledger, regime or cost screens. The old full-render
+            # for lineage, ledger or cost screens. The old full-render
             # path did this despite showing at most two fields on a phone.
-            if self.section in ("lineage", "technical", "ledger", "regimes", "costs"):
+            if self.section in ("lineage", "technical", "ledger", "costs"):
                 embed.set_footer(text="Read-only database evidence • No trading approval")
                 return embed
 

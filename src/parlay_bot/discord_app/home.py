@@ -469,22 +469,6 @@ def _regime_record(market: object, asset: str, horizon: int) -> dict:
     return trial_report(market.store, asset=asset, horizon=horizon)
 
 
-def _regime2_record(market: object, asset: str, horizon: int) -> dict:
-    """Live graded record of the trending-subset challenger (7 days).
-
-    Same columns as the regime_v1 trial row, measured on regime_v2's
-    issued subset only, plus the D5 decomposition with the paired gain
-    vs the incumbent as the headline (for v2 the gain is the point:
-    v1's paired gain is 0.000 by construction, v2's is the test),
-    the v2-vs-v1 head-to-head, the selection effect, coverage, and
-    the availability ratio (how often the artifact was there when the
-    gate passed).
-    """
-    from parlay_bot.perpetuals.regime2_model import trial_report
-
-    return trial_report(market.store, asset=asset, horizon=horizon)
-
-
 def _regime_live_record(market: object, asset: str, horizon: int) -> dict:
     """Live graded record of the regime live-learning challenger (30 days).
 
@@ -509,53 +493,104 @@ def _regime_live_fast_record(market: object, asset: str, horizon: int) -> dict:
     return trial_report(market.store, asset=asset, horizon=horizon, family=FAST_FAMILY)
 
 
-def _regime_live_text(record, label):
-    """One live family's trial row as a performance-page fragment.
+def _trial_clock(record, now):
+    """(days, targets) for the one-line clock, from the trial record itself.
 
-    Empty when the family has not issued yet (renders only when
-    issued>0, like every other trial row). The paired gain leads the
-    line: for the live families it is the headline, because unlike v1
-    they train their own weights and can beat the incumbent.
+    targets = distinct decided windows (the same measure the Route B
+    evaluation calls "targets": one independent observation per target
+    window). days = days since first issuance in this record's window.
+    Both are measured over the trial window — 7 days for the pooled and
+    regime_v1 rows, 30 days for the live families — so for a family older
+    than its window the day count is capped by the window. The
+    authoritative 30-day Route B clock is the one the status card and
+    the Research dashboard show per scope.
+    """
+    targets = int(record.get("windows") or 0)
+    days = 0
+    try:
+        first = datetime.fromisoformat(str(record.get("first_issued")))
+        if first.tzinfo is None:
+            first = first.replace(tzinfo=UTC)
+        days = max(1, (now - first.astimezone(UTC)).days)
+    except (TypeError, ValueError):
+        days = 0
+    return days, targets
+
+
+def _trial_one_liner(label, record, now):
+    """One family, one headline line + one short detail line.
+
+    Headline: name · accuracy · Brier vs incumbent · paired gain ·
+    clock. Detail line: everything else the old paragraph showed —
+    Brier vs the simple guess, vs-regime_v1 head-to-head, selection,
+    coverage, availability, trending labels learned, weight drift,
+    the 7d vs 8-30d gain split, and "too early to judge". Nothing is
+    dropped, only shortened; a metric the record does not carry is
+    simply absent from the detail line. Returns "" when the family has
+    not issued yet (renders only when issued>0, like every other
+    trial row).
     """
     if not isinstance(record, dict) or not int(record.get("issued") or 0):
         return ""
-    graded, decided = int(record["graded"] or 0), int(record["decided"] or 0)
-    if not (decided and record["model_brier"] is not None
-            and record["incumbent_brier"] is not None
-            and record["baseline_brier"] is not None):
-        return (f"\n**{label} on trial (learns only in trending markets):** "
-                f"{int(record['issued']):,} predictions made, "
-                f"{graded:,} scored so far")
-    hits = int(record["hits"] or 0)
-    windows = int(record.get("windows") or 0)
+    issued = int(record["issued"])
+    graded, decided = int(record.get("graded") or 0), int(record.get("decided") or 0)
+    days, targets = _trial_clock(record, now)
+    clock = f" · {targets:,}/150 targets" + (f" · day {days}/21" if days else "")
+    if not (decided and record.get("model_brier") is not None
+            and record.get("incumbent_brier") is not None
+            and record.get("baseline_brier") is not None):
+        return (f"**{label}:** {issued:,} predictions made, "
+                f"{graded:,} scored so far{clock}")
+    hits = int(record.get("hits") or 0)
     gain = float(record["incumbent_brier"]) - float(record["model_brier"])
-    gain_v1 = record.get("paired_gain_vs_regime_v1")
-    sel = record.get("selection_effect")
-    cov = record.get("coverage")
-    avail = record.get("availability_ratio")
-    updates = record.get("updates")
-    drift = record.get("weight_drift_mean")
-    gain_7d = record.get("paired_gain_last_7d")
-    gain_8_30 = record.get("paired_gain_days_8_30")
-    return (
-        f"\n**{label} on trial (learns only in trending markets):** "
-        f"paired gain vs current model {gain:+.3f}"
-        + (f"; vs regime_v1 {float(gain_v1):+.3f}" if gain_v1 is not None else "")
-        + f"; right {hits:,} of {decided:,} ({hits / decided:.1%}) over "
-        f"{windows:,} candles. Error score {float(record['model_brier']):.3f} vs "
-        f"current model {float(record['incumbent_brier']):.3f} vs simple "
-        f"guess {float(record['baseline_brier']):.3f}, on the same candles"
-        + (f"; selection effect {float(sel):+.3f} "
-           f"({'harder' if float(sel) > 0 else 'easier'} subset for the current model)"
-           if sel is not None else "")
-        + (f"; coverage {float(cov):.0%}" if cov is not None else "")
-        + (f"; availability {float(avail):.0%}" if avail is not None else "")
-        + (f"; {int(updates):,} trending labels learned" if updates is not None else "")
-        + (f"; weight drift {float(drift):.3f}" if drift is not None else "")
-        + (f"; gain last 7d {float(gain_7d):+.3f}" if gain_7d is not None else "")
-        + (f"; gain days 8-30 {float(gain_8_30):+.3f}" if gain_8_30 is not None else "")
-        + ("; too early to judge" if windows < 300 else "")
+    headline = (
+        f"**{label}:** right {hits:,} of {decided:,} ({hits / decided:.1%})"
+        f" · Brier {float(record['model_brier']):.3f} vs incumbent "
+        f"{float(record['incumbent_brier']):.3f} · paired gain {gain:+.3f}{clock}"
     )
+    details = [f"vs guess {float(record['baseline_brier']):.3f}"]
+    gain_v1 = record.get("paired_gain_vs_regime_v1")
+    if gain_v1 is not None:
+        details.append(f"vs regime_v1 {float(gain_v1):+.3f}")
+    sel = record.get("selection_effect")
+    if sel is not None:
+        details.append(
+            f"selection {float(sel):+.3f} "
+            f"({'harder' if float(sel) > 0 else 'easier'} subset)")
+    cov = record.get("coverage")
+    if cov is not None:
+        details.append(f"coverage {float(cov):.0%}")
+    avail = record.get("availability_ratio")
+    if avail is not None:
+        details.append(f"availability {float(avail):.0%}")
+    updates = record.get("updates")
+    if updates is not None:
+        details.append(f"{int(updates):,} trending labels learned")
+    drift = record.get("weight_drift_mean")
+    if drift is not None:
+        details.append(f"weight drift {float(drift):.3f}")
+    gain_7d = record.get("paired_gain_last_7d")
+    if gain_7d is not None:
+        details.append(f"gain last 7d {float(gain_7d):+.3f}")
+    gain_8_30 = record.get("paired_gain_days_8_30")
+    if gain_8_30 is not None:
+        details.append(f"gain days 8-30 {float(gain_8_30):+.3f}")
+    if int(record.get("windows") or 0) < 300:
+        details.append("too early to judge")
+    return headline + "\n" + " · ".join(details)
+
+
+def _regime_live_text(record, label, now=None):
+    """One live family's trial row as a performance-page fragment.
+
+    The one-line format (see _trial_one_liner): headline + short
+    detail line, same as the pooled and regime_v1 rows. Empty when the
+    family has not issued yet (renders only when issued>0, like every
+    other trial row).
+    """
+    if not isinstance(record, dict) or not int(record.get("issued") or 0):
+        return ""
+    return "\n" + _trial_one_liner(label, record, now or datetime.now(UTC))
 
 
 def _intelligence_status(market: object, asset: str, horizon: int) -> dict | None:
@@ -1624,10 +1659,6 @@ class GuidedHome(discord.ui.View):
                     asyncio.to_thread(_regime_record, self.market, self.coin, self.horizon),
                     timeout=PERFORMANCE_READ_SECONDS,
                 )
-                readers["regime2"] = asyncio.wait_for(
-                    asyncio.to_thread(_regime2_record, self.market, self.coin, self.horizon),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
                 readers["regime_live"] = asyncio.wait_for(
                     asyncio.to_thread(_regime_live_record, self.market, self.coin, self.horizon),
                     timeout=PERFORMANCE_READ_SECONDS,
@@ -1684,7 +1715,6 @@ class GuidedHome(discord.ui.View):
                 correct = int(part.get("correct") or 0)
                 settled = int(part.get("settled") or 0)
                 issued = int(part.get("issued") or 0)
-                scored = int(part.get("scored", settled) or 0)
                 hit = part.get("hit_rate")
                 accuracy = (
                     f"**{correct:,} of {decided:,}** ({hit:.1%})"
@@ -1701,22 +1731,24 @@ class GuidedHome(discord.ui.View):
                                "always uses how often the price usually rises.)")
                 else:
                     scoring = "**Better than a simple guess?** Too early to compare fairly"
-                paired = (
-                    f" · {settled - scored:,} couldn't be scored (nobody traded on "
-                    "that exchange during the candle)"
-                    if scored != settled else ""
-                )
-                pending = ""
+                # Overdue results are the only preamble health signal kept:
+                # a late result is a real problem, while the waiting
+                # count, the unscored breakdown, and the "no results
+                # running late" line are routine. The timing paragraph
+                # is cut too; the coverage (scope + period) joins the
+                # Checked line, so the preamble is one short line and
+                # the 1024-char field budget goes to the trial rows.
+                # The honesty disclosures live in the embed description
+                # ("Does it make money? Not proven yet", "predictions
+                # saved before the result was known"), not in this field,
+                # and stay.
+                overdue_line = ""
                 if "due" in part:
-                    due = int(part.get("due") or 0)
                     overdue = int(part.get("overdue") or 0)
-                    waiting = max(0, issued - due)
-                    pending = (f" · {waiting:,} waiting for their candle to finish"
-                               if waiting else "") + (
-                        f"\n⚠️ **{overdue:,} should have a result by now but don't** "
-                        "(the candle is missing or checking is behind)" if overdue else
-                        "\n✅ No results running late"
-                    )
+                    if overdue:
+                        overdue_line = (
+                            f"\n⚠️ **{overdue:,} should have a result by now but don't** "
+                            "(the candle is missing or checking is behind)")
                 venues = int(part.get("venues") or 0)
                 windows = int(part.get("windows") or 0)
                 scope = (
@@ -1733,112 +1765,29 @@ class GuidedHome(discord.ui.View):
                                   f"(~{days} day{'s' if days != 1 else ''})")
                 except (TypeError, ValueError):
                     pass
-                late = int(part.get("issued_late") or 0)
-                timing = (
-                    f"\nℹ️ {'All' if late == issued else f'{late:,} of {issued:,}'} "
-                    "predictions were made a minute or two after the candle opened, using "
-                    "only earlier prices. That's a fair test, but not a price you could "
-                    "have traded at."
-                    if late else
-                    "\nℹ️ Each prediction uses the last finished 5-minute candle and is "
-                    "made 1–2 minutes after it closes."
-                )
                 problems = score_consistency_problems(part)
                 if problems:
                     _LOG.error("Performance consistency check failed for %s %s min: %s",
                                self.coin, self.horizon, "; ".join(problems))
                 exchange_text = (
                     f"**Called the direction right:** {accuracy}\n{scoring}\n"
-                    f"**Checked:** {settled:,} of {issued:,} predictions"
-                    f"{paired}{pending}{timing}\n"
-                    f"**Covers:** {period}, {scope}, current model only"
+                    f"**Checked:** {settled:,} of {issued:,} predictions · "
+                    f"{scope}, {period}, current model only"
+                    f"{overdue_line}"
                     + ("\n⚠️ **These numbers don't add up** ("
                        + "; ".join(problems)[:300]
                        + "). Don't trust them until this is fixed." if problems else "")
                 )
+            # Trial rows: one line per family, same format everywhere
+            # (see _trial_one_liner). regime_v2 is dead — never issued
+            # once, flag off — so it has no reader and no row here.
             pooled = reports.get("pooled")
             if isinstance(pooled, dict) and int(pooled.get("issued") or 0):
-                graded, decided = int(pooled["graded"] or 0), int(pooled["decided"] or 0)
-                if decided and pooled["model_brier"] is not None:
-                    hits = int(pooled["hits"] or 0)
-                    windows = int(pooled.get("windows") or 0)
-                    exchange_text += (
-                        f"\n**New model on trial (trained on 6 years of prices):** right "
-                        f"{hits:,} of {decided:,} ({hits / decided:.1%}) over {windows:,} "
-                        f"candles. Error score {float(pooled['model_brier']):.3f} vs "
-                        f"current model {float(pooled['incumbent_brier']):.3f} vs simple "
-                        f"guess {float(pooled['baseline_brier']):.3f}, on the same candles"
-                        + ("; too early to judge" if windows < 300 else "")
-                    )
-                else:
-                    exchange_text += (f"\n**New model on trial (6 years of prices):** "
-                                      f"{int(pooled['issued']):,} predictions made, "
-                                      f"{graded:,} scored so far")
+                exchange_text += "\n" + _trial_one_liner(
+                    "Pooled 6-year model", pooled, now)
             regime = reports.get("regime")
             if isinstance(regime, dict) and int(regime.get("issued") or 0):
-                graded, decided = int(regime["graded"] or 0), int(regime["decided"] or 0)
-                if (decided and regime["model_brier"] is not None
-                        and regime["incumbent_brier"] is not None
-                        and regime["baseline_brier"] is not None):
-                    hits = int(regime["hits"] or 0)
-                    windows = int(regime.get("windows") or 0)
-                    gain = float(regime["incumbent_brier"]) - float(regime["model_brier"])
-                    sel = regime.get("selection_effect")
-                    cov = regime.get("coverage")
-                    exchange_text += (
-                        f"\n**Regime-gated model on trial (calls only in trending markets):** right "
-                        f"{hits:,} of {decided:,} ({hits / decided:.1%}) over {windows:,} "
-                        f"candles. Error score {float(regime['model_brier']):.3f} vs "
-                        f"current model {float(regime['incumbent_brier']):.3f} vs simple "
-                        f"guess {float(regime['baseline_brier']):.3f}, on the same candles"
-                        f"; paired gain {gain:+.3f}"
-                        + (f"; selection effect {float(sel):+.3f} "
-                           f"({'harder' if float(sel) > 0 else 'easier'} subset for the current model)"
-                           if sel is not None else "")
-                        + (f"; coverage {float(cov):.0%}" if cov is not None else "")
-                        + ("; too early to judge" if windows < 300 else "")
-                    )
-                else:
-                    exchange_text += (f"\n**Regime-gated model on trial (calls only in trending markets):** "
-                                      f"{int(regime['issued']):,} predictions made, "
-                                      f"{graded:,} scored so far")
-            regime2 = reports.get("regime2")
-            if isinstance(regime2, dict) and int(regime2.get("issued") or 0):
-                graded, decided = int(regime2["graded"] or 0), int(regime2["decided"] or 0)
-                if (decided and regime2["model_brier"] is not None
-                        and regime2["incumbent_brier"] is not None
-                        and regime2["baseline_brier"] is not None):
-                    hits = int(regime2["hits"] or 0)
-                    windows = int(regime2.get("windows") or 0)
-                    gain = float(regime2["incumbent_brier"]) - float(regime2["model_brier"])
-                    gain_v1 = regime2.get("paired_gain_vs_regime_v1")
-                    sel = regime2.get("selection_effect")
-                    cov = regime2.get("coverage")
-                    avail = regime2.get("availability_ratio")
-                    # Paired gain is the headline for v2 (for v1 it is
-                    # 0.000 by construction; for v2 it is the test), so
-                    # it leads the line and survives the 1024-char field
-                    # cap even if the tail is cut.
-                    exchange_text += (
-                        f"\n**Regime-v2 model on trial (trained only on trending markets):** "
-                        f"paired gain vs current model {gain:+.3f}"
-                        + (f"; vs regime_v1 {float(gain_v1):+.3f}"
-                           if gain_v1 is not None else "")
-                        + f"; right {hits:,} of {decided:,} ({hits / decided:.1%}) over "
-                        f"{windows:,} candles. Error score {float(regime2['model_brier']):.3f} vs "
-                        f"current model {float(regime2['incumbent_brier']):.3f} vs simple "
-                        f"guess {float(regime2['baseline_brier']):.3f}, on the same candles"
-                        + (f"; selection effect {float(sel):+.3f} "
-                           f"({'harder' if float(sel) > 0 else 'easier'} subset for the current model)"
-                           if sel is not None else "")
-                        + (f"; coverage {float(cov):.0%}" if cov is not None else "")
-                        + (f"; availability {float(avail):.0%}" if avail is not None else "")
-                        + ("; too early to judge" if windows < 300 else "")
-                    )
-                else:
-                    exchange_text += (f"\n**Regime-v2 model on trial (trained only on trending markets):** "
-                                      f"{int(regime2['issued']):,} predictions made, "
-                                      f"{graded:,} scored so far")
+                exchange_text += "\n" + _trial_one_liner("regime_v1", regime, now)
             embed.add_field(name=f"📈 {self.coin} exchange predictions (up or down?)",
                             value=exchange_text[:1024], inline=False)
 
@@ -1848,19 +1797,20 @@ class GuidedHome(discord.ui.View):
             # field they were cut mid-header on 2026-11-09 (Felix's
             # Performance screenshot: the base row was cut at ~1015 chars
             # and the fast row was cut entirely). One field per family
-            # keeps each full-form row (all D7 extras) under the 1024-char
-            # field cap with room to spare — a worst-case full-form row
-            # measures 463 chars, two combined 876 — so no row is ever
-            # truncated and no slice is applied here. _regime_live_text
+            # keeps each one-line row (headline + detail line, all D7
+            # extras) under the 1024-char field cap with room to spare
+            # — a worst-case full-form row measures 356 chars, two
+            # combined 712 — so no row is ever truncated and no slice
+            # is applied here. _regime_live_text
             # returns "" before first issuance, and Discord rejects empty
             # field values, so a family with no text gets no field at all.
             live_text = _regime_live_text(
-                reports.get("regime_live"), "Regime live-learning model")
+                reports.get("regime_live"), "Regime live-learning model", now)
             if live_text:
                 embed.add_field(name="🔬 Regime live-learning model",
                                 value=live_text.strip(), inline=False)
             live_fast_text = _regime_live_text(
-                reports.get("regime_live_fast"), "Regime live-learning fast model")
+                reports.get("regime_live_fast"), "Regime live-learning fast model", now)
             if live_fast_text:
                 embed.add_field(name="🔬 Regime live-learning fast model",
                                 value=live_fast_text.strip(), inline=False)

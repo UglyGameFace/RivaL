@@ -13,10 +13,8 @@ name: RivaL archive model weekly training
 # The GBM trains as a step in this same workflow (no separate workflow
 # file): same restored bytes, same --train-end / --test-start /
 # --trained-through, same manifests dir, per-horizon + per-step failure
-# isolation. Never on every push: weekly retrain + manual dispatch only.
+# isolation. Train only through manual workflow dispatch; no cron schedule.
 on:
-  schedule:
-    - cron: "30 7 * * 0"
   workflow_dispatch:
     inputs:
       publish:
@@ -36,27 +34,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # One-off pause: skip the Nov 15, 2026 scheduled run only.
-  # Manual dispatches and subsequent weekly schedules remain enabled.
-  schedule_guard:
-    runs-on: ubuntu-latest
-    outputs:
-      should_run: ${{ steps.check.outputs.should_run }}
-    steps:
-      - name: Check one-time schedule exclusion
-        id: check
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" == "schedule" && "$(date -u +%F)" == "2026-11-15" ]]; then
-            echo "Skipping the 2026-11-15 scheduled archive training."
-            echo "should_run=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_run=true" >> "$GITHUB_OUTPUT"
-          fi
-
   train:
-    needs: schedule_guard
-    if: needs.schedule_guard.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:

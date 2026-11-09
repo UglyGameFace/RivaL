@@ -380,6 +380,16 @@ class FamilyPromotion:
                     self.store, asset, horizon)
             except Exception:  # noqa: BLE001 - a missing state row records as no artifact
                 scored["regime_v2"]["artifact"] = None
+        for live_family in ("regime_live_v1", "regime_live_fast_v1"):
+            if live_family in scored:
+                try:
+                    from parlay_bot.perpetuals.regime_live_model import (
+                        artifact_identity as live_artifact_identity,
+                    )
+                    scored[live_family]["artifact"] = live_artifact_identity(
+                        self.store, asset, horizon, family=live_family)
+                except Exception:  # noqa: BLE001 - a missing state row records as no artifact
+                    scored[live_family]["artifact"] = None
         for family, pinned_sha in pinned_shas.items():
             evidence = scored.get(family)
             if evidence and (evidence.get("artifact") or {}).get("model_sha256") != pinned_sha:
@@ -513,6 +523,36 @@ class FamilyPromotion:
                     now=stamp)
             except Exception:  # noqa: BLE001 - a receipt must never block governance
                 _LOG.exception("RivaL regime_v2 promotion receipt unavailable")
+        # First promoted_paper write for the live families: same pattern,
+        # same dedupe (one receipt per family/scope/kind, ON CONFLICT DO
+        # NOTHING). The receipt preserves the weights SHA the family
+        # earned promotion with (spec
+        # rival-regime-live-learning-spec-20261108, D6): the live
+        # learner's weights keep moving after promotion under
+        # continuity, and the receipt is the record of what was
+        # promoted, not a pin.
+        for live_family in ("regime_live_v1", "regime_live_fast_v1"):
+            if selected == live_family and not (
+                    previous and previous["status"] == "promoted_paper"
+                    and previous["selected_family"] == live_family):
+                try:
+                    from parlay_bot.perpetuals.promotion_receipts import (
+                        record_promotion_receipt,
+                    )
+                    from parlay_bot.perpetuals.regime_live_model import (
+                        calibration_status as live_calibration_status,
+                    )
+                    record_promotion_receipt(
+                        self.store, family=live_family, venue=venue,
+                        contract=contract, quote=quote, horizon=horizon,
+                        kind="promoted",
+                        evidence={**scored[live_family],
+                                  "evaluated_at": stamp.isoformat()},
+                        calibration=live_calibration_status(
+                            self.store, asset, horizon, family=live_family),
+                        now=stamp)
+                except Exception:  # noqa: BLE001 - a receipt must never block governance
+                    _LOG.exception("RivaL %s promotion receipt unavailable", live_family)
         # D14 pin verdicts: a selected offline family is promoted; a pinned
         # fit whose evidence is exhausted without a promotion is rejected.
         # The next queued fit is admitted on the next reload
@@ -704,6 +744,50 @@ class FamilyPromotion:
                 from parlay_bot.perpetuals.regime_model import artifact_identity
                 recorded = json.loads(row["evidence_json"])["regime_v1"]["artifact"]
                 current = artifact_identity(self.store, asset, horizon)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                return None
+            if not recorded or not current:
+                return None
+            try:
+                recorded_sha = str(recorded["weights_sha256"])
+                recorded_digest = str(recorded["feature_digest"])
+                recorded_through = utc(datetime.fromisoformat(
+                    str(recorded["trained_through"])))
+                recorded_count = int(recorded["graded_count"])
+                current_through = utc(datetime.fromisoformat(
+                    str(current["trained_through"])))
+                current_count = int(current["graded_count"])
+            except (ValueError, TypeError, KeyError):
+                return None
+            if (len(recorded_sha) != 64
+                    or recorded_digest != current["feature_digest"]
+                    or current_through < recorded_through
+                    or current_count < recorded_count):
+                return None
+            if (str(current["weights_sha256"]) != recorded_sha
+                    and not (current_count > recorded_count
+                             and current_through >= recorded_through)):
+                return None
+            return selected
+        if selected in ("regime_live_v1", "regime_live_fast_v1"):
+            # Same continuity check as regime_v1, on the live family's
+            # identity (spec rival-regime-live-learning-spec-20261108,
+            # D5/D6): the served call is the family's own live learner,
+            # so the check verifies the live weights the family last
+            # served are a continuation of the promoted ones -- same
+            # feature digest, trained-through and graded count monotone.
+            # No D14 pin: the learner keeps moving under continuity, and
+            # a weight change with more graded learning behind it is a
+            # continuation, not a refit. A refit/reset (digest change,
+            # cursor/count regression, or unexplained weight change)
+            # blocks serve until the family re-earns promotion.
+            try:
+                from parlay_bot.perpetuals.regime_live_model import (
+                    artifact_identity as live_artifact_identity,
+                )
+                recorded = json.loads(row["evidence_json"])[selected]["artifact"]
+                current = live_artifact_identity(
+                    self.store, asset, horizon, family=selected)
             except (ValueError, TypeError, KeyError, AttributeError):
                 return None
             if not recorded or not current:

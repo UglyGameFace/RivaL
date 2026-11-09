@@ -44,6 +44,30 @@ def _copy_state(state: dict) -> dict:
     return copied
 
 
+def _apply_warm_start(state, warm_start):
+    """Copy another model's weights into a fresh cold state, once.
+
+    Raises ValueError on a malformed warm start instead of silently
+    starting from zeros: a bad copy is a caller bug, and a silent zero
+    start would look like a working learner that never had a warm start.
+    """
+    weights = warm_start.get("weights") if isinstance(warm_start, dict) else None
+    source_sha = warm_start.get("source_weights_sha256") if isinstance(warm_start, dict) else None
+    copied_at = warm_start.get("copied_at") if isinstance(warm_start, dict) else None
+    if (weights is None or len(weights) != 11
+            or any(not isinstance(w, (int, float)) or not math.isfinite(w) for w in weights)
+            or not isinstance(source_sha, str) or len(source_sha) != 64
+            or not isinstance(copied_at, str) or not copied_at):
+        raise ValueError("warm_start needs 11 finite weights, a 64-hex source SHA and a copied_at")
+    state["weights"] = [float(w) for w in weights]
+    state["warm_start_weights"] = [float(w) for w in weights]
+    state["warm_start"] = {
+        "source": warm_start.get("source", "live_model_checkpoints"),
+        "source_weights_sha256": source_sha,
+        "copied_at": copied_at,
+    }
+
+
 def _same_fingerprint(saved, fresh: str) -> bool:
     """``fresh`` is FINGERPRINT_HEX long; ``saved`` may be a legacy full digest."""
     return (isinstance(saved, str) and len(saved) >= FINGERPRINT_HEX
@@ -51,8 +75,25 @@ def _same_fingerprint(saved, fresh: str) -> bool:
 
 
 class LiveModelCheckpoints:
-    def __init__(self, store):
+    """Fit the live logistic on samples of live feedback and persist it.
+
+    A checkpoint row is one stream's weights at one clock: venue, contract,
+    quote, horizon and the feature contract. ``feature_contract`` pins the
+    training identity (features + labelling rule + learning rate), so a
+    trending-subset learner (spec rival-regime-live-learning-spec-20261108,
+    D5) keeps its own row under its own contract string instead of sharing
+    the incumbent's. ``learning_rate`` is the per-step SGD size, validated
+    against the same 0 < lr <= 0.1 bound walk_forward.py enforces for the
+    incumbent; the base live family uses 0.025, the fast family 0.05.
+    """
+
+    def __init__(self, store, *, feature_contract=FEATURE_CONTRACT,
+                 learning_rate=0.025):
+        if not 0 < learning_rate <= 0.1:
+            raise ValueError("learning_rate must satisfy 0 < lr <= 0.1")
         self.store = store
+        self.feature_contract = feature_contract
+        self.learning_rate = learning_rate
         self._initialized = False
         self._lock = threading.RLock()
         self._loaded = 0
@@ -163,7 +204,7 @@ class LiveModelCheckpoints:
 
     def _cold_state(self, first, now, seed=None):
         if seed and (
-            seed.get("feature_contract") != FEATURE_CONTRACT
+            seed.get("feature_contract") != self.feature_contract
             or seed.get("target_contract") != TARGET_CONTRACT
             or seed.get("retrospective_screen") != "passed"
             or (seed["identity"]["venue"], seed["identity"]["contract"], seed["identity"]["quote"],
@@ -177,12 +218,22 @@ class LiveModelCheckpoints:
                 "historical_training_cutoff": seed["training_cutoff"] if seed else None,
                 "historical_training_labels": seed["training_count"] if seed else 0}
 
-    def fit(self, samples, *, as_of: datetime, seed=None) -> WalkForwardResult:
+    def fit(self, samples, *, as_of: datetime, seed=None,
+            warm_start=None) -> WalkForwardResult:
         """Train on new matured labels once; rolling input eviction retains memory.
 
         Source corrections rebuild this research state. Earlier fixture clocks
         cannot read future weights or overwrite a newer saved checkpoint.
         Frozen issued predictions are never rewritten.
+
+        ``warm_start`` (spec rival-regime-live-learning-spec-20261108, D4)
+        copies another model's weights ONCE, at the first fit, when no
+        checkpoint row exists yet: ``{"weights": tuple, "source": str,
+        "source_weights_sha256": str, "copied_at": str}``. It is recorded
+        in the state (source SHA + timestamp) so the drift metric can
+        measure movement away from the copied weights, and it is never
+        re-applied: a restart restores the persisted state, whose weights
+        already include every update since the copy.
         """
         ordered = self._validate(samples)
         if not ordered:
@@ -190,7 +241,7 @@ class LiveModelCheckpoints:
         now = utc(as_of)
         first = ordered[0]
         identity = (first.venue, first.contract, first.quote, first.horizon_minutes,
-                    FEATURE_CONTRACT + (":" + seed["model_sha256"] if seed else ""), TARGET_CONTRACT)
+                    self.feature_contract + (":" + seed["model_sha256"] if seed else ""), TARGET_CONTRACT)
         self.initialize()
         with self._lock:
             query_scope = ("WHERE venue=? AND contract=? AND quote=? "
@@ -233,6 +284,8 @@ class LiveModelCheckpoints:
                 state = None
             if state is None:
                 state = self._cold_state(first, now, seed)
+                if row is None and warm_start is not None:
+                    _apply_warm_start(state, warm_start)
             else:
                 self._loaded += 1
             cursor = tuple(state["cursor"]) if state["cursor"] else None
@@ -249,7 +302,7 @@ class LiveModelCheckpoints:
                 x = (1., *sample.features)
                 error = sample.label_up - _sigmoid(sum(w*v for w, v in zip(weights, x)))
                 for i, value in enumerate(x):
-                    weights[i] += .025 * (error * value - (.0001 * weights[i] if i else 0))
+                    weights[i] += self.learning_rate * (error * value - (.0001 * weights[i] if i else 0))
                 state["updates"] += 1
                 state["cursor"] = list(key)
                 cursor = key
@@ -327,5 +380,5 @@ class LiveModelCheckpoints:
                 "reused_this_process": self._loaded, "fitted_this_process": self._fitted,
                 "verified_checkpoint_cache_hits": self._cache_hits,
                 "historical_seeded_checkpoints": sum(bool(s and s["historical_seed"]) for s in valid),
-                "feature_contract": FEATURE_CONTRACT, "target_contract": TARGET_CONTRACT,
+                "feature_contract": self.feature_contract, "target_contract": TARGET_CONTRACT,
                 "model_version": STATE_VERSION}

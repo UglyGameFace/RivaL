@@ -434,13 +434,19 @@ def test_census_standalone_entry_point(tmp_path):
 
 def test_gate_frozen_at_0_30_and_shared_with_v1():
     """v2 inherits the v1 gate object, not a copy: ER > 0.30, frozen,
-    no retuning, no sensitivity runs in the trainer."""
+    no retuning, no sensitivity runs in the trainer.
+
+    The gate is still shared (the trainer still defines it); only the
+    issuance switch is off -- v2 is retired by the live-learning build
+    (spec rival-regime-live-learning-spec-20261108, D10), so the frozen
+    gate no longer issues anything live.
+    """
     assert ER_THRESHOLD == 0.30
     assert regime2_training.ER_THRESHOLD == ER_THRESHOLD
     # The mask applies that same threshold (the boundary test pins the
     # strict >); the trainer never retunes it.
     assert regime2_training.trending_mask is not None
-    assert forward_audit.ISSUE_REGIME_V2_CHALLENGERS is True
+    assert forward_audit.ISSUE_REGIME_V2_CHALLENGERS is False
 
 
 def test_train_serve_er_equivalence():
@@ -672,10 +678,13 @@ def test_regime2_calls_requires_gate_and_artifact(tmp_path):
 
 # --- Cycle: kill switch, abstention vs unavailable ----------------------------
 
-def test_kill_switch_stops_regime2_issuance_in_cycle(tmp_path, monkeypatch):
-    """Flag on: the cycle issues regime_v2 shadow rows (artifact imported
-    first). Flag off: none new, while the incumbent cycle still runs."""
-    assert forward_audit.ISSUE_REGIME_V2_CHALLENGERS is True
+def test_kill_switch_stops_regime2_issuance_in_cycle(tmp_path):
+    """Retired (spec rival-regime-live-learning-spec-20261108, D10):
+    the switch defaults off, so the cycle issues no regime_v2 shadow
+    rows even with an artifact imported, while the incumbent cycle
+    still runs. A second cycle with the switch still off issues nothing
+    new for regime_v2 either."""
+    assert forward_audit.ISSUE_REGIME_V2_CHALLENGERS is False
     now = datetime.now(UTC)
     store = SQLiteHotStore(tmp_path / "regime2-cycle.sqlite")
     market = PerpetualMarketStore(store)
@@ -685,14 +694,12 @@ def test_kill_switch_stops_regime2_issuance_in_cycle(tmp_path, monkeypatch):
         model_set = Regime2ModelSet(store)
         doc = _valid_regime2_doc()
         assert model_set.import_document("file-1", json.dumps(doc).encode()) == 1
-        monkeypatch.setattr(forward_audit, "ISSUE_REGIME_V2_CHALLENGERS", True)
         monitor.run_once(now=now)
-        shadow_on, incumbent_on = _cycle_counts(store)
-        assert shadow_on >= 1  # the control proves this cycle can issue regime_v2
+        shadow_off, incumbent_on = _cycle_counts(store)
+        assert shadow_off == 0
         assert incumbent_on >= 1
-        monkeypatch.setattr(forward_audit, "ISSUE_REGIME_V2_CHALLENGERS", False)
         monitor.run_once(now=now)
-        assert _cycle_counts(store) == (shadow_on, incumbent_on)
+        assert _cycle_counts(store) == (shadow_off, incumbent_on)
     finally:
         store.close()
 
@@ -1058,10 +1065,11 @@ def test_trial_report_availability_below_one(tmp_path):
 
 # --- D4: the weekly shared run ------------------------------------------------
 
-async def test_weekly_archive_trains_regime2_as_third_family(tmp_path):
-    """The shared run writes a regime-v2 report (with its census) next
-    to the archive and GBM reports, on the same frames, same splits,
-    same provenance -- and a model file when the gates pass."""
+async def test_weekly_archive_no_longer_trains_regime2(tmp_path):
+    """Retired (spec rival-regime-live-learning-spec-20261108, D10):
+    the shared run writes no regime-v2 report or model file at all --
+    v2 no longer trains here -- while the archive and GBM families
+    still train in the same run."""
     from parlay_bot.research import weekly_archive
 
     train_end, test_start, trained_through = _splits()
@@ -1073,26 +1081,18 @@ async def test_weekly_archive_trains_regime2_as_third_family(tmp_path):
     }
     await weekly_archive.train_weekly_archive(
         frames, training=training, census={}, out=tmp_path, publish=False)
-    report_path = tmp_path / "regime-v2-BTC-5m-report.json"
-    assert report_path.exists()
-    report = json.loads(report_path.read_text())
-    assert report["family"] == "regime_v2"
-    assert report["trending_census"]["per_venue"]["binance"]["trending_bars"] == 10488
-    assert report["gates_passed"] is True
-    assert report["training_status"] == "passed"
-    model_path = tmp_path / "regime-v2-BTC-5m-model.json"
-    assert model_path.exists()
-    model = json.loads(model_path.read_text())
-    assert model["family"] == "regime_v2"
-    assert is_regime2_document(model_path.read_bytes())
+    assert not (tmp_path / "regime-v2-BTC-5m-report.json").exists()
+    assert not (tmp_path / "regime-v2-BTC-5m-model.json").exists()
     # The other two families still trained in the same run.
     assert (tmp_path / "archive-v1-BTC-5m-report.json").exists()
     assert (tmp_path / "gbm-v1-BTC-5m-report.json").exists()
 
 
 async def test_weekly_archive_blocked_regime2_carries_census(tmp_path):
-    """A floor failure in the shared run still writes a blocked report
-    that measures the shortfall (trending_census), not just its name."""
+    """Retired (spec rival-regime-live-learning-spec-20261108, D10):
+    with too few bars for a v2 census, the shared run still writes no
+    regime-v2 report at all (not even a blocked one) -- v2 no longer
+    trains here -- while the other families still train."""
     from parlay_bot.research import weekly_archive
 
     train_end, test_start, trained_through = _splits()
@@ -1104,12 +1104,10 @@ async def test_weekly_archive_blocked_regime2_carries_census(tmp_path):
     }
     await weekly_archive.train_weekly_archive(
         frames, training=training, census={}, out=tmp_path, publish=False)
-    report = json.loads(
-        (tmp_path / "regime-v2-BTC-5m-report.json").read_text())
-    assert report["training_status"] == "blocked"
-    assert report["gates_passed"] is False
-    assert report["trending_census"]["splits"]["train"]["trending_labelled"] < 2000
+    assert not (tmp_path / "regime-v2-BTC-5m-report.json").exists()
     assert not (tmp_path / "regime-v2-BTC-5m-model.json").exists()
+    assert (tmp_path / "archive-v1-BTC-5m-report.json").exists()
+    assert (tmp_path / "gbm-v1-BTC-5m-report.json").exists()
 
 
 # --- D8: never an OTG live lean ------------------------------------------------

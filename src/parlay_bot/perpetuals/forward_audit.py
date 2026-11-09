@@ -13,6 +13,7 @@ import math
 import time
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals import regime_live_model
 from parlay_bot.perpetuals.archive_model import ArchiveModelSet, archive_calls
 from parlay_bot.perpetuals.calibrated_challenger import CalibratedIncumbent
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
@@ -114,7 +115,19 @@ ISSUE_REGIME_V1_CHALLENGERS = True
 # imported; it never serves until Route B promotes it. Kill switch for
 # issuance; serving is gated separately by promotion. Existing rows
 # keep settling either way. Regime_v1 keeps issuing as the control.
-ISSUE_REGIME_V2_CHALLENGERS = True
+# RETIRED by the live-learning build (spec
+# rival-regime-live-learning-spec-20261108, D10): the switch is off, so
+# no new regime_v2 rows are issued; existing rows keep settling.
+ISSUE_REGIME_V2_CHALLENGERS = False
+# regime live-learning shadow issuance (spec
+# rival-regime-live-learning-spec-20261108, D8): each live family issues
+# its own learner's call as a shadow forecast only on trending cycles
+# (same frozen gate); it never serves until Route B promotes it. Kill
+# switch per family (default True); serving is gated separately by
+# promotion. Existing rows keep settling either way. Regime_v1 keeps
+# issuing as the control.
+ISSUE_REGIME_LIVE_V1_CHALLENGERS = True
+ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS = True
 
 # The incumbent's fast settlement covers the last 2 days; a day of margin.
 SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
@@ -216,6 +229,17 @@ class ForwardAccuracyMonitor:
             if self.market.live_model_checkpoints is None:
                 self.market.live_model_checkpoints = LiveModelCheckpoints(self.store)
             self.market.live_model_checkpoints.initialize()
+            if self.market.regime_live_checkpoints is None:
+                self.market.regime_live_checkpoints = {
+                    family: LiveModelCheckpoints(
+                        self.store,
+                        feature_contract=regime_live_model.feature_contract(family),
+                        learning_rate=regime_live_model.learning_rate(family),
+                    )
+                    for family in regime_live_model.FAMILIES
+                }
+            for checkpoints in self.market.regime_live_checkpoints.values():
+                checkpoints.initialize()
             if self.market.historical_challengers is None:
                 self.market.historical_challengers = HistoricalChallengers(self.store, self.market.live_model_checkpoints)
             self.market.historical_challengers.initialize()
@@ -272,6 +296,27 @@ class ForwardAccuracyMonitor:
                 self.market.regime2_models = current
             except Exception:  # noqa: BLE001 - optional challenger only
                 _LOG.exception("RivaL regime_v2 model registry unavailable")
+                return None
+        return current
+
+    def _regime_live_checkpoints(self):
+        """The per-family live learners (None if their table is unavailable)."""
+        current = getattr(self.market, "regime_live_checkpoints", None)
+        if current is None:
+            try:
+                current = {
+                    family: LiveModelCheckpoints(
+                        self.store,
+                        feature_contract=regime_live_model.feature_contract(family),
+                        learning_rate=regime_live_model.learning_rate(family),
+                    )
+                    for family in regime_live_model.FAMILIES
+                }
+                for checkpoints in current.values():
+                    checkpoints.initialize()
+                self.market.regime_live_checkpoints = current
+            except Exception:  # noqa: BLE001 - optional challenger only
+                _LOG.exception("RivaL regime live checkpoints unavailable")
                 return None
         return current
 
@@ -843,6 +888,10 @@ class ForwardAccuracyMonitor:
             "settled_forecasts": 0,
             "regime_issued": 0, "regime_abstained": 0,
             "regime2_issued": 0, "regime2_abstained": 0, "regime2_unavailable": 0,
+            "regime_live_issued": 0, "regime_live_abstained": 0,
+            "regime_live_unavailable": 0,
+            "regime_live_fast_issued": 0, "regime_live_fast_abstained": 0,
+            "regime_live_fast_unavailable": 0,
         }
         # Reuse the same bounded, freshness-checked stream selection as
         # existing offline evaluation, without external HTTP requests.
@@ -1027,6 +1076,51 @@ class ForwardAccuracyMonitor:
                     tested = self.market.live_model_checkpoints.fit(samples, as_of=stamp)
                     self._lap("fit", mark)
                     mark = self._mark()
+                    # Regime live-learning families (spec
+                    # rival-regime-live-learning-spec-20261108, D2-D4):
+                    # each family fits the same samples the incumbent
+                    # just fitted, filtered to trending labels only, warm
+                    # started once from the incumbent's weights. The fit
+                    # runs in the fit phase, before the incumbent's
+                    # issuance threshold: the families learn from every
+                    # trending label, whether or not the incumbent issues
+                    # this cycle. A learner-fit failure never blocks the
+                    # incumbent or the other family: issuance below is the
+                    # single counting point (a failed fit surfaces there
+                    # as unavailable when the gate passes).
+                    live_results: dict = {}
+                    try:
+                        live_samples = regime_live_model.trending_samples(candles, samples)
+                    except Exception:  # noqa: BLE001 - a filter failure fits nothing
+                        _LOG.exception("RivaL regime live filter unavailable")
+                        live_samples = ()
+                    for live_family, live_flag in (
+                        (regime_live_model.BASE_FAMILY, ISSUE_REGIME_LIVE_V1_CHALLENGERS),
+                        (regime_live_model.FAST_FAMILY, ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS),
+                    ):
+                        if not live_flag:
+                            continue
+                        try:
+                            live_checkpoints = self._regime_live_checkpoints()
+                            if live_checkpoints is None:
+                                raise RuntimeError("regime live checkpoints unavailable")
+                            warm_start = {
+                                "weights": tuple(tested.final_weights),
+                                "source": "live_model_checkpoints",
+                                "source_weights_sha256": hashlib.sha256(json.dumps(
+                                    tested.final_weights, separators=(",", ":"),
+                                    allow_nan=False,
+                                ).encode()).hexdigest(),
+                                "copied_at": stamp.isoformat(),
+                            }
+                            live_results[live_family] = live_checkpoints[live_family].fit(
+                                live_samples, as_of=stamp, warm_start=warm_start,
+                            )
+                        except Exception:  # noqa: BLE001 - a learner failure never blocks the incumbent
+                            # No metric here: issuance below is the single
+                            # counting point (a failed fit surfaces there
+                            # as unavailable when the gate passes).
+                            _LOG.exception("RivaL %s live fit unavailable", live_family)
                     # Historical challengers are *shadow research* until a
                     # separate, model-SHA-specific prospective + quote/cost
                     # promotion gate authorizes serving. In particular,
@@ -1157,6 +1251,48 @@ class ForwardAccuracyMonitor:
                             metrics["regime2_abstained"] += 1
                         else:
                             metrics["regime2_unavailable"] += 1
+                    # Regime live-learning families: each family's own
+                    # learner's call as a shadow forecast, only when the
+                    # gate passes (spec
+                    # rival-regime-live-learning-spec-20261108, D1/D11).
+                    # A family whose learner has no fitted weights yet
+                    # (no trending labels seen) is unavailable, not an
+                    # abstention: the gate passed, the model was not
+                    # ready. A failure here is an abstention, counted in
+                    # the cycle metrics, not a stored row -- and never
+                    # blocks the incumbent.
+                    live_items: dict = {}
+                    for live_family, live_flag in (
+                        (regime_live_model.BASE_FAMILY, ISSUE_REGIME_LIVE_V1_CHALLENGERS),
+                        (regime_live_model.FAST_FAMILY, ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS),
+                    ):
+                        live_items[live_family] = ()
+                        if not live_flag:
+                            continue
+                        prefix = regime_live_model.metric_prefix(live_family)
+                        try:
+                            result = live_results.get(live_family)
+                            if result is not None and len(result.final_weights) == 11:
+                                live_items[live_family] = regime_live_model.regime_live_calls(
+                                    family=live_family, candles=candles,
+                                    probability=_probability(result.final_weights, features),
+                                    training_rows=result.updates,
+                                    model_sha256=hashlib.sha256(json.dumps(
+                                        result.final_weights, separators=(",", ":"),
+                                        allow_nan=False,
+                                    ).encode()).hexdigest(),
+                                )
+                        except Exception:  # noqa: BLE001 - a call failure abstains
+                            _LOG.exception("RivaL %s live call unavailable", live_family)
+                            live_items[live_family] = ()
+                        if live_items[live_family]:
+                            metrics[f"{prefix}_issued"] += 1
+                        elif not trending_gate(candles):
+                            metrics[f"{prefix}_abstained"] += 1
+                        else:
+                            metrics[f"{prefix}_unavailable"] += 1
+                    regime_live_items = live_items[regime_live_model.BASE_FAMILY]
+                    regime_live_fast_items = live_items[regime_live_model.FAST_FAMILY]
                     # Shadow-model fitting is CPU work on inputs already
                     # fixed at issuance: do it before the transaction opens.
                     try:
@@ -1258,7 +1394,7 @@ class ForwardAccuracyMonitor:
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
-                                    challengers=(*flow_calls, *archive_items, *gbm_items, *regime_items, *regime2_items),
+                                    challengers=(*flow_calls, *archive_items, *gbm_items, *regime_items, *regime2_items, *regime_live_items, *regime_live_fast_items),
                                     prepared=shadow_prepared,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger
@@ -1387,7 +1523,9 @@ class ForwardAccuracyMonitor:
             "stale=%d insufficient_labels=%d insufficient_training=%d "
             "expired=%d duplicate=%d issued=%d "
             "regime_issued=%d regime_abstained=%d "
-            "regime2_issued=%d regime2_abstained=%d regime2_unavailable=%d",
+            "regime2_issued=%d regime2_abstained=%d regime2_unavailable=%d "
+            "regime_live_issued=%d regime_live_abstained=%d regime_live_unavailable=%d "
+            "regime_live_fast_issued=%d regime_live_fast_abstained=%d regime_live_fast_unavailable=%d",
             metrics["discovered_streams"], metrics["selected_streams"],
             metrics["short_history"], metrics["stale_last_candle"],
             metrics["insufficient_causal_labels"],
@@ -1396,6 +1534,10 @@ class ForwardAccuracyMonitor:
             metrics["regime_issued"], metrics["regime_abstained"],
             metrics["regime2_issued"], metrics["regime2_abstained"],
             metrics["regime2_unavailable"],
+            metrics["regime_live_issued"], metrics["regime_live_abstained"],
+            metrics["regime_live_unavailable"],
+            metrics["regime_live_fast_issued"], metrics["regime_live_fast_abstained"],
+            metrics["regime_live_fast_unavailable"],
         )
         _LOG.info(
             "RivaL prospective shadow audit issued=%s settled=%s",

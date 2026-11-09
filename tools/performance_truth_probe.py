@@ -19,6 +19,11 @@ CURRENT = """SELECT x.venue,x.contract,x.quote,x.horizon_minutes,
    ORDER BY f.settled_at, x.issued_at LIMIT 4000"""
 
 
+NEW = CURRENT.replace(
+    "AND f.reference_opened_at=x.reference_opened_at",
+    "AND f.reference_opened_at=x.reference_opened_at\n    AND f.asset=x.asset AND f.issued_at=x.issued_at")
+
+
 def probe() -> dict:
     from parlay_bot.config import Settings
     from parlay_bot.storage.hot import PostgresHotStore
@@ -39,35 +44,24 @@ def probe() -> dict:
 
     try:
         with store.connect() as conn:
-            q("pending", """SELECT learned, COUNT(*), MIN(issued_at), MAX(issued_at)
-                            FROM rival_liq1_features GROUP BY learned""")
-            q("pending_by_day", """SELECT substr(issued_at,1,10), COUNT(*) FROM rival_liq1_features
-                                   WHERE learned=0 GROUP BY 1 ORDER BY 1""")
-            q("audit_size", """SELECT model_version, COUNT(*), MIN(issued_at) FROM perp_forward_audit
-                               GROUP BY model_version""")
-            q("pending_audit_state", """SELECT (f.venue IS NULL) AS no_audit,
-                    (f.settled_at IS NULL) AS unsettled, COUNT(*), COUNT(DISTINCT f.model_version)
-                 FROM rival_liq1_features x LEFT JOIN perp_forward_audit f
-                   ON f.venue=x.venue AND f.contract=x.contract AND f.quote=x.quote
-                  AND f.horizon_minutes=x.horizon_minutes
-                  AND f.reference_opened_at=x.reference_opened_at
-                 WHERE x.learned=0 GROUP BY 1,2""")
-            q("settle_before_issue", """SELECT COUNT(*), MIN(settled_at::timestamptz - issued_at::timestamptz)
-                 FROM perp_forward_audit WHERE settled_at IS NOT NULL AND issued_at > ?""",
-              ("2026-11-05",))
-            q("x_vs_f_issued", """SELECT COUNT(*) FILTER (WHERE f.issued_at=x.issued_at),
-                    COUNT(*) FILTER (WHERE f.issued_at<>x.issued_at),
-                    COUNT(*) FILTER (WHERE f.asset<>x.asset),
-                    COUNT(*) FILTER (WHERE f.settled_at < x.issued_at),
-                    MIN(f.settled_at::timestamptz - x.issued_at::timestamptz)
+            q("issued_match", """SELECT COUNT(*) FILTER (WHERE f.issued_at=x.issued_at) AS same_issued,
+                    COUNT(*) FILTER (WHERE f.issued_at<>x.issued_at) AS diff_issued,
+                    COUNT(*) FILTER (WHERE f.asset<>x.asset) AS diff_asset,
+                    COUNT(*) FILTER (WHERE f.model_version<>'prospective-logistic-persistent-v3') AS other_model,
+                    COUNT(*) AS total
                  FROM rival_liq1_features x JOIN perp_forward_audit f
                    ON f.venue=x.venue AND f.contract=x.contract AND f.quote=x.quote
                   AND f.horizon_minutes=x.horizon_minutes
-                  AND f.reference_opened_at=x.reference_opened_at
-                 WHERE x.issued_at > ?""", ("2026-11-08",))
+                  AND f.reference_opened_at=x.reference_opened_at""")
+            q("orphans", """SELECT COUNT(*) AS n FROM rival_liq1_features x WHERE NOT EXISTS (
+                   SELECT 1 FROM perp_forward_audit f WHERE f.asset=x.asset
+                    AND f.horizon_minutes=x.horizon_minutes AND f.issued_at=x.issued_at
+                    AND f.venue=x.venue AND f.contract=x.contract AND f.quote=x.quote
+                    AND f.reference_opened_at=x.reference_opened_at)""")
             q("explain_current", "EXPLAIN (ANALYZE, BUFFERS) " + CURRENT, (now,))
-            q("indexes", """SELECT tablename, indexname, indexdef FROM pg_indexes
-                            WHERE tablename IN ('perp_forward_audit','rival_liq1_features')""")
+            q("explain_new", "EXPLAIN (ANALYZE, BUFFERS) " + NEW, (now,))
+            q("rows_current", "SELECT md5(string_agg(venue||contract||quote||horizon_minutes||reference_opened_at||coalesce(outcome_up::text,'n')||settled_at, ',' ORDER BY venue||contract||quote||horizon_minutes||reference_opened_at||coalesce(outcome_up::text,'n')||settled_at)), COUNT(*) FROM (" + CURRENT.replace("4000", "4000").replace("x.learned=0", "x.learned=1").replace("f.settled_at<=?", "f.settled_at<=? AND x.issued_at>'2026-11-09T06'") + ") s", (now,))
+            q("rows_new", "SELECT md5(string_agg(venue||contract||quote||horizon_minutes||reference_opened_at||coalesce(outcome_up::text,'n')||settled_at, ',' ORDER BY venue||contract||quote||horizon_minutes||reference_opened_at||coalesce(outcome_up::text,'n')||settled_at)), COUNT(*) FROM (" + NEW.replace("x.learned=0", "x.learned=1").replace("f.settled_at<=?", "f.settled_at<=? AND x.issued_at>'2026-11-09T06'") + ") s", (now,))
     except Exception as exc:  # noqa: BLE001
         out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
     finally:

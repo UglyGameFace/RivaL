@@ -640,6 +640,13 @@ class LiquidityChallengerV1:
     def learn(self, now: datetime) -> int:
         """Train on forecasts whose real outcome has since been graded."""
         self.initialize()
+        # A feature row is written only in the same transaction that inserts
+        # its incumbent audit row, with the same asset and issued_at string,
+        # so matching on those too selects exactly that audit row. It lets
+        # Postgres look each pending row up through
+        # idx_perp_forward_asset_horizon instead of walking the audit primary
+        # key, whose model_version column sits before reference_opened_at
+        # (live: 1.5 s -> 0.06 s for ~550 pending rows; same rows returned).
         with self.store.connect() as conn:
             rows = conn.execute(
                 f"""SELECT x.venue,x.contract,x.quote,x.horizon_minutes,
@@ -647,8 +654,9 @@ class LiquidityChallengerV1:
                           f.outcome_up,f.settled_at
                    FROM {self.features_table} x
                    JOIN perp_forward_audit f
-                     ON f.venue=x.venue AND f.contract=x.contract AND f.quote=x.quote
-                    AND f.horizon_minutes=x.horizon_minutes
+                     ON f.asset=x.asset AND f.horizon_minutes=x.horizon_minutes
+                    AND f.issued_at=x.issued_at
+                    AND f.venue=x.venue AND f.contract=x.contract AND f.quote=x.quote
                     AND f.reference_opened_at=x.reference_opened_at
                    WHERE x.learned=0 AND f.settled_at IS NOT NULL AND f.settled_at<=?
                    ORDER BY f.settled_at, x.issued_at LIMIT ?""",

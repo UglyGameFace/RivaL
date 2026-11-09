@@ -152,7 +152,8 @@ def _candidate_payload(*, proposal_sha: str = SHA):
 
 def _seed_promotion_row(store, *, family: str, targets: int, days: int,
                         qualified: bool, evaluated_at: datetime,
-                        horizon_minutes: int = 5):
+                        horizon_minutes: int = 5, asset: str = "BTC",
+                        venue: str = "hyperliquid"):
     from parlay_bot.perpetuals.family_governance import FamilyPromotion
 
     FamilyPromotion(store).initialize()
@@ -166,7 +167,7 @@ def _seed_promotion_row(store, *, family: str, targets: int, days: int,
                (venue, contract, quote, asset, horizon_minutes, evaluated_at,
                 selected_family, status, reason, evidence_json)
                VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            ("hyperliquid", "BTC", "USDC", "BTC", horizon_minutes,
+            (venue, asset, "USDC", asset, horizon_minutes,
              evaluated_at.isoformat(),
              family if qualified else None,
              "promoted_paper" if qualified else "held", "test",
@@ -577,11 +578,11 @@ def test_status_card_shows_shadow_progress(tmp_path):
                             qualified=True, evaluated_at=NOW - timedelta(hours=1),
                             horizon_minutes=15)
         alerts = dict(research_alerts(store, now=NOW))
-        assert alerts["shadow-progress:archive_v1:BTC:5m"] == (
-            "📊 archive_v1 BTC 5m: 8/21 days · 62/150 windows")
+        assert alerts["shadow-progress:archive_v1"] == (
+            "📊 archive_v1: 8/21 days · 62/150 targets (max across 1 scope)")
         # A qualified family shows no progress line — its promotion
         # receipt already announces it.
-        assert "shadow-progress:liq_v1:BTC:15m" not in alerts
+        assert "shadow-progress:liq_v1" not in alerts
     finally:
         store.close()
 
@@ -596,5 +597,69 @@ def test_status_card_shows_blocker(tmp_path):
         alerts = dict(research_alerts(store, now=NOW))
         assert alerts["research-blocked:okx"] == (
             "⛔ Research blocked at okx: 2 month(s) missing (2026-01, 2026-02)")
+    finally:
+        store.close()
+
+
+def test_status_card_groups_shadow_progress_by_family(tmp_path):
+    """Consolidation change 2: the progress section shows one line per
+    family, grouped across scopes, so calib_incumbent_v1's 12 combos no
+    longer saturate the old flat 12-line cut and hide every other
+    family's clock. A zombie offline family with no usable fit and no
+    attributable progress gets one collapsed line; retired families
+    (flag off) show nothing."""
+    store = _store(tmp_path)
+    try:
+        # calib_incumbent_v1 on all 12 (asset, horizon) combos: the old
+        # code emitted 12 lines and hid everything else.
+        for asset in ("BTC", "ETH", "SOL", "XRP"):
+            for horizon in (5, 15, 60):
+                # ETH 15m is the best scope (most days / most targets).
+                targets, days = (2308, 10) if (asset, horizon) == ("ETH", 15) \
+                    else (400, 6)
+                _seed_promotion_row(
+                    store, family="calib_incumbent_v1", targets=targets, days=days,
+                    qualified=False, evaluated_at=NOW - timedelta(hours=1),
+                    horizon_minutes=horizon, asset=asset)
+        _seed_promotion_row(store, family="gaussian_nb_v1", targets=2308,
+                            days=10, qualified=False,
+                            evaluated_at=NOW - timedelta(hours=1),
+                            horizon_minutes=5, venue="dydx")
+        _seed_promotion_row(store, family="regime_v1", targets=133, days=1,
+                            qualified=False, evaluated_at=NOW - timedelta(hours=1),
+                            horizon_minutes=5, venue="bitget")
+        # Zombie: no attributable progress and no usable fit imported.
+        _seed_promotion_row(store, family="archive_v1", targets=0, days=0,
+                            qualified=False, evaluated_at=NOW - timedelta(hours=1),
+                            horizon_minutes=5, venue="gate")
+        # Retired families still have settling rows, but no clock: they
+        # must not appear in the progress section at all.
+        _seed_promotion_row(store, family="flow_v3", targets=100, days=5,
+                            qualified=False, evaluated_at=NOW - timedelta(hours=1),
+                            horizon_minutes=5, venue="okx")
+        _seed_promotion_row(store, family="regime_v2", targets=100, days=5,
+                            qualified=False, evaluated_at=NOW - timedelta(hours=1),
+                            horizon_minutes=5, venue="kucoin")
+        alerts = dict(research_alerts(store, now=NOW))
+        progress = {k: v for k, v in alerts.items()
+                    if k.startswith("shadow-progress:")}
+        assert sorted(progress) == [
+            "shadow-progress:archive_v1",
+            "shadow-progress:calib_incumbent_v1",
+            "shadow-progress:gaussian_nb_v1",
+            "shadow-progress:regime_v1",
+        ]
+        assert progress["shadow-progress:calib_incumbent_v1"] == (
+            "📊 calib_incumbent_v1: 10/21 days · 2308/150 targets "
+            "(max across 12 scopes)")
+        assert progress["shadow-progress:gaussian_nb_v1"] == (
+            "📊 gaussian_nb_v1: 10/21 days · 2308/150 targets "
+            "(max across 1 scope)")
+        assert progress["shadow-progress:regime_v1"] == (
+            "📊 regime_v1: 1/21 days · 133/150 targets (max across 1 scope)")
+        assert progress["shadow-progress:archive_v1"] == (
+            "⏳ archive_v1: no usable artifact — clock not started")
+        # No per-scope calib line survives in any alert value.
+        assert not any("calib_incumbent_v1 BTC" in v for v in alerts.values())
     finally:
         store.close()

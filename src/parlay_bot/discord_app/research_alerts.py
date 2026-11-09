@@ -49,6 +49,38 @@ def _ago(delta: timedelta) -> str:
         else f"{hours / 24:.0f} days"
 
 
+def _has_usable_fit(conn, family: str, stamp: datetime) -> bool:
+    """True when an offline family has at least one usable fit imported.
+
+    The zombie check for the D18 progress line: archive_v1 / gbm_v1
+    with no usable fit have no clock to show. Usable = the queue
+    block's predicate (gates_passed=1, trained_through past, not a
+    rejected pin). Any read failure means "unknown", reported as
+    False so the caller shows the collapsed line rather than a
+    0/21 · 0/150 progress line; the queue block below reports the
+    same state from its own read.
+    """
+    table = {"archive_v1": "rival_archive_models",
+             "gbm_v1": "rival_gbm_models"}.get(family)
+    if table is None:
+        return False
+    try:
+        from parlay_bot.perpetuals.offline_model_pins import PINS_SCHEMA
+        conn.execute(PINS_SCHEMA)
+        row = conn.execute(
+            f"""SELECT COUNT(*) AS n FROM {table}
+                WHERE gates_passed=1 AND trained_through < ?
+                AND model_sha256 NOT IN (
+                    SELECT model_sha256
+                    FROM rival_offline_model_pins
+                    WHERE family=? AND verdict='rejected')""",
+            (stamp.isoformat(), family),
+        ).fetchone()
+        return bool(row and int(row["n"]))
+    except Exception:  # noqa: BLE001 - no table yet: no fits imported
+        return False
+
+
 def research_alerts(store, *, now: datetime | None = None,
                     intelligence_enabled: bool = True) -> list[tuple[str, str]]:
     """All checks share ONE pooled connection.
@@ -359,6 +391,16 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
     # families are not shown here — their promotion receipt (check 5)
     # already announces them. Progress keys carry no counters, so the
     # card re-posts only when the set of families being tracked changes.
+    # One line per family: the (family, asset, horizon) scopes are
+    # grouped and the line shows the best scope (max days / max
+    # targets), because the old flat 12-line cut was saturated by
+    # calib_incumbent_v1's exactly 12 combos and hid every other
+    # family's clock. The cap is now per family — one line each, no
+    # flat cut — so every tracked family is visible. Retired families
+    # (issue flag off) cannot advance a clock and are skipped. A zombie
+    # offline family (archive_v1 / gbm_v1) with no usable fit and no
+    # attributable progress gets one collapsed line instead of a
+    # 0/21 · 0/150 progress line.
     try:
         from parlay_bot.perpetuals.family_governance import MIN_DAYS, MIN_WINDOWS
     except Exception:  # noqa: BLE001 - thresholds are stable; fall back
@@ -388,11 +430,39 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
                        int(row["horizon_minutes"]))
                 if key not in best:
                     best[key] = (days, targets)
-        for (family, asset, horizon), (days, targets) in sorted(best.items())[:12]:
+        try:
+            from parlay_bot.perpetuals import forward_audit as _fa
+            retired = {
+                family for family, flag in (
+                    ("flow_v1", "ISSUE_FLOW_CHALLENGERS"),
+                    ("flow_v2", "ISSUE_FLOW_CHALLENGERS"),
+                    ("flow_v3", "ISSUE_FLOW_V3_CHALLENGERS"),
+                    ("regime_v2", "ISSUE_REGIME_V2_CHALLENGERS"),
+                ) if not getattr(_fa, flag, True)
+            }
+        except Exception:  # noqa: BLE001 - flag read must never break the card
+            retired = set()
+        by_family: dict[str, list[tuple[int, int]]] = {}
+        for (family, asset, horizon), (days, targets) in best.items():
+            if family in retired:
+                continue
+            by_family.setdefault(family, []).append((days, targets))
+        for family in sorted(by_family):
+            scopes = by_family[family]
+            days = max(d for d, _ in scopes)
+            targets = max(t for _, t in scopes)
+            if (family in ("archive_v1", "gbm_v1") and days == 0
+                    and targets == 0 and not _has_usable_fit(conn, family, stamp)):
+                alerts.append(
+                    (f"shadow-progress:{family}",
+                     f"⏳ {family}: no usable artifact — clock not started"))
+                continue
             alerts.append(
-                (f"shadow-progress:{family}:{asset}:{horizon}m",
-                 (f"📊 {family} {asset} {horizon}m: {days}/{MIN_DAYS} days · "
-                  f"{targets}/{MIN_WINDOWS} windows")))
+                (f"shadow-progress:{family}",
+                 (f"📊 {family}: {days}/{MIN_DAYS} days · "
+                  f"{targets}/{MIN_WINDOWS} targets"
+                  f" (max across {len(scopes)} scope"
+                  f"{'s' if len(scopes) != 1 else ''})")))
     except Exception as exc:  # noqa: BLE001 - progress must never break the card
         _LOG.warning("Research alert: shadow progress unreadable (%s)",
                      type(exc).__name__)

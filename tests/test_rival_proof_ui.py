@@ -28,14 +28,29 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
         assert "No pre-outcome" in next(
             x.value for x in ledger.fields if "Prediction ledger" in x.name
         )
-        view.section = "regimes"
+        view.section = "progress"
         view._rebuild()
-        regime = await view.render()
-        assert len(regime.fields) <= 3
-        assert any("market regime" in x.name for x in regime.fields)
-        assert "insufficient" in next(
-            x.value for x in regime.fields if "market regime" in x.name
+        progress = await view.render()
+        assert len(progress.fields) <= 3
+        names = [x.name for x in progress.fields]
+        # One merged proof section: the per-family proof checks and the
+        # per-regime splits sit on the same render, not in two sections.
+        assert "Future model proof" in names
+        assert "Prospective skill by market regime" in names
+        regime_value = next(
+            x.value for x in progress.fields if "market regime" in x.name
         )
+        assert "insufficient" in regime_value
+        assert "quiet:" in regime_value  # incumbent per-regime splits kept
+        assert "regime_v1 subset" in regime_value  # family subsets kept
+        assert "regime_v2 subset" not in regime_value  # dead family removed
+        # Deduplicated: the per-regime gains live in exactly one field.
+        proof_value = next(
+            x.value for x in progress.fields if x.name == "Future model proof"
+        )
+        assert "paired Brier gain" not in proof_value
+        assert "paired Brier gain" in regime_value
+        assert "quiet:" not in proof_value
         view.section = "costs"
         view._rebuild()
         costs = await view.render()
@@ -46,12 +61,15 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
         assert "not measured" in proof.lower() or "NOT measured" in proof
         assert "No live orders" in proof
         # All drilldowns are discoverable using the same Discord selector.
+        # The standalone "regimes" section is gone — its evidence lives
+        # in the merged "progress" section now.
         section = next(
             x for x in view.children
             if x.custom_id == "rival:research:section"
         )
         opts = {option.value for option in section.options}
-        assert {"ledger", "regimes", "costs"}.issubset(opts)
+        assert {"ledger", "progress", "costs"}.issubset(opts)
+        assert "regimes" not in opts
     finally:
         view.stop()
         store.close()

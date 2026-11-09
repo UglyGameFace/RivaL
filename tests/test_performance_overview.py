@@ -1,6 +1,7 @@
 """Performance scorecard: honest forward evidence and failure-isolated health."""
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -99,7 +100,16 @@ async def test_scorecard_is_short_source_specific_and_skips_heavy_training(tmp_p
             fields["📈 BTC exchange predictions (up or down?)"]
         )
         assert "current model only" in fields["📈 BTC exchange predictions (up or down?)"]
-        assert "1 couldn't be scored" in fields["📈 BTC exchange predictions (up or down?)"]
+        # The preamble is one short coverage line now: the timing
+        # paragraph, the unscored breakdown, and the waiting line are
+        # cut, so the 1024-char budget goes to the trial rows.
+        assert "**Checked:** 7 of 8 predictions · every exchange it collects, the last 7 days, current model only" in (
+            fields["📈 BTC exchange predictions (up or down?)"]
+        )
+        assert "couldn't be scored" not in fields["📈 BTC exchange predictions (up or down?)"]
+        assert "minute or two" not in fields["📈 BTC exchange predictions (up or down?)"]
+        assert "Covers:" not in fields["📈 BTC exchange predictions (up or down?)"]
+        assert "No results running late" not in fields["📈 BTC exchange predictions (up or down?)"]
         assert "Better than Polymarket's own odds?** No, not yet" in fields["🎯 Polymarket / Kalshi predictions"]
         assert "(Error score: RivaL" in fields["🎯 Polymarket / Kalshi predictions"]
         assert "Past results studied:** 402 (history, not live predictions)" in fields["🎯 Polymarket / Kalshi predictions"]
@@ -321,12 +331,14 @@ def _patch_live_reads(monkeypatch, *, pooled=None, regime=None, live=None,
 
 
 @pytest.mark.asyncio
-async def test_live_rows_get_own_fields_in_full_when_exchange_field_is_full(
+async def test_live_rows_get_own_fields_and_trial_rows_fit_in_exchange_field(
         tmp_path, monkeypatch):
     """2026-11-09 regression: the live rows were appended last to the
     1024-char exchange field, so the base row was cut mid-header and the
     fast row was cut entirely. Both rows must now appear in full, in their
-    own fields, and nowhere inside the exchange field."""
+    own fields, and nowhere inside the exchange field. The pooled and
+    regime_v1 rows render in the same one-line format inside the exchange
+    field, which is no longer full now that the preamble is one short line."""
     bot, home = _make_home(tmp_path)
     live = _live_record(issued=12, decided=9, hits=6, windows=11)
     fast = _live_record(issued=12, decided=9, hits=5, windows=11, brier=.248,
@@ -353,15 +365,15 @@ async def test_live_rows_get_own_fields_in_full_when_exchange_field_is_full(
         ]
         exchange = fields["📈 BTC exchange predictions (up or down?)"]
         assert "live-learning" not in exchange
-        assert "New model on trial (trained on 6 years of prices)" in exchange
-        assert "Regime-gated model on trial" in exchange
-        assert len(exchange) == 1024  # the bug condition: exchange field is full
+        assert "**Pooled 6-year model:**" in exchange
+        assert "**regime_v1:**" in exchange
+        assert len(exchange) < 1024  # preamble cut freed the budget
         base_text = home_module._regime_live_text(live, "Regime live-learning model").strip()
         fast_text = home_module._regime_live_text(
             fast, "Regime live-learning fast model").strip()
         assert fields["🔬 Regime live-learning model"] == base_text
         assert fields["🔬 Regime live-learning fast model"] == fast_text
-        assert "paired gain vs current model" in base_text
+        assert "paired gain +0.002" in base_text
         assert "trending labels learned" in base_text
         assert "weight drift" in base_text
         assert max(map(len, fields.values())) <= 1024
@@ -405,8 +417,8 @@ async def test_only_issued_family_gets_a_field(tmp_path, monkeypatch):
             "📡 Is everything running?",
         ]
         assert fields["🔬 Regime live-learning model"] == (
-            "**Regime live-learning model on trial (learns only in trending markets):** "
-            "3 predictions made, 0 scored so far")
+            "**Regime live-learning model:** "
+            "3 predictions made, 0 scored so far · 0/150 targets")
     finally:
         await _close(bot, home)
 
@@ -414,7 +426,7 @@ async def test_only_issued_family_gets_a_field(tmp_path, monkeypatch):
 def test_full_form_live_row_stays_under_the_field_cap():
     """A single full-form live row must fit one embed field on its own, so
     no slice is needed on the live fields. Extreme-but-plausible values
-    (30 days of 5m cycles, every D7 extra present) measure 463 chars."""
+    (30 days of 5m cycles, every D7 extra present) measure 356 chars."""
     extreme = _live_record(
         issued=8640, decided=8640, hits=8640, windows=8640,
         brier=.001, incumbent=.999, baseline=.999, gain_v1=1.0,
@@ -423,5 +435,125 @@ def test_full_form_live_row_stays_under_the_field_cap():
     extreme["selection_effect"] = 1.0
     extreme["paired_gain_last_7d"] = 1.0
     extreme["paired_gain_days_8_30"] = 1.0
+    extreme["first_issued"] = (datetime.now(UTC) - timedelta(days=20)).isoformat()
     text = home_module._regime_live_text(extreme, "Regime live-learning model")
-    assert 400 < len(text) < 512  # full form with every D7 extra, far under 1024
+    assert 300 < len(text) < 400  # one-line form with every D7 extra, far under 1024
+
+
+_ONE_LINE_HEADLINE = re.compile(
+    r"\*\*(?P<label>[^*]+):\*\* right (?P<hits>[\d,]+) of (?P<decided>[\d,]+) "
+    r"\((?P<pct>\d+\.\d)%\) · Brier (?P<brier>\d\.\d{3}) vs incumbent "
+    r"(?P<incumbent>\d\.\d{3}) · paired gain (?P<gain>[+-]\d\.\d{3}) · "
+    r"(?P<targets>[\d,]+)/150 targets · day (?P<day>\d+)/21"
+)
+
+
+@pytest.mark.asyncio
+async def test_one_line_per_live_family_and_no_dead_or_zombie_families(
+        tmp_path, monkeypatch):
+    """Consolidation change 1: every live family renders as exactly one
+    line in the same format across the page; dead families (flow_v1/v2,
+    regime_v2 — never issued, zero rows) never render; zombie families
+    (archive_v1, gbm_v1 — no artifact imported) have no Performance-page
+    row at all. All four live rows keep every number the old paragraphs
+    showed, on the detail line."""
+    bot, home = _make_home(tmp_path)
+    now = datetime.now(UTC)
+    first_6d = (now - timedelta(days=6)).isoformat()
+    first_2d = (now - timedelta(days=2)).isoformat()
+    live = _live_record(issued=12, decided=9, hits=6, windows=11)
+    live["first_issued"] = first_2d
+    fast = _live_record(issued=12, decided=9, hits=5, windows=11, brier=.248,
+                        gain_v1=.003, updates=93, drift=.021)
+    fast["first_issued"] = first_2d
+    pooled = {"issued": 12761, "graded": 12761, "decided": 12761, "hits": 6698,
+              "windows": 1527, "model_brier": .249, "incumbent_brier": .251,
+              "baseline_brier": .250, "first_issued": first_6d}
+    regime = {"issued": 935, "graded": 935, "decided": 935, "hits": 511,
+              "windows": 133, "model_brier": .253, "incumbent_brier": .253,
+              "baseline_brier": .250, "selection_effect": .001, "coverage": .06,
+              "first_issued": first_6d}
+    _patch_live_reads(monkeypatch, pooled=pooled, regime=regime,
+                      live=live, live_fast=fast)
+    try:
+        panel = await home.render()
+        fields = _fields(panel)
+        page = "\n".join([panel.description or "", *fields.values()])
+        # One line per live family, same format, exactly once each.
+        for label in ("Pooled 6-year model", "regime_v1",
+                      "Regime live-learning model",
+                      "Regime live-learning fast model"):
+            assert page.count(f"**{label}:**") == 1, label
+            match = _ONE_LINE_HEADLINE.search(page)
+            assert match is not None
+        headlines = _ONE_LINE_HEADLINE.findall(page)
+        assert len(headlines) == 4
+        assert {h[0] for h in headlines} == {
+            "Pooled 6-year model", "regime_v1",
+            "Regime live-learning model", "Regime live-learning fast model",
+        }
+        # Dead families never render; zombies have no row on this page.
+        for dead in ("flow_v1", "flow_v2", "regime_v2", "regime-v2",
+                     "Regime-v2"):
+            assert dead not in page, dead
+        for zombie in ("archive_v1", "gbm_v1"):
+            assert zombie not in page, zombie
+        # Every number the old paragraphs showed is still on the page.
+        assert "vs guess 0.250" in page
+        assert "selection +0.001 (harder subset)" in page
+        assert "coverage 6%" in page
+        assert "too early to judge" in page
+        assert "trending labels learned" in page
+        assert "weight drift" in page
+        assert "vs regime_v1 +0.002" in page
+    finally:
+        await _close(bot, home)
+
+
+@pytest.mark.asyncio
+async def test_exchange_preamble_is_one_short_line_and_trial_rows_fit(
+        tmp_path, monkeypatch):
+    """Consolidation change 3: with Felix's screenshot shape (pooled +
+    regime_v1 + live rows), the exchange field's preamble is one short
+    coverage line — the timing paragraph, the unscored breakdown, and
+    the waiting line are gone — and both trial rows fit without
+    truncation. The honesty disclosures stay in the embed description."""
+    bot, home = _make_home(tmp_path)
+    now = datetime.now(UTC)
+    first_6d = (now - timedelta(days=6)).isoformat()
+    live = _live_record(issued=12, decided=9, hits=6, windows=11)
+    fast = _live_record(issued=12, decided=9, hits=5, windows=11, brier=.248,
+                        gain_v1=.003, updates=93, drift=.021)
+    _patch_live_reads(
+        monkeypatch,
+        pooled={"issued": 12761, "graded": 12761, "decided": 12761, "hits": 6698,
+                "windows": 1527, "model_brier": .249, "incumbent_brier": .251,
+                "baseline_brier": .250, "first_issued": first_6d},
+        regime={"issued": 935, "graded": 935, "decided": 935, "hits": 511,
+                "windows": 133, "model_brier": .253, "incumbent_brier": .253,
+                "baseline_brier": .250, "selection_effect": .001, "coverage": .06,
+                "first_issued": first_6d},
+        live=live, live_fast=fast,
+    )
+    try:
+        panel = await home.render()
+        fields = _fields(panel)
+        exchange = fields["📈 BTC exchange predictions (up or down?)"]
+        lines = exchange.split("\n")
+        assert lines[0].startswith("**Called the direction right:**")
+        assert lines[1].startswith("**Better than a simple guess?**")
+        assert lines[2] == (
+            "**Checked:** 7 of 8 predictions · every exchange it collects, "
+            "the last 7 days, current model only")
+        assert "minute or two" not in exchange
+        assert "couldn't be scored" not in exchange
+        assert "Covers:" not in exchange
+        assert "waiting for their candle" not in exchange
+        assert "No results running late" not in exchange
+        assert "**Pooled 6-year model:** right 6,698 of 12,761 (52.5%) · Brier 0.249 vs incumbent 0.251 · paired gain +0.002 · 1,527/150 targets · day 6/21\nvs guess 0.250" in exchange
+        assert "**regime_v1:** right 511 of 935 (54.7%) · Brier 0.253 vs incumbent 0.253 · paired gain +0.000 · 133/150 targets · day 6/21\nvs guess 0.250 · selection +0.001 (harder subset) · coverage 6% · too early to judge" in exchange
+        assert len(exchange) < 1024
+        assert "Does it make money?** Not proven yet" in panel.description
+        assert "predictions saved *before* the result was known" in panel.description
+    finally:
+        await _close(bot, home)

@@ -143,6 +143,10 @@ def _schema(features: str, state: str) -> tuple[str, ...]:
         )""",
         f"""CREATE INDEX IF NOT EXISTS idx_{features}_pending
             ON {features} (learned, issued_at)""",
+        # Serves the per-(asset, horizon) calibration refit, which otherwise
+        # scans every stored feature row once per key per cycle.
+        f"""CREATE INDEX IF NOT EXISTS idx_{features}_scope
+            ON {features} (asset, horizon_minutes, learned)""",
         f"""CREATE TABLE IF NOT EXISTS {state} (
             asset TEXT NOT NULL, horizon_minutes INTEGER NOT NULL,
             weights TEXT NOT NULL, updates INTEGER NOT NULL, positives INTEGER NOT NULL,
@@ -730,6 +734,11 @@ class LiquidityChallengerV1:
         # fetch just those (newest first, then back to oldest-first) instead
         # of the whole, ever-growing graded history every cycle. Same rows,
         # same order; the key columns only break exact timestamp ties.
+        # The audit side is scoped to the same (asset, horizon) as well: a
+        # feature row and its audit row are written in one transaction with
+        # the same asset, so the rows are unchanged, but Postgres can now use
+        # idx_perp_forward_asset_horizon instead of hashing the whole audit
+        # table once per key (slow SELECT / held connection, ~10 an hour).
         graded = conn.execute(
             f"""SELECT features, outcome_up FROM (
                  SELECT x.features, f.outcome_up, f.settled_at AS s_at,
@@ -741,12 +750,13 @@ class LiquidityChallengerV1:
                   AND f.horizon_minutes=x.horizon_minutes
                   AND f.reference_opened_at=x.reference_opened_at
                  WHERE x.asset=? AND x.horizon_minutes=? AND x.learned=1
+                   AND f.asset=? AND f.horizon_minutes=?
                    AND f.settled_at IS NOT NULL AND f.outcome_up IN (0,1)
                  ORDER BY f.settled_at DESC, x.issued_at DESC, x.venue DESC,
                           x.contract DESC, x.quote DESC
                  LIMIT ?) recent
                ORDER BY s_at, i_at, v, c, q""",
-            (key[0], key[1], MAX_CALIBRATION_ROWS),
+            (key[0], key[1], key[0], key[1], MAX_CALIBRATION_ROWS),
         ).fetchall()
         if len(graded) < MIN_FIT_ROWS + MIN_EVAL_ROWS:
             return

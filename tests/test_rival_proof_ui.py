@@ -31,26 +31,31 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
         view.section = "progress"
         view._rebuild()
         progress = await view.render()
-        assert len(progress.fields) <= 3
+        assert len(progress.fields) <= 4  # live + three short progress fields
         names = [x.name for x in progress.fields]
         # One merged proof section: the per-family proof checks and the
         # per-regime splits sit on the same render, not in two sections.
         assert "Future model proof" in names
         assert "Prospective skill by market regime" in names
+        assert "Trial detail (5-minute)" in names
         regime_value = next(
             x.value for x in progress.fields if "market regime" in x.name
         )
         assert "insufficient" in regime_value
-        assert "quiet:" in regime_value  # incumbent per-regime splits kept
-        assert "regime_v1 subset" in regime_value  # family subsets kept
-        assert "regime_v2 subset" not in regime_value  # dead family removed
+        assert "quiet " in regime_value  # incumbent per-regime splits kept
+        assert "regime_v1 5m" in regime_value  # family subsets kept
+        assert "regime_v2" not in regime_value  # dead family removed
         # Deduplicated: the per-regime gains live in exactly one field.
         proof_value = next(
             x.value for x in progress.fields if x.name == "Future model proof"
         )
         assert "paired Brier gain" not in proof_value
         assert "paired Brier gain" in regime_value
-        assert "quiet:" not in proof_value
+        assert "quiet" not in proof_value
+        detail_value = next(
+            x.value for x in progress.fields if x.name == "Trial detail (5-minute)"
+        )
+        assert "No scored trial results yet" in detail_value
         view.section = "costs"
         view._rebuild()
         costs = await view.render()
@@ -115,4 +120,63 @@ def test_forward_score_counts_only_decided_predictions_in_accuracy_denominator(t
         assert score["hit_rate"] == .5
         assert score["model_beats_baseline"] is None
     finally:
+        store.close()
+
+
+@pytest.mark.asyncio
+async def test_trial_detail_field_carries_the_cut_metrics(tmp_path, monkeypatch):
+    """Headline-only change: the metrics cut from the Performance page
+    (vs guess, vs regime_v1, selection, coverage, availability,
+    trending labels learned, weight drift, gain splits) render in
+    Detailed Research's Trial detail field — one line per family,
+    only the metrics each family carries."""
+    import parlay_bot.discord_app.home as home_module
+    from parlay_bot.perpetuals import regime_live_model, regime_model
+
+    store = SQLiteHotStore(tmp_path / "trial-detail.sqlite")
+    market = PerpetualMarketStore(store)
+    ForwardAccuracyMonitor(market).initialize()
+    pooled = {"issued": 12761, "graded": 12761, "decided": 12761, "hits": 6698,
+              "windows": 1527, "model_brier": .249, "incumbent_brier": .251,
+              "baseline_brier": .250}
+    regime = {"issued": 935, "graded": 935, "decided": 935, "hits": 511,
+              "windows": 133, "model_brier": .253, "incumbent_brier": .253,
+              "baseline_brier": .250, "selection_effect": .001, "coverage": .06}
+    live = {"issued": 434, "graded": 434, "decided": 434, "hits": 214,
+            "windows": 56, "model_brier": .256, "incumbent_brier": .252,
+            "baseline_brier": .250, "paired_gain_vs_regime_v1": -.004,
+            "selection_effect": -.001, "coverage": .02,
+            "availability_ratio": .45, "updates": 2292,
+            "weight_drift_mean": .325, "paired_gain_last_7d": -.008,
+            "paired_gain_days_8_30": None}
+    monkeypatch.setattr(home_module, "_pooled_record", lambda *_: pooled)
+    monkeypatch.setattr(regime_model, "trial_report", lambda *_, **__: regime)
+    monkeypatch.setattr(
+        regime_live_model, "trial_report",
+        lambda *_, **k: live if k.get("family") == regime_live_model.BASE_FAMILY
+        else {"issued": 0},
+    )
+    view = ResearchDashboard(
+        owner_id=42, market=market, ai=None,
+        venues=("hyperliquid", "dydx"), shadow_enabled=True,
+    )
+    try:
+        view.screen = "accuracy"
+        view.section = "progress"
+        view._rebuild()
+        progress = await view.render()
+        fields = {x.name: x.value for x in progress.fields}
+        detail = fields["Trial detail (5-minute)"]
+        assert "**Pooled 6-year model:** vs guess 0.250" in detail
+        assert ("**regime_v1:** vs guess 0.250 · selection +0.001 "
+                "(harder subset) · coverage 6%") in detail
+        assert ("**Live-learning:** vs guess 0.250 · vs regime_v1 -0.004 · "
+                "selection -0.001 (easier subset) · coverage 2% · availability 45% · "
+                "2,292 trending labels learned · weight drift 0.325 · "
+                "gain last 7d -0.008") in detail
+        assert "Live-learning fast" not in detail  # issued 0: no line
+        assert "too early to judge" not in detail
+        assert len(detail) <= 1024
+    finally:
+        view.stop()
         store.close()

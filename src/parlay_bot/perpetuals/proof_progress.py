@@ -170,11 +170,24 @@ def proof_progress(store, *, asset: str, venue: str,
     }
 
 
-_QUOTED_VENUES = frozenset({"hyperliquid", "binance"})
+_CHECK_LABELS = (
+    ("future_outcomes", "outcomes"),
+    ("beats_baselines", "baselines"),
+    ("quote_coverage", "quotes"),
+    ("after_cost_paper", "cost"),
+    ("valid_records", "records"),
+)
 
 
 def proof_progress_text(proof: dict) -> str:
-    """Discord-safe summary; never imply execution profits."""
+    """One short verdict line per evaluation; never imply execution profits.
+
+    Each line is the top candidate for one horizon with its five proof
+    checks as ✓/✗ — no prose, no counts. When the quote check fails,
+    the missing/duplicate counts ride along in one parenthetical, so
+    the reason the quotes fail stays visible. The paper-cost footer
+    stays: cost tests are assumed fees, real fills are NOT verified.
+    """
     if not proof["evaluations"]:
         return (proof["reason"] + ". RivaL needs new, genuinely future results; "
                 "archived candles cannot substitute for them.")
@@ -182,24 +195,31 @@ def proof_progress_text(proof: dict) -> str:
     for evidence in proof["evaluations"]:
         candidate = evidence.get("candidate")
         horizon = evidence["horizon"]
+        scope = f"**{horizon}m · {evidence['venue']}/{evidence['contract']}**"
         if not candidate or not candidate.get("valid"):
-            lines.append(f"**{horizon}m:** {evidence['reason']}")
+            lines.append(f"{scope} {evidence['reason']}")
             continue
-        coverage = candidate["quote_coverage"]
-        lines.append(
-            f"**{horizon}m · {evidence['venue']}/{evidence['contract']}**\n"
-            f"Model: {candidate['name'][:46]}\n"
-            f"Future outcomes: {candidate['targets']}/{MIN_WINDOWS}, "
-            f"days: {candidate['days']}/{MIN_DAYS}. "
-            f"Matched book quotes: {candidate['closed_quotes']}/"
-            f"{candidate['eligible_quotes']} ({coverage:.0%}, need {MIN_COVERAGE:.0%}).\n"
-            f"Missing matched quotes: {candidate['missing_quote_windows']}; "
-            f"overlapping targets ignored: {candidate['duplicate_target_rows']}.\n"
-            f"Decision: {evidence['reason'][:170]}"
-            + ("" if evidence["venue"] in _QUOTED_VENUES else
-               f"\n⚠️ RivaL only records live bid/ask prices on Hyperliquid and "
-               f"Binance, so a {evidence['venue']} model cannot reach the quote "
-               "requirement. Pick Hyperliquid to see one that can.")
-        )
+        if not evidence.get("fresh", True):
+            # Stale verdicts never read as a pass: the reason says
+            # expired, even when the saved checks still pass.
+            lines.append(f"{scope} {evidence['reason']}")
+            continue
+        checks = candidate["checks"]
+        parts = []
+        for key, label in _CHECK_LABELS:
+            part = f"{label} {'✓' if checks.get(key) else '✗'}"
+            if key == "quote_coverage" and not checks.get(key):
+                extra = ", ".join(
+                    f"{value} {name}"
+                    for value, name in (
+                        (candidate.get("missing_quote_windows"), "missing"),
+                        (candidate.get("duplicate_target_rows"), "dup"),
+                    )
+                    if isinstance(value, int) and value > 0
+                )
+                if extra:
+                    part += f" ({extra})"
+            parts.append(part)
+        lines.append(f"{scope} {candidate['name']}: " + " · ".join(parts))
     return ("\n".join(lines) + "\nPaper cost tests use assumed fees/slippage/funding; "
             "real fills and real profitability are NOT verified.")[:1024]

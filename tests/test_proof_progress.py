@@ -41,9 +41,11 @@ def test_only_exact_fresh_paper_candidate_can_pass_all_gates(learning_store):
     assert all(example["candidate"]["checks"].values())
     assert example["paper_qualified"]
     readable = proof_progress_text(result)
-    assert "168/150" in readable
-    assert "21/21" in readable
-    assert "100%" in readable
+    assert "outcomes ✓" in readable
+    assert "baselines ✓" in readable
+    assert "quotes ✓" in readable
+    assert "cost ✓" in readable
+    assert "records ✓" in readable
     assert "real fills and real profitability are NOT verified" in readable
     assert not proof_progress(learning_store, asset="ETH", venue="hyperliquid",
                               now=now)["evaluations"]
@@ -69,7 +71,7 @@ def test_inadequate_quotes_show_missing_coverage_not_a_win(learning_store):
     assert not sample["candidate"]["checks"]["quote_coverage"]
     assert not sample["candidate"]["checks"]["after_cost_paper"]
     assert "quote coverage" in sample["reason"]
-    assert "110/168" in proof_progress_text({"evaluations": [sample]})
+    assert "quotes ✗ (58 missing)" in proof_progress_text({"evaluations": [sample]})
 
 
 def test_bad_saved_proof_never_becomes_qualified(learning_store):
@@ -145,8 +147,8 @@ def test_quote_gap_and_overlap_evidence_is_visible_and_fail_closed(learning_stor
     assert candidate["missing_quote_windows"] == 58
     assert candidate["duplicate_target_rows"] == 3
     text = proof_progress_text(progress)
-    assert "Missing matched quotes: 58" in text
-    assert "overlapping targets ignored: 3" in text
+    assert "(58 missing, 3 dup)" in text
+    assert "quotes ✗" in text
     # A corrupt persisted summary is never silently shown as qualified.
     data[name]["missing_quote_windows"] = 0
     with learning_store.connect() as conn:

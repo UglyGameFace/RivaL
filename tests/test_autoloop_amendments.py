@@ -579,7 +579,7 @@ def test_status_card_shows_shadow_progress(tmp_path):
                             horizon_minutes=15)
         alerts = dict(research_alerts(store, now=NOW))
         assert alerts["shadow-progress:archive_v1"] == (
-            "📊 archive_v1: 8/21 days · 62/150 targets (max across 1 scope)")
+            "📊 archive_v1: day 8/21 · 62/150 targets · gain +0.009")
         # A qualified family shows no progress line — its promotion
         # receipt already announces it.
         assert "shadow-progress:liq_v1" not in alerts
@@ -602,12 +602,13 @@ def test_status_card_shows_blocker(tmp_path):
 
 
 def test_status_card_groups_shadow_progress_by_family(tmp_path):
-    """Consolidation change 2: the progress section shows one line per
-    family, grouped across scopes, so calib_incumbent_v1's 12 combos no
-    longer saturate the old flat 12-line cut and hide every other
-    family's clock. A zombie offline family with no usable fit and no
-    attributable progress gets one collapsed line; retired families
-    (flag off) show nothing."""
+    """Headline-only change 2: the progress section shows one short
+    line per family — day/targets/gain only, grouped across scopes,
+    so calib_incumbent_v1's 12 combos no longer saturate the old flat
+    12-line cut and hide every other family's clock. The gain belongs
+    to the clock-leading scope. A zombie offline family with no usable
+    fit and no attributable progress gets one collapsed line; retired
+    families (flag off) show nothing."""
     store = _store(tmp_path)
     try:
         # calib_incumbent_v1 on all 12 (asset, horizon) combos: the old
@@ -650,13 +651,11 @@ def test_status_card_groups_shadow_progress_by_family(tmp_path):
             "shadow-progress:regime_v1",
         ]
         assert progress["shadow-progress:calib_incumbent_v1"] == (
-            "📊 calib_incumbent_v1: 10/21 days · 2308/150 targets "
-            "(max across 12 scopes)")
+            "📊 calib_incumbent_v1: day 10/21 · 2308/150 targets · gain +0.009")
         assert progress["shadow-progress:gaussian_nb_v1"] == (
-            "📊 gaussian_nb_v1: 10/21 days · 2308/150 targets "
-            "(max across 1 scope)")
+            "📊 gaussian_nb_v1: day 10/21 · 2308/150 targets · gain +0.009")
         assert progress["shadow-progress:regime_v1"] == (
-            "📊 regime_v1: 1/21 days · 133/150 targets (max across 1 scope)")
+            "📊 regime_v1: day 1/21 · 133/150 targets · gain +0.009")
         assert progress["shadow-progress:archive_v1"] == (
             "⏳ archive_v1: no usable artifact — clock not started")
         # No per-scope calib line survives in any alert value.

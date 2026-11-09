@@ -518,36 +518,57 @@ def _trial_clock(record, now):
 
 
 def _trial_one_liner(label, record, now):
-    """One family, one headline line + one short detail line.
+    """One family, one headline line — nothing else.
 
-    Headline: name · accuracy · Brier vs incumbent · paired gain ·
-    clock. Detail line: everything else the old paragraph showed —
-    Brier vs the simple guess, vs-regime_v1 head-to-head, selection,
-    coverage, availability, trending labels learned, weight drift,
-    the 7d vs 8-30d gain split, and "too early to judge". Nothing is
-    dropped, only shortened; a metric the record does not carry is
-    simply absent from the detail line. Returns "" when the family has
-    not issued yet (renders only when issued>0, like every other
-    trial row).
+    Headline: name · accuracy · Brier vs incumbent · gain · clock
+    (day, then targets). Hard cap ~120 chars, pinned by test (worst
+    case under 140): the live labels are shortened here ("Live-learning",
+    "Live-learning fast") because the full names would push the worst
+    case past the cap — the full names stay on the field titles above
+    the lines. Everything the old
+    detail line showed (Brier vs the simple guess, vs-regime_v1
+    head-to-head, selection, coverage, availability, trending labels
+    learned, weight drift, the 7d vs 8-30d gain split, "too early to
+    judge") now lives in Detailed Research's Trial detail field, not
+    here — see _trial_detail_line. Returns "" when the family has not
+    issued yet (renders only when issued>0, like every other trial
+    row).
     """
     if not isinstance(record, dict) or not int(record.get("issued") or 0):
         return ""
     issued = int(record["issued"])
     graded, decided = int(record.get("graded") or 0), int(record.get("decided") or 0)
     days, targets = _trial_clock(record, now)
-    clock = f" · {targets:,}/150 targets" + (f" · day {days}/21" if days else "")
+    clock = (f" · day {days}/21" if days else "") + f" · {targets:,}/150 targets"
     if not (decided and record.get("model_brier") is not None
-            and record.get("incumbent_brier") is not None
-            and record.get("baseline_brier") is not None):
+            and record.get("incumbent_brier") is not None):
         return (f"**{label}:** {issued:,} predictions made, "
                 f"{graded:,} scored so far{clock}")
     hits = int(record.get("hits") or 0)
     gain = float(record["incumbent_brier"]) - float(record["model_brier"])
-    headline = (
+    return (
         f"**{label}:** right {hits:,} of {decided:,} ({hits / decided:.1%})"
         f" · Brier {float(record['model_brier']):.3f} vs incumbent "
-        f"{float(record['incumbent_brier']):.3f} · paired gain {gain:+.3f}{clock}"
+        f"{float(record['incumbent_brier']):.3f} · gain {gain:+.3f}{clock}"
     )
+
+
+def _trial_detail_line(label, record):
+    """One family's cut metrics, for Detailed Research only.
+
+    The metrics the Performance-page headline no longer shows: Brier
+    vs the simple guess, vs-regime_v1 head-to-head, selection,
+    coverage, availability, trending labels learned, weight drift,
+    the 7d vs 8-30d gain split. Only the metrics the record carries
+    are shown; "too early to judge" is not a metric and is gone (the
+    day/targets clock on the headline already says it). Returns ""
+    when the family has no decided results to detail.
+    """
+    if (not isinstance(record, dict) or not int(record.get("decided") or 0)
+            or record.get("model_brier") is None
+            or record.get("incumbent_brier") is None
+            or record.get("baseline_brier") is None):
+        return ""
     details = [f"vs guess {float(record['baseline_brier']):.3f}"]
     gain_v1 = record.get("paired_gain_vs_regime_v1")
     if gain_v1 is not None:
@@ -575,18 +596,15 @@ def _trial_one_liner(label, record, now):
     gain_8_30 = record.get("paired_gain_days_8_30")
     if gain_8_30 is not None:
         details.append(f"gain days 8-30 {float(gain_8_30):+.3f}")
-    if int(record.get("windows") or 0) < 300:
-        details.append("too early to judge")
-    return headline + "\n" + " · ".join(details)
+    return f"**{label}:** " + " · ".join(details)
 
 
 def _regime_live_text(record, label, now=None):
     """One live family's trial row as a performance-page fragment.
 
-    The one-line format (see _trial_one_liner): headline + short
-    detail line, same as the pooled and regime_v1 rows. Empty when the
-    family has not issued yet (renders only when issued>0, like every
-    other trial row).
+    The headline-only format (see _trial_one_liner): a single short
+    line, no detail line. Empty when the family has not issued yet
+    (renders only when issued>0, like every other trial row).
     """
     if not isinstance(record, dict) or not int(record.get("issued") or 0):
         return ""
@@ -1797,20 +1815,24 @@ class GuidedHome(discord.ui.View):
             # field they were cut mid-header on 2026-11-09 (Felix's
             # Performance screenshot: the base row was cut at ~1015 chars
             # and the fast row was cut entirely). One field per family
-            # keeps each one-line row (headline + detail line, all D7
-            # extras) under the 1024-char field cap with room to spare
-            # — a worst-case full-form row measures 356 chars, two
-            # combined 712 — so no row is ever truncated and no slice
-            # is applied here. _regime_live_text
-            # returns "" before first issuance, and Discord rejects empty
-            # field values, so a family with no text gets no field at all.
+            # keeps each headline-only row under the 1024-char field cap
+            # with room to spare — a worst-case full-form headline
+            # measures under 140 chars, two combined under 280 — so no
+            # row is ever truncated and no slice is applied here.
+            # _regime_live_text returns "" before first issuance, and
+            # Discord rejects empty field values, so a family with no
+            # text gets no field at all. The line labels are shortened
+            # ("Live-learning", "Live-learning fast") because the full
+            # names would push the worst-case headline past the
+            # 140-char pin; the full names stay on the field titles
+            # above the lines.
             live_text = _regime_live_text(
-                reports.get("regime_live"), "Regime live-learning model", now)
+                reports.get("regime_live"), "Live-learning", now)
             if live_text:
                 embed.add_field(name="🔬 Regime live-learning model",
                                 value=live_text.strip(), inline=False)
             live_fast_text = _regime_live_text(
-                reports.get("regime_live_fast"), "Regime live-learning fast model", now)
+                reports.get("regime_live_fast"), "Live-learning fast", now)
             if live_fast_text:
                 embed.add_field(name="🔬 Regime live-learning fast model",
                                 value=live_fast_text.strip(), inline=False)

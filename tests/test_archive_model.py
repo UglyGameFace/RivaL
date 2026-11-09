@@ -431,12 +431,13 @@ def test_dry_run_cli_writes_model_and_report(tmp_path):
     assert validate(doc)["family"] == "archive_v1"
 
 
-def test_workflow_yaml_is_weekly_dispatch_only():
+def test_workflow_yaml_is_manual_dispatch_only():
     # No PyYAML in the research venv: check the workflow text directly.
+    # Training was made manual-only (1d4f363): no cron schedule, no push.
     text = (
         Path(__file__).resolve().parents[1] / ".github/workflows/archive-model-training.yml"
     ).read_text()
-    assert 'cron: "30 7 * * 0"' in text  # weekly, Sunday
+    assert "schedule:" not in text and "cron:" not in text
     assert "workflow_dispatch:" in text
     assert "on:\n  push" not in text and "\n  push:" not in text
     assert "runs-on: ubuntu-latest" in text

@@ -1839,12 +1839,31 @@ class GuidedHome(discord.ui.View):
                     exchange_text += (f"\n**Regime-v2 model on trial (trained only on trending markets):** "
                                       f"{int(regime2['issued']):,} predictions made, "
                                       f"{graded:,} scored so far")
-            exchange_text += _regime_live_text(
-                reports.get("regime_live"), "Regime live-learning model")
-            exchange_text += _regime_live_text(
-                reports.get("regime_live_fast"), "Regime live-learning fast model")
             embed.add_field(name=f"📈 {self.coin} exchange predictions (up or down?)",
                             value=exchange_text[:1024], inline=False)
+
+            # Regime live-learning rows get their own fields, one per
+            # family, directly after the exchange field so the reading
+            # order is unchanged. Appended last to the 1024-char exchange
+            # field they were cut mid-header on 2026-11-09 (Felix's
+            # Performance screenshot: the base row was cut at ~1015 chars
+            # and the fast row was cut entirely). One field per family
+            # keeps each full-form row (all D7 extras) under the 1024-char
+            # field cap with room to spare — a worst-case full-form row
+            # measures 463 chars, two combined 876 — so no row is ever
+            # truncated and no slice is applied here. _regime_live_text
+            # returns "" before first issuance, and Discord rejects empty
+            # field values, so a family with no text gets no field at all.
+            live_text = _regime_live_text(
+                reports.get("regime_live"), "Regime live-learning model")
+            if live_text:
+                embed.add_field(name="🔬 Regime live-learning model",
+                                value=live_text.strip(), inline=False)
+            live_fast_text = _regime_live_text(
+                reports.get("regime_live_fast"), "Regime live-learning fast model")
+            if live_fast_text:
+                embed.add_field(name="🔬 Regime live-learning fast model",
+                                value=live_fast_text.strip(), inline=False)
 
             # 2. Contract-native comparisons; historical labels are NOT model wins.
             poly = reports.get("polymarket")

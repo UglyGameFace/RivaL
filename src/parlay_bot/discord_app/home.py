@@ -485,6 +485,79 @@ def _regime2_record(market: object, asset: str, horizon: int) -> dict:
     return trial_report(market.store, asset=asset, horizon=horizon)
 
 
+def _regime_live_record(market: object, asset: str, horizon: int) -> dict:
+    """Live graded record of the regime live-learning challenger (30 days).
+
+    Same columns as the regime_v2 trial row, measured on
+    regime_live_v1's issued subset only, plus the D7 extras: the
+    trending-label update count, the weight drift from the warm-start
+    copy, and the paired-gain split (last 7 days vs days 8-30).
+    """
+    from parlay_bot.perpetuals.regime_live_model import BASE_FAMILY, trial_report
+
+    return trial_report(market.store, asset=asset, horizon=horizon, family=BASE_FAMILY)
+
+
+def _regime_live_fast_record(market: object, asset: str, horizon: int) -> dict:
+    """Live graded record of the fast live-learning challenger (30 days).
+
+    Same columns as _regime_live_record, for regime_live_fast_v1 (the
+    2x learning-rate family, graded separately).
+    """
+    from parlay_bot.perpetuals.regime_live_model import FAST_FAMILY, trial_report
+
+    return trial_report(market.store, asset=asset, horizon=horizon, family=FAST_FAMILY)
+
+
+def _regime_live_text(record, label):
+    """One live family's trial row as a performance-page fragment.
+
+    Empty when the family has not issued yet (renders only when
+    issued>0, like every other trial row). The paired gain leads the
+    line: for the live families it is the headline, because unlike v1
+    they train their own weights and can beat the incumbent.
+    """
+    if not isinstance(record, dict) or not int(record.get("issued") or 0):
+        return ""
+    graded, decided = int(record["graded"] or 0), int(record["decided"] or 0)
+    if not (decided and record["model_brier"] is not None
+            and record["incumbent_brier"] is not None
+            and record["baseline_brier"] is not None):
+        return (f"\n**{label} on trial (learns only in trending markets):** "
+                f"{int(record['issued']):,} predictions made, "
+                f"{graded:,} scored so far")
+    hits = int(record["hits"] or 0)
+    windows = int(record.get("windows") or 0)
+    gain = float(record["incumbent_brier"]) - float(record["model_brier"])
+    gain_v1 = record.get("paired_gain_vs_regime_v1")
+    sel = record.get("selection_effect")
+    cov = record.get("coverage")
+    avail = record.get("availability_ratio")
+    updates = record.get("updates")
+    drift = record.get("weight_drift_mean")
+    gain_7d = record.get("paired_gain_last_7d")
+    gain_8_30 = record.get("paired_gain_days_8_30")
+    return (
+        f"\n**{label} on trial (learns only in trending markets):** "
+        f"paired gain vs current model {gain:+.3f}"
+        + (f"; vs regime_v1 {float(gain_v1):+.3f}" if gain_v1 is not None else "")
+        + f"; right {hits:,} of {decided:,} ({hits / decided:.1%}) over "
+        f"{windows:,} candles. Error score {float(record['model_brier']):.3f} vs "
+        f"current model {float(record['incumbent_brier']):.3f} vs simple "
+        f"guess {float(record['baseline_brier']):.3f}, on the same candles"
+        + (f"; selection effect {float(sel):+.3f} "
+           f"({'harder' if float(sel) > 0 else 'easier'} subset for the current model)"
+           if sel is not None else "")
+        + (f"; coverage {float(cov):.0%}" if cov is not None else "")
+        + (f"; availability {float(avail):.0%}" if avail is not None else "")
+        + (f"; {int(updates):,} trending labels learned" if updates is not None else "")
+        + (f"; weight drift {float(drift):.3f}" if drift is not None else "")
+        + (f"; gain last 7d {float(gain_7d):+.3f}" if gain_7d is not None else "")
+        + (f"; gain days 8-30 {float(gain_8_30):+.3f}" if gain_8_30 is not None else "")
+        + ("; too early to judge" if windows < 300 else "")
+    )
+
+
 def _intelligence_status(market: object, asset: str, horizon: int) -> dict | None:
     """RivaL Intelligence's graded reviews of the models (None if never run)."""
     from parlay_bot.perpetuals.intelligence import IntelligenceLedger
@@ -1555,6 +1628,14 @@ class GuidedHome(discord.ui.View):
                     asyncio.to_thread(_regime2_record, self.market, self.coin, self.horizon),
                     timeout=PERFORMANCE_READ_SECONDS,
                 )
+                readers["regime_live"] = asyncio.wait_for(
+                    asyncio.to_thread(_regime_live_record, self.market, self.coin, self.horizon),
+                    timeout=PERFORMANCE_READ_SECONDS,
+                )
+                readers["regime_live_fast"] = asyncio.wait_for(
+                    asyncio.to_thread(_regime_live_fast_record, self.market, self.coin, self.horizon),
+                    timeout=PERFORMANCE_READ_SECONDS,
+                )
                 readers["intelligence"] = asyncio.wait_for(
                     asyncio.to_thread(
                         _intelligence_status, self.market, self.coin, self.horizon,
@@ -1758,6 +1839,10 @@ class GuidedHome(discord.ui.View):
                     exchange_text += (f"\n**Regime-v2 model on trial (trained only on trending markets):** "
                                       f"{int(regime2['issued']):,} predictions made, "
                                       f"{graded:,} scored so far")
+            exchange_text += _regime_live_text(
+                reports.get("regime_live"), "Regime live-learning model")
+            exchange_text += _regime_live_text(
+                reports.get("regime_live_fast"), "Regime live-learning fast model")
             embed.add_field(name=f"📈 {self.coin} exchange predictions (up or down?)",
                             value=exchange_text[:1024], inline=False)
 

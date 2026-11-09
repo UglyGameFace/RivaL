@@ -92,9 +92,12 @@ def probe() -> dict:
     out: dict = {"stamp": stamp.isoformat()}
 
     def digest(rows):
-        keys = sorted(json.dumps([str(v) for v in dict(r).values()]) for r in rows)
+        edge = str(rows[-1]["issued_at"]) if rows else None
+        keys = sorted(json.dumps([str(v) for v in dict(r).values()]) for r in rows
+                      if str(r["issued_at"]) != edge)
         order = [str(r["issued_at"]) for r in rows]
-        return hashlib.sha256(json.dumps([keys, order]).encode()).hexdigest()[:16], len(rows)
+        h = lambda x: hashlib.sha256(json.dumps(x).encode()).hexdigest()[:10]  # noqa: E731
+        return f"rows={h(keys)} order={h(order)} edge_n={len(rows)-len(keys)}", len(rows)
 
     try:
         with store.connect() as conn:
@@ -112,8 +115,7 @@ def probe() -> dict:
                         res[name] = [*digest(rows), round(dt, 2)]
                     out[f"{a}_{h}"] = res
             out["total_s"] = {k: round(v, 2) for k, v in tot.items()}
-            out["explain_new"] = [list(dict(r).values())[0] for r in conn.execute(
-                "EXPLAIN (ANALYZE, BUFFERS) " + NEW, ("BTC", 5, start, stamp.isoformat(), 200, 200)).fetchall()]
+            out["explain_skip"] = None
     except Exception as exc:  # noqa: BLE001
         out["error"] = f"{type(exc).__name__}: {str(exc)[:300]}"
     finally:

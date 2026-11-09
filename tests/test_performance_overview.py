@@ -368,14 +368,19 @@ async def test_live_rows_get_own_fields_and_trial_rows_fit_in_exchange_field(
         assert "**Pooled 6-year model:**" in exchange
         assert "**regime_v1:**" in exchange
         assert len(exchange) < 1024  # preamble cut freed the budget
-        base_text = home_module._regime_live_text(live, "Regime live-learning model").strip()
+        base_text = home_module._regime_live_text(live, "Live-learning").strip()
         fast_text = home_module._regime_live_text(
-            fast, "Regime live-learning fast model").strip()
+            fast, "Live-learning fast").strip()
         assert fields["🔬 Regime live-learning model"] == base_text
         assert fields["🔬 Regime live-learning fast model"] == fast_text
-        assert "paired gain +0.002" in base_text
-        assert "trending labels learned" in base_text
-        assert "weight drift" in base_text
+        assert "gain +0.002" in base_text
+        assert "\n" not in base_text  # headline only, no detail line
+        assert "\n" not in fast_text
+        # The cut metrics live in Detailed Research's Trial detail
+        # field now, not on this page.
+        assert "trending labels learned" not in base_text
+        assert "weight drift" not in base_text
+        assert "vs guess" not in base_text
         assert max(map(len, fields.values())) <= 1024
     finally:
         await _close(bot, home)
@@ -417,46 +422,85 @@ async def test_only_issued_family_gets_a_field(tmp_path, monkeypatch):
             "📡 Is everything running?",
         ]
         assert fields["🔬 Regime live-learning model"] == (
-            "**Regime live-learning model:** "
+            "**Live-learning:** "
             "3 predictions made, 0 scored so far · 0/150 targets")
     finally:
         await _close(bot, home)
 
 
-def test_full_form_live_row_stays_under_the_field_cap():
-    """A single full-form live row must fit one embed field on its own, so
-    no slice is needed on the live fields. Extreme-but-plausible values
-    (30 days of 5m cycles, every D7 extra present) measure 356 chars."""
+def test_worst_case_headline_stays_under_140_chars():
+    """Headline-only pin (2026-11-09): the longest label with the
+    largest plausible numbers must stay under 140 chars, so a real
+    row can never grow back into a paragraph. Bounds: decided ≤
+    77,760 rows (30 days × 288 windows × 9 venues), windows ≤ 8,640,
+    day ≤ 30. The old full form with every D7 extra measured 356."""
     extreme = _live_record(
-        issued=8640, decided=8640, hits=8640, windows=8640,
+        issued=77760, decided=77760, hits=77760, windows=8640,
         brier=.001, incumbent=.999, baseline=.999, gain_v1=1.0,
         updates=999999, drift=999.999,
     )
     extreme["selection_effect"] = 1.0
     extreme["paired_gain_last_7d"] = 1.0
     extreme["paired_gain_days_8_30"] = 1.0
-    extreme["first_issued"] = (datetime.now(UTC) - timedelta(days=20)).isoformat()
-    text = home_module._regime_live_text(extreme, "Regime live-learning model")
-    assert 300 < len(text) < 400  # one-line form with every D7 extra, far under 1024
+    extreme["first_issued"] = (datetime.now(UTC) - timedelta(days=30)).isoformat()
+    for label in ("Pooled 6-year model", "regime_v1",
+                  "Live-learning", "Live-learning fast"):
+        text = home_module._trial_one_liner(label, extreme, datetime.now(UTC))
+        assert "\n" not in text, label
+        assert len(text) < 140, (label, len(text), text)
+    longest = home_module._trial_one_liner(
+        "Live-learning fast", extreme, datetime.now(UTC))
+    assert len(longest) < 140
+
+
+def test_trial_detail_line_carries_every_cut_metric_and_only_those():
+    """Headline-only change: the metrics cut from the Performance page
+    live in _trial_detail_line (rendered by Detailed Research's Trial
+    detail field). A metric the record does not carry is absent; a
+    family with no decided results has no detail line at all."""
+    record = _live_record(
+        issued=434, decided=434, hits=214, windows=56,
+        brier=.256, incumbent=.252, baseline=.250, gain_v1=-.004,
+        updates=2292, drift=.325,
+    )
+    record["selection_effect"] = -.001
+    record["coverage"] = .02
+    record["availability_ratio"] = .45
+    record["paired_gain_last_7d"] = -.008
+    record["paired_gain_days_8_30"] = None
+    line = home_module._trial_detail_line("Live-learning fast", record)
+    assert line == (
+        "**Live-learning fast:** vs guess 0.250 · vs regime_v1 -0.004 · "
+        "selection -0.001 (easier subset) · coverage 2% · availability 45% · "
+        "2,292 trending labels learned · weight drift 0.325 · gain last 7d -0.008")
+    assert "too early to judge" not in line
+    # A metric the record does not carry is simply absent.
+    del record["paired_gain_last_7d"]
+    assert "gain last 7d" not in home_module._trial_detail_line(
+        "Live-learning fast", record)
+    # No decided results: no detail line.
+    assert home_module._trial_detail_line(
+        "Live-learning fast", {"issued": 3, "decided": 0}) == ""
 
 
 _ONE_LINE_HEADLINE = re.compile(
     r"\*\*(?P<label>[^*]+):\*\* right (?P<hits>[\d,]+) of (?P<decided>[\d,]+) "
     r"\((?P<pct>\d+\.\d)%\) · Brier (?P<brier>\d\.\d{3}) vs incumbent "
-    r"(?P<incumbent>\d\.\d{3}) · paired gain (?P<gain>[+-]\d\.\d{3}) · "
-    r"(?P<targets>[\d,]+)/150 targets · day (?P<day>\d+)/21"
+    r"(?P<incumbent>\d\.\d{3}) · gain (?P<gain>[+-]\d\.\d{3}) · "
+    r"day (?P<day>\d+)/21 · (?P<targets>[\d,]+)/150 targets"
 )
 
 
 @pytest.mark.asyncio
 async def test_one_line_per_live_family_and_no_dead_or_zombie_families(
         tmp_path, monkeypatch):
-    """Consolidation change 1: every live family renders as exactly one
-    line in the same format across the page; dead families (flow_v1/v2,
-    regime_v2 — never issued, zero rows) never render; zombie families
-    (archive_v1, gbm_v1 — no artifact imported) have no Performance-page
-    row at all. All four live rows keep every number the old paragraphs
-    showed, on the detail line."""
+    """Headline-only change: every live family renders as exactly one
+    short headline line in the same format across the page; dead
+    families (flow_v1/v2, regime_v2 — never issued, zero rows) never
+    render; zombie families (archive_v1, gbm_v1 — no artifact
+    imported) have no Performance-page row at all. The detail metrics
+    the old detail line showed are NOT on this page anymore — they
+    live in Detailed Research's Trial detail field."""
     bot, home = _make_home(tmp_path)
     now = datetime.now(UTC)
     first_6d = (now - timedelta(days=6)).isoformat()
@@ -481,8 +525,7 @@ async def test_one_line_per_live_family_and_no_dead_or_zombie_families(
         page = "\n".join([panel.description or "", *fields.values()])
         # One line per live family, same format, exactly once each.
         for label in ("Pooled 6-year model", "regime_v1",
-                      "Regime live-learning model",
-                      "Regime live-learning fast model"):
+                      "Live-learning", "Live-learning fast"):
             assert page.count(f"**{label}:**") == 1, label
             match = _ONE_LINE_HEADLINE.search(page)
             assert match is not None
@@ -490,7 +533,7 @@ async def test_one_line_per_live_family_and_no_dead_or_zombie_families(
         assert len(headlines) == 4
         assert {h[0] for h in headlines} == {
             "Pooled 6-year model", "regime_v1",
-            "Regime live-learning model", "Regime live-learning fast model",
+            "Live-learning", "Live-learning fast",
         }
         # Dead families never render; zombies have no row on this page.
         for dead in ("flow_v1", "flow_v2", "regime_v2", "regime-v2",
@@ -498,14 +541,15 @@ async def test_one_line_per_live_family_and_no_dead_or_zombie_families(
             assert dead not in page, dead
         for zombie in ("archive_v1", "gbm_v1"):
             assert zombie not in page, zombie
-        # Every number the old paragraphs showed is still on the page.
-        assert "vs guess 0.250" in page
-        assert "selection +0.001 (harder subset)" in page
-        assert "coverage 6%" in page
-        assert "too early to judge" in page
-        assert "trending labels learned" in page
-        assert "weight drift" in page
-        assert "vs regime_v1 +0.002" in page
+        # The cut metrics are gone from this page (they live in
+        # Detailed Research's Trial detail field now).
+        assert "vs guess" not in page
+        assert "selection +" not in page
+        assert "coverage" not in page
+        assert "too early to judge" not in page
+        assert "trending labels learned" not in page
+        assert "weight drift" not in page
+        assert "vs regime_v1" not in page
     finally:
         await _close(bot, home)
 
@@ -550,8 +594,10 @@ async def test_exchange_preamble_is_one_short_line_and_trial_rows_fit(
         assert "Covers:" not in exchange
         assert "waiting for their candle" not in exchange
         assert "No results running late" not in exchange
-        assert "**Pooled 6-year model:** right 6,698 of 12,761 (52.5%) · Brier 0.249 vs incumbent 0.251 · paired gain +0.002 · 1,527/150 targets · day 6/21\nvs guess 0.250" in exchange
-        assert "**regime_v1:** right 511 of 935 (54.7%) · Brier 0.253 vs incumbent 0.253 · paired gain +0.000 · 133/150 targets · day 6/21\nvs guess 0.250 · selection +0.001 (harder subset) · coverage 6% · too early to judge" in exchange
+        assert "**Pooled 6-year model:** right 6,698 of 12,761 (52.5%) · Brier 0.249 vs incumbent 0.251 · gain +0.002 · day 6/21 · 1,527/150 targets" in exchange
+        assert "**regime_v1:** right 511 of 935 (54.7%) · Brier 0.253 vs incumbent 0.253 · gain +0.000 · day 6/21 · 133/150 targets" in exchange
+        assert "vs guess" not in exchange
+        assert "too early to judge" not in exchange
         assert len(exchange) < 1024
         assert "Does it make money?** Not proven yet" in panel.description
         assert "predictions saved *before* the result was known" in panel.description

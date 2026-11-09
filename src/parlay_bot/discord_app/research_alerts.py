@@ -391,16 +391,18 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
     # families are not shown here — their promotion receipt (check 5)
     # already announces them. Progress keys carry no counters, so the
     # card re-posts only when the set of families being tracked changes.
-    # One line per family: the (family, asset, horizon) scopes are
-    # grouped and the line shows the best scope (max days / max
-    # targets), because the old flat 12-line cut was saturated by
-    # calib_incumbent_v1's exactly 12 combos and hid every other
-    # family's clock. The cap is now per family — one line each, no
-    # flat cut — so every tracked family is visible. Retired families
-    # (issue flag off) cannot advance a clock and are skipped. A zombie
-    # offline family (archive_v1 / gbm_v1) with no usable fit and no
-    # attributable progress gets one collapsed line instead of a
-    # 0/21 · 0/150 progress line.
+    # One short line per family: the (family, asset, horizon) scopes
+    # are grouped and the line shows the best scope (max days / max
+    # targets) plus its paired Brier gain, because the old flat 12-line
+    # cut was saturated by calib_incumbent_v1's exactly 12 combos and
+    # hid every other family's clock. The cap is now per family — one
+    # line each, no flat cut — so every tracked family is visible. The
+    # gain belongs to the clock-leading scope (most days, ties: most
+    # targets), so the gain and the clock describe the same scope.
+    # Retired families (issue flag off) cannot advance a clock and are
+    # skipped. A zombie offline family (archive_v1 / gbm_v1) with no
+    # usable fit and no attributable progress gets one collapsed line
+    # instead of a 0/21 · 0/150 progress line.
     try:
         from parlay_bot.perpetuals.family_governance import MIN_DAYS, MIN_WINDOWS
     except Exception:  # noqa: BLE001 - thresholds are stable; fall back
@@ -412,7 +414,7 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
                ORDER BY evaluated_at DESC""",
             ((stamp - timedelta(hours=48)).isoformat(),),
         ).fetchall()
-        best: dict[tuple[str, str, int], tuple[int, int]] = {}
+        best: dict[tuple[str, str, int], tuple[int, int, float | None]] = {}
         for row in rows:
             try:
                 families = json.loads(row["evidence_json"] or "{}")
@@ -426,10 +428,14 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
                 targets, days = info.get("targets"), info.get("days")
                 if not isinstance(targets, int) or not isinstance(days, int):
                     continue
+                gain = info.get("forward_gain")
+                gain = (float(gain) if isinstance(gain, (int, float))
+                        and not isinstance(gain, bool)
+                        and math.isfinite(gain) else None)
                 key = (str(family), str(row["asset"]),
                        int(row["horizon_minutes"]))
                 if key not in best:
-                    best[key] = (days, targets)
+                    best[key] = (days, targets, gain)
         try:
             from parlay_bot.perpetuals import forward_audit as _fa
             retired = {
@@ -442,27 +448,28 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
             }
         except Exception:  # noqa: BLE001 - flag read must never break the card
             retired = set()
-        by_family: dict[str, list[tuple[int, int]]] = {}
-        for (family, asset, horizon), (days, targets) in best.items():
+        by_family: dict[str, list[tuple[int, int, float | None]]] = {}
+        for (family, asset, horizon), (days, targets, gain) in best.items():
             if family in retired:
                 continue
-            by_family.setdefault(family, []).append((days, targets))
+            by_family.setdefault(family, []).append((days, targets, gain))
         for family in sorted(by_family):
             scopes = by_family[family]
-            days = max(d for d, _ in scopes)
-            targets = max(t for _, t in scopes)
+            days = max(d for d, _, _ in scopes)
+            targets = max(t for _, t, _ in scopes)
+            lead = max(scopes, key=lambda s: (s[0], s[1]))
+            gain = lead[2]
             if (family in ("archive_v1", "gbm_v1") and days == 0
                     and targets == 0 and not _has_usable_fit(conn, family, stamp)):
                 alerts.append(
                     (f"shadow-progress:{family}",
                      f"⏳ {family}: no usable artifact — clock not started"))
                 continue
-            alerts.append(
-                (f"shadow-progress:{family}",
-                 (f"📊 {family}: {days}/{MIN_DAYS} days · "
-                  f"{targets}/{MIN_WINDOWS} targets"
-                  f" (max across {len(scopes)} scope"
-                  f"{'s' if len(scopes) != 1 else ''})")))
+            line = (f"📊 {family}: day {days}/{MIN_DAYS} · "
+                    f"{targets}/{MIN_WINDOWS} targets")
+            if gain is not None:
+                line += f" · gain {gain:+.3f}"
+            alerts.append((f"shadow-progress:{family}", line))
     except Exception as exc:  # noqa: BLE001 - progress must never break the card
         _LOG.warning("Research alert: shadow progress unreadable (%s)",
                      type(exc).__name__)

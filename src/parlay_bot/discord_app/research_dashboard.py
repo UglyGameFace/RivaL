@@ -103,7 +103,8 @@ _FIELD_GROUPS = {
     "accuracy": {
         "engine": ("Automatic learning engine", "Forward issue audit"),
         "readiness": ("Mathematical forecast readiness",),
-        "progress": ("Future model proof", "Prospective skill by market regime"),
+        "progress": ("Future model proof", "Prospective skill by market regime",
+                     "Trial detail (5-minute)"),
         "tracker": ("Prediction tracking",),
         "lineage": ("How is RivaL learning?", "Are advanced models ready?"),
         "technical": ("Model training actually used", "Boosted model production proof"),
@@ -283,8 +284,13 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
             add_one(("AI research · UNCALIBRATED", "Analysis status"), short=True)
             add_one(("AI provider & request limits",), short=True)
     else:
+        # Progress carries three short fields by design (proof checks,
+        # regime splits, trial detail), so its compact cap is one
+        # higher; every other section stays at live + two detailed
+        # metrics.
+        cap = 4 if section == "progress" else 3
         for prefix in _FIELD_GROUPS[screen].get(section, ()):
-            if len(result.fields) >= 3:  # live + max two detailed metrics
+            if len(result.fields) >= cap:
                 break
             add_one((prefix,))
     if len(result.fields) == (1 if source is not None else 0):
@@ -668,6 +674,17 @@ class _AskButton(discord.ui.Button["ResearchDashboard"]):
         )
 
 
+def _regime_line(family: str, horizon: int, proof: dict) -> str:
+    """One family's per-regime gains for one horizon: three short numbers."""
+    gains = []
+    for regime in ("quiet", "normal", "turbulent"):
+        gain = proof["regimes"][regime]["paired_brier_gain"]
+        gains.append(
+            f"{regime} {gain:+.4f}" if gain is not None else f"{regime} none")
+    return (f"{family} {horizon}m · {proof['status'].replace('_', ' ')}: "
+            + " · ".join(gains))
+
+
 class ResearchDashboard(discord.ui.View):
     def __init__(
         self, *, owner_id: int, market: PerpetualMarketStore | None,
@@ -903,46 +920,80 @@ class ResearchDashboard(discord.ui.View):
             max(recent_closes, default=None),
         )
 
-    async def _regime_field_value(self) -> str:
-        """Prospective skill by market regime, as one field value.
+    def _trial_detail_value(self) -> str:
+        """The numbers the Performance-page headlines cut (5-minute).
 
-        The incumbent per-regime split (5m/15m) plus the same split
-        over each live family's issued subset (regime_v1, the two
-        live-learning families) — the per-regime evidence that used
-        to live in the standalone "regimes" section, now merged into
-        the proof section alongside "Future model proof" (both answer
-        "is anything proving itself?"). regime_v2 is dead — never
-        issued once, flag off — so it has no subset here. A failure
-        in any subset never hides the sections above it. The value
-        stays 1024-capped (a Discord field limit); the tail — the
-        live-family subsets — may still be cut there, as before.
+        One line per trial family with the detail the headline no
+        longer shows: Brier vs the simple guess, the vs-regime_v1
+        head-to-head, the selection decomposition, coverage,
+        availability, trending labels learned, weight drift, and the
+        7d vs 8-30d gain split. Only the metrics a family actually
+        carries are shown; a family with no scored results has no
+        line. This is the one place the cut metrics live — the
+        Performance page is headline-only now. Never raises: a read
+        failure returns a short fallback, never hides the sections
+        above it.
+        """
+        try:
+            from parlay_bot.discord_app.home import (
+                _pooled_record,
+                _trial_detail_line,
+            )
+            from parlay_bot.perpetuals.regime_live_model import (
+                BASE_FAMILY,
+                FAST_FAMILY,
+            )
+            from parlay_bot.perpetuals.regime_live_model import (
+                trial_report as live_trial_report,
+            )
+            from parlay_bot.perpetuals.regime_model import (
+                trial_report as regime_trial_report,
+            )
+
+            store = self.market.store
+            records = [
+                ("Pooled 6-year model", _pooled_record(self.market, self.asset, 5)),
+                ("regime_v1", regime_trial_report(store, asset=self.asset, horizon=5)),
+                ("Live-learning", live_trial_report(
+                    store, asset=self.asset, horizon=5, family=BASE_FAMILY)),
+                ("Live-learning fast", live_trial_report(
+                    store, asset=self.asset, horizon=5, family=FAST_FAMILY)),
+            ]
+            lines = []
+            for label, record in records:
+                line = _trial_detail_line(label, record)
+                if line:
+                    lines.append(line)
+            if not lines:
+                return "No scored trial results yet — nothing to detail."
+            return "\n".join(lines)[:1024]
+        except Exception:  # noqa: BLE001 - detail is additive only
+            _LOG.exception("RivaL trial detail read unavailable")
+            return "Trial detail unavailable. No improvement claimed."
+
+    async def _regime_field_value(self) -> str:
+        """Paired Brier gain by market regime, one short line per family.
+
+        One line per family per horizon (incumbent first, then the
+        live families' issued subsets) with only the three per-regime
+        gains — no target/day counts, no disputed counts. The counts
+        are not rendered anywhere now; the gains are the evidence this
+        field exists to show. regime_v2 is dead — never issued once,
+        flag off — so it has no subset here. A failure in any subset
+        never hides the sections above it. The value stays 1024-capped
+        (a Discord field limit); at ~8 short lines it no longer
+        reaches the cap, so the live-family subsets are no longer cut
+        at the tail.
         """
         try:
             monitor = ForwardAccuracyMonitor(self.market)
-            pieces = []
+            lines = ["paired Brier gain by regime (quiet · normal · turbulent):"]
             for horizon in (5, 15):
                 proof = await asyncio.to_thread(
                     monitor.regime_summary,
                     asset=self.asset, horizon_minutes=horizon,
                 )
-                lines = []
-                for regime in ("quiet", "normal", "turbulent"):
-                    part = proof["regimes"][regime]
-                    gain = part["paired_brier_gain"]
-                    gain_text = (
-                        f"{gain:+.4f}" if gain is not None else "none"
-                    )
-                    lines.append(
-                        f"{regime}: **{part['unique_targets']}** "
-                        f"UTC targets / {part['utc_days']} days · "
-                        f"paired Brier gain {gain_text}"
-                    )
-                pieces.append(
-                    f"**{horizon}m** · "
-                    f"{proof['status'].replace('_', ' ')} "
-                    f"({proof['disputed_regime_targets']} disputed)\n"
-                    + "\n".join(lines)
-                )
+                lines.append(_regime_line("incumbent", horizon, proof))
             # Family subsets: the same per-regime split, but only over
             # the targets each family actually issued on, so the page
             # shows whether the family won on the targets it chose.
@@ -952,36 +1003,17 @@ class ResearchDashboard(discord.ui.View):
             for subset_family in ("regime_v1", "regime_live_v1",
                                   "regime_live_fast_v1"):
                 try:
-                    subset_pieces = []
                     for horizon in (5, 15):
                         proof = await asyncio.to_thread(
                             monitor.regime_summary,
                             asset=self.asset, horizon_minutes=horizon,
                             family=subset_family,
                         )
-                        lines = []
-                        for regime in ("quiet", "normal", "turbulent"):
-                            part = proof["regimes"][regime]
-                            gain = part["paired_brier_gain"]
-                            gain_text = (
-                                f"{gain:+.4f}" if gain is not None else "none"
-                            )
-                            lines.append(
-                                f"{regime}: **{part['unique_targets']}** "
-                                f"UTC targets / {part['utc_days']} days · "
-                                f"paired Brier gain {gain_text}"
-                            )
-                        subset_pieces.append(
-                            f"**{horizon}m {subset_family} subset** · "
-                            f"{proof['status'].replace('_', ' ')} "
-                            f"({proof['disputed_regime_targets']} disputed)\n"
-                            + "\n".join(lines)
-                        )
-                    pieces.extend(subset_pieces)
+                        lines.append(_regime_line(subset_family, horizon, proof))
                 except Exception:  # noqa: BLE001 - subset is additive only
                     _LOG.exception("RivaL %s subset query unavailable", subset_family)
             return (
-                "\n\n".join(pieces)
+                "\n".join(lines)
                 + "\nRegimes were stamped BEFORE outcomes. "
                   "Multiple venues count once per target. "
                   "A stable shadow score is not trading profit."
@@ -1466,10 +1498,19 @@ class ResearchDashboard(discord.ui.View):
             # instead of in a standalone "regimes" section. Both
             # kinds of evidence stay; a family's paired gain appears
             # once (in the proof checks), the regime splits carry
-            # their own per-regime gains.
+            # their own per-regime gains. The trial detail field is
+            # the one place the numbers the Performance-page headlines
+            # cut still live (vs guess, selection, coverage,
+            # availability, updates, drift, gain splits) — the
+            # Performance page is headline-only now.
             embed.add_field(
                 name="Prospective skill by market regime",
                 value=await self._regime_field_value(), inline=False,
+            )
+            embed.add_field(
+                name="Trial detail (5-minute)",
+                value=await asyncio.to_thread(self._trial_detail_value),
+                inline=False,
             )
             embed.set_footer(
                 text="Per-exchange future scores · No real fills or trading approval"

@@ -77,7 +77,7 @@ def _store(tmp_path):
         conn.execute("""CREATE TABLE IF NOT EXISTS perp_forward_audit (
             venue TEXT, contract TEXT, quote TEXT, horizon_minutes INTEGER,
             reference_opened_at TEXT, settled_at TEXT, outcome_up INTEGER,
-            asset TEXT)""")
+            asset TEXT, issued_at TEXT)""")
     return store
 
 
@@ -164,14 +164,14 @@ def _seed_liq1_state(store):
         conn.execute("""CREATE TABLE IF NOT EXISTS perp_forward_audit (
             venue TEXT, contract TEXT, quote TEXT, horizon_minutes INTEGER,
             reference_opened_at TEXT, settled_at TEXT, outcome_up INTEGER,
-            asset TEXT)""")
+            asset TEXT, issued_at TEXT)""")
         ref = NOW - timedelta(minutes=30)
         challenger.call(conn, venue="hyperliquid", contract="BTC", quote="USDC",
                         asset="BTC", horizon=5, reference_opened_at=ref,
                         issued_at=ref, features=(0.1,) * 10, flow=flow)
         conn.execute("INSERT INTO perp_forward_audit VALUES "
-                     "('hyperliquid','BTC','USDC',5,?,?,1,'BTC')",
-                     (ref.isoformat(), NOW.isoformat()))
+                     "('hyperliquid','BTC','USDC',5,?,?,1,'BTC',?)",
+                     (ref.isoformat(), NOW.isoformat(), ref.isoformat()))
     assert challenger.learn(NOW) == 1
     return LiquidityChallengerV1.artifact_identity(store, "BTC", 5)
 
@@ -799,9 +799,9 @@ def test_liq_v1_calibration_refit_reads_only_the_newest_rows(tmp_path, monkeypat
                                 asset="BTC", horizon=5, reference_opened_at=ref,
                                 issued_at=ref, features=((i % 5) / 5.0,) * 10, flow=flow)
                 conn.execute("INSERT INTO perp_forward_audit VALUES "
-                             "('hyperliquid','BTC','USDC',5,?,?,?,'BTC')",
+                             "('hyperliquid','BTC','USDC',5,?,?,?,'BTC',?)",
                              (ref.isoformat(), (ref + timedelta(minutes=5)).isoformat(),
-                              int(i % 3 == 0)))
+                              int(i % 3 == 0), ref.isoformat()))
         assert challenger.learn(NOW) == 130
         with store.connect() as conn:
             state = challenger._state(conn, "BTC", 5)
@@ -897,10 +897,10 @@ def test_liq_v1_refit_scope_keeps_rows_and_uses_the_scope_index(tmp_path, monkey
                                         reference_opened_at=ref, issued_at=ref,
                                         features=((i % 4) / 4.0,) * 10, flow=flow)
                         conn.execute(
-                            "INSERT INTO perp_forward_audit VALUES (?,?,?,?,?,?,?,?)",
+                            "INSERT INTO perp_forward_audit VALUES (?,?,?,?,?,?,?,?,?)",
                             (venue, asset, "USDC", horizon, ref.isoformat(),
                              (ref + timedelta(minutes=horizon, seconds=i % 3)).isoformat(),
-                             int((i + horizon) % 3 == 0), asset))
+                             int((i + horizon) % 3 == 0), asset, ref.isoformat()))
         assert challenger.learn(NOW) == 60 * 2 * len(keys)
         with store.connect() as conn:
             for asset, horizon in keys:
@@ -925,6 +925,113 @@ def test_liq_v1_refit_scope_keeps_rows_and_uses_the_scope_index(tmp_path, monkey
             columns = [r["name"] for r in conn.execute(
                 "PRAGMA index_info(idx_rival_liq1_features_scope)").fetchall()]
         assert columns == ["asset", "horizon_minutes", "learned"]
+    finally:
+        store.close()
+
+
+_OLD_PENDING_SQL = """SELECT x.venue,x.contract,x.quote,x.horizon_minutes,
+          x.reference_opened_at,x.asset,x.features,x.raw_features,
+          f.outcome_up,f.settled_at
+   FROM rival_liq1_features x
+   JOIN perp_forward_audit f
+     ON f.venue=x.venue AND f.contract=x.contract AND f.quote=x.quote
+    AND f.horizon_minutes=x.horizon_minutes
+    AND f.reference_opened_at=x.reference_opened_at
+   WHERE x.learned=0 AND f.settled_at IS NOT NULL AND f.settled_at<=?
+   ORDER BY f.settled_at, x.issued_at LIMIT ?"""
+
+
+def test_liq_v1_pending_learn_matches_only_its_own_audit_row(tmp_path):
+    """learn() joins each pending row to its own issuance's audit row.
+
+    Matching also on (asset, horizon, issued_at) -- written in the same
+    transaction as the feature row -- lets Postgres use
+    idx_perp_forward_asset_horizon. On ordinary data the pending SELECT
+    returns exactly the previous query's rows, in order. An audit row from
+    another model version at the same reference bar (different issued_at)
+    is no longer joined a second time, so the outcome is learned once.
+    """
+    store = _store(tmp_path)
+    challenger = LiquidityChallengerV1(store)
+    flow = (0.3,) + (0.0,) * 20 + (1.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    try:
+        with store.connect() as conn:
+            for i in range(40):
+                for venue in ("hyperliquid", "okx"):
+                    for asset, horizon in (("BTC", 5), ("ETH", 15)):
+                        ref = NOW - timedelta(minutes=5 * (100 - i))
+                        issued = ref + timedelta(seconds=30 + i % 7)
+                        challenger.call(conn, venue=venue, contract=asset, quote="USDC",
+                                        asset=asset, horizon=horizon,
+                                        reference_opened_at=ref, issued_at=issued,
+                                        features=((i % 4) / 4.0,) * 10, flow=flow)
+                        settled = (None if i % 9 == 0 else
+                                   (ref + timedelta(minutes=horizon, seconds=i % 3)).isoformat())
+                        conn.execute(
+                            "INSERT INTO perp_forward_audit VALUES (?,?,?,?,?,?,?,?,?)",
+                            (venue, asset, "USDC", horizon, ref.isoformat(), settled,
+                             None if i % 11 == 0 else int(i % 3 == 0), asset,
+                             issued.isoformat()))
+            old = conn.execute(_OLD_PENDING_SQL, (NOW.isoformat(), 4000)).fetchall()
+        captured: list = []
+
+        class Capture:
+            def __init__(self, raw):
+                self.raw = raw
+
+            def __getattr__(self, name):
+                return getattr(self.raw, name)
+
+            def execute(self, sql, params=()):
+                cursor = self.raw.execute(sql, params)
+                if "WHERE x.learned=0" not in sql:
+                    return cursor
+                rows = cursor.fetchall()
+                captured.append((sql, rows))
+
+                class Rows:
+                    def fetchall(self):
+                        return rows
+                return Rows()
+
+        connect = store.connect
+
+        class Store:
+            def __getattr__(self, name):
+                return getattr(store, name)
+
+            def connect(self):
+                from contextlib import contextmanager
+
+                @contextmanager
+                def wrapped():
+                    with connect() as conn:
+                        yield Capture(conn)
+                return wrapped()
+
+        challenger.store = Store()
+        learned = challenger.learn(NOW)
+        ((sql, rows),) = captured
+        assert len(old) > 100
+        assert [tuple(r) for r in rows] == [tuple(r) for r in old]
+        assert "f.issued_at=x.issued_at" in " ".join(sql.split())
+        assert learned == sum(1 for r in old if r["outcome_up"] in (0, 1))
+        challenger.store = store
+
+        # A second audit row for the same bar from an older model version,
+        # issued earlier: only the feature row's own issuance is learned.
+        ref = NOW - timedelta(minutes=10)
+        with store.connect() as conn:
+            challenger.call(conn, venue="hyperliquid", contract="BTC", quote="USDC",
+                            asset="BTC", horizon=5, reference_opened_at=ref,
+                            issued_at=ref, features=(0.2,) * 10, flow=flow)
+            for issued in (ref, ref - timedelta(seconds=20)):
+                conn.execute(
+                    "INSERT INTO perp_forward_audit VALUES (?,?,?,?,?,?,?,?,?)",
+                    ("hyperliquid", "BTC", "USDC", 5, ref.isoformat(),
+                     (ref + timedelta(minutes=5)).isoformat(), 1, "BTC",
+                     issued.isoformat()))
+        assert challenger.learn(NOW) == 1
     finally:
         store.close()
 

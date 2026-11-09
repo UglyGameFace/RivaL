@@ -1,20 +1,20 @@
 name: RivaL archive model weekly training
 
-# Trains the archive_v1 offline logistic (spec §2.3-§2.7, D1/D4), the
-# gbm_v1 offline GBM (autonomous loop Phase 2, spec §3.4, D4/D6), and the
-# regime_v2 trending-subset logistic (spec rival-regime-v2-spec-20261108,
-# D1/D3/D4: the same 32-feature logistic trained only on trending
-# candles, ER > 0.30) on the verified Drive archive and publishes
-# artifacts that pass their offline gates to the private Drive models
-# folder. A run that fails its gates publishes a kind="report" only --
-# no model artifact. The bot imports a published artifact only through
-# the existing manifest cross-check, and it serves only through the
-# existing Route B promotion gates (Phase 2).
+# Trains the archive_v1 offline logistic (spec §2.3-§2.7, D1/D4) and the
+# gbm_v1 offline GBM (autonomous loop Phase 2, spec §3.4, D4/D6) on the
+# verified Drive archive and publishes artifacts that pass their offline
+# gates to the private Drive models folder. A run that fails its gates
+# publishes a kind="report" only -- no model artifact. The bot imports a
+# published artifact only through the existing manifest cross-check, and
+# it serves only through the existing Route B promotion gates (Phase 2).
+# regime_v2 was retired in PR #464 and is no longer trained by this job.
 # The GBM trains as a step in this same workflow (no separate workflow
 # file): same restored bytes, same --train-end / --test-start /
 # --trained-through, same manifests dir, per-horizon + per-step failure
-# isolation. Train only through manual workflow dispatch; no cron schedule.
+# isolation. Never on every push: weekly retrain + manual dispatch only.
 on:
+  schedule:
+    - cron: "30 7 * * 0"
   workflow_dispatch:
     inputs:
       publish:
@@ -34,7 +34,27 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # One-off pause: skip the Nov 15, 2026 scheduled run only.
+  # Manual dispatches and subsequent weekly schedules remain enabled.
+  schedule_guard:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.check.outputs.should_run }}
+    steps:
+      - name: Check one-time schedule exclusion
+        id: check
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" && "$(date -u +%F)" == "2026-11-15" ]]; then
+            echo "Skipping the 2026-11-15 scheduled archive training."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          fi
+
   train:
+    needs: schedule_guard
+    if: needs.schedule_guard.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 240
     strategy:
@@ -75,7 +95,7 @@ jobs:
           python tools/restore_archive_months.py --asset ${{ matrix.asset }} \
             --root data/archive-v1-restore
       # Step 3: train per (asset, horizon). The shared weekly run
-      # (train_weekly_archive) trains archive-v1, gbm-v1 AND regime-v2
+      # (train_weekly_archive) trains archive-v1 and gbm-v1
       # for every (asset, horizon) on the same restored bytes, same
       # splits, same provenance. Binance 5m loads from official
       # Vision ZIPs via the pooled-training loader (SHA verified against

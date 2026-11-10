@@ -410,6 +410,127 @@ def warm_benefit_cache(market: object) -> int:
     return done
 
 
+# The exchange scorecard and the Polymarket scorecard are the same shape of
+# problem as the improvement check: 7-day aggregates that take 2-7 s in
+# production against the page's 7 s per-read budget, and move one 5-minute
+# cycle at a time. They get the same treatment: a 45-minute cache (a 7-day
+# window barely moves in 45 minutes) refreshed in the background, with
+# in-flight dedup so a cold page request waits for the run already going
+# instead of starting a duplicate query.
+EXCHANGE_CACHE_SECONDS = 45 * 60
+POLYMARKET_CACHE_SECONDS = 45 * 60
+_EXCHANGE_CACHE: dict[tuple, tuple[float, object, dict]] = {}
+_EXCHANGE_INFLIGHT: dict[tuple, threading.Event] = {}
+_EXCHANGE_LOCK = threading.Lock()
+_POLYMARKET_CACHE: dict[tuple, tuple[float, object, dict]] = {}
+_POLYMARKET_INFLIGHT: dict[tuple, threading.Event] = {}
+_POLYMARKET_LOCK = threading.Lock()
+
+
+def _cached_exchange(market: object, asset: str, *, refresh: bool = False) -> dict:
+    """Seven-day exchange scorecard, cached like the improvement check.
+
+    The summary covers every horizon, so the key is (market, asset) only.
+    """
+    key = (id(market), asset)
+    while True:
+        with _EXCHANGE_LOCK:
+            hit = _EXCHANGE_CACHE.get(key)
+            if (not refresh and hit is not None and hit[1] is market
+                    and time.monotonic() - hit[0] < EXCHANGE_CACHE_SECONDS):
+                return hit[2]
+            running = _EXCHANGE_INFLIGHT.get(key)
+            if running is None:
+                running = _EXCHANGE_INFLIGHT[key] = threading.Event()
+                break
+        running.wait(timeout=30)
+        refresh = False  # the other run's result is fresh enough
+    try:
+        result = _performance_exchange(market, asset)
+        if isinstance(result, dict):
+            with _EXCHANGE_LOCK:
+                if len(_EXCHANGE_CACHE) > 64:
+                    _EXCHANGE_CACHE.clear()
+                _EXCHANGE_CACHE[key] = (time.monotonic(), market, result)
+        return result
+    finally:
+        with _EXCHANGE_LOCK:
+            _EXCHANGE_INFLIGHT.pop(key, None)
+        running.set()
+
+
+def _polymarket_cache_owner(status_fn: Callable[[str, int], dict]) -> object:
+    """Stable cache owner for a scorecard callable: the bound instance.
+
+    A bound method object is recreated on every attribute access, so its
+    id() is unstable; the instance it is bound to is the stable identity.
+    A plain function has no __self__ and is its own owner.
+    """
+    return getattr(status_fn, "__self__", status_fn)
+
+
+def _cached_polymarket_status(
+    status_fn: Callable[[str, int], dict], asset: str, horizon: int, *,
+    refresh: bool = False,
+) -> dict:
+    """Polymarket/Kalshi scorecard, cached like the improvement check.
+
+    Caches the whole result dict (it already includes the pooled comparison
+    and, at 15 minutes, the Kalshi scorecards).
+    """
+    owner = _polymarket_cache_owner(status_fn)
+    key = (id(owner), asset, horizon)
+    while True:
+        with _POLYMARKET_LOCK:
+            hit = _POLYMARKET_CACHE.get(key)
+            if (not refresh and hit is not None and hit[1] is owner
+                    and time.monotonic() - hit[0] < POLYMARKET_CACHE_SECONDS):
+                return hit[2]
+            running = _POLYMARKET_INFLIGHT.get(key)
+            if running is None:
+                running = _POLYMARKET_INFLIGHT[key] = threading.Event()
+                break
+        running.wait(timeout=30)
+        refresh = False  # the other run's result is fresh enough
+    try:
+        result = status_fn(asset, horizon)
+        if isinstance(result, dict):
+            with _POLYMARKET_LOCK:
+                if len(_POLYMARKET_CACHE) > 64:
+                    _POLYMARKET_CACHE.clear()
+                _POLYMARKET_CACHE[key] = (time.monotonic(), owner, result)
+        return result
+    finally:
+        with _POLYMARKET_LOCK:
+            _POLYMARKET_INFLIGHT.pop(key, None)
+        running.set()
+
+
+def warm_exchange_cache(market: object) -> int:
+    """Background refresh of every coin's exchange scorecard."""
+    done = 0
+    for asset in ("BTC", "ETH", "SOL", "XRP"):
+        try:
+            _cached_exchange(market, asset, refresh=True)
+            done += 1
+        except Exception:  # noqa: BLE001 - optional page context only
+            _LOG.warning("Exchange scorecard refresh failed %s", asset)
+    return done
+
+
+def warm_polymarket_cache(status_fn: Callable[[str, int], dict]) -> int:
+    """Background refresh of every coin/timeframe Polymarket scorecard."""
+    done = 0
+    for asset in ("BTC", "ETH", "SOL", "XRP"):
+        for horizon in (5, 15, 60):
+            try:
+                _cached_polymarket_status(status_fn, asset, horizon, refresh=True)
+                done += 1
+            except Exception:  # noqa: BLE001 - optional page context only
+                _LOG.warning("Polymarket scorecard refresh failed %s %s min", asset, horizon)
+    return done
+
+
 def _pooled_record(market: object, asset: str, horizon: int) -> dict:
     """Live graded record of the pooled multi-year challenger now in use (7 days).
 
@@ -1661,7 +1782,7 @@ class GuidedHome(discord.ui.View):
             readers = {}
             if self.market is not None:
                 readers["exchange"] = asyncio.wait_for(
-                    asyncio.to_thread(_performance_exchange, self.market, self.coin),
+                    asyncio.to_thread(_cached_exchange, self.market, self.coin),
                     timeout=PERFORMANCE_READ_SECONDS,
                 )
                 readers["benefit"] = asyncio.wait_for(
@@ -1708,7 +1829,8 @@ class GuidedHome(discord.ui.View):
             if self.polymarket_status is not None:
                 readers["polymarket"] = asyncio.wait_for(
                     asyncio.to_thread(
-                        self.polymarket_status, self.coin, self.horizon,
+                        _cached_polymarket_status, self.polymarket_status,
+                        self.coin, self.horizon,
                     ), timeout=PERFORMANCE_READ_SECONDS,
                 )
             reports = dict(zip(

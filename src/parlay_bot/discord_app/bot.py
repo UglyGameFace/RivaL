@@ -29,6 +29,8 @@ from parlay_bot.discord_app.home import (
     build_stale_guided_menu_views,
     install_view_dispatch_logging,
     warm_benefit_cache,
+    warm_exchange_cache,
+    warm_polymarket_cache,
 )
 from parlay_bot.discord_app.interaction_scope import install_interaction_scope
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
@@ -2493,10 +2495,12 @@ class RivalDiscordClient(discord.Client):
             tally[outcome] = tally.get(outcome, 0) + 1
 
     async def _benefit_loop(self) -> None:
-        """Keep Bot Performance's slow "Is accuracy improving?" answer ready.
+        """Keep Bot Performance's slow scorecards ready.
 
-        Runs on its own task, mid-slot, so its ~1 minute of queries never
-        delays the 5-minute collection and forecast cycle.
+        Runs on its own task, mid-slot, so its few minutes of queries never
+        delay the 5-minute collection and forecast cycle. Warms the
+        improvement check, the exchange scorecard, and the Polymarket
+        scorecard on the same 30-minute schedule.
         """
         await self.wait_until_ready()
         await asyncio.sleep(150)  # start between forecast cycles
@@ -2506,6 +2510,16 @@ class RivalDiscordClient(discord.Client):
                     await asyncio.to_thread(warm_benefit_cache, self.perp_collector.market)
                 except Exception:  # noqa: BLE001 - optional page context
                     _LOG.exception("RivaL improvement-check refresh failed")
+                try:
+                    await asyncio.to_thread(warm_exchange_cache, self.perp_collector.market)
+                except Exception:  # noqa: BLE001 - optional page context
+                    _LOG.exception("RivaL exchange-scorecard refresh failed")
+                try:
+                    await asyncio.to_thread(
+                        warm_polymarket_cache, self.polymarket_learning_status,
+                    )
+                except Exception:  # noqa: BLE001 - optional page context
+                    _LOG.exception("RivaL Polymarket-scorecard refresh failed")
             await asyncio.sleep(30 * 60)
 
     async def _spike_stage(self) -> None:

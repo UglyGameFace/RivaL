@@ -91,7 +91,7 @@ def test_postgres_limit_applies_only_inside_marked_scope_and_resets():
             query_scope.mark_interactive()
             return _show(db)
 
-        assert contextvars.Context().run(interactive) == "15s"
+        assert contextvars.Context().run(interactive) == "8s"
         # Same pooled connection (max_size=1) is unlimited again for workers.
         assert _show(db) == "0"
     finally:

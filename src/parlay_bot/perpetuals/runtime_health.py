@@ -167,64 +167,91 @@ class RuntimeHealthMonitor:
                 # positive close). Rows it rejects forever were counted as
                 # "recoverable" and kept the alert open; they are now
                 # reported separately instead of hidden.
-                backlog = conn.execute(
-                    """SELECT
-                         SUM(CASE WHEN f.issued_at<c.closed_at AND c.close_price>0
-                                  THEN 1 ELSE 0 END) AS n,
-                         SUM(CASE WHEN f.issued_at<c.closed_at AND c.close_price>0
-                                  THEN 0 ELSE 1 END) AS unsettleable
-                       FROM perp_forward_audit AS f
-                       JOIN perp_market_candles AS c
-                        ON c.venue=f.venue AND c.contract=f.contract
-                       AND c.quote=f.quote AND c.interval_minutes=5
-                       AND c.opened_at=f.target_opened_at
-                       WHERE f.settled_at IS NULL
-                       AND f.target_opened_at<?
-                       AND c.first_observed_at>f.issued_at
-                       AND c.first_observed_at<=? AND c.closed_at<?""",
-                    # Settlement runs once per 5-minute cycle, so an outcome
-                    # candle that arrived late (after a restart or a slow
-                    # venue) is legitimately unsettled until the next cycle.
-                    # Only one still unsettled after two full cycles is a
-                    # backlog; production showed 38 incidents that each
-                    # cleared within one cycle (Nov 5).
-                    ((stamp-timedelta(minutes=15)).isoformat(),
-                     (stamp-BACKLOG_GRACE).isoformat(), stamp.isoformat()),
-                ).fetchone()
-                if int(backlog["n"] or 0) > 0:
-                    faults["settlement_backlog"] = f"{backlog['n']} recoverable prospective outcomes"
-                if int(backlog["unsettleable"] or 0) > 0:
+                # The audit/candle join is one of the slow SELECTs on the
+                # 2-minute watchdog pass, and the count barely moves in
+                # minutes, so reuse it for the same 10-minute window as the
+                # regression cache. A new backlog is then seen up to 10
+                # minutes late, and the watchdog repair below re-runs on the
+                # cached verdict until the next recheck — acceptable: the
+                # 5-minute cycle settles anyway and the repair is idempotent.
+                cached_backlog = getattr(self, "_backlog_cache", None)
+                if cached_backlog is not None and (
+                        timedelta(0) <= stamp - cached_backlog[0] < REGRESSION_RECHECK):
+                    backlog_n, backlog_unsettleable = (
+                        cached_backlog[1], cached_backlog[2])
+                else:
+                    backlog = conn.execute(
+                        """SELECT
+                             SUM(CASE WHEN f.issued_at<c.closed_at AND c.close_price>0
+                                      THEN 1 ELSE 0 END) AS n,
+                             SUM(CASE WHEN f.issued_at<c.closed_at AND c.close_price>0
+                                      THEN 0 ELSE 1 END) AS unsettleable
+                           FROM perp_forward_audit AS f
+                           JOIN perp_market_candles AS c
+                            ON c.venue=f.venue AND c.contract=f.contract
+                           AND c.quote=f.quote AND c.interval_minutes=5
+                           AND c.opened_at=f.target_opened_at
+                           WHERE f.settled_at IS NULL
+                           AND f.target_opened_at<?
+                           AND c.first_observed_at>f.issued_at
+                           AND c.first_observed_at<=? AND c.closed_at<?""",
+                        # Settlement runs once per 5-minute cycle, so an outcome
+                        # candle that arrived late (after a restart or a slow
+                        # venue) is legitimately unsettled until the next cycle.
+                        # Only one still unsettled after two full cycles is a
+                        # backlog; production showed 38 incidents that each
+                        # cleared within one cycle (Nov 5).
+                        ((stamp-timedelta(minutes=15)).isoformat(),
+                         (stamp-BACKLOG_GRACE).isoformat(), stamp.isoformat()),
+                    ).fetchone()
+                    backlog_n = int(backlog["n"] or 0)
+                    backlog_unsettleable = int(backlog["unsettleable"] or 0)
+                    self._backlog_cache = (stamp, backlog_n, backlog_unsettleable)
+                if backlog_n > 0:
+                    faults["settlement_backlog"] = f"{backlog_n} recoverable prospective outcomes"
+                if backlog_unsettleable > 0:
                     _LOG.info("RivaL %s unsettled forecasts can never settle "
                               "(issued after target close or invalid price)",
-                              backlog["unsettleable"])
+                              backlog_unsettleable)
             if streaming_enabled and learning_enabled:
                 # No claim of an executable fill: only verified matching
                 # bid/ask observations. Require a meaningful sample size.
-                quote_rows = conn.execute(
-                    """SELECT f.venue,COUNT(*) AS n,
-                              SUM(CASE WHEN q.entry_at IS NOT NULL THEN 1
-                                       ELSE 0 END) AS matched
-                       FROM rival_model_shadow_forecasts AS f
-                       LEFT JOIN rival_family_quote_shadow AS q
-                         ON q.venue=f.venue AND q.contract=f.contract
-                        AND q.quote=f.quote AND q.horizon_minutes=f.horizon_minutes
-                        AND q.family=f.family
-                        AND q.reference_opened_at=f.reference_opened_at
-                       WHERE f.venue IN ('hyperliquid','binance')
-                         AND (f.probability_up>=0.56 OR f.probability_up<=0.44
-                              OR f.incumbent_up>=0.56 OR f.incumbent_up<=0.44)
-                         AND f.issued_at>=? AND f.issued_at<?
-                       GROUP BY f.venue""",
-                    ((stamp-timedelta(hours=2)).isoformat(),
-                     (stamp-timedelta(minutes=5)).isoformat()),
-                ).fetchall()
-                n = sum(int(row["n"]) for row in quote_rows)
-                matched = sum(int(row["matched"] or 0) for row in quote_rows)
-                if n >= 12 and matched / n < 0.8:
+                # The shadow/quote join is one of the slow SELECTs on the
+                # 2-minute watchdog pass, and the coverage ratio barely moves
+                # in minutes, so reuse it for the same 10-minute window as
+                # the regression cache.
+                cached_quotes = getattr(self, "_quote_coverage_cache", None)
+                if cached_quotes is not None and (
+                        timedelta(0) <= stamp - cached_quotes[0] < REGRESSION_RECHECK):
+                    n, matched, by_venue = (
+                        cached_quotes[1], cached_quotes[2], cached_quotes[3])
+                else:
+                    quote_rows = conn.execute(
+                        """SELECT f.venue,COUNT(*) AS n,
+                                  SUM(CASE WHEN q.entry_at IS NOT NULL THEN 1
+                                           ELSE 0 END) AS matched
+                           FROM rival_model_shadow_forecasts AS f
+                           LEFT JOIN rival_family_quote_shadow AS q
+                             ON q.venue=f.venue AND q.contract=f.contract
+                            AND q.quote=f.quote AND q.horizon_minutes=f.horizon_minutes
+                            AND q.family=f.family
+                            AND q.reference_opened_at=f.reference_opened_at
+                           WHERE f.venue IN ('hyperliquid','binance')
+                             AND (f.probability_up>=0.56 OR f.probability_up<=0.44
+                                  OR f.incumbent_up>=0.56 OR f.incumbent_up<=0.44)
+                             AND f.issued_at>=? AND f.issued_at<?
+                           GROUP BY f.venue""",
+                        ((stamp-timedelta(hours=2)).isoformat(),
+                         (stamp-timedelta(minutes=5)).isoformat()),
+                    ).fetchall()
+                    n = sum(int(row["n"]) for row in quote_rows)
+                    matched = sum(int(row["matched"] or 0) for row in quote_rows)
                     by_venue = ", ".join(
                         f'{row["venue"]} {int(row["matched"] or 0)}/{int(row["n"])}'
                         for row in quote_rows
                     )
+                    self._quote_coverage_cache = (stamp, n, matched, by_venue)
+                if n >= 12 and matched / n < 0.8:
                     faults["quote_coverage"] = (
                         f"{matched}/{n} prospective actionable family forecasts "
                         f"have a source-matched book (by venue: {by_venue})"

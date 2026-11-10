@@ -117,7 +117,11 @@ from parlay_bot.research.sports_results import (
 )
 from parlay_bot.storage.catalog import MarketCatalogStore
 from parlay_bot.storage.hot import PostgresHotStore, RelationalHotStore, SQLiteHotStore
-from parlay_bot.storage.query_scope import mark_background
+from parlay_bot.storage.query_scope import (
+    WATCHDOG_STATEMENT_TIMEOUT_MS,
+    mark_background,
+    statement_timeout,
+)
 from parlay_bot.storage.startup import initialize_with_dns_recovery
 
 _LOG = logging.getLogger(__name__)
@@ -3221,39 +3225,48 @@ class RivalDiscordClient(discord.Client):
                           for asset in self.perp_collector.assets)
                     if self.perp_collector is not None else ()
                 )
-                observed = await asyncio.wait_for(
-                    asyncio.to_thread(
-                        self.health_monitor.inspect, now=now,
-                        expected_feeds=feeds,
-                        learning_enabled=self.autonomous is not None,
-                        streaming_enabled=self.live_stream is not None,
-                        import_enabled=self.offline_registry is not None,
-                        import_checked_at=self.candidate_sync_checked_at,
-                        import_status=self.candidate_sync_status,
-                    ),
-                    timeout=15,
-                )
-                faults.update(observed)
-                # The underlying normal settlement cycle already performs the
-                # same idempotent recovery. Help when it is delayed, but never
-                # manufacture missing target candles or overwrite outcomes.
-                if ("settlement_backlog" in observed and
-                        self.forward_audit is not None):
-                    recent = await asyncio.wait_for(
-                        asyncio.to_thread(self.forward_audit._settle, now), timeout=15,
-                    )
-                    recovered = await asyncio.wait_for(
+                # The health check runs under 15 s waits, but a wait abandons
+                # only the wait: the thread keeps running and holds its pooled
+                # connection until a statement timeout fires. The watchdog task
+                # never set one (RIVAL-N: inspect held a connection for 11.5 s
+                # while the pool filled), so bound its statements to 12 s —
+                # under every 15 s wait here. Scoped narrowly, restored before
+                # the acceptance task below is spawned: its first post-restart
+                # read takes ~20 s and must not inherit this bound.
+                with statement_timeout(WATCHDOG_STATEMENT_TIMEOUT_MS):
+                    observed = await asyncio.wait_for(
                         asyncio.to_thread(
-                            self.forward_audit.reconcile_stale_settlements,
-                            now, limit=120,
-                        ), timeout=15,
+                            self.health_monitor.inspect, now=now,
+                            expected_feeds=feeds,
+                            learning_enabled=self.autonomous is not None,
+                            streaming_enabled=self.live_stream is not None,
+                            import_enabled=self.offline_registry is not None,
+                            import_checked_at=self.candidate_sync_checked_at,
+                            import_status=self.candidate_sync_status,
+                        ),
+                        timeout=15,
                     )
-                    recovered += recent
-                    if recovered:
-                        _LOG.info(
-                            "RivaL watchdog repaired %d causally settleable forecasts",
-                            recovered,
+                    faults.update(observed)
+                    # The underlying normal settlement cycle already performs the
+                    # same idempotent recovery. Help when it is delayed, but never
+                    # manufacture missing target candles or overwrite outcomes.
+                    if ("settlement_backlog" in observed and
+                            self.forward_audit is not None):
+                        recent = await asyncio.wait_for(
+                            asyncio.to_thread(self.forward_audit._settle, now), timeout=15,
                         )
+                        recovered = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                self.forward_audit.reconcile_stale_settlements,
+                                now, limit=120,
+                            ), timeout=15,
+                        )
+                        recovered += recent
+                        if recovered:
+                            _LOG.info(
+                                "RivaL watchdog repaired %d causally settleable forecasts",
+                                recovered,
+                            )
                 # Only needed until the first hosted receipt is logged; after
                 # that, re-running the join every watchdog pass just held a
                 # database connection for seconds (status card "database busy").
@@ -3268,10 +3281,11 @@ class RivalDiscordClient(discord.Client):
                              or self._acceptance_log_task.done())):
                     self._acceptance_log_task = asyncio.ensure_future(
                         self._log_acceptance_once(now))
-                events = await asyncio.wait_for(
-                    asyncio.to_thread(self.health_monitor.publish, faults, now=now),
-                    timeout=15,
-                )
+                with statement_timeout(WATCHDOG_STATEMENT_TIMEOUT_MS):
+                    events = await asyncio.wait_for(
+                        asyncio.to_thread(self.health_monitor.publish, faults, now=now),
+                        timeout=15,
+                    )
                 webhook = os.environ.get("RIVAL_HEALTH_DISCORD_WEBHOOK_URL", "")
                 if (events and webhook.startswith((
                     "https://discord.com/api/webhooks/",

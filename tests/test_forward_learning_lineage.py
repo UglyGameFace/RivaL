@@ -77,7 +77,10 @@ async def test_results_page_shows_actual_training_provenance_without_claiming_ac
     )
     try:
         view.screen = "accuracy"
-        view.section = "lineage"
+        # Audit Step 3: lineage is the "Is it learning from history?"
+        # detail topic inside "Is anything better?".
+        view.section = "better"
+        view.detail = "lineage"
         view._rebuild()
         embed = await view.render()
         values = {field.name: field.value for field in embed.fields}

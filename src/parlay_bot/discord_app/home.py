@@ -3036,8 +3036,12 @@ class GuidedHome(discord.ui.View):
                         and hasattr(panel, "_rebuild")):
                         panel.asset = self.coin
                         panel.screen = "accuracy"
-                        panel.section = ("tracker" if action == "track-forward"
-                                         else "lineage")
+                        # Audit Step 3: the drill-down opens the same
+                        # evidence as its detail topic inside "Is anything
+                        # better?", not a standalone section.
+                        panel.section = "better"
+                        panel.detail = ("tracker" if action == "track-forward"
+                                        else "lineage")
                         panel._rebuild()
                     await interaction.followup.send(
                         embed=await panel.render(), view=panel,

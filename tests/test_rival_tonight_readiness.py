@@ -47,6 +47,9 @@ async def test_accuracy_tab_shows_live_per_exchange_blocker_and_no_unverified_be
     try:
         view.screen = "accuracy"
         view.section = "venue"
+        # Audit Step 3: the blocked-exchange topic lives inside
+        # "Is it running?".
+        view.detail = "venue"
         view._rebuild()
         selects = [
             item for item in view.children

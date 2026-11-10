@@ -80,18 +80,10 @@ _SECTIONS = {
     ),
     "accuracy": (
         ("overview", "At a glance"),
-        ("engine", "Is the engine running?"),
-        ("readiness", "Can RivaL predict yet?"),
-        ("progress", "Is any model proven better?"),
-        ("tracker", "Track next predictions"),
-        ("lineage", "Is it learning from history?"),
-        ("venue", "Which exchange is blocked?"),
-        ("five", "5-minute predictions"),
-        ("fifteen", "15-minute predictions"),
-        ("calibration", "Are probabilities reliable?"),
-        ("ledger", "Recent predictions"),
-        ("costs", "Profit after trading fees"),
-        ("method", "How results are checked"),
+        ("running", "Is it running?"),
+        ("accuracy", "How accurate is it?"),
+        ("better", "Is anything better?"),
+        ("money", "Would it make money?"),
         ("technical", "Technical evidence"),
     ),
     "ai": (
@@ -100,6 +92,48 @@ _SECTIONS = {
         ("analysis", "AI assessment"),
     ),
 }
+# Audit Step 3 (2026-11-10): the accuracy ("Results") screen lists 5
+# consolidated sections + the raw technical page, not 14. NOTHING is
+# deleted: each old section survives as a detail topic inside its new
+# home, reachable behind a detail button on the consolidated card.
+# Old keys still resolve — a stale menu or deep link lands on the
+# consolidated answer, never a dead section.
+ACCURACY_SECTIONS = {
+    "overview": ("overview",),
+    "running": ("engine", "readiness", "venue"),
+    "accuracy": ("five", "fifteen", "calibration", "ledger"),
+    "better": ("progress", "lineage", "tracker"),
+    "money": ("costs", "method"),
+    "technical": ("technical",),
+}
+LEGACY_SECTION_MAP = {
+    old: new for new, olds in ACCURACY_SECTIONS.items() for old in olds
+}
+# The old section labels, reused for detail buttons and the compact
+# description when a detail topic is open.
+ACCURACY_DETAIL_LABELS = {
+    "engine": "Is the engine running?",
+    "readiness": "Can RivaL predict yet?",
+    "venue": "Which exchange is blocked?",
+    "five": "5-minute predictions",
+    "fifteen": "15-minute predictions",
+    "calibration": "Are probabilities reliable?",
+    "ledger": "Recent predictions",
+    "progress": "Is any model proven better?",
+    "lineage": "Is it learning from history?",
+    "tracker": "Track next predictions",
+    "costs": "Profit after trading fees",
+    "method": "How results are checked",
+}
+
+
+def _resolve_section(screen: str, section: str) -> str:
+    """An old accuracy key resolves to its consolidated card."""
+    if screen == "accuracy":
+        return LEGACY_SECTION_MAP.get(section, section)
+    return section
+
+
 # Audit Step 2: field names use the one display-name set (answer_cards).
 # Each tuple lists the new name first, then the old name, so the compact
 # view still finds a field built by older code paths or tests.
@@ -136,6 +170,27 @@ _FIELD_GROUPS = {
         "ledger": ("Prediction ledger · prospective",),
         "costs": ("Execution cost verification", "How accuracy is audited"),
         "method": ("How accuracy is audited",),
+        # Audit Step 3: the consolidated cards show the headline
+        # answer-first card of each absorbed topic (live feed + two);
+        # the rest of the topics sit behind detail buttons.
+        "running": ("Automatic learning engine",
+                    "Main model forecast readiness",
+                    "Mathematical forecast readiness",
+                    "Why this exchange", "Forward issue audit"),
+        "accuracy": ("Forward 5-minute evaluation",
+                     "Forward 15-minute evaluation", "Research verdict",
+                     "Forward 5m calibration", "Forward 15m calibration",
+                     "Prediction ledger · prospective"),
+        "better": ("Future model proof",
+                   "Prospective skill by market",
+                   "Prospective skill by market regime",
+                   "How is RivaL learning?",
+                   "Are 6-year history models ready?",
+                   "Are advanced models ready?",
+                   "Prediction tracking",
+                   "Test-model detail (5-minute)",
+                   "Trial detail (5-minute)"),
+        "money": ("Execution cost verification", "How accuracy is audited"),
     },
     "ai": {
         "limits": ("Private LFM3 Intelligence", "Intelligence status"),
@@ -171,6 +226,46 @@ class _SectionSelect(discord.ui.Select["ResearchDashboard"]):
         dashboard = self.view
         assert dashboard is not None
         dashboard.section = self.values[0]
+        dashboard.detail = None
+        await dashboard.redraw(interaction)
+
+
+class _DetailButton(discord.ui.Button["ResearchDashboard"]):
+    """One absorbed topic behind a consolidated card (audit Step 3).
+
+    Opens that topic's old section content — one sentence per number,
+    per Step 2's rules — with a back button to the consolidated card.
+    """
+
+    def __init__(self, topic: str) -> None:
+        super().__init__(
+            label=ACCURACY_DETAIL_LABELS[topic],
+            style=discord.ButtonStyle.secondary,
+            custom_id=f"rival:research:detail:{topic}", row=2,
+        )
+        self.topic = topic
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        dashboard.detail = self.topic
+        await dashboard.redraw(interaction)
+
+
+class _DetailBackButton(discord.ui.Button["ResearchDashboard"]):
+    """Back from a detail topic to its consolidated card (audit Step 3)."""
+
+    def __init__(self, section: str) -> None:
+        super().__init__(
+            label=f"← Back to {dict(_SECTIONS['accuracy'])[section]}",
+            style=discord.ButtonStyle.secondary,
+            custom_id="rival:research:detail:back", row=2,
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        dashboard.detail = None
         await dashboard.redraw(interaction)
 
 
@@ -258,7 +353,13 @@ def _short(value: str, limit: int = 225) -> str:
 
 def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord.Embed:
     """A real phone-sized screen; detailed metrics are separate screens."""
-    label = dict(_SECTIONS[screen]).get(section, "Overview")
+    # Audit Step 3: a detail topic keeps its old label in the header.
+    label = dict(_SECTIONS[screen]).get(section)
+    if label is None:
+        label = (
+            ACCURACY_DETAIL_LABELS.get(section, "Overview")
+            if screen == "accuracy" else "Overview"
+        )
     result = discord.Embed(
         title=full.title,
         description={
@@ -585,7 +686,9 @@ class _TrackVenueButton(discord.ui.Button["ResearchDashboard"]):
     async def callback(self, interaction: discord.Interaction) -> None:
         dashboard = self.view
         assert dashboard is not None
-        dashboard.section = "progress"
+        # The venue picker lives on the proof detail topic now.
+        dashboard.section = "better"
+        dashboard.detail = "progress"
         await dashboard.redraw(interaction)
 
 
@@ -606,6 +709,7 @@ class _ScreenButton(discord.ui.Button["ResearchDashboard"]):
         dashboard = self.view
         dashboard.screen = self.screen
         dashboard.section = "overview"
+        dashboard.detail = None
         dashboard.message = None
         await dashboard.redraw(interaction)
 
@@ -676,6 +780,7 @@ class _AskButton(discord.ui.Button["ResearchDashboard"]):
         await interaction.response.defer()
         dashboard.screen = "math"
         dashboard.section = "ai"
+        dashboard.detail = None
         dashboard.message = None
         dashboard.opinion = None
         try:
@@ -823,6 +928,9 @@ class ResearchDashboard(discord.ui.View):
         self.asset = "BTC"
         self.screen = "opportunities"
         self.section = "overview"
+        # Audit Step 3: the open detail topic inside a consolidated
+        # accuracy section (an old section key), else None.
+        self.detail: str | None = None
         self.selected_venue = venues[0] if venues else ""
         # Track Next defaults to Polymarket: that is where users place bets.
         self.track_platform = "polymarket"
@@ -846,7 +954,21 @@ class ResearchDashboard(discord.ui.View):
             return False
         return True
 
+    def _render_topics(self) -> tuple[str, ...]:
+        """Old section keys rendered by this view: the open detail topic,
+        else every topic the consolidated section absorbs. A detail
+        topic from another section is ignored, never rendered stale."""
+        if self.screen != "accuracy":
+            return (self.section,)
+        section = _resolve_section(self.screen, self.section)
+        topics = ACCURACY_SECTIONS.get(section, (section,))
+        if (self.detail is not None and self.detail in topics
+                and self.detail != section):
+            return (self.detail,)
+        return topics
+
     def _rebuild(self) -> None:
+        self.section = _resolve_section(self.screen, self.section)
         self.clear_items()
         for name in ("opportunities", "math", "accuracy"):
             item = _ScreenButton(name)
@@ -861,16 +983,25 @@ class ResearchDashboard(discord.ui.View):
         self.add_item(_AssetSelect(self.asset))
         self.add_item(_RefreshButton())
         self.add_item(_SectionSelect(self.screen, self.section))
-        if self.screen == "accuracy" and self.section == "tracker":
+        topics = self._render_topics()
+        single = len(topics) == 1
+        if self.screen == "accuracy" and not single:
+            # One detail button per absorbed topic on the consolidated
+            # card; the topic content itself is one tap away.
+            for topic in topics:
+                self.add_item(_DetailButton(topic))
+        elif self.screen == "accuracy" and self.detail is not None:
+            self.add_item(_DetailBackButton(self.section))
+        if self.screen == "accuracy" and single and topics[0] == "tracker":
             self.add_item(_TrackStartSelect())
             self.add_item(_TrackPlatformButton(self.track_platform))
             if self.track_platform != "polymarket":
                 self.add_item(_TrackVenueButton())
         if self.screen == "opportunities" and self.target_service is not None:
             self.add_item(_QuickTargetButton())
-        if (((self.screen == "accuracy" and self.section == "venue")
-             or (self.screen == "math" and self.section == "history")
-              or (self.screen == "accuracy" and self.section == "progress"))
+        if (((self.screen == "accuracy"
+              and bool(set(topics) & {"venue", "progress"}))
+             or (self.screen == "math" and self.section == "history"))
                 and self.venues):
             self.add_item(_VenueSelect(self.venues, self.selected_venue))
         if self.screen == "ai" or (self.screen == "math" and self.section == "ai"):
@@ -1156,9 +1287,14 @@ class ResearchDashboard(discord.ui.View):
                 crypto_desk_embed, self.market, asset=self.asset,
                 proof=self.section == "proof",
             )
+        # Audit Step 3: an old accuracy key lands on its consolidated
+        # card; a detail topic compacts by its own field groups.
+        self.section = _resolve_section(self.screen, self.section)
         detailed = await self._render_full()
+        topics = self._render_topics()
+        compact_section = topics[0] if len(topics) == 1 else self.section
         return _compact_embed(
-            detailed, screen=self.screen, section=self.section,
+            detailed, screen=self.screen, section=compact_section,
         )
 
     async def _render_full(self) -> discord.Embed:
@@ -1174,6 +1310,12 @@ class ResearchDashboard(discord.ui.View):
 
     async def _render_full_inner(self) -> discord.Embed:
         """Current authoritative data, never returned as a giant Discord embed."""
+        # Audit Step 3: an old accuracy key lands on its consolidated
+        # card; ``topics`` below is the one topic (detail view) or the
+        # whole absorbed set (consolidated view).
+        self.section = _resolve_section(self.screen, self.section)
+        topics = self._render_topics()
+        single = len(topics) == 1
         embed = discord.Embed(
             title=f"RivaL  |  {self.asset} Research",
             description=(
@@ -1685,7 +1827,7 @@ class ResearchDashboard(discord.ui.View):
             )
             return embed
 
-        if self.screen == "accuracy" and self.section == "tracker":
+        if self.screen == "accuracy" and "tracker" in topics:
             polymarket = self.track_platform == "polymarket"
             if self.market is None:
                 text = "Database unavailable. No tracking can be checked."
@@ -1720,9 +1862,10 @@ class ResearchDashboard(discord.ui.View):
                       if polymarket else
                       f"Next predictions only · {self.selected_venue} · No real P&L")
             )
-            return embed
+            if single:
+                return embed
 
-        if self.screen == "accuracy" and self.section == "progress":
+        if self.screen == "accuracy" and "progress" in topics:
             if self.market is None:
                 value = "Database unavailable. No model proof can be checked."
             else:
@@ -1764,7 +1907,8 @@ class ResearchDashboard(discord.ui.View):
             embed.set_footer(
                 text="Per-exchange future scores · No real fills or trading approval"
             )
-            return embed
+            if single:
+                return embed
 
         if self.screen == "accuracy":
             # These independent proof pages must render even if a separate
@@ -1773,7 +1917,7 @@ class ResearchDashboard(discord.ui.View):
             # Only request expensive, detailed proof when the user
             # actually opens that page. This is a fresh DB query, not
             # a 5-minute stale widget or an LLM-generated number.
-            if self.section in ("lineage", "technical"):
+            if set(topics) & {"lineage", "technical"}:
                 try:
                     monitor = ForwardAccuracyMonitor(self.market)
                     rows = []
@@ -1811,7 +1955,7 @@ class ResearchDashboard(discord.ui.View):
                     # Audit Step 2: the lineage section answers first
                     # ("Is it learning from history?"); the per-horizon
                     # training lines stay under "Raw numbers:".
-                    if self.section == "lineage":
+                    if "lineage" in topics:
                         detail_lines = tuple(
                             f"{horizon}-minute: "
                             f"{int(proof['historically_seeded'])} of "
@@ -1833,20 +1977,20 @@ class ResearchDashboard(discord.ui.View):
                             "An unapproved six-month archive does not count as live model training."
                         )
                     embed.add_field(
-                        name=("How is RivaL learning?" if self.section == "lineage"
+                        name=("How is RivaL learning?" if "lineage" in topics
                               else "Model training actually used"),
                         value=fit_embed_field_value(lineage_value), inline=False,
                     )
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL model training lineage unavailable")
                     embed.add_field(
-                        name=("How is RivaL learning?" if self.section == "lineage"
+                        name=("How is RivaL learning?" if "lineage" in topics
                               else "Model training actually used"),
                         value="Training history cannot be checked right now. "
                               "Do not assume historical training was used.",
                         inline=False,
                     )
-            if self.section in ("lineage", "technical"):
+            if set(topics) & {"lineage", "technical"}:
                 try:
                     live_proof = await asyncio.to_thread(
                         ForwardAccuracyMonitor(self.market).boosted_production_evidence,
@@ -1882,7 +2026,7 @@ class ResearchDashboard(discord.ui.View):
                         if blockers else "Screening blockers: none recorded"
                     )
                     incumbent_proof = None
-                    if self.section == "lineage":
+                    if "lineage" in topics:
                         try:
                             incumbent_proof = await asyncio.to_thread(
                                 ForwardAccuracyMonitor(self.market).summary,
@@ -1891,7 +2035,7 @@ class ResearchDashboard(discord.ui.View):
                         except Exception:  # noqa: BLE001 - baseline read is independent
                             _LOG.exception("RivaL main model forward counters unavailable")
                     embed.add_field(
-                        name=("Are advanced models ready?" if self.section == "lineage"
+                        name=("Are advanced models ready?" if "lineage" in topics
                               else "Boosted model production proof"),
                         value=fit_embed_field_value(
                             boosted_card(
@@ -1899,7 +2043,7 @@ class ResearchDashboard(discord.ui.View):
                                 raw=_plain_boosted_proof(
                                     live_proof, incumbent=incumbent_proof),
                             ).field_value()
-                            if self.section == "lineage" else (
+                            if "lineage" in topics else (
                             f"**Built from history:** {live_proof['portable_imported']} models, "
                             f"**{live_proof['portable_screened']}** passed screening.\n"
                             f"{explanation}\n"
@@ -1918,13 +2062,13 @@ class ResearchDashboard(discord.ui.View):
                 except Exception:  # noqa: BLE001 - source evidence fails closed
                     _LOG.exception("RivaL boosted production ledger read unavailable")
                     embed.add_field(
-                        name=("Are advanced models ready?" if self.section == "lineage"
+                        name=("Are advanced models ready?" if "lineage" in topics
                               else "Boosted model production proof"),
                         value="Cannot check model approval right now. "
                               "No model readiness or profitability can be assumed.",
                         inline=False,
                     )
-            if self.section == "ledger":
+            if "ledger" in topics:
                 try:
                     issued = await asyncio.to_thread(
                         ForwardAccuracyMonitor(self.market).recent_issued,
@@ -1963,7 +2107,7 @@ class ResearchDashboard(discord.ui.View):
                         value="Database proof unavailable; no forecast inferred.",
                         inline=False,
                     )
-            if self.section == "costs":
+            if "costs" in topics:
                 costs_raw = (
                     "**NOT VERIFIED.** RivaL has no authenticated "
                     "matched entry/exit fill receipts for these "
@@ -1982,15 +2126,14 @@ class ResearchDashboard(discord.ui.View):
                         costs_card(raw=costs_raw).field_value()),
                     inline=False,
                 )
-            # The selected evidence above is already fresh and source-specific.
-            # Do not run every other accuracy, analytics and readiness query
-            # for lineage, ledger or cost screens. The old full-render
-            # path did this despite showing at most two fields on a phone.
-            if self.section in ("lineage", "technical", "ledger", "costs"):
+            # A detail topic ends here, exactly as its old section did;
+            # a consolidated card keeps going so its other topics' fields
+            # are built too.
+            if single and topics[0] in ("lineage", "technical", "ledger", "costs"):
                 embed.set_footer(text="Read-only database evidence • No trading approval")
                 return embed
 
-            if self.section == "engine":
+            if "engine" in topics:
                 # Read-only proof that the autonomous engine actually attempted
                 # its last scheduled research cycle. Do not confuse zero issued
                 # forecasts with a failed learning process.
@@ -2139,10 +2282,22 @@ class ResearchDashboard(discord.ui.View):
                 "from the SAME exchange after outcomes are observed. "
                 "No live bets or automated trading."
             )
-            if self.section == "engine":
+            if single and topics[0] == "engine":
                 # Engine/worker health is a distinct live read. It must not
                 # depend on slow accuracy baselines or external AI analytics.
                 embed.set_footer(text="Live cycle and issuance diagnostics • Not skill proof")
+                return embed
+            # Audit Step 3: only the tail pieces a rendered topic needs.
+            # "Is anything better?" has no summary or analytics; its
+            # topics are all built above, so the tail is skipped whole.
+            needs_tail = single or bool(set(topics) & {
+                "overview", "five", "fifteen", "readiness", "venue",
+                "calibration", "method"})
+            if not needs_tail:
+                embed.set_footer(
+                    text="Live PostgreSQL audit • New outcomes accrue over time • "
+                         "No accuracy guarantee"
+                )
                 return embed
             if self.market is None or not self.shadow_enabled:
                 embed.add_field(
@@ -2166,7 +2321,7 @@ class ResearchDashboard(discord.ui.View):
                         inline=False,
                     )
                 else:
-                    if self.section in ("readiness", "venue"):
+                    if set(topics) & {"readiness", "venue"}:
                         # Always recompute genuine live observation readiness from
                         # PostgreSQL, never reuse six-month historical cache.
                         try:
@@ -2227,268 +2382,280 @@ class ResearchDashboard(discord.ui.View):
                                 )),
                                 inline=False,
                             )
-                    for horizon in (5, 15):
-                        stats = report["last_7d"][horizon]
-                        earlier = report["prior_7d"][horizon]
-                        n = stats["settled"]
-                        scored = int(stats.get("scored", n) or 0)
-                        if n == 0 or scored == 0:
-                            value = (
-                                f"Issued: **{stats['issued']}** · settled: **{n}**, "
-                                f"valid scored pairs: **{scored}**. "
-                                "No measurable accuracy yet."
-                            )
-                        else:
-                            hit = (
-                                rate_or_too_few(
-                                    scored,
-                                    f"{stats['hit_rate'] * 100:.1f}%",
-                                    what="scored")
-                                if stats["hit_rate"] is not None else "unavailable"
-                            )
-                            value = (
-                                f"Issued: **{stats['issued']:,}**, settled: "
-                                f"**{n:,}** across {stats['venues']} exchanges.\n"
-                                f"Directional hit rate: **{hit}**.\n"
-                                + (
-                                    f"Brier loss: **{stats['brier']:.4f}** vs "
-                                    f"baseline **{stats['baseline_brier']:.4f}** "
-                                    "(lower is better)."
-                                    if stats["brier"] is not None
-                                    and stats["baseline_brier"] is not None
-                                    else "Brier comparison unavailable: unscored settlements."
+                    # Audit Step 3: the horizon summaries belong
+                    # to "At a glance" / "How accurate is it?"
+                    # (and the old single-topic views); "Is it
+                    # running?" and "Would it make money?" do not
+                    # show them.
+                    if single or set(topics) & {"overview", "five", "fifteen"}:
+                        for horizon in (5, 15):
+                            stats = report["last_7d"][horizon]
+                            earlier = report["prior_7d"][horizon]
+                            n = stats["settled"]
+                            scored = int(stats.get("scored", n) or 0)
+                            if n == 0 or scored == 0:
+                                value = (
+                                    f"Issued: **{stats['issued']}** · settled: **{n}**, "
+                                    f"valid scored pairs: **{scored}**. "
+                                    "No measurable accuracy yet."
                                 )
-                            )
-                            if scored != n:
-                                value += (
-                                    f"\nOnly {scored}/{n} settled records have "
-                                    "valid paired scores. No approval inferred."
+                            else:
+                                hit = (
+                                    rate_or_too_few(
+                                        scored,
+                                        f"{stats['hit_rate'] * 100:.1f}%",
+                                        what="scored")
+                                    if stats["hit_rate"] is not None else "unavailable"
                                 )
-                            if stats["model_beats_baseline"] is None:
+                                value = (
+                                    f"Issued: **{stats['issued']:,}**, settled: "
+                                    f"**{n:,}** across {stats['venues']} exchanges.\n"
+                                    f"Directional hit rate: **{hit}**.\n"
+                                    + (
+                                        f"Brier loss: **{stats['brier']:.4f}** vs "
+                                        f"baseline **{stats['baseline_brier']:.4f}** "
+                                        "(lower is better)."
+                                        if stats["brier"] is not None
+                                        and stats["baseline_brier"] is not None
+                                        else "Brier comparison unavailable: unscored settlements."
+                                    )
+                                )
+                                if scored != n:
+                                    value += (
+                                        f"\nOnly {scored}/{n} settled records have "
+                                        "valid paired scores. No approval inferred."
+                                    )
+                                if stats["model_beats_baseline"] is None:
+                                    value += (
+                                        "\nNot enough completed trials to "
+                                        "judge predictive skill (minimum 50)."
+                                    )
+                                else:
+                                    value += (
+                                        "\nCandidate "
+                                        + ("beats" if stats["model_beats_baseline"]
+                                           else "does not beat")
+                                        + " baseline in this window."
+                                    )
+                            if (earlier["settled"] >= 50 and n >= 50
+                                and earlier["brier"] is not None and stats["brier"] is not None
+                                and earlier.get("scored", earlier["settled"]) == earlier["settled"]
+                                and scored == n):
                                 value += (
-                                    "\nNot enough completed trials to "
-                                    "judge predictive skill (minimum 50)."
+                                    f"\nPrevious non-overlapping 7 days: "
+                                    f"{earlier['settled']} settled; "
+                                    f"Brier {earlier['brier']:.4f} vs "
+                                    f"{stats['brier']:.4f} now."
                                 )
                             else:
                                 value += (
-                                    "\nCandidate "
-                                    + ("beats" if stats["model_beats_baseline"]
-                                       else "does not beat")
-                                    + " baseline in this window."
+                                    "\nAccuracy trend: awaiting comparable "
+                                    "previous/current 7-day cohorts."
                                 )
-                        if (earlier["settled"] >= 50 and n >= 50
-                            and earlier["brier"] is not None and stats["brier"] is not None
-                            and earlier.get("scored", earlier["settled"]) == earlier["settled"]
-                            and scored == n):
-                            value += (
-                                f"\nPrevious non-overlapping 7 days: "
-                                f"{earlier['settled']} settled; "
-                                f"Brier {earlier['brier']:.4f} vs "
-                                f"{stats['brier']:.4f} now."
+                            embed.add_field(
+                                name=f"Forward {horizon}-minute evaluation",
+                                value=fit_embed_field_value(
+                                    _forward_eval_card(horizon, stats, scored, value)),
+                                inline=False,
+                            )
+                        # Never replace verified out-of-sample results with a
+                        # compelling-looking near-term price move. A short period
+                        # of market collection is not a validated betting edge.
+                        recent_5 = report["last_7d"][5]
+                        recent_15 = report["last_7d"][15]
+                        window = "the last 7 days"
+                        try:
+                            first = min(
+                                datetime.fromisoformat(str(x)) for x in (
+                                    recent_5.get("first_issued"), recent_15.get("first_issued"),
+                                ) if x
+                            )
+                            age = datetime.now(UTC) - first
+                            if first.tzinfo is not None and age < timedelta(days=6, hours=12):
+                                window = (f"the {max(1, round(age.total_seconds() / 86400))} days "
+                                          f"since this model went live ({first:%b %d})")
+                        except (TypeError, ValueError):
+                            pass
+                        embed.add_field(
+                            name="Research verdict",
+                            value=fit_embed_field_value(
+                                "**NO VERIFIED BETTING EDGE.** RivaL may observe "
+                                "live prices and issue shadow predictions, but "
+                                f"only **{recent_5['settled']:,}** five-minute and "
+                                f"**{recent_15['settled']:,}** fifteen-minute "
+                                "prospective forecasts have been graded in "
+                                f"{window}. Real fill costs, funding, "
+                                "slippage and liquidation risk are not fully "
+                                "validated. No auto-betting orders are placed. "
+                                "Do not interpret a green feed or historical "
+                                "momentum as a recommended trade."
+                            ), inline=False,
+                        )
+                        # Overview and horizon summaries already have their verified
+                        # prospective results; advanced analytics belongs to its own section.
+                        if single and topics[0] in ("overview", "five", "fifteen", "readiness", "venue"):
+                            return embed
+                    # Audit Step 3: the analytics + calibration
+                    # detail belongs to "How accurate is it?" and
+                    # "Would it make money?" (and the old
+                    # single-topic views).
+                    if set(topics) & {"calibration", "method"}:
+                        # Database evidence is queried at every Accuracy screen
+                        # render, never a frozen Discord embed or cached AI claim.
+                        try:
+                            details = await asyncio.to_thread(
+                                analytics_snapshot, self.market, asset=self.asset,
+                            )
+                        except Exception:  # noqa: BLE001
+                            _LOG.exception("Advanced RivaL analytics unavailable")
+                            embed.add_field(
+                                name="Independent track analytics",
+                                value="The forward analytics query is unavailable. "
+                                      "No accuracy numbers were inferred.",
+                                inline=False,
                             )
                         else:
-                            value += (
-                                "\nAccuracy trend: awaiting comparable "
-                                "previous/current 7-day cohorts."
-                            )
-                        embed.add_field(
-                            name=f"Forward {horizon}-minute evaluation",
-                            value=fit_embed_field_value(
-                                _forward_eval_card(horizon, stats, scored, value)),
-                            inline=False,
-                        )
-                    # Never replace verified out-of-sample results with a
-                    # compelling-looking near-term price move. A short period
-                    # of market collection is not a validated betting edge.
-                    recent_5 = report["last_7d"][5]
-                    recent_15 = report["last_7d"][15]
-                    window = "the last 7 days"
-                    try:
-                        first = min(
-                            datetime.fromisoformat(str(x)) for x in (
-                                recent_5.get("first_issued"), recent_15.get("first_issued"),
-                            ) if x
-                        )
-                        age = datetime.now(UTC) - first
-                        if first.tzinfo is not None and age < timedelta(days=6, hours=12):
-                            window = (f"the {max(1, round(age.total_seconds() / 86400))} days "
-                                      f"since this model went live ({first:%b %d})")
-                    except (TypeError, ValueError):
-                        pass
-                    embed.add_field(
-                        name="Research verdict",
-                        value=fit_embed_field_value(
-                            "**NO VERIFIED BETTING EDGE.** RivaL may observe "
-                            "live prices and issue shadow predictions, but "
-                            f"only **{recent_5['settled']:,}** five-minute and "
-                            f"**{recent_15['settled']:,}** fifteen-minute "
-                            "prospective forecasts have been graded in "
-                            f"{window}. Real fill costs, funding, "
-                            "slippage and liquidation risk are not fully "
-                            "validated. No auto-betting orders are placed. "
-                            "Do not interpret a green feed or historical "
-                            "momentum as a recommended trade."
-                        ), inline=False,
-                    )
-                    # Overview and horizon summaries already have their verified
-                    # prospective results; advanced analytics belongs to its own section.
-                    if self.section in ("overview", "five", "fifteen", "readiness", "venue"):
-                        return embed
-                    # Database evidence is queried at every Accuracy screen
-                    # render, never a frozen Discord embed or cached AI claim.
-                    try:
-                        details = await asyncio.to_thread(
-                            analytics_snapshot, self.market, asset=self.asset,
-                        )
-                    except Exception:  # noqa: BLE001
-                        _LOG.exception("Advanced RivaL analytics unavailable")
-                        embed.add_field(
-                            name="Independent track analytics",
-                            value="The forward analytics query is unavailable. "
-                                  "No accuracy numbers were inferred.",
-                            inline=False,
-                        )
-                    else:
-                        for horizon in (5, 15):
-                            item = details["math"][horizon]
-                            recent = item["last_7d"]
-                            gate = details["model_governance"].get(horizon)
-                            brier = (
-                                f"{recent['brier']:.4f}"
-                                if recent["brier"] is not None else "pending"
-                            )
-                            calibration = (
-                                f"{recent['ece']:.4f}"
-                                if recent["ece"] is not None else "pending"
-                            )
-                            stress = item["cost_stress_7d"]
-                            harsh = stress["scenarios"]["severe_stress"]
-                            cost = (
-                                f"{harsh['mean_net_bps']:+.1f} bps"
-                                if harsh["mean_net_bps"] is not None
+                            for horizon in (5, 15):
+                                item = details["math"][horizon]
+                                recent = item["last_7d"]
+                                gate = details["model_governance"].get(horizon)
+                                brier = (
+                                    f"{recent['brier']:.4f}"
+                                    if recent["brier"] is not None else "pending"
+                                )
+                                calibration = (
+                                    f"{recent['ece']:.4f}"
+                                    if recent["ece"] is not None else "pending"
+                                )
+                                stress = item["cost_stress_7d"]
+                                harsh = stress["scenarios"]["severe_stress"]
+                                cost = (
+                                    f"{harsh['mean_net_bps']:+.1f} bps"
+                                    if harsh["mean_net_bps"] is not None
+                                    else "not measurable"
+                                )
+                                state = (
+                                    gate["status"].replace("_", " ")
+                                    if gate is not None else "no review yet"
+                                )
+                                late = int((details.get("issued_after_window_opened_7d") or {})
+                                           .get(horizon, 0))
+                                late_note = (
+                                    f"⚠️ {late:,} graded {horizon}-minute predictions are not "
+                                    "counted here: each was issued after its window had "
+                                    "already started (using only data from before it).\n"
+                                    if late and not recent["events"] else ""
+                                )
+                                embed.add_field(
+                                    name=f"Math {horizon}m · independent UTC windows",
+                                    value=fit_embed_field_value(
+                                        late_note +
+                                        f"**{recent['events']}** forward events, "
+                                        f"**{details['math_pending']}** awaiting results "
+                                        "(all exchanges and timeframes).\n"
+                                        f"Brier: {brier} · calibration gap: {calibration}\n"
+                                        f"Baseline-adjusted 7d skill trend: **{item['trend']}** "
+                                        "(100+ unique events per period; "
+                                        "observational research only).\n"
+                                        f"Shadow model gate: **{state}**.\n"
+                                        "Net after hypothetical severe "
+                                        f"{harsh['assumed_total_bps']:.0f} bps "
+                                        f"fees/slippage/adverse funding: **{cost}** "
+                                        f"({stress['unique_decided_targets']} UTC targets, "
+                                        f"{stress['utc_days']} days; "
+                                        f"{harsh['status'].replace('_', ' ')}). "
+                                        "NOT actual fills or trading approval."
+                                    ),
+                                    inline=False,
+                                )
+                            for horizon in (5, 15):
+                                reliability = details["math"][horizon][
+                                    "forward_reliability_7d"
+                                ]
+                                ece = (
+                                    f"{reliability['ece']:.4f}"
+                                    if reliability["ece"] is not None
+                                    else "not measurable"
+                                )
+                                bins = [
+                                    f"{part['bin'] / 10:.1f}–"
+                                    f"{(part['bin'] + 1) / 10:.1f}: "
+                                    f"n={part['n']}, "
+                                    f"p={part['average_probability']:.2f}, "
+                                    f"observed={part['observed_up_rate']:.2f}"
+                                    for part in reliability["bins"][:5]
+                                ]
+                                late = int((details.get("issued_after_window_opened_7d") or {})
+                                           .get(horizon, 0))
+                                calibration_raw = (
+                                    (f"ℹ️ Not measured here, by design: each {horizon}-minute "
+                                     "prediction is issued about 1–2 minutes after its "
+                                     "result window opens (the model only uses closed "
+                                     "candles, so its accuracy score elsewhere is fair, "
+                                     "but nobody could have traded at that price). "
+                                     f"Calibration counts only predictions made before the "
+                                     f"window, and none of the {late:,} graded ones were.\n"
+                                     if late and not reliability["unique_targets"] else "") +
+                                    f"**{reliability['unique_targets']}** independent "
+                                    f"UTC target outcomes over **{reliability['days']}** "
+                                    f"days; conflicting venue labels: "
+                                    f"**{reliability['disputed_targets']}**.\\n"
+                                    f"Expected calibration error: **{ece}**. "
+                                    f"Status: **{reliability['status'].replace('_', ' ')}**.\\n"
+                                    f"Bin evidence (predicted vs observed):\\n"
+                                    + ("\\n".join(bins) if bins else "Not enough outcomes.")
+                                    + "\\nHistorical bins are descriptive, NOT "
+                                      "a calibrated deployable model or trading approval."
+                                ).replace("\\n", "\n")
+                                embed.add_field(
+                                    name=f"Forward {horizon}m calibration",
+                                    value=fit_embed_field_value(
+                                        _calibration_card(
+                                            horizon, reliability, calibration_raw)),
+                                    inline=False,
+                                )
+                            ai_status = details["historical_external_ai"]
+                            quality = (
+                                rate_or_too_few(
+                                    int(ai_status["decided"] or 0),
+                                    f"{ai_status['directional_accuracy'] * 100:.1f}%",
+                                    what="decided")
+                                if ai_status["directional_accuracy"] is not None
                                 else "not measurable"
                             )
-                            state = (
-                                gate["status"].replace("_", " ")
-                                if gate is not None else "no review yet"
-                            )
-                            late = int((details.get("issued_after_window_opened_7d") or {})
-                                       .get(horizon, 0))
-                            late_note = (
-                                f"⚠️ {late:,} graded {horizon}-minute predictions are not "
-                                "counted here: each was issued after its window had "
-                                "already started (using only data from before it).\n"
-                                if late and not recent["events"] else ""
-                            )
                             embed.add_field(
-                                name=f"Math {horizon}m · independent UTC windows",
+                                name="Historical external AI · forward outcomes",
                                 value=fit_embed_field_value(
-                                    late_note +
-                                    f"**{recent['events']}** forward events, "
-                                    f"**{details['math_pending']}** awaiting results "
-                                    "(all exchanges and timeframes).\n"
-                                    f"Brier: {brier} · calibration gap: {calibration}\n"
-                                    f"Baseline-adjusted 7d skill trend: **{item['trend']}** "
-                                    "(100+ unique events per period; "
-                                    "observational research only).\n"
-                                    f"Shadow model gate: **{state}**.\n"
-                                    "Net after hypothetical severe "
-                                    f"{harsh['assumed_total_bps']:.0f} bps "
-                                    f"fees/slippage/adverse funding: **{cost}** "
-                                    f"({stress['unique_decided_targets']} UTC targets, "
-                                    f"{stress['utc_days']} days; "
-                                    f"{harsh['status'].replace('_', ' ')}). "
-                                    "NOT actual fills or trading approval."
+                                    f"Issued **{ai_status['issued']}**, "
+                                    f"settled **{ai_status['settled']}**, "
+                                    f"directional decisions **{ai_status['decided']}**, "
+                                    f"uncertain/abstain **{ai_status['abstained']}**.\n"
+                                    f"Observed hit rate **{quality}**. "
+                                    "Self-reported confidence is NOT calibrated. "
+                                    "Source health and provider availability may "
+                                    "cause skipped cycles."
                                 ),
                                 inline=False,
                             )
-                        for horizon in (5, 15):
-                            reliability = details["math"][horizon][
-                                "forward_reliability_7d"
-                            ]
-                            ece = (
-                                f"{reliability['ece']:.4f}"
-                                if reliability["ece"] is not None
-                                else "not measurable"
-                            )
-                            bins = [
-                                f"{part['bin'] / 10:.1f}–"
-                                f"{(part['bin'] + 1) / 10:.1f}: "
-                                f"n={part['n']}, "
-                                f"p={part['average_probability']:.2f}, "
-                                f"observed={part['observed_up_rate']:.2f}"
-                                for part in reliability["bins"][:5]
-                            ]
-                            late = int((details.get("issued_after_window_opened_7d") or {})
-                                       .get(horizon, 0))
-                            calibration_raw = (
-                                (f"ℹ️ Not measured here, by design: each {horizon}-minute "
-                                 "prediction is issued about 1–2 minutes after its "
-                                 "result window opens (the model only uses closed "
-                                 "candles, so its accuracy score elsewhere is fair, "
-                                 "but nobody could have traded at that price). "
-                                 f"Calibration counts only predictions made before the "
-                                 f"window, and none of the {late:,} graded ones were.\n"
-                                 if late and not reliability["unique_targets"] else "") +
-                                f"**{reliability['unique_targets']}** independent "
-                                f"UTC target outcomes over **{reliability['days']}** "
-                                f"days; conflicting venue labels: "
-                                f"**{reliability['disputed_targets']}**.\\n"
-                                f"Expected calibration error: **{ece}**. "
-                                f"Status: **{reliability['status'].replace('_', ' ')}**.\\n"
-                                f"Bin evidence (predicted vs observed):\\n"
-                                + ("\\n".join(bins) if bins else "Not enough outcomes.")
-                                + "\\nHistorical bins are descriptive, NOT "
-                                  "a calibrated deployable model or trading approval."
-                            ).replace("\\n", "\n")
+                        if "method" in topics or single:
                             embed.add_field(
-                                name=f"Forward {horizon}m calibration",
-                                value=fit_embed_field_value(
-                                    _calibration_card(
-                                        horizon, reliability, calibration_raw)),
-                                inline=False,
+                                name="How accuracy is audited",
+                                value=(
+                                    "These are future-outcome scores, not historical "
+                                    "backfill wins. Each forecast is immutable and "
+                                    "settled once. Exchange returns are correlated, "
+                                    "so summed scores are NOT independent bets. "
+                                    "A better score on a small sample doesn't prove "
+                                    "a profitable edge after fees, funding or slippage. "
+                                    "Cost stress uses hypothetical 16/40/80 bps "
+                                    "round trips with fees, entry+exit slippage and "
+                                    "adverse funding allowances. One UTC target counts "
+                                    "once. 100 decisions over 7 days plus daily "
+                                    "consistency are required even for a hypothetical "
+                                    "pass. Real fills, funding payments, liquidation "
+                                    "and position sizing have NOT been verified."
+                                ), inline=False,
                             )
-                        ai_status = details["historical_external_ai"]
-                        quality = (
-                            rate_or_too_few(
-                                int(ai_status["decided"] or 0),
-                                f"{ai_status['directional_accuracy'] * 100:.1f}%",
-                                what="decided")
-                            if ai_status["directional_accuracy"] is not None
-                            else "not measurable"
-                        )
-                        embed.add_field(
-                            name="Historical external AI · forward outcomes",
-                            value=fit_embed_field_value(
-                                f"Issued **{ai_status['issued']}**, "
-                                f"settled **{ai_status['settled']}**, "
-                                f"directional decisions **{ai_status['decided']}**, "
-                                f"uncertain/abstain **{ai_status['abstained']}**.\n"
-                                f"Observed hit rate **{quality}**. "
-                                "Self-reported confidence is NOT calibrated. "
-                                "Source health and provider availability may "
-                                "cause skipped cycles."
-                            ),
-                            inline=False,
-                        )
-                    embed.add_field(
-                        name="How accuracy is audited",
-                        value=(
-                            "These are future-outcome scores, not historical "
-                            "backfill wins. Each forecast is immutable and "
-                            "settled once. Exchange returns are correlated, "
-                            "so summed scores are NOT independent bets. "
-                            "A better score on a small sample doesn't prove "
-                            "a profitable edge after fees, funding or slippage. "
-                            "Cost stress uses hypothetical 16/40/80 bps "
-                            "round trips with fees, entry+exit slippage and "
-                            "adverse funding allowances. One UTC target counts "
-                            "once. 100 decisions over 7 days plus daily "
-                            "consistency are required even for a hypothetical "
-                            "pass. Real fills, funding payments, liquidation "
-                            "and position sizing have NOT been verified."
-                        ), inline=False,
-                    )
             embed.set_footer(
                 text="Live PostgreSQL audit • New outcomes accrue over time • "
                      "No accuracy guarantee"
@@ -2576,6 +2743,7 @@ class ResearchDashboard(discord.ui.View):
         fresh.asset = self.asset
         fresh.screen = self.screen
         fresh.section = self.section
+        fresh.detail = self.detail
         fresh.selected_venue = self.selected_venue
         fresh.track_platform = self.track_platform
         fresh.opinion = self.opinion
@@ -2631,6 +2799,9 @@ class ResearchDashboard(discord.ui.View):
     async def redraw(
         self, interaction: discord.Interaction, *, acknowledged: bool = False,
     ) -> None:
+        # Audit Step 3: a stale section key resolves before the loading
+        # title looks it up in _SECTIONS.
+        self.section = _resolve_section(self.screen, self.section)
         # Discord needs acknowledgment before any database or model queries.
         if not acknowledged:
             await interaction.response.defer()

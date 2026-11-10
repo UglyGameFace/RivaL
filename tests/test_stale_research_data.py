@@ -12,6 +12,7 @@ from parlay_bot.discord_app.stale_dashboards import (
     DATA_BUTTONS,
     DATA_SELECTS,
     RESEARCH_BUTTONS,
+    RESEARCH_DETAIL_BUTTONS,
     RESEARCH_EXTRA_SELECTS,
     RESEARCH_SELECTS,
     build_stale_dashboard_views,
@@ -48,15 +49,16 @@ def _interaction(owner=42):
 
 
 def test_recovery_custom_ids_cover_every_live_dashboard_component():
-    research, research_extra, data = _views()
-    for view in (research, research_extra, data):
+    research, research_extra, research_detail, data = _views()
+    for view in (research, research_extra, research_detail, data):
         assert view.timeout is None and view.is_persistent()
         assert len(view.children) <= 25
         assert all(item.custom_id for item in view.children)
         assert max(item.row for item in view.children) <= 4
-    assert _ids(research) | _ids(research_extra) == {
+    assert _ids(research) | _ids(research_extra) | _ids(research_detail) == {
         f"rival:research:{a}" for a in (*RESEARCH_BUTTONS, *RESEARCH_SELECTS,
-                                        *RESEARCH_EXTRA_SELECTS)}
+                                        *RESEARCH_EXTRA_SELECTS,
+                                        *RESEARCH_DETAIL_BUTTONS)}
     assert _ids(data) == {f"rival:data:{a}" for a in (*DATA_BUTTONS, *DATA_SELECTS)}
 
 
@@ -66,14 +68,17 @@ def test_every_live_research_control_has_a_stale_fallback():
     from pathlib import Path
 
     src = Path(__file__).resolve().parents[1] / "src/parlay_bot/discord_app"
-    research, research_extra, data = _views()
-    covered = _ids(research) | _ids(research_extra) | _ids(data)
+    research, research_extra, research_detail, data = _views()
+    covered = (_ids(research) | _ids(research_extra)
+               | _ids(research_detail) | _ids(data))
     live = set()
     for name, prefix in (("research_dashboard.py", "research"), ("data_dashboard.py", "data")):
         text = (src / name).read_text()
         live |= set(re.findall(rf'custom_id="(rival:{prefix}:[a-z:-]+)"', text))
-    # f-string ids: the research screen tabs and the data navigation/choosers.
+    # f-string ids: the research screen tabs, the data navigation/choosers,
+    # and the consolidated cards' detail buttons (audit Step 3).
     live |= {f"rival:research:{screen}" for screen in ("opportunities", "math", "ai", "accuracy")}
+    live |= {f"rival:research:{a}" for a in RESEARCH_DETAIL_BUTTONS}
     live |= {f"rival:data:{screen}" for screen in ("overview", "exchanges", "markets", "coverage")}
     live |= {f"rival:data:choose:{kind}" for kind in ("exchange", "coverage", "market")}
     assert {"rival:research:track-start", "rival:research:track-venue"} <= live
@@ -87,6 +92,9 @@ def test_every_live_research_control_has_a_stale_fallback():
     ("research", "rival:research:section"),
     ("research", "rival:research:track-start"),
     ("research", "rival:research:track-venue"),
+    # Audit Step 3: the consolidated cards' back + detail buttons.
+    ("research", "rival:research:detail:back"),
+    ("research", "rival:research:detail:five"),
     ("data", "rival:data:choose:exchange"),
     ("data", "rival:data:refresh"),
 ])

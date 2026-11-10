@@ -130,13 +130,19 @@ def test_pending_missing_lineage_and_invalid_outcomes_never_complete(learning_st
 
 @pytest.mark.asyncio
 async def test_tracking_controls_are_available_without_triggering_sessions(learning_store):
+    from parlay_bot.discord_app.research_dashboard import ACCURACY_SECTIONS
+
     tracker = _monitor(learning_store)
     panel = ResearchDashboard(owner_id=42, market=PerpetualMarketStore(learning_store),
                               ai=None, venues=("hyperliquid",))
-    panel.screen, panel.section = "accuracy", "tracker"
+    # Audit Step 3: tracking is the "Track next" detail topic inside
+    # "Is anything better?", not a standalone section.
+    panel.screen, panel.section = "accuracy", "better"
+    panel.detail = "tracker"
     panel._rebuild()
     try:
-        assert "tracker" in dict(_SECTIONS["accuracy"])
+        assert "tracker" in ACCURACY_SECTIONS["better"]
+        assert "tracker" not in dict(_SECTIONS["accuracy"])
         ids = {child.custom_id: child for child in panel.children}
         assert "rival:research:track-start" in ids
         assert len(ids["rival:research:track-start"].options) == 18

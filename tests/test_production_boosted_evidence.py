@@ -108,6 +108,9 @@ async def test_lineage_page_displays_real_boosted_delivery_proof_without_new_men
     try:
         view.screen = "accuracy"
         view.section = "lineage"
+        # Audit Step 3: lineage is the detail topic inside
+        # "Is anything better?".
+        view.detail = "lineage"
         view._rebuild()
         embed = await view.render()
         fields = {field.name: str(field.value) for field in embed.fields}

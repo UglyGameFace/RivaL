@@ -120,6 +120,7 @@ from parlay_bot.research.sports_results import (
 from parlay_bot.storage.catalog import MarketCatalogStore
 from parlay_bot.storage.hot import PostgresHotStore, RelationalHotStore, SQLiteHotStore
 from parlay_bot.storage.query_scope import (
+    BACKGROUND_STATEMENT_TIMEOUT_MS,
     WATCHDOG_STATEMENT_TIMEOUT_MS,
     mark_background,
     statement_timeout,
@@ -242,6 +243,8 @@ class RivalDiscordClient(discord.Client):
         self._acceptance_cache: tuple[datetime, dict] | None = None
         self._acceptance_task: asyncio.Future[dict] | None = None
         self._acceptance_log_task: asyncio.Future[None] | None = None
+        # The 7-day challenger aggregate, run beside the watchdog pass.
+        self._regression_task: asyncio.Future[None] | None = None
         _LOG.info(
             "RivaL operational storage initialized (backend=%s)",
             self.store.database.backend,
@@ -1680,6 +1683,27 @@ class RivalDiscordClient(discord.Client):
                     if now - t < timedelta(hours=1)),
             })
         return states
+
+    async def _refresh_regressions(self, now: datetime) -> None:
+        """Recompute the 7-day challenger verdict outside the watchdog pass.
+
+        One aggregate over the whole shadow ledger: 11-12 s on production.
+        Inside the pass it hit the 12 s statement bound (RIVAL-P), held a
+        pooled connection while the pool filled (RIVAL-N) or outlasted the
+        15 s wait (RIVAL-M), and each time the pass published nothing. Here
+        it has the 60 s background bound, and the pass reads its last verdict.
+        """
+        try:
+            with statement_timeout(BACKGROUND_STATEMENT_TIMEOUT_MS):
+                await asyncio.to_thread(
+                    self.health_monitor.refresh_regressions, now=now)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - previous verdict kept; retried next pass
+            _LOG.warning(
+                "RivaL 7-day challenger score check did not finish; "
+                "retrying next watchdog pass", exc_info=True,
+            )
 
     async def _log_acceptance_once(self, now: datetime) -> None:
         try:
@@ -3239,6 +3263,17 @@ class RivalDiscordClient(discord.Client):
                           for asset in self.perp_collector.assets)
                     if self.perp_collector is not None else ()
                 )
+                # The 7-day challenger aggregate takes 11-12 s, so it runs
+                # beside this pass (one at a time, after the startup burst)
+                # and inspect only reads its stored verdict. Spawned before
+                # the 12 s scope below so it does not inherit that bound.
+                if (self.autonomous is not None
+                        and now - self._boot_at >= STARTUP_QUIET_PERIOD
+                        and self.health_monitor.regressions_due(now)
+                        and (self._regression_task is None
+                             or self._regression_task.done())):
+                    self._regression_task = asyncio.ensure_future(
+                        self._refresh_regressions(now))
                 # The health check runs under 15 s waits, but a wait abandons
                 # only the wait: the thread keeps running and holds its pooled
                 # connection until a statement timeout fires. The watchdog task
@@ -3257,6 +3292,7 @@ class RivalDiscordClient(discord.Client):
                             import_enabled=self.offline_registry is not None,
                             import_checked_at=self.candidate_sync_checked_at,
                             import_status=self.candidate_sync_status,
+                            regressions_inline=False,
                         ),
                         timeout=15,
                     )

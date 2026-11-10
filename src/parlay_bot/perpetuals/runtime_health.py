@@ -14,6 +14,9 @@ from parlay_bot.storage.hot import RelationalHotStore
 _LOG = logging.getLogger(__name__)
 # How long a challenger-regression verdict (a 7-day paired score) is reused.
 REGRESSION_RECHECK = timedelta(minutes=10)
+# How long the watchdog trusts a regression verdict it did not compute itself
+# (three missed rechecks). Past this the verdict is unknown, not clear.
+REGRESSION_STALE = timedelta(minutes=30)
 # A challenger counts as in use if it issued a forecast this recently.
 BACKLOG_GRACE = timedelta(minutes=10)
 REGRESSION_IN_USE_WITHIN = timedelta(minutes=30)
@@ -40,6 +43,8 @@ class RuntimeHealthMonitor:
         self.boot_id = uuid4().hex
         self._boot_written = False
         self._initialized = False
+        # (computed_at, faults) from the last completed 7-day aggregate.
+        self._regression_cache: tuple[datetime, dict[str, str]] | None = None
 
     def initialize(self) -> None:
         if self._initialized:
@@ -83,11 +88,18 @@ class RuntimeHealthMonitor:
         import_enabled: bool = False,
         import_checked_at: datetime | None = None,
         import_status: str = "",
+        regressions_inline: bool = True,
     ) -> dict[str, str]:
         """Inspect causal host evidence without network calls or writes.
 
         Missing optional capabilities aren't treated as failures. A newly
         started process has a bounded warm-up window for its first cycle.
+
+        ``regressions_inline=False`` is the watchdog's mode: this pass never
+        runs the 7-day challenger aggregate, it only reads the verdict that
+        ``refresh_regressions`` last stored (RIVAL-P/N/M: that one SELECT took
+        11-12 s and cost the whole pass its 12 s statement bound or 15 s wait,
+        so nothing was published).
         """
         stamp = now or datetime.now(UTC)
         if stamp.utcoffset() is None:
@@ -98,8 +110,9 @@ class RuntimeHealthMonitor:
         self.initialize()
         with self.store.connect() as conn:
             active = {
-                row["issue_key"] for row in conn.execute(
-                    "SELECT issue_key FROM rival_runtime_health_incidents WHERE state='OPEN'"
+                row["issue_key"]: row["detail"] for row in conn.execute(
+                    "SELECT issue_key,detail FROM rival_runtime_health_incidents "
+                    "WHERE state='OPEN'"
                 ).fetchall()
             }
             if learning_enabled:
@@ -256,39 +269,28 @@ class RuntimeHealthMonitor:
                         f"{matched}/{n} prospective actionable family forecasts "
                         f"have a source-matched book (by venue: {by_venue})"
                     )
-            cached = getattr(self, "_regression_cache", None)
+            cached = self._regression_cache
             if learning_enabled and cached is not None and (
-                    timedelta(0) <= stamp - cached[0] < REGRESSION_RECHECK):
+                    timedelta(0) <= stamp - cached[0]
+                    < (REGRESSION_RECHECK if regressions_inline else REGRESSION_STALE)):
                 # A 7-day paired score barely moves in minutes; re-aggregating
                 # the whole shadow ledger on every 2-minute watchdog pass was
                 # one of the slow SELECTs. The alerts themselves are unchanged.
                 faults.update(cached[1])
+            elif learning_enabled and regressions_inline:
+                faults.update(self._score_regressions(conn, stamp))
             elif learning_enabled:
-                regression_faults: dict[str, str] = {}
-                regressions = conn.execute(
-                    """SELECT venue,contract,quote,family,COUNT(*) AS n,
-                              AVG(model_brier) AS model_score,
-                              AVG(incumbent_brier) AS incumbent_score
-                       FROM rival_model_shadow_forecasts
-                       WHERE settled_at IS NOT NULL AND issued_at>=?
-                         AND model_brier IS NOT NULL AND incumbent_brier IS NOT NULL
-                       GROUP BY venue,contract,quote,family
-                       HAVING COUNT(*)>=50 AND MAX(issued_at)>=?""",
-                    # Only families still issuing: a retired or replaced
-                    # challenger keeps its record but stops raising incidents.
-                    ((stamp-timedelta(days=7)).isoformat(),
-                     (stamp-REGRESSION_IN_USE_WITHIN).isoformat()),
-                ).fetchall()
-                for row in regressions:
-                    if float(row["model_score"]) > float(row["incumbent_score"]) + 0.025:
-                        key = f"regression:{row['venue']}:{row['contract']}:{row['family']}"
-                        regression_faults[key] = (
-                            f"paired Brier {float(row['model_score']):.4f} vs "
-                            f"incumbent {float(row['incumbent_score']):.4f}, "
-                            f"n={row['n']}; promotion must stay gated"
-                        )
-                faults.update(regression_faults)
-                self._regression_cache = (stamp, regression_faults)
+                # No usable verdict (just restarted, or the aggregate has not
+                # finished). Unknown is not clear: an open regression stays
+                # open with its last verified detail instead of being closed
+                # here and re-raised when the aggregate lands.
+                faults.update({key: detail for key, detail in active.items()
+                               if key.startswith("regression:")})
+                if warm or "regression_check_stalled" in active:
+                    faults["regression_check_stalled"] = (
+                        "7-day challenger score check has not completed; "
+                        "open regressions are carried forward unverified"
+                    )
             if import_enabled:
                 import_age = _age(stamp, import_checked_at)
                 if import_age is None and (warm or "import_unverified" in active):
@@ -298,6 +300,54 @@ class RuntimeHealthMonitor:
                 if import_status in ("drive_read_unverified", "candidate_registry_unavailable"):
                     faults["import_failed"] = import_status
         return faults
+
+    def _score_regressions(self, conn, stamp: datetime) -> dict[str, str]:
+        """Run the 7-day paired challenger aggregate and store its verdict."""
+        regression_faults: dict[str, str] = {}
+        regressions = conn.execute(
+            """SELECT venue,contract,quote,family,COUNT(*) AS n,
+                      AVG(model_brier) AS model_score,
+                      AVG(incumbent_brier) AS incumbent_score
+               FROM rival_model_shadow_forecasts
+               WHERE settled_at IS NOT NULL AND issued_at>=?
+                 AND model_brier IS NOT NULL AND incumbent_brier IS NOT NULL
+               GROUP BY venue,contract,quote,family
+               HAVING COUNT(*)>=50 AND MAX(issued_at)>=?""",
+            # Only families still issuing: a retired or replaced
+            # challenger keeps its record but stops raising incidents.
+            ((stamp-timedelta(days=7)).isoformat(),
+             (stamp-REGRESSION_IN_USE_WITHIN).isoformat()),
+        ).fetchall()
+        for row in regressions:
+            if float(row["model_score"]) > float(row["incumbent_score"]) + 0.025:
+                key = f"regression:{row['venue']}:{row['contract']}:{row['family']}"
+                regression_faults[key] = (
+                    f"paired Brier {float(row['model_score']):.4f} vs "
+                    f"incumbent {float(row['incumbent_score']):.4f}, "
+                    f"n={row['n']}; promotion must stay gated"
+                )
+        self._regression_cache = (stamp, regression_faults)
+        return regression_faults
+
+    def regressions_due(self, now: datetime) -> bool:
+        """True when the stored regression verdict is missing or due a recheck."""
+        cached = self._regression_cache
+        return cached is None or not (
+            timedelta(0) <= now.astimezone(UTC) - cached[0] < REGRESSION_RECHECK)
+
+    def refresh_regressions(self, *, now: datetime | None = None) -> dict[str, str]:
+        """Recompute the regression verdict on its own connection.
+
+        The watchdog runs this beside its pass, never inside it, so the pass
+        stays point reads and cached verdicts. Read-only; a failure leaves
+        the previous verdict in place and raises to the caller.
+        """
+        stamp = now or datetime.now(UTC)
+        if stamp.utcoffset() is None:
+            raise ValueError("regression check requires a UTC-aware clock")
+        stamp = stamp.astimezone(UTC)
+        with self.store.connect() as conn:
+            return self._score_regressions(conn, stamp)
 
     def publish(
         self, faults: dict[str, str], *, now: datetime | None = None,

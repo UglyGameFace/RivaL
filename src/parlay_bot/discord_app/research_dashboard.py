@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from parlay_bot.discord_app.home import fit_embed_field_value, rate_or_too_few
 from parlay_bot.discord_app.opportunities import crypto_desk_embed
 from parlay_bot.perpetuals.ai_types import AiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
@@ -966,7 +967,7 @@ class ResearchDashboard(discord.ui.View):
                     lines.append(line)
             if not lines:
                 return "No scored trial results yet — nothing to detail."
-            return "\n".join(lines)[:1024]
+            return fit_embed_field_value("\n".join(lines))
         except Exception:  # noqa: BLE001 - detail is additive only
             _LOG.exception("RivaL trial detail read unavailable")
             return "Trial detail unavailable. No improvement claimed."
@@ -979,11 +980,17 @@ class ResearchDashboard(discord.ui.View):
         gains — no target/day counts, no disputed counts. The counts
         are not rendered anywhere now; the gains are the evidence this
         field exists to show. regime_v2 is dead — never issued once,
-        flag off — so it has no subset here. A failure in any subset
-        never hides the sections above it. The value stays 1024-capped
-        (a Discord field limit); at ~8 short lines it no longer
-        reaches the cap, so the live-family subsets are no longer cut
-        at the tail.
+        flag off — so it has no subset here. regime_v1 has no subset
+        line either: its per-regime gain is +0.0000 by design (it
+        returns the incumbent's own probability verbatim, so its
+        model Brier equals the incumbent Brier on its issued subset),
+        and a line that can never show anything else is not evidence.
+        regime_v1 still appears in the Trial detail field and on the
+        Performance-page trial rows, which report its honest trial
+        result. The value is fitted with fit_embed_field_value: tail
+        lines drop before any mid-word cut (the old [:1024] slice cut
+        the disclaimer mid-word on real numbers). A failure in any
+        subset never hides the sections above it.
         """
         try:
             monitor = ForwardAccuracyMonitor(self.market)
@@ -997,10 +1004,11 @@ class ResearchDashboard(discord.ui.View):
             # Family subsets: the same per-regime split, but only over
             # the targets each family actually issued on, so the page
             # shows whether the family won on the targets it chose.
-            # v1 keeps issuing as the control, so the subsets sit beside
-            # the incumbent split; a failure here never hides the
-            # sections above.
-            for subset_family in ("regime_v1", "regime_live_v1",
+            # regime_v1 is not a subset here: its gain is +0.0000 by
+            # design (see the docstring), so its line can never show
+            # anything else. A failure here never hides the sections
+            # above.
+            for subset_family in ("regime_live_v1",
                                   "regime_live_fast_v1"):
                 try:
                     for horizon in (5, 15):
@@ -1012,12 +1020,12 @@ class ResearchDashboard(discord.ui.View):
                         lines.append(_regime_line(subset_family, horizon, proof))
                 except Exception:  # noqa: BLE001 - subset is additive only
                     _LOG.exception("RivaL %s subset query unavailable", subset_family)
-            return (
+            return fit_embed_field_value(
                 "\n".join(lines)
                 + "\nRegimes were stamped BEFORE outcomes. "
                   "Multiple venues count once per target. "
                   "A stable shadow score is not trading profit."
-            )[:1024]
+            )
         except Exception:  # noqa: BLE001
             _LOG.exception("RivaL regime-evidence query unavailable")
             return "Regime proof unavailable. No improvement claimed."
@@ -1108,7 +1116,7 @@ class ResearchDashboard(discord.ui.View):
                     )
                     embed.add_field(
                         name="Source-native training readiness",
-                        value=(
+                        value=fit_embed_field_value(
                             f"**{state['venue']} / {state['contract']} ({state['quote']})**\n"
                             f"Published source-month receipts: "
                             f"**{state['months_with_receipts']}/6**.\n"
@@ -1118,7 +1126,7 @@ class ResearchDashboard(discord.ui.View):
                             + "Count-only months are NOT certified. "
                               "Training still requires private Drive SHA-256 "
                               "restoration; publication and future model proof are separate."
-                        )[:1024], inline=False,
+                        ), inline=False,
                     )
                 except ValueError:
                     embed.add_field(
@@ -1218,7 +1226,7 @@ class ResearchDashboard(discord.ui.View):
                                 if kucoin is not None:
                                     embed.add_field(
                                         name="KuCoin six-month recovery",
-                                        value=(
+                                        value=fit_embed_field_value(
                                             f"**{kucoin['status']}** · "
                                             f"**{int(kucoin['inserted_bars']):,}** old "
                                             f"candles imported for {self.asset}. "
@@ -1226,7 +1234,7 @@ class ResearchDashboard(discord.ui.View):
                                             f"Missing intervals: **{int(kucoin['empty_windows'])}** "
                                             "empty request windows. "
                                             "These are NOT live forward tests."
-                                        )[:1024], inline=False,
+                                        ), inline=False,
                                     )
                                 del bitget  # every venue is listed below
                                 rows = await asyncio.to_thread(self._all_history_progress)
@@ -1284,12 +1292,12 @@ class ResearchDashboard(discord.ui.View):
                     except InsufficientEvidence as exc:
                         embed.add_field(
                             name="Current market pulse",
-                            value=(
+                            value=fit_embed_field_value(
                                 f"NO SIGNAL · {exc} "
                                 "Exchange collection can be healthy while "
                                 "the required continuous five-minute history "
                                 "is still incomplete. Tap **Update live stats**."
-                            )[:1024], inline=False,
+                            ), inline=False,
                         )
                     except Exception:  # noqa: BLE001 - no credentials in Discord
                         _LOG.exception("RivaL market pulse calculation failed")
@@ -1309,7 +1317,7 @@ class ResearchDashboard(discord.ui.View):
                         )
                         embed.add_field(
                             name="Current market pulse · NOT a trading signal",
-                            value=(
+                            value=fit_embed_field_value(
                                 f"**{pulse.sources}/{pulse.configured}** fresh venues "
                                 f"· most recent shared close "
                                 f"{discord.utils.format_dt(pulse.observed_at, style='R')}\n"
@@ -1324,7 +1332,7 @@ class ResearchDashboard(discord.ui.View):
                                 "**Next 5m forecast: NOT VALIDATED.** "
                                 "Suggested take-profit/stop: not approved. "
                                 "Past momentum is not the next candle."
-                            )[:1024],
+                            ),
                             inline=False,
                         )
             if self.section == "spikes":
@@ -1335,7 +1343,7 @@ class ResearchDashboard(discord.ui.View):
                     events = spike.get("events_24h")
                     embed.add_field(
                         name="Spike watch analytics",
-                        value=(
+                        value=fit_embed_field_value(
                             f"Status: **{spike['status'].replace('_', ' ')}** · "
                             f"Fresh venues: **{spike.get('fresh_venues', 0)}**.\n"
                             f"Last scan: **{_when(spike.get('checked_at'))}**.\n"
@@ -1346,7 +1354,7 @@ class ResearchDashboard(discord.ui.View):
                             f"· source-unverified: **{spike.get('unverified_24h') or 0}**.\n"
                             "Future outcomes update automatically, never backfilled "
                             "as live scores; no validated trade signal."
-                        )[:1024], inline=False,
+                        ), inline=False,
                     )
                     lines = [
                         f"{r['opened_at'][5:16]} UTC · {r['kind']} "
@@ -1469,7 +1477,7 @@ class ResearchDashboard(discord.ui.View):
                     _LOG.exception("RivaL forward-tracking report unavailable")
                     text = "Could not read tracking records; no results inferred."
             if self.message:
-                text = (f"{self.message}\n\n{text}")[:1024]
+                text = fit_embed_field_value(f"{self.message}\n\n{text}")
             embed.add_field(name="Prediction tracking", value=text, inline=False)
             embed.set_footer(
                 text=("Next calls only · Polymarket · paper results, no real trades"
@@ -1562,13 +1570,13 @@ class ResearchDashboard(discord.ui.View):
                     embed.add_field(
                         name=("How is RivaL learning?" if self.section == "lineage"
                               else "Model training actually used"),
-                        value=(
+                        value=fit_embed_field_value(
                             (_history_headline(proofs) + "\n" + "\n".join(plain_rows)
                              + "\nLive updates are training steps, not prediction wins.")
                             if self.section == "lineage" else
                             ("\n".join(rows) + "\nTraining evidence is NOT a measured win rate. "
                              "An unapproved six-month archive does not count as live model training.")
-                        )[:1024], inline=False,
+                        ), inline=False,
                     )
                 except Exception:  # noqa: BLE001
                     _LOG.exception("RivaL model training lineage unavailable")
@@ -1626,8 +1634,10 @@ class ResearchDashboard(discord.ui.View):
                     embed.add_field(
                         name=("Are advanced models ready?" if self.section == "lineage"
                               else "Boosted model production proof"),
-                        value=(_plain_boosted_proof(live_proof, incumbent=incumbent_proof)
-                               if self.section == "lineage" else (
+                        value=fit_embed_field_value(
+                            _plain_boosted_proof(
+                                live_proof, incumbent=incumbent_proof)
+                            if self.section == "lineage" else (
                             f"**Built from history:** {live_proof['portable_imported']} models, "
                             f"**{live_proof['portable_screened']}** passed screening.\n"
                             f"{explanation}\n"
@@ -1640,7 +1650,7 @@ class ResearchDashboard(discord.ui.View):
                             f"**Verdict:** {live_proof['status_reason']}.\n"
                             "Real fills, fees, funding and slippage: **NOT VERIFIED**. "
                             "GitHub research artifacts are not imported live models."
-                        ))[:1024],
+                        )),
                         inline=False,
                     )
                 except Exception:  # noqa: BLE001 - source evidence fails closed
@@ -1677,11 +1687,11 @@ class ResearchDashboard(discord.ui.View):
                         )
                     embed.add_field(
                         name="Prediction ledger · prospective",
-                        value=(
+                        value=fit_embed_field_value(
                             "\n".join(lines) if lines else
                             "No pre-outcome mathematical predictions "
                             "have been issued yet. Do not fabricate signals."
-                        )[:1024],
+                        ),
                         inline=False,
                     )
                 except Exception:  # noqa: BLE001
@@ -1772,7 +1782,7 @@ class ResearchDashboard(discord.ui.View):
                             ).replace("\\n", "\n")
                         embed.add_field(
                             name="Automatic learning engine · LIVE",
-                            value=heartbeat[:1024], inline=False,
+                            value=fit_embed_field_value(heartbeat), inline=False,
                         )
                     except Exception:  # noqa: BLE001
                         _LOG.exception("RivaL learning heartbeat read unavailable")
@@ -1829,7 +1839,7 @@ class ResearchDashboard(discord.ui.View):
                             ).replace("\\n", "\n")
                         embed.add_field(
                             name="Forward issue audit · LIVE",
-                            value=details[:1024],
+                            value=fit_embed_field_value(details),
                             inline=False,
                         )
                     except Exception:  # noqa: BLE001
@@ -1903,7 +1913,7 @@ class ResearchDashboard(discord.ui.View):
                             )
                             embed.add_field(
                                 name="Mathematical forecast readiness · LIVE",
-                                value=(
+                                value=fit_embed_field_value(
                                     f"**{ready}/{configured}** exchange streams "
                                     "eligible for 5m and 15m shadow evaluation.\n"
                                     f"Longest genuine live streak: "
@@ -1916,13 +1926,13 @@ class ResearchDashboard(discord.ui.View):
                                     f"· awaiting live history: "
                                     f"**{readiness['waiting_history']}**.\n"
                                     f"{blocker} No betting permission implied."
-                                )[:1024], inline=False,
+                                ), inline=False,
                             )
                             embed.add_field(
                                 name="Why this exchange is or isn't ready",
-                                value=explain_venue_readiness(
+                                value=fit_embed_field_value(explain_venue_readiness(
                                     readiness, self.selected_venue,
-                                )[:1024],
+                                )),
                                 inline=False,
                             )
                     for horizon in (5, 15):
@@ -1938,7 +1948,10 @@ class ResearchDashboard(discord.ui.View):
                             )
                         else:
                             hit = (
-                                f"{stats['hit_rate'] * 100:.1f}%"
+                                rate_or_too_few(
+                                    scored,
+                                    f"{stats['hit_rate'] * 100:.1f}%",
+                                    what="scored")
                                 if stats["hit_rate"] is not None else "unavailable"
                             )
                             value = (
@@ -1988,7 +2001,7 @@ class ResearchDashboard(discord.ui.View):
                             )
                         embed.add_field(
                             name=f"Forward {horizon}-minute evaluation",
-                            value=value[:1024], inline=False,
+                            value=fit_embed_field_value(value), inline=False,
                         )
                     # Never replace verified out-of-sample results with a
                     # compelling-looking near-term price move. A short period
@@ -2010,7 +2023,7 @@ class ResearchDashboard(discord.ui.View):
                         pass
                     embed.add_field(
                         name="Research verdict",
-                        value=(
+                        value=fit_embed_field_value(
                             "**NO VERIFIED BETTING EDGE.** RivaL may observe "
                             "live prices and issue shadow predictions, but "
                             f"only **{recent_5['settled']:,}** five-minute and "
@@ -2021,7 +2034,7 @@ class ResearchDashboard(discord.ui.View):
                             "validated. No auto-betting orders are placed. "
                             "Do not interpret a green feed or historical "
                             "momentum as a recommended trade."
-                        )[:1024], inline=False,
+                        ), inline=False,
                     )
                     # Overview and horizon summaries already have their verified
                     # prospective results; advanced analytics belongs to its own section.
@@ -2075,7 +2088,7 @@ class ResearchDashboard(discord.ui.View):
                             )
                             embed.add_field(
                                 name=f"Math {horizon}m · independent UTC windows",
-                                value=(
+                                value=fit_embed_field_value(
                                     late_note +
                                     f"**{recent['events']}** forward events, "
                                     f"**{details['math_pending']}** awaiting results "
@@ -2092,7 +2105,7 @@ class ResearchDashboard(discord.ui.View):
                                     f"{stress['utc_days']} days; "
                                     f"{harsh['status'].replace('_', ' ')}). "
                                     "NOT actual fills or trading approval."
-                                )[:1024],
+                                ),
                                 inline=False,
                             )
                         for horizon in (5, 15):
@@ -2116,7 +2129,7 @@ class ResearchDashboard(discord.ui.View):
                                        .get(horizon, 0))
                             embed.add_field(
                                 name=f"Forward {horizon}m calibration",
-                                value=(
+                                value=fit_embed_field_value(
                                     (f"ℹ️ Not measured here, by design: each {horizon}-minute "
                                      "prediction is issued about 1–2 minutes after its "
                                      "result window opens (the model only uses closed "
@@ -2135,18 +2148,21 @@ class ResearchDashboard(discord.ui.View):
                                     + ("\\n".join(bins) if bins else "Not enough outcomes.")
                                     + "\\nHistorical bins are descriptive, NOT "
                                       "a calibrated deployable model or trading approval."
-                                ).replace("\\n", "\n")[:1024],
+                                ).replace("\\n", "\n"),
                                 inline=False,
                             )
                         ai_status = details["historical_external_ai"]
                         quality = (
-                            f"{ai_status['directional_accuracy'] * 100:.1f}%"
+                            rate_or_too_few(
+                                int(ai_status["decided"] or 0),
+                                f"{ai_status['directional_accuracy'] * 100:.1f}%",
+                                what="decided")
                             if ai_status["directional_accuracy"] is not None
                             else "not measurable"
                         )
                         embed.add_field(
                             name="Historical external AI · forward outcomes",
-                            value=(
+                            value=fit_embed_field_value(
                                 f"Issued **{ai_status['issued']}**, "
                                 f"settled **{ai_status['settled']}**, "
                                 f"directional decisions **{ai_status['decided']}**, "
@@ -2155,7 +2171,7 @@ class ResearchDashboard(discord.ui.View):
                                 "Self-reported confidence is NOT calibrated. "
                                 "Source health and provider availability may "
                                 "cause skipped cycles."
-                            )[:1024],
+                            ),
                             inline=False,
                         )
                     embed.add_field(
@@ -2197,7 +2213,7 @@ class ResearchDashboard(discord.ui.View):
                 configured = bool(state["ready"])
                 embed.add_field(
                     name="Private LFM3 Intelligence",
-                    value=(
+                    value=fit_embed_field_value(
                         f"Model: **{discord.utils.escape_markdown(state['model'])}**\n"
                         + (
                             "Configured for on-demand inference. **No paid tokens "
@@ -2212,7 +2228,7 @@ class ResearchDashboard(discord.ui.View):
                             "Private RIVAL_LOCAL_AI_TOKEN is not configured. "
                             "AI research is unavailable; mathematical learning continues."
                         )
-                    )[:1024],
+                    ),
                     inline=False,
                 )
             except Exception:  # noqa: BLE001
@@ -2226,7 +2242,7 @@ class ResearchDashboard(discord.ui.View):
             answer = self.opinion
             embed.add_field(
                 name="AI research · UNCALIBRATED",
-                value=(
+                value=fit_embed_field_value(
                     f"Direction: **{answer.direction.title()}** · "
                     f"{answer.confidence} self-reported confidence\n"
                     f"Feeds: {answer.source_count} · "
@@ -2234,7 +2250,7 @@ class ResearchDashboard(discord.ui.View):
                     f"Answered by: **{_answered_by(answer.model)}**\n"
                     f"Reason: {discord.utils.escape_mentions(answer.thesis)}\n"
                     f"Risk: {discord.utils.escape_mentions(answer.risk)}"
-                )[:1024], inline=False,
+                ), inline=False,
             )
         else:
             embed.add_field(

@@ -259,9 +259,12 @@ def tracking_text(result: dict) -> str:
                 f"{item['issued']}/{item['target']} future predictions issued, "
                 f"{item['settled']} scored")
         if item["settled"]:
+            # Audit Step 1: no rate on fewer than 20 results.
+            rate = (f"{item['hit_rate']:.1%}" if item["settled"] >= 20
+                    else f"too few to judge — {item['settled']} scored")
             line += (
                 f"\nDirection right: {item['correct']}/{item['settled']} "
-                f"({item['hit_rate']:.1%}). Brier: {item['model_brier']:.4f} "
+                f"({rate}). Brier: {item['model_brier']:.4f} "
                 f"vs baseline {item['baseline_brier']:.4f} (lower wins)."
             )
         if item["settled"]:

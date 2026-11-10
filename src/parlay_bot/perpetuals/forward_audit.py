@@ -16,6 +16,7 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.perpetuals import regime_live_model
 from parlay_bot.perpetuals.archive_model import ArchiveModelSet, archive_calls
 from parlay_bot.perpetuals.calibrated_challenger import CalibratedIncumbent
+from parlay_bot.perpetuals.cross_model import CrossModel
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
 from parlay_bot.perpetuals.features import (
     WindowFeatureMemo,
@@ -138,6 +139,14 @@ ISSUE_REGIME_V2_CHALLENGERS = False
 # issuing as the control.
 ISSUE_REGIME_LIVE_V1_CHALLENGERS = True
 ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS = True
+# Cross-exchange shadow issuance (cross_model.py, 2026-11-10): cross_v1 is
+# one learner per coin and horizon that reads every exchange at once;
+# cross_all_v1 shares one learner per horizon across coins. Both issue the
+# same call on every contributing stream after the per-stream loop, only
+# once a learner has a day of graded lessons, and never serve until Route B
+# promotes them. One kill switch for issuance and learning of both;
+# existing rows keep settling either way.
+ISSUE_CROSS_V1_CHALLENGERS = True
 
 # The incumbent's fast settlement covers the last 2 days; a day of margin.
 SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
@@ -885,7 +894,7 @@ class ForwardAccuracyMonitor:
         # Seconds per phase for this cycle, logged once at the end so a slow
         # cycle names its own bottleneck (forecasts expire when it runs long).
         timing = {k: 0.0 for k in ("select", "read", "pooled", "fit", "challengers",
-                                   "boosters", "write", "settle")}
+                                   "boosters", "write", "cross", "settle")}
         self.last_timing = timing
         self.last_db_timing = dict.fromkeys(timing, 0.0)
         mark = self._mark()
@@ -976,6 +985,9 @@ class ForwardAccuracyMonitor:
             self.market._path_sample_memos = path_memos
         while len(path_memos) > MAX_STREAMS_PER_CYCLE * 4:
             path_memos.pop(next(iter(path_memos)))
+        # Streams whose main-model forecast was stored this cycle, for the
+        # cross-exchange test models issued after the loop.
+        cross_pending: list[dict] = []
         for venue, contract, quote in selection:
             try:
                 mark = self._mark()
@@ -1454,6 +1466,15 @@ class ForwardAccuracyMonitor:
                         issued += int(record.rowcount == 1)
                         metrics["duplicate_forecasts"] += int(record.rowcount == 0)
                     self._lap("write", mark)
+                    if record.rowcount == 1 and ISSUE_CROSS_V1_CHALLENGERS:
+                        cross_pending.append({
+                            "venue": venue, "contract": contract, "quote": quote,
+                            "asset": asset, "horizon": horizon,
+                            "reference_opened_at": utc(last.opened_at),
+                            "target_opened_at": target_open,
+                            "incumbent_up": probability, "baseline_up": baseline,
+                            "features": features,
+                        })
                 window_memos[stream_key] = window_inputs.current
             except (ValueError, TypeError, ArithmeticError) as exc:
                 metrics["invalid_data"] += 1
@@ -1463,6 +1484,20 @@ class ForwardAccuracyMonitor:
                 )
                 continue
         metrics["issued_forecasts"] = issued
+        # Cross-exchange test models: they need every exchange's inputs for a
+        # target, so they issue here, after the loop, on the streams whose
+        # main-model forecast was just stored. Optional research: a failure
+        # costs only these shadow rows.
+        if cross_pending:
+            mark = self._mark()
+            try:
+                CrossModel(self.store).issue(
+                    cross_pending,
+                    issued_at=stamp if now is not None else datetime.now(UTC),
+                )
+            except Exception:  # noqa: BLE001 - optional challenger
+                _LOG.exception("RivaL cross-exchange test models unavailable")
+            self._lap("cross", mark)
         # One bounded, fair source-specific proof review per hour, including
         # all three horizons. Other venues remain in immutable forward research
         # but cannot earn after-cost proof without a real matching quote feed.
@@ -1500,6 +1535,14 @@ class ForwardAccuracyMonitor:
         # Issuance reads candles, not settlements, so nothing it uses changes.
         mark = self._mark()
         settled = self._settle(stamp)
+        if ISSUE_CROSS_V1_CHALLENGERS:
+            try:
+                lessons = CrossModel(self.store).learn(stamp, model_version=MODEL)
+                if lessons:
+                    _LOG.info("RivaL cross-exchange test models learned from "
+                              "%d graded targets", lessons)
+            except Exception:  # noqa: BLE001 - optional challenger
+                _LOG.exception("RivaL cross-exchange learning unavailable")
         for flow in flows:
             try:
                 learned = flow.learn(stamp)

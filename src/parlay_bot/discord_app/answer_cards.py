@@ -63,6 +63,8 @@ DISPLAY_NAMES: dict[str, str] = {
     "knn21_v1": "pattern test B",
     "regime_v1": "trend-only test",
     "regime_wild_v1": "wild-only test",
+    "cross_all_v1": "all-coins test",
+    "cross_v1": "all-exchanges test",
     # Phrases before their bare words.
     "paired brier gain": "paired error score gain",
     "market regime": "market",

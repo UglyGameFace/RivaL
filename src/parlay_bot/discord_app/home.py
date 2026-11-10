@@ -1903,7 +1903,115 @@ class GuidedHome(discord.ui.View):
                     _LOG.warning("Performance %s read failed: %s", name, type(result).__name__)
             now = datetime.now(UTC)
 
-            # 1. Actual seven-day exchange scores, independent from trend queries.
+            # 1. Contract-native comparisons; historical labels are NOT model wins.
+            poly = reports.get("polymarket")
+            def money(cents: float) -> str:
+                return (f"made {cents:.1f}¢" if cents > 0 else
+                        f"lost {-cents:.1f}¢" if cents < 0 else "broke even") + " per $1"
+
+            if not isinstance(poly, dict):
+                poly_text = ("Couldn't load these scores right now (that doesn't mean "
+                             "zero accuracy). Press Refresh.")
+            else:
+                resolved = int(poly.get("settled_forward_contracts") or 0)
+                learned = int(poly.get("learned_contracts") or 0)
+                window = int(poly.get("score_window_days") or 7)
+                model_error, market_error = (
+                    poly.get("forward_brier"), poly.get("market_baseline_brier"),
+                )
+                if (resolved and isinstance(model_error, (int, float))
+                        and isinstance(market_error, (int, float))):
+                    outcome = (
+                        "Slightly, so far, but not proven enough to trade on"
+                        if model_error < market_error else "No, not yet"
+                    )
+                    # Audit Step 8: this field is the page headline now,
+                    # so it leads with the verdict (Step 2 style: verdict
+                    # line first, ≤12 words), then the reason (the error
+                    # scores), then the sample size — the verdict would
+                    # change with a lower error score on more settled
+                    # contracts. The headline uses only numbers this
+                    # block already computes; nothing new is measured.
+                    headline = (
+                        "**Yes, so far — RivaL beats Polymarket's odds.**"
+                        if model_error < market_error else
+                        "**No, not yet — RivaL trails Polymarket's odds.**"
+                    )
+                    poly_text = (
+                        f"{headline}\n"
+                        f"**Better than Polymarket's own odds?** {outcome}. "
+                        f"(Error score: RivaL {model_error:.3f}, Polymarket "
+                        f"{market_error:.3f}; lower is better.)\n"
+                        f"**Checked:** {resolved:,} live predictions (last {window} days)"
+                    )
+                else:
+                    poly_text = (
+                        "**Not yet — can't compare with Polymarket's odds yet.**\n"
+                        f"**Checked:** {resolved:,} live predictions "
+                        "· too early to compare with Polymarket's odds")
+                observed = int(poly.get("observed_contracts") or 0)
+                pooled = poly.get("pooled") or {}
+                if pooled.get("contracts"):
+                    verdict = ("better" if pooled["model_brier"] < pooled["market_brier"]
+                               else "not better")
+                    poly_text += (
+                        f"\n**New 6-year model vs Polymarket's odds:** {verdict} on "
+                        f"{pooled['contracts']:,} contracts ({pooled['model_brier']:.3f} vs "
+                        f"{pooled['market_brier']:.3f})"
+                    )
+                    if pooled.get("real_value_bets"):
+                        poly_text += (
+                            f". When it disagreed with the odds, betting its side would "
+                            f"have won {pooled['real_value_bet_wins']} of "
+                            f"{pooled['real_value_bets']} and "
+                            f"{money(pooled['real_return_per_dollar_after_fees'] * 100)} "
+                            "after Polymarket's fee"
+                        )
+                    elif pooled.get("value_bets"):
+                        poly_text += (
+                            f". When it disagreed with the odds by 5+ points, its side won "
+                            f"{pooled['value_bet_wins']} of {pooled['value_bets']} and "
+                            f"{money(pooled['value_bet_avg_return'] * 100)} before fees"
+                        )
+                kalshi = poly.get("kalshi") or {}
+                if kalshi.get("contracts"):
+                    k_verdict = ("better" if kalshi["model_brier"] < kalshi["market_brier"]
+                                 else "not better")
+                    poly_text += (
+                        f"\n**Kalshi 15-min (also on Robinhood, Coinbase):** {k_verdict} "
+                        f"than Kalshi's odds on {kalshi['contracts']:,} contracts "
+                        f"({kalshi['model_brier']:.3f} vs {kalshi['market_brier']:.3f})")
+                    if kalshi.get("value_bets"):
+                        poly_text += (
+                            f"; betting its side when it disagreed won "
+                            f"{kalshi['value_bet_wins']} of {kalshi['value_bets']} and "
+                            f"{money(kalshi['return_per_dollar_after_fees'] * 100)} "
+                            "after Kalshi's fees")
+                labels = {"flow_v1": "Order-flow test model",
+                          "flow_v2": "Order-flow test model + OKX/Coinbase"}
+                for family, scored in (poly.get("kalshi_challengers") or {}).items():
+                    if not scored.get("contracts"):
+                        continue
+                    better = scored["model_brier"] < scored["market_brier"]
+                    poly_text += (
+                        f"\n**{labels.get(family, family)} vs Kalshi (testing only, not "
+                        f"used for calls):** {'better' if better else 'not better'} on "
+                        f"{scored['contracts']:,} contracts "
+                        f"({scored['model_brier']:.3f} vs {scored['market_brier']:.3f})")
+                    if scored.get("value_bets"):
+                        poly_text += (
+                            f"; its side won {scored['value_bet_wins']} of "
+                            f"{scored['value_bets']} and "
+                            f"{money(scored['return_per_dollar_after_fees'] * 100)} after fees")
+                poly_text += (f"\n**Past results studied:** {learned:,} (history, not live "
+                              "predictions)")
+                if observed and not learned:
+                    poly_text += (f"\n⚠️ Saw {observed:,} contracts but couldn't read any "
+                                  "of their results yet")
+            embed.add_field(name="🎯 Polymarket / Kalshi predictions",
+                            value=fit_embed_field_value(rename_text(poly_text)), inline=False)
+
+            # 2. Actual seven-day exchange scores, independent from trend queries.
             exchange = reports.get("exchange")
             part = (
                 exchange.get("last_7d", {}).get(self.horizon)
@@ -2027,98 +2135,6 @@ class GuidedHome(discord.ui.View):
                 embed.add_field(name="🔬 Wild-only test",
                                 value=rename_text(wild_text.strip()), inline=False)
 
-            # 2. Contract-native comparisons; historical labels are NOT model wins.
-            poly = reports.get("polymarket")
-            def money(cents: float) -> str:
-                return (f"made {cents:.1f}¢" if cents > 0 else
-                        f"lost {-cents:.1f}¢" if cents < 0 else "broke even") + " per $1"
-
-            if not isinstance(poly, dict):
-                poly_text = ("Couldn't load these scores right now (that doesn't mean "
-                             "zero accuracy). Press Refresh.")
-            else:
-                resolved = int(poly.get("settled_forward_contracts") or 0)
-                learned = int(poly.get("learned_contracts") or 0)
-                window = int(poly.get("score_window_days") or 7)
-                model_error, market_error = (
-                    poly.get("forward_brier"), poly.get("market_baseline_brier"),
-                )
-                if (resolved and isinstance(model_error, (int, float))
-                        and isinstance(market_error, (int, float))):
-                    outcome = (
-                        "Slightly, so far, but not proven enough to trade on"
-                        if model_error < market_error else "No, not yet"
-                    )
-                    poly_text = (
-                        f"**Checked:** {resolved:,} live predictions (last {window} days)\n"
-                        f"**Better than Polymarket's own odds?** {outcome}. "
-                        f"(Error score: RivaL {model_error:.3f}, Polymarket "
-                        f"{market_error:.3f}; lower is better.)"
-                    )
-                else:
-                    poly_text = (f"**Checked:** {resolved:,} live predictions "
-                                 "· too early to compare with Polymarket's odds")
-                observed = int(poly.get("observed_contracts") or 0)
-                pooled = poly.get("pooled") or {}
-                if pooled.get("contracts"):
-                    verdict = ("better" if pooled["model_brier"] < pooled["market_brier"]
-                               else "not better")
-                    poly_text += (
-                        f"\n**New 6-year model vs Polymarket's odds:** {verdict} on "
-                        f"{pooled['contracts']:,} contracts ({pooled['model_brier']:.3f} vs "
-                        f"{pooled['market_brier']:.3f})"
-                    )
-                    if pooled.get("real_value_bets"):
-                        poly_text += (
-                            f". When it disagreed with the odds, betting its side would "
-                            f"have won {pooled['real_value_bet_wins']} of "
-                            f"{pooled['real_value_bets']} and "
-                            f"{money(pooled['real_return_per_dollar_after_fees'] * 100)} "
-                            "after Polymarket's fee"
-                        )
-                    elif pooled.get("value_bets"):
-                        poly_text += (
-                            f". When it disagreed with the odds by 5+ points, its side won "
-                            f"{pooled['value_bet_wins']} of {pooled['value_bets']} and "
-                            f"{money(pooled['value_bet_avg_return'] * 100)} before fees"
-                        )
-                kalshi = poly.get("kalshi") or {}
-                if kalshi.get("contracts"):
-                    k_verdict = ("better" if kalshi["model_brier"] < kalshi["market_brier"]
-                                 else "not better")
-                    poly_text += (
-                        f"\n**Kalshi 15-min (also on Robinhood, Coinbase):** {k_verdict} "
-                        f"than Kalshi's odds on {kalshi['contracts']:,} contracts "
-                        f"({kalshi['model_brier']:.3f} vs {kalshi['market_brier']:.3f})")
-                    if kalshi.get("value_bets"):
-                        poly_text += (
-                            f"; betting its side when it disagreed won "
-                            f"{kalshi['value_bet_wins']} of {kalshi['value_bets']} and "
-                            f"{money(kalshi['return_per_dollar_after_fees'] * 100)} "
-                            "after Kalshi's fees")
-                labels = {"flow_v1": "Order-flow test model",
-                          "flow_v2": "Order-flow test model + OKX/Coinbase"}
-                for family, scored in (poly.get("kalshi_challengers") or {}).items():
-                    if not scored.get("contracts"):
-                        continue
-                    better = scored["model_brier"] < scored["market_brier"]
-                    poly_text += (
-                        f"\n**{labels.get(family, family)} vs Kalshi (testing only, not "
-                        f"used for calls):** {'better' if better else 'not better'} on "
-                        f"{scored['contracts']:,} contracts "
-                        f"({scored['model_brier']:.3f} vs {scored['market_brier']:.3f})")
-                    if scored.get("value_bets"):
-                        poly_text += (
-                            f"; its side won {scored['value_bet_wins']} of "
-                            f"{scored['value_bets']} and "
-                            f"{money(scored['return_per_dollar_after_fees'] * 100)} after fees")
-                poly_text += (f"\n**Past results studied:** {learned:,} (history, not live "
-                              "predictions)")
-                if observed and not learned:
-                    poly_text += (f"\n⚠️ Saw {observed:,} contracts but couldn't read any "
-                                  "of their results yet")
-            embed.add_field(name="🎯 Polymarket / Kalshi predictions",
-                            value=fit_embed_field_value(rename_text(poly_text)), inline=False)
 
             # 3. Live worker state is distinct from statistical learning benefit.
             cycles = reports.get("cycles")

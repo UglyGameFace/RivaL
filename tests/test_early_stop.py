@@ -51,7 +51,6 @@ def test_a_clear_loser_is_stopped_with_its_evidence():
     {"model_score": 0.20, "loss_square": 0.01},   # better than the main model
     {"model_score": 0.255, "loss_square": 0.0001},  # worse, but under the margin
     {"model_score": 0.27, "loss_square": 0.16},   # worse, but inside the noise
-    {"horizon_minutes": 60},                      # overlapping targets: not yet
     {"model_score": float("nan")},
     {"loss_square": None},
     {"n": "many"},
@@ -67,10 +66,14 @@ def test_a_family_that_reuses_the_main_models_call_can_never_be_stopped():
     assert verdict(same) is None
 
 
-def test_sixty_minute_targets_need_more_evidence_than_five_minute_ones():
-    # Same score, twelve times the overlap: stopped only once n is large.
-    assert verdict(_score(horizon_minutes=60, n=200)) is None
-    assert verdict(_score(horizon_minutes=60, n=2000, days=7)) is not None
+def test_sixty_minute_targets_need_no_more_evidence_than_five_minute_ones():
+    # RIVAL-V: the horizon/5 variance inflation made the 60-minute trigger
+    # unreachable inside the 7-day window (n>1879 needed at loss 0.16,
+    # while the window holds ~200 targets), so a clearly losing 60m leg
+    # kept issuing. Same score, same verdict on every horizon now.
+    for horizon in (5, 15, 60):
+        assert verdict(_score(horizon_minutes=horizon, n=200)) is not None
+        assert verdict(_score(horizon_minutes=horizon, n=2000, days=7)) is not None
 
 
 # --- End to end on the ledger ------------------------------------------------
@@ -285,3 +288,36 @@ def test_stopped_pattern_models_are_not_fitted(monkeypatch):
     with pytest.raises(AssertionError):
         ShadowModelCompetition.prepare(
             [], (0.25,) * 10, now=NOW, stopped=frozenset({"knn21_v1"}))
+
+
+# --- RIVAL-V -----------------------------------------------------------------
+
+def _rival_v_score(**changes) -> dict:
+    """RIVAL-V: liq_v1 on dydx:SOL-USD, pooled Brier 0.3439 vs 0.2569, n=573.
+
+    Pooled across the three horizons, so ~191 graded targets per horizon.
+    loss_square 0.1856 is the repo's own "clear loser" spread; 0.08 is a
+    realistic spread for a badly miscalibrated model.
+    """
+    base = {"venue": "dydx", "contract": "SOL-USD", "quote": "USD",
+            "horizon_minutes": 5, "family": "liq_v1", "n": 191, "days": 7,
+            "model_score": 0.3439, "incumbent_score": 0.2569,
+            "loss_square": 0.1856, "last_issued": NOW.isoformat()}
+    return {**base, **changes}
+
+
+@pytest.mark.parametrize("loss_square", [0.1856, 0.08])
+def test_rival_v_losing_leg_stops_on_every_horizon(loss_square):
+    """RIVAL-V: a 0.087 loss on dydx:SOL:liq_v1 must stop on every horizon.
+
+    The horizon/5 variance inflation made the 60-minute trigger unreachable
+    inside the 7-day window (it needs n>237 even at loss_square 0.03 and
+    n>1879 at 0.1856, while the window holds ~191 targets per horizon), so
+    the 60m leg kept issuing and the pooled alert kept firing. The 15m leg
+    was blocked the same way at loss_square 0.1856 and 0.08.
+    """
+    for horizon in (5, 15, 60):
+        evidence = verdict(_rival_v_score(horizon_minutes=horizon,
+                                          loss_square=loss_square))
+        assert evidence is not None, f"horizon {horizon} loss_square {loss_square}"
+        assert evidence["loss"] == pytest.approx(0.0870)

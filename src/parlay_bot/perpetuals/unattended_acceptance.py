@@ -42,6 +42,13 @@ def _paired_rows(store, stamp, days):
     newest-first and stops after ``_SAMPLE`` pairs, so the work no longer
     grows with table size. Merging and re-limiting keeps the same newest-200
     sample as before.
+
+    The newest ``_SAMPLE`` pairs of a scope come from at most ``_SAMPLE``
+    audit rows that have a settled pair, so those audit rows are picked
+    first (EXISTS stops at the first match) and only they are joined. The
+    plain join + ORDER BY made Postgres pair and sort every row of the
+    2-day window (~26k pairs, 3-5 s per scope, up to 47 s held for all 12).
+    Same rows, same order.
     """
     start = (stamp - timedelta(days=days)).isoformat()
     end = stamp.isoformat()
@@ -60,7 +67,25 @@ def _paired_rows(store, stamp, days):
                               s.settled_at AS challenger_settled_at,
                               q.state AS quote_state,q.entry_at,q.exit_at,
                               q.entry_bid,q.entry_ask,q.exit_bid,q.exit_ask
-                       FROM perp_forward_audit AS f
+                       FROM (SELECT a.venue,a.contract,a.quote,a.asset,
+                                    a.horizon_minutes,a.model_version,
+                                    a.reference_opened_at,a.issued_at,
+                                    a.target_opened_at,a.settled_at,
+                                    a.outcome_up,a.model_brier
+                             FROM perp_forward_audit AS a
+                             WHERE a.asset=? AND a.horizon_minutes=?
+                               AND a.issued_at>=? AND a.issued_at<=?
+                               AND a.settled_at IS NOT NULL
+                               AND EXISTS (
+                                SELECT 1 FROM rival_model_shadow_forecasts AS p
+                                WHERE p.venue=a.venue AND p.contract=a.contract
+                                  AND p.quote=a.quote
+                                  AND p.horizon_minutes=a.horizon_minutes
+                                  AND p.reference_opened_at=a.reference_opened_at
+                                  AND p.asset=a.asset AND p.issued_at=a.issued_at
+                                  AND p.target_opened_at=a.target_opened_at
+                                  AND p.settled_at IS NOT NULL)
+                             ORDER BY a.issued_at DESC LIMIT ?) AS f
                        JOIN rival_model_shadow_forecasts AS s
                         ON s.venue=f.venue AND s.contract=f.contract
                        AND s.quote=f.quote AND s.asset=f.asset
@@ -73,11 +98,9 @@ def _paired_rows(store, stamp, days):
                        AND q.quote=s.quote AND q.horizon_minutes=s.horizon_minutes
                        AND q.family=s.family
                        AND q.reference_opened_at=s.reference_opened_at
-                       WHERE f.asset=? AND f.horizon_minutes=?
-                         AND f.issued_at>=? AND f.issued_at<=?
-                         AND f.settled_at IS NOT NULL AND s.settled_at IS NOT NULL
+                       WHERE s.settled_at IS NOT NULL
                        ORDER BY f.issued_at DESC LIMIT ?""",
-                    (asset, horizon, start, end, _SAMPLE),
+                    (asset, horizon, start, end, _SAMPLE, _SAMPLE),
                 ).fetchall())
     rows.sort(key=lambda r: str(r["issued_at"]), reverse=True)
     return rows[:_SAMPLE]

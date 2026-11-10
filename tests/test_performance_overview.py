@@ -89,8 +89,8 @@ async def test_scorecard_is_short_source_specific_and_skips_heavy_training(tmp_p
         panel = await home.render()
         fields = _fields(panel)
         assert list(fields) == [
-            "📈 BTC exchange predictions (up or down?)",
             "🎯 Polymarket / Kalshi predictions",
+            "📈 BTC exchange predictions (up or down?)",
             "🧠 Is it learning?",
             "📡 Is everything running?",
         ]
@@ -356,10 +356,10 @@ async def test_live_rows_get_own_fields_and_trial_rows_fit_in_exchange_field(
     try:
         fields = _fields(await home.render())
         assert list(fields) == [
+            "🎯 Polymarket / Kalshi predictions",
             "📈 BTC exchange predictions (up or down?)",
             "🔬 Trend learner",
             "🔬 Fast trend learner",
-            "🎯 Polymarket / Kalshi predictions",
             "🧠 Is it learning?",
             "📡 Is everything running?",
         ]
@@ -398,8 +398,8 @@ async def test_no_live_field_before_first_issuance(tmp_path, monkeypatch):
     try:
         fields = _fields(await home.render())
         assert list(fields) == [
-            "📈 BTC exchange predictions (up or down?)",
             "🎯 Polymarket / Kalshi predictions",
+            "📈 BTC exchange predictions (up or down?)",
             "🧠 Is it learning?",
             "📡 Is everything running?",
         ]
@@ -418,9 +418,9 @@ async def test_only_issued_family_gets_a_field(tmp_path, monkeypatch):
     try:
         fields = _fields(await home.render())
         assert list(fields) == [
+            "🎯 Polymarket / Kalshi predictions",
             "📈 BTC exchange predictions (up or down?)",
             "🔬 Trend learner",
-            "🎯 Polymarket / Kalshi predictions",
             "🧠 Is it learning?",
             "📡 Is everything running?",
         ]

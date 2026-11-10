@@ -1200,6 +1200,9 @@ class ResearchDashboard(discord.ui.View):
             from parlay_bot.perpetuals.regime_model import (
                 trial_report as regime_trial_report,
             )
+            from parlay_bot.perpetuals.wild_model import (
+                trial_report as wild_trial_report,
+            )
 
             store = self.market.store
             records = [
@@ -1209,6 +1212,7 @@ class ResearchDashboard(discord.ui.View):
                     store, asset=self.asset, horizon=5, family=BASE_FAMILY)),
                 ("fast trend learner", live_trial_report(
                     store, asset=self.asset, horizon=5, family=FAST_FAMILY)),
+                ("wild-only test", wild_trial_report(store, asset=self.asset, horizon=5)),
             ]
             lines = []
             for label, record in records:

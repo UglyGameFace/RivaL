@@ -36,14 +36,14 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
         # One merged proof section: the per-family proof checks and the
         # per-regime splits sit on the same render, not in two sections.
         assert "Future model proof" in names
-        assert "Prospective skill by market regime" in names
-        assert "Trial detail (5-minute)" in names
+        assert "Prospective skill by market" in names
+        assert "Test-model detail (5-minute)" in names
         regime_value = next(
-            x.value for x in progress.fields if "market regime" in x.name
+            x.value for x in progress.fields if "Prospective skill" in x.name
         )
         assert "insufficient" in regime_value
-        assert "quiet " in regime_value  # incumbent per-regime splits kept
-        assert "regime_live_v1 5m" in regime_value  # live subsets kept
+        assert "calm " in regime_value  # main-model per-regime splits kept
+        assert "trend learner 5m" in regime_value  # live subsets kept
         # Audit Step 1: regime_v1's per-regime gain is +0.0000 by design
         # (it returns the incumbent's own probability verbatim), so its
         # line is hidden here. Its trial result still lives in Trial
@@ -54,13 +54,13 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
         proof_value = next(
             x.value for x in progress.fields if x.name == "Future model proof"
         )
-        assert "paired Brier gain" not in proof_value
-        assert "paired Brier gain" in regime_value
+        assert "paired error score gain" not in proof_value
+        assert "paired error score gain" in regime_value
         assert "quiet" not in proof_value
         detail_value = next(
-            x.value for x in progress.fields if x.name == "Trial detail (5-minute)"
+            x.value for x in progress.fields if x.name == "Test-model detail (5-minute)"
         )
-        assert "No scored trial results yet" in detail_value
+        assert "No graded test model results yet" in detail_value
         view.section = "costs"
         view._rebuild()
         costs = await view.render()
@@ -171,15 +171,15 @@ async def test_trial_detail_field_carries_the_cut_metrics(tmp_path, monkeypatch)
         view._rebuild()
         progress = await view.render()
         fields = {x.name: x.value for x in progress.fields}
-        detail = fields["Trial detail (5-minute)"]
-        assert "**Pooled 6-year model:** vs guess 0.250" in detail
-        assert ("**regime_v1:** vs guess 0.250 · selection +0.001 "
+        detail = fields["Test-model detail (5-minute)"]
+        assert "**6-year history model:** vs coin flip 0.250" in detail
+        assert ("**trend-only test:** vs coin flip 0.250 · selection +0.001 "
                 "(harder subset) · coverage 6%") in detail
-        assert ("**Live-learning:** vs guess 0.250 · vs regime_v1 -0.004 · "
+        assert ("**trend learner:** vs coin flip 0.250 · vs trend-only test -0.004 · "
                 "selection -0.001 (easier subset) · coverage 2% · availability 45% · "
                 "2,292 trending labels learned · weight drift 0.325 · "
                 "gain last 7d -0.008") in detail
-        assert "Live-learning fast" not in detail  # issued 0: no line
+        assert "fast trend learner" not in detail  # issued 0: no line
         assert "too early to judge" not in detail
         assert len(detail) <= 1024
     finally:

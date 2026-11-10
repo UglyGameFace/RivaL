@@ -130,9 +130,9 @@ async def test_regime_field_hides_always_zero_line_and_fits(monkeypatch):
     finally:
         dashboard.stop()
     assert "regime_v1" not in value
-    assert "regime_live_v1 5m" in value
-    assert "regime_live_fast_v1 15m" in value
-    assert "incumbent 5m" in value
+    assert "trend learner 5m" in value
+    assert "fast trend learner 15m" in value
+    assert "main model 5m" in value
     assert "A stable shadow score is not trading profit." in value
     assert len(value) < 1024
     assert not value.endswith("tradin")
@@ -217,7 +217,7 @@ async def test_performance_page_worst_case_fields_fit_and_tell_the_truth(
         name: len(value) for name, value in fields.items()}
     # The trial rows stay: only the per-regime gain line goes, not the
     # Performance-page trial result.
-    assert "regime_v1" in fields["📈 BTC exchange predictions (up or down?)"]
+    assert "trend-only test" in fields["📈 BTC exchange predictions (up or down?)"]
     learning = fields["🧠 Is it learning?"]
     assert "too few to judge — 2 followed" in learning
     assert "too few to judge — 2 sat out" in learning
@@ -268,7 +268,7 @@ async def test_exchange_accuracy_hides_rate_below_20(tmp_path, monkeypatch):
     finally:
         await _close(bot, home)
     exchange = fields["📈 BTC exchange predictions (up or down?)"]
-    assert "too few to judge — 7 decided" in exchange
+    assert "too few to judge — 7 graded" in exchange
     assert "42.9%" not in exchange
 
     bot, home = _make_home(tmp_path)
@@ -420,7 +420,7 @@ async def test_historical_external_ai_hides_hit_rate_below_20(monkeypatch):
     finally:
         dashboard.stop()
     fields = {f.name: f.value for f in embed.fields}
-    assert "too few to judge — 5 decided" in fields[
+    assert "too few to judge — 5 graded" in fields[
         "Historical external AI · forward outcomes"]
     assert "100.0%" not in fields["Historical external AI · forward outcomes"]
     assert max(map(len, fields.values())) < 1024

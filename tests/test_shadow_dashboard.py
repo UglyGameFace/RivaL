@@ -23,10 +23,10 @@ async def test_math_panel_discloses_automatic_shadow_status(tmp_path):
         dashboard._rebuild()
         rendered = (await dashboard.render()).to_dict()
         fields = {field["name"]: field["value"] for field in rendered["fields"]}
-        assert "Automatic shadow evaluation" in fields
-        assert "Waiting for at least" in fields["Automatic shadow evaluation"]
-        assert "verified production signals" not in fields["Mathematical model"]
-        assert "no model is approved" in fields["Mathematical model"].lower()
+        assert "Automatic test model evaluation" in fields
+        assert "Waiting for at least" in fields["Automatic test model evaluation"]
+        assert "verified production signals" not in fields["Main model"]
+        assert "no model is approved" in fields["Main model"].lower()
     finally:
         dashboard.stop()
         store.close()
@@ -47,8 +47,8 @@ async def test_math_panel_reports_when_background_learning_disabled(tmp_path):
         dashboard._rebuild()
         rendered = (await dashboard.render()).to_dict()
         fields = {field["name"]: field["value"] for field in rendered["fields"]}
-        assert "disabled" in fields["Mathematical model"]
-        assert "Automatic shadow evaluation" not in fields
+        assert "disabled" in fields["Main model"]
+        assert "Automatic test model evaluation" not in fields
     finally:
         dashboard.stop()
         store.close()

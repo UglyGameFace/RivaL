@@ -178,7 +178,10 @@ async def test_research_accuracy_tab_reads_real_database_without_invented_result
         fields = {x.name: x.value for x in embed.fields}
         assert "Forward 5-minute evaluation" in fields
         assert "settled: **0**" in fields["Forward 5-minute evaluation"]
-        assert "No measurable accuracy" in fields["Forward 5-minute evaluation"]
+        # Audit Step 2: the card answers first; the old "No measurable
+        # accuracy" sentence stays in the raw block behind it.
+        assert fields["Forward 5-minute evaluation"].startswith(
+            "Can't tell — no graded predictions yet.")
         view.section = "fifteen"
         fifteen = {x.name: x.value for x in (await view.render()).fields}
         assert "Forward 15-minute evaluation" in fifteen

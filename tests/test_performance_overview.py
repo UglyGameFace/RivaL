@@ -95,8 +95,8 @@ async def test_scorecard_is_short_source_specific_and_skips_heavy_training(tmp_p
             "📡 Is everything running?",
         ]
         assert "Does it make money?** Not proven yet" in panel.description
-        assert "Better than a simple guess?** No, not yet" in fields["📈 BTC exchange predictions (up or down?)"]
-        assert "(Error score: RivaL 0.310, simple guess 0.240; lower is better." in (
+        assert "Better than a coin flip?** No, not yet" in fields["📈 BTC exchange predictions (up or down?)"]
+        assert "(Error score: RivaL 0.310, coin flip 0.240; lower is better." in (
             fields["📈 BTC exchange predictions (up or down?)"]
         )
         assert "current model only" in fields["📈 BTC exchange predictions (up or down?)"]
@@ -116,7 +116,7 @@ async def test_scorecard_is_short_source_specific_and_skips_heavy_training(tmp_p
         assert "Getting more accurate?** Too early to tell" in fields["🧠 Is it learning?"]
         assert "Built from the 6-year history?** 0 of the last 10 predictions" in fields["🧠 Is it learning?"]
         assert "Learning loop:** ✅ running" in fields["🧠 Is it learning?"]
-        assert "Price feeds:** ✅ 1 of 1 exchanges up to date" in fields["📡 Is everything running?"]
+        assert "Live market feeds:** ✅ 1 of 1 exchanges up to date" in fields["📡 Is everything running?"]
         assert "Prediction cycle:" in fields["📡 Is everything running?"]
         assert max(map(len, fields.values())) < 1024
     finally:
@@ -143,10 +143,10 @@ async def test_slow_or_broken_learning_cannot_hide_exchange_or_cycle(tmp_path, m
     home.market.feed_health = bad_feeds
     try:
         fields = _fields(await home.render())
-        assert "Better than a simple guess?** No, not yet" in fields["📈 BTC exchange predictions (up or down?)"]
+        assert "Better than a coin flip?** No, not yet" in fields["📈 BTC exchange predictions (up or down?)"]
         assert "Getting more accurate?** Couldn't check right now" in fields["🧠 Is it learning?"]
         assert "Learning loop:** couldn't check right now" in fields["🧠 Is it learning?"]
-        assert "Price feeds:** couldn't check right now" in fields["📡 Is everything running?"]
+        assert "Live market feeds:** couldn't check right now" in fields["📡 Is everything running?"]
         assert "made 7 predictions" in fields["📡 Is everything running?"]
         assert "Better than Polymarket's own odds?** No, not yet" in fields["🎯 Polymarket / Kalshi predictions"]
     finally:
@@ -357,22 +357,25 @@ async def test_live_rows_get_own_fields_and_trial_rows_fit_in_exchange_field(
         fields = _fields(await home.render())
         assert list(fields) == [
             "📈 BTC exchange predictions (up or down?)",
-            "🔬 Regime live-learning model",
-            "🔬 Regime live-learning fast model",
+            "🔬 Trend learner",
+            "🔬 Fast trend learner",
             "🎯 Polymarket / Kalshi predictions",
             "🧠 Is it learning?",
             "📡 Is everything running?",
         ]
         exchange = fields["📈 BTC exchange predictions (up or down?)"]
         assert "live-learning" not in exchange
-        assert "**Pooled 6-year model:**" in exchange
-        assert "**regime_v1:**" in exchange
+        assert "trend learner" not in exchange
+        assert "**6-year history model:**" in exchange
+        assert "**trend-only test:**" in exchange
         assert len(exchange) < 1024  # preamble cut freed the budget
-        base_text = home_module._regime_live_text(live, "Live-learning").strip()
-        fast_text = home_module._regime_live_text(
-            fast, "Live-learning fast").strip()
-        assert fields["🔬 Regime live-learning model"] == base_text
-        assert fields["🔬 Regime live-learning fast model"] == fast_text
+        from parlay_bot.discord_app.answer_cards import rename_text
+        base_text = rename_text(
+            home_module._regime_live_text(live, "trend learner").strip())
+        fast_text = rename_text(home_module._regime_live_text(
+            fast, "fast trend learner").strip())
+        assert fields["🔬 Trend learner"] == base_text
+        assert fields["🔬 Fast trend learner"] == fast_text
         assert "gain +0.002" in base_text
         assert "\n" not in base_text  # headline only, no detail line
         assert "\n" not in fast_text
@@ -416,14 +419,14 @@ async def test_only_issued_family_gets_a_field(tmp_path, monkeypatch):
         fields = _fields(await home.render())
         assert list(fields) == [
             "📈 BTC exchange predictions (up or down?)",
-            "🔬 Regime live-learning model",
+            "🔬 Trend learner",
             "🎯 Polymarket / Kalshi predictions",
             "🧠 Is it learning?",
             "📡 Is everything running?",
         ]
-        assert fields["🔬 Regime live-learning model"] == (
-            "**Live-learning:** "
-            "3 predictions made, 0 scored so far · 0/150 targets")
+        assert fields["🔬 Trend learner"] == (
+            "**trend learner:** "
+            "3 predictions made, 0 graded so far · 0/150 targets")
     finally:
         await _close(bot, home)
 
@@ -443,13 +446,13 @@ def test_worst_case_headline_stays_under_140_chars():
     extreme["paired_gain_last_7d"] = 1.0
     extreme["paired_gain_days_8_30"] = 1.0
     extreme["first_issued"] = (datetime.now(UTC) - timedelta(days=30)).isoformat()
-    for label in ("Pooled 6-year model", "regime_v1",
-                  "Live-learning", "Live-learning fast"):
+    for label in ("6-year history model", "trend-only test",
+                  "trend learner", "fast trend learner"):
         text = home_module._trial_one_liner(label, extreme, datetime.now(UTC))
         assert "\n" not in text, label
         assert len(text) < 140, (label, len(text), text)
     longest = home_module._trial_one_liner(
-        "Live-learning fast", extreme, datetime.now(UTC))
+        "fast trend learner", extreme, datetime.now(UTC))
     assert len(longest) < 140
 
 
@@ -485,7 +488,7 @@ def test_trial_detail_line_carries_every_cut_metric_and_only_those():
 
 _ONE_LINE_HEADLINE = re.compile(
     r"\*\*(?P<label>[^*]+):\*\* right (?P<hits>[\d,]+) of (?P<decided>[\d,]+) "
-    r"\((?P<pct>\d+\.\d%|too few to judge — [\d,]+ decided)\) · Brier (?P<brier>\d\.\d{3}) vs incumbent "
+    r"\((?P<pct>\d+\.\d%|too few to judge — [\d,]+ graded)\) · Error score (?P<brier>\d\.\d{3}) vs main model "
     r"(?P<incumbent>\d\.\d{3}) · gain (?P<gain>[+-]\d\.\d{3}) · "
     r"day (?P<day>\d+)/21 · (?P<targets>[\d,]+)/150 targets"
 )
@@ -524,23 +527,24 @@ async def test_one_line_per_live_family_and_no_dead_or_zombie_families(
         fields = _fields(panel)
         page = "\n".join([panel.description or "", *fields.values()])
         # One line per live family, same format, exactly once each.
-        for label in ("Pooled 6-year model", "regime_v1",
-                      "Live-learning", "Live-learning fast"):
+        for label in ("6-year history model", "trend-only test",
+                      "trend learner", "fast trend learner"):
             assert page.count(f"**{label}:**") == 1, label
             match = _ONE_LINE_HEADLINE.search(page)
             assert match is not None
         headlines = _ONE_LINE_HEADLINE.findall(page)
         assert len(headlines) == 4
         assert {h[0] for h in headlines} == {
-            "Pooled 6-year model", "regime_v1",
-            "Live-learning", "Live-learning fast",
+            "6-year history model", "trend-only test",
+            "trend learner", "fast trend learner",
         }
         # Audit Step 1: the live rows have 9 decided (< 20), so their
         # rate reads "too few to judge" instead of a % — same one-line
         # format, no rate on a tiny sample. The pooled/regime rows
         # have thousands decided, so theirs still show a %.
-        live_rows = [h for h in headlines if h[0].startswith("Live-learning")]
-        assert all("too few to judge — 9 decided" in h[3] for h in live_rows)
+        live_rows = [h for h in headlines
+                   if h[0] in ("trend learner", "fast trend learner")]
+        assert all("too few to judge — 9 graded" in h[3] for h in live_rows)
         assert all("%" in h[3] for h in headlines if h not in live_rows)
         # Dead families never render; zombies have no row on this page.
         for dead in ("flow_v1", "flow_v2", "regime_v2", "regime-v2",
@@ -592,7 +596,7 @@ async def test_exchange_preamble_is_one_short_line_and_trial_rows_fit(
         exchange = fields["📈 BTC exchange predictions (up or down?)"]
         lines = exchange.split("\n")
         assert lines[0].startswith("**Called the direction right:**")
-        assert lines[1].startswith("**Better than a simple guess?**")
+        assert lines[1].startswith("**Better than a coin flip?**")
         assert lines[2] == (
             "**Checked:** 7 of 8 predictions · every exchange it collects, "
             "the last 7 days, current model only")
@@ -601,8 +605,8 @@ async def test_exchange_preamble_is_one_short_line_and_trial_rows_fit(
         assert "Covers:" not in exchange
         assert "waiting for their candle" not in exchange
         assert "No results running late" not in exchange
-        assert "**Pooled 6-year model:** right 6,698 of 12,761 (52.5%) · Brier 0.249 vs incumbent 0.251 · gain +0.002 · day 6/21 · 1,527/150 targets" in exchange
-        assert "**regime_v1:** right 511 of 935 (54.7%) · Brier 0.253 vs incumbent 0.253 · gain +0.000 · day 6/21 · 133/150 targets" in exchange
+        assert "**6-year history model:** right 6,698 of 12,761 (52.5%) · Error score 0.249 vs main model 0.251 · gain +0.002 · day 6/21 · 1,527/150 targets" in exchange
+        assert "**trend-only test:** right 511 of 935 (54.7%) · Error score 0.253 vs main model 0.253 · gain +0.000 · day 6/21 · 133/150 targets" in exchange
         assert "vs guess" not in exchange
         assert "too early to judge" not in exchange
         assert len(exchange) < 1024

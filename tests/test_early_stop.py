@@ -229,3 +229,59 @@ def test_the_watchdog_side_task_records_stops_from_its_one_scan(tmp_path):
             ("hyperliquid", "liq_v1")]
     finally:
         client.store.close()
+
+
+# --- One read per cycle, and no fitting for stopped pattern models -----------
+
+def test_one_read_returns_every_stop_keyed_by_stream_and_horizon(tmp_path, monkeypatch):
+    store = _store(tmp_path, "map.sqlite")
+    try:
+        EarlyStop(store).record(
+            [_score(), _score(family="gaussian_nb_v1"), _score(venue="okx", horizon_minutes=15,
+                                                              n=2000, days=7)], now=NOW)
+        assert early_stop.stops_by_stream(store) == {
+            ("hyperliquid", "BTC", "USDC", 5): frozenset({"liq_v1", "gaussian_nb_v1"}),
+            ("okx", "BTC", "USDC", 15): frozenset({"liq_v1"}),
+        }
+        monkeypatch.setattr(early_stop, "ENABLED", False)
+        assert early_stop.stops_by_stream(store) == {}
+    finally:
+        store.close()
+
+
+def test_a_stop_set_passed_in_needs_no_lookup(tmp_path):
+    store = _store(tmp_path, "passed.sqlite")
+    try:
+        with store.connect() as conn:  # no table: a lookup would fall open to 2
+            conn.execute("DROP TABLE rival_family_early_stop")
+            saved = ShadowModelCompetition(store).issue(
+                conn, samples=[], features=(0.25,) * 10, now=NOW,
+                venue="hyperliquid", contract="BTC", quote="USDC", asset="BTC",
+                horizon=5, reference_opened_at=NOW,
+                target_opened_at=NOW + timedelta(minutes=5), issued_at=NOW,
+                incumbent_up=0.6, baseline_up=0.5,
+                challengers=[{"family": family, "probability": 0.7,
+                              "training_rows": 100, "model_sha256": "a" * 64}
+                             for family in ("liq_v1", "gbm_v1")],
+                stopped=frozenset({"liq_v1"}),
+            )
+        assert saved == 1
+        assert _families(store) == {("hyperliquid", 5, "gbm_v1")}
+    finally:
+        store.close()
+
+
+def test_stopped_pattern_models_are_not_fitted(monkeypatch):
+    from parlay_bot.perpetuals import model_competition
+
+    def fitted(*args, **kwargs):
+        raise AssertionError("a stopped model was fitted")
+
+    monkeypatch.setattr(model_competition, "shadow_predictions", fitted)
+    both = frozenset(model_competition.FAMILIES)
+    assert ShadowModelCompetition.prepare([], (0.25,) * 10, now=NOW, stopped=both) == {
+        "predictions": {}, "training_count": 0, "fingerprint": "0" * 64}
+    # One of the two still running: the fit happens as before.
+    with pytest.raises(AssertionError):
+        ShadowModelCompetition.prepare(
+            [], (0.25,) * 10, now=NOW, stopped=frozenset({"knn21_v1"}))

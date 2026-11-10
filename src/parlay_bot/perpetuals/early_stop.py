@@ -102,6 +102,23 @@ def stopped_families(conn, *, venue, contract, quote, horizon) -> frozenset[str]
     return frozenset(str(row["family"]) for row in rows)
 
 
+def stops_by_stream(store) -> dict[tuple[str, str, str, int], frozenset[str]]:
+    """Every stop, keyed by stream and horizon: one read for a whole cycle."""
+    if not ENABLED:
+        return {}
+    with store.connect() as conn:
+        rows = conn.execute(
+            """SELECT venue,contract,quote,horizon_minutes,family
+               FROM rival_family_early_stop""",
+        ).fetchall()
+    found: dict[tuple[str, str, str, int], set[str]] = {}
+    for row in rows:
+        found.setdefault(
+            (str(row["venue"]), str(row["contract"]), str(row["quote"]),
+             int(row["horizon_minutes"])), set()).add(str(row["family"]))
+    return {key: frozenset(families) for key, families in found.items()}
+
+
 class EarlyStop:
     def __init__(self, store):
         self.store = store

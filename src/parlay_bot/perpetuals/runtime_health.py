@@ -130,10 +130,15 @@ class RuntimeHealthMonitor:
                     faults["learning_missing"] = "no valid completed learning cycle"
                 elif age is not None and age > timedelta(minutes=16):
                     faults["learning_stalled"] = f"last completed cycle {int(age.total_seconds()//60)}m ago"
-                if cycle and not all(int(cycle[k]) for k in (
-                    "math_ok", "ai_settlement_ok", "model_review_ok",
-                )):
-                    faults["learning_failure"] = "persisted learning stage failed"
+                failed = [name for key, name in (
+                    ("math_ok", "prediction"), ("ai_settlement_ok", "AI grading"),
+                    ("model_review_ok", "hourly model review"),
+                ) if cycle and not int(cycle[key])]
+                if failed:
+                    # Say which stage: "a stage failed" sent every reader to
+                    # the logs to find out.
+                    faults["learning_failure"] = (
+                        "persisted learning stage failed: " + ", ".join(failed))
                 diagnostic = conn.execute(
                     """SELECT checked_at,selected_streams,issued_forecasts,
                               insufficient_causal_labels,insufficient_training,

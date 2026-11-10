@@ -21,6 +21,9 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
     try:
         view.screen = "accuracy"
         view.section = "ledger"
+        # Audit Step 3: the ledger is the detail topic inside
+        # "How accurate is it?".
+        view.detail = "ledger"
         view._rebuild()
         ledger = await view.render()
         assert len(ledger.fields) <= 3
@@ -29,6 +32,9 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
             x.value for x in ledger.fields if "Prediction ledger" in x.name
         )
         view.section = "progress"
+        # Audit Step 3: proof is the detail topic inside
+        # "Is anything better?".
+        view.detail = "progress"
         view._rebuild()
         progress = await view.render()
         assert len(progress.fields) <= 4  # live + three short progress fields
@@ -62,6 +68,9 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
         )
         assert "No graded test model results yet" in detail_value
         view.section = "costs"
+        # Audit Step 3: costs is the detail topic inside
+        # "Would it make money?".
+        view.detail = "costs"
         view._rebuild()
         costs = await view.render()
         assert len(costs.fields) <= 3
@@ -72,13 +81,16 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
         assert "No live orders" in proof
         # All drilldowns are discoverable using the same Discord selector.
         # The standalone "regimes" section is gone — its evidence lives
-        # in the merged "progress" section now.
+        # in the merged "progress" section now. Audit Step 3: the old
+        # ledger/progress/costs sections are detail topics inside the
+        # consolidated cards, not selector options.
         section = next(
             x for x in view.children
             if x.custom_id == "rival:research:section"
         )
         opts = {option.value for option in section.options}
-        assert {"ledger", "progress", "costs"}.issubset(opts)
+        assert {"better", "money"}.issubset(opts)
+        assert not ({"ledger", "progress", "costs"} & opts)
         assert "regimes" not in opts
     finally:
         view.stop()
@@ -168,6 +180,9 @@ async def test_trial_detail_field_carries_the_cut_metrics(tmp_path, monkeypatch)
     try:
         view.screen = "accuracy"
         view.section = "progress"
+        # Audit Step 3: proof is the detail topic inside
+        # "Is anything better?".
+        view.detail = "progress"
         view._rebuild()
         progress = await view.render()
         fields = {x.name: x.value for x in progress.fields}

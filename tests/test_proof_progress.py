@@ -6,7 +6,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from parlay_bot.discord_app.research_dashboard import _SECTIONS, ResearchDashboard
+from parlay_bot.discord_app.research_dashboard import (
+    _SECTIONS,
+    ACCURACY_SECTIONS,
+    ResearchDashboard,
+)
 from parlay_bot.perpetuals.family_governance import FamilyPromotion
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.proof_progress import proof_progress, proof_progress_text
@@ -109,10 +113,13 @@ async def test_progress_is_a_lightweight_navigable_results_section(learning_stor
     )
     panel.screen = "accuracy"
     panel.section = "progress"
+    # Audit Step 3: proof is the detail topic inside "Is anything better?".
+    panel.detail = "progress"
     panel.selected_venue = "hyperliquid"
     panel._rebuild()
     try:
-        assert "progress" in dict(_SECTIONS["accuracy"])
+        assert "progress" in ACCURACY_SECTIONS["better"]
+        assert "progress" not in dict(_SECTIONS["accuracy"])
         assert any(item.custom_id == "rival:research:venue" for item in panel.children)
         result = await panel.render()
         fields = {field.name: field.value for field in result.fields}

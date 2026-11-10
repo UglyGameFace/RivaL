@@ -128,8 +128,16 @@ async def test_mobile_accuracy_engine_exposes_measured_blocker_not_stale_guess(t
         view.screen = "accuracy"
         view.section = "engine"
         view._rebuild()
+        # Audit Step 3: the old engine section lands on the consolidated
+        # "Is it running?" card; the issue audit is its detail topic.
         embed = await view.render()
+        assert view.section == "running"
         assert len(embed.fields) <= 3
+        assert "Automatic learning engine · LIVE" in [
+            f.name for f in embed.fields]
+        view.detail = "engine"
+        view._rebuild()
+        embed = await view.render()
         details = next(
             f.value for f in embed.fields
             if f.name == "Forward issue audit · LIVE"

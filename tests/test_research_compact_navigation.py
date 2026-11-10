@@ -159,9 +159,17 @@ async def test_real_section_selector_and_tab_buttons_are_clickable(monkeypatch):
 
         view.section = "five"
         outcome = await view.render()
+        # Audit Step 3: an old key lands on its consolidated card, so
+        # both horizon cards show; the old single-horizon view is the
+        # "5-minute" detail topic behind a button.
+        assert view.section == "accuracy"
+        assert "Forward 5-minute evaluation" in [f.name for f in outcome.fields]
+        assert "Forward 15-minute evaluation" in [f.name for f in outcome.fields]
+        view.detail = "five"
+        outcome = await view.render()
         assert "Forward 5-minute evaluation" in [f.name for f in outcome.fields]
         assert "Forward 15-minute evaluation" not in [f.name for f in outcome.fields]
-        view.section = "fifteen"
+        view.detail = "fifteen"
         outcome = await view.render()
         assert "Forward 15-minute evaluation" in [f.name for f in outcome.fields]
         assert "Forward 5-minute evaluation" not in [f.name for f in outcome.fields]
@@ -312,9 +320,24 @@ def test_advanced_models_show_screening_blocker_not_paper_profit():
 
 
 def test_research_accuracy_offers_plain_and_technical_sections():
+    # Audit Step 3: 14 sections became 5 + the raw technical page.
+    # Nothing was deleted: the old sections survive as detail topics.
+    from parlay_bot.discord_app.research_dashboard import ACCURACY_SECTIONS
+
     labels = dict(_SECTIONS["accuracy"])
-    assert labels["lineage"] == "Is it learning from history?"
+    assert list(labels) == [
+        "overview", "running", "accuracy", "better", "money", "technical",
+    ]
+    assert labels["running"] == "Is it running?"
+    assert labels["accuracy"] == "How accurate is it?"
+    assert labels["better"] == "Is anything better?"
+    assert labels["money"] == "Would it make money?"
     assert labels["technical"] == "Technical evidence"
+    assert ACCURACY_SECTIONS["better"] == ("progress", "lineage", "tracker")
+    assert ACCURACY_SECTIONS["running"] == ("engine", "readiness", "venue")
+    assert ACCURACY_SECTIONS["accuracy"] == (
+        "five", "fifteen", "calibration", "ledger")
+    assert ACCURACY_SECTIONS["money"] == ("costs", "method")
     assert len(_SECTIONS["accuracy"]) <= 25
 
 

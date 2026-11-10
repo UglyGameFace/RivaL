@@ -123,6 +123,9 @@ async def test_private_accuracy_calibration_page_reads_real_forward_rows(tmp_pat
         try:
             view.screen = "accuracy"
             view.section = "calibration"
+            # Audit Step 3: calibration is the detail topic inside
+            # "How accurate is it?".
+            view.detail = "calibration"
             view._rebuild()
             embed = await view.render()
             assert len(embed.fields) <= 3

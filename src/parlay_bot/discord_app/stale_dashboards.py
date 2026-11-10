@@ -10,11 +10,23 @@ from collections.abc import Callable
 
 import discord
 
+from parlay_bot.discord_app.research_dashboard import ACCURACY_SECTIONS
+
 _LOG = logging.getLogger(__name__)
 
 RESEARCH_BUTTONS = (
     "opportunities", "math", "ai", "accuracy", "refresh",
     "follow-target", "analyze", "track-venue", "track-platform",
+    # Audit Step 3: the consolidated cards' back button.
+    "detail:back",
+)
+# Audit Step 3: one recovery button per absorbed detail topic, so a
+# stale tap on a detail button opens a fresh panel like every other
+# live control.
+RESEARCH_DETAIL_BUTTONS = tuple(
+    f"detail:{topic}"
+    for section in ("running", "accuracy", "better", "money")
+    for topic in ACCURACY_SECTIONS[section]
 )
 RESEARCH_SELECTS = ("asset", "section", "venue")
 # A view has five rows and each select fills one, so the tracker's select
@@ -119,5 +131,7 @@ def build_stale_dashboard_views(
         StaleDashboardView("research", research_factory),
         StaleDashboardView("research", research_factory, buttons=(),
                            selects=RESEARCH_EXTRA_SELECTS),
+        StaleDashboardView("research", research_factory,
+                           buttons=RESEARCH_DETAIL_BUTTONS, selects=()),
         StaleDashboardView("data", data_factory),
     )

@@ -11,9 +11,16 @@ over its graded shadow rows of the last 7 days on that stream,
 - it has at least ``MIN_TARGETS`` graded targets across ``MIN_DAYS`` UTC days,
 - its Brier score is worse than the main model's on the SAME targets by at
   least ``MIN_LOSS`` on average, and
-- that average loss stays above zero after subtracting ``Z`` standard errors,
-  with the variance inflated by horizon/5 because 15- and 60-minute targets
-  issued every 5 minutes overlap.
+- that average loss stays above zero after subtracting ``Z`` standard errors.
+  An earlier version also inflated the variance by horizon/5 for the
+  overlap of 15- and 60-minute targets issued every 5 minutes; that made
+  the 60-minute trigger unreachable inside the 7-day window (RIVAL-V: at a
+  0.087 loss it needs n>237 even at loss_square 0.03 and n>1879 at 0.1856,
+  while the window holds ~191 targets per horizon), so the 60m leg kept
+  issuing and the pooled alert kept firing. The inflation was removed; the
+  2.58 bar, the 0.01 margin, and the 60-target / 2-day floors are the
+  conservatism now. Treating overlapping targets as independent understates
+  the standard error, which the 2.58 bar absorbs.
 
 The standard-error buffer is a heuristic conservative screen, like the
 day-block screen in ``governance.score_paired_forward``. It is checked every
@@ -82,7 +89,11 @@ def verdict(score: dict) -> dict | None:
     loss = model - incumbent
     if loss < MIN_LOSS:
         return None
-    variance = max(0.0, square - loss * loss) * max(1.0, horizon / 5)
+    # No horizon inflation on the variance. Overlapping targets do share
+    # most of their window, but inflating by horizon/5 made the 60-minute
+    # trigger unreachable inside the 7-day window (RIVAL-V), so a clearly
+    # losing 60m leg kept issuing. The 2.58 bar is the conservatism.
+    variance = max(0.0, square - loss * loss)
     lower = loss - Z * math.sqrt(variance / targets)
     if lower <= 0:
         return None

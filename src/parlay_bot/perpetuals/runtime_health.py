@@ -46,6 +46,9 @@ class RuntimeHealthMonitor:
         self._initialized = False
         # (computed_at, faults) from the last completed 7-day aggregate.
         self._regression_cache: tuple[datetime, dict[str, str]] | None = None
+        # The same aggregate per stream and horizon, for the early-stop rule.
+        self._paired_scores: tuple[dict, ...] = ()
+        self._paired_in_use_since: str | None = None
 
     def initialize(self) -> None:
         if self._initialized:
@@ -305,30 +308,56 @@ class RuntimeHealthMonitor:
     def _score_regressions(self, conn, stamp: datetime) -> dict[str, str]:
         """Run the 7-day paired challenger aggregate and store its verdict."""
         regression_faults: dict[str, str] = {}
-        regressions = conn.execute(
-            """SELECT venue,contract,quote,family,COUNT(*) AS n,
+        in_use_since = (stamp-REGRESSION_IN_USE_WITHIN).isoformat()
+        # One scan serves two readers. The alert below pools a family's
+        # horizons per venue, as before. The early-stop rule (early_stop.py)
+        # needs each horizon by itself plus the spread of the paired loss, so
+        # the scan groups by horizon and the alert re-pools in Python.
+        scores = [dict(row) for row in conn.execute(
+            """SELECT venue,contract,quote,horizon_minutes,family,COUNT(*) AS n,
                       AVG(model_brier) AS model_score,
-                      AVG(incumbent_brier) AS incumbent_score
+                      AVG(incumbent_brier) AS incumbent_score,
+                      AVG((model_brier-incumbent_brier)*(model_brier-incumbent_brier))
+                          AS loss_square,
+                      COUNT(DISTINCT SUBSTR(target_opened_at,1,10)) AS days,
+                      MAX(issued_at) AS last_issued
                FROM rival_model_shadow_forecasts
                WHERE settled_at IS NOT NULL AND issued_at>=?
                  AND model_brier IS NOT NULL AND incumbent_brier IS NOT NULL
-               GROUP BY venue,contract,quote,family
-               HAVING COUNT(*)>=50 AND MAX(issued_at)>=?""",
+               GROUP BY venue,contract,quote,horizon_minutes,family""",
+            ((stamp-timedelta(days=7)).isoformat(),),
+        ).fetchall()]
+        pooled: dict[tuple[str, str, str, str], list] = {}
+        for row in scores:
+            count = int(row["n"])
+            entry = pooled.setdefault(
+                (row["venue"], row["contract"], row["quote"], row["family"]),
+                [0, 0.0, 0.0, ""])
+            entry[0] += count
+            entry[1] += float(row["model_score"]) * count
+            entry[2] += float(row["incumbent_score"]) * count
+            entry[3] = max(entry[3], str(row["last_issued"]))
+        for (venue, contract, _quote, family), (
+                count, model_sum, incumbent_sum, last_issued) in sorted(pooled.items()):
             # Only families still issuing: a retired or replaced
             # challenger keeps its record but stops raising incidents.
-            ((stamp-timedelta(days=7)).isoformat(),
-             (stamp-REGRESSION_IN_USE_WITHIN).isoformat()),
-        ).fetchall()
-        for row in regressions:
-            if float(row["model_score"]) > float(row["incumbent_score"]) + 0.025:
-                key = f"regression:{row['venue']}:{row['contract']}:{row['family']}"
-                regression_faults[key] = (
-                    f"paired Brier {float(row['model_score']):.4f} vs "
-                    f"incumbent {float(row['incumbent_score']):.4f}, "
-                    f"n={row['n']}; promotion must stay gated"
+            if count < 50 or last_issued < in_use_since:
+                continue
+            model_score, incumbent_score = model_sum / count, incumbent_sum / count
+            if model_score > incumbent_score + 0.025:
+                regression_faults[f"regression:{venue}:{contract}:{family}"] = (
+                    f"paired Brier {model_score:.4f} vs "
+                    f"incumbent {incumbent_score:.4f}, "
+                    f"n={count}; promotion must stay gated"
                 )
         self._regression_cache = (stamp, regression_faults)
+        self._paired_scores = tuple(scores)
+        self._paired_in_use_since = in_use_since
         return regression_faults
+
+    def paired_scores(self) -> tuple[tuple[dict, ...], str | None]:
+        """The last aggregate per stream and horizon, and its in-use cutoff."""
+        return self._paired_scores, self._paired_in_use_since
 
     def regressions_due(self, now: datetime) -> bool:
         """True when the stored regression verdict is missing or due a recheck."""

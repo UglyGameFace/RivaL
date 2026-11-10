@@ -15,6 +15,7 @@ import logging
 import math
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals import early_stop
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.research.boosted_portable import predict_portable
@@ -162,6 +163,9 @@ class ShadowModelCompetition:
             CREATE INDEX IF NOT EXISTS idx_rival_model_shadow_venue_issued
                 ON rival_model_shadow_forecasts (venue,issued_at);
             """)
+            # Stops recorded by early_stop: issue() reads this on every
+            # stream, so it must exist wherever the ledger does.
+            conn.execute(early_stop.SCHEMA)
 
     def _withdraw_no_trade_labels(self) -> None:
         """Match the incumbent ledger's no-trade correction on shadow rows.
@@ -294,6 +298,26 @@ class ShadowModelCompetition:
                 continue
         if not predictions:
             return 0
+        # A test model that is clearly losing on this stream has been
+        # stopped (early_stop): it issues no new rows here. Existing rows
+        # keep settling. The lookup fails open inside its own savepoint, so
+        # a missing table can never cost the other families their rows.
+        conn.execute("SAVEPOINT rival_early_stop_lookup")
+        try:
+            stopped = early_stop.stopped_families(
+                conn, venue=venue, contract=contract, quote=quote, horizon=horizon)
+        except Exception:  # noqa: BLE001 - optional governance read
+            conn.execute("ROLLBACK TO SAVEPOINT rival_early_stop_lookup")
+            _LOG.warning("RivaL early-stop lookup unavailable; issuing all families",
+                         exc_info=True)
+            stopped = frozenset()
+        finally:
+            conn.execute("RELEASE SAVEPOINT rival_early_stop_lookup")
+        if stopped:
+            predictions = {family: value for family, value in predictions.items()
+                           if family not in stopped}
+            if not predictions:
+                return 0
         # Training provenance is persisted at issuance, never reconstructed
         # from current weights after the future price is known.
         fingerprint = prepared["fingerprint"]

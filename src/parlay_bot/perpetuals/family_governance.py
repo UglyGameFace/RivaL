@@ -380,6 +380,14 @@ class FamilyPromotion:
                     self.store, asset, horizon)
             except Exception:  # noqa: BLE001 - a missing state row records as no artifact
                 scored["regime_wild_v1"]["artifact"] = None
+        for cross_family in ("cross_v1", "cross_all_v1"):
+            if cross_family in scored:
+                try:
+                    from parlay_bot.perpetuals import cross_model
+                    scored[cross_family]["artifact"] = cross_model.artifact_identity(
+                        self.store, cross_family, asset, horizon)
+                except Exception:  # noqa: BLE001 - a missing record is no artifact
+                    scored[cross_family]["artifact"] = None
         if "regime_v2" in scored:
             try:
                 from parlay_bot.perpetuals.regime2_model import artifact_identity
@@ -800,6 +808,20 @@ class FamilyPromotion:
                              and current_through >= recorded_through)):
                 return None
             return selected
+        if selected in ("cross_v1", "cross_all_v1"):
+            # Cross-exchange live learners (cross_model.py): no offline
+            # artifact, so the same continuity check as regime_v1 -- the
+            # learner behind the latest graded row must be a forward
+            # continuation of the one that earned promotion (same feature
+            # digest, trained-through and graded count never backwards).
+            try:
+                from parlay_bot.perpetuals import cross_model
+                recorded = json.loads(row["evidence_json"])[selected]["artifact"]
+                current = cross_model.artifact_identity(
+                    self.store, selected, asset, horizon)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                return None
+            return selected if cross_model.live_continuity(recorded, current) else None
         if selected == "regime_wild_v1":
             # Same continuity check as regime_v1, on the wild identity
             # (audit Step 5): the served call is the gated live logistic,

@@ -39,6 +39,69 @@ def test_disabled_under_tests_and_by_empty_dsn(monkeypatch):
     assert observability.init_sentry() is False
 
 
+def test_init_sentry_never_reports_under_tests_even_with_explicit_dsn(monkeypatch):
+    """Audit step 4 item 2: an exported SENTRY_DSN used to defeat the
+    pytest guard, so a test run reported health-alert errors as production
+    issues in environment "production", indistinguishable from real ones."""
+    import sentry_sdk
+
+    monkeypatch.setenv("SENTRY_DSN", "https://key@o1.ingest.us.sentry.io/1")
+    try:
+        assert observability.init_sentry() is False
+    finally:
+        sentry_sdk.init()  # no DSN: reporting off again for other tests
+
+
+def test_message_events_dedupe_by_message_not_one_shared_key():
+    """Audit step 4 item 1: capture_message events carry no logentry, so
+    without the plain message in the dedupe key they all shared one key
+    ("None|None") and only the first model-quality alert in 10 minutes
+    would leave the process."""
+    observability._recent.clear()
+    first = {"message": "RivaL HEALTH ALERT regression:phemex:ETH:liq_v1: gated"}
+    second = {"message": "RivaL HEALTH ALERT regression:okx:BTC:archive_v1: gated"}
+    assert observability.before_send(first, {}) is not None
+    assert observability.before_send(second, {}) is not None
+    assert observability.before_send(first, {}) is None
+
+
+def test_model_quality_alert_is_a_warning_with_its_own_fingerprint():
+    """Audit step 4 item 1: a RIVAL-F-style alert (gate working as designed)
+    leaves as a Sentry warning, grouped apart from real faults, with the
+    alert text unchanged."""
+    import sentry_sdk
+    from sentry_sdk.transport import Transport
+
+    sent: list[dict] = []
+
+    class Capture(Transport):
+        def capture_envelope(self, envelope):
+            sent.extend(item.payload.json for item in envelope.items
+                        if item.type == "event")
+
+    observability._recent.clear()
+    with sentry_sdk.isolation_scope():
+        sentry_sdk.init(dsn="https://key@o1.ingest.us.sentry.io/1", transport=Capture(),
+                        before_send=observability.before_send)
+        try:
+            observability.report_model_quality(
+                "regression:phemex:ETH:liq_v1",
+                "paired Brier 0.2600 vs incumbent 0.2000, n=120; "
+                "promotion must stay gated")
+            sentry_sdk.flush()
+        finally:
+            sentry_sdk.init()  # no DSN: reporting off again for other tests
+    assert len(sent) == 1
+    event = sent[0]
+    assert event["level"] == "warning"
+    assert event["fingerprint"] == ["model-quality", "regression:phemex:ETH:liq_v1"]
+    assert event["tags"]["alert_kind"] == "model_quality"
+    assert event["message"] == (
+        "RivaL HEALTH ALERT regression:phemex:ETH:liq_v1: "
+        "paired Brier 0.2600 vs incumbent 0.2000, n=120; "
+        "promotion must stay gated")
+
+
 def test_release_is_the_stamped_commit(tmp_path, monkeypatch):
     monkeypatch.setattr(observability, "__file__", str(tmp_path / "observability.py"))
     assert observability.release() is None

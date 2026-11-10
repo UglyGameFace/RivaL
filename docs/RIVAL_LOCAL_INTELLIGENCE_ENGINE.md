@@ -60,7 +60,7 @@ A valid token is required even for local access because private VLAN access is n
    RIVAL_CLOUDFLARE_AI_TOKEN=<existing separate Cloudflare secret if desired>
    RIVAL_OPENROUTER_DAILY_MAX=18
    RIVAL_GEMINI_AUTO_ENABLED=false
-   RIVAL_AI_BACKGROUND_OPT_IN=false
+   RIVAL_LLM_BACKGROUND_OPT_IN=false
    ```
    All unconfigured or unavailable local responses must leave existing mathematical learning and NO CALL behavior unchanged. `RIVAL_AI_PROVIDER=disabled` is the fast rollback.
 

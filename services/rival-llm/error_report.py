@@ -129,9 +129,13 @@ class SentryHandler(logging.Handler):
 
 
 def install(root: logging.Logger | None = None) -> SentryHandler | None:
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        # Tests never report to the rival-intelligence project, even when
+        # RIVAL_LLM_SENTRY_DSN is exported in the shell: an explicit DSN
+        # used to defeat this guard (same hole as observability.init_sentry).
+        return None
     dsn = os.environ.get("RIVAL_LLM_SENTRY_DSN", DEFAULT_DSN).strip()
-    if not dsn or ("PYTEST_CURRENT_TEST" in os.environ
-                   and "RIVAL_LLM_SENTRY_DSN" not in os.environ):
+    if not dsn:
         return None
     handler = SentryHandler(dsn)
     (root or logging.getLogger()).addHandler(handler)

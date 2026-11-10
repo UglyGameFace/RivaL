@@ -49,6 +49,7 @@ from parlay_bot.perpetuals.regime_gate import trending_gate
 from parlay_bot.perpetuals.regime_model import regime_calls
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
+from parlay_bot.perpetuals.wild_model import wild_calls
 from parlay_bot.research.archive_features import live_vector as archive_live_vector
 from parlay_bot.storage.database import database_clock
 
@@ -109,6 +110,15 @@ ISSUE_GBM_V1_CHALLENGERS = True
 # serving is gated separately by promotion. Existing rows keep settling
 # either way.
 ISSUE_REGIME_V1_CHALLENGERS = True
+# regime_wild_v1 shadow issuance (audit Step 5, 2026-11-10): the
+# wild-only challenger issues the incumbent's own call as a shadow
+# forecast only when the market-condition stamp recorded at issuance
+# says wild (issue_regime() "turbulent": 5-minute log-return volatility
+# in pct, features[2], >= 0.35); it never serves until Route B promotes
+# it. Kill switch for issuance; serving is gated separately by
+# promotion. Existing rows keep settling either way. The family starts
+# with no track record and proves nothing until 150 targets + 21 days.
+ISSUE_REGIME_WILD_V1_CHALLENGERS = True
 # regime_v2 shadow issuance (spec rival-regime-v2-spec-20261108, D6):
 # the trending-subset trained logistic issues shadow forecasts only on
 # trending cycles (same frozen gate) AND only when a pinned artifact is
@@ -887,6 +897,7 @@ class ForwardAccuracyMonitor:
             "duplicate_forecasts": 0, "issued_forecasts": 0,
             "settled_forecasts": 0,
             "regime_issued": 0, "regime_abstained": 0,
+            "wild_issued": 0, "wild_abstained": 0,
             "regime2_issued": 0, "regime2_abstained": 0, "regime2_unavailable": 0,
             "regime_live_issued": 0, "regime_live_abstained": 0,
             "regime_live_unavailable": 0,
@@ -1225,6 +1236,28 @@ class ForwardAccuracyMonitor:
                             metrics["regime_issued"] += 1
                         else:
                             metrics["regime_abstained"] += 1
+                    # regime_wild_v1: the incumbent's own call as a shadow
+                    # forecast, only when the issuance stamp says wild
+                    # (audit Step 5, 2026-11-10). The stamp is the
+                    # already-computed `regime` above -- no new volatility
+                    # measure, no re-derivation. A failure here is an
+                    # abstention, counted in the cycle metrics, not a
+                    # stored row -- and never blocks the incumbent.
+                    wild_items = ()
+                    if ISSUE_REGIME_WILD_V1_CHALLENGERS:
+                        try:
+                            wild_items = wild_calls(
+                                regime=regime, probability=probability,
+                                training_rows=tested.evaluated,
+                                model_sha256=weight_hash,
+                            )
+                        except Exception:  # noqa: BLE001 - a gate failure abstains
+                            _LOG.exception("RivaL wild gate unavailable")
+                            wild_items = ()
+                        if wild_items:
+                            metrics["wild_issued"] += 1
+                        else:
+                            metrics["wild_abstained"] += 1
                     # regime_v2: the trending-subset trained logistic as a
                     # shadow forecast, only when the gate passes AND a
                     # pinned artifact is imported (spec
@@ -1394,7 +1427,7 @@ class ForwardAccuracyMonitor:
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
-                                    challengers=(*flow_calls, *archive_items, *gbm_items, *regime_items, *regime2_items, *regime_live_items, *regime_live_fast_items),
+                                    challengers=(*flow_calls, *archive_items, *gbm_items, *regime_items, *wild_items, *regime2_items, *regime_live_items, *regime_live_fast_items),
                                     prepared=shadow_prepared,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger
@@ -1523,6 +1556,7 @@ class ForwardAccuracyMonitor:
             "stale=%d insufficient_labels=%d insufficient_training=%d "
             "expired=%d duplicate=%d issued=%d "
             "regime_issued=%d regime_abstained=%d "
+            "wild_issued=%d wild_abstained=%d "
             "regime2_issued=%d regime2_abstained=%d regime2_unavailable=%d "
             "regime_live_issued=%d regime_live_abstained=%d regime_live_unavailable=%d "
             "regime_live_fast_issued=%d regime_live_fast_abstained=%d regime_live_fast_unavailable=%d",
@@ -1532,6 +1566,7 @@ class ForwardAccuracyMonitor:
             metrics["insufficient_training"], metrics["target_expired"],
             metrics["duplicate_forecasts"], metrics["issued_forecasts"],
             metrics["regime_issued"], metrics["regime_abstained"],
+            metrics["wild_issued"], metrics["wild_abstained"],
             metrics["regime2_issued"], metrics["regime2_abstained"],
             metrics["regime2_unavailable"],
             metrics["regime_live_issued"], metrics["regime_live_abstained"],

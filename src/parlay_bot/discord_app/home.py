@@ -615,6 +615,20 @@ def _regime_live_fast_record(market: object, asset: str, horizon: int) -> dict:
     return trial_report(market.store, asset=asset, horizon=horizon, family=FAST_FAMILY)
 
 
+def _wild_record(market: object, asset: str, horizon: int) -> dict:
+    """Live graded record of the wild-only challenger (7 days).
+
+    Same columns as the regime_v1 trial row, measured on
+    regime_wild_v1's issued subset only, plus the same D5 selection
+    decomposition (paired_gain, selection_effect, coverage) so the page
+    shows whether the family won on the targets it chose or only by
+    choosing easy ones.
+    """
+    from parlay_bot.perpetuals.wild_model import trial_report
+
+    return trial_report(market.store, asset=asset, horizon=horizon)
+
+
 DISCORD_FIELD_LIMIT = 1024
 MIN_SAMPLE_FOR_RATE = 20
 
@@ -1850,6 +1864,10 @@ class GuidedHome(discord.ui.View):
                     asyncio.to_thread(_regime_live_fast_record, self.market, self.coin, self.horizon),
                     timeout=PERFORMANCE_READ_SECONDS,
                 )
+                readers["wild"] = asyncio.wait_for(
+                    asyncio.to_thread(_wild_record, self.market, self.coin, self.horizon),
+                    timeout=PERFORMANCE_READ_SECONDS,
+                )
                 readers["intelligence"] = asyncio.wait_for(
                     asyncio.to_thread(
                         _intelligence_status, self.market, self.coin, self.horizon,
@@ -2003,6 +2021,11 @@ class GuidedHome(discord.ui.View):
             if live_fast_text:
                 embed.add_field(name="🔬 Fast trend learner",
                                 value=rename_text(live_fast_text.strip()), inline=False)
+            wild_text = _regime_live_text(
+                reports.get("wild"), "wild-only test", now)
+            if wild_text:
+                embed.add_field(name="🔬 Wild-only test",
+                                value=rename_text(wild_text.strip()), inline=False)
 
             # 2. Contract-native comparisons; historical labels are NOT model wins.
             poly = reports.get("polymarket")

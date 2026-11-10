@@ -373,6 +373,13 @@ class FamilyPromotion:
                     self.store, asset, horizon)
             except Exception:  # noqa: BLE001 - a missing state row records as no artifact
                 scored["regime_v1"]["artifact"] = None
+        if "regime_wild_v1" in scored:
+            try:
+                from parlay_bot.perpetuals.wild_model import artifact_identity
+                scored["regime_wild_v1"]["artifact"] = artifact_identity(
+                    self.store, asset, horizon)
+            except Exception:  # noqa: BLE001 - a missing state row records as no artifact
+                scored["regime_wild_v1"]["artifact"] = None
         if "regime_v2" in scored:
             try:
                 from parlay_bot.perpetuals.regime2_model import artifact_identity
@@ -553,6 +560,30 @@ class FamilyPromotion:
                         now=stamp)
                 except Exception:  # noqa: BLE001 - a receipt must never block governance
                     _LOG.exception("RivaL %s promotion receipt unavailable", live_family)
+        # First promoted_paper write for regime_wild_v1 (audit Step 5):
+        # same pattern, same dedupe. Regime_v1 has no receipt block; the
+        # wild family adds one rather than copying that gap.
+        if selected == "regime_wild_v1" and not (
+                previous and previous["status"] == "promoted_paper"
+                and previous["selected_family"] == "regime_wild_v1"):
+            try:
+                from parlay_bot.perpetuals.promotion_receipts import (
+                    record_promotion_receipt,
+                )
+                from parlay_bot.perpetuals.wild_model import (
+                    calibration_status as wild_calibration_status,
+                )
+                record_promotion_receipt(
+                    self.store, family="regime_wild_v1", venue=venue,
+                    contract=contract, quote=quote, horizon=horizon,
+                    kind="promoted",
+                    evidence={**scored["regime_wild_v1"],
+                              "evaluated_at": stamp.isoformat()},
+                    calibration=wild_calibration_status(
+                        self.store, asset, horizon),
+                    now=stamp)
+            except Exception:  # noqa: BLE001 - a receipt must never block governance
+                _LOG.exception("RivaL regime_wild_v1 promotion receipt unavailable")
         # D14 pin verdicts: a selected offline family is promoted; a pinned
         # fit whose evidence is exhausted without a promotion is rejected.
         # The next queued fit is admitted on the next reload
@@ -743,6 +774,42 @@ class FamilyPromotion:
             try:
                 from parlay_bot.perpetuals.regime_model import artifact_identity
                 recorded = json.loads(row["evidence_json"])["regime_v1"]["artifact"]
+                current = artifact_identity(self.store, asset, horizon)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                return None
+            if not recorded or not current:
+                return None
+            try:
+                recorded_sha = str(recorded["weights_sha256"])
+                recorded_digest = str(recorded["feature_digest"])
+                recorded_through = utc(datetime.fromisoformat(
+                    str(recorded["trained_through"])))
+                recorded_count = int(recorded["graded_count"])
+                current_through = utc(datetime.fromisoformat(
+                    str(current["trained_through"])))
+                current_count = int(current["graded_count"])
+            except (ValueError, TypeError, KeyError):
+                return None
+            if (len(recorded_sha) != 64
+                    or recorded_digest != current["feature_digest"]
+                    or current_through < recorded_through
+                    or current_count < recorded_count):
+                return None
+            if (str(current["weights_sha256"]) != recorded_sha
+                    and not (current_count > recorded_count
+                             and current_through >= recorded_through)):
+                return None
+            return selected
+        if selected == "regime_wild_v1":
+            # Same continuity check as regime_v1, on the wild identity
+            # (audit Step 5): the served call is the gated live logistic,
+            # so the check verifies the live weights the gate last served
+            # are a continuation of the promoted ones -- same feature
+            # digest, trained-through and graded count monotone. No
+            # offline artifact exists, so there is no D14 pin to check.
+            try:
+                from parlay_bot.perpetuals.wild_model import artifact_identity
+                recorded = json.loads(row["evidence_json"])["regime_wild_v1"]["artifact"]
                 current = artifact_identity(self.store, asset, horizon)
             except (ValueError, TypeError, KeyError, AttributeError):
                 return None

@@ -62,6 +62,7 @@ from parlay_bot.perpetuals.bitget_history_recovery import BitgetHistoryRecovery
 from parlay_bot.perpetuals.collector import PerpetualMarketCollector
 from parlay_bot.perpetuals.deribit_history_recovery import DeribitHistoryRecovery
 from parlay_bot.perpetuals.dydx_history_recovery import DydxHistoryRecovery
+from parlay_bot.perpetuals.early_stop import EarlyStop
 from parlay_bot.perpetuals.family_quotes import FamilyQuoteShadow
 from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 from parlay_bot.perpetuals.gbm_model import GbmModelSet, is_gbm_document
@@ -1714,8 +1715,7 @@ class RivalDiscordClient(discord.Client):
         """
         try:
             with statement_timeout(BACKGROUND_STATEMENT_TIMEOUT_MS):
-                await asyncio.to_thread(
-                    self.health_monitor.refresh_regressions, now=now)
+                await asyncio.to_thread(self._score_test_models, now)
         except asyncio.CancelledError:
             raise
         except Exception:  # noqa: BLE001 - previous verdict kept; retried next pass
@@ -1723,6 +1723,17 @@ class RivalDiscordClient(discord.Client):
                 "RivaL 7-day challenger score check did not finish; "
                 "retrying next watchdog pass", exc_info=True,
             )
+
+    def _score_test_models(self, now: datetime) -> None:
+        """One scan, two verdicts: regression alerts, then early stops.
+
+        A test model that is clearly losing on a stream stops issuing there
+        (perpetuals/early_stop.py). The stop is written only after the scan
+        succeeds, from the same rows the alert used.
+        """
+        self.health_monitor.refresh_regressions(now=now)
+        scores, in_use_since = self.health_monitor.paired_scores()
+        EarlyStop(self.store).record(scores, now=now, in_use_since=in_use_since)
 
     async def _log_acceptance_once(self, now: datetime) -> None:
         try:

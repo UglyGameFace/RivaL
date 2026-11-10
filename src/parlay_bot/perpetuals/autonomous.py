@@ -38,7 +38,14 @@ SLOT_HOURS = 4
 # Auto-AI: one LLM ask can take 100 s per POST plus a retry, so its bound
 # is 240 s. Events: official-source polls are 7 s per request, but several
 # sources are checked in sequence.
-AUTONOMOUS_FORWARD_TIMEOUT_SECONDS = 90
+# The prediction stage normally takes 31-92 s on production (cycle logs,
+# 2026-11-10), longer just after a restart and at the top of the hour. At
+# 90 s the wait gave up on runs that were about to finish: the thread kept
+# working, its forecasts were stored, but the cycle was recorded as a failed
+# stage (learning_failure alerts) and the next stages started on top of it.
+# 180 s still exceeds the 60 s statement timeout, so a parked statement
+# aborts first, and still fits under the 240 s cap on the whole cycle.
+AUTONOMOUS_FORWARD_TIMEOUT_SECONDS = 180
 AUTONOMOUS_MULTI_SETTLE_TIMEOUT_SECONDS = 90
 AUTONOMOUS_MULTI_ISSUE_TIMEOUT_SECONDS = 90
 AUTONOMOUS_AI_SETTLE_TIMEOUT_SECONDS = 90
@@ -552,9 +559,15 @@ class AutonomousResearch:
             raise
         except TimeoutError:
             math_ok = False
+            # Name the slow phase: the thread is still running, so this is
+            # a snapshot of where its time had gone when the wait gave up.
             _LOG.warning(
-                "RivaL forward research stage timed out after %ds, skipping",
+                "RivaL forward research stage timed out after %ds, skipping "
+                "(seconds per phase so far: %s)",
                 AUTONOMOUS_FORWARD_TIMEOUT_SECONDS,
+                " ".join(f"{phase}={seconds:.0f}" for phase, seconds in dict(
+                    getattr(self.forward, "last_timing", None) or {}).items())
+                or "unavailable",
             )
         except Exception:  # noqa: BLE001
             math_ok = False

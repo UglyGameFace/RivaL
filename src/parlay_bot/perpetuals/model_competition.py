@@ -205,13 +205,17 @@ class ShadowModelCompetition:
             _LOG.exception("RivaL challenger no-trade correction unavailable")
 
     @staticmethod
-    def prepare(samples, features, *, now) -> dict:
+    def prepare(samples, features, *, now, stopped=frozenset()) -> dict:
         """The CPU part of issue(), safe to run BEFORE opening the transaction.
 
         Fits NB/kNN and fingerprints the training set from inputs that are
         already fixed at issuance, so the forecast transaction holds its
-        PostgreSQL connection only for the inserts.
+        PostgreSQL connection only for the inserts. When both pattern
+        families are stopped on this stream (early_stop) there is nothing
+        to fit or fingerprint, so neither is done.
         """
+        if all(family in stopped for family in FAMILIES):
+            return {"predictions": {}, "training_count": 0, "fingerprint": "0" * 64}
         eligible = sorted(
             (s for s in samples if utc(s.label_known_at) <= utc(now)),
             key=lambda s: (utc(s.label_known_at), utc(s.issued_at)),
@@ -226,11 +230,13 @@ class ShadowModelCompetition:
     def issue(self, conn, *, samples, features, now, venue, contract, quote,
               asset, horizon, reference_opened_at, target_opened_at, issued_at,
               incumbent_up, baseline_up, boosters=(), historical_candidates=(),
-              pooled=(), challengers=(), prepared=None):
+              pooled=(), challengers=(), prepared=None, stopped=None):
         """Call only inside the incumbent forecast's *successful* transaction.
 
         Pass ``prepared`` (from prepare(), same samples/features/now) to keep
         the model fitting outside the transaction; results are identical.
+        Pass ``stopped`` (this stream's early-stopped families, from one
+        per-cycle read) to skip the per-call lookup.
         """
         if prepared is None:
             prepared = self.prepare(samples, features, now=now)
@@ -303,17 +309,20 @@ class ShadowModelCompetition:
         # stopped (early_stop): it issues no new rows here. Existing rows
         # keep settling. The lookup fails open inside its own savepoint, so
         # a missing table can never cost the other families their rows.
-        conn.execute("SAVEPOINT rival_early_stop_lookup")
-        try:
-            stopped = early_stop.stopped_families(
-                conn, venue=venue, contract=contract, quote=quote, horizon=horizon)
-        except Exception:  # noqa: BLE001 - optional governance read
-            conn.execute("ROLLBACK TO SAVEPOINT rival_early_stop_lookup")
-            _LOG.warning("RivaL early-stop lookup unavailable; issuing all families",
-                         exc_info=True)
+        if stopped is None:
+            conn.execute("SAVEPOINT rival_early_stop_lookup")
+            try:
+                stopped = early_stop.stopped_families(
+                    conn, venue=venue, contract=contract, quote=quote, horizon=horizon)
+            except Exception:  # noqa: BLE001 - optional governance read
+                conn.execute("ROLLBACK TO SAVEPOINT rival_early_stop_lookup")
+                _LOG.warning("RivaL early-stop lookup unavailable; issuing all families",
+                             exc_info=True)
+                stopped = frozenset()
+            finally:
+                conn.execute("RELEASE SAVEPOINT rival_early_stop_lookup")
+        elif not early_stop.ENABLED:
             stopped = frozenset()
-        finally:
-            conn.execute("RELEASE SAVEPOINT rival_early_stop_lookup")
         if stopped:
             predictions = {family: value for family, value in predictions.items()
                            if family not in stopped}

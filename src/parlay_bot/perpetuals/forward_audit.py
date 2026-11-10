@@ -13,7 +13,7 @@ import math
 import time
 from datetime import UTC, datetime, timedelta
 
-from parlay_bot.perpetuals import regime_live_model
+from parlay_bot.perpetuals import early_stop, regime_live_model
 from parlay_bot.perpetuals.archive_model import ArchiveModelSet, archive_calls
 from parlay_bot.perpetuals.calibrated_challenger import CalibratedIncumbent
 from parlay_bot.perpetuals.cross_model import CrossModel
@@ -985,6 +985,14 @@ class ForwardAccuracyMonitor:
             self.market._path_sample_memos = path_memos
         while len(path_memos) > MAX_STREAMS_PER_CYCLE * 4:
             path_memos.pop(next(iter(path_memos)))
+        # Early-stopped test models, read once for the whole cycle (it was
+        # three statements per stream and horizon). Unavailable means each
+        # issue() falls back to its own fail-open lookup.
+        try:
+            stop_map = early_stop.stops_by_stream(self.store)
+        except Exception:  # noqa: BLE001 - optional governance read
+            _LOG.warning("RivaL early-stop table unavailable this cycle", exc_info=True)
+            stop_map = None
         # Streams whose main-model forecast was stored this cycle, for the
         # cross-exchange test models issued after the loop.
         cross_pending: list[dict] = []
@@ -1338,11 +1346,13 @@ class ForwardAccuracyMonitor:
                             metrics[f"{prefix}_unavailable"] += 1
                     regime_live_items = live_items[regime_live_model.BASE_FAMILY]
                     regime_live_fast_items = live_items[regime_live_model.FAST_FAMILY]
+                    stream_stops = (None if stop_map is None else stop_map.get(
+                        (venue, contract, quote, horizon), frozenset()))
                     # Shadow-model fitting is CPU work on inputs already
                     # fixed at issuance: do it before the transaction opens.
                     try:
                         shadow_prepared = ShadowModelCompetition.prepare(
-                            samples, features, now=stamp)
+                            samples, features, now=stamp, stopped=stream_stops or frozenset())
                     except Exception:  # noqa: BLE001 - optional challenger
                         shadow_prepared = None  # issue() recomputes and isolates it
                     # Path priors likewise: CPU work, before the transaction,
@@ -1440,7 +1450,7 @@ class ForwardAccuracyMonitor:
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
                                     challengers=(*flow_calls, *archive_items, *gbm_items, *regime_items, *wild_items, *regime2_items, *regime_live_items, *regime_live_fast_items),
-                                    prepared=shadow_prepared,
+                                    prepared=shadow_prepared, stopped=stream_stops,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger
                                 conn.execute("ROLLBACK TO SAVEPOINT rival_shadow_prediction")
@@ -1494,6 +1504,7 @@ class ForwardAccuracyMonitor:
                 CrossModel(self.store).issue(
                     cross_pending,
                     issued_at=stamp if now is not None else datetime.now(UTC),
+                    stops=stop_map,
                 )
             except Exception:  # noqa: BLE001 - optional challenger
                 _LOG.exception("RivaL cross-exchange test models unavailable")

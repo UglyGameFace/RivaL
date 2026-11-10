@@ -219,14 +219,15 @@ class CrossModel:
 
     # -- issuance ------------------------------------------------------------
 
-    def issue(self, pending, *, issued_at: datetime) -> int:
+    def issue(self, pending, *, issued_at: datetime, stops=None) -> int:
         """Issue both families for every target with enough exchanges.
 
         ``pending`` holds one entry per stream and horizon whose main-model
         forecast was stored this cycle: venue, contract, quote, asset,
         horizon, reference_opened_at, target_opened_at, incumbent_up,
-        baseline_up and that stream's 10 main-model inputs. Returns the
-        shadow rows saved.
+        baseline_up and that stream's 10 main-model inputs. ``stops`` is
+        the cycle's early-stop map (stream and horizon -> families); without
+        it each stream looks its own stops up. Returns the shadow rows saved.
         """
         from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
 
@@ -289,6 +290,9 @@ class CrossModel:
                         challengers=calls,
                         prepared={"predictions": {}, "training_count": 0,
                                   "fingerprint": "0" * 64},
+                        stopped=(None if stops is None else stops.get(
+                            (entry["venue"], entry["contract"], entry["quote"],
+                             horizon), frozenset())),
                     )
         return saved
 

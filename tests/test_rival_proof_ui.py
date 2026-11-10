@@ -43,7 +43,12 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
         )
         assert "insufficient" in regime_value
         assert "quiet " in regime_value  # incumbent per-regime splits kept
-        assert "regime_v1 5m" in regime_value  # family subsets kept
+        assert "regime_live_v1 5m" in regime_value  # live subsets kept
+        # Audit Step 1: regime_v1's per-regime gain is +0.0000 by design
+        # (it returns the incumbent's own probability verbatim), so its
+        # line is hidden here. Its trial result still lives in Trial
+        # detail and on the Performance page.
+        assert "regime_v1 5m" not in regime_value
         assert "regime_v2" not in regime_value  # dead family removed
         # Deduplicated: the per-regime gains live in exactly one field.
         proof_value = next(

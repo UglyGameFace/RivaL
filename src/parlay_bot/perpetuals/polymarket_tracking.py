@@ -208,13 +208,24 @@ def polymarket_tracking_text(result: dict) -> str:
         line = (f"**{item['horizon']}m** · {item['issued']}/{item['target']} calls issued, "
                 f"{item['settled']} settled")
         if item["settled"]:
+            # Audit Step 1: no rate on fewer than 20 results.
+            if item["picked"] >= 20:
+                picks = f" ({item['wins'] / item['picked']:.0%})"
+            elif item["picked"]:
+                picks = f" (too few to judge — {item['picked']} picked)"
+            else:
+                picks = ""
             line += (f"\nPicked a side {item['picked']} times, right **{item['wins']}**"
-                     + (f" ({item['wins'] / item['picked']:.0%})" if item["picked"] else "")
+                     + picks
                      + f"; WAIT (no pick) {item['waits']} times.")
             if item["return_per_dollar"] is not None:
-                line += (f"\nBuying each pick at the price shown, after Polymarket fees: "
-                         f"**{item['return_per_dollar']:+.1%}** per $1 "
-                         f"({item['priced']} picks with a recorded price).")
+                if item["priced"] >= 20:
+                    line += (f"\nBuying each pick at the price shown, after Polymarket fees: "
+                             f"**{item['return_per_dollar']:+.1%}** per $1 "
+                             f"({item['priced']} picks with a recorded price).")
+                else:
+                    line += ("\nBuying each pick at the price shown, after Polymarket fees: "
+                             f"too few to judge — {item['priced']} picks with a recorded price.")
             line += (f"\nError {item['model_brier']:.4f} vs the market price's own "
                      f"{item['market_brier']:.4f} (lower is better).")
         for call in reversed(item["recent"][-3:]):

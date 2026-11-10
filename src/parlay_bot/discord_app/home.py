@@ -614,6 +614,46 @@ def _regime_live_fast_record(market: object, asset: str, horizon: int) -> dict:
     return trial_report(market.store, asset=asset, horizon=horizon, family=FAST_FAMILY)
 
 
+DISCORD_FIELD_LIMIT = 1024
+MIN_SAMPLE_FOR_RATE = 20
+
+
+def fit_embed_field_value(text: str, *, budget: int = DISCORD_FIELD_LIMIT) -> str:
+    """Fit an embed field value to Discord's limit without cutting mid-word.
+
+    The old pattern sliced at [:1024], which cut live numbers mid-word —
+    the 2026-11-10 audit screenshot shows the regime field ending "A
+    stable shadow score is not tradin". Lines are dropped from the tail
+    (lowest priority last) until the value fits; only a single line that
+    alone exceeds the budget is cut, at the last word boundary, with an
+    ellipsis. Short values pass through unchanged.
+    """
+    if len(text) <= budget:
+        return text
+    lines = text.split("\n")
+    while len(lines) > 1 and len("\n".join(lines)) > budget:
+        lines.pop()
+    fitted = "\n".join(lines)
+    if len(fitted) <= budget:
+        return fitted
+    cut = fitted[: budget - 1].rsplit(" ", 1)[0]
+    if not cut:
+        cut = fitted[: budget - 1]
+    return cut + "…"
+
+
+def rate_or_too_few(n: int, rate: str, *, what: str) -> str:
+    """A measured rate, or "too few to judge" on a tiny sample.
+
+    A rate on fewer than 20 results reads as evidence when it is noise —
+    0% on 2 sat-out Intelligence calls is the case that prompted this.
+    The count stays; only the rate goes.
+    """
+    if int(n) >= MIN_SAMPLE_FOR_RATE:
+        return rate
+    return f"too few to judge — {int(n)} {what}"
+
+
 def _trial_clock(record, now):
     """(days, targets) for the one-line clock, from the trial record itself.
 
@@ -642,7 +682,9 @@ def _trial_one_liner(label, record, now):
     """One family, one headline line — nothing else.
 
     Headline: name · accuracy · Brier vs incumbent · gain · clock
-    (day, then targets). Hard cap ~120 chars, pinned by test (worst
+    (day, then targets). The accuracy rate shows only on 20+ decided
+    results; below that it reads "too few to judge" (audit Step 1) —
+    the counts stay. Hard cap ~120 chars, pinned by test (worst
     case under 140): the live labels are shortened here ("Live-learning",
     "Live-learning fast") because the full names would push the worst
     case past the cap — the full names stay on the field titles above
@@ -667,8 +709,9 @@ def _trial_one_liner(label, record, now):
                 f"{graded:,} scored so far{clock}")
     hits = int(record.get("hits") or 0)
     gain = float(record["incumbent_brier"]) - float(record["model_brier"])
+    rate = rate_or_too_few(decided, f"{hits / decided:.1%}", what="decided")
     return (
-        f"**{label}:** right {hits:,} of {decided:,} ({hits / decided:.1%})"
+        f"**{label}:** right {hits:,} of {decided:,} ({rate})"
         f" · Brier {float(record['model_brier']):.3f} vs incumbent "
         f"{float(record['incumbent_brier']):.3f} · gain {gain:+.3f}{clock}"
     )
@@ -1197,7 +1240,7 @@ class GuidedHome(discord.ui.View):
             if market is None:
                 embed.add_field(
                     name="Start here",
-                    value=(
+                    value=fit_embed_field_value(
                         "**Polymarket:** Crypto UP/DOWN event contracts.\n"
                         "**Crypto Perpetuals:** Long/short BTC, ETH, SOL, etc. "
                         "on exchanges like Hyperliquid, Binance Futures and OKX. "
@@ -1208,7 +1251,7 @@ class GuidedHome(discord.ui.View):
                         "on exchange data; no confirmed contract match.\n"
                         "**DraftKings Sportsbook:** Sports odds and championship "
                         "futures belong under **Sports**, not Crypto Perpetuals."
-                    )[:1024], inline=False,
+                    ), inline=False,
                 )
             elif market == "kalshi":
                 progress = (
@@ -1251,7 +1294,7 @@ class GuidedHome(discord.ui.View):
                         )
                 embed.add_field(
                     name=f"🎯 Kalshi model validation • {self.coin}",
-                    value=progress[:1024], inline=False,
+                    value=fit_embed_field_value(progress), inline=False,
                 )
                 embed.add_field(
                     name="Next action",
@@ -1262,7 +1305,7 @@ class GuidedHome(discord.ui.View):
             elif market == "draftkings":
                 embed.add_field(
                     name="DraftKings Predictions • NOT CONNECTED (references only)",
-                    value=(
+                    value=fit_embed_field_value(
                         f"**Coin:** {self.coin} • **Exchange research window only (not contract expiry):** "
                         f"{self.horizon}m\n"
                         "**Find My Coin:** Automatically find public CDNA candidates; "
@@ -1276,7 +1319,7 @@ class GuidedHome(discord.ui.View):
                         "trained model, or settled prediction statistics yet.** "
                         "Use DraftKings' own listed strike, settlement terms, "
                         "fees, and executable quote before a decision."
-                    )[:1024], inline=False,
+                    ), inline=False,
                 )
                 if self.dkex_status is not None:
                     try:
@@ -1476,14 +1519,14 @@ class GuidedHome(discord.ui.View):
                                 )
                             embed.add_field(
                                 name=item.title[:140],
-                                value=(
+                                value=fit_embed_field_value(
                                     f"{item.ticker} • closes "
                                     f"{discord.utils.format_dt(item.close_time, style='R')}\n"
                                     f"YES ask: {yes} • NO ask: {no}\n"
                                     f"{quote_context}\n"
                                     f"{research_context}\n"
                                     f"Rule: {item.rules[:140]}"
-                                )[:1024], inline=False,
+                                ), inline=False,
                             )
                     except (TimeoutError, ValueError, TypeError):
                         embed.add_field(
@@ -1857,7 +1900,8 @@ class GuidedHome(discord.ui.View):
                 issued = int(part.get("issued") or 0)
                 hit = part.get("hit_rate")
                 accuracy = (
-                    f"**{correct:,} of {decided:,}** ({hit:.1%})"
+                    f"**{correct:,} of {decided:,}** "
+                    f"({rate_or_too_few(decided, f'{hit:.1%}', what='decided')})"
                     if isinstance(hit, (int, float)) and decided else
                     "not enough finished results to measure yet"
                 )
@@ -1929,7 +1973,7 @@ class GuidedHome(discord.ui.View):
             if isinstance(regime, dict) and int(regime.get("issued") or 0):
                 exchange_text += "\n" + _trial_one_liner("regime_v1", regime, now)
             embed.add_field(name=f"📈 {self.coin} exchange predictions (up or down?)",
-                            value=exchange_text[:1024], inline=False)
+                            value=fit_embed_field_value(exchange_text), inline=False)
 
             # Regime live-learning rows get their own fields, one per
             # family, directly after the exchange field so the reading
@@ -2050,7 +2094,7 @@ class GuidedHome(discord.ui.View):
                     poly_text += (f"\n⚠️ Saw {observed:,} contracts but couldn't read any "
                                   "of their results yet")
             embed.add_field(name="🎯 Polymarket / Kalshi predictions",
-                            value=poly_text[:1024], inline=False)
+                            value=fit_embed_field_value(poly_text), inline=False)
 
             # 3. Live worker state is distinct from statistical learning benefit.
             cycles = reports.get("cycles")
@@ -2113,18 +2157,34 @@ class GuidedHome(discord.ui.View):
                 rep_ = intelligence["report"]
                 latest = intelligence["latest"]
                 stance, direction = latest["stances"].get(self.horizon, ("—", "none"))
+                followed_n = int(rep_["followed"] or 0)
+                followed_rate = rep_["followed_hit_rate"]
+                followed_outcome = (
+                    rate_or_too_few(
+                        followed_n, f"right {followed_rate:.0%}",
+                        what="followed")
+                    if followed_n and followed_rate is not None else None
+                )
                 followed = (
-                    f"went along with the model {rep_['followed']} times "
-                    f"(right {rep_['followed_hit_rate']:.0%})"
-                    if rep_["followed"] and rep_["followed_hit_rate"] is not None
-                    else f"went along with the model {rep_['followed']} times "
+                    f"went along with the model {followed_n} times "
+                    f"({followed_outcome})"
+                    if followed_outcome is not None
+                    else f"went along with the model {followed_n} times "
                          "(none scored yet)"
                 )
+                abstained_n = int(rep_["abstained"] or 0)
+                abstained_rate = rep_["model_hit_when_abstained"]
+                abstained_outcome = (
+                    rate_or_too_few(
+                        abstained_n,
+                        f"the model was right {abstained_rate:.0%} of those",
+                        what="sat out")
+                    if abstained_n and abstained_rate is not None else None
+                )
                 abstained = (
-                    f"sat out {rep_['abstained']} (the model was right "
-                    f"{rep_['model_hit_when_abstained']:.0%} of those)"
-                    if rep_["abstained"] and rep_["model_hit_when_abstained"] is not None
-                    else f"sat out {rep_['abstained']}"
+                    f"sat out {abstained_n} ({abstained_outcome})"
+                    if abstained_outcome is not None
+                    else f"sat out {abstained_n}"
                 )
                 # "now DOWN" read as "the service is down"; spell out that it is
                 # a price call, and that sitting out is a choice, not an outage.
@@ -2146,7 +2206,8 @@ class GuidedHome(discord.ui.View):
                               if "intelligence" in reports else "")
             embed.add_field(
                 name="🧠 Is it learning?",
-                value=f"{engine_text}\n{trend_text}\n{lineage_text}{intel_text}"[:1024],
+                value=fit_embed_field_value(
+                    f"{engine_text}\n{trend_text}\n{lineage_text}{intel_text}"),
                 inline=False,
             )
 
@@ -2201,8 +2262,12 @@ class GuidedHome(discord.ui.View):
             if isinstance(coverage, dict) and coverage["cycles"]:
                 ran = min(coverage["cycles"], 288)
                 missed = coverage["expired"]
+                # A green tick must mean nothing went wrong: cycles ran
+                # AND no prediction was skipped for running late. The
+                # audit's example (288 of 288 ran, 199 skipped) showed ✅.
+                healthy = ran >= 274 and not missed
                 cycle_text += (
-                    f"\n**Last 24 hours:** {'✅' if ran >= 274 else '⚠️'} {ran} of 288 "
+                    f"\n**Last 24 hours:** {'✅' if healthy else '⚠️'} {ran} of 288 "
                     f"cycles ran ({ran / 288:.0%})"
                     + (f"; {missed:,} predictions skipped because a cycle ran late"
                        if missed else "")
@@ -2210,7 +2275,8 @@ class GuidedHome(discord.ui.View):
                        ". Restarts and slow cycles both count against this")
                 )
             embed.add_field(
-                name="📡 Is everything running?", value=f"{feeds_text}\n{cycle_text}"[:1024],
+                name="📡 Is everything running?",
+                value=fit_embed_field_value(f"{feeds_text}\n{cycle_text}"),
                 inline=False,
             )
             embed.timestamp = now

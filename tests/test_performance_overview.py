@@ -485,7 +485,7 @@ def test_trial_detail_line_carries_every_cut_metric_and_only_those():
 
 _ONE_LINE_HEADLINE = re.compile(
     r"\*\*(?P<label>[^*]+):\*\* right (?P<hits>[\d,]+) of (?P<decided>[\d,]+) "
-    r"\((?P<pct>\d+\.\d)%\) · Brier (?P<brier>\d\.\d{3}) vs incumbent "
+    r"\((?P<pct>\d+\.\d%|too few to judge — [\d,]+ decided)\) · Brier (?P<brier>\d\.\d{3}) vs incumbent "
     r"(?P<incumbent>\d\.\d{3}) · gain (?P<gain>[+-]\d\.\d{3}) · "
     r"day (?P<day>\d+)/21 · (?P<targets>[\d,]+)/150 targets"
 )
@@ -535,6 +535,13 @@ async def test_one_line_per_live_family_and_no_dead_or_zombie_families(
             "Pooled 6-year model", "regime_v1",
             "Live-learning", "Live-learning fast",
         }
+        # Audit Step 1: the live rows have 9 decided (< 20), so their
+        # rate reads "too few to judge" instead of a % — same one-line
+        # format, no rate on a tiny sample. The pooled/regime rows
+        # have thousands decided, so theirs still show a %.
+        live_rows = [h for h in headlines if h[0].startswith("Live-learning")]
+        assert all("too few to judge — 9 decided" in h[3] for h in live_rows)
+        assert all("%" in h[3] for h in headlines if h not in live_rows)
         # Dead families never render; zombies have no row on this page.
         for dead in ("flow_v1", "flow_v2", "regime_v2", "regime-v2",
                      "Regime-v2"):

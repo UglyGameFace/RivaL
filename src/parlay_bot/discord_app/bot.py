@@ -2088,8 +2088,10 @@ class RivalDiscordClient(discord.Client):
                     )
                     considered += 1
                 _LOG.debug("RivaL formula test considered=%d", considered)
-                if considered:
-                    heartbeat("rival-formula-test")
+                # Liveness check-in, not a result signal: the loop completed
+                # a pass, so Sentry hears from it even when the listing was
+                # empty and nothing was considered.
+                heartbeat("rival-formula-test")
             except asyncio.CancelledError:
                 raise
             except TimeoutError:

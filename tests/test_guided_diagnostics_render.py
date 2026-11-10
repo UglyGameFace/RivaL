@@ -33,7 +33,7 @@ async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) ->
         fields = _fields(embed)
         assert len(fields) == 4
         health = fields["📡 Is everything running?"]
-        assert "Price feeds:** ⚠️ 0 of 1 exchanges up to date" in health
+        assert "Live market feeds:** ⚠️ 0 of 1 exchanges up to date" in health
         assert "Prediction cycle:** ⚠️ no run recorded yet" in health
 
         from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
@@ -123,7 +123,7 @@ async def test_feed_read_failure_does_not_hide_recorded_cycle(tmp_path, monkeypa
     try:
         embed = await home.render()
         status = _fields(embed)["📡 Is everything running?"]
-        assert "Price feeds:** couldn't check right now" in status
+        assert "Live market feeds:** couldn't check right now" in status
         assert "Prediction cycle:" in status
         assert "made 0 predictions" in status
         assert len(embed.fields) == 4

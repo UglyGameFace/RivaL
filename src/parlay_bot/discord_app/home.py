@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import discord
 
 from parlay_bot.discord_app.alert_control import stop_all_notifications
+from parlay_bot.discord_app.answer_cards import RESEARCH_FOOTER, rename_text
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
 from parlay_bot.discord_app.cdna_public import CDNAPersonalReader
 from parlay_bot.discord_app.cdna_ui import (
@@ -685,8 +686,8 @@ def _trial_one_liner(label, record, now):
     (day, then targets). The accuracy rate shows only on 20+ decided
     results; below that it reads "too few to judge" (audit Step 1) —
     the counts stay. Hard cap ~120 chars, pinned by test (worst
-    case under 140): the live labels are shortened here ("Live-learning",
-    "Live-learning fast") because the full names would push the worst
+    case under 140): the live labels are shortened here ("trend learner",
+    "fast trend learner") because the full names would push the worst
     case past the cap — the full names stay on the field titles above
     the lines. Everything the old
     detail line showed (Brier vs the simple guess, vs-regime_v1
@@ -1968,12 +1969,12 @@ class GuidedHome(discord.ui.View):
             pooled = reports.get("pooled")
             if isinstance(pooled, dict) and int(pooled.get("issued") or 0):
                 exchange_text += "\n" + _trial_one_liner(
-                    "Pooled 6-year model", pooled, now)
+                    "6-year history model", pooled, now)
             regime = reports.get("regime")
             if isinstance(regime, dict) and int(regime.get("issued") or 0):
-                exchange_text += "\n" + _trial_one_liner("regime_v1", regime, now)
+                exchange_text += "\n" + _trial_one_liner("trend-only test", regime, now)
             embed.add_field(name=f"📈 {self.coin} exchange predictions (up or down?)",
-                            value=fit_embed_field_value(exchange_text), inline=False)
+                            value=fit_embed_field_value(rename_text(exchange_text)), inline=False)
 
             # Regime live-learning rows get their own fields, one per
             # family, directly after the exchange field so the reading
@@ -1988,20 +1989,20 @@ class GuidedHome(discord.ui.View):
             # _regime_live_text returns "" before first issuance, and
             # Discord rejects empty field values, so a family with no
             # text gets no field at all. The line labels are shortened
-            # ("Live-learning", "Live-learning fast") because the full
+            # ("trend learner", "fast trend learner") because the full
             # names would push the worst-case headline past the
             # 140-char pin; the full names stay on the field titles
             # above the lines.
             live_text = _regime_live_text(
-                reports.get("regime_live"), "Live-learning", now)
+                reports.get("regime_live"), "trend learner", now)
             if live_text:
-                embed.add_field(name="🔬 Regime live-learning model",
-                                value=live_text.strip(), inline=False)
+                embed.add_field(name="🔬 Trend learner",
+                                value=rename_text(live_text.strip()), inline=False)
             live_fast_text = _regime_live_text(
-                reports.get("regime_live_fast"), "Live-learning fast", now)
+                reports.get("regime_live_fast"), "fast trend learner", now)
             if live_fast_text:
-                embed.add_field(name="🔬 Regime live-learning fast model",
-                                value=live_fast_text.strip(), inline=False)
+                embed.add_field(name="🔬 Fast trend learner",
+                                value=rename_text(live_fast_text.strip()), inline=False)
 
             # 2. Contract-native comparisons; historical labels are NOT model wins.
             poly = reports.get("polymarket")
@@ -2094,7 +2095,7 @@ class GuidedHome(discord.ui.View):
                     poly_text += (f"\n⚠️ Saw {observed:,} contracts but couldn't read any "
                                   "of their results yet")
             embed.add_field(name="🎯 Polymarket / Kalshi predictions",
-                            value=fit_embed_field_value(poly_text), inline=False)
+                            value=fit_embed_field_value(rename_text(poly_text)), inline=False)
 
             # 3. Live worker state is distinct from statistical learning benefit.
             cycles = reports.get("cycles")
@@ -2207,7 +2208,7 @@ class GuidedHome(discord.ui.View):
             embed.add_field(
                 name="🧠 Is it learning?",
                 value=fit_embed_field_value(
-                    f"{engine_text}\n{trend_text}\n{lineage_text}{intel_text}"),
+                    rename_text(f"{engine_text}\n{trend_text}\n{lineage_text}{intel_text}")),
                 inline=False,
             )
 
@@ -2215,7 +2216,7 @@ class GuidedHome(discord.ui.View):
             # substitute for an actual forecast-worker heartbeat.
             feeds = reports.get("feeds")
             if not isinstance(feeds, (list, tuple)):
-                feeds_text = "**Price feeds:** couldn't check right now"
+                feeds_text = "**Live market feeds:** couldn't check right now"
             else:
                 fresh, listed = set(), set()
                 for row in feeds:
@@ -2238,10 +2239,10 @@ class GuidedHome(discord.ui.View):
                 expected = listed or set(self.venues)
                 stale = sorted(expected - fresh)
                 feeds_text = (
-                    f"**Price feeds:** {'✅' if not stale else '⚠️'} {len(fresh)} of "
+                    f"**Live market feeds:** {'✅' if not stale else '⚠️'} {len(fresh)} of "
                     f"{len(expected)} exchanges up to date"
                     + (f" (behind: {', '.join(stale)[:200]})" if stale else "")
-                    if self.venues else "**Price feeds:** not set up"
+                    if self.venues else "**Live market feeds:** not set up"
                 )
             cycle = cycles.get("forecast") if isinstance(cycles, dict) else None
             if cycle is None:
@@ -2276,13 +2277,12 @@ class GuidedHome(discord.ui.View):
                 )
             embed.add_field(
                 name="📡 Is everything running?",
-                value=fit_embed_field_value(f"{feeds_text}\n{cycle_text}"),
+                value=fit_embed_field_value(rename_text(f"{feeds_text}\n{cycle_text}")),
                 inline=False,
             )
             embed.timestamp = now
             embed.set_footer(
-                text="Live numbers · Research only, no real trades · "
-                     "More detail: Detailed Research"
+                text=f"{RESEARCH_FOOTER} · More detail: Detailed Research"
             )
         elif p == "help":
             embed = discord.Embed(

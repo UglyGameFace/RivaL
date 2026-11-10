@@ -117,7 +117,10 @@ async def test_progress_is_a_lightweight_navigable_results_section(learning_stor
         result = await panel.render()
         fields = {field.name: field.value for field in result.fields}
         assert "Future model proof" in fields
-        assert "No" not in fields["Future model proof"][:5]
+        # Audit Step 2: the card answers first — "Not yet" is the honest
+        # verdict for an evaluated-but-unqualified candidate, not a "No".
+        assert fields["Future model proof"].split("\n")[0] == (
+            "Not yet — no test model passed proof.")
         assert "real profitability" in fields["Future model proof"]
         assert len(fields["Future model proof"]) <= 1024
     finally:

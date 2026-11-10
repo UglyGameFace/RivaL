@@ -394,6 +394,36 @@ class ForwardAccuracyMonitor:
         self.market.initialize()
         ShadowLearningMonitor(self.store).initialize()
         with self.store.connect() as conn:
+            # DDL notes, as Python comments on purpose: the Postgres
+            # executescript path splits the script on ";" and a
+            # semicolon inside a "--" SQL comment breaks the split —
+            # that crashed startup after PR #485. No prose comments
+            # may live inside the SQL string below.
+            # - rival_forward_model_lineage holds per-issuance
+            #   evidence, separate from old forecast rows; only new
+            #   predictions can claim a known training lineage.
+            # - idx_rival_forward_lineage_policy scopes the
+            #   current-policy lookup by horizon/model and time.
+            # - idx_perp_forward_asset_issued serves recent_watches
+            #   exactly: asset + issued range for still-pending
+            #   forecasts, ordered newest first.
+            # - idx_perp_forward_shadow_observe serves
+            #   StreamShadowLedger.observe() exactly: the five equality
+            #   filters, then the issued_at range in ORDER BY order
+            #   (LIMIT 24). With asset/venue/contract/quote/
+            #   model_version fixed, the issued_at range scan returns
+            #   rows already ordered, so the query needs no sort and no
+            #   scan past the matching rows. The three remaining
+            #   selected columns (horizon_minutes, target_opened_at,
+            #   probability_up) still come from the heap for the <=24
+            #   returned rows. INCLUDE is not used because this DDL
+            #   must also run on SQLite in tests, which has no
+            #   INCLUDE clause. CONCURRENTLY is not used either: the
+            #   shared executescript runs inside a transaction on
+            #   Postgres (where CONCURRENTLY is forbidden) and
+            #   SQLite has no CONCURRENTLY at all. The build runs
+            #   once, at the first cycle after deploy, under the
+            #   startup DDL lock; afterwards it is a catalog no-op.
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS perp_forward_cycle_diagnostics (
@@ -453,8 +483,6 @@ class ForwardAccuracyMonitor:
                         reference_opened_at
                     )
                 );
-                -- Per-issuance evidence, separate from old forecast rows.
-                -- Only new predictions can claim a known training lineage.
                 CREATE TABLE IF NOT EXISTS rival_forward_model_lineage (
                     venue TEXT NOT NULL,
                     contract TEXT NOT NULL,
@@ -476,7 +504,6 @@ class ForwardAccuracyMonitor:
                 );
                 CREATE INDEX IF NOT EXISTS idx_rival_forward_lineage_issued
                     ON rival_forward_model_lineage (issued_at);
-                -- Scope the current-policy lookup by horizon/model and time.
                 CREATE INDEX IF NOT EXISTS idx_rival_forward_lineage_policy
                     ON rival_forward_model_lineage
                        (model_version,horizon_minutes,issued_at,venue,contract,quote);
@@ -486,27 +513,9 @@ class ForwardAccuracyMonitor:
                     ON perp_forward_audit (settled_at,target_opened_at);
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_asset_horizon
                     ON perp_forward_audit (asset,horizon_minutes,issued_at);
-                -- Serves recent_watches exactly: asset + issued range for
-                -- still-pending forecasts, ordered newest first.
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_asset_issued
                     ON perp_forward_audit (asset,issued_at)
                     WHERE settled_at IS NULL;
-                -- Serves StreamShadowLedger.observe() exactly: the five
-                -- equality filters, then the issued_at range in ORDER BY
-                -- order (LIMIT 24). With asset/venue/contract/quote/
-                -- model_version fixed, the issued_at range scan returns
-                -- rows already ordered, so the query needs no sort and no
-                -- scan past the matching rows. The three remaining
-                -- selected columns (horizon_minutes, target_opened_at,
-                -- probability_up) still come from the heap for the <=24
-                -- returned rows; INCLUDE is not used because this DDL
-                -- must also run on SQLite in tests, which has no
-                -- INCLUDE clause. CONCURRENTLY is not used either: the
-                -- shared executescript runs inside a transaction on
-                -- Postgres (where CONCURRENTLY is forbidden) and
-                -- SQLite has no CONCURRENTLY at all. The build runs
-                -- once, at the first cycle after deploy, under the
-                -- startup DDL lock; afterwards it is a catalog no-op.
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_shadow_observe
                     ON perp_forward_audit
                        (asset,venue,contract,quote,model_version,issued_at);

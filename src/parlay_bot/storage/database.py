@@ -171,7 +171,12 @@ class _Connection:
         # threads, store instances, and even overlapping bot processes.
         # It is released automatically at commit/rollback; no permanent lock.
         self.execute("SELECT pg_advisory_xact_lock(72649113001)")
-        statements = [part.strip() for part in script.split(";") if part.strip()]
+        # Drop full-line ``--`` comments before splitting on ``;`` so a
+        # semicolon inside a comment cannot cut it into a bogus statement.
+        uncommented = "\n".join(
+            line for line in script.splitlines() if not line.lstrip().startswith("--")
+        )
+        statements = [part.strip() for part in uncommented.split(";") if part.strip()]
         for statement in statements:
             self.execute(statement)
 

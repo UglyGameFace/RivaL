@@ -499,7 +499,7 @@ class ForwardAccuracyMonitor:
                 -- scan past the matching rows. The three remaining
                 -- selected columns (horizon_minutes, target_opened_at,
                 -- probability_up) still come from the heap for the <=24
-                -- returned rows; INCLUDE is not used because this DDL
+                -- returned rows. INCLUDE is not used because this DDL
                 -- must also run on SQLite in tests, which has no
                 -- INCLUDE clause. CONCURRENTLY is not used either: the
                 -- shared executescript runs inside a transaction on

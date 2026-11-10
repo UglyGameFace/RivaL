@@ -9,6 +9,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
+from parlay_bot.observability import report_model_quality
 from parlay_bot.storage.hot import RelationalHotStore
 
 _LOG = logging.getLogger(__name__)
@@ -403,7 +404,21 @@ class RuntimeHealthMonitor:
             )
         for status, key, detail in events:
             if status == "OPEN":
-                _LOG.error("RivaL HEALTH ALERT %s: %s", key, detail)
+                if key.startswith("regression:"):
+                    # A challenger losing to the incumbent by more than the
+                    # promotion bar is the gate working as designed (RIVAL-F:
+                    # liq_v1 phemex:ETH), not a fault in the host, the loop
+                    # or the model code. It still reaches Sentry, but as a
+                    # warning under its own fingerprint, so real faults stand
+                    # out — see observability.report_model_quality. Logging
+                    # it at error here would ALSO create a second,
+                    # error-level Sentry event via the logging integration.
+                    # The local problem log keeps WARNING+ lines, so the
+                    # alert still shows on the status card, as "Warning: ".
+                    _LOG.warning("RivaL HEALTH ALERT %s: %s", key, detail)
+                    report_model_quality(key, detail)
+                else:
+                    _LOG.error("RivaL HEALTH ALERT %s: %s", key, detail)
             else:
                 _LOG.info("RivaL HEALTH RECOVERED %s", key)
         return events

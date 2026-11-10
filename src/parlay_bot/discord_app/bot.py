@@ -1593,6 +1593,25 @@ class RivalDiscordClient(discord.Client):
                 self._intelligence_task = asyncio.create_task(
                     self._intelligence_loop(), name="rival-intelligence-review",
                 )
+            elif (self._intelligence_task is None
+                    and isinstance(self.intelligence_research, LocalFirstResearch)
+                    and self.intelligence_research.available):
+                # Off by design, NOT a failure: the review loop runs only
+                # with the RIVAL_LLM_BACKGROUND_OPT_IN opt-in
+                # (llm_background_enabled above; default False), and the
+                # stored Discloud env does not set it, so this task is never
+                # created, the loop never runs, and the heartbeat — which
+                # fires only on a completed review — never checks in. Zero
+                # check-ins on the rival-intelligence-reviews monitor is the
+                # expected consequence. The monitor cannot be paused from
+                # code; that is a Sentry UI action. Do NOT "fix" this by
+                # enabling the opt-in here. (RIVAL_AI_BACKGROUND_OPT_IN,
+                # still present in the stored env, is read by no code.)
+                _LOG.info(
+                    "RivaL Intelligence background reviews off by opt-in "
+                    "(rival_llm_background_opt_in=False); no reviews expected "
+                    "and the rival-intelligence-reviews Sentry monitor will "
+                    "show zero check-ins by design")
 
         if (
             (self.history_auditor is not None

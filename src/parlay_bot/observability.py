@@ -88,9 +88,15 @@ def before_send(event, hint):
         return event
     if _expected_task_error(event):
         return None
+    # capture_message events carry a plain "message" string and no logentry;
+    # without it every message event shared one dedupe key ("None|None")
+    # and only the first model-quality alert in 10 minutes would leave.
+    raw_message = event.get("message")
+    if isinstance(raw_message, dict):
+        raw_message = raw_message.get("formatted")
     key = "|".join(str(p) for p in (
         event.get("logger"),
-        (event.get("logentry") or {}).get("message"),
+        (event.get("logentry") or {}).get("message") or raw_message,
         *[(e.get("type"), (e.get("stacktrace") or {}).get("frames", [{}])[-1].get("lineno"))
           for e in (event.get("exception") or {}).get("values", [])],
     ))
@@ -107,11 +113,50 @@ def before_send(event, hint):
     return _scrub(event)
 
 
+# A challenger losing to the incumbent by more than the promotion bar is
+# the promotion gate working as designed, not a fault in the host, a loop
+# or the model code (the known example: RIVAL-F, liq_v1 phemex:ETH, held
+# below the 0.025 bar in runtime_health._score_regressions). Those alerts
+# still reach Sentry, but as warnings under their own fingerprint, so real
+# faults stand out. The alert text is unchanged; only level, fingerprint
+# and tag differ.
+MODEL_QUALITY_FINGERPRINT = "model-quality"
+
+
+def report_model_quality(key: str, detail: str) -> None:
+    """Send a model-quality alert to Sentry as a warning, never an error.
+
+    One Sentry issue per regression (fingerprint ["model-quality", key]),
+    tagged alert_kind=model_quality. Never raises; a no-op when Sentry is
+    not active (tests, empty DSN). Callers log the same text locally at
+    warning level: logging it at error would ALSO create a second,
+    error-level Sentry event via the logging integration.
+    """
+    try:
+        import sentry_sdk
+        if not sentry_sdk.get_client().is_active():
+            return
+        sentry_sdk.capture_message(
+            f"RivaL HEALTH ALERT {key}: {detail}",
+            level="warning",
+            fingerprint=[MODEL_QUALITY_FINGERPRINT, key],
+            tags={"alert_kind": "model_quality"},
+        )
+    except Exception:  # noqa: BLE001 - monitoring must never break a loop
+        _LOG.debug("model-quality Sentry report failed key=%s", key, exc_info=True)
+
+
 def init_sentry() -> bool:
     """Start Sentry if a DSN is configured; never stops the bot from starting."""
+    if "PYTEST_CURRENT_TEST" in os.environ:
+        # Tests never report to the production project, even when SENTRY_DSN
+        # is exported in the shell: an explicit DSN used to defeat this
+        # guard, so a test run sent health-alert errors as production
+        # issues in environment "production", indistinguishable from real
+        # ones. (The SDK's own init inside tests uses a fake DSN with a
+        # capture transport; see test_observability.py.)
+        return False
     dsn = os.environ.get("SENTRY_DSN", DEFAULT_DSN).strip()
-    if "PYTEST_CURRENT_TEST" in os.environ and "SENTRY_DSN" not in os.environ:
-        dsn = ""  # tests never report to the production project
     if not dsn:
         _LOG.info("Sentry disabled (SENTRY_DSN is empty)")
         return False

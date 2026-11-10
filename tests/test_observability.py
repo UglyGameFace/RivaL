@@ -59,6 +59,50 @@ def test_handled_task_errors_are_not_reported_but_real_crashes_are():
     assert observability.before_send(task_error("HTTPStatusError", "logging"), {}) is not None
 
 
+def test_cron_check_ins_are_never_dropped_as_repeats():
+    """RIVAL-A/B/8/9: check-ins share no error identity, so none is a repeat."""
+    observability._recent.clear()
+
+    def check_in(slug):
+        return {"type": "check_in", "monitor_slug": slug, "status": "ok"}
+    for slug in ("rival-formula-test", "rival-polymarket-learning",
+                 "rival-5m-model-cycle", "rival-intelligence-reviews"):
+        assert observability.before_send(check_in(slug), {}) is not None
+    # The same monitor again inside the 10-minute error window still goes.
+    assert observability.before_send(check_in("rival-5m-model-cycle"), {}) is not None
+
+
+def test_every_monitor_check_in_leaves_the_process_through_the_real_sdk(monkeypatch):
+    """End to end through sentry_sdk: four loops beat twice, eight check-ins sent."""
+    import sentry_sdk
+    from sentry_sdk.transport import Transport
+
+    sent: list[str] = []
+
+    class Capture(Transport):
+        def capture_envelope(self, envelope):
+            sent.extend(item.payload.json["monitor_slug"]
+                        for item in envelope.items if item.type == "check_in")
+
+    observability._recent.clear()
+    monkeypatch.setattr(observability, "_beats", {})
+    slugs = ("rival-formula-test", "rival-polymarket-learning",
+             "rival-5m-model-cycle", "rival-intelligence-reviews")
+    with sentry_sdk.isolation_scope():
+        sentry_sdk.init(dsn="https://key@o1.ingest.us.sentry.io/1", transport=Capture(),
+                        before_send=observability.before_send)
+        try:
+            for slug in slugs:
+                observability.heartbeat(slug)
+            observability._beats.clear()  # the per-monitor minute has passed
+            for slug in slugs:
+                observability.heartbeat(slug)
+            sentry_sdk.flush()
+        finally:
+            sentry_sdk.init()  # no DSN: reporting off again for other tests
+    assert sorted(sent) == sorted(slugs * 2)
+
+
 def test_heartbeat_is_throttled_and_never_raises(monkeypatch):
     calls = []
     from sentry_sdk import crons

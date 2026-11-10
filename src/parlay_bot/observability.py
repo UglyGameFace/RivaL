@@ -78,6 +78,14 @@ def _expected_task_error(event) -> bool:
 
 def before_send(event, hint):
     """Scrub credentials and drop repeats of the same error within 10 minutes."""
+    if event.get("type") == "check_in":
+        # The SDK passes cron check-ins through before_send too. They carry
+        # no logger, message or exception, so every check-in from every
+        # monitor shared one dedupe key and only one per 10 minutes left
+        # the process: RIVAL-A/B/8/9 reported "missed" for loops that were
+        # running on time. heartbeat() already limits each monitor to one
+        # check-in per minute, and a check-in holds no user data to scrub.
+        return event
     if _expected_task_error(event):
         return None
     key = "|".join(str(p) for p in (

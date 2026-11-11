@@ -18,7 +18,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import threading
 from datetime import UTC, datetime, timedelta
+
+_LOG = logging.getLogger(__name__)
 
 FAMILY = "calib_incumbent_v1"
 FIT_WINDOW = timedelta(days=7)
@@ -45,6 +49,32 @@ class CalibratedIncumbent:
         self.store = store
         self._fits: dict[tuple[str, int], tuple[float, int]] = {}
         self._fitted_at: datetime | None = None
+        self._refitting: threading.Thread | None = None
+
+    def refit_in_background(self, now: datetime, assets) -> None:
+        """Start a due refit on its own thread; the cycle never waits for it.
+
+        Its 12 seven-day counts took about half a minute in production, at
+        the start of the first cycle after every restart and once an hour,
+        delaying that cycle's predictions. Until the first fit lands this
+        family simply issues nothing (``call`` returns None), as before a
+        first fit; afterwards it uses the newest completed fit.
+        """
+        stamp = now.astimezone(UTC)
+        if self._fitted_at is not None and timedelta(0) <= stamp - self._fitted_at < REFIT_EVERY:
+            return
+        running = self._refitting
+        if running is not None and running.is_alive():
+            return
+
+        def work() -> None:
+            try:
+                self.refit(stamp, tuple(assets))
+            except Exception:  # noqa: BLE001 - optional challenger only
+                _LOG.exception("RivaL calibrated challenger fit unavailable")
+
+        self._refitting = threading.Thread(target=work, name="rival-calib-refit", daemon=True)
+        self._refitting.start()
 
     def refit(self, now: datetime, assets, horizons=(5, 15, 60)) -> None:
         """One causal fit per asset/horizon, at most every REFIT_EVERY."""

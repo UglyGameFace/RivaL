@@ -122,6 +122,13 @@ def _timings(store, now) -> dict:
             research_alerts._decay_rows(conn, now)
 
     timed("research_decay", decay)
+
+    def calib_refit():
+        from parlay_bot.perpetuals.calibrated_challenger import CalibratedIncumbent
+
+        CalibratedIncumbent(store).refit(now, ("BTC", "ETH", "SOL", "XRP"))
+
+    timed("calibrated_refit_12_counts", calib_refit)
     timed("summary_7d", lambda: monitor._summary_uncached(asset="BTC", now=now))
     timed("learning_evidence_5m", lambda: monitor.active_learning_evidence(
         asset="BTC", horizon_minutes=5, now=now))

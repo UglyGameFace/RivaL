@@ -50,3 +50,16 @@ def _no_saved_screen_copies():
     screen_snapshots.reset()
     yield
     screen_snapshots.reset()
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_cycle(monkeypatch):
+    """Cycle tests run the calibrated refit inline, and start with an empty
+    candidate cache, so each test sees exactly its own rows."""
+    from parlay_bot.perpetuals import forward_audit
+    from parlay_bot.research import candidate_registry
+
+    monkeypatch.setattr(forward_audit, "CALIBRATED_REFIT_IN_BACKGROUND", False)
+    candidate_registry._CANDIDATE_CACHE.clear()
+    yield
+    candidate_registry._CANDIDATE_CACHE.clear()

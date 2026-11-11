@@ -22,12 +22,15 @@ def test_compare_card_puts_models_side_by_side_per_timeframe(store):  # noqa: F8
     embed = compare_embed(_reports(store), asset="BTC")
     fields = {f.name: f.value for f in embed.fields}
     assert embed.title == "🧪 Compare · BTC · 4 models"
-    five = fields["📏 5-min"].split("```")[1].strip().splitlines()
-    # Best edge first; every row is one model, phone width.
-    assert [line.split()[0] for line in five[1:]] == ["Trend-only", "6-year", "Cross-all"]
-    assert five[1].split() == ["Trend-only", "12/21", "300", "75%", "+2.5", "ahead"]
-    assert five[3].split()[-1] == "cut"
-    assert max(len(line) for line in five) <= 44
+    from tests.test_trial_board import _grouped
+
+    five = _grouped(fields["📏 5-min"])
+    # Grouped by status, best edge first; one line per model, phone width.
+    assert [words[0] for _, words in five] == ["Trend-only", "6-year", "Cross-all"]
+    assert five[0] == ("ahead", ["Trend-only", "12/21", "300", "75%", "+2.5"])
+    assert five[2][0] == "cut"
+    block = fields["📏 5-min"].split("```")[1].strip().splitlines()
+    assert max(len(line) for line in block) <= 35
     assert "Best here: **Trend-only**" in fields["📏 5-min"]
     assert "📏 15-min" in fields and "📏 60-min" not in fields     # no 60-min trials
     assert fields["Not on trial here"].startswith("Gone:")

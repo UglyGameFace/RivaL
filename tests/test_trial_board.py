@@ -5,6 +5,21 @@ from parlay_bot.discord_app import trial_board
 from parlay_bot.discord_app.trial_board import TrialRow, fold, leader_line, short_name, table
 
 
+def _grouped(text: str) -> list[tuple[str, list[str]]]:
+    """(status, row words) per model line of a grouped phone table."""
+    from parlay_bot.discord_app.trial_board import GROUP_LABELS
+
+    label_to_status = {v: k for k, v in GROUP_LABELS.items()}
+    lines = text.split("```")[1].strip().splitlines()[1:]
+    out, status = [], None
+    for line in lines:
+        if line in label_to_status:
+            status = label_to_status[line]
+        else:
+            out.append((status, line.split()))
+    return out
+
+
 def _info(days, targets, gain, **extra):
     return {"days": days, "targets": targets, "forward_gain": gain, **extra}
 
@@ -66,8 +81,10 @@ def test_the_table_fits_a_phone_even_at_extremes():
     rows = [TrialRow(name="Order-flow-12", days=140, results=12_345_678, gain=-.9999,
                      ahead=0, exchanges=9, stopped=0, passed=False, after_fees_bps=None)]
     lines = table(rows).strip("`\n").splitlines()
-    assert max(len(line) for line in lines) <= 42
-    assert lines[1].split()[:5] == ["Order-flow-", "99/21", "12M", "—", "-1000"]
+    # Nov 11: Discord on a phone wraps past ~35 characters; no status column.
+    assert max(len(line) for line in lines) <= trial_board.PHONE_WIDTH
+    assert _grouped(table(rows)) == [("behind", ["Order-flow-", "99/21", "12M", "—", "-1000"])]
+    assert trial_board._tiny_count(2_062) == "2.1k" and trial_board._tiny_count(140) == "140"
     assert trial_board._count(9_999) == "9,999" and trial_board._count(45_000) == "45k"
 
 
@@ -92,17 +109,18 @@ def test_contest_rows_keep_each_models_best_covered_source():
     ])
     assert [(r["model"], r["contracts"], r["status"]) for r in rows] == [
         ("w", 500, "PASSED"), ("m", 400, "behind")]
-    lines = trial_board.contest_table(rows).strip("`\n").splitlines()
-    assert lines[1].split() == ["Formula", "500", "+1.0", "+1.2¢", "PASSED"]
-    assert lines[2].split() == ["Jump", "model", "400", "-2.0", "—", "behind"]
+    assert _grouped(trial_board.contest_table(rows)) == [
+        ("PASSED", ["Formula", "500", "+1.0", "+1.2¢"]),
+        ("behind", ["Jump", "model", "400", "-2.0", "—"])]
+    assert max(len(line) for line in trial_board.contest_table(rows).splitlines()) <= 35
 
 
 def test_the_right_column_is_the_share_of_calls_that_came_true():
     row = TrialRow(name="Trend-only", days=12, results=300, gain=.003, ahead=2,
                    exchanges=2, stopped=0, passed=False, after_fees_bps=None,
                    family="regime_v1", calls=200, right=113)
-    assert table([row]).strip("`\n").splitlines()[1].split() == [
-        "Trend-only", "12/21", "300", "56%", "+3.0", "ahead"]
+    assert _grouped(table([row])) == [
+        ("ahead", ["Trend-only", "12/21", "300", "56%", "+3.0"])]
     few = TrialRow(name="Cross-exch", days=1, results=9, gain=.01, ahead=1, exchanges=1,
                    stopped=0, passed=False, after_fees_bps=None, calls=9, right=9)
     assert few.hit_rate is None          # 9 calls: no rate, never "100%"
@@ -153,6 +171,21 @@ def test_read_adds_each_models_hit_rate_from_the_ledger(tmp_path):
         board = trial_board.read(store, asset="BTC", horizon=5, now=now)
         row = board["rows"][0]
         assert (row.family, row.calls, row.right) == ("regime_v1", 30, 18)
-        assert table(board["rows"]).strip("`\n").splitlines()[1].split()[3] == "60%"
+        assert _grouped(table(board["rows"]))[0][1][3] == "60%"
     finally:
         store.close()
+
+
+def test_reverted_venue_variants_never_show():
+    """'<family>_venue' (#365) was reverted in #366: its old rows must not
+    sit on the board as "day 1/21, 5 results" forever."""
+    from parlay_bot.discord_app.trial_board import fold, is_retired
+
+    assert is_retired("pooled_15m_1a10acfb6945_venue")
+    assert is_retired("flow_v1_venue")
+    assert not is_retired("pooled_15m_1a10acfb6945")
+    info = {"targets": 5, "days": 1, "forward_gain": .017}
+    rows = fold([("okx", "BTC-okx", {"pooled_5m_aaaaaaaaaaaa_venue": info,
+                                      "flow_v2_venue": info,
+                                      "regime_v1": {"targets": 200, "days": 4}})], [])
+    assert [r.name for r in rows] == ["Trend-only"]

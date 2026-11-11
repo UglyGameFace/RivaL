@@ -21,7 +21,14 @@ from datetime import UTC, datetime
 import discord
 
 from parlay_bot.discord_app.model_detail import HORIZONS, model_report
-from parlay_bot.discord_app.trial_board import LEVEL_WITHIN, MIN_DAYS, TOO_FEW
+from parlay_bot.discord_app.trial_board import (
+    _ORDER,
+    LEVEL_WITHIN,
+    MIN_DAYS,
+    TOO_FEW,
+    _tiny_count,
+    grouped,
+)
 
 _LOG = logging.getLogger(__name__)
 
@@ -75,15 +82,17 @@ def compare_embed(reports: dict[str, dict | None], *, asset: str,
             led = h["ledger"]
             right = ("?" if not h.get("ledger_ok", True)
                      else f"{led['right'] / led['n']:.0%}" if led["n"] >= TOO_FEW else "few")
-            results = f"{h['results']:,}" if h["results"] < 10_000 else f"{h['results'] // 1000}k"
-            line = (f"{name[:11]:<11} {min(h['days'], 99):>2}/{MIN_DAYS} "
-                    f"{results:>5} {right:>5} {_pts(h['gain']):>5} {_status(h)}")
+            day = f"{min(h['days'], 99)}/{MIN_DAYS}"
+            line = (f"{name[:11]:<11} {day:>5} {_tiny_count(h['results']):>4} "
+                    f"{right:>5} {_pts(h['gain']):>5}")
             rows.append((name, h, line))
         if not rows:
             continue
-        table = [f"{'Model':<11} {'Day':>5} {'Res':>5} {'Right':>5} {'Edge':>5} Now"]
-        table += [line for _, _, line in sorted(
-            rows, key=lambda r: -(r[1]["gain"] if r[1]["gain"] is not None else -9))]
+        # Same phone-width layout as Bot Performance: grouped by status.
+        ordered = sorted(rows, key=lambda r: (
+            _ORDER[_status(r[1])], -(r[1]["gain"] if r[1]["gain"] is not None else -9)))
+        table = grouped(f"{'Model':<11} {'Day':>5} {'Res':>4} {'Right':>5} {'Edge':>5}",
+                        [(_status(h), line) for _, h, line in ordered])
         judged = [(name, h) for name, h, _ in rows
                   if h["results"] >= TOO_FEW and h["gain"] is not None]
         lead = ""
@@ -93,7 +102,7 @@ def compare_embed(reports: dict[str, dict | None], *, asset: str,
                     f"{h['days']}/{MIN_DAYS})." if h["gain"] > LEVEL_WITHIN
                     else "None of these is beating the main model here yet.")
         embed.add_field(name=f"📏 {horizon}-min",
-                        value="```\n" + "\n".join(table) + "\n```\n" + lead, inline=False)
+                        value=table + lead, inline=False)
     if missing:
         embed.add_field(name="Not on trial here",
                         value=", ".join(missing)[:300] + ": no recent results for this coin "

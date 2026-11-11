@@ -217,14 +217,17 @@ async def test_every_model_on_trial_is_one_row_from_the_hourly_check(tmp_path, m
         fields = _fields(await home.render())
         name, value = next((k, v) for k, v in fields.items() if k.startswith("🧪"))
         assert name == "🧪 Models on trial here (4)"
-        table = value.split("```")[1].strip().splitlines()
-        assert [line.split()[0] for line in table] == [
-            "Model", "Trend-only", "Cross-exch", "6-year", "Liquidity"]
+        from tests.test_trial_board import _grouped
+
+        rows = _grouped(value)
+        assert [words[0] for _, words in rows] == [
+            "Trend-only", "Cross-exch", "6-year", "Liquidity"]
         # No graded calls stored in this test: the Right column says so ("—").
-        assert table[1].split()[1:] == ["12/21", "300", "—", "+3.0", "ahead"]
-        assert table[2].split()[-1] == "early"     # 9 results is too few to judge
-        assert table[4].split()[-1] == "cut"       # cut on every exchange it ran on
-        assert max(len(line) for line in table) <= 42   # fits a phone
+        assert rows[0] == ("ahead", ["Trend-only", "12/21", "300", "—", "+3.0"])
+        assert rows[1][0] == "early"     # 9 results is too few to judge
+        assert rows[3][0] == "cut"       # cut on every exchange it ran on
+        block = value.split("```")[1].strip().splitlines()
+        assert max(len(line) for line in block) <= 35   # one line per model on a phone
         assert ("Closest: **Trend-only** (ahead on 2 of 2 exchanges, behind after fees). "
                 "Needs 9 more days before it can be trusted.") in value
         assert "All markets: 5 on trial · 0 passed · 2 cut early for losing" in value
@@ -254,9 +257,10 @@ async def test_polymarket_contest_table_shows_only_when_scores_exist(tmp_path, m
              "significant": False},
         ]
         contest = _fields(await home.render())["🎲 Polymarket contest"]
-        rows = contest.split("```")[1].strip().splitlines()
-        assert rows[1].split() == ["Odds-lag", "12", "+0.0", "—", "early"]
-        assert rows[2].split() == ["Formula", "412", "-1.2", "-0.4¢", "behind"]
+        from tests.test_trial_board import _grouped
+
+        assert _grouped(contest) == [("early", ["Odds-lag", "12", "+0.0", "—"]),
+                                     ("behind", ["Formula", "412", "-1.2", "-0.4¢"])]
         assert "300 contracts and a statistical pass" in contest
     finally:
         await _close(bot, home)

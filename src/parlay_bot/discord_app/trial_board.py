@@ -123,7 +123,7 @@ def fold(evidence_rows, stops, *, retired=frozenset()) -> list[TrialRow]:
         if not isinstance(evidence, dict):
             continue
         for family, info in evidence.items():
-            if family in retired or not isinstance(info, dict):
+            if is_retired(family, retired) or not isinstance(info, dict):
                 continue
             targets, days = info.get("targets"), info.get("days")
             if not isinstance(targets, int) or not isinstance(days, int):
@@ -180,18 +180,56 @@ def _count(n: int) -> str:
     return f"{min(n // 1_000_000, 9999)}M"
 
 
+# Discord on a phone fits about 35 monospace characters before a line
+# wraps, and a wrapped table is twice as long and hard to read. So rows
+# carry no status column: they are grouped under one plain heading per
+# status instead (rows arrive sorted by status already).
+PHONE_WIDTH = 34
+GROUP_LABELS = {
+    "PASSED": "✅ passed every test",
+    "ahead": "▲ ahead of the main model",
+    "level": "= level with the main model",
+    "early": "⏳ too early to judge",
+    "behind": "▼ behind the main model",
+    "cut": "✂ cut for losing",
+}
+
+
+def _tiny_count(n: int) -> str:
+    """A count in at most 4 characters: 140 · 2.1k · 12k · 3M."""
+    if n < 1000:
+        return str(n)
+    if n < 9_950:
+        return f"{n / 1000:.1f}k"
+    if n < 1_000_000:
+        return f"{min(n // 1000, 999)}k"
+    return f"{min(n // 1_000_000, 999)}M"
+
+
+def grouped(header: str, items: list[tuple[str, str]]) -> str:
+    """A code block: the header, then each status heading and its lines."""
+    lines, current = [header], None
+    for status, line in items:
+        if status != current:
+            lines.append(GROUP_LABELS.get(status, status))
+            current = status
+        lines.append(line)
+    return "```\n" + "\n".join(lines) + "\n```\n"
+
+
 def table(rows: list[TrialRow]) -> str:
-    """A monospace table that fits a phone: name, day, results, right, edge, status."""
-    lines = [f"{'Model':<11} {'Day':>5} {'Res':>5} {'Right':>5} {'Edge':>5} Now"]
+    """Name, day, results, right, edge; one line per model, grouped by status."""
+    items = []
     for row in rows[:MAX_ROWS]:
         day = f"{min(row.days, 99)}/{MIN_DAYS}"
-        res = _count(row.results)
         rate = "—" if row.hit_rate is None else f"{row.hit_rate:.0%}"
-        lines.append(f"{row.name[:11]:<11} {day:>5} {res:>5} {rate:>5} "
-                     f"{_pts(row.gain):>5} {row.status}")
+        line = (f"{row.name[:11]:<11} {day:>5} {_tiny_count(row.results):>4} "
+                f"{rate:>5} {_pts(row.gain):>5}")
+        items.append((row.status, line))
+    text = grouped(f"{'Model':<11} {'Day':>5} {'Res':>4} {'Right':>5} {'Edge':>5}", items)
     if len(rows) > MAX_ROWS:
-        lines.append(f"… and {len(rows) - MAX_ROWS} more")
-    return "```\n" + "\n".join(lines) + "\n```\n"
+        text = text[:-4] + f"\n… and {len(rows) - MAX_ROWS} more\n```\n"
+    return text
 
 
 def leader_line(rows: list[TrialRow]) -> str:
@@ -295,6 +333,17 @@ def hit_rates(store, *, asset: str, horizon: int,
     return {str(r["family"]): (int(r["n"]), int(r["came_true"] or 0)) for r in rows}
 
 
+# The '<family>_venue' variants (#365, Nov 4) were reverted the next day
+# (#366): nothing issues them, but their few old rows still get re-scored
+# hourly, so they showed as "day 1/21, 5 results" forever.
+REVERTED_SUFFIXES = ("_venue",)
+
+
+def is_retired(family: str, retired=frozenset()) -> bool:
+    """A model that can never advance: switched off, or its issuer removed."""
+    return family in retired or family.endswith(REVERTED_SUFFIXES)
+
+
 def retired_families() -> frozenset[str]:
     """Test models whose issue switch is off: they can never advance."""
     try:
@@ -337,14 +386,15 @@ def contest_rows(models) -> list[dict]:
 
 
 def contest_table(rows: list[dict]) -> str:
-    """Name, contracts, edge vs the odds, after-fees result per $1."""
-    lines = [f"{'Model':<12} {'Done':>5} {'Edge':>5} {'Fees':>6} Now"]
+    """Name, contracts, edge vs the odds, after-fees result; grouped by status."""
+    items = []
     for m in rows[:MAX_ROWS]:
         name = str(m.get("label") or m["model"])
         name = CONTEST_NAMES.get(name, name)
         done = int(m.get("contracts") or 0)
         net = _finite(m.get("net_per_contract"))
         fees = "—" if net is None or not int(m.get("trades") or 0) else f"{net * 100:+.1f}¢"
-        lines.append(f"{name[:12]:<12} {_count(done):>5} "
-                     f"{_pts(_finite(m.get('improvement'))):>5} {fees[:6]:>6} {m['status']}")
-    return "```\n" + "\n".join(lines) + "\n```\n"
+        line = (f"{name[:11]:<11} {_tiny_count(done):>4} "
+                f"{_pts(_finite(m.get('improvement'))):>5} {fees[:6]:>6}")
+        items.append((m["status"], line))
+    return grouped(f"{'Model':<11} {'Done':>4} {'Edge':>5} {'Fees':>6}", items)

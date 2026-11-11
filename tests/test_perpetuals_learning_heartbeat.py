@@ -74,7 +74,7 @@ async def test_accuracy_screen_reads_persisted_learning_cycle(tmp_path):
         panel.screen = "accuracy"
         panel.section = "engine"
         panel._rebuild()
-        embed = await panel.render()
+        embed = await panel._render_full()   # raw numbers live on the full render
         result = next(
             field.value for field in embed.fields
             if field.name == "Automatic learning engine · LIVE"
@@ -98,7 +98,7 @@ async def test_accuracy_screen_reads_persisted_learning_cycle(tmp_path):
         panel.screen = "accuracy"
         panel.section = "engine"
         panel._rebuild()
-        embed = await panel.render()
+        embed = await panel._render_full()   # raw numbers live on the full render
         result = next(
             field.value for field in embed.fields
             if field.name == "Automatic learning engine · LIVE"

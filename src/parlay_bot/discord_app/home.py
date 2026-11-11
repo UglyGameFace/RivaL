@@ -824,8 +824,8 @@ def _best_text(reports: dict) -> str | None:
         lead = ""
         if tops:
             h, top = max(tops, key=lambda t: t[1]["fitness"])
-            lead = (f" Leading so far: **{trial_board.short_name(top['family'])}** on "
-                    f"{h}-min (early, not proven).")
+            lead = (f" Leading so far (all coins): **{trial_board.short_name(top['family'])}** "
+                    f"on {h}-min (early, not proven).")
         lines.append(f"🧬 Model Lab: {testing} designs testing, {closed} closed so far, "
                      f"each loser replaced automatically.{lead}")
     lines.append("-# Edge = less error than the main model, in points. Proven = 21 days, "
@@ -1134,6 +1134,12 @@ def _health_text(coin: str, horizon: int, reports: dict, now: datetime,
                         direction.lower(), direction.upper())
         elif current:
             call = "makes no call for the next candle"
+        elif age is not None and age > timedelta(hours=1):
+            # Nov 11 audit: "no current call (last review 4 days ago)" read as
+            # broken. The automatic reviews are switched off on this server;
+            # the AI service itself still answers when asked.
+            call = (f"automatic reviews are paused (last one {_age_words(age)} ago); "
+                    "it still answers when asked")
         elif age is not None and age > timedelta(0):
             call = f"no current call (last review {_age_words(age)} ago)"
         else:

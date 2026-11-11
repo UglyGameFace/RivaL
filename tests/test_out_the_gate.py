@@ -783,8 +783,11 @@ def test_desk_embed_shows_otg_and_lean_lines(tmp_path):
             value for name, value in fields.items()
             if name.startswith("👀 Leans UP")
         )
-        assert "Out the gate: UP 68%" in watch_field
-        assert "Live lean:" in watch_field
+        # Nov 11 audit: one chance per card (it used to repeat it three
+        # times); a "Now" line appears only when the live lean has moved.
+        assert "Chance of UP: **68.0%**" in watch_field
+        assert "Out the gate" not in watch_field
+        assert "Now: UP 68%" not in watch_field      # never the same number twice
         assert "Just watch: this is not a signal to trade." in watch_field
     finally:
         store.close()

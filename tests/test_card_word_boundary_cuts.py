@@ -344,8 +344,7 @@ def test_crypto_desk_embed_no_mid_word_cut(monkeypatch):
     monkeypatch.setattr(opp_module, "recent_watches", lambda market, *, asset, now: [watch])
     monkeypatch.setattr(opp_module, "otg_snapshot", lambda watch, market: {})
     monkeypatch.setattr(opp_module, "live_lean", lambda *args, **kwargs: None)
-    monkeypatch.setattr(opp_module, "otg_line", lambda otg: "OTG line")
-    monkeypatch.setattr(opp_module, "lean_line", lambda lean: "lean line")
+    monkeypatch.setattr(opp_module, "lean_line", lambda lean, **_: "lean line")
     monkeypatch.setattr(opp_module, "below_line_label", lambda otg: None)
 
     seen: list[tuple[str, int]] = []

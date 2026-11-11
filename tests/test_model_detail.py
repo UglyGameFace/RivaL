@@ -259,3 +259,19 @@ def test_a_failed_ledger_read_says_unknown_not_no_calls(store, monkeypatch):
     from parlay_bot.discord_app.model_watch import compare_embed
     table = compare_embed({"Trend-only": report}, asset="BTC").fields[0].value
     assert " ? " in table and "few" not in table.split("Trend-only", 1)[1].split("\n")[0]
+
+
+def test_the_page_explains_why_a_model_is_ahead_or_behind(store):
+    """Nov 11: every model page says where its edge (or loss) comes from,
+    from its own graded calls only."""
+    _seed(store)
+    report = model_report(store, "BTC", "Trend-only")
+    text = model_detail.why(report)
+    # 40 calls at 58%: 30 came true (quiet), 10 did not (turbulent); the main
+    # model was right on 20 of them.
+    assert text.startswith("On its 5-min calls it is **ahead of** the main model")
+    assert "Most of that comes from **calm markets**" in text
+    assert "a lead to watch, not proof" in text
+    fields = {f.name: f.value for f in model_embed(report, asset="BTC",
+                                                   name="Trend-only").fields}
+    assert fields["💡 Why it's ahead or behind"] == text

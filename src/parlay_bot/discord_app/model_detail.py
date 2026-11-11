@@ -379,6 +379,63 @@ def _conditions(report: dict) -> str | None:
     return "```\n" + "\n".join(lines) + "\n```\n-# A lead in one condition is a clue, not proof."
 
 
+_PLAIN_CONDITION = {"quiet": "calm", "normal": "normal", "turbulent": "wild"}
+
+
+def why(report: dict) -> str | None:
+    """Why this model is ahead of or behind the main model, from its own results.
+
+    Same graded calls as the tables above (last LEDGER_DAYS days): which
+    market condition its edge (or loss) comes from, whether its confident
+    calls beat the main model's on the same targets, and its best timeframe.
+    Only parts with at least TOO_FEW calls are used; nothing is guessed.
+    """
+    horizon, h = _lead(report)
+    led = h["ledger"]
+    if led["n"] < TOO_FEW or not h.get("ledger_ok", True):
+        return None
+    total = (led["main_sum"] - led["model_sum"]) / led["n"]
+    direction = ("ahead of" if total > LEVEL_WITHIN else "behind" if total < -LEVEL_WITHIN
+                 else "level with")
+    lines = [(f"On its {horizon}-min calls it is **{direction}** the main model "
+              f"({_pts(total)} points over {led['n']:,} graded calls).")]
+    parts = []
+    for key in CONDITIONS:
+        c = h["conditions"].get(key)
+        if c and c["n"] >= TOO_FEW:
+            parts.append((key, (c["main_sum"] - c["model_sum"]) / c["n"], c["n"],
+                          c["main_sum"] - c["model_sum"]))
+    if parts:
+        # The condition that moves the total most, in the total's direction.
+        lead = (max(parts, key=lambda p: p[3]) if total >= 0
+                else min(parts, key=lambda p: p[3]))
+        others = [p for p in parts if p[0] != lead[0]]
+        line = (f"Most of that comes from **{_PLAIN_CONDITION[lead[0]]} markets** "
+                f"({_pts(lead[1])} on {lead[2]:,} calls)")
+        if others:
+            other = max(others, key=lambda p: p[2])
+            line += (f"; in {_PLAIN_CONDITION[other[0]]} markets it is "
+                     f"{_pts(other[1])} ({other[2]:,} calls)")
+        lines.append(line + ".")
+    sure = [b for b in h["bands"][2:] if b["n"] >= TOO_FEW]
+    if sure:
+        n = sum(b["n"] for b in sure)
+        mine = sum(b["right"] for b in sure) / n
+        main = sum(b["main_right"] for b in sure) / n
+        verb = ("beat" if mine > main + 0.01 else "trailed" if mine < main - 0.01
+                else "matched")
+        lines.append(f"When it is confident (60%+), its calls came true {mine:.0%} vs the "
+                     f"main model's {main:.0%} on the same targets ({n:,} calls): it {verb} it.")
+    gains = {hz: x["gain"] for hz, x in report["horizons"].items()
+             if x["gain"] is not None and x["results"] >= TOO_FEW}
+    if len(gains) > 1:
+        best = max(gains, key=gains.get)
+        lines.append(f"Best timeframe so far: {best}-min ({_pts(gains[best])} points).")
+    lines.append(f"-# Last {report['ledger_days']} days of graded calls. A pattern here is a "
+                 "lead to watch, not proof.")
+    return "\n".join(lines)
+
+
 def _checklist(report: dict) -> str:
     _, h = _lead(report)
     severe = h["fees"].get("severe")
@@ -427,6 +484,9 @@ def model_embed(report: dict | None, *, asset: str, name: str) -> discord.Embed:
     embed.add_field(name=title, value=table, inline=False)
     embed.add_field(name="🎚️ Is its confidence honest?", value=_confidence(report),
                     inline=False)
+    reason = why(report)
+    if reason:
+        embed.add_field(name="💡 Why it's ahead or behind", value=reason, inline=False)
     conditions = _conditions(report)
     if conditions:
         embed.add_field(name="🌦️ Calm vs wild markets", value=conditions, inline=False)

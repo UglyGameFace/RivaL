@@ -275,7 +275,7 @@ def test_historical_learning_is_explained_without_claiming_improvement():
     assert "live data only" in explanation
     assert "1,434 live updates so far" in explanation
     assert "history used in 0 of the last 100 predictions" in explanation
-    assert "Is it learning from history? No." in _history_headline([proof])
+    assert "How is it learning? Live." in _history_headline([proof])
 
     proof["latest_historical_seed_sha256"] = "verified-hash"
     assert "verified historical model" in _plain_training_line(proof, 5)

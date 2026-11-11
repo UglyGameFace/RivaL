@@ -47,7 +47,7 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
         regime_value = next(
             x.value for x in progress.fields if "Prospective skill" in x.name
         )
-        assert "insufficient" in regime_value
+        assert "not enough market types yet" in regime_value
         assert "calm " in regime_value  # main-model per-regime splits kept
         assert "trend learner 5m" in regime_value  # live subsets kept
         # Audit Step 1: regime_v1's per-regime gain is +0.0000 by design
@@ -61,7 +61,7 @@ async def test_three_private_proof_pages_are_compact_and_query_real_store(tmp_pa
             x.value for x in progress.fields if x.name == "Future model proof"
         )
         assert "paired error score gain" not in proof_value
-        assert "paired error score gain" in regime_value
+        assert "Edge by market type, in points" in regime_value
         assert "quiet" not in proof_value
         detail_value = next(
             x.value for x in progress.fields if x.name == "Test-model detail (5-minute)"

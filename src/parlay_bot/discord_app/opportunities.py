@@ -18,7 +18,6 @@ from parlay_bot.discord_app.out_the_gate import (
     below_line_label,
     lean_line,
     live_lean,
-    otg_line,
     otg_snapshot,
 )
 from parlay_bot.discord_app.presentation import display_book
@@ -502,23 +501,34 @@ def crypto_desk_embed(
             quote=watch.get("quote"), now=stamp,
             engine="live", model_version=watch.get("model_version"),
         )
-        otg_lines = [otg_line(otg), lean_line(lean)]
+        # Nov 11 audit: the card said the same chance three times ("How
+        # sure it is", "Out the gate", "Live lean"). One chance, then a "now"
+        # line only when the live lean has moved since the call was made.
+        otg_lines = []
+        made = otg.get("probability") if isinstance(otg, dict) else None
+        # Compare as shown (whole percent), so the "Now" line never repeats
+        # the same number.
+        if lean is not None and (made is None or round(float(lean["probability"]) * 100)
+                                 != round(float(made) * 100)):
+            otg_lines.append(lean_line(lean, as_of_label="Now"))
         below = below_line_label(otg)
         if below is not None:
             otg_lines.append(below)
+        from parlay_bot.discord_app.data_dashboard import VENUE_NAMES
+
         embed.add_field(
             name=fit_embed_field_value(
                 f"👀 Leans {watch['direction']} • next {watch['horizon_minutes']} min • "
-                f"{watch['venue']}{other}",
+                f"{VENUE_NAMES.get(watch['venue'], watch['venue'])}{other}",
                 budget=256,
             ),
             value=(
                 f"Price at the last finished candle: **{_cash(watch['price'])}** "
                 f"({discord.utils.format_dt(watch['price_observed_at'], style='R')})\n"
-                f"How sure it is: **{watch['direction_probability']:.1%}** chance of "
-                f"{watch['direction']} (its own estimate; raw, uncalibrated — not proven accurate)\n"
-                + "\n".join(otg_lines) + "\n"
-                f"Made {discord.utils.format_dt(watch['issued'], style='R')} · "
+                f"Chance of {watch['direction']}: **{watch['direction_probability']:.1%}** "
+                "(its own estimate; raw, uncalibrated — not proven accurate)\n"
+                + "".join(line + "\n" for line in otg_lines)
+                + f"Made {discord.utils.format_dt(watch['issued'], style='R')} · "
                 f"Answer known {discord.utils.format_dt(watch['target'] + timedelta(minutes=5), style='R')}\n"
                 f"**{JUST_WATCH}**"
             ),

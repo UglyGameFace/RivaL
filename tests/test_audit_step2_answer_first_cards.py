@@ -62,9 +62,8 @@ OLD_TO_NEW = [
     ("shadow", "test model"),
     ("family", "test model"),
     ("trial", "test model"),
-    ("pooled", "6-year history model"),
-    ("boosted", "6-year history model"),
-    ("advanced", "6-year history model"),
+    ("pooled", "6-year model"),
+    ("advanced", "boosted history model"),
     ("regime_v1", "trend-only test"),
     ("regime_live_v1", "trend learner"),
     ("regime_live_fast_v1", "fast trend learner"),
@@ -221,8 +220,10 @@ def test_lineage_card_partly_no_and_cant_tell():
           "online_training_updates_low": 5,
           "online_training_updates_high": 5,
           "online_training_venues": 1}])
+    # Nov 11: it IS learning (live); the card no longer opens with "No".
     assert none.field_value().split("\n")[0] == (
-        "No — the main model learns from live candles only.")
+        "Yes, live: the main model updates itself after every graded result.")
+    assert none.question == "How is RivaL learning?"
     empty = lineage_card([{"lineage_proven": 0, "historically_seeded": 0}])
     assert empty.field_value().split("\n")[0] == (
         "Can't tell — no training history checked yet.")
@@ -239,8 +240,10 @@ def test_boosted_readiness_engine_and_costs_cards_answer_first():
         "fresh_paper_promotions": [],
     }, raw="Advanced models built from history so far: 54")
     value = boosted.field_value()
-    assert value.split("\n")[0] == "Not yet — no 6-year history model is ready."
+    assert value.split("\n")[0] == ("Not yet — none of the boosted history models "
+                                     "passed screening.")
     assert "0 of 54 passed screening." in value
+    assert "separate 6-year model is a different test" in value
     assert "54" in value.split("Raw numbers:")[1]  # raw keeps the original text
     ready = readiness_card({
         "eligible": 3, "configured": 9, "best_live_streak": 130,
@@ -374,10 +377,11 @@ async def test_lineage_section_renders_the_lineage_card(monkeypatch):
     learning = fields["How is RivaL learning?"]
     assert learning.split("\n")[0] == (
         "Yes — partly, 9 of 30 predictions used history.")
-    assert "6-year history model" in learning
-    assert "Are 6-year history models ready?" in fields
-    boosted = fields["Are 6-year history models ready?"]
-    assert boosted.split("\n")[0] == "Not yet — no 6-year history model is ready."
+    assert "history model" in learning
+    assert "Are boosted history models ready?" in fields
+    boosted = fields["Are boosted history models ready?"]
+    assert boosted.split("\n")[0] == ("Not yet — none of the boosted history models "
+                                       "passed screening.")
     assert "0 of 54 passed screening." in boosted
 
 

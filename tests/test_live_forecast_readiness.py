@@ -129,13 +129,15 @@ async def test_live_accuracy_screen_explains_shortage_in_actual_database(tmp_pat
         view.screen = "accuracy"
         view.section = "readiness"
         view._rebuild()
-        embed = await view.render()
+        # Nov 11: raw numbers are on the full render / detail view, not the
+        # consolidated card.
+        embed = await view._render_full()
         readiness = next(
             x.value for x in embed.fields
             if x.name == "Mathematical forecast readiness · LIVE"
         )
         assert "0/2" in readiness
-        assert "25/65" in readiness
+        assert "**25** candles (needs 65)" in readiness
         assert "Stale/blocked" in readiness
         assert "No betting permission implied" in readiness
     finally:

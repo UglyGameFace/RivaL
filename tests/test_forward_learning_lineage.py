@@ -86,7 +86,6 @@ async def test_results_page_shows_actual_training_provenance_without_claiming_ac
         values = {field.name: field.value for field in embed.fields}
         proof = values["How is RivaL learning?"]
         assert "No recorded predictions to check yet" in proof
-        assert "not prediction wins" in proof
         compact = _compact_embed(embed, screen="accuracy", section="lineage")
         assert any(f.name == "How is RivaL learning?" for f in compact.fields)
 

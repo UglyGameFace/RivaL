@@ -162,8 +162,8 @@ def _intel(age):
     (5, 3, "says DOWN (price falling) for the next candle"),
     (15, 20, "says UP (price rising) for the next candle"),
     (5, 40, "no current call (last review 40 min ago)"),
-    (5, 60 * 30, "no current call (last review 30 hours ago)"),
-    (60, 60 * 24 * 3, "no current call (last review 3 days ago)"),
+    (5, 60 * 30, "automatic reviews are paused (last one 30 hours ago); it still answers when asked"),
+    (60, 60 * 24 * 3, "automatic reviews are paused (last one 3 days ago); it still answers when asked"),
 ])
 async def test_an_old_ai_review_is_not_shown_as_a_call_for_the_next_candle(
         tmp_path, monkeypatch, horizon, age_minutes, expected):

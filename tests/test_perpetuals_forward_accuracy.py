@@ -173,6 +173,7 @@ async def test_research_accuracy_tab_reads_real_database_without_invented_result
             item.custom_id for item in view.children
         }
         view.screen = "accuracy"
+        view.section = "accuracy"
         view._rebuild()
         embed = await view.render()
         fields = {x.name: x.value for x in embed.fields}

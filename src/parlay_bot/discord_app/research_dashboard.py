@@ -57,6 +57,7 @@ from parlay_bot.perpetuals.readiness import explain_venue_readiness, forecast_re
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
 from parlay_bot.perpetuals.spike_watch import SpikeWatch
 from parlay_bot.research.source_native import VENUES, source_month_readiness
+from parlay_bot.storage.optional_reads import optional_rows
 
 if TYPE_CHECKING:
     from parlay_bot.discord_app.targeting import DirectionTargetService
@@ -80,12 +81,15 @@ _SECTIONS = {
         ("recovery", "Backfill progress (technical)"),
         ("ai", "AI Review"),
     ),
+    # Cleanup (Nov 11): Bot Performance is the summary; Results holds the
+    # deep dives. "At a glance" repeated Performance and is gone (an old
+    # link opens Models on trial); the other two summary cards are now
+    # labelled as the detail sections they are.
     "accuracy": (
-        ("overview", "At a glance"),
-        ("running", "Is it running?"),
-        ("accuracy", "How accurate is it?"),
-        ("better", "Is anything better?"),
+        ("better", "Models on trial"),
         ("money", "Would it make money?"),
+        ("accuracy", "Accuracy details"),
+        ("running", "Running details"),
         ("technical", "Technical evidence"),
     ),
     "ai": (
@@ -111,6 +115,9 @@ ACCURACY_SECTIONS = {
 LEGACY_SECTION_MAP = {
     old: new for new, olds in ACCURACY_SECTIONS.items() for old in olds
 }
+# "At a glance" repeated Bot Performance: an old link or menu opens the
+# first Results section instead (cleanup, Nov 11).
+LEGACY_SECTION_MAP["overview"] = "better"
 # The old section labels, reused for detail buttons and the compact
 # description when a detail topic is open.
 ACCURACY_DETAIL_LABELS = {
@@ -418,11 +425,13 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
         # regime splits, trial detail), so its compact cap is one
         # higher; every other section stays at live + two detailed
         # metrics.
-        cap = 4 if section == "progress" else 3
+        # Accuracy also keeps the no-edge verdict (it was on "At a glance",
+        # which the Nov 11 cleanup removed), shortened.
+        cap = 4 if section in ("progress", "accuracy") else 3
         for prefix in _FIELD_GROUPS[screen].get(section, ()):
             if len(result.fields) >= cap:
                 break
-            add_one((prefix,))
+            add_one((prefix,), short=prefix == "Research verdict")
     if len(result.fields) == (1 if source is not None else 0):
         result.add_field(
             name="No results yet",
@@ -745,7 +754,7 @@ class _WatchLiveButton(discord.ui.Button["ResearchDashboard"]):
 
 class _ModelBackButton(discord.ui.Button["ResearchDashboard"]):
     def __init__(self) -> None:
-        super().__init__(label="← Back to Is anything better?",
+        super().__init__(label="← Back to Models on trial",
                          style=discord.ButtonStyle.secondary,
                          custom_id="rival:research:model:back", row=2)
 
@@ -1183,86 +1192,47 @@ class ResearchDashboard(discord.ui.View):
         audits = SixMonthQualityAudit(self.market).latest(
             asset=self.asset, venues=self.venues,
         )
-        recovery = None
-        with self.market.store.connect() as conn:
-            try:
-                row = conn.execute(
-                    """SELECT * FROM perp_history_recovery
-                       WHERE venue='gate' AND asset=?""",
-                    (self.asset,),
-                ).fetchone()
-            except Exception:  # noqa: BLE001 - older DB may not have this table
-                row = None
-            if row is not None:
-                recovery = dict(row)
+        recovery = self._recovery_row("gate", "*")
         return audits, recovery
+
+    # One backfill-progress read for every exchange card (was four copies).
+    # Each read has its own connection via optional_rows: an older database
+    # without the table shows "no progress", never breaks the screen.
+    _PROGRESS_COLUMNS = "status,inserted_bars,next_opened_at,empty_windows,attempted_at"
+
+    def _recovery_row(self, venue: str, columns: str | None = None) -> dict | None:
+        if self.market is None:
+            return None
+        rows = optional_rows(
+            self.market.store,
+            f"SELECT {columns or self._PROGRESS_COLUMNS} FROM perp_history_recovery "
+            "WHERE venue=? AND asset=?",
+            (venue, self.asset), what="history recovery read") or []
+        return dict(rows[0]) if rows else None
 
     def _kucoin_history_progress(self) -> dict | None:
         """Read KuCoin-specific recovery progress without fetching exchange data."""
-        if self.market is None:
-            return None
-        with self.market.store.connect() as conn:
-            try:
-                row = conn.execute(
-                    """SELECT status,inserted_bars,next_opened_at,empty_windows,
-                              attempted_at
-                       FROM perp_history_recovery
-                       WHERE venue='kucoin' AND asset=?""",
-                    (self.asset,),
-                ).fetchone()
-            except Exception:  # noqa: BLE001 - older DB may not have schema
-                return None
-        return dict(row) if row is not None else None
+        return self._recovery_row("kucoin")
 
     def _okx_history_progress(self) -> dict | None:
         """Reverse-chronological OKX six-month repair state from PostgreSQL."""
-        if self.market is None:
-            return None
-        with self.market.store.connect() as conn:
-            try:
-                row = conn.execute(
-                    """SELECT status,inserted_bars,next_opened_at,empty_windows,
-                              attempted_at
-                       FROM perp_history_recovery
-                       WHERE venue='okx' AND asset=?""",
-                    (self.asset,),
-                ).fetchone()
-            except Exception:  # noqa: BLE001 - previous DB version
-                return None
-        return dict(row) if row is not None else None
+        return self._recovery_row("okx")
+
+    def _bitget_history_progress(self) -> dict | None:
+        """One DB query, no Bitget API request or stale embedded cache."""
+        return self._recovery_row("bitget")
 
     def _all_history_progress(self) -> list[dict]:
         """Every exchange's backfill state for this coin (one DB query)."""
         if self.market is None:
             return []
-        with self.market.store.connect() as conn:
-            try:
-                rows = conn.execute(
-                    """SELECT venue,status,inserted_bars,started_from,next_opened_at,
-                              empty_windows,attempted_at
-                       FROM perp_history_recovery WHERE asset=? ORDER BY venue""",
-                    (self.asset,),
-                ).fetchall()
-            except Exception:  # noqa: BLE001 - schema upgrade pending
-                return []
+        rows = optional_rows(
+            self.market.store,
+            """SELECT venue,status,inserted_bars,started_from,next_opened_at,
+                      empty_windows,attempted_at
+               FROM perp_history_recovery WHERE asset=? ORDER BY venue""",
+            (self.asset,), what="history recovery read") or []
         return [dict(row) for row in rows]
-
-    def _bitget_history_progress(self) -> dict | None:
-        """One DB query, no Bitget API request or stale embedded cache."""
-        if self.market is None:
-            return None
-        with self.market.store.connect() as conn:
-            try:
-                row = conn.execute(
-                    """SELECT status,inserted_bars,next_opened_at,empty_windows,
-                              attempted_at
-                       FROM perp_history_recovery
-                       WHERE venue='bitget' AND asset=?""",
-                    (self.asset,),
-                ).fetchone()
-            except Exception:  # noqa: BLE001 - schema upgrade pending
-                return None
-        return dict(row) if row is not None else None
 
     def _live_feed_status(
         self,

@@ -112,7 +112,7 @@ async def test_stale_views_are_persistent_and_cover_every_guided_custom_id(tmp_p
     bot = _client(tmp_path)
     try:
         views = build_stale_guided_menu_views(lambda owner: _home(bot, owner))
-        assert len(views) == 3
+        assert len(views) == 4   # A-C are full; D holds newer buttons
         covered: set[str] = set()
         for view in views:
             assert view.timeout is None

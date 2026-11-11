@@ -235,3 +235,27 @@ def test_a_retired_model_is_not_offered(store):
     _seed(store)
     _promotion(store, "gate", 5, {"liq_v1": _info(11, 581, -.06)})
     assert "Liquidity" not in trial_models(store, "BTC")
+
+
+def test_a_failed_ledger_read_says_unknown_not_no_calls(store, monkeypatch):
+    """Nov 11: each read has its own connection, and a failed one is shown
+    as "?" (couldn't read), never as "few calls" or a zero."""
+    _seed(store)
+    real = model_detail._ledger
+
+    def flaky(store_, **kw):
+        return None if kw["horizon"] == 5 else real(store_, **kw)
+
+    monkeypatch.setattr(model_detail, "_ledger", flaky)
+    report = model_report(store, "BTC", "Trend-only")
+    assert report["horizons"][5]["ledger_ok"] is False
+    assert report["horizons"][15]["ledger_ok"] is True    # the other timeframe still reads
+    assert report["horizons"][5]["results"] == 300         # promotion evidence unaffected
+    text = model_detail._timeframes(report)
+    five = next(line for line in text.splitlines() if line.startswith("  5m"))
+    assert five.split()[1:3] == ["?", "?"]
+    assert "couldn't read right now" in text
+
+    from parlay_bot.discord_app.model_watch import compare_embed
+    table = compare_embed({"Trend-only": report}, asset="BTC").fields[0].value
+    assert " ? " in table and "few" not in table.split("Trend-only", 1)[1].split("\n")[0]

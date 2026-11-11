@@ -68,6 +68,13 @@ def test_page_says_when_a_section_is_an_older_copy():
     now = datetime.now(UTC)
     embed = home.performance_embed(
         "BTC", 5, {"_stale": {"exchange": timedelta(minutes=12)}}, now=now)
-    assert "last good check from 12 min ago" in embed.description
+    assert embed.description.startswith("**⚠️ NOT ALL LIVE")
+    assert "12 min old" in embed.description
+    assert embed.color == home.discord.Color.orange()
+    scoreboard = embed.fields[0]
+    assert scoreboard.name.endswith("⏳ OLD COPY")
+    assert scoreboard.value.startswith("**⏳ Old copy from 12 min ago, not live.**")
+    assert not any(f.name.endswith("OLD COPY") for f in embed.fields[1:])
     plain = home.performance_embed("BTC", 5, {}, now=now)
-    assert "last good check" not in plain.description
+    assert "NOT ALL LIVE" not in plain.description
+    assert not any("OLD COPY" in f.name for f in plain.fields)

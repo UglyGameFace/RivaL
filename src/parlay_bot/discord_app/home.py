@@ -1194,33 +1194,40 @@ def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
     """
     headline, scoreboard = _scoreboard_text(coin, horizon, reports, now)
     stale = reports.get("_stale") or {}
-    oldest = max(stale.values(), default=None)
-    note = (f"\n-# ⏳ Some sections show the last good check from {_age_words(max(oldest, timedelta(minutes=1)))} ago — the "
-            "database was busy just now. They update by themselves."
-            if oldest is not None else "")
+
+    def field(name: str, value: str, sources: tuple[str, ...]) -> None:
+        """A section built from an older saved copy says so in its title and first line."""
+        ages = [stale[s] for s in sources if s in stale]
+        if ages:
+            when = _age_words(max(max(ages), timedelta(minutes=1)))
+            name = f"{name} · ⏳ OLD COPY"
+            value = f"**⏳ Old copy from {when} ago, not live.**\n{value}"
+        embed.add_field(name=name, value=fit_embed_field_value(value), inline=False)
+
+    warning = ""
+    if stale:
+        when = _age_words(max(max(stale.values()), timedelta(minutes=1)))
+        warning = ("**⚠️ NOT ALL LIVE: sections marked ⏳ OLD COPY are the last good check "
+                   f"(up to {when} old). The database was busy; press Refresh in a "
+                   "minute for live numbers.**\n")
     embed = discord.Embed(
         title=f"📊 {ASSET_NAMES.get(coin, coin)} · {horizon}-min · Bot performance",
-        description=(f"{headline}\n-# Every score uses predictions saved before the "
-                     f"result was known. Does it make money? Not proven yet.{note}"),
-        color=discord.Color.blurple(),
+        description=(f"{warning}{headline}\n-# Every score uses predictions saved before the "
+                     "result was known. Does it make money? Not proven yet."),
+        color=discord.Color.orange() if stale else discord.Color.blurple(),
     )
-    embed.add_field(name="🎯 Scoreboard (last 7 days)",
-                    value=fit_embed_field_value(rename_text(scoreboard)), inline=False)
-    embed.add_field(name="🎚️ Can you trust its confidence?",
-                    value=fit_embed_field_value(_calibration_text(reports)), inline=False)
+    field("🎯 Scoreboard (last 7 days)", rename_text(scoreboard), ("exchange", "polymarket"))
+    field("🎚️ Can you trust its confidence?", _calibration_text(reports), ("calibration",))
     name, trials = _trials_text(reports)
-    embed.add_field(name=name, value=fit_embed_field_value(trials), inline=False)
+    field(name, trials, ("trials",))
     leaders = _best_text(reports)
     if leaders:
-        embed.add_field(name=f"🏆 Best model per timeframe ({coin})",
-                        value=fit_embed_field_value(leaders), inline=False)
+        field(f"🏆 Best model per timeframe ({coin})", leaders, ("best",))
     contest = _contest_text(reports)
     if contest:
-        embed.add_field(name="🎲 Polymarket contest", value=fit_embed_field_value(contest),
-                        inline=False)
-    embed.add_field(name="⚙️ Running and learning",
-                    value=fit_embed_field_value(rename_text(
-                        _health_text(coin, horizon, reports, now, venues))), inline=False)
+        field("🎲 Polymarket contest", contest, ())
+    field("⚙️ Running and learning",
+          rename_text(_health_text(coin, horizon, reports, now, venues)), ("benefit",))
     embed.timestamp = now
     embed.set_footer(text=f"{RESEARCH_FOOTER} · Per-model detail: Detailed Research")
     # Discord refuses an embed over 6,000 characters (the screen would fail
@@ -1228,8 +1235,8 @@ def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
     for optional in ("🎲 Polymarket contest", f"🏆 Best model per timeframe ({coin})"):
         if len(embed) <= 5900:
             break
-        for index, field in enumerate(embed.fields):
-            if field.name == optional:
+        for index, f in enumerate(embed.fields):
+            if f.name.startswith(optional):
                 embed.remove_field(index)
                 break
     return embed

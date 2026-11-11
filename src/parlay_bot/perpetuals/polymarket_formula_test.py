@@ -14,11 +14,13 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.perpetuals.model_league import (
     FORMULA,
     JUMP,
+    LAG,
     PRESSURE,
     Contest,
     checkpoint,
     settlement_schema,
 )
+from parlay_bot.perpetuals.polymarket_lag import OddsLagLearner
 from parlay_bot.perpetuals.price_formula import (
     chance_up,
     jump_chance,
@@ -35,6 +37,7 @@ class FormulaTest:
     def __init__(self, store):
         self.store = store
         self.contest = Contest(store)
+        self.lag = OddsLagLearner(store)
         self.latest: dict[str, dict] = {}
         self._lock = threading.RLock()
         self._restored: set[str] = set()
@@ -121,6 +124,22 @@ class FormulaTest:
                                "strike_source": evidence["strike_source"],
                                "reference_label": reference["reference_label"],
                                "payoff": "TWAP moment approximation" if twap else "terminal digital"}
+        # The odds-lag learner reads this same frozen book and the formula
+        # and pressure forecasts just made from it. Optional research: a
+        # failure drops only its own forecast.
+        if FORMULA in forecasts:
+            try:
+                lag = self.lag.forecast(
+                    notice, schema, formula=forecasts[FORMULA][0],
+                    pressure=forecasts[PRESSURE][0] if PRESSURE in forecasts else None,
+                    now=stamp)
+            except Exception:
+                import logging
+                logging.getLogger(__name__).warning(
+                    "Odds-lag learner unavailable", exc_info=True)
+                lag = None
+            if lag is not None:
+                forecasts[LAG] = lag
         # All contestants use this book NOW. Never substitute a start-time
         # pooled price, a previous main-model call, or a later formula tick.
         forecasts.update(learner.contest_forecasts(notice))

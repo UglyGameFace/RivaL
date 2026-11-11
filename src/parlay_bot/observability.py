@@ -7,6 +7,7 @@ per DEDUPE_SECONDS per fingerprint; Sentry still groups the issue.
 """
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import re
@@ -64,6 +65,9 @@ EXPECTED_IN_TASKS = frozenset({
     "MarketUnavailable", "QuoteUnavailable", "HTTPStatusError", "ConnectError",
     "ConnectTimeout", "ReadTimeout", "ReadError", "RemoteProtocolError",
     "PoolTimeout", "TimeoutError", "CancelledError",
+    # Every Drive caller catches and logs it (RIVAL-W: each failure arrived
+    # twice, once handled via logging and once as an asyncio "crash").
+    "DriveArchiveError",
 })
 
 
@@ -94,8 +98,12 @@ def before_send(event, hint):
     raw_message = event.get("message")
     if isinstance(raw_message, dict):
         raw_message = raw_message.get("formatted")
+    # The fingerprint is part of the key: health alerts share one log
+    # template ("RivaL HEALTH ALERT %s: %s"), so without it a second,
+    # different alert within the window was dropped as a "repeat".
     key = "|".join(str(p) for p in (
         event.get("logger"),
+        event.get("fingerprint"),
         (event.get("logentry") or {}).get("message") or raw_message,
         *[(e.get("type"), (e.get("stacktrace") or {}).get("frames", [{}])[-1].get("lineno"))
           for e in (event.get("exception") or {}).get("values", [])],
@@ -144,6 +152,31 @@ def report_model_quality(key: str, detail: str) -> None:
         )
     except Exception:  # noqa: BLE001 - monitoring must never break a loop
         _LOG.debug("model-quality Sentry report failed key=%s", key, exc_info=True)
+
+
+HEALTH_FINGERPRINT = "health-alert"
+
+
+@contextlib.contextmanager
+def health_alert_scope(key: str):
+    """Group an error-level health alert as its own Sentry issue.
+
+    Every watchdog alert is logged with one template, so Sentry put all of
+    them (stale feeds, Drive reads, memory, ...) in a single issue
+    (RIVAL-F): a new kind of fault was just another event on an old issue
+    and never sent a "new issue" email. Inside this scope the logging
+    integration's event carries fingerprint ["health-alert", key]. Never
+    raises; without the SDK it is a plain no-op scope.
+    """
+    try:
+        import sentry_sdk
+        scope_cm = sentry_sdk.new_scope()
+    except Exception:  # noqa: BLE001 - monitoring must never break a loop
+        yield
+        return
+    with scope_cm as scope:
+        scope.fingerprint = [HEALTH_FINGERPRINT, key]
+        yield
 
 
 def init_sentry() -> bool:

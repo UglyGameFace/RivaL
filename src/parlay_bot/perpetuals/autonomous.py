@@ -8,6 +8,7 @@ Every score is from a forecast stored before its outcome.
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
 import math
 import threading
@@ -26,6 +27,20 @@ from parlay_bot.perpetuals.markets import ASSETS, HORIZONS
 from parlay_bot.perpetuals.multi_exchange import MultiExchangeResearch
 
 _LOG = logging.getLogger(__name__)
+
+
+class StepStillRunning(TimeoutError):
+    """A cycle step's previous run has not finished; this cycle skips it."""
+
+
+def _consume_result(task: asyncio.Future) -> None:
+    # A step whose wait already gave up still finishes later: read its
+    # outcome so a late failure is logged once, never "never retrieved".
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        _LOG.warning("RivaL cycle step finished late with an error: %r", exc)
 SLOT_HOURS = 4
 
 # Per-stage deadlines for cycle(). Each DB stage's deadline EXCEEDS the 60 s
@@ -87,6 +102,7 @@ class AutonomousResearch:
         self._lock = asyncio.Lock()
         self._schema_lock = threading.Lock()
         self._schema_ready = False
+        self._step_threads: dict[str, asyncio.Future] = {}
 
     def initialize(self) -> None:
         # This was running CREATE TABLE/INDEX on every model settlement and
@@ -537,6 +553,29 @@ class AutonomousResearch:
                 ),
             )
 
+    async def _in_thread(self, name: str, fn, *, timeout: float):  # noqa: ASYNC109 - a wait budget, not a cancel
+        """Run one cycle step in a thread, never on top of its last run.
+
+        A step that outlives its wait keeps running in its thread (Python
+        cannot stop it), still holding its database connection. Without
+        this guard the next cycle started a second copy alongside it, on
+        the same ledger. The previous run is tracked; while it is still
+        going, this step is skipped (raised as a timeout, which every caller
+        already logs as "timed out, skipping").
+        """
+        threads = self.__dict__.setdefault("_step_threads", {})
+        running = threads.get(name)
+        if running is not None and not running.done():
+            _LOG.warning(
+                "RivaL %s is still running from an earlier cycle; "
+                "skipping it this cycle", name,
+            )
+            raise StepStillRunning(name)
+        task = asyncio.ensure_future(asyncio.to_thread(fn))
+        task.add_done_callback(_consume_result)
+        threads[name] = task
+        return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+
     async def cycle(self) -> tuple[int, int, int]:
         """Five-minute automatic research, with durable proof of each stage."""
         started = datetime.now(UTC)
@@ -551,8 +590,8 @@ class AutonomousResearch:
             mark = time.perf_counter()
 
         try:
-            issued, settled = await asyncio.wait_for(
-                asyncio.to_thread(self.forward.run_once),
+            issued, settled = await self._in_thread(
+                "forward.run_once", self.forward.run_once,
                 timeout=AUTONOMOUS_FORWARD_TIMEOUT_SECONDS,
             )
         except asyncio.CancelledError:
@@ -576,12 +615,12 @@ class AutonomousResearch:
         # Challenge the incumbent only with forecasts genuinely issued by
         # the completed live research cycle, on shared UTC target windows.
         try:
-            paired = await asyncio.wait_for(
-                asyncio.to_thread(self.multi.settle),
+            paired = await self._in_thread(
+                "multi.settle", self.multi.settle,
                 timeout=AUTONOMOUS_MULTI_SETTLE_TIMEOUT_SECONDS,
             )
-            fused = await asyncio.wait_for(
-                asyncio.to_thread(self.multi.issue),
+            fused = await self._in_thread(
+                "multi.issue", self.multi.issue,
                 timeout=AUTONOMOUS_MULTI_ISSUE_TIMEOUT_SECONDS,
             )
             _LOG.info(
@@ -598,8 +637,8 @@ class AutonomousResearch:
             _LOG.exception("RivaL multi-exchange challenger unavailable safely")
         lap("multi")
         try:
-            await asyncio.wait_for(
-                asyncio.to_thread(self.settle_ai),
+            await self._in_thread(
+                "settle_ai", self.settle_ai,
                 timeout=AUTONOMOUS_AI_SETTLE_TIMEOUT_SECONDS,
             )
         except asyncio.CancelledError:
@@ -616,8 +655,8 @@ class AutonomousResearch:
         lap("ai_settle")
         if datetime.now(UTC).minute < 5:
             try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(self.review_model),
+                await self._in_thread(
+                    "review_model", self.review_model,
                     timeout=AUTONOMOUS_REVIEW_TIMEOUT_SECONDS,
                 )
             except asyncio.CancelledError:
@@ -632,8 +671,8 @@ class AutonomousResearch:
                 review_ok = False
                 _LOG.exception("RivaL shadow model gate review failed")
             try:
-                await asyncio.wait_for(
-                    asyncio.to_thread(self.evaluate_promotion),
+                await self._in_thread(
+                    "evaluate_promotion", self.evaluate_promotion,
                     timeout=AUTONOMOUS_PROMOTION_TIMEOUT_SECONDS,
                 )
             except asyncio.CancelledError:
@@ -663,8 +702,8 @@ class AutonomousResearch:
             _LOG.exception("RivaL automatic AI research cycle failed")
         lap("auto_ai")
         try:
-            await asyncio.wait_for(
-                asyncio.to_thread(
+            await self._in_thread(
+                "_save_cycle", functools.partial(
                     self._save_cycle, started=started,
                     issued=issued, settled=settled, ai_count=ai_count,
                     math_ok=math_ok, ai_settlement_ok=settlement_ok,
@@ -685,8 +724,8 @@ class AutonomousResearch:
         # slow official-source server cannot delay core forecast issuance.
         # Poll attempts are durably throttled per source across restarts.
         try:
-            event_status = await asyncio.wait_for(
-                asyncio.to_thread(self.events.refresh),
+            event_status = await self._in_thread(
+                "events.refresh", self.events.refresh,
                 timeout=AUTONOMOUS_EVENTS_TIMEOUT_SECONDS,
             )
             if event_status["sources_checked"]:

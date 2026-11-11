@@ -9,7 +9,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from parlay_bot.observability import report_model_quality
+from parlay_bot.observability import health_alert_scope, report_model_quality
 from parlay_bot.storage.hot import RelationalHotStore
 
 _LOG = logging.getLogger(__name__)
@@ -452,7 +452,8 @@ class RuntimeHealthMonitor:
                     _LOG.warning("RivaL HEALTH ALERT %s: %s", key, detail)
                     report_model_quality(key, detail)
                 else:
-                    _LOG.error("RivaL HEALTH ALERT %s: %s", key, detail)
+                    with health_alert_scope(key):
+                        _LOG.error("RivaL HEALTH ALERT %s: %s", key, detail)
             else:
                 _LOG.info("RivaL HEALTH RECOVERED %s", key)
         return events

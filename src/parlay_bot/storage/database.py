@@ -104,6 +104,58 @@ def _postgres_sql(sql: str) -> str:
     return sql.replace("%", "%%").replace("?", "%s")
 
 
+def split_script(script: str) -> list[str]:
+    """Split a DDL script into statements, the same way on both backends.
+
+    ``--`` comments are dropped and ``;`` ends a statement only outside a
+    quoted string or identifier. A semicolon inside a comment once split a
+    PostgreSQL statement mid-comment and crash-looped startup, while the
+    SQLite tests (whole-script executescript) passed.
+    """
+    statements: list[str] = []
+    current: list[str] = []
+    quote: str | None = None
+    i, n = 0, len(script)
+    while i < n:
+        ch = script[i]
+        if quote is not None:
+            current.append(ch)
+            if ch == quote:
+                if i + 1 < n and script[i + 1] == quote:  # escaped '' or ""
+                    current.append(script[i + 1])
+                    i += 1
+                else:
+                    quote = None
+        elif ch in ("'", '"'):
+            quote = ch
+            current.append(ch)
+        elif ch == "-" and script.startswith("--", i):
+            end = script.find("\n", i)
+            i = n if end < 0 else end
+            continue
+        elif ch == "/" and script.startswith("/*", i):
+            end = script.find("*/", i + 2)
+            if end < 0:
+                raise ValueError("unterminated /* comment in DDL script")
+            i = end + 2
+            current.append(" ")
+            continue
+        elif ch == ";":
+            statement = "".join(current).strip()
+            if statement:
+                statements.append(statement)
+            current = []
+        else:
+            current.append(ch)
+        i += 1
+    if quote is not None:
+        raise ValueError("unterminated quote in DDL script")
+    tail = "".join(current).strip()
+    if tail:
+        statements.append(tail)
+    return statements
+
+
 class _Connection:
     def __init__(
         self, raw: Any, backend: BackendName,
@@ -162,7 +214,13 @@ class _Connection:
             # diagnostic script accidentally requests schema initialization.
             raise PermissionError("Read-only PostgreSQL connection cannot initialize schema")
         if self.backend == "sqlite":
-            self._raw.executescript(script)
+            # Same split as PostgreSQL, so a script that only SQLite's
+            # executescript would accept fails in tests, not at deploy.
+            # executescript committed any open transaction first; keep that.
+            if self._raw.in_transaction:
+                self._raw.commit()
+            for statement in split_script(script):
+                self._raw.execute(statement)
             return
 
         # IF NOT EXISTS is not concurrency-safe when two independent workers
@@ -171,8 +229,7 @@ class _Connection:
         # threads, store instances, and even overlapping bot processes.
         # It is released automatically at commit/rollback; no permanent lock.
         self.execute("SELECT pg_advisory_xact_lock(72649113001)")
-        statements = [part.strip() for part in script.split(";") if part.strip()]
-        for statement in statements:
+        for statement in split_script(script):
             self.execute(statement)
 
     def __enter__(self) -> Self:

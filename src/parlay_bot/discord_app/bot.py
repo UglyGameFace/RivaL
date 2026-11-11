@@ -2378,9 +2378,13 @@ class RivalDiscordClient(discord.Client):
                             result = await asyncio.to_thread(
                                 self.stream_shadow.observe, book,
                             )
-                            if self.autonomous is not None:
+                            # Re-read the book: the first ledger's write can
+                            # take seconds, and the 10-second freshness check
+                            # then rejected the reused book (RIVAL-K).
+                            fresh = self.live_stream.snapshot(venue, asset)
+                            if self.autonomous is not None and fresh is not None:
                                 multi_result = await asyncio.to_thread(
-                                    self.autonomous.multi.observe, book,
+                                    self.autonomous.multi.observe, fresh,
                                 )
                                 if multi_result["opened"] or multi_result["closed"]:
                                     _LOG.info(
@@ -2396,6 +2400,13 @@ class RivalDiscordClient(discord.Client):
                                     venue, asset, result["opened"],
                                     result["closed"], result["expired"],
                                 )
+                        except QuoteUnavailable as exc:
+                            # A stale or unusable book is a skipped sample,
+                            # the freshness gate working, not a fault.
+                            _LOG.info(
+                                "RivaL streaming forward sample skipped venue=%s "
+                                "asset=%s: %s", venue, asset, exc,
+                            )
                         except Exception:  # noqa: BLE001 - isolate per market
                             _LOG.exception(
                                 "RivaL streaming forward proof failed venue=%s asset=%s",

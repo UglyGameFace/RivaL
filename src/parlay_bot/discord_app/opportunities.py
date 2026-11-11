@@ -506,8 +506,10 @@ def crypto_desk_embed(
         # line only when the live lean has moved since the call was made.
         otg_lines = []
         made = otg.get("probability") if isinstance(otg, dict) else None
-        if lean is not None and (made is None
-                                 or abs(float(lean["probability"]) - float(made)) >= .01):
+        # Compare as shown (whole percent), so the "Now" line never repeats
+        # the same number.
+        if lean is not None and (made is None or round(float(lean["probability"]) * 100)
+                                 != round(float(made) * 100)):
             otg_lines.append(lean_line(lean, as_of_label="Now"))
         below = below_line_label(otg)
         if below is not None:

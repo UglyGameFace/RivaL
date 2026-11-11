@@ -787,7 +787,7 @@ def test_desk_embed_shows_otg_and_lean_lines(tmp_path):
         # times); a "Now" line appears only when the live lean has moved.
         assert "Chance of UP: **68.0%**" in watch_field
         assert "Out the gate" not in watch_field
-        assert watch_field.count("68") == 1
+        assert "Now: UP 68%" not in watch_field      # never the same number twice
         assert "Just watch: this is not a signal to trade." in watch_field
     finally:
         store.close()

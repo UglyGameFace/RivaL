@@ -180,10 +180,15 @@ class MultiExchangeResearch:
                           issued_at,target_opened_at,probability_up
                    FROM perp_forward_audit
                    WHERE model_version=? AND settled_at IS NULL
+                     AND asset IN (""" + ",".join("?" for _ in ASSETS) + """)
                      AND issued_at<=? AND issued_at>=?
                      AND target_opened_at>=?
                    ORDER BY target_opened_at DESC,issued_at DESC LIMIT 240""",
-                (SOURCE_MODEL, stamp.isoformat(),
+                # The asset list lets PostgreSQL use the unsettled partial
+                # index (asset, issued_at): without it every unsettled row
+                # ever (no-trade targets never settle) was read, 3 s per
+                # cycle (158 slow warnings a day, Nov 11). Same rows.
+                (SOURCE_MODEL, *ASSETS, stamp.isoformat(),
                  (stamp - MAX_SOURCE_AGE).isoformat(),
                  (stamp - timedelta(minutes=4)).isoformat()),
             ).fetchall()

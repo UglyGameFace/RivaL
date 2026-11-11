@@ -364,14 +364,20 @@ class PolymarketResearch:
         with self.store.connect() as conn:
             rows = conn.execute(
                 "SELECT c.slug,c.condition_id,c.expires_at FROM ("
-                "SELECT slug,condition_id,expires_at FROM rival_polymarket_ai_calls UNION "
-                "SELECT slug,condition_id,expires_at FROM rival_polymarket_observations UNION "
-                "SELECT slug,condition_id,expires_at FROM rival_poly_contest_rounds) c "
+                "SELECT slug,condition_id,expires_at FROM rival_polymarket_ai_calls "
+                "WHERE expires_at<? AND expires_at>=? UNION "
+                "SELECT slug,condition_id,expires_at FROM rival_polymarket_observations "
+                "WHERE expires_at<? AND expires_at>=? UNION "
+                "SELECT slug,condition_id,expires_at FROM rival_poly_contest_rounds "
+                "WHERE expires_at<? AND expires_at>=?) c "
                 "LEFT JOIN rival_polymarket_ai_outcomes o ON o.slug=c.slug "
                 "LEFT JOIN rival_polymarket_resolution_attempts a ON a.slug=c.slug "
-                "WHERE o.slug IS NULL AND c.expires_at<? "
+                "WHERE o.slug IS NULL "
                 "ORDER BY COALESCE(a.checked_at,''),c.expires_at LIMIT 20",
-                (now.isoformat(),),
+                # Contracts resolve within hours; one still unresolved after
+                # 30 days will not be. Unbounded, the UNION of every call and
+                # observation ever grew to 5 s (84 slow warnings a day, Nov 11).
+                (now.isoformat(), (now - timedelta(days=30)).isoformat()) * 3,
             ).fetchall()
             for row in rows:
                 conn.execute(

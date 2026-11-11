@@ -596,7 +596,16 @@ def test_status_card_shows_blocker(tmp_path):
             now=NOW) == 1
         alerts = dict(research_alerts(store, now=NOW))
         assert alerts["research-blocked:okx"] == (
-            "⛔ Research blocked at okx: 2 month(s) missing (2026-01, 2026-02)")
+            "⛔ Research blocked at OKX Swaps: 2 month(s) of data missing (2026-01, 2026-02)")
+        # Nov 11: a blocked run with nothing missing no longer reads
+        # "0 month(s) missing ()".
+        assert record_blocked_receipt(
+            store, venue="dydx", asset=None, requested_months=6, missing_months=[],
+            report_sha256="b" * 64, now=NOW) == 1
+        alerts = dict(research_alerts(store, now=NOW))
+        assert alerts["research-blocked:dydx"] == (
+            "⛔ Research at dYdX: the last offline run made no trials "
+            "(no missing months reported; see that run's report)")
     finally:
         store.close()
 

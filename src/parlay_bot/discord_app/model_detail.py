@@ -61,8 +61,8 @@ HOW_IT_WORKS = {
         "Like Cross-exch, but one learner shared by every coin, so a lesson learned "
         "on one coin can help the others."),
     "Liquidity": (
-        "Adds live order-book and trading activity (who is buying or selling, how deep "
-        "the book is) to the main model's price inputs, learned live."),
+        "Added live order-book and trading activity to the main model's price inputs, "
+        "learned live. Retired Nov 11: far behind the main model and overconfident."),
     "Order-flow 1": "Price inputs plus Hyperliquid order flow and funding (retired).",
     "Order-flow 2": "A variant of Order-flow 1 (retired for overconfidence).",
     "Order-flow 3": (

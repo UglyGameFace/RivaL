@@ -10,6 +10,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
 from parlay_bot.observability import health_alert_scope, report_model_quality
+from parlay_bot.perpetuals import shadow_score_hours
 from parlay_bot.storage.hot import RelationalHotStore
 
 _LOG = logging.getLogger(__name__)
@@ -46,6 +47,7 @@ class RuntimeHealthMonitor:
         self._initialized = False
         # (computed_at, faults) from the last completed 7-day aggregate.
         self._regression_cache: tuple[datetime, dict[str, str]] | None = None
+        self._regression_failed_at: datetime | None = None
         # The same aggregate per stream and horizon, for the early-stop rule.
         self._paired_scores: tuple[dict, ...] = ()
         self._paired_in_use_since: str | None = None
@@ -321,15 +323,35 @@ class RuntimeHealthMonitor:
                     faults["import_failed"] = import_status
         return faults
 
-    def _score_regressions(self, conn, stamp: datetime) -> dict[str, str]:
-        """Run the 7-day paired challenger aggregate and store its verdict."""
-        regression_faults: dict[str, str] = {}
-        in_use_since = (stamp-REGRESSION_IN_USE_WITHIN).isoformat()
+    def _score_regressions(self, conn, stamp: datetime, *,
+                           full_scan: bool = True) -> dict[str, str]:
+        """Run the 7-day paired challenger aggregate and store its verdict.
+
+        The scores come from stored hourly tallies plus recent rows
+        (shadow_score_hours: the same rows and numbers as one 7-day scan,
+        which reached 60 s on production). While those tallies are still
+        being built, ``full_scan=False`` (the watchdog's background refresh)
+        keeps the last verdict instead of scanning the whole week.
+        """
+        try:
+            scores = shadow_score_hours.window_scores(self.store, stamp)
+        except shadow_score_hours.NoVenues:
+            scores = self._full_scan(conn, stamp)   # a new, small ledger
+        if scores is None and not full_scan:
+            cached = self._regression_cache
+            return dict(cached[1]) if cached is not None else {}
+        if scores is None:
+            scores = self._full_scan(conn, stamp)
+        return self._verdict(scores, stamp)
+
+    @staticmethod
+    def _full_scan(conn, stamp: datetime) -> list[dict]:
+        """The original single 7-day aggregate (tests and first-run inline use)."""
         # One scan serves two readers. The alert below pools a family's
         # horizons per venue, as before. The early-stop rule (early_stop.py)
         # needs each horizon by itself plus the spread of the paired loss, so
         # the scan groups by horizon and the alert re-pools in Python.
-        scores = [dict(row) for row in conn.execute(
+        return [dict(row) for row in conn.execute(
             """SELECT venue,contract,quote,horizon_minutes,family,COUNT(*) AS n,
                       AVG(model_brier) AS model_score,
                       AVG(incumbent_brier) AS incumbent_score,
@@ -343,6 +365,10 @@ class RuntimeHealthMonitor:
                GROUP BY venue,contract,quote,horizon_minutes,family""",
             ((stamp-timedelta(days=7)).isoformat(),),
         ).fetchall()]
+
+    def _verdict(self, scores: list[dict], stamp: datetime) -> dict[str, str]:
+        regression_faults: dict[str, str] = {}
+        in_use_since = (stamp-REGRESSION_IN_USE_WITHIN).isoformat()
         pooled: dict[tuple[str, str, str, str], list] = {}
         for row in scores:
             count = int(row["n"])
@@ -376,10 +402,17 @@ class RuntimeHealthMonitor:
         return self._paired_scores, self._paired_in_use_since
 
     def regressions_due(self, now: datetime) -> bool:
-        """True when the stored regression verdict is missing or due a recheck."""
+        """True when the stored regression verdict is missing or due a recheck.
+
+        Never sooner than REGRESSION_RECHECK after a failed attempt.
+        """
+        stamp = now.astimezone(UTC)
+        failed = self._regression_failed_at
+        if failed is not None and timedelta(0) <= stamp - failed < REGRESSION_RECHECK:
+            return False
         cached = self._regression_cache
         return cached is None or not (
-            timedelta(0) <= now.astimezone(UTC) - cached[0] < REGRESSION_RECHECK)
+            timedelta(0) <= stamp - cached[0] < REGRESSION_RECHECK)
 
     def refresh_regressions(self, *, now: datetime | None = None) -> dict[str, str]:
         """Recompute the regression verdict on its own connection.
@@ -392,8 +425,14 @@ class RuntimeHealthMonitor:
         if stamp.utcoffset() is None:
             raise ValueError("regression check requires a UTC-aware clock")
         stamp = stamp.astimezone(UTC)
-        with self.store.connect() as conn:
-            return self._score_regressions(conn, stamp)
+        try:
+            with self.store.connect() as conn:
+                return self._score_regressions(conn, stamp, full_scan=False)
+        except Exception:
+            # Wait REGRESSION_RECHECK before trying again, instead of
+            # retrying every watchdog pass with another long read.
+            self._regression_failed_at = stamp
+            raise
 
     def publish(
         self, faults: dict[str, str], *, now: datetime | None = None,

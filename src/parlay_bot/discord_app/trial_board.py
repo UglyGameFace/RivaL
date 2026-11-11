@@ -265,6 +265,7 @@ def retired_families() -> frozenset[str]:
     return frozenset(family for family, flag in (
         ("flow_v1", "ISSUE_FLOW_CHALLENGERS"), ("flow_v2", "ISSUE_FLOW_CHALLENGERS"),
         ("flow_v3", "ISSUE_FLOW_V3_CHALLENGERS"), ("regime_v2", "ISSUE_REGIME_V2_CHALLENGERS"),
+        ("liq_v1", "ISSUE_LIQ_V1_CHALLENGERS"),
     ) if not getattr(fa, flag, True))
 
 

@@ -90,7 +90,7 @@ def _seed(store):
             "conservative": {"paired_gain_bps": 1.2, "windows": 200}}),
         "pooled_5m_aaaaaaaaaaaa": _info(3, 40, .01),
         "pooled_5m_bbbbbbbbbbbb": _info(12, 649, -.002),
-        "liq_v1": _info(11, 581, -.06),
+        "cross_all_v1": _info(11, 581, -.06),
     })
     _promotion(store, "bybit", 5, {"regime_v1": _info(12, 100, -.002)})
     _promotion(store, "okx", 15, {"regime_v1": _info(9, 120, .001),
@@ -100,7 +100,7 @@ def _seed(store):
             """INSERT INTO rival_family_early_stop (venue,contract,quote,horizon_minutes,family,
                  stopped_at,rule_version,targets,days,model_brier,incumbent_brier,loss,
                  loss_lower) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            ("okx", "BTC-okx", "USDT", 5, "liq_v1", NOW.isoformat(), "t", 581, 11, .34,
+            ("okx", "BTC-okx", "USDT", 5, "cross_all_v1", NOW.isoformat(), "t", 581, 11, .34,
              .26, .06, .05))
     # 40 trend-only calls at 58%: 30 right; the main model was right on 20.
     for k in range(40):
@@ -113,7 +113,7 @@ def test_the_picker_lists_every_model_on_trial_for_the_coin(store):
     _seed(store)
     _promotion(store, "okx", 5, {"cross_v1": _info(1, 5, .0)}, asset="ETH")
     # One entry per model (6-year versions fold), longest-running first.
-    assert trial_models(store, "BTC") == ["6-year", "Trend-only", "Liquidity"]
+    assert trial_models(store, "BTC") == ["6-year", "Trend-only", "Cross-all"]
     assert trial_models(store, "ETH") == ["Cross-exch"]
 
 
@@ -134,7 +134,7 @@ def test_the_report_compares_like_with_like(store):
     # The most advanced 6-year version per timeframe, not the newest one.
     assert model_report(store, "BTC", "6-year")["horizons"][5]["family"] == (
         "pooled_5m_bbbbbbbbbbbb")
-    assert model_report(store, "BTC", "Liquidity")["horizons"][5]["cut"] == 1
+    assert model_report(store, "BTC", "Cross-all")["horizons"][5]["cut"] == 1
     assert model_report(store, "BTC", "Nope") is None
 
 
@@ -171,7 +171,7 @@ def test_the_page_answers_how_it_works_how_accurate_and_whats_left(store):
 
 def test_a_cut_model_says_so_and_an_unknown_one_explains(store):
     _seed(store)
-    liq = model_embed(model_report(store, "BTC", "Liquidity"), asset="BTC", name="Liquidity")
+    liq = model_embed(model_report(store, "BTC", "Cross-all"), asset="BTC", name="Cross-all")
     assert "🛑 **Cut for losing** on every exchange it ran on." in liq.description
     missing = model_embed(None, asset="BTC", name="Old model")
     assert "no recent trial results" in missing.description
@@ -208,7 +208,7 @@ async def test_detailed_research_opens_a_models_page_and_back(store):
     await view.render()
     picker = next(i for i in view.children if getattr(i, "custom_id", "") ==
                   "rival:research:model")
-    assert [o.label for o in picker.options] == ["6-year", "Trend-only", "Liquidity"]
+    assert [o.label for o in picker.options] == ["6-year", "Trend-only", "Cross-all"]
     assert picker.row == 4 and len({i.row for i in view.children}) <= 5
     # The exchange picker gave its row to the model picker on this card.
     assert not any(getattr(i, "custom_id", "") == "rival:research:venue"
@@ -228,3 +228,10 @@ async def test_detailed_research_opens_a_models_page_and_back(store):
 
 async def _plain():
     return discord.Embed(title="Results")
+
+
+def test_a_retired_model_is_not_offered(store):
+    """liq_v1 was retired Nov 11 (switch off): its old rows stay, the picker hides it."""
+    _seed(store)
+    _promotion(store, "gate", 5, {"liq_v1": _info(11, 581, -.06)})
+    assert "Liquidity" not in trial_models(store, "BTC")

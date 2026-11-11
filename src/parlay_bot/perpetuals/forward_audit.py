@@ -97,7 +97,15 @@ ISSUE_ARCHIVE_V1_CHALLENGERS = True
 # promote before ~21 days + 150 targets). Kill switch for issuance;
 # serving is gated separately by promotion. Existing rows keep settling
 # either way.
-ISSUE_LIQ_V1_CHALLENGERS = True
+# Retired Nov 11, 2026: paired Brier 0.34-0.36 vs the incumbent's 0.26 on
+# 581 and 1,443 graded results (dydx SOL/BTC), the worst family by far;
+# early stop had already cut it; its calibration gate failed (ECE
+# 0.13-0.14, top-bucket calls 83-100% hit); and its learn step held a
+# pooled connection for 130 s per cycle (50 queries, slowest 41.5 s),
+# slowing the incumbent and every page. Same honest retirement as
+# flow_v1-v3: stored forecasts and weights stay; nothing new is issued
+# or learned. A successor would be a new family.
+ISSUE_LIQ_V1_CHALLENGERS = False
 # gbm_v1 shadow issuance (autonomous loop Phase 2, spec §3.4): the
 # offline-trained GBM model issues shadow forecasts beside the incumbent
 # once an artifact is imported; it never serves until Route B promotes

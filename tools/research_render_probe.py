@@ -64,6 +64,12 @@ async def _render_all() -> dict:
     out: dict = {}
     try:
         market = PerpetualMarketStore(store)
+        # The Model Lab line on Bot Performance, without running its DDL.
+        from parlay_bot.perpetuals.model_lab import ModelLab
+
+        market.model_lab = ModelLab(store)
+        market.model_lab._ready = True
+        market.model_lab.learners._ready = True
         with store.connect() as conn:
             venues = tuple(sorted({str(r["venue"]) for r in conn.execute(
                 "SELECT DISTINCT venue FROM perp_forward_audit WHERE issued_at>=?",

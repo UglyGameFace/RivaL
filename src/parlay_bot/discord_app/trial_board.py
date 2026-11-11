@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 MIN_DAYS = 21
@@ -73,6 +73,13 @@ class TrialRow:
     stopped: int                # exchanges where early stop cut it
     passed: bool
     after_fees_bps: float | None  # severe-cost paired gain, bps per trade
+    family: str = ""              # the family behind this row (most advanced version)
+    calls: int = 0                # graded up/down calls, last HIT_DAYS days
+    right: int = 0                # of those, how many came true
+
+    @property
+    def hit_rate(self) -> float | None:
+        return self.right / self.calls if self.calls >= TOO_FEW else None
 
     @property
     def status(self) -> str:
@@ -146,6 +153,7 @@ def fold(evidence_rows, stops, *, retired=frozenset()) -> list[TrialRow]:
             ahead=ahead, exchanges=len(scopes), stopped=cut,
             passed=any(bool(info.get("qualified")) for _, _, info in scopes),
             after_fees_bps=fees_sum / fees_weight if fees_weight else None,
+            family=family,
         )
         best = rows.get(row.name)
         if best is None or (row.days, row.results) > (best.days, best.results):
@@ -171,12 +179,14 @@ def _count(n: int) -> str:
 
 
 def table(rows: list[TrialRow]) -> str:
-    """A monospace table that fits a phone: name, day, results, edge, status."""
-    lines = [f"{'Model':<12} {'Day':>5} {'Res':>5} {'Edge':>5} Now"]
+    """A monospace table that fits a phone: name, day, results, right, edge, status."""
+    lines = [f"{'Model':<11} {'Day':>5} {'Res':>5} {'Right':>5} {'Edge':>5} Now"]
     for row in rows[:MAX_ROWS]:
         day = f"{min(row.days, 99)}/{MIN_DAYS}"
         res = _count(row.results)
-        lines.append(f"{row.name[:12]:<12} {day:>5} {res:>5} {_pts(row.gain):>5} {row.status}")
+        rate = "—" if row.hit_rate is None else f"{row.hit_rate:.0%}"
+        lines.append(f"{row.name[:11]:<11} {day:>5} {res:>5} {rate:>5} "
+                     f"{_pts(row.gain):>5} {row.status}")
     if len(rows) > MAX_ROWS:
         lines.append(f"… and {len(rows) - MAX_ROWS} more")
     return "```\n" + "\n".join(lines) + "\n```\n"
@@ -244,6 +254,9 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
                   if int(r["horizon_minutes"]) == horizon
                   and (str(r["venue"]), str(r["contract"])) in contracts]
     rows = fold(here, stops_here, retired=retired)
+    rates = hit_rates(store, asset=asset, horizon=horizon, now=stamp)
+    rows = [replace(r, calls=rates.get(r.family, (0, 0))[0],
+                    right=rates.get(r.family, (0, 0))[1]) for r in rows]
     total = passed = 0
     by_market: dict[tuple[str, int], list] = {}
     for entry, a, h in everywhere:
@@ -254,6 +267,36 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
         passed += sum(r.passed for r in folded)
     return {"rows": rows, "markets": len(by_market), "trials": total, "passed": passed,
             "stops": len(stop_rows)}
+
+
+HIT_DAYS = 7
+
+
+def hit_rates(store, *, asset: str, horizon: int,
+              now: datetime | None = None) -> dict[str, tuple[int, int]]:
+    """family -> (graded up/down calls, calls that came true), last HIT_DAYS days.
+
+    The scoreboard's own rule: graded with a 0/1 outcome, not a 50/50 call.
+    One grouped read on the (asset, horizon, family, issued_at) index.
+    """
+    stamp = (now or datetime.now(UTC)).astimezone(UTC)
+    try:
+        with store.connect() as conn:
+            rows = conn.execute(
+                """SELECT family, COUNT(*) AS n,
+                          SUM(CASE WHEN (probability_up>0.5 AND outcome_up=1)
+                                     OR (probability_up<0.5 AND outcome_up=0)
+                                   THEN 1 ELSE 0 END) AS came_true
+                   FROM rival_model_shadow_forecasts
+                   WHERE asset=? AND horizon_minutes=? AND issued_at>=?
+                     AND settled_at IS NOT NULL AND outcome_up IN (0,1)
+                     AND probability_up BETWEEN 0 AND 1 AND probability_up<>0.5
+                   GROUP BY family""",
+                (asset, int(horizon), (stamp - timedelta(days=HIT_DAYS)).isoformat()),
+            ).fetchall()
+    except Exception:  # noqa: BLE001 - no ledger yet: no rates, never a fake zero
+        return {}
+    return {str(r["family"]): (int(r["n"]), int(r["came_true"] or 0)) for r in rows}
 
 
 def retired_families() -> frozenset[str]:

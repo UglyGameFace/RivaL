@@ -938,7 +938,8 @@ def _trials_text(reports: dict) -> tuple[str, str]:
         body = "No test models have scored results here yet."
     else:
         body = (trial_board.table(rows) + trial_board.leader_line(rows) + "\n"
-                "-# Edge = how much less error than the main model, in points (+ is "
+                f"-# Right = its up/down calls that came true, last {trial_board.HIT_DAYS} "
+                "days. Edge = how much less error than the main model, in points (+ is "
                 f"better). To replace it: {trial_board.MIN_DAYS} days, "
                 f"{trial_board.MIN_RESULTS} results and a win after fees.")
     body += (f"\n-# All markets: {int(board.get('trials') or 0)} on trial · "

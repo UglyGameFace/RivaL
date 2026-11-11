@@ -230,6 +230,7 @@ class _SectionSelect(discord.ui.Select["ResearchDashboard"]):
         dashboard.section = self.values[0]
         dashboard.detail = None
         dashboard.model = None
+        dashboard.compare = []
         await dashboard.redraw(interaction)
 
 
@@ -550,6 +551,7 @@ class _AssetSelect(discord.ui.Select["ResearchDashboard"]):
         dashboard.asset = self.values[0]
         dashboard.opinion = None
         dashboard.model = None
+        dashboard.compare = []
         dashboard.message = None
         await dashboard.redraw(interaction)
 
@@ -699,20 +701,46 @@ class _TrackVenueButton(discord.ui.Button["ResearchDashboard"]):
 class _ModelSelect(discord.ui.Select["ResearchDashboard"]):
     """Pick any model on trial for this coin to open its own detail page."""
 
-    def __init__(self, names: list[str], selected: str | None) -> None:
+    def __init__(self, names: list[str], selected: list[str]) -> None:
+        options = [discord.SelectOption(label=name, value=name, default=name in selected)
+                   for name in names[:25]]
         super().__init__(
-            placeholder="🧪 Inspect a model on trial…",
-            custom_id="rival:research:model", row=4,
-            options=[discord.SelectOption(label=name, value=name, default=name == selected)
-                     for name in names[:25]],
+            placeholder="🧪 Inspect one model, or pick up to 5 to compare…",
+            custom_id="rival:research:model", row=4, options=options,
+            min_values=1, max_values=min(5, len(options)),
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         dashboard = self.view
         assert dashboard is not None
-        dashboard.model = self.values[0]
+        picked = list(self.values)
+        # One model: its own page. Two or more: side by side.
+        dashboard.model = picked[0] if len(picked) == 1 else None
+        dashboard.compare = picked if len(picked) > 1 else []
         dashboard.detail = None
         await dashboard.redraw(interaction)
+
+
+class _WatchLiveButton(discord.ui.Button["ResearchDashboard"]):
+    """Post the open model page or comparison as a self-updating watch."""
+
+    def __init__(self) -> None:
+        super().__init__(label="Watch live", emoji="📌",
+                         style=discord.ButtonStyle.success,
+                         custom_id="rival:research:watch", row=2)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        names = dashboard.compare or ([dashboard.model] if dashboard.model else [])
+        service = dashboard.watch_service
+        if service is None or not names:
+            await interaction.response.send_message(
+                "Live watching isn't available right now.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        notice = await service.start(interaction, dashboard.asset, names)
+        await interaction.followup.send(notice, ephemeral=True)
 
 
 class _ModelBackButton(discord.ui.Button["ResearchDashboard"]):
@@ -725,6 +753,7 @@ class _ModelBackButton(discord.ui.Button["ResearchDashboard"]):
         dashboard = self.view
         assert dashboard is not None
         dashboard.model = None
+        dashboard.compare = []
         await dashboard.redraw(interaction)
 
 
@@ -747,6 +776,7 @@ class _ScreenButton(discord.ui.Button["ResearchDashboard"]):
         dashboard.section = "overview"
         dashboard.detail = None
         dashboard.model = None
+        dashboard.compare = []
         dashboard.message = None
         await dashboard.redraw(interaction)
 
@@ -954,6 +984,7 @@ class ResearchDashboard(discord.ui.View):
         venues: tuple[str, ...],
         shadow_enabled: bool = False,
         target_service: DirectionTargetService | None = None,
+        watch_service=None,
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
@@ -962,6 +993,9 @@ class ResearchDashboard(discord.ui.View):
         self.venues = venues
         self.shadow_enabled = shadow_enabled
         self.target_service = target_service
+        self.watch_service = watch_service
+        # Models picked for the side-by-side card (two or more).
+        self.compare: list[str] = []
         self.asset = "BTC"
         self.screen = "opportunities"
         self.section = "overview"
@@ -1028,8 +1062,10 @@ class ResearchDashboard(discord.ui.View):
         topics = self._render_topics()
         single = len(topics) == 1
         picker = self._model_picker()
-        if picker and self.model is not None:
+        if picker and (self.model is not None or self.compare):
             self.add_item(_ModelBackButton())
+            if self.watch_service is not None:
+                self.add_item(_WatchLiveButton())
         elif self.screen == "accuracy" and not single:
             # One detail button per absorbed topic on the consolidated
             # card; the topic content itself is one tap away.
@@ -1050,7 +1086,8 @@ class ResearchDashboard(discord.ui.View):
             # own detail topic, the one that uses it.
             names = self._cached_models()
             if names:
-                self.add_item(_ModelSelect(names, self.model))
+                picked = self.compare or ([self.model] if self.model else [])
+                self.add_item(_ModelSelect(names, picked))
         elif (((self.screen == "accuracy"
                 and bool(set(topics) & {"venue", "progress"}))
                or (self.screen == "math" and self.section == "history"))
@@ -1065,7 +1102,7 @@ class ResearchDashboard(discord.ui.View):
     def _model_picker(self) -> bool:
         """The model picker belongs to the "Is anything better?" card."""
         return (self.screen == "accuracy" and self.section == "better"
-                and (self.detail is None or self.model is not None)
+                and (self.detail is None or self.model is not None or bool(self.compare))
                 and self.market is not None)
 
     def _cached(self, key: tuple):
@@ -1097,6 +1134,21 @@ class ResearchDashboard(discord.ui.View):
                 model_report, self.market.store, self.asset, self.model)
             self._model_cache[key] = (time.monotonic(), report or {})
         return model_embed(report or None, asset=self.asset, name=self.model)
+
+    async def _compare_page(self) -> discord.Embed:
+        from parlay_bot.discord_app.model_detail import model_report
+        from parlay_bot.discord_app.model_watch import compare_embed
+
+        reports = {}
+        for name in self.compare:
+            key = ("report", self.asset, name)
+            report = self._cached(key)
+            if report is None:
+                report = await asyncio.to_thread(
+                    model_report, self.market.store, self.asset, name)
+                self._model_cache[key] = (time.monotonic(), report or {})
+            reports[name] = report or None
+        return compare_embed(reports, asset=self.asset)
 
     def _history_inventory_cached(self) -> dict:
         """Historical totals cached for 2 minutes, NEVER live feed status."""
@@ -1389,6 +1441,8 @@ class ResearchDashboard(discord.ui.View):
                 await self._load_models()
             except Exception:  # noqa: BLE001 - the picker is optional, the card is not
                 _LOG.warning("Research model list unavailable", exc_info=True)
+            if self.compare:
+                return await self._compare_page()
             if self.model is not None:
                 return await self._model_page()
         detailed = await self._render_full()
@@ -2839,8 +2893,9 @@ class ResearchDashboard(discord.ui.View):
         fresh = ResearchDashboard(
             owner_id=self.owner_id, market=self.market, ai=self.ai,
             venues=self.venues, shadow_enabled=self.shadow_enabled,
-            target_service=self.target_service,
+            target_service=self.target_service, watch_service=self.watch_service,
         )
+        fresh.compare = list(self.compare)
         fresh.asset = self.asset
         fresh.screen = self.screen
         fresh.section = self.section

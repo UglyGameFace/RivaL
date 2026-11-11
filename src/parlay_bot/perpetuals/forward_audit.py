@@ -68,7 +68,9 @@ def no_trade_outcome(row) -> bool:
 
 
 SETTLEMENT_DUE_AFTER = timedelta(minutes=5)
-SUMMARY_TTL_SECONDS = 60
+# The 7-day scorecard moves one 5-minute cycle at a time; at 60 s its 3-4 s
+# aggregate ran ~9 times an hour (224 slow warnings a day, Nov 11).
+SUMMARY_TTL_SECONDS = 300
 SETTLEMENT_OVERDUE_AFTER = timedelta(minutes=65)
 HORIZONS = RESEARCH_HORIZONS
 MIN_PREVIOUS_EVALUATED = 20
@@ -162,8 +164,12 @@ ISSUE_CROSS_V1_CHALLENGERS = True
 # every challenger; never serves (selected() has no lab branch).
 ISSUE_LAB_CHALLENGERS = True
 
-# The incumbent's fast settlement covers the last 2 days; a day of margin.
-SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
+# The per-cycle fast pass grades recent targets; the hourly full pass (same
+# place) still grades anything older. 3 days made every batch walk ~19k
+# shadow rows that can never settle (their incumbent target had no trades)
+# with two lookups each: 2-3 s per batch, 167 slow warnings a day (Nov 11).
+# A shadow row is graded minutes after its incumbent; 6 hours is ample.
+SHADOW_FAST_SETTLE_WINDOW = timedelta(hours=6)
 
 
 def _features(candles) -> tuple[float, ...]:

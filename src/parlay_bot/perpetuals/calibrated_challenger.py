@@ -22,7 +22,9 @@ from datetime import UTC, datetime, timedelta
 
 FAMILY = "calib_incumbent_v1"
 FIT_WINDOW = timedelta(days=7)
-REFIT_EVERY = timedelta(minutes=30)
+# A 7-day fit barely moves in an hour; every 30 min its 12 reads of 7 days
+# caused ~120 slow warnings a day (Nov 11).
+REFIT_EVERY = timedelta(minutes=60)
 MIN_GRADED = 500
 # The incumbent's call is recorded on every family row; read it from one
 # family so each incumbent forecast counts once.

@@ -26,10 +26,13 @@ def _store(tmp_path, *, forecast_age, trained_age, review_age, pooled_scores):
         conn.execute("""CREATE TABLE IF NOT EXISTS rival_model_shadow_forecasts (
                         family TEXT, horizon_minutes INTEGER, settled_at TEXT,
                         model_brier REAL, baseline_brier REAL, venue TEXT,
-                        training_sha256 TEXT, issued_at TEXT, target_opened_at TEXT)""")
+                        training_sha256 TEXT, issued_at TEXT, target_opened_at TEXT,
+                        asset TEXT DEFAULT 'BTC')""")
         for i, (model, base) in enumerate(pooled_scores):
             conn.execute(
-                "INSERT INTO rival_model_shadow_forecasts VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO rival_model_shadow_forecasts (family,horizon_minutes,settled_at,"
+                "model_brier,baseline_brier,venue,training_sha256,issued_at,target_opened_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                 ("pooled_5m_abc", 5, (NOW - timedelta(hours=1)).isoformat(), model, base,
                  "okx", "abc" * 21 + "d", (NOW - timedelta(minutes=10)).isoformat(),
                  (NOW - timedelta(minutes=5 * i)).isoformat()))
@@ -226,14 +229,17 @@ def test_decay_judges_only_the_version_in_use(tmp_path):
             conn.execute("""CREATE TABLE rival_model_shadow_forecasts (
                             family TEXT, horizon_minutes INTEGER, settled_at TEXT,
                             model_brier REAL, baseline_brier REAL, venue TEXT,
-                            training_sha256 TEXT, issued_at TEXT, target_opened_at TEXT)""")
+                            training_sha256 TEXT, issued_at TEXT, target_opened_at TEXT,
+                        asset TEXT DEFAULT 'BTC')""")
             settled = (NOW - timedelta(hours=1)).isoformat()
             old = (NOW - timedelta(hours=8)).isoformat()      # replaced version
             recent = (NOW - timedelta(minutes=5)).isoformat()  # version in use
             rows = ([("pooled_5m_abc", 5, settled, .30, .25, "okx", "a" * 64, old)] * 400
                     + [("pooled_5m_abc", 5, settled, .24, .25, "okx", "b" * 64, recent)] * 400)
             for i, row in enumerate(rows):
-                conn.execute("INSERT INTO rival_model_shadow_forecasts "
+                conn.execute("INSERT INTO rival_model_shadow_forecasts (family,"
+                             "horizon_minutes,settled_at,model_brier,baseline_brier,venue,"
+                             "training_sha256,issued_at,target_opened_at) "
                              "VALUES (?,?,?,?,?,?,?,?,?)",
                              (*row, (NOW - timedelta(minutes=5 * (i % 400))).isoformat()))
         alerts = dict(research_alerts(store, now=NOW, intelligence_enabled=False))
@@ -261,7 +267,8 @@ def test_a_gap_within_random_noise_is_not_called_decay(tmp_path):
             conn.execute("""CREATE TABLE rival_model_shadow_forecasts (
                             family TEXT, horizon_minutes INTEGER, settled_at TEXT,
                             model_brier REAL, baseline_brier REAL, venue TEXT,
-                            training_sha256 TEXT, issued_at TEXT, target_opened_at TEXT)""")
+                            training_sha256 TEXT, issued_at TEXT, target_opened_at TEXT,
+                        asset TEXT DEFAULT 'BTC')""")
             settled = (NOW - timedelta(hours=1)).isoformat()
             recent = (NOW - timedelta(minutes=5)).isoformat()
 
@@ -269,7 +276,9 @@ def test_a_gap_within_random_noise_is_not_called_decay(tmp_path):
                 for i in range(1400):
                     base = rng.choice((0.2025, 0.3025))  # p=0.55 vs outcomes
                     model = max(0.0, base + rng.gauss(model_shift, 0.05))
-                    conn.execute("INSERT INTO rival_model_shadow_forecasts VALUES (?,?,?,?,?,?,?,?,?)",
+                    conn.execute("INSERT INTO rival_model_shadow_forecasts (family,horizon_minutes,settled_at,"
+                "model_brier,baseline_brier,venue,training_sha256,issued_at,target_opened_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                                  ("pooled_15m_x", 15, settled, model, base, "okx", sha * 64,
                                   recent, (NOW - timedelta(minutes=5 * i)).isoformat()))
 
@@ -299,9 +308,12 @@ def test_live_clock_reuses_decay_scores_but_explicit_now_reads_fresh(tmp_path, m
             conn.execute("""CREATE TABLE rival_model_shadow_forecasts (
                             family TEXT, horizon_minutes INTEGER, settled_at TEXT,
                             model_brier REAL, baseline_brier REAL, venue TEXT,
-                            training_sha256 TEXT, issued_at TEXT, target_opened_at TEXT)""")
+                            training_sha256 TEXT, issued_at TEXT, target_opened_at TEXT,
+                        asset TEXT DEFAULT 'BTC')""")
             for i in range(400):
-                conn.execute("INSERT INTO rival_model_shadow_forecasts VALUES (?,?,?,?,?,?,?,?,?)",
+                conn.execute("INSERT INTO rival_model_shadow_forecasts (family,horizon_minutes,settled_at,"
+                "model_brier,baseline_brier,venue,training_sha256,issued_at,target_opened_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?)",
                              ("pooled_5m_abc", 5, (NOW - timedelta(hours=1)).isoformat(),
                               .27, .25, "okx", "b" * 64,
                               (NOW - timedelta(minutes=5)).isoformat(),

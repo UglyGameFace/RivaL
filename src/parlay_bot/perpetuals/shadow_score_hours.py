@@ -184,7 +184,12 @@ def _window(conn, venues, now, cutoff, first_whole, final_cut) -> list[dict] | N
     grading = {(str(r["venue"]), str(r["hour"])) for r in conn.execute(
         """SELECT DISTINCT venue, SUBSTR(issued_at,1,13) AS hour
            FROM rival_model_shadow_forecasts
-           WHERE settled_at IS NULL AND issued_at>=?""", (cutoff.isoformat(),)).fetchall()}
+           WHERE settled_at IS NULL AND target_opened_at>=? AND issued_at>=?""",
+        # target_opened_at bounds the (settled_at, target_opened_at) index
+        # range: never-settling rows (no-trade targets) pile up forever, so
+        # "settled_at IS NULL" alone read all of them (7 s, Nov 11). A
+        # target opens at most an hour before its forecast is issued.
+        ((cutoff - timedelta(hours=1)).isoformat(), cutoff.isoformat())).fetchall()}
 
     def waiting(venue: str, hour: datetime) -> bool:
         return (venue, _key(hour)) in grading and now - hour < GIVE_UP_AFTER

@@ -124,11 +124,19 @@ def _decay_rows(conn, stamp: datetime) -> list:
                   COUNT(DISTINCT target_opened_at) AS targets,
                   MAX(issued_at) AS last_issued
            FROM rival_model_shadow_forecasts
-           WHERE family LIKE 'pooled%' AND settled_at IS NOT NULL
+           WHERE asset IN ('BTC','ETH','SOL','XRP') AND horizon_minutes IN (5,15,60)
+             AND family>='pooled' AND family<'poolee' AND family LIKE 'pooled%'
+             AND issued_at>=?
+             AND settled_at IS NOT NULL
              AND model_brier IS NOT NULL AND baseline_brier IS NOT NULL
              AND settled_at>=?
            GROUP BY horizon_minutes, family, SUBSTR(training_sha256,1,12)""",
-        ((stamp - DECAY_WINDOW).isoformat(),),
+        # The asset/horizon/family/issued_at bounds use the score index; by
+        # settled_at alone it read every family's settled rows of 3 days to
+        # keep the pooled ones (7-8 s, 126 slow warnings a day, Nov 11). A
+        # row settles within hours of issue, so a day of margin keeps them.
+        ((stamp - DECAY_WINDOW - timedelta(days=1)).isoformat(),
+         (stamp - DECAY_WINDOW).isoformat()),
     ).fetchall()
 
 
@@ -532,10 +540,16 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
             shown = ", ".join(missing[:3])
             if len(missing) > 3:
                 shown += ", …"
-            alerts.append(
-                (f"research-blocked:{venue}",
-                 (f"⛔ Research blocked at {venue}: {len(missing)} month(s) "
-                  f"missing ({shown})")))
+            from parlay_bot.discord_app.data_dashboard import VENUE_NAMES
+
+            name = VENUE_NAMES.get(venue, venue)
+            # A blocked run with no missing months was stopped for another
+            # reason; "0 month(s) missing ()" read as a contradiction.
+            text = (f"⛔ Research blocked at {name}: {len(missing)} month(s) of data "
+                    f"missing ({shown})" if missing else
+                    f"⛔ Research at {name}: the last offline run made no trials "
+                    "(no missing months reported; see that run's report)")
+            alerts.append((f"research-blocked:{venue}", text))
     except Exception as exc:  # noqa: BLE001 - blockers must never break the card
         _LOG.warning("Research alert: research blockers unreadable (%s)",
                      type(exc).__name__)

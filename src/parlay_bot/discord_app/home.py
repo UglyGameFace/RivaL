@@ -371,7 +371,11 @@ def _performance_benefit(market: object, asset: str, horizon: int) -> dict:
 # timeframe in the background (warm_benefit_cache) so the page reads a ready
 # answer; a page request that still misses waits for any run already in
 # flight instead of starting a duplicate query.
-BENEFIT_CACHE_SECONDS = 45 * 60
+BENEFIT_CACHE_SECONDS = 90 * 60
+# The background loop runs every 30 min but re-runs a check only once it is
+# this old: a 14-day verdict barely moves in an hour, and refreshing all 12
+# every 30 min was the bot's most frequent slow query (418 a day, Nov 11).
+BENEFIT_REFRESH_AFTER = 55 * 60
 # The Performance page renders through patient() (_finish_performance): after
 # 8 s it shows "still loading" and keeps waiting up to 45 s on the same reads.
 # A 7 s per-reader cut made a slow read show "couldn't load, press Refresh"
@@ -416,6 +420,11 @@ def warm_benefit_cache(market: object) -> int:
     done = 0
     for asset in ("BTC", "ETH", "SOL", "XRP"):
         for horizon in (5, 15, 60):
+            with _BENEFIT_LOCK:
+                hit = _BENEFIT_CACHE.get((id(market), asset, horizon))
+            if (hit is not None and hit[1] is market
+                    and time.monotonic() - hit[0] < BENEFIT_REFRESH_AFTER):
+                continue   # still fresh: no 3-7 s query this round
             try:
                 _cached_benefit(market, asset, horizon, refresh=True)
                 done += 1

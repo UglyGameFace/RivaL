@@ -31,7 +31,7 @@ async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) ->
         assert home.page == "performance"
         embed = await home.render()
         fields = _fields(embed)
-        assert len(fields) == 3
+        assert len(fields) == 4
         health = fields["⚙️ Running and learning"]
         assert "⚠️ 0/1 exchanges live (behind: hyperliquid)" in health
         assert "⚠️ predictions: no run recorded yet" in health
@@ -124,7 +124,7 @@ async def test_feed_read_failure_does_not_hide_recorded_cycle(tmp_path, monkeypa
         status = _fields(embed)["⚙️ Running and learning"]
         assert "feeds: couldn't check" in status
         assert "✅ predictions just now" in status
-        assert len(embed.fields) == 3
+        assert len(embed.fields) == 4
     finally:
         home.stop()
         await bot.zip_resolver.aclose()

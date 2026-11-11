@@ -72,6 +72,8 @@ def _patch_live_reads(monkeypatch, *, trials=None, **_ignored):
     })
     monkeypatch.setattr(home_module, "_trial_board_record", lambda *_: trials or {
         "rows": [], "markets": 0, "trials": 0, "passed": 0, "stops": 0})
+    monkeypatch.setattr(home_module, "_calibration_record", lambda *_: {
+        "bands": [], "regimes": {}, "window_days": 7})
 
 
 SCORE = "🎯 Scoreboard (last 7 days)"
@@ -94,7 +96,8 @@ async def test_page_is_verdict_first_then_scoreboard_trials_and_health(tmp_path,
     try:
         panel = await home.render()
         fields = _fields(panel)
-        assert list(fields) == [SCORE, "🧪 Models on trial here (0)", HEALTH]
+        assert list(fields) == [SCORE, "🎚️ Can you trust its confidence?",
+                                "🧪 Models on trial here (0)", HEALTH]
         # The verdict is the first line; honesty disclosures stay.
         assert panel.description.startswith(
             "**No edge yet: Polymarket's odds are still more accurate.**")

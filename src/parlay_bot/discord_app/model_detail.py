@@ -266,7 +266,10 @@ def _pts(gain: float | None) -> str:
 
 
 def _rate(right: int, n: int) -> str:
-    return f"{right / n:.1%}" if n >= TOO_FEW else "few"
+    if n < TOO_FEW:
+        return "few"
+    rate = right / n
+    return "100%" if rate >= .9995 else f"{rate:.1%}"   # at most 5 characters
 
 
 def _status(h: dict) -> str:
@@ -303,18 +306,19 @@ def _standing(report: dict) -> str:
 
 
 def _timeframes(report: dict) -> str:
-    lines = [f"{'TF':<4} {'Right':>6} {'Main':>6} {'Edge':>5} {'Res':>5} {'Day':>5}"]
+    # 34 characters: one line per timeframe on a phone.
+    lines = [f"{'TF':<4} {'Right':>5} {'Main':>5} {'Edge':>5} {'Res':>5} {'Day':>5}"]
     for horizon in HORIZONS:
         h = report["horizons"].get(horizon)
         if h is None:
-            lines.append(f"{horizon:>3}m {'—':>6} {'—':>6} {'—':>5} {'0':>5} {'—':>5}")
+            lines.append(f"{horizon:>3}m {'—':>5} {'—':>5} {'—':>5} {'0':>5} {'—':>5}")
             continue
         led = h["ledger"]
         results = f"{h['results']:,}" if h["results"] < 10_000 else f"{h['results'] // 1000}k"
         right, main = ((_rate(led["right"], led["n"]), _rate(led["main_right"], led["n"]))
                        if h.get("ledger_ok", True) else ("?", "?"))
-        lines.append(f"{horizon:>3}m {right:>6} "
-                     f"{main:>6} {_pts(h['gain']):>5} "
+        lines.append(f"{horizon:>3}m {right:>5} "
+                     f"{main:>5} {_pts(h['gain']):>5} "
                      f"{results:>5} {min(h['days'], 99):>2}/{MIN_DAYS}")
     return ("```\n" + "\n".join(lines) + "\n```\n"
             f"-# Right = its calls that came true, Main = the main model on the same "

@@ -142,7 +142,8 @@ class RuntimeHealthMonitor:
                 diagnostic = conn.execute(
                     """SELECT checked_at,selected_streams,issued_forecasts,
                               insufficient_causal_labels,insufficient_training,
-                              stale_last_candle,short_history
+                              stale_last_candle,short_history,
+                              duplicate_forecasts,target_expired
                        FROM perp_forward_cycle_diagnostics
                        ORDER BY checked_at DESC LIMIT 1"""
                 ).fetchone()
@@ -153,10 +154,20 @@ class RuntimeHealthMonitor:
                         and int(diagnostic["insufficient_training"]) == 0
                         and int(diagnostic["stale_last_candle"]) == 0
                         and int(diagnostic["short_history"]) == 0
+                        # Already issued (the first cycle after a restart
+                        # re-runs the bar the old process predicted, RIVAL-Z):
+                        # a reason, not a gap.
+                        and int(diagnostic["duplicate_forecasts"] or 0) == 0
                         and (_age(stamp, diagnostic["checked_at"]) or timedelta.max)
                         < timedelta(minutes=16)
                 ):
-                    faults["missing_forecasts"] = "eligible sources selected but no forecasts issued"
+                    if int(diagnostic["target_expired"] or 0):
+                        faults["forecasts_late"] = (
+                            f"every prediction this cycle ran too late "
+                            f"({int(diagnostic['target_expired'])} skipped)")
+                    else:
+                        faults["missing_forecasts"] = (
+                            "eligible sources selected but no forecasts issued")
             if expected_feeds:
                 rows = conn.execute(
                     """SELECT venue,asset,status,last_attempt_at,last_success_at,

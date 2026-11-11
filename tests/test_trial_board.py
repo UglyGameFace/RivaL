@@ -156,3 +156,18 @@ def test_read_adds_each_models_hit_rate_from_the_ledger(tmp_path):
         assert table(board["rows"]).strip("`\n").splitlines()[1].split()[3] == "60%"
     finally:
         store.close()
+
+
+def test_reverted_venue_variants_never_show():
+    """'<family>_venue' (#365) was reverted in #366: its old rows must not
+    sit on the board as "day 1/21, 5 results" forever."""
+    from parlay_bot.discord_app.trial_board import fold, is_retired
+
+    assert is_retired("pooled_15m_1a10acfb6945_venue")
+    assert is_retired("flow_v1_venue")
+    assert not is_retired("pooled_15m_1a10acfb6945")
+    info = {"targets": 5, "days": 1, "forward_gain": .017}
+    rows = fold([("okx", "BTC-okx", {"pooled_5m_aaaaaaaaaaaa_venue": info,
+                                      "flow_v2_venue": info,
+                                      "regime_v1": {"targets": 200, "days": 4}})], [])
+    assert [r.name for r in rows] == ["Trend-only"]

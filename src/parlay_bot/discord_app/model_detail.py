@@ -28,6 +28,7 @@ from parlay_bot.discord_app.trial_board import (
     MIN_DAYS,
     MIN_RESULTS,
     TOO_FEW,
+    is_retired,
     retired_families,
     short_name,
 )
@@ -107,7 +108,7 @@ def _families(store, asset: str, now: datetime) -> dict[str, dict[int, list]]:
         if not isinstance(evidence, dict):
             continue
         for family, info in evidence.items():
-            if (family in retired or not isinstance(info, dict)
+            if (is_retired(family, retired) or not isinstance(info, dict)
                     or not isinstance(info.get("targets"), int)
                     or not isinstance(info.get("days"), int)):
                 continue

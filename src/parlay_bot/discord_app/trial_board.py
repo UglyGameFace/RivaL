@@ -123,7 +123,7 @@ def fold(evidence_rows, stops, *, retired=frozenset()) -> list[TrialRow]:
         if not isinstance(evidence, dict):
             continue
         for family, info in evidence.items():
-            if family in retired or not isinstance(info, dict):
+            if is_retired(family, retired) or not isinstance(info, dict):
                 continue
             targets, days = info.get("targets"), info.get("days")
             if not isinstance(targets, int) or not isinstance(days, int):
@@ -293,6 +293,17 @@ def hit_rates(store, *, asset: str, horizon: int,
     except Exception:  # noqa: BLE001 - no ledger yet: no rates, never a fake zero
         return {}
     return {str(r["family"]): (int(r["n"]), int(r["came_true"] or 0)) for r in rows}
+
+
+# The '<family>_venue' variants (#365, Nov 4) were reverted the next day
+# (#366): nothing issues them, but their few old rows still get re-scored
+# hourly, so they showed as "day 1/21, 5 results" forever.
+REVERTED_SUFFIXES = ("_venue",)
+
+
+def is_retired(family: str, retired=frozenset()) -> bool:
+    """A model that can never advance: switched off, or its issuer removed."""
+    return family in retired or family.endswith(REVERTED_SUFFIXES)
 
 
 def retired_families() -> frozenset[str]:

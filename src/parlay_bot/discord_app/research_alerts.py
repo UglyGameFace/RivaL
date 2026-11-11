@@ -439,22 +439,12 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
                        int(row["horizon_minutes"]))
                 if key not in best:
                     best[key] = (days, targets, gain)
-        try:
-            from parlay_bot.perpetuals import forward_audit as _fa
-            retired = {
-                family for family, flag in (
-                    ("flow_v1", "ISSUE_FLOW_CHALLENGERS"),
-                    ("flow_v2", "ISSUE_FLOW_CHALLENGERS"),
-                    ("flow_v3", "ISSUE_FLOW_V3_CHALLENGERS"),
-                    ("regime_v2", "ISSUE_REGIME_V2_CHALLENGERS"),
-                    ("liq_v1", "ISSUE_LIQ_V1_CHALLENGERS"),
-                ) if not getattr(_fa, flag, True)
-            }
-        except Exception:  # noqa: BLE001 - flag read must never break the card
-            retired = set()
+        # One retired list for every screen (was a copy of trial_board's).
+        from parlay_bot.discord_app.trial_board import is_retired, retired_families
+        retired = retired_families()
         by_family: dict[str, list[tuple[int, int, float | None]]] = {}
         for (family, asset, horizon), (days, targets, gain) in best.items():
-            if family in retired:
+            if is_retired(family, retired):
                 continue
             by_family.setdefault(family, []).append((days, targets, gain))
         for family in sorted(by_family):

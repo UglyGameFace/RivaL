@@ -909,7 +909,7 @@ def _forward_eval_card(horizon: int, stats: dict, scored: int, raw: str) -> str:
     hit = stats.get("hit_rate")
     if isinstance(hit, (int, float)) and scored >= 20:
         details.append(
-            f"Called the direction right {hit * 100:.1f}% on {scored} graded.")
+            f"Called the direction right {hit * 100:.1f}% of {scored:,} graded calls.")
     if isinstance(brier, (int, float)) and isinstance(baseline, (int, float)):
         reason = f"Error score {brier:.4f} vs coin flip {baseline:.4f}."
     else:
@@ -927,7 +927,8 @@ def _forward_eval_card(horizon: int, stats: dict, scored: int, raw: str) -> str:
         next_step = "Next: check the after-cost proof before trusting it."
     elif beats is False:
         verdict, answer = "No", "No — not beating the coin flip yet."
-        next_step = f"Needs a better error score over {scored} graded results."
+        next_step = (f"Its error is higher than a coin flip's over {scored:,} graded "
+                     "results; it has to get lower to count.")
     else:
         verdict, answer = "Not yet", "Not yet — skill not judged in this window."
         next_step = f"Needs 50 graded results; has {scored}."

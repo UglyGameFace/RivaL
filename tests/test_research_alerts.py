@@ -328,6 +328,8 @@ def test_live_clock_reuses_decay_scores_but_explicit_now_reads_fresh(tmp_path, m
         calls = []
         real = module._decay_rows
         monkeypatch.setattr(module, "datetime", Clock)
+        # The cache rule, not the production interval (30 min since Nov 11).
+        monkeypatch.setattr(module, "DECAY_RECHECK", timedelta(minutes=10))
         monkeypatch.setattr(module, "_decay_rows",
                             lambda conn, stamp: calls.append(stamp) or real(conn, stamp))
         fresh = dict(research_alerts(store, now=NOW, intelligence_enabled=False))

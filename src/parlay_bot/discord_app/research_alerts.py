@@ -31,7 +31,9 @@ DECAY_SIGMAS = 2.0
 # A trained version counts as in use if it issued a forecast this recently.
 IN_USE_WITHIN = timedelta(minutes=30)
 # Check 3 re-aggregates its 3-day scores at most this often (live clock only).
-DECAY_RECHECK = timedelta(minutes=10)
+# Measured Nov 11: the 3-day decay aggregate still takes ~8 s on production
+# even through the score index; its answer moves on an hours scale.
+DECAY_RECHECK = timedelta(minutes=30)
 
 
 def _utc(value) -> datetime | None:

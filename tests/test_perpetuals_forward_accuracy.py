@@ -178,7 +178,11 @@ async def test_research_accuracy_tab_reads_real_database_without_invented_result
         embed = await view.render()
         fields = {x.name: x.value for x in embed.fields}
         assert "Forward 5-minute evaluation" in fields
-        assert "settled: **0**" in fields["Forward 5-minute evaluation"]
+        # Nov 11: the consolidated card says each number once; the raw block
+        # stays on the full render (and the topic's detail view).
+        assert "Raw numbers:" not in fields["Forward 5-minute evaluation"]
+        full = {x.name: x.value for x in (await view._render_full()).fields}
+        assert "settled: **0**" in full["Forward 5-minute evaluation"]
         # Audit Step 2: the card answers first; the old "No measurable
         # accuracy" sentence stays in the raw block behind it.
         assert fields["Forward 5-minute evaluation"].startswith(
@@ -333,7 +337,7 @@ async def test_detailed_accuracy_survives_incomplete_paired_scores(tmp_path):
         view.screen = "accuracy"
         view.section = "five"
         view._rebuild()
-        embed = await view.render()
+        embed = await view._render_full()   # raw numbers live on the full render
         values = {f.name: f.value for f in embed.fields}
         assert "No measurable accuracy yet" in values["Forward 5-minute evaluation"]
         assert "settled: **1**" in values["Forward 5-minute evaluation"]

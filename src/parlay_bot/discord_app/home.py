@@ -824,8 +824,8 @@ def _best_text(reports: dict) -> str | None:
         lead = ""
         if tops:
             h, top = max(tops, key=lambda t: t[1]["fitness"])
-            lead = (f" Leading so far: **{trial_board.short_name(top['family'])}** on "
-                    f"{h}-min (early, not proven).")
+            lead = (f" Leading so far (all coins): **{trial_board.short_name(top['family'])}** "
+                    f"on {h}-min (early, not proven).")
         lines.append(f"🧬 Model Lab: {testing} designs testing, {closed} closed so far, "
                      f"each loser replaced automatically.{lead}")
     lines.append("-# Edge = less error than the main model, in points. Proven = 21 days, "

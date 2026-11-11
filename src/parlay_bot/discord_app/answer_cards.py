@@ -437,7 +437,7 @@ def readiness_card(readiness: dict, *, raw: str | None = None) -> AnswerCard:
             ),
             next_step="Next: check the graded results on this page.",
             details=(
-                f"Longest genuine live streak: {streak} of {needed} bars.",
+                f"Longest unbroken live run: {streak} candles (needs {needed}).",
                 (f"Best 5m causal samples: "
                  f"{int(readiness.get('best_causal_5m') or 0)}, evaluated "
                  f"{int(readiness.get('best_evaluated_5m') or 0)}."),

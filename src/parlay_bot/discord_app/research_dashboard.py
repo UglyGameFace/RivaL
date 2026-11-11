@@ -362,7 +362,19 @@ def _short(value: str, limit: int = 225) -> str:
     return compact[:limit - 1].rsplit(" ", 1)[0] + "…"
 
 
-def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord.Embed:
+def _strip_raw(value: str) -> str:
+    """The answer, reason, next step and details, without the "Raw numbers:"
+    block that repeats them in technical words (Nov 11 audit: every card
+    said each number twice). The raw block stays one tap away, on the
+    topic's own detail view."""
+    from parlay_bot.discord_app.answer_cards import RAW_MARKER
+
+    head, sep, _raw = value.partition(RAW_MARKER)
+    return head.rstrip() if sep and head.strip() else value
+
+
+def _compact_embed(full: discord.Embed, *, screen: str, section: str,
+                   raw: bool = True) -> discord.Embed:
     """A real phone-sized screen; detailed metrics are separate screens."""
     # Audit Step 3: a detail topic keeps its old label in the header.
     label = dict(_SECTIONS[screen]).get(section)
@@ -402,9 +414,10 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
             field = next((f for f in fields if f.name.startswith(prefix)), None)
             if field is None:
                 continue
+            value = field.value if raw else _strip_raw(field.value)
             result.add_field(
                 name=field.name,
-                value=_short(field.value, 230) if short else field.value,
+                value=_short(value, 230) if short else value,
                 inline=False,
             )
             return True
@@ -945,7 +958,16 @@ def _calibration_card(horizon: int, reliability: dict, raw: str) -> str:
         f"{targets} independent targets over {days} days.",
         f"Conflicting venue labels: {int(reliability.get('disputed_targets') or 0)}.",
     )
-    if status == "insufficient_independent_forward_history":
+    if status == "insufficient_independent_forward_history" and raw.startswith("ℹ️ Not measured"):
+        # Nov 11 audit: say WHY in plain words instead of "too few
+        # pre-window predictions" (the raw block alone explained it).
+        verdict, answer = "Can't tell", (
+            f"Can't tell — {horizon}-min calls come 1–2 minutes into their window.")
+        reason = ("That is fair for scoring (it only sees finished candles) but too late "
+                  "to trade at the opening price, so this check skips them.")
+        next_step = ("Bot Performance shows how often its stated chances came true "
+                     "(\"Can you trust its confidence?\").")
+    elif status == "insufficient_independent_forward_history":
         verdict, answer = "Not yet", (
             "Not yet — too few pre-window predictions to judge calibration.")
         next_step = "Needs 100 independent targets over 7 days."
@@ -976,14 +998,20 @@ def _regime_line(family: str, horizon: int, proof: dict) -> str:
     stay the stored quiet/normal/turbulent.
     """
     display = {"quiet": "calm", "normal": "normal", "turbulent": "wild"}
+    # Nov 11 audit: points (x1000, like every other "edge" in the bot) and
+    # a plain verdict, instead of "+0.0157" and "regime instability detected".
+    verdict = {
+        "consistent_shadow_skill_research_only": "ahead in every market type",
+        "insufficient_distinct_market_conditions": "not enough market types yet",
+        "regime_instability_detected": "ahead in some market types, behind in others",
+    }.get(proof["status"], proof["status"].replace("_", " "))
     gains = []
     for regime in ("quiet", "normal", "turbulent"):
         gain = proof["regimes"][regime]["paired_brier_gain"]
         gains.append(
-            f"{display[regime]} {gain:+.4f}" if gain is not None
-            else f"{display[regime]} none")
-    return (f"{family} {horizon}m · {proof['status'].replace('_', ' ')}: "
-            + " · ".join(gains))
+            f"{display[regime]} {gain * 1000:+.1f}" if gain is not None
+            else f"{display[regime]} —")
+    return f"{family} {horizon}m · {verdict}: " + " · ".join(gains)
 
 
 class ResearchDashboard(discord.ui.View):
@@ -1360,7 +1388,8 @@ class ResearchDashboard(discord.ui.View):
         """
         try:
             monitor = ForwardAccuracyMonitor(self.market)
-            lines = ["paired Brier gain by regime (quiet · normal · turbulent):"]
+            lines = [("Edge by market type, in points (+ is better). Main model: vs a coin "
+                      "flip. Test models: vs the main model on the calls they made.")]
             for horizon in (5, 15):
                 proof = await asyncio.to_thread(
                     monitor.regime_summary,
@@ -1405,6 +1434,7 @@ class ResearchDashboard(discord.ui.View):
             )
         # Audit Step 3: an old accuracy key lands on its consolidated
         # card; a detail topic compacts by its own field groups.
+        requested = self.section
         self.section = _resolve_section(self.screen, self.section)
         if self._model_picker():
             try:
@@ -1418,8 +1448,12 @@ class ResearchDashboard(discord.ui.View):
         detailed = await self._render_full()
         topics = self._render_topics()
         compact_section = topics[0] if len(topics) == 1 else self.section
+        # A consolidated card shows each answer once; a detail view (one
+        # topic, opened by its button) and Technical keep the raw numbers.
         return _compact_embed(
             detailed, screen=self.screen, section=compact_section,
+            raw=(self.screen != "accuracy" or self.detail is not None
+                 or requested != self.section or self.section == "technical"),
         )
 
     async def _render_full(self) -> discord.Embed:
@@ -2188,7 +2222,7 @@ class ResearchDashboard(discord.ui.View):
                             f"**Built from history:** {live_proof['portable_imported']} models, "
                             f"**{live_proof['portable_screened']}** passed screening.\n"
                             f"{explanation}\n"
-                            f"**Advanced-model only, last 30d:** {live_proof['issued']} "
+                            f"**Boosted models only, last 30d:** {live_proof['issued']} "
                             f"forecasts, {live_proof['settled']} future settlements, "
                             f"{live_proof['quote_exits']} matched exit book quotes.\n"
                             f"**Most recent source:** {scope_label}. "
@@ -2497,8 +2531,8 @@ class ResearchDashboard(discord.ui.View):
                             readiness_raw = (
                                 f"**{ready}/{configured}** exchange streams "
                                 "eligible for 5m and 15m shadow evaluation.\n"
-                                f"Longest genuine live streak: "
-                                f"**{streak}/{readiness['min_live_bars']}** bars.\n"
+                                f"Longest unbroken live run: **{streak}** candles "
+                                f"(needs {readiness['min_live_bars']}).\n"
                                 f"Best 5m causal samples: "
                                 f"**{readiness['best_causal_5m']}**, "
                                 f"evaluated **{readiness['best_evaluated_5m']}** "

@@ -274,6 +274,6 @@ def test_bot_performance_names_the_best_model_per_timeframe_and_the_lab():
     assert lines[1] == "**15m** · no test model is ahead of the main model yet"
     assert lines[2] == "**60m** · couldn't load right now"
     assert lines[3].startswith("🧬 Model Lab: 9 designs testing, 3 closed so far")
-    assert "Leading so far: **Lab 3f9a2c** on 5-min (early" in lines[3]
+    assert "Leading so far (all coins): **Lab 3f9a2c** on 5-min (early" in lines[3]
     assert _best_text({"best": RuntimeError("slow")}) is None
     assert _best_text({"best": {"best": {5: None, 15: None, 60: None}}}) is None

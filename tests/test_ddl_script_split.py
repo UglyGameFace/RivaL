@@ -1,6 +1,8 @@
 """One DDL splitter for both backends, so tests catch what would break deploy."""
 from __future__ import annotations
 
+import sqlite3
+
 import pytest
 
 from parlay_bot.storage.database import split_script
@@ -40,5 +42,5 @@ def test_sqlite_runs_the_same_split(tmp_path):
         """)
         assert conn.execute("SELECT x FROM t").fetchone()[0] == 1
     # A statement the old whole-script path would have hidden still fails here.
-    with store.connect() as conn, pytest.raises(Exception):
+    with store.connect() as conn, pytest.raises(sqlite3.OperationalError):
         conn.executescript("CREATE TABLE u (x INTEGER); NOT SQL AT ALL")

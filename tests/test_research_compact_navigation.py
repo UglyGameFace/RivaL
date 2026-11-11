@@ -61,7 +61,8 @@ def test_no_research_screen_turns_into_an_entire_grocery_list(screen):
     old = expanded_report()
     for section, _ in _SECTIONS[screen]:
         result = _compact_embed(old, screen=screen, section=section)
-        assert 1 <= len(result.fields) <= 3
+        # Accuracy details carries one extra short field: the no-edge verdict.
+        assert 1 <= len(result.fields) <= (4 if section == "accuracy" else 3)
         assert result.timestamp == old.timestamp
         assert "Live market feeds" in [f.name for f in result.fields]
         assert "Choose a section" in result.description
@@ -148,8 +149,8 @@ async def test_real_section_selector_and_tab_buttons_are_clickable(monkeypatch):
         clicked = Interaction()
         await button.callback(clicked)
         assert clicked.view is view
-        assert view.screen == "accuracy" and view.section == "overview"
-        assert len(clicked.embed.fields) == 3
+        assert view.screen == "accuracy" and view.section == "better"
+        assert 1 <= len(clicked.embed.fields) <= 3   # compact; empty DB says so honestly
         assert not control(view, "rival:research:accuracy").disabled
 
         view.section = "venue"
@@ -325,12 +326,12 @@ def test_research_accuracy_offers_plain_and_technical_sections():
     from parlay_bot.discord_app.research_dashboard import ACCURACY_SECTIONS
 
     labels = dict(_SECTIONS["accuracy"])
-    assert list(labels) == [
-        "overview", "running", "accuracy", "better", "money", "technical",
-    ]
-    assert labels["running"] == "Is it running?"
-    assert labels["accuracy"] == "How accurate is it?"
-    assert labels["better"] == "Is anything better?"
+    # Nov 11 cleanup: Results opens on the models; the old overview
+    # duplicated Bot Performance and now opens Models on trial.
+    assert list(labels) == ["better", "money", "accuracy", "running", "technical"]
+    assert labels["better"] == "Models on trial"
+    assert labels["accuracy"] == "Accuracy details"
+    assert labels["running"] == "Running details"
     assert labels["money"] == "Would it make money?"
     assert labels["technical"] == "Technical evidence"
     assert ACCURACY_SECTIONS["better"] == ("progress", "lineage", "tracker")

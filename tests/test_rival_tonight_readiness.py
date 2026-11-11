@@ -68,7 +68,8 @@ async def test_accuracy_tab_shows_live_per_exchange_blocker_and_no_unverified_be
         assert "blocked" in fields["Why this exchange is or isn't ready"].lower()
         assert any(x.custom_id == "rival:research:refresh" for x in view.children)
         assert len(embed.fields) <= 3
-        view.section = "overview"
+        # The no-edge verdict lives on Accuracy details (Nov 11 cleanup).
+        view.section = "accuracy"
         summary = await view.render()
         assert "NO VERIFIED BETTING EDGE" in next(
             x.value for x in summary.fields

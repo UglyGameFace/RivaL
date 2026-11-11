@@ -66,8 +66,8 @@ def test_the_table_fits_a_phone_even_at_extremes():
     rows = [TrialRow(name="Order-flow-12", days=140, results=12_345_678, gain=-.9999,
                      ahead=0, exchanges=9, stopped=0, passed=False, after_fees_bps=None)]
     lines = table(rows).strip("`\n").splitlines()
-    assert max(len(line) for line in lines) <= 38
-    assert lines[1].split()[:4] == ["Order-flow-1", "99/21", "12M", "-1000"]
+    assert max(len(line) for line in lines) <= 42
+    assert lines[1].split()[:5] == ["Order-flow-", "99/21", "12M", "—", "-1000"]
     assert trial_board._count(9_999) == "9,999" and trial_board._count(45_000) == "45k"
 
 
@@ -95,3 +95,64 @@ def test_contest_rows_keep_each_models_best_covered_source():
     lines = trial_board.contest_table(rows).strip("`\n").splitlines()
     assert lines[1].split() == ["Formula", "500", "+1.0", "+1.2¢", "PASSED"]
     assert lines[2].split() == ["Jump", "model", "400", "-2.0", "—", "behind"]
+
+
+def test_the_right_column_is_the_share_of_calls_that_came_true():
+    row = TrialRow(name="Trend-only", days=12, results=300, gain=.003, ahead=2,
+                   exchanges=2, stopped=0, passed=False, after_fees_bps=None,
+                   family="regime_v1", calls=200, right=113)
+    assert table([row]).strip("`\n").splitlines()[1].split() == [
+        "Trend-only", "12/21", "300", "56%", "+3.0", "ahead"]
+    few = TrialRow(name="Cross-exch", days=1, results=9, gain=.01, ahead=1, exchanges=1,
+                   stopped=0, passed=False, after_fees_bps=None, calls=9, right=9)
+    assert few.hit_rate is None          # 9 calls: no rate, never "100%"
+
+
+def test_read_adds_each_models_hit_rate_from_the_ledger(tmp_path):
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from parlay_bot.perpetuals.family_governance import FAMILY_PROMOTION_SCHEMA
+    from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
+    from parlay_bot.storage.hot import SQLiteHotStore
+
+    now = datetime.now(UTC)
+    store = SQLiteHotStore(tmp_path / "rates.sqlite")
+    try:
+        ShadowModelCompetition(store).initialize()
+        with store.connect() as conn:
+            conn.executescript(FAMILY_PROMOTION_SCHEMA)
+            conn.execute(
+                """INSERT INTO rival_family_promotion (venue,contract,quote,asset,
+                     horizon_minutes,evaluated_at,selected_family,status,reason,evidence_json)
+                   VALUES ('okx','BTC-okx','USDT','BTC',5,?,NULL,'held','t',?)""",
+                (now.isoformat(), json.dumps({"regime_v1": _info(12, 300, .003)})))
+
+            def call(i, p, up, *, age=timedelta(hours=1), horizon=5, asset="BTC",
+                     settled=True):
+                issued = now - age
+                conn.execute(
+                    """INSERT INTO rival_model_shadow_forecasts (venue,contract,quote,asset,
+                         horizon_minutes,family,reference_opened_at,issued_at,target_opened_at,
+                         probability_up,incumbent_up,baseline_up,training_count,
+                         training_sha256,settled_at,outcome_up,model_brier,incumbent_brier,
+                         baseline_brier) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ("okx", f"{asset}-okx", "USDT", asset, horizon, "regime_v1",
+                     (issued - timedelta(seconds=i)).isoformat(), issued.isoformat(),
+                     issued.isoformat(), p, .5, .5, 0, "s" * 64,
+                     issued.isoformat() if settled else None, int(up) if settled else None,
+                     .2, .25, .25))
+
+            for i in range(30):
+                call(i, .6, i < 18)                      # 18 of 30 came true
+            call(100, .5, True)                          # 50/50: not a call
+            call(101, .7, True, settled=False)           # not graded yet
+            call(102, .7, True, age=timedelta(days=8))   # older than the 7 days
+            call(103, .7, True, horizon=15)              # another timeframe
+            call(104, .7, True, asset="ETH")             # another coin
+        board = trial_board.read(store, asset="BTC", horizon=5, now=now)
+        row = board["rows"][0]
+        assert (row.family, row.calls, row.right) == ("regime_v1", 30, 18)
+        assert table(board["rows"]).strip("`\n").splitlines()[1].split()[3] == "60%"
+    finally:
+        store.close()

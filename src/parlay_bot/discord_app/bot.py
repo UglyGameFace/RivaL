@@ -653,6 +653,10 @@ class RivalDiscordClient(discord.Client):
             research=self.polymarket_research,
         )
         self._poly_board_task: asyncio.Task[None] | None = None
+        # Live model watch posts (Detailed Research -> Watch live).
+        from parlay_bot.discord_app.model_watch import ModelWatchService
+        self.model_watch = ModelWatchService(self, self.store)
+        self._model_watch_task: asyncio.Task[None] | None = None
         self._poly_research_task: asyncio.Task[None] | None = None
         # Locked test of the Up/Down price formula vs Polymarket's price.
         from parlay_bot.perpetuals.polymarket_formula_test import FormulaTest
@@ -717,6 +721,7 @@ class RivalDiscordClient(discord.Client):
             venues=tuple(collector.providers) if collector is not None else (),
             shadow_enabled=self.shadow_monitor is not None,
             target_service=self.direction_targets,
+            watch_service=self.model_watch if collector is not None else None,
         )
 
     def _build_data_dashboard(self, owner_id: int) -> MarketDataDashboard:
@@ -1450,6 +1455,8 @@ class RivalDiscordClient(discord.Client):
         # DM panel controls must survive process restarts. Dispatch still checks
         # the current user and message ID against the persisted tracker.
         self.add_view(self.polymarket_board.dm_view)
+        # Watch posts keep their Refresh / Stop buttons across restarts.
+        self.add_view(self.model_watch.view)
         install_owner_gate(self.tree, self.owner_gate)
         # Resolve the owner now, not inside the first button tap after a
         # restart, where Discord's application lookup counts against the
@@ -1485,6 +1492,10 @@ class RivalDiscordClient(discord.Client):
         if self._poly_board_task is None:
             self._poly_board_task = asyncio.create_task(
                 self._poly_board_loop(), name="rival-auto-polymarket-board",
+            )
+        if self._model_watch_task is None and self.perp_collector is not None:
+            self._model_watch_task = asyncio.create_task(
+                self._model_watch_loop(), name="rival-live-model-watch",
             )
         if (
             self.settings.rival_polybolt_enabled
@@ -2266,6 +2277,22 @@ class RivalDiscordClient(discord.Client):
             # Refresh the single DM panel every ~5s; the first model forecast
             # is immutable and no extra flip-notification DMs are sent.
             await asyncio.sleep(max(0.1, 5 - (time.monotonic() - started)))
+
+    async def _model_watch_loop(self) -> None:
+        """Edit every live model watch post every 5 minutes."""
+        from parlay_bot.discord_app.model_watch import REFRESH_SECONDS
+
+        await self.wait_until_ready()
+        while not self.is_closed():
+            try:
+                updated = await self.model_watch.cycle()
+                if updated:
+                    _LOG.info("RivaL live model watch posts updated=%d", updated)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - a watch post must never stop the bot
+                _LOG.exception("RivaL live model watch cycle failed safely")
+            await asyncio.sleep(REFRESH_SECONDS)
 
     async def _target_loop(self) -> None:
         """Update user-opted-in private forecast cards without flooding DMs."""
@@ -3268,6 +3295,7 @@ class RivalDiscordClient(discord.Client):
                  "rival-silent-polymarket-learning"),
                 ("_poly_board_task", self._poly_board_loop,
                  "rival-auto-polymarket-board"),
+                ("_model_watch_task", self._model_watch_loop, "rival-live-model-watch"),
                 ("_formula_task", self._formula_loop,
                  "rival-polymarket-formula-test"),
                 ("_polybolt_task", self.polybolt.run, "rival-read-only-chainlink-twap"),

@@ -27,7 +27,7 @@ RESEARCH_DETAIL_BUTTONS = (*(
     f"detail:{topic}"
     for section in ("running", "accuracy", "better", "money")
     for topic in ACCURACY_SECTIONS[section]
-), "model:back")
+), "model:back", "watch")
 RESEARCH_SELECTS = ("asset", "section", "venue")
 # A view has five rows and each select fills one, so the tracker's select
 # lives in a second research fallback view (dispatch matches by custom_id

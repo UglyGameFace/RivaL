@@ -57,6 +57,7 @@ from parlay_bot.perpetuals.readiness import explain_venue_readiness, forecast_re
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
 from parlay_bot.perpetuals.spike_watch import SpikeWatch
 from parlay_bot.research.source_native import VENUES, source_month_readiness
+from parlay_bot.storage.optional_reads import optional_rows
 
 if TYPE_CHECKING:
     from parlay_bot.discord_app.targeting import DirectionTargetService
@@ -80,12 +81,15 @@ _SECTIONS = {
         ("recovery", "Backfill progress (technical)"),
         ("ai", "AI Review"),
     ),
+    # Cleanup (Nov 11): Bot Performance is the summary; Results holds the
+    # deep dives. "At a glance" repeated Performance and is gone (an old
+    # link opens Models on trial); the other two summary cards are now
+    # labelled as the detail sections they are.
     "accuracy": (
-        ("overview", "At a glance"),
-        ("running", "Is it running?"),
-        ("accuracy", "How accurate is it?"),
-        ("better", "Is anything better?"),
+        ("better", "Models on trial"),
         ("money", "Would it make money?"),
+        ("accuracy", "Accuracy details"),
+        ("running", "Running details"),
         ("technical", "Technical evidence"),
     ),
     "ai": (
@@ -111,6 +115,9 @@ ACCURACY_SECTIONS = {
 LEGACY_SECTION_MAP = {
     old: new for new, olds in ACCURACY_SECTIONS.items() for old in olds
 }
+# "At a glance" repeated Bot Performance: an old link or menu opens the
+# first Results section instead (cleanup, Nov 11).
+LEGACY_SECTION_MAP["overview"] = "better"
 # The old section labels, reused for detail buttons and the compact
 # description when a detail topic is open.
 ACCURACY_DETAIL_LABELS = {
@@ -230,6 +237,7 @@ class _SectionSelect(discord.ui.Select["ResearchDashboard"]):
         dashboard.section = self.values[0]
         dashboard.detail = None
         dashboard.model = None
+        dashboard.compare = []
         await dashboard.redraw(interaction)
 
 
@@ -417,11 +425,13 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
         # regime splits, trial detail), so its compact cap is one
         # higher; every other section stays at live + two detailed
         # metrics.
-        cap = 4 if section == "progress" else 3
+        # Accuracy also keeps the no-edge verdict (it was on "At a glance",
+        # which the Nov 11 cleanup removed), shortened.
+        cap = 4 if section in ("progress", "accuracy") else 3
         for prefix in _FIELD_GROUPS[screen].get(section, ()):
             if len(result.fields) >= cap:
                 break
-            add_one((prefix,))
+            add_one((prefix,), short=prefix == "Research verdict")
     if len(result.fields) == (1 if source is not None else 0):
         result.add_field(
             name="No results yet",
@@ -550,6 +560,7 @@ class _AssetSelect(discord.ui.Select["ResearchDashboard"]):
         dashboard.asset = self.values[0]
         dashboard.opinion = None
         dashboard.model = None
+        dashboard.compare = []
         dashboard.message = None
         await dashboard.redraw(interaction)
 
@@ -699,25 +710,51 @@ class _TrackVenueButton(discord.ui.Button["ResearchDashboard"]):
 class _ModelSelect(discord.ui.Select["ResearchDashboard"]):
     """Pick any model on trial for this coin to open its own detail page."""
 
-    def __init__(self, names: list[str], selected: str | None) -> None:
+    def __init__(self, names: list[str], selected: list[str]) -> None:
+        options = [discord.SelectOption(label=name, value=name, default=name in selected)
+                   for name in names[:25]]
         super().__init__(
-            placeholder="🧪 Inspect a model on trial…",
-            custom_id="rival:research:model", row=4,
-            options=[discord.SelectOption(label=name, value=name, default=name == selected)
-                     for name in names[:25]],
+            placeholder="🧪 Inspect one model, or pick up to 5 to compare…",
+            custom_id="rival:research:model", row=4, options=options,
+            min_values=1, max_values=min(5, len(options)),
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
         dashboard = self.view
         assert dashboard is not None
-        dashboard.model = self.values[0]
+        picked = list(self.values)
+        # One model: its own page. Two or more: side by side.
+        dashboard.model = picked[0] if len(picked) == 1 else None
+        dashboard.compare = picked if len(picked) > 1 else []
         dashboard.detail = None
         await dashboard.redraw(interaction)
 
 
+class _WatchLiveButton(discord.ui.Button["ResearchDashboard"]):
+    """Post the open model page or comparison as a self-updating watch."""
+
+    def __init__(self) -> None:
+        super().__init__(label="Watch live", emoji="📌",
+                         style=discord.ButtonStyle.success,
+                         custom_id="rival:research:watch", row=2)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        names = dashboard.compare or ([dashboard.model] if dashboard.model else [])
+        service = dashboard.watch_service
+        if service is None or not names:
+            await interaction.response.send_message(
+                "Live watching isn't available right now.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        notice = await service.start(interaction, dashboard.asset, names)
+        await interaction.followup.send(notice, ephemeral=True)
+
+
 class _ModelBackButton(discord.ui.Button["ResearchDashboard"]):
     def __init__(self) -> None:
-        super().__init__(label="← Back to Is anything better?",
+        super().__init__(label="← Back to Models on trial",
                          style=discord.ButtonStyle.secondary,
                          custom_id="rival:research:model:back", row=2)
 
@@ -725,6 +762,7 @@ class _ModelBackButton(discord.ui.Button["ResearchDashboard"]):
         dashboard = self.view
         assert dashboard is not None
         dashboard.model = None
+        dashboard.compare = []
         await dashboard.redraw(interaction)
 
 
@@ -747,6 +785,7 @@ class _ScreenButton(discord.ui.Button["ResearchDashboard"]):
         dashboard.section = "overview"
         dashboard.detail = None
         dashboard.model = None
+        dashboard.compare = []
         dashboard.message = None
         await dashboard.redraw(interaction)
 
@@ -954,6 +993,7 @@ class ResearchDashboard(discord.ui.View):
         venues: tuple[str, ...],
         shadow_enabled: bool = False,
         target_service: DirectionTargetService | None = None,
+        watch_service=None,
     ) -> None:
         super().__init__(timeout=900)
         self.owner_id = owner_id
@@ -962,6 +1002,9 @@ class ResearchDashboard(discord.ui.View):
         self.venues = venues
         self.shadow_enabled = shadow_enabled
         self.target_service = target_service
+        self.watch_service = watch_service
+        # Models picked for the side-by-side card (two or more).
+        self.compare: list[str] = []
         self.asset = "BTC"
         self.screen = "opportunities"
         self.section = "overview"
@@ -1028,8 +1071,10 @@ class ResearchDashboard(discord.ui.View):
         topics = self._render_topics()
         single = len(topics) == 1
         picker = self._model_picker()
-        if picker and self.model is not None:
+        if picker and (self.model is not None or self.compare):
             self.add_item(_ModelBackButton())
+            if self.watch_service is not None:
+                self.add_item(_WatchLiveButton())
         elif self.screen == "accuracy" and not single:
             # One detail button per absorbed topic on the consolidated
             # card; the topic content itself is one tap away.
@@ -1050,7 +1095,8 @@ class ResearchDashboard(discord.ui.View):
             # own detail topic, the one that uses it.
             names = self._cached_models()
             if names:
-                self.add_item(_ModelSelect(names, self.model))
+                picked = self.compare or ([self.model] if self.model else [])
+                self.add_item(_ModelSelect(names, picked))
         elif (((self.screen == "accuracy"
                 and bool(set(topics) & {"venue", "progress"}))
                or (self.screen == "math" and self.section == "history"))
@@ -1065,7 +1111,7 @@ class ResearchDashboard(discord.ui.View):
     def _model_picker(self) -> bool:
         """The model picker belongs to the "Is anything better?" card."""
         return (self.screen == "accuracy" and self.section == "better"
-                and (self.detail is None or self.model is not None)
+                and (self.detail is None or self.model is not None or bool(self.compare))
                 and self.market is not None)
 
     def _cached(self, key: tuple):
@@ -1097,6 +1143,21 @@ class ResearchDashboard(discord.ui.View):
                 model_report, self.market.store, self.asset, self.model)
             self._model_cache[key] = (time.monotonic(), report or {})
         return model_embed(report or None, asset=self.asset, name=self.model)
+
+    async def _compare_page(self) -> discord.Embed:
+        from parlay_bot.discord_app.model_detail import model_report
+        from parlay_bot.discord_app.model_watch import compare_embed
+
+        reports = {}
+        for name in self.compare:
+            key = ("report", self.asset, name)
+            report = self._cached(key)
+            if report is None:
+                report = await asyncio.to_thread(
+                    model_report, self.market.store, self.asset, name)
+                self._model_cache[key] = (time.monotonic(), report or {})
+            reports[name] = report or None
+        return compare_embed(reports, asset=self.asset)
 
     def _history_inventory_cached(self) -> dict:
         """Historical totals cached for 2 minutes, NEVER live feed status."""
@@ -1131,86 +1192,47 @@ class ResearchDashboard(discord.ui.View):
         audits = SixMonthQualityAudit(self.market).latest(
             asset=self.asset, venues=self.venues,
         )
-        recovery = None
-        with self.market.store.connect() as conn:
-            try:
-                row = conn.execute(
-                    """SELECT * FROM perp_history_recovery
-                       WHERE venue='gate' AND asset=?""",
-                    (self.asset,),
-                ).fetchone()
-            except Exception:  # noqa: BLE001 - older DB may not have this table
-                row = None
-            if row is not None:
-                recovery = dict(row)
+        recovery = self._recovery_row("gate", "*")
         return audits, recovery
+
+    # One backfill-progress read for every exchange card (was four copies).
+    # Each read has its own connection via optional_rows: an older database
+    # without the table shows "no progress", never breaks the screen.
+    _PROGRESS_COLUMNS = "status,inserted_bars,next_opened_at,empty_windows,attempted_at"
+
+    def _recovery_row(self, venue: str, columns: str | None = None) -> dict | None:
+        if self.market is None:
+            return None
+        rows = optional_rows(
+            self.market.store,
+            f"SELECT {columns or self._PROGRESS_COLUMNS} FROM perp_history_recovery "
+            "WHERE venue=? AND asset=?",
+            (venue, self.asset), what="history recovery read") or []
+        return dict(rows[0]) if rows else None
 
     def _kucoin_history_progress(self) -> dict | None:
         """Read KuCoin-specific recovery progress without fetching exchange data."""
-        if self.market is None:
-            return None
-        with self.market.store.connect() as conn:
-            try:
-                row = conn.execute(
-                    """SELECT status,inserted_bars,next_opened_at,empty_windows,
-                              attempted_at
-                       FROM perp_history_recovery
-                       WHERE venue='kucoin' AND asset=?""",
-                    (self.asset,),
-                ).fetchone()
-            except Exception:  # noqa: BLE001 - older DB may not have schema
-                return None
-        return dict(row) if row is not None else None
+        return self._recovery_row("kucoin")
 
     def _okx_history_progress(self) -> dict | None:
         """Reverse-chronological OKX six-month repair state from PostgreSQL."""
-        if self.market is None:
-            return None
-        with self.market.store.connect() as conn:
-            try:
-                row = conn.execute(
-                    """SELECT status,inserted_bars,next_opened_at,empty_windows,
-                              attempted_at
-                       FROM perp_history_recovery
-                       WHERE venue='okx' AND asset=?""",
-                    (self.asset,),
-                ).fetchone()
-            except Exception:  # noqa: BLE001 - previous DB version
-                return None
-        return dict(row) if row is not None else None
+        return self._recovery_row("okx")
+
+    def _bitget_history_progress(self) -> dict | None:
+        """One DB query, no Bitget API request or stale embedded cache."""
+        return self._recovery_row("bitget")
 
     def _all_history_progress(self) -> list[dict]:
         """Every exchange's backfill state for this coin (one DB query)."""
         if self.market is None:
             return []
-        with self.market.store.connect() as conn:
-            try:
-                rows = conn.execute(
-                    """SELECT venue,status,inserted_bars,started_from,next_opened_at,
-                              empty_windows,attempted_at
-                       FROM perp_history_recovery WHERE asset=? ORDER BY venue""",
-                    (self.asset,),
-                ).fetchall()
-            except Exception:  # noqa: BLE001 - schema upgrade pending
-                return []
+        rows = optional_rows(
+            self.market.store,
+            """SELECT venue,status,inserted_bars,started_from,next_opened_at,
+                      empty_windows,attempted_at
+               FROM perp_history_recovery WHERE asset=? ORDER BY venue""",
+            (self.asset,), what="history recovery read") or []
         return [dict(row) for row in rows]
-
-    def _bitget_history_progress(self) -> dict | None:
-        """One DB query, no Bitget API request or stale embedded cache."""
-        if self.market is None:
-            return None
-        with self.market.store.connect() as conn:
-            try:
-                row = conn.execute(
-                    """SELECT status,inserted_bars,next_opened_at,empty_windows,
-                              attempted_at
-                       FROM perp_history_recovery
-                       WHERE venue='bitget' AND asset=?""",
-                    (self.asset,),
-                ).fetchone()
-            except Exception:  # noqa: BLE001 - schema upgrade pending
-                return None
-        return dict(row) if row is not None else None
 
     def _live_feed_status(
         self,
@@ -1389,6 +1411,8 @@ class ResearchDashboard(discord.ui.View):
                 await self._load_models()
             except Exception:  # noqa: BLE001 - the picker is optional, the card is not
                 _LOG.warning("Research model list unavailable", exc_info=True)
+            if self.compare:
+                return await self._compare_page()
             if self.model is not None:
                 return await self._model_page()
         detailed = await self._render_full()
@@ -2839,8 +2863,9 @@ class ResearchDashboard(discord.ui.View):
         fresh = ResearchDashboard(
             owner_id=self.owner_id, market=self.market, ai=self.ai,
             venues=self.venues, shadow_enabled=self.shadow_enabled,
-            target_service=self.target_service,
+            target_service=self.target_service, watch_service=self.watch_service,
         )
+        fresh.compare = list(self.compare)
         fresh.asset = self.asset
         fresh.screen = self.screen
         fresh.section = self.section

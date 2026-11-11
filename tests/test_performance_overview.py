@@ -220,10 +220,11 @@ async def test_every_model_on_trial_is_one_row_from_the_hourly_check(tmp_path, m
         table = value.split("```")[1].strip().splitlines()
         assert [line.split()[0] for line in table] == [
             "Model", "Trend-only", "Cross-exch", "6-year", "Liquidity"]
-        assert table[1].split()[1:] == ["12/21", "300", "+3.0", "ahead"]
+        # No graded calls stored in this test: the Right column says so ("—").
+        assert table[1].split()[1:] == ["12/21", "300", "—", "+3.0", "ahead"]
         assert table[2].split()[-1] == "early"     # 9 results is too few to judge
         assert table[4].split()[-1] == "cut"       # cut on every exchange it ran on
-        assert max(len(line) for line in table) <= 38   # fits a phone
+        assert max(len(line) for line in table) <= 42   # fits a phone
         assert ("Closest: **Trend-only** (ahead on 2 of 2 exchanges, behind after fees). "
                 "Needs 9 more days before it can be trusted.") in value
         assert "All markets: 5 on trial · 0 passed · 2 cut early for losing" in value

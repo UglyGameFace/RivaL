@@ -529,7 +529,8 @@ def polish_embed(embed, *, section: str):
 
     Every field name and value is renamed (the raw block is untouched),
     the footer becomes the one disclaimer, and the "Live market feeds"
-    field is kept only on the overview or when a feed is behind
+    field is kept only on Running details (the old overview opens Models
+    on trial since the Nov 11 cleanup) or when a feed is behind
     (``live/configured`` in its value). Works on any object with the
     ``discord.Embed`` field/footer API; returns the same embed.
     """
@@ -539,7 +540,7 @@ def polish_embed(embed, *, section: str):
         value = rename_text(field.value)
         if "Live collection status" in field.name:
             name = "Live market feeds"
-            if section != "overview":
+            if section not in ("overview", "running"):
                 match = re.search(r"\*\*(\d+)/(\d+)\*\*", value)
                 if match and int(match.group(1)) >= int(match.group(2)):
                     continue  # feeds fine and this is not the overview: not news

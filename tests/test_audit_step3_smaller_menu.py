@@ -68,15 +68,15 @@ def _control(view: ResearchDashboard, key: str):
 
 
 def test_accuracy_menu_lists_five_sections_plus_technical():
-    assert [key for key, _ in _SECTIONS["accuracy"]] == [
-        "overview", "running", "accuracy", "better", "money", "technical",
-    ]
+    # Nov 11 cleanup: Results opens on the models; "At a glance" duplicated
+    # Bot Performance and its key now opens Models on trial.
+    order = ["better", "money", "accuracy", "running", "technical"]
+    assert [key for key, _ in _SECTIONS["accuracy"]] == order
     assert dict(_SECTIONS["accuracy"]) == {
-        "overview": "At a glance",
-        "running": "Is it running?",
-        "accuracy": "How accurate is it?",
-        "better": "Is anything better?",
+        "better": "Models on trial",
         "money": "Would it make money?",
+        "accuracy": "Accuracy details",
+        "running": "Running details",
         "technical": "Technical evidence",
     }
     dashboard = ResearchDashboard(
@@ -86,10 +86,8 @@ def test_accuracy_menu_lists_five_sections_plus_technical():
         dashboard.screen = "accuracy"
         dashboard._rebuild()
         select = _control(dashboard, "rival:research:section")
-        assert [o.value for o in select.options] == [
-            "overview", "running", "accuracy", "better", "money", "technical",
-        ]
-        assert len(select.options) == 6
+        assert [o.value for o in select.options] == order
+        assert len(select.options) == 5
     finally:
         dashboard.stop()
 
@@ -100,12 +98,12 @@ def test_accuracy_menu_lists_five_sections_plus_technical():
     ("calibration", "accuracy"), ("ledger", "accuracy"),
     ("progress", "better"), ("lineage", "better"), ("tracker", "better"),
     ("costs", "money"), ("method", "money"),
-    ("overview", "overview"), ("technical", "technical"),
+    ("overview", "better"), ("technical", "technical"),
 ])
 def test_every_old_section_key_resolves_to_its_new_card(old, new):
     assert _resolve_section("accuracy", old) == new
     assert LEGACY_SECTION_MAP[old] == new
-    assert old in ACCURACY_SECTIONS[new]
+    assert old in ACCURACY_SECTIONS[new] or old == "overview"
     if old not in ("overview", "technical"):
         assert ACCURACY_DETAIL_LABELS[old]
     # Other screens are untouched by the mapping.
@@ -178,7 +176,10 @@ def test_each_consolidated_card_has_one_detail_button_per_topic():
     )
     try:
         dashboard.screen = "accuracy"
+        menu = dict(_SECTIONS["accuracy"])
         for section, topics in ACCURACY_SECTIONS.items():
+            if section not in menu:
+                continue   # "overview" opens Models on trial now
             dashboard.section = section
             dashboard.detail = None
             dashboard._rebuild()
@@ -222,7 +223,7 @@ async def test_detail_button_opens_its_topic_and_back_returns(monkeypatch):
         assert "**5-minute predictions**" in interaction.embed.description
 
         back = _control(dashboard, "rival:research:detail:back")
-        assert back.label == "← Back to How accurate is it?"
+        assert back.label == "← Back to Accuracy details"
         assert back.row == 2
         interaction = _Interaction()
         await back.callback(interaction)

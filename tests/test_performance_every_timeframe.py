@@ -133,3 +133,23 @@ async def test_nothing_is_flagged_when_every_read_worked(tmp_path, monkeypatch):
         assert "Couldn't load right now" not in _fields(await home.render())[EXCHANGE]
     finally:
         await _close(bot, home)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("horizon", "unit"), [
+    (5, "results"), (15, "separate 15-min windows"), (60, "separate 60-min windows")])
+async def test_the_learning_count_says_when_it_counts_whole_windows(
+        tmp_path, monkeypatch, horizon, unit):
+    """1,015 at 15 minutes vs 3,020 at 5 is by design (one per window)."""
+    bot, home = _make_home(tmp_path)
+    home.horizon = horizon
+    _patch_live_reads(monkeypatch, pooled={"issued": 0}, regime={"issued": 0},
+                      live={"issued": 0}, live_fast={"issued": 0})
+    monkeypatch.setattr(home_module, "_wild_record", lambda *_: {"issued": 0})
+    monkeypatch.setattr(home_module, "_performance_benefit", lambda *_: {
+        "status": "not_improving", "targets": 1015, "days": 12})
+    try:
+        learning = _fields(await home.render())["🧠 Is it learning?"]
+        assert f"(1,015 {unit} over 12 days)" in learning
+    finally:
+        await _close(bot, home)

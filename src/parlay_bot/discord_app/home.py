@@ -2232,9 +2232,18 @@ class GuidedHome(discord.ui.View):
                 need = ""
                 if benefit.get("status") == "insufficient" and days < 7:
                     need = f"; needs 7 days of results, has {days}"
+                # active_learning_evidence keeps one target per whole
+                # timeframe window (15-min targets on :00/:15/:30/:45, 60-min
+                # on the hour), so overlapping predictions are not counted as
+                # independent evidence. Say so: at 15 minutes the count is a
+                # third of the 5-minute one by design, which read as data
+                # going missing.
+                counted = int(benefit.get("targets") or 0)
+                unit = ("results" if self.horizon == 5 else
+                        f"separate {self.horizon}-min windows")
                 trend_text = (
                     f"**Getting more accurate?** {reason} "
-                    f"({int(benefit.get('targets') or 0):,} results over {days} "
+                    f"({counted:,} {unit} over {days} "
                     f"day{'s' if days != 1 else ''}{need})"
                 )
             elif isinstance(benefit, TimeoutError):

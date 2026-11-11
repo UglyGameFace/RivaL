@@ -444,6 +444,7 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
                     ("flow_v2", "ISSUE_FLOW_CHALLENGERS"),
                     ("flow_v3", "ISSUE_FLOW_V3_CHALLENGERS"),
                     ("regime_v2", "ISSUE_REGIME_V2_CHALLENGERS"),
+                    ("liq_v1", "ISSUE_LIQ_V1_CHALLENGERS"),
                 ) if not getattr(_fa, flag, True)
             }
         except Exception:  # noqa: BLE001 - flag read must never break the card

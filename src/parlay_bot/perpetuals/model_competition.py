@@ -15,7 +15,7 @@ import logging
 import math
 from datetime import UTC, datetime, timedelta
 
-from parlay_bot.perpetuals import early_stop
+from parlay_bot.perpetuals import early_stop, shadow_score_hours
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.research.boosted_portable import predict_portable
@@ -185,6 +185,7 @@ class ShadowModelCompetition:
         """
         try:
             maintenance.initialize(self.store)
+            shadow_score_hours.initialize(self.store)
             with self.store.connect() as conn:
                 cutoff = maintenance.correction_cutoff(conn, "shadow.no_trade", now)
                 result = conn.execute(
@@ -209,6 +210,9 @@ class ShadowModelCompetition:
                 if cutoff is None:
                     maintenance.record_full_sweep(conn, "shadow.no_trade", now)
                 if result.rowcount:
+                    # The stored hourly score tallies counted these rows:
+                    # tally the hours they may sit in again (same transaction).
+                    shadow_score_hours.invalidate(conn, since=cutoff)
                     _LOG.warning("RivaL withdrew %d challenger results copied from "
                                  "no-trade candles", result.rowcount)
         except Exception:  # noqa: BLE001 - a correction must never block startup

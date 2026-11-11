@@ -664,10 +664,11 @@ def test_liq_v1_kill_switch_blocks_issuance_in_cycle(tmp_path, monkeypatch):
 
     Control first: with the flag on, the cycle issues liq_v1 forecasts
     (features rows + shadow rows). With the flag off -- its production
-    value when Felix kills it -- the same cycle issues nothing new for
-    liq_v1, while the incumbent cycle still runs.
+    value since the Nov 11, 2026 retirement -- the same cycle issues
+    nothing new for liq_v1, while the incumbent cycle still runs.
     """
-    assert forward_audit.ISSUE_LIQ_V1_CHALLENGERS is True
+    assert forward_audit.ISSUE_LIQ_V1_CHALLENGERS is False   # retired
+    monkeypatch.setattr(forward_audit, "ISSUE_LIQ_V1_CHALLENGERS", True)
     now = datetime.now(UTC)
     store = SQLiteHotStore(tmp_path / "liq-kill.sqlite")
     market = PerpetualMarketStore(store)

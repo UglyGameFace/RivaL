@@ -102,8 +102,16 @@ jobs:
               raise SystemExit(0)
           if os.environ["MODE"] == "render":
               merged = {}
-              for asset in ("BTC", "ETH", "SOL", "XRP"):
-                  shell = run(f"RIVAL_PROBE_ASSETS={asset} ")
+              # The four coins' research pages, then one call for every other
+              # page, the model pages and the compare card (BTC).
+              for asset in ("BTC", "ETH", "SOL", "XRP", "pages"):
+                  prefix = ("RIVAL_PROBE_PAGES=1 RIVAL_PROBE_ASSETS=BTC " if asset == "pages"
+                            else f"RIVAL_PROBE_ASSETS={asset} ")
+                  try:
+                      shell = run(prefix)
+                  except Exception as exc:  # noqa: BLE001
+                      merged[f"error/{asset}"] = f"{type(exc).__name__}: {exc}"[:300]
+                      continue
                   for line in str(shell.get("stdout", "")).splitlines():
                       if line.startswith("RIVAL_RENDER_PROBE="):
                           merged.update(json.loads(gzip.decompress(

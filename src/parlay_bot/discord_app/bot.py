@@ -658,6 +658,7 @@ class RivalDiscordClient(discord.Client):
         self.model_watch = ModelWatchService(self, self.store)
         self._model_watch_task: asyncio.Task[None] | None = None
         self._model_lab_task: asyncio.Task[None] | None = None
+        self._retention_task: asyncio.Task[None] | None = None
         self._poly_research_task: asyncio.Task[None] | None = None
         # Locked test of the Up/Down price formula vs Polymarket's price.
         from parlay_bot.perpetuals.polymarket_formula_test import FormulaTest
@@ -1502,6 +1503,10 @@ class RivalDiscordClient(discord.Client):
             self._model_lab_task = asyncio.create_task(
                 self._model_lab_loop(), name="rival-model-lab",
             )
+        if self._retention_task is None:
+            self._retention_task = asyncio.create_task(
+                self._retention_loop(), name="rival-prediction-cleanup",
+            )
         if (
             self.settings.rival_polybolt_enabled
             and self.polybolt.configured
@@ -2312,6 +2317,22 @@ class RivalDiscordClient(discord.Client):
                 _LOG.warning("RivaL model lab review failed; retrying next round",
                              exc_info=True)
             await asyncio.sleep(REVIEW_EVERY.total_seconds())
+
+    async def _retention_loop(self) -> None:
+        """Owner-approved prediction cleanup (retention.py), once a day."""
+        from parlay_bot.perpetuals import retention
+
+        await self.wait_until_ready()
+        await asyncio.sleep(600)   # after startup work and the first cycles
+        while not self.is_closed():
+            try:
+                await asyncio.to_thread(retention.run, self.store)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - cleanup must never stop the bot
+                _LOG.warning("RivaL prediction cleanup failed; retrying tomorrow",
+                             exc_info=True)
+            await asyncio.sleep(24 * 3600)
 
     async def _model_watch_loop(self) -> None:
         """Edit every live model watch post every 5 minutes."""
@@ -3332,6 +3353,7 @@ class RivalDiscordClient(discord.Client):
                  "rival-auto-polymarket-board"),
                 ("_model_watch_task", self._model_watch_loop, "rival-live-model-watch"),
                 ("_model_lab_task", self._model_lab_loop, "rival-model-lab"),
+                ("_retention_task", self._retention_loop, "rival-prediction-cleanup"),
                 ("_formula_task", self._formula_loop,
                  "rival-polymarket-formula-test"),
                 ("_polybolt_task", self.polybolt.run, "rival-read-only-chainlink-twap"),

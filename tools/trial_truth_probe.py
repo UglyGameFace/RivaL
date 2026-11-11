@@ -107,6 +107,21 @@ def probe() -> dict:
                     ((now - timedelta(hours=1)).isoformat(),)).fetchall()]
             except Exception as exc:  # noqa: BLE001
                 out["grading_error"] = type(exc).__name__
+        # Slow-database warnings per hour (last 24 h), to see what changed when.
+        try:
+            with store.connect() as conn:
+                out["problem_hours"] = [dict(r) for r in conn.execute(
+                    """SELECT hour, logger, level, SUBSTR(template,1,90) AS template,
+                              SUM(count) AS n
+                       FROM rival_problem_log WHERE hour>=?
+                       GROUP BY hour, logger, level, SUBSTR(template,1,90)
+                       ORDER BY hour""",
+                    ((now - timedelta(hours=26)).strftime("%Y-%m-%dT%H:00:00+00:00"),)
+                ).fetchall()]
+        except Exception as exc:  # noqa: BLE001
+            out["problem_hours_error"] = type(exc).__name__
+        if os.environ.get("RIVAL_PROBE_PROBLEMS_ONLY"):
+            return out
         retired = trial_board.retired_families()
         for asset in assets:
             for horizon in (5, 15, 60):

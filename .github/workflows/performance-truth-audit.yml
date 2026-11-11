@@ -81,9 +81,11 @@ jobs:
               # One coin per console call: each stays well under the API's
               # ~100 s gateway limit.
               merged = {}
-              for asset in ("BTC", "ETH", "SOL", "XRP"):
+              only = os.environ.get("PATTERN") == "problems"
+              for asset in (("BTC",) if only else ("BTC", "ETH", "SOL", "XRP")):
                   try:
-                      shell = run(f"RIVAL_PROBE_ASSETS={asset} ")
+                      shell = run(("RIVAL_PROBE_PROBLEMS_ONLY=1 " if only else "")
+                                  + f"RIVAL_PROBE_ASSETS={asset} ")
                   except Exception as exc:  # noqa: BLE001
                       merged[f"error/{asset}"] = f"{type(exc).__name__}: {exc}"[:300]
                       continue

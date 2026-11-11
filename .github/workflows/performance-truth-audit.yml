@@ -102,6 +102,38 @@ jobs:
               pathlib.Path("render.json").write_text(json.dumps(merged, indent=1))
               print(json.dumps(merged, indent=1)[:60000])
               raise SystemExit(0)
+          def run_long(prefix, marker, tag):
+              """Start the probe in the background on the host and poll its
+              output file: one console call is cut at ~100 s by the API
+              gateway (HTTP 524), and a full render takes longer."""
+              import time
+              out = f"/tmp/rival_probe_{tag}_{os.getpid()}.out"
+              start = (prefix + "nohup python -c \"import base64,gzip,sys;sys.path.insert(0,'src');"
+                       f"exec(gzip.decompress(base64.b64decode('{code}')))\" > {out} 2>&1 &")
+              req = request.Request(
+                  "https://api.discloud.app/v2/app/"
+                  + parse.quote(os.environ["DISCLOUD_APP_ID"], safe="") + "/console",
+                  data=json.dumps({"command": start}).encode(),
+                  headers={"api-token": os.environ["DISCLOUD_TOKEN"],
+                           "Content-Type": "application/json"}, method="PUT")
+              with request.urlopen(req, timeout=120) as response:
+                  json.load(response)
+              for _ in range(60):
+                  time.sleep(30)
+                  req = request.Request(
+                      "https://api.discloud.app/v2/app/"
+                      + parse.quote(os.environ["DISCLOUD_APP_ID"], safe="") + "/console",
+                      data=json.dumps({"command": f"grep -a '^{marker}' {out} || true"}).encode(),
+                      headers={"api-token": os.environ["DISCLOUD_TOKEN"],
+                               "Content-Type": "application/json"}, method="PUT")
+                  try:
+                      with request.urlopen(req, timeout=120) as response:
+                          shell = json.load(response).get("apps", {}).get("shell", {})
+                  except Exception:  # noqa: BLE001 - a slow poll just retries
+                      continue
+                  if marker in str(shell.get("stdout", "")):
+                      return shell
+              return {"stdout": "", "stderr": f"no result after 30 min ({tag})"}
           if os.environ["MODE"] == "render":
               merged = {}
               # The four coins' research pages, then one call for every other
@@ -110,7 +142,7 @@ jobs:
                   prefix = ("RIVAL_PROBE_PAGES=1 RIVAL_PROBE_ASSETS=BTC " if asset == "pages"
                             else f"RIVAL_PROBE_ASSETS={asset} ")
                   try:
-                      shell = run(prefix)
+                      shell = run_long(prefix, "RIVAL_RENDER_PROBE=", asset)
                   except Exception as exc:  # noqa: BLE001
                       merged[f"error/{asset}"] = f"{type(exc).__name__}: {exc}"[:300]
                       continue

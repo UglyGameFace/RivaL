@@ -16,6 +16,7 @@ from pathlib import Path
 
 import discord
 
+from parlay_bot.discord_app.answer_cards import rename_text
 from parlay_bot.discord_app.embed_text import fit_embed_field_value
 
 STALE_FEED_AFTER = timedelta(minutes=20)
@@ -84,6 +85,108 @@ def _parse(value) -> datetime | None:
     except ValueError:
         return None
     return parsed if parsed.utcoffset() is not None else parsed.replace(tzinfo=UTC)
+
+
+# One test model's clock, as research_alerts writes it (tests pin that form).
+_PROGRESS = re.compile(
+    r"^📊 (?P<family>\S+): day (?P<days>\d+)/(?P<min_days>\d+) · "
+    r"(?P<targets>\d+)/(?P<min_targets>\d+) targets"
+    r"(?: · gain (?P<gain>[+-]?\d+(?:\.\d+)?))?$")
+# Below this many graded results a score is not a verdict (audit rule 6).
+TOO_FEW_TO_JUDGE = 20
+# A score difference smaller than this reads as level, not ahead or behind.
+LEVEL_WITHIN = 0.0005
+SHOWN_CLOSEST = 3
+# Test models the shared name table does not cover yet.
+_FAMILY_WORDS = {
+    "calib_incumbent_v1": "calibrated main model",
+    "liq_v1": "liquidity test",
+    "flow_v1": "order-flow test 1",
+    "flow_v2": "order-flow test 2",
+    "flow_v3": "order-flow test 3",
+    "archive_v1": "archive test",
+    "gbm_v1": "boosted-trees test",
+    "regime_v2": "trend test 2",
+}
+
+
+def family_words(family: str) -> str:
+    """A test model's everyday name; each 6-year model version folds into one."""
+    per_exchange = family.endswith("_venue")
+    base = family.removesuffix("_venue")
+    pooled = re.fullmatch(r"pooled_(\d+)m_[0-9a-f]+", base)
+    if pooled:
+        name = f"6-year history model ({pooled.group(1)}-min)"
+    else:
+        name = _FAMILY_WORDS.get(base) or rename_text(base)
+    return name + (", per exchange" if per_exchange else "")
+
+
+def _verdict(targets: int, gain: str | None) -> str:
+    if targets < TOO_FEW_TO_JUDGE:
+        return "too few results to judge"
+    if gain is None:
+        return "no score yet"
+    value = float(gain)
+    if value > LEVEL_WITHIN:
+        return "ahead of the main model so far"
+    if value < -LEVEL_WITHIN:
+        return "behind the main model"
+    return "level with the main model"
+
+
+def prediction_lines(research) -> list[str]:
+    """The Predictions field: a count, the closest few, then the rest as before.
+
+    One line per test model listed every internal id with its raw clock
+    (e.g. "pooled_15m_1a10acfb6945: day 8/21 · 649/150 targets · gain
+    +0.008"). This answers how many are being tested and how far the
+    leaders are, in plain words, and keeps the other research lines.
+    """
+    progress, others = [], []
+    for key, text in research:
+        match = _PROGRESS.match(text) if str(key).startswith("shadow-progress:") else None
+        if match:
+            progress.append(match)
+        else:
+            others.append(text)
+    if not progress:
+        return list(others)
+    groups: dict[str, list] = {}
+    for match in progress:
+        groups.setdefault(family_words(match["family"]), []).append(match)
+    leaders = sorted(
+        ((name, len(matches), max(matches, key=lambda m: (int(m["days"]),
+                                                          int(m["targets"]))))
+         for name, matches in groups.items()),
+        key=lambda entry: (-int(entry[2]["days"]), -int(entry[2]["targets"]), entry[0]),
+    )
+    min_days = int(leaders[0][2]["min_days"])
+    furthest = int(leaders[0][2]["days"])
+    count = len(leaders)
+    summary = (f"📊 {count} test model{'s' if count != 1 else ''} being tested. "
+               f"The furthest along is on day {furthest} of {min_days}.")
+    lines = [summary]
+    for name, versions, lead in leaders[:SHOWN_CLOSEST]:
+        targets, needed = int(lead["targets"]), int(lead["min_targets"])
+        results = ("enough results" if targets >= needed
+                   else f"{targets} of {needed} results")
+        label = name + (f" ({versions} versions)" if versions > 1 else "")
+        lines.append(f"• {label}: day {lead['days']} of {lead['min_days']}, "
+                     f"{results}, {_verdict(targets, lead['gain'])}")
+    if count > SHOWN_CLOSEST:
+        lines.append(f"• and {count - SHOWN_CLOSEST} more, further behind")
+    return [*lines, *others]
+
+
+def _job(text: str) -> str:
+    """Which part of the bot a database line came from, in plain words."""
+    owner = _field(text, "owner")
+    if not owner:
+        return ""
+    module, _, function = owner.split(":", 1)[0].rpartition(".")
+    words = " ".join(part.replace("_", " ").strip() for part in (module, function) if part)
+    return f" ({words})" if words else ""
 
 
 def _clip(lines: list[str], limit: int = 1000) -> str:
@@ -264,7 +367,7 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
 
     if facts.research is not None:
         if facts.research:
-            predictions = _clip([text for _, text in facts.research])
+            predictions = _clip(prediction_lines(facts.research))
         elif facts.intelligence_checked:
             # _clip() of an empty list returns "—", which hid this message.
             # State only what the four research_alerts checks actually prove:
@@ -350,7 +453,9 @@ def _plain(text: str) -> str:
     if "event loop blocked" in low:
         return "The bot froze for over a second while busy"
     if "postgresql connection held" in low:
-        return "A database job took a long time"
+        return "A database job took a long time" + _job(t)
+    if "postgresql slow operation" in low:
+        return "A database query took over 2 seconds" + _job(t)
     if "rate limited" in low:
         return f"{name or 'An exchange'} asked the bot to slow down"
     if "blocked" in low and ("region" in low or "451" in low) or "refuses this host" in low:

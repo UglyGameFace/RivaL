@@ -536,6 +536,81 @@ def warm_polymarket_cache(status_fn: Callable[[str, int], dict]) -> int:
     return done
 
 
+# The rest of the page's per-timeframe readers (the test-model rows, the
+# AI review grades, the history-lineage line) had no cache. They ran live
+# on every page load, in parallel with each other and with the 5-minute
+# cycle, against an 8-connection pool and a 7 s limit per read. When a read
+# lost that race its section was left off the page without a word: the
+# 15-minute page in the Nov 10 video showed no test-model rows and
+# "RivaL Intelligence: couldn't check right now" while the 5-minute page,
+# loaded minutes earlier, showed both. They now get the same cache and
+# background refresh as the three scorecards above, for every coin and
+# timeframe, so no timeframe depends on winning that race.
+PAGE_READ_CACHE_SECONDS = 35 * 60  # outlives the 30-minute background refresh
+_PAGE_READ_CACHE: dict[tuple, tuple[float, object, object]] = {}
+_PAGE_READ_INFLIGHT: dict[tuple, threading.Event] = {}
+_PAGE_READ_LOCK = threading.Lock()
+
+
+def _cached_page_read(reader: Callable, market: object, asset: str, horizon: int, *,
+                      refresh: bool = False):
+    """``reader(market, asset, horizon)``, cached per coin and timeframe.
+
+    Same rules as the scorecard caches: a fresh hit is returned at once, a
+    request that misses waits for a read already in flight instead of
+    starting a duplicate, and a failed read is never cached (it raises to
+    the caller and the next request tries again).
+    """
+    # Keyed by the reader itself: two readers never share an entry, even
+    # when both are anonymous.
+    key = (reader, id(market), asset, horizon)
+    while True:
+        with _PAGE_READ_LOCK:
+            hit = _PAGE_READ_CACHE.get(key)
+            if (not refresh and hit is not None and hit[1] is market
+                    and time.monotonic() - hit[0] < PAGE_READ_CACHE_SECONDS):
+                return hit[2]
+            running = _PAGE_READ_INFLIGHT.get(key)
+            if running is None:
+                running = _PAGE_READ_INFLIGHT[key] = threading.Event()
+                break
+        running.wait(timeout=30)
+        refresh = False  # the other run's result is fresh enough
+    try:
+        result = reader(market, asset, horizon)
+        with _PAGE_READ_LOCK:
+            if len(_PAGE_READ_CACHE) > 256:
+                _PAGE_READ_CACHE.clear()
+            _PAGE_READ_CACHE[key] = (time.monotonic(), market, result)
+        return result
+    finally:
+        with _PAGE_READ_LOCK:
+            _PAGE_READ_INFLIGHT.pop(key, None)
+        running.set()
+
+
+def _page_readers() -> tuple[Callable, ...]:
+    """Looked up at call time, so a patched reader is the one that runs."""
+    return (_pooled_record, _regime_record, _regime_live_record,
+            _regime_live_fast_record, _wild_record, _intelligence_report,
+            _performance_lineage)
+
+
+def warm_page_reads(market: object) -> int:
+    """Background refresh of every per-timeframe reader, every coin."""
+    done = 0
+    for asset in ("BTC", "ETH", "SOL", "XRP"):
+        for horizon in (5, 15, 60):
+            for reader in _page_readers():
+                try:
+                    _cached_page_read(reader, market, asset, horizon, refresh=True)
+                    done += 1
+                except Exception:  # noqa: BLE001 - optional page context only
+                    _LOG.warning("Performance %s refresh failed %s %s min",
+                                 getattr(reader, "__name__", "read"), asset, horizon)
+    return done
+
+
 def _pooled_record(market: object, asset: str, horizon: int) -> dict:
     """Live graded record of the pooled multi-year challenger now in use (7 days).
 
@@ -769,15 +844,37 @@ def _regime_live_text(record, label, now=None):
     return "\n" + _trial_one_liner(label, record, now or datetime.now(UTC))
 
 
+# A review older than its timeframe plus this is not a call for the next candle.
+INTELLIGENCE_CALL_GRACE_MINUTES = 10
+
+
+def _age_words(age: timedelta) -> str:
+    minutes = int(age.total_seconds() // 60)
+    if minutes < 120:
+        return f"{minutes} min"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours} hours"
+    return f"{hours // 24} days"
+
+
 def _intelligence_status(market: object, asset: str, horizon: int) -> dict | None:
     """RivaL Intelligence's graded reviews of the models (None if never run)."""
     from parlay_bot.perpetuals.intelligence import IntelligenceLedger
 
     ledger = IntelligenceLedger(market.store)
-    latest = ledger.latest(asset=asset)
+    latest = ledger.latest(asset=asset)  # the current call: read live, it is cheap
     if latest is None:
         return None
-    return {"latest": latest, "report": ledger.report(asset=asset, horizon=horizon)}
+    return {"latest": latest,
+            "report": _cached_page_read(_intelligence_report, market, asset, horizon)}
+
+
+def _intelligence_report(market: object, asset: str, horizon: int) -> dict:
+    """The 7-day grades of RivaL Intelligence's reviews (the slow part)."""
+    from parlay_bot.perpetuals.intelligence import IntelligenceLedger
+
+    return IntelligenceLedger(market.store).report(asset=asset, horizon=horizon)
 
 
 def _cycle_coverage(market: object) -> dict | None:
@@ -1827,26 +1924,17 @@ class GuidedHome(discord.ui.View):
                         _cached_benefit, self.market, self.coin, self.horizon,
                     ), timeout=PERFORMANCE_READ_SECONDS,
                 )
-                readers["pooled"] = asyncio.wait_for(
-                    asyncio.to_thread(_pooled_record, self.market, self.coin, self.horizon),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
-                readers["regime"] = asyncio.wait_for(
-                    asyncio.to_thread(_regime_record, self.market, self.coin, self.horizon),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
-                readers["regime_live"] = asyncio.wait_for(
-                    asyncio.to_thread(_regime_live_record, self.market, self.coin, self.horizon),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
-                readers["regime_live_fast"] = asyncio.wait_for(
-                    asyncio.to_thread(_regime_live_fast_record, self.market, self.coin, self.horizon),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
-                readers["wild"] = asyncio.wait_for(
-                    asyncio.to_thread(_wild_record, self.market, self.coin, self.horizon),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
+                for name, reader in (
+                    ("pooled", _pooled_record), ("regime", _regime_record),
+                    ("regime_live", _regime_live_record),
+                    ("regime_live_fast", _regime_live_fast_record),
+                    ("wild", _wild_record),
+                ):
+                    readers[name] = asyncio.wait_for(
+                        asyncio.to_thread(_cached_page_read, reader, self.market,
+                                          self.coin, self.horizon),
+                        timeout=PERFORMANCE_READ_SECONDS,
+                    )
                 readers["intelligence"] = asyncio.wait_for(
                     asyncio.to_thread(
                         _intelligence_status, self.market, self.coin, self.horizon,
@@ -1857,7 +1945,8 @@ class GuidedHome(discord.ui.View):
                 )
                 readers["lineage"] = asyncio.wait_for(
                     asyncio.to_thread(
-                        _performance_lineage, self.market, self.coin, self.horizon,
+                        _cached_page_read, _performance_lineage, self.market,
+                        self.coin, self.horizon,
                     ), timeout=PERFORMANCE_READ_SECONDS,
                 )
                 readers["cycles"] = asyncio.wait_for(
@@ -2078,6 +2167,16 @@ class GuidedHome(discord.ui.View):
             regime = reports.get("regime")
             if isinstance(regime, dict) and int(regime.get("issued") or 0):
                 exchange_text += "\n" + _trial_one_liner("trend-only test", regime, now)
+            # A row that could not be read is not a row with nothing in it.
+            missed = [label for key, label in (
+                ("pooled", "6-year history model"), ("regime", "trend-only test"),
+                ("regime_live", "trend learner"),
+                ("regime_live_fast", "fast trend learner"), ("wild", "wild-only test"),
+            ) if isinstance(reports.get(key), Exception)]
+            if missed:
+                exchange_text += (
+                    f"\n⚠️ **Couldn't load right now:** {', '.join(missed)}. "
+                    "Press Refresh; this is a slow read, not a missing result.")
             embed.add_field(name=f"📈 {self.coin} exchange predictions (up or down?)",
                             value=fit_embed_field_value(rename_text(exchange_text)), inline=False)
 
@@ -2147,9 +2246,18 @@ class GuidedHome(discord.ui.View):
                 need = ""
                 if benefit.get("status") == "insufficient" and days < 7:
                     need = f"; needs 7 days of results, has {days}"
+                # active_learning_evidence keeps one target per whole
+                # timeframe window (15-min targets on :00/:15/:30/:45, 60-min
+                # on the hour), so overlapping predictions are not counted as
+                # independent evidence. Say so: at 15 minutes the count is a
+                # third of the 5-minute one by design, which read as data
+                # going missing.
+                counted = int(benefit.get("targets") or 0)
+                unit = ("results" if self.horizon == 5 else
+                        f"separate {self.horizon}-min windows")
                 trend_text = (
                     f"**Getting more accurate?** {reason} "
-                    f"({int(benefit.get('targets') or 0):,} results over {days} "
+                    f"({counted:,} {unit} over {days} "
                     f"day{'s' if days != 1 else ''}{need})"
                 )
             elif isinstance(benefit, TimeoutError):
@@ -2213,10 +2321,28 @@ class GuidedHome(discord.ui.View):
                             if stance == "follow" and direction != "none"
                             else "makes no call")
                 # The AI's own note is technical; it stays in Detailed Research.
+                # Only a review young enough to cover the next candle is
+                # shown as a call for it. Background reviews are off by
+                # opt-in in production (bot.py), so the
+                # stored "latest" call can be days old; it was shown as "for
+                # the next 5-min candle it says DOWN" regardless.
+                try:
+                    reviewed = datetime.fromisoformat(str(latest.get("issued_at")))
+                    age = now - reviewed.astimezone(UTC)
+                except (TypeError, ValueError):
+                    age = None
+                current = age is not None and timedelta(0) <= age <= timedelta(
+                    minutes=self.horizon + INTELLIGENCE_CALL_GRACE_MINUTES)
+                if current:
+                    call = f"for the next {self.horizon}-min candle it {now_call}"
+                elif age is not None and age > timedelta(0):
+                    call = (f"no call for the next candle; its last review was "
+                            f"{_age_words(age)} ago")
+                else:
+                    call = "no call for the next candle"
                 intel_text = (
-                    f"\n**RivaL Intelligence (an AI that reviews the model's calls):** for "
-                    f"the next {self.horizon}-min candle it {now_call}. Last 7 days it "
-                    f"{followed} and {abstained}."
+                    f"\n**RivaL Intelligence (an AI that reviews the model's calls):** "
+                    f"{call}. Last 7 days it {followed} and {abstained}."
                 )
             elif isinstance(intelligence, Exception):
                 intel_text = "\n**RivaL Intelligence:** couldn't check right now"

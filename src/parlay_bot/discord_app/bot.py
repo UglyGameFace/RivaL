@@ -31,6 +31,7 @@ from parlay_bot.discord_app.home import (
     install_view_dispatch_logging,
     warm_benefit_cache,
     warm_exchange_cache,
+    warm_page_reads,
     warm_polymarket_cache,
 )
 from parlay_bot.discord_app.interaction_scope import install_interaction_scope
@@ -2576,6 +2577,13 @@ class RivalDiscordClient(discord.Client):
                     )
                 except Exception:  # noqa: BLE001 - optional page context
                     _LOG.exception("RivaL Polymarket-scorecard refresh failed")
+                # Test-model rows, AI review grades and lineage, for every
+                # coin and timeframe: the 15- and 60-minute pages must not
+                # depend on a live read beating the 5-minute cycle.
+                try:
+                    await asyncio.to_thread(warm_page_reads, self.perp_collector.market)
+                except Exception:  # noqa: BLE001 - optional page context
+                    _LOG.exception("RivaL Performance page refresh failed")
             await asyncio.sleep(30 * 60)
 
     async def _spike_stage(self) -> None:

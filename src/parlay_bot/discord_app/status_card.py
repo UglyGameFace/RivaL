@@ -16,6 +16,8 @@ from pathlib import Path
 
 import discord
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
+
 STALE_FEED_AFTER = timedelta(minutes=20)
 STALE_LIQUIDITY_AFTER = timedelta(minutes=15)
 # A live book stream that has delivered nothing for this long is a problem
@@ -207,7 +209,8 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
                           f"{hb['last_problem']}"
                           + (f" ({hb['consecutive_problems']} in a row)"
                              if hb.get("consecutive_problems") else ""))
-    embed.add_field(name="Outside uptime check", value=heartbeat[:1024], inline=False)
+    embed.add_field(name="Outside uptime check",
+                    value=fit_embed_field_value(heartbeat), inline=False)
 
     active = [w for w in facts.workers if w["state"] != "disabled"]
     running = sum(w["state"] == "running" for w in active)

@@ -15,6 +15,7 @@ import math
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
 from parlay_bot.perpetuals.forward_tracking import GOALS, ForwardTracking, TrackingUnavailable
 from parlay_bot.perpetuals.polymarket_learning import (
     MIN_DIRECTIONAL_MARGIN,
@@ -236,4 +237,6 @@ def polymarket_tracking_text(result: dict) -> str:
             line += (f"\n{mark} <t:{int(call['issued_at'].timestamp())}:t> "
                      f"{call['side']}{price} · {call['probability_up']:.0%} UP")
         lines.append(line)
-    return ("\n".join(lines) + "\nPaper results from frozen calls; no real trades.")[:1024]
+    return fit_embed_field_value(
+        "\n".join(lines) + "\nPaper results from frozen calls; no real trades."
+    )

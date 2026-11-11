@@ -63,6 +63,14 @@ def _storage(store, now) -> dict:
             """SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts
                WHERE settled_at IS NULL AND target_opened_at<?""",
             (cuts["older_14d"],)).fetchone()["n"])
+        out["shadow_by_family"] = [dict(r) for r in conn.execute(
+            """SELECT family, COUNT(*) AS n,
+                      SUM(CASE WHEN settled_at IS NULL THEN 1 ELSE 0 END) AS unsettled,
+                      MAX(issued_at) AS last_issued
+               FROM rival_model_shadow_forecasts GROUP BY family ORDER BY n DESC""").fetchall()]
+        out["liq1_last"] = conn.execute(
+            "SELECT MAX(issued_at) AS m FROM rival_liq1_features").fetchone()["m"] \
+            if conn.execute("SELECT to_regclass('rival_liq1_features') AS t").fetchone()["t"] else None
         out["shadow_retired_families_older_14d"] = [dict(r) for r in conn.execute(
             """SELECT family, COUNT(*) AS n FROM rival_model_shadow_forecasts
                WHERE issued_at<? AND (family LIKE 'flow_%' OR family LIKE 'liq_%'

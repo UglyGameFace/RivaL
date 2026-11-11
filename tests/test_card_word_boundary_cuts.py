@@ -253,6 +253,8 @@ def test_proof_progress_text_no_mid_word_cut():
 
 
 def test_status_card_heartbeat_no_mid_word_cut():
+    from parlay_bot.discord_app.status_card import HEARTBEAT_PROBLEM_CHARS
+
     now = datetime.now(UTC)
     facts = StatusFacts(
         now=now,
@@ -262,18 +264,19 @@ def test_status_card_heartbeat_no_mid_word_cut():
             "consecutive_problems": 1,
             "last_success_at": (now - timedelta(minutes=5)).isoformat(),
             "last_problem_at": (now - timedelta(minutes=3)).isoformat(),
-            "last_problem": _straddling_line(1024),
+            "last_problem": _straddling_line(HEARTBEAT_PROBLEM_CHARS),
         },
     )
     unfitted = _captured_unfitted(
         sc_module, lambda: build_embed(facts)[0].fields
     )
-    _assert_discriminating(unfitted, 1024)
+    _assert_discriminating(unfitted, HEARTBEAT_PROBLEM_CHARS)
     embed, _, _ = build_embed(facts)
-    fields = {field.name: field.value for field in embed.fields}
-    assert "Outside uptime check" in fields
-    assert fields["Outside uptime check"] != unfitted[:1024]
-    _assert_no_mid_word_cut(unfitted, fields["Outside uptime check"], 1024)
+    checks = next(field.value for field in embed.fields if field.name == "Checks")
+    line = next(x for x in checks.splitlines() if "last failed" in x)
+    said = line.split(": ", 1)[1].removesuffix(" (1 in a row)")
+    assert said != unfitted[:HEARTBEAT_PROBLEM_CHARS]
+    _assert_no_mid_word_cut(unfitted, said, HEARTBEAT_PROBLEM_CHARS)
 
 
 # --- GuidedHome "What Happened" note (site 5) ------------------------------

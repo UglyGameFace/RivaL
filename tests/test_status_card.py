@@ -44,6 +44,8 @@ def test_healthy_state_has_empty_signature():
     text = str(embed.to_dict())
     assert "1 of 1 running" in text  # disabled workers are not counted
     assert "1 of 1 up to date" in text
+    # Healthy is one short Checks list, not a section per system.
+    assert [f.name for f in embed.fields] == ["Checks"]
 
 
 def test_real_problems_raise_severity_and_name_the_cause():
@@ -75,7 +77,7 @@ def test_unreadable_sources_are_reported_not_guessed():
     assert severity == "degraded"
     assert "watchdog:unreadable" in signature and "liquidity:stale" in signature
     text = str(build_embed(facts)[0].to_dict())
-    assert "Couldn't read" in text and "Not set up" in text
+    assert "couldn't read the alert list" in text and "not set up" in text
 
 
 def test_error_digest_groups_counts_and_redacts():
@@ -143,8 +145,9 @@ def test_blocked_provider_is_shown_as_off_not_failing():
                                {"venue": "okx", "asset": "BTC", "status": "ok",
                                 "last_success_at": now.isoformat()}])
     assert assess(facts)[0] == "healthy"
-    field = next(f for f in build_embed(facts)[0].fields if f.name == "Exchange prices")
-    assert "1 of 1 up to date" in field.value and "off" in field.value
+    field = next(f for f in build_embed(facts)[0].fields if f.name == "Checks")
+    assert "**Prices:** 1 of 1 up to date" in field.value
+    assert "off, the exchange blocks this server: binance/BTC" in field.value
 
 
 def test_open_socket_with_no_data_is_not_a_green_check():
@@ -255,6 +258,11 @@ def test_a_stalled_stream_counts_after_startup_and_clears_when_it_recovers():
     assert "stream_stalled:hyperliquid" not in assess(facts(400, boot_minutes=2))[1]
 
 
+def _predictions(embed) -> str:
+    checks = next(f for f in embed.fields if f.name == "Checks").value
+    return next(line for line in checks.splitlines() if "**Predictions:**" in line)
+
+
 def test_empty_prediction_health_states_only_what_the_checks_prove():
     from datetime import UTC, datetime
 
@@ -264,16 +272,16 @@ def test_empty_prediction_health_states_only_what_the_checks_prove():
     embed, _, _ = build_embed(StatusFacts(
         now=now, boot_at=now, ready=True, heartbeat=None, workers=[], incidents=[],
         feeds=None, streams=None, liquidity_last_bucket=None, memory=None, research=[]))
-    field = next(f for f in embed.fields if f.name == "Predictions")
-    assert field.value.startswith("✅ These four checks passed")
+    line = _predictions(embed)
     # No blanket "no problems" and no unqualified "isn't doing worse": the
-    # four checks prove less than the old sentence claimed.
-    assert "No problems" not in field.value
-    assert "isn't doing worse" not in field.value
-    assert "last 20 min" in field.value
-    assert "last finished month" in field.value
-    assert "fewer than 300 graded results get no verdict" in field.value
-    assert "last 2 hours" in field.value
+    # checks prove less than that.
+    assert "No problems" not in line
+    assert "isn't doing worse" not in line
+    assert "last 20 min" in line
+    assert "last finished month" in line
+    assert "needs 300+ graded results for a verdict" in line
+    # Check 4 ran (the default), so the verified review is claimed.
+    assert "AI reviewed within the last 2 hours" in line
 
 
 def test_predictions_field_does_not_claim_a_review_that_never_ran(tmp_path):
@@ -306,12 +314,11 @@ def test_predictions_field_does_not_claim_a_review_that_never_ran(tmp_path):
             now=NOW, boot_at=NOW, ready=True, heartbeat=None, workers=[],
             incidents=[], feeds=None, streams=None, liquidity_last_bucket=None,
             memory=None, research=[], intelligence_checked=False))
-        field = next(f for f in embed.fields if f.name == "Predictions")
-        assert "reviewed within the last 2 hours" not in field.value
-        assert "RivaL Intelligence reviews off (background opt-in off)" in field.value
+        line = _predictions(embed)
+        assert "reviewed within the last 2 hours" not in line
+        assert "AI reviews off (background opt-in off)" in line
         # The three checks that did run are still reported honestly.
-        assert "These three checks passed" in field.value
-        assert "last 20 min" in field.value
+        assert "last 20 min" in line and "last finished month" in line
     finally:
         store.close()
 
@@ -346,7 +353,28 @@ def test_predictions_field_claims_a_review_only_after_a_real_recent_one(tmp_path
             now=NOW, boot_at=NOW, ready=True, heartbeat=None, workers=[],
             incidents=[], feeds=None, streams=None, liquidity_last_bucket=None,
             memory=None, research=[], intelligence_checked=True))
-        field = next(f for f in embed.fields if f.name == "Predictions")
-        assert "RivaL Intelligence reviewed within the last 2 hours" in field.value
+        assert "AI reviewed within the last 2 hours" in _predictions(embed)
     finally:
         store.close()
+
+
+def test_a_blocked_order_book_is_off_not_a_warning():
+    facts = _facts(streams={
+        "hyperliquid": {"connected": True, "updates": 50, "reconnects": 0,
+                        "last_update_age_s": 2},
+        "binance": {"connected": True, "updates": 0, "reconnects": 0}})
+    checks = next(f.value for f in build_embed(facts)[0].fields if f.name == "Checks")
+    line = next(x for x in checks.splitlines() if "**Order books:**" in x)
+    assert line.startswith("✅ **Order books:** 1 of 1 live")
+    assert "binance: connected but nothing received" in checks
+
+
+def test_problem_detail_sits_under_its_own_check():
+    facts = _facts(workers=[{"name": "settlement", "state": "stopped",
+                             "restarts_last_hour": 2}])
+    checks = next(f.value for f in build_embed(facts)[0].fields
+                  if f.name == "Checks").splitlines()
+    jobs = next(i for i, x in enumerate(checks) if "**Jobs:**" in x)
+    assert checks[jobs].startswith("⚠️ **Jobs:** 0 of 1 running")
+    assert checks[jobs + 1].strip() == "🛑 settlement: stopped"
+    assert checks[jobs + 2].strip() == "↻ settlement: restarted 2× in the last hour"

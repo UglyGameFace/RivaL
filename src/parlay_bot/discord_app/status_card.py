@@ -20,6 +20,7 @@ from parlay_bot.discord_app.answer_cards import rename_text
 from parlay_bot.discord_app.embed_text import fit_embed_field_value
 
 STALE_FEED_AFTER = timedelta(minutes=20)
+HEARTBEAT_PROBLEM_CHARS = 300
 STALE_LIQUIDITY_AFTER = timedelta(minutes=15)
 # A live book stream that has delivered nothing for this long is a problem
 # (counted in the status, so the card reposts when it stops and recovers).
@@ -287,62 +288,88 @@ def assess(facts: StatusFacts) -> tuple[str, tuple[str, ...]]:
     return severity, tuple(sorted(keys))
 
 
+def _sub(lines) -> list[str]:
+    """Problem detail under its check line, indented so the check stays scannable."""
+    return [f" {line}" for line in lines]
+
+
+def _predictions_line(facts: StatusFacts) -> str:
+    """One line that claims only what research_alerts' checks actually proved.
+
+    Check 4 (a fresh RivaL Intelligence review) is claimed only when it ran;
+    otherwise the reviews are said to be off, never given an invented time.
+    """
+    review = ("AI reviewed within the last 2 hours" if facts.intelligence_checked
+              else "AI reviews off (background opt-in off)")
+    return ("✅ **Predictions:** new ones in the last 20 min · 6-year model passed its "
+            "gates and covers the last finished month · no in-use 6-year version "
+            "significantly worse than a simple guess over 3 days (needs 300+ graded "
+            f"results for a verdict) · {review}")
+
+
 def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]]:
+    """One Checks list (a line per system, detail only under what is wrong),
+    then predictions and errors only when they have something to say."""
     severity, signature = assess(facts)
     now = facts.now
+    head = [(f"Up {_ago(facts.boot_at, now).replace(' ago', '')} "
+             f"(since {discord.utils.format_dt(facts.boot_at, 'f')})"),
+            "Connected to Discord" if facts.ready else "⚠️ NOT connected to Discord"]
+    if facts.memory:
+        memory = facts.memory
+        text = f"memory {memory['rss_mb']}/{memory['limit_mb']} MB"
+        if memory.get("pressure"):
+            text = "⚠️ " + text + " (running low: extra work paused)"
+        if memory.get("oom_kills"):
+            text += f", {memory['oom_kills']} out-of-memory crashes since the server started"
+        head.append(text)
     embed = discord.Embed(
-        title=f"RivaL Status • {LABELS[severity]}",
-        description=(
-            f"Running since {discord.utils.format_dt(facts.boot_at, 'f')} "
-            f"({_ago(facts.boot_at, now).replace(' ago', '')}) • "
-            f"{'Connected to Discord' if facts.ready else '⚠️ NOT connected to Discord'}"
-        ),
+        title=f"RivaL Status • {LABELS[severity]}", description=" · ".join(head),
         color=COLORS[severity], timestamp=now,
     )
+    checks: list[str] = []
+
     hb = facts.heartbeat
     if hb is None:
-        heartbeat = "⚪ Not set up (set RIVAL_HEALTHCHECKS_PING_URL)"
+        checks.append("⚪ **Uptime ping:** not set up (set RIVAL_HEALTHCHECKS_PING_URL)")
     else:
         ok = hb.get("consecutive_problems", 0) == 0
-        heartbeat = (f"{'✅' if ok else '⚠️'} Last check-in with Healthchecks.io "
-                     f"{_ago(_parse(hb.get('last_success_at')), now)}")
+        checks.append(f"{'✅' if ok else '⚠️'} **Uptime ping:** Healthchecks.io check-in "
+                      f"{_ago(_parse(hb.get('last_success_at')), now)}")
         if hb.get("last_problem"):
-            heartbeat += (f"\nLast failed check-in "
-                          f"{_ago(_parse(hb.get('last_problem_at')), now)}: "
-                          f"{hb['last_problem']}"
-                          + (f" ({hb['consecutive_problems']} in a row)"
-                             if hb.get("consecutive_problems") else ""))
-    embed.add_field(name="Outside uptime check",
-                    value=fit_embed_field_value(heartbeat), inline=False)
+            # The provider's message can be long: cut it at a word, never mid-word.
+            said = fit_embed_field_value(str(hb["last_problem"]), budget=HEARTBEAT_PROBLEM_CHARS)
+            checks += _sub([
+                f"last failed {_ago(_parse(hb.get('last_problem_at')), now)}: {said}"
+                + (f" ({hb['consecutive_problems']} in a row)"
+                   if hb.get("consecutive_problems") else "")])
 
     active = [w for w in facts.workers if w["state"] != "disabled"]
     running = sum(w["state"] == "running" for w in active)
-    lines = [f"{'✅' if running == len(active) else '⚠️'} {running} of {len(active)} running"]
-    lines += [f"🛑 {w['name']}: stopped" for w in active if w["state"] == "stopped"]
-    lines += [f"↻ {w['name']}: restarted {w['restarts_last_hour']}× in the last hour"
-              for w in active if w.get("restarts_last_hour")]
-    embed.add_field(name="Bot jobs", value=_clip(lines), inline=False)
+    checks.append(f"{'✅' if running == len(active) else '⚠️'} **Jobs:** "
+                  f"{running} of {len(active)} running")
+    checks += _sub([f"🛑 {w['name']}: stopped" for w in active if w["state"] == "stopped"])
+    checks += _sub([f"↻ {w['name']}: restarted {w['restarts_last_hour']}× in the last hour"
+                    for w in active if w.get("restarts_last_hour")])
 
     if facts.incidents is None:
-        incidents = "⚠️ Couldn't read the alert list (database slow or down)"
+        checks.append("⚠️ **Alerts:** couldn't read the alert list (database slow or down)")
     elif not facts.incidents:
-        incidents = "✅ None"
+        checks.append("✅ **Alerts:** none open")
     else:
-        incidents = _clip([
+        checks.append(f"⚠️ **Alerts:** {len(facts.incidents)} open")
+        checks += _sub([
             f"• `{i['issue_key']}` since {_ago(_parse(i.get('first_seen_at')), now)}: "
-            f"{str(i.get('detail') or '')[:140]}"
-            for i in facts.incidents
-        ])
-    embed.add_field(name="Open alerts", value=incidents, inline=False)
+            f"{str(i.get('detail') or '')[:120]}" for i in facts.incidents])
 
     if facts.feeds is None:
-        feeds = "⚪ Price collection is off or couldn't be read"
+        checks.append("⚪ **Prices:** collection is off or couldn't be read")
     else:
         stale, off = [], []
         for feed in facts.feeds:
             last = _parse(feed.get("last_success_at"))
             if feed.get("status") == "blocked":
-                off.append(f"⚪ {feed['venue']}/{feed['asset']}: off (the exchange blocks this server)")
+                off.append(f"{feed['venue']}/{feed['asset']}")
                 continue
             if last is None or now - last > STALE_FEED_AFTER:
                 stale.append(
@@ -350,66 +377,45 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
                     + (f", {feed['failure_count']} failures" if feed.get("failure_count")
                        else "")
                     + (f" ({feed['status']})" if feed.get("status") else ""))
-        active = len(facts.feeds) - len(off)
-        fresh = active - len(stale)
-        summary = (f"{'✅' if not stale else '⚠️'} {fresh} of {active} up to date "
-                   "(new prices in the last 20 min)")
-        feeds = _clip([summary, *stale, *off])
-    embed.add_field(name="Exchange prices", value=feeds, inline=False)
+        live = len(facts.feeds) - len(off)
+        checks.append(f"{'✅' if not stale else '⚠️'} **Prices:** {live - len(stale)} of "
+                      f"{live} up to date (new prices in the last 20 min)")
+        checks += _sub(stale)
+        if off:
+            checks += _sub([f"⚪ off, the exchange blocks this server: {', '.join(off)}"])
 
     if facts.streams:
-        stream_lines = [_stream_line(venue, s) for venue, s in facts.streams.items()]
+        lines = [_stream_line(venue, s) for venue, s in facts.streams.items()]
+        good = sum(line.startswith("✅") for line in lines)
+        # ⚪ = the exchange sends nothing to this server: off, not failing.
+        off = sum(line.startswith("⚪") for line in lines)
         last = _parse(facts.liquidity_last_bucket)
-        stream_lines.append(
-            f"{'✅' if last and now - last <= STALE_LIQUIDITY_AFTER else '⚠️'} "
-            f"Trading-activity record: last saved {_ago(last, now)}")
-        embed.add_field(name="Live order books", value=_clip(stream_lines), inline=False)
+        saved = last is not None and now - last <= STALE_LIQUIDITY_AFTER
+        healthy = good == len(lines) - off and saved
+        checks.append(f"{'✅' if healthy else '⚠️'} **Order books:** "
+                      f"{good} of {len(lines) - off} live · trading activity saved "
+                      f"{_ago(last, now)}")
+        checks += _sub([line for line in lines if not line.startswith("✅")])
 
-    if facts.research is not None:
-        if facts.research:
-            predictions = _clip(prediction_lines(facts.research))
-        elif facts.intelligence_checked:
-            # _clip() of an empty list returns "—", which hid this message.
-            # State only what the four research_alerts checks actually prove:
-            # fresh forecasts, a gated 6-year model covering the last finished
-            # month, no in-use version significantly worse than a simple guess,
-            # and fresh Intelligence reviews. Anything else is checked
-            # separately on this card.
-            predictions = ("✅ These four checks passed: new predictions arrived in the "
-                           "last 20 min; the 6-year model passed its gates and covers "
-                           "the last finished month; no in-use 6-year version was "
-                           "significantly worse than a simple guess over the last 3 days "
-                           "(versions with fewer than 300 graded results get no verdict); "
-                           "and RivaL Intelligence reviewed within the last 2 hours. "
-                           "Other parts of the system are checked separately on this card.")
-        else:
-            # Check 4 never ran (Intelligence task absent), so no review was
-            # verified: claim only the three checks that did pass, and say
-            # the reviews are off instead of inventing a review time.
-            predictions = ("✅ These three checks passed: new predictions arrived in the "
-                           "last 20 min; the 6-year model passed its gates and covers "
-                           "the last finished month; and no in-use 6-year version was "
-                           "significantly worse than a simple guess over the last 3 days "
-                           "(versions with fewer than 300 graded results get no verdict). "
-                           "RivaL Intelligence reviews off (background opt-in off). "
-                           "Other parts of the system are checked separately on this card.")
-        embed.add_field(name="Predictions", value=predictions, inline=False)
-
-    if facts.memory:
-        memory = facts.memory
-        text = f"{memory['rss_mb']} / {memory['limit_mb']} MB"
-        if memory.get("pressure"):
-            text = "⚠️ " + text + " (running low: extra work paused)"
-        if memory.get("oom_kills"):
-            text += f" • {memory['oom_kills']} out-of-memory crashes since the server started"
-        embed.add_field(name="Memory used", value=text, inline=True)
+    if facts.research is not None and not facts.research:
+        checks.append(_predictions_line(facts))
 
     totals = facts.problem_totals or {}
     open_incidents = (None if facts.incidents is None
                       else {str(i["issue_key"]) for i in facts.incidents})
-    lines = problem_lines(facts.problems, now=now, boot_at=facts.boot_at, totals=totals,
-                          open_incidents=open_incidents)
-    embed.add_field(name="Errors and warnings (last 24 h)", value=_clip(lines), inline=False)
+    if not facts.problems:
+        checks.append(f"✅ **Errors:** none in the last 24 h "
+                      f"({totals.get('ERROR', 0)} errors, {totals.get('WARNING', 0)} warnings)")
+    embed.add_field(name="Checks", value=_clip(checks), inline=False)
+
+    if facts.research:
+        embed.add_field(name="Predictions", value=_clip(prediction_lines(facts.research)),
+                        inline=False)
+    if facts.problems:
+        lines = problem_lines(facts.problems, now=now, boot_at=facts.boot_at,
+                              totals=totals, open_incidents=open_incidents)
+        embed.add_field(name="Errors and warnings (last 24 h)", value=_clip(lines),
+                        inline=False)
     embed.set_footer(text="Posts when something changes, and once a day • "
                           f"Check version {_prediction_health_revision()}")
     return embed, severity, signature

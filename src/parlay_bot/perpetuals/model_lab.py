@@ -55,10 +55,10 @@ PREFIX = "lab_"
 VERSION = 1
 HORIZONS = (5, 15, 60)
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
-# Two per timeframe to start: each design adds a row per stream and cycle to
-# the shared ledger, and settlement has a 20 s budget per cycle. Raise it
-# once the forecast-cycle timing log shows settlement keeping up.
-SLOTS_PER_HORIZON = 2
+# Four per timeframe (12 designs) since Nov 11: the grading fast pass now
+# takes ~0.16 s (measured on production after #512), so the extra rows -- one
+# per design, stream and cycle, about +1,300 an hour -- fit easily.
+SLOTS_PER_HORIZON = 4
 
 # The 10 live features (features.feature_vector), grouped so a design reads
 # whole ideas rather than single columns.

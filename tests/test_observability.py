@@ -177,3 +177,53 @@ def test_heartbeat_is_throttled_and_never_raises(monkeypatch):
     observability.heartbeat("rival-test")
     observability.heartbeat("rival-test")
     assert calls == [{"monitor_slug": "rival-test", "status": "ok"}]
+
+
+def _capture_sdk():
+    import sentry_sdk
+    from sentry_sdk.transport import Transport
+
+    sent: list[dict] = []
+
+    class Capture(Transport):
+        def capture_envelope(self, envelope):
+            sent.extend(item.payload.json for item in envelope.items
+                        if item.type == "event")
+
+    sentry_sdk.init(dsn="https://key@o1.ingest.us.sentry.io/1", transport=Capture(),
+                    before_send=observability.before_send)
+    return sentry_sdk, sent
+
+
+def test_each_health_alert_is_its_own_issue_and_none_is_dropped_as_a_repeat():
+    """RIVAL-F: every watchdog alert shares one log template, so Sentry put
+    all of them in one issue (no "new issue" email for a new kind of fault)
+    and the 10-minute dedupe dropped a second, different alert."""
+    import logging
+
+    import sentry_sdk as sdk
+
+    log = logging.getLogger("parlay_bot.perpetuals.runtime_health")
+    observability._recent.clear()
+    with sdk.isolation_scope():
+        sentry_sdk, sent = _capture_sdk()
+        try:
+            for key, detail in (("import_failed", "drive_read_unverified"),
+                                ("feed:bitget:BTC", "no verified fresh completed candle")):
+                with observability.health_alert_scope(key):
+                    log.error("RivaL HEALTH ALERT %s: %s", key, detail)
+            # A true repeat of the same alert is still rate-limited.
+            with observability.health_alert_scope("import_failed"):
+                log.error("RivaL HEALTH ALERT %s: %s", "import_failed", "drive_read_unverified")
+            # Outside the scope, nothing is fingerprinted.
+            log.error("unrelated failure")
+            sentry_sdk.flush()
+        finally:
+            sentry_sdk.init()
+    assert [e.get("fingerprint") for e in sent] == [
+        ["health-alert", "import_failed"], ["health-alert", "feed:bitget:BTC"], None]
+
+
+def test_health_alert_scope_is_a_no_op_without_sentry():
+    with observability.health_alert_scope("anything"):
+        pass

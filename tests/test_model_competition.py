@@ -312,3 +312,19 @@ def test_batched_settlement_writes_the_same_scores_as_per_row(learning_store):
         assert row["model_brier"] == pytest.approx(p ** 2, abs=1e-12)
         assert row["incumbent_brier"] == pytest.approx(.36, abs=1e-12)
         assert row["baseline_brier"] == pytest.approx(.25, abs=1e-12)
+
+
+def test_a_row_issued_seconds_after_its_incumbent_is_still_graded(learning_store):
+    """Nov 11: cross-exchange rows are issued after the per-stream loop, so
+    their issued_at is a few seconds after the incumbent's. They must grade
+    (they never did: every cross row stayed unsettled)."""
+    hot = learning_store
+    ForwardAccuracyMonitor(PerpetualMarketStore(hot)).initialize()
+    comp = ShadowModelCompetition(hot)
+    now = datetime(2026, 11, 4, 20, tzinfo=UTC)
+    _seed_settled(hot, start=now - timedelta(hours=2), count=3, families=("cross_all_v1",))
+    with hot.connect() as conn:
+        conn.execute("""UPDATE rival_model_shadow_forecasts SET issued_at=
+                          REPLACE(issued_at, ':20+00:00', ':27+00:00')""")
+    assert comp.settle(now=now, since=now - timedelta(hours=6)) == 3
+    assert _unsettled(hot) == 0

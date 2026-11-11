@@ -220,3 +220,30 @@ async def test_resumable_upload_recovers_from_transient_503(tmp_path, monkeypatc
     assert stored.file_id == "f1"
     full = f"bytes 0-{len(payload) - 1}/{len(payload)}"
     assert puts == [full, f"bytes */{len(payload)}", full]
+
+
+@pytest.mark.parametrize(("body", "expected"), (
+    ({"error": "invalid_grant", "error_description": "Token has been expired or revoked."},
+     "Google OAuth refresh failed with 400 (invalid_grant)"),
+    (None, "Google OAuth refresh failed with 400"),
+))
+@pytest.mark.asyncio
+async def test_a_rejected_sign_in_names_googles_reason_never_the_token(body, expected) -> None:
+    from parlay_bot.archive.drive import DriveArchiveError
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if body is None:
+            return httpx.Response(400, text="not json")
+        return httpx.Response(400, json=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = GoogleDriveArchiveClient(
+            client_id="c", client_secret="s", refresh_token="secret-refresh",
+            folders=DriveArchiveFolders(root="root-id", history="history-id",
+                                        manifests="manifests-id", staging="staging-id"),
+            client=http, chunk_size_bytes=256 * 1024,
+        )
+        with pytest.raises(DriveArchiveError) as raised:
+            await client._access_token()
+    assert str(raised.value) == expected
+    assert "secret-refresh" not in str(raised.value)

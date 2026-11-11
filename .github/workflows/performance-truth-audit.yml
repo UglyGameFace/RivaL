@@ -133,6 +133,10 @@ jobs:
                   else:
                       merged[f"error/{asset}"] = str(shell.get("stderr", ""))[-800:]
               pathlib.Path("render.json").write_text(json.dumps(merged, indent=1))
+              # Short sections first: the full dump is cut at 60k characters.
+              print("TIMINGS " + json.dumps(merged.get("timings"), sort_keys=True))
+              print("ERRORS " + json.dumps({k: v for k, v in merged.items()
+                                            if k.startswith("error")})[:2000])
               print(json.dumps(merged, indent=1)[:60000])
               raise SystemExit(0)
           if os.environ["MODE"] == "render":

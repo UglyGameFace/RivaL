@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 
 import discord
 
+from parlay_bot.discord_app import screen_snapshots
 from parlay_bot.discord_app.alert_control import stop_all_notifications
 from parlay_bot.discord_app.answer_cards import RESEARCH_FOOTER, rename_text
 from parlay_bot.discord_app.api_limits import OwnerLimitsView
@@ -404,6 +405,7 @@ def _cached_benefit(market: object, asset: str, horizon: int, *, refresh: bool =
     try:
         result = _performance_benefit(market, asset, horizon)
         if isinstance(result, dict):
+            screen_snapshots.remember("benefit", asset, horizon, result)
             with _BENEFIT_LOCK:
                 if len(_BENEFIT_CACHE) > 64:
                     _BENEFIT_CACHE.clear()
@@ -471,6 +473,7 @@ def _cached_exchange(market: object, asset: str, *, refresh: bool = False) -> di
     try:
         result = _performance_exchange(market, asset)
         if isinstance(result, dict):
+            screen_snapshots.remember("exchange", asset, 0, result)
             with _EXCHANGE_LOCK:
                 if len(_EXCHANGE_CACHE) > 64:
                     _EXCHANGE_CACHE.clear()
@@ -518,6 +521,7 @@ def _cached_polymarket_status(
     try:
         result = status_fn(asset, horizon)
         if isinstance(result, dict):
+            screen_snapshots.remember("polymarket", asset, horizon, result)
             with _POLYMARKET_LOCK:
                 if len(_POLYMARKET_CACHE) > 64:
                     _POLYMARKET_CACHE.clear()
@@ -596,6 +600,9 @@ def _cached_page_read(reader: Callable, market: object, asset: str, horizon: int
         refresh = False  # the other run's result is fresh enough
     try:
         result = reader(market, asset, horizon)
+        if isinstance(result, dict) and result.get("partial"):
+            return result      # part of it failed: shown once, never cached
+        screen_snapshots.remember(getattr(reader, "__name__", "read"), asset, horizon, result)
         with _PAGE_READ_LOCK:
             if len(_PAGE_READ_CACHE) > 256:
                 _PAGE_READ_CACHE.clear()
@@ -784,6 +791,7 @@ def _best_record(market: object, asset: str, horizon: int) -> dict:
             out["best"][h] = trial_board.best(board.get("rows") or [])
         except Exception:  # noqa: BLE001 - one timeframe failing shows as unknown
             out["best"][h] = "error"
+            out["partial"] = True
     lab = getattr(market, "model_lab", None)
     if lab is not None:
         try:
@@ -1019,7 +1027,9 @@ def _trials_text(reports: dict) -> tuple[str, str]:
                  else f"{len(venues)} exchanges" if venues else "the judged exchange")
         # Every column of a row comes from the same exchange(s), so the
         # numbers can be read together.
-        body = (trial_board.table(rows) + trial_board.leader_line(rows) + "\n"
+        missing = ("\n-# Right % couldn't load this time (not zero); it fills in on "
+                   "its own." if board.get("partial") else "")
+        body = (trial_board.table(rows) + trial_board.leader_line(rows) + missing + "\n"
                 f"-# Scored on {where} (the hourly check rotates exchanges). Day = days of "
                 f"results, Res = graded results, Right = its up/down calls that came true "
                 f"(last {trial_board.HIT_DAYS} days), Edge = less error than the main model "
@@ -1157,6 +1167,23 @@ def _health_text(coin: str, horizon: int, reports: dict, now: datetime,
     return "\n".join(lines)
 
 
+# Screen reader name -> (saved-copy name, timeframe key or None for "this one").
+_SAVED_NAMES = {
+    "exchange": ("exchange", 0), "benefit": ("benefit", None),
+    "polymarket": ("polymarket", None), "calibration": ("_calibration_record", None),
+    "trials": ("_trial_board_record", None), "best": ("_best_record", 0),
+}
+
+
+def _last_good(name: str, coin: str, horizon: int):
+    """(value, age) of the last good copy of a failed read, or None."""
+    spec = _SAVED_NAMES.get(name)
+    if spec is None:
+        return None
+    saved_name, fixed = spec
+    return screen_snapshots.last(saved_name, coin, horizon if fixed is None else fixed)
+
+
 def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
                       venues: tuple[str, ...] = ()) -> discord.Embed:
     """Bot Performance: verdict first, then three short sections and two tables.
@@ -1166,10 +1193,15 @@ def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
     never as a zero.
     """
     headline, scoreboard = _scoreboard_text(coin, horizon, reports, now)
+    stale = reports.get("_stale") or {}
+    oldest = max(stale.values(), default=None)
+    note = (f"\n-# ⏳ Some sections show the last good check from {_age_words(max(oldest, timedelta(minutes=1)))} ago — the "
+            "database was busy just now. They update by themselves."
+            if oldest is not None else "")
     embed = discord.Embed(
         title=f"📊 {ASSET_NAMES.get(coin, coin)} · {horizon}-min · Bot performance",
         description=(f"{headline}\n-# Every score uses predictions saved before the "
-                     "result was known. Does it make money? Not proven yet."),
+                     f"result was known. Does it make money? Not proven yet.{note}"),
         color=discord.Color.blurple(),
     )
     embed.add_field(name="🎯 Scoreboard (last 7 days)",
@@ -2315,9 +2347,15 @@ class GuidedHome(discord.ui.View):
             reports = dict(zip(
                 readers, await asyncio.gather(*readers.values(), return_exceptions=True),
             ))
-            for name, result in reports.items():
+            stale = {}
+            for name, result in list(reports.items()):
                 if isinstance(result, Exception):
                     _LOG.warning("Performance %s read failed: %s", name, type(result).__name__)
+                    saved = _last_good(name, self.coin, self.horizon)
+                    if saved is not None:
+                        reports[name], stale[name] = saved
+            if stale:
+                reports["_stale"] = stale
             if self.contest_models is not None:
                 try:  # in memory, refreshed by the live board every 10 minutes
                     reports["contest"] = self.contest_models(self.coin, self.horizon)

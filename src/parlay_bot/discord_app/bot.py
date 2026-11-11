@@ -2655,6 +2655,12 @@ class RivalDiscordClient(discord.Client):
         scorecard on the same 30-minute schedule.
         """
         await self.wait_until_ready()
+        if self.perp_collector is not None:
+            from parlay_bot.discord_app import screen_snapshots
+            try:  # last good Bot Performance copies survive the restart
+                await asyncio.to_thread(screen_snapshots.load, self.perp_collector.market.store)
+            except Exception:  # noqa: BLE001 - optional page context
+                _LOG.warning("Saved Bot Performance copies not loaded", exc_info=True)
         await asyncio.sleep(150)  # start between forecast cycles
         while not self.is_closed():
             if self.perp_collector is not None and not host_memory.snapshot().pressure:

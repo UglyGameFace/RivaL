@@ -40,3 +40,13 @@ def learning_store(request, tmp_path):
             if store is not None:
                 store.close()
             connection.execute(sql.SQL('DROP SCHEMA {} CASCADE').format(sql.Identifier(schema)))
+
+
+@pytest.fixture(autouse=True)
+def _no_saved_screen_copies():
+    """Bot Performance's last-good copies must not leak between tests."""
+    from parlay_bot.discord_app import screen_snapshots
+
+    screen_snapshots.reset()
+    yield
+    screen_snapshots.reset()

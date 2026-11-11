@@ -15,12 +15,15 @@ plus on how many exchanges it is ahead.
 from __future__ import annotations
 
 import json
+import logging
 import math
 import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.storage.optional_reads import optional_rows
+
+_LOG = logging.getLogger(__name__)
 
 MIN_DAYS = 21
 MIN_RESULTS = 150
@@ -311,6 +314,8 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
     venues = sorted({venue for venue, _contract in contracts})
     rates = (hit_rates(store, asset=asset, horizon=horizon, now=stamp, venues=venues)
              if venues else {})
+    partial = rates is None
+    rates = rates or {}
     rows = [replace(r, calls=rates.get(r.family, (0, 0))[0],
                     right=rates.get(r.family, (0, 0))[1]) for r in rows]
     total = passed = 0
@@ -322,19 +327,20 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
         total += len(folded)
         passed += sum(r.passed for r in folded)
     return {"rows": rows, "markets": len(by_market), "trials": total, "passed": passed,
-            "stops": len(stop_rows), "venues": venues}
+            "stops": len(stop_rows), "venues": venues, "partial": partial}
 
 
 HIT_DAYS = 7
 
 
 def hit_rates(store, *, asset: str, horizon: int, now: datetime | None = None,
-              venues=None) -> dict[str, tuple[int, int]]:
+              venues=None) -> dict[str, tuple[int, int]] | None:
     """family -> (graded up/down calls, calls that came true), last HIT_DAYS days.
 
     The scoreboard's own rule: graded with a 0/1 outcome, not a 50/50 call.
     One grouped read on the (asset, horizon, family, issued_at) index;
-    ``venues`` limits it to those exchanges (None: every exchange).
+    ``venues`` limits it to those exchanges (None: every exchange). None if
+    the read failed, so a busy database never shows as "no calls".
     """
     stamp = (now or datetime.now(UTC)).astimezone(UTC)
     where, extra = "", ()
@@ -358,8 +364,9 @@ def hit_rates(store, *, asset: str, horizon: int, now: datetime | None = None,
                 + where + " GROUP BY family",
                 (asset, int(horizon), (stamp - timedelta(days=HIT_DAYS)).isoformat(), *extra),
             ).fetchall()
-    except Exception:  # noqa: BLE001 - no ledger yet: no rates, never a fake zero
-        return {}
+    except Exception:  # noqa: BLE001 - a failed read is not "no calls"
+        _LOG.warning("Trial hit-rate read failed %s %s min", asset, horizon)
+        return None
     return {str(r["family"]): (int(r["n"]), int(r["came_true"] or 0)) for r in rows}
 
 

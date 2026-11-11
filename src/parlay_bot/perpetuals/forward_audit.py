@@ -162,6 +162,22 @@ ISSUE_CROSS_V1_CHALLENGERS = True
 # models. Up to SLOTS_PER_HORIZON live-learning designs per timeframe; a
 # closed design is replaced by one the lab has never tried. Test-only like
 # every challenger; never serves (selected() has no lab branch).
+# The calibrated challenger's hourly refit runs beside the cycle, never in it
+# (calibrated_challenger.refit_in_background). Tests turn it off to stay
+# deterministic.
+CALIBRATED_REFIT_IN_BACKGROUND = True
+_NO_TRADE_SETTLE_SQL = """UPDATE perp_forward_audit
+       SET settled_at=?, outcome_up=NULL, realized_close=?,
+           model_brier=NULL, baseline_brier=NULL
+       WHERE venue=? AND contract=? AND quote=?
+         AND horizon_minutes=? AND model_version=?
+         AND reference_opened_at=? AND settled_at IS NULL"""
+_GRADED_SETTLE_SQL = """UPDATE perp_forward_audit
+       SET settled_at=?, outcome_up=?, realized_close=?,
+           model_brier=?,baseline_brier=?
+       WHERE venue=? AND contract=? AND quote=?
+         AND horizon_minutes=? AND model_version=?
+         AND reference_opened_at=? AND settled_at IS NULL"""
 ISSUE_LAB_CHALLENGERS = True
 
 # The per-cycle fast pass grades recent targets; the hourly full pass (same
@@ -794,7 +810,7 @@ class ForwardAccuracyMonitor:
                 "frozen_weights_improvement_proven": False}
 
     def _settle_rows(self, now: datetime, pending) -> int:
-        resolved = 0
+        updates: list[tuple[str, tuple]] = []
         for pred in pending:
             try:
                 observed = utc(datetime.fromisoformat(
@@ -822,39 +838,26 @@ class ForwardAccuracyMonitor:
                     # is just the previous price repeated (dYdX does this on
                     # thin markets). Grade it as settled but not comparable
                     # instead of counting a fake NOT-UP result.
-                    with self.store.connect() as conn:
-                        result = conn.execute(
-                            """UPDATE perp_forward_audit
-                               SET settled_at=?, outcome_up=NULL, realized_close=?,
-                                   model_brier=NULL, baseline_brier=NULL
-                               WHERE venue=? AND contract=? AND quote=?
-                                 AND horizon_minutes=? AND model_version=?
-                                 AND reference_opened_at=? AND settled_at IS NULL""",
-                            (now.isoformat(), value, pred["venue"], pred["contract"],
-                             pred["quote"], pred["horizon_minutes"],
-                             pred["model_version"], pred["reference_opened_at"]),
-                        )
-                        resolved += int(result.rowcount == 1)
+                    updates.append((_NO_TRADE_SETTLE_SQL, (
+                        now.isoformat(), value, pred["venue"], pred["contract"],
+                        pred["quote"], pred["horizon_minutes"],
+                        pred["model_version"], pred["reference_opened_at"])))
                     continue
                 label = int(value > previous)
-                with self.store.connect() as conn:
-                    result = conn.execute(
-                        """UPDATE perp_forward_audit
-                           SET settled_at=?, outcome_up=?, realized_close=?,
-                               model_brier=?,baseline_brier=?
-                           WHERE venue=? AND contract=? AND quote=?
-                             AND horizon_minutes=? AND model_version=?
-                             AND reference_opened_at=? AND settled_at IS NULL""",
-                        (
-                            now.isoformat(), label, value, (p - label) ** 2,
-                            (b - label) ** 2, pred["venue"], pred["contract"],
-                            pred["quote"], pred["horizon_minutes"],
-                            pred["model_version"], pred["reference_opened_at"],
-                        ),
-                    )
-                    resolved += int(result.rowcount == 1)
+                updates.append((_GRADED_SETTLE_SQL, (
+                    now.isoformat(), label, value, (p - label) ** 2,
+                    (b - label) ** 2, pred["venue"], pred["contract"],
+                    pred["quote"], pred["horizon_minutes"],
+                    pred["model_version"], pred["reference_opened_at"])))
             except (ValueError, TypeError, ArithmeticError):
                 _LOG.warning("Prospective settlement skipped corrupt market row")
+        # All grades on one connection (they each took their own, about 100
+        # connections a cycle); each update is still guarded by settled_at.
+        resolved = 0
+        if updates:
+            with self.store.connect() as conn:
+                for sql, params in updates:
+                    resolved += int(conn.execute(sql, params).rowcount == 1)
         return resolved
 
     def _settle(self, now: datetime) -> int:
@@ -950,17 +953,19 @@ class ForwardAccuracyMonitor:
             ).fetchall()
         return self._settle_rows(now, pending)
 
-    def _mark(self) -> tuple[float, float]:
+    def _mark(self) -> tuple[float, float, int]:
         clock = getattr(self, "_db_clock", None)
-        return time.perf_counter(), clock.seconds if clock is not None else 0.0
+        return (time.perf_counter(), clock.seconds if clock is not None else 0.0,
+                clock.checkouts if clock is not None else 0)
 
-    def _lap(self, phase: str, mark: tuple[float, float]) -> None:
+    def _lap(self, phase: str, mark: tuple[float, float, int]) -> None:
         """Add wall time since ``mark`` to a phase, and the PostgreSQL share of it."""
-        started, db_started = mark
+        started, db_started, checkouts_started = mark
         self.last_timing[phase] += time.perf_counter() - started
         clock = getattr(self, "_db_clock", None)
         if clock is not None:
             self.last_db_timing[phase] += clock.seconds - db_started
+            self.last_checkouts[phase] += clock.checkouts - checkouts_started
 
     def run_once(self, *, now: datetime | None = None) -> tuple[int, int]:
         """One forecast cycle, with its PostgreSQL time measured per phase."""
@@ -993,6 +998,7 @@ class ForwardAccuracyMonitor:
                                    "boosters", "write", "cross", "settle")}
         self.last_timing = timing
         self.last_db_timing = dict.fromkeys(timing, 0.0)
+        self.last_checkouts = dict.fromkeys(timing, 0)
         mark = self._mark()
         metrics = {
             "discovered_streams": 0, "selected_streams": 0,
@@ -1062,10 +1068,13 @@ class ForwardAccuracyMonitor:
         # Calibrated incumbent: refit (causally, from already-graded outcomes)
         # at most every 30 minutes; kept on the monitor across cycles.
         calib = self.__dict__.setdefault("_calibrated", CalibratedIncumbent(self.store))
-        try:
-            calib.refit(stamp, cycle_assets)
-        except Exception:  # noqa: BLE001 - optional challenger never blocks forecasts
-            _LOG.exception("RivaL calibrated challenger fit unavailable")
+        if CALIBRATED_REFIT_IN_BACKGROUND:
+            calib.refit_in_background(stamp, cycle_assets)
+        else:
+            try:
+                calib.refit(stamp, cycle_assets)
+            except Exception:  # noqa: BLE001 - optional challenger never blocks forecasts
+                _LOG.exception("RivaL calibrated challenger fit unavailable")
         self._lap("select", mark)
         # Per-stream window inputs from the previous cycle (process memory
         # only; rebuilt from candles after a restart). Bounded to the
@@ -1710,10 +1719,11 @@ class ForwardAccuracyMonitor:
         clock = self._db_clock
         # Wall time per phase, then the PostgreSQL part of each (execute +
         # commit + pool wait); the difference is Python work in that phase.
-        _LOG.info("RivaL forward cycle timing %s | db %s | statements=%d commits=%d "
-                  "checkouts=%d pool_wait=%.1fs",
+        _LOG.info("RivaL forward cycle timing %s | db %s | connections %s | statements=%d "
+                  "commits=%d checkouts=%d pool_wait=%.1fs",
                   " ".join(f"{k}={v:.1f}s" for k, v in timing.items()),
                   " ".join(f"{k}={v:.1f}s" for k, v in self.last_db_timing.items()),
+                  " ".join(f"{k}={v}" for k, v in self.last_checkouts.items()),
                   clock.statements if clock else 0, clock.commits if clock else 0,
                   clock.checkouts if clock else 0, clock.wait_seconds if clock else 0.0)
         if ISSUE_LAB_CHALLENGERS and getattr(self.market, "model_lab", None) is not None:

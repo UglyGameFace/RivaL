@@ -5,11 +5,14 @@ live research learner; prospective performance and trade promotion are separate.
 """
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
 import math
 import threading
+import time
+import weakref
 from datetime import UTC, datetime, timedelta
 
 from parlay_bot.perpetuals.markets import ASSETS, HORIZONS, asset_for_contract
@@ -17,6 +20,31 @@ from parlay_bot.perpetuals.model_checkpoints import FEATURE_CONTRACT, TARGET_CON
 from parlay_bot.research.boosted_portable import validate_portable
 from parlay_bot.storage.hot import RelationalHotStore
 
+# The 5-minute cycle asked for the same candidates once per exchange and
+# timeframe (about 240 identical reads per cycle, each re-parsing and
+# re-hashing up to 60 stored models). The query depends only on coin and
+# timeframe, so its parsed rows are kept for ``CANDIDATE_CACHE_SECONDS``;
+# every per-call check (exchange, "trained before now", "imported before
+# now") still runs on every call. An import clears the cache at once.
+CANDIDATE_CACHE_SECONDS = 120.0
+_CANDIDATE_CACHE: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+_CANDIDATE_LOCK = threading.Lock()
+
+
+def _cached_rows(store, key, load):
+    with _CANDIDATE_LOCK:
+        hit = _CANDIDATE_CACHE.get(store, {}).get(key)
+        if hit is not None and time.monotonic() - hit[0] < CANDIDATE_CACHE_SECONDS:
+            return hit[1]
+    rows = load()
+    with _CANDIDATE_LOCK:
+        _CANDIDATE_CACHE.setdefault(store, {})[key] = (time.monotonic(), rows)
+    return rows
+
+
+def _forget_candidates(store) -> None:
+    with _CANDIDATE_LOCK:
+        _CANDIDATE_CACHE.pop(store, None)
 
 class CandidateValidationError(ValueError):
     """External research candidate cannot be trusted or is unsupported."""
@@ -408,6 +436,7 @@ class ResearchCandidateRegistry:
             ).fetchone()
             stored_verified = bool(stored["source_verified"])
             stored_status = stored["source_verification"]
+        _forget_candidates(self.store)
         if inserted.rowcount == 1:
             identity = candidate["model_spec"]["identity"]
             logging.getLogger(__name__).info(
@@ -502,6 +531,23 @@ class ResearchCandidateRegistry:
         not a qualification to trade or a claim of live superiority.
         """
         self.initialize()
+        rows = _cached_rows(self.store, ("candidates", horizon, asset_for_contract(contract)),
+                            lambda: self._candidate_rows(horizon, contract))
+        found = []
+        for spec, sha, row in rows:
+            identity = spec["identity"]
+            if (spec.get("model") == "offline-live-contract-logistic-v3"
+                and sha == row["model_sha256"] and
+                (identity["venue"], identity["contract"], identity["quote"]) == (venue, contract, quote)
+                and datetime.fromisoformat(spec["evaluation_completed_through"]) < now
+                and datetime.fromisoformat(row["first_imported_at"]) <= now):
+                found.append({**copy.deepcopy(spec), "model_sha256": sha,
+                              "retrospective_screen": "passed",
+                              "imported_at": row["first_imported_at"]})
+        return found[:2]
+
+    def _candidate_rows(self, horizon, contract):
+        """The candidate query, each row parsed and hashed once."""
         with self.store.connect() as conn:
             rows = conn.execute(
                 "SELECT c.model_sha256,a.model_spec_json,c.holdout_brier,c.first_imported_at FROM "
@@ -520,19 +566,12 @@ class ResearchCandidateRegistry:
                 "ORDER BY c.first_imported_at DESC,c.model_sha256 LIMIT 30",
                 (horizon, asset_for_contract(contract)),
             ).fetchall()
-        found = []
+        parsed = []
         for row in rows:
             spec = json.loads(row["model_spec_json"])
             sha = hashlib.sha256(json.dumps(spec, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-            identity = spec["identity"]
-            if (spec.get("model") == "offline-live-contract-logistic-v3"
-                and sha == row["model_sha256"] and
-                (identity["venue"], identity["contract"], identity["quote"]) == (venue, contract, quote)
-                and datetime.fromisoformat(spec["evaluation_completed_through"]) < now
-                and datetime.fromisoformat(row["first_imported_at"]) <= now):
-                found.append({**spec, "model_sha256": sha, "retrospective_screen": "passed",
-                              "imported_at": row["first_imported_at"]})
-        return found[:2]
+            parsed.append((spec, sha, {k: row[k] for k in ("model_sha256", "first_imported_at")}))
+        return parsed
 
     def compatible_boosters(self, *, venue, contract, quote, horizon, now):
         """Source-exact native-parity tree research, never auto-approved.
@@ -541,6 +580,31 @@ class ResearchCandidateRegistry:
         exchange or prediction contract. No model is read from unverified bytes.
         """
         self.initialize()
+        rows = _cached_rows(self.store, ("boosters", horizon, asset_for_contract(contract)),
+                            lambda: self._booster_rows(horizon, contract))
+        found = {}
+        for spec, sha, row in rows:
+            try:
+                if (sha != row["model_sha256"]
+                    or (spec["identity"]["venue"], spec["identity"]["contract"],
+                        spec["identity"]["quote"]) != (venue, contract, quote)
+                    or datetime.fromisoformat(spec["evaluation_completed_through"]) >= now
+                    or datetime.fromisoformat(row["first_imported_at"]) > now):
+                    continue
+                found.setdefault(spec["family"], {
+                    "model_sha256": sha, "family": spec["family"],
+                    "portable_model": copy.deepcopy(spec["portable_model"]),
+                    "identity": dict(spec["identity"]),
+                    "horizon_minutes": spec["horizon_minutes"],
+                    "imported_at": row["first_imported_at"],
+                    "evaluation_completed_through": spec["evaluation_completed_through"],
+                })
+            except (ValueError, TypeError, KeyError, OverflowError):
+                continue
+        return list(found.values())
+
+    def _booster_rows(self, horizon, contract):
+        """The booster query; each row parsed, hashed and validated once."""
         with self.store.connect() as conn:
             rows = conn.execute(
                 "SELECT c.model_sha256,a.model_spec_json,c.first_imported_at FROM "
@@ -554,7 +618,7 @@ class ResearchCandidateRegistry:
                 "ORDER BY c.first_imported_at DESC,c.model_sha256 LIMIT 60",
                 (horizon, asset_for_contract(contract)),
             ).fetchall()
-        found = {}
+        parsed = []
         for row in rows:
             try:
                 spec = json.loads(row["model_spec_json"])
@@ -563,24 +627,11 @@ class ResearchCandidateRegistry:
                 sha = hashlib.sha256(json.dumps(
                     spec, sort_keys=True, separators=(",", ":"),
                 ).encode()).hexdigest()
-                if (sha != row["model_sha256"]
-                    or (spec["identity"]["venue"], spec["identity"]["contract"],
-                        spec["identity"]["quote"]) != (venue, contract, quote)
-                    or datetime.fromisoformat(spec["evaluation_completed_through"]) >= now
-                    or datetime.fromisoformat(row["first_imported_at"]) > now):
-                    continue
                 validate_portable(spec["portable_model"])
-                found.setdefault(spec["family"], {
-                    "model_sha256": sha, "family": spec["family"],
-                    "portable_model": spec["portable_model"],
-                    "identity": spec["identity"],
-                    "horizon_minutes": spec["horizon_minutes"],
-                    "imported_at": row["first_imported_at"],
-                    "evaluation_completed_through": spec["evaluation_completed_through"],
-                })
             except (ValueError, TypeError, KeyError, OverflowError):
                 continue
-        return list(found.values())
+            parsed.append((spec, sha, {k: row[k] for k in ("model_sha256", "first_imported_at")}))
+        return parsed
 
     def compatible_seed(self, **scope):
         found = self.compatible_candidates(**scope)

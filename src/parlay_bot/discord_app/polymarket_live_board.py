@@ -753,6 +753,17 @@ class LivePolymarketBoardService:
                     _LOG.info("Stopped tracker; original DM could not be edited")
             return ended
 
+    def contest_models(self, asset: str, horizon: int) -> list[dict] | None:
+        """Every contest model's latest score here, from memory; None if stale.
+
+        Reads the league the board already refreshes every 10 minutes, so
+        the Performance page never recomputes it.
+        """
+        if self._league is None or datetime.now(UTC)-self._league[0] > timedelta(minutes=20):
+            return None
+        entry = self._league[1].get("markets", {}).get((asset, horizon))
+        return list(entry.get("models", [])) if entry else []
+
     def _league_entry(self, asset: str, horizon: int, quote=None) -> dict:
         empty = {"models": [], "champion": None}
         if self._league is None or datetime.now(UTC)-self._league[0] > timedelta(minutes=20):

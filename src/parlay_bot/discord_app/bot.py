@@ -701,6 +701,7 @@ class RivalDiscordClient(discord.Client):
             venues=tuple(collector.providers) if collector is not None else (),
             training_status=self.training_status,
             polymarket_status=self.polymarket_learning_status,
+            contest_models=self.polymarket_board.contest_models,
             dkex_status=DKeXPublicReports(self.store).summary,
             kalshi=self.kalshi_browser,
             kalshi_status=self.kalshi_forward.summary,

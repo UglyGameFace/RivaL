@@ -453,12 +453,11 @@ async def test_advanced_tools_and_legacy_pages_do_not_duplicate_metrics(tmp_path
         assert "Profit Proof" not in _labels(home)
         assert "Home" in _labels(home)
         view = await home.render()
-        assert view.title == "📊 How RivaL is doing: BTC, 5-min predictions"
+        assert view.title == "📊 Bitcoin · 5-min · Bot performance"
         assert [f.name for f in view.fields] == [
-            "🎯 Polymarket / Kalshi predictions",
-            "📈 BTC exchange predictions (up or down?)",
-            "🧠 Is it learning?",
-            "📡 Is everything running?",
+            "🎯 Scoreboard (last 7 days)",
+            "🧪 Models on trial",
+            "⚙️ Running and learning",
         ]
         assert all(len(field.value) < 1025 for field in view.fields)
     finally:

@@ -16,7 +16,7 @@ mockups: a 150-target / 21-day proof candidate, the audit's own
 """
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pytest
@@ -43,7 +43,6 @@ from tests.test_audit_step1_card_quick_fixes import (
 from tests.test_performance_overview import (
     _close,
     _fields,
-    _live_record,
     _make_home,
     _patch_live_reads,
 )
@@ -430,26 +429,18 @@ async def test_forward_eval_and_calibration_cards_answer_first(monkeypatch):
 @pytest.mark.asyncio
 async def test_performance_page_uses_the_one_name_set(tmp_path, monkeypatch):
     """Worst case from Step 1 (77,760 rows, 8,640 windows) with every
-    trial family issued: no old term survives in any field, and the
-    footer carries the single disclaimer."""
+    trial model listed: no old term survives in any field, and the footer
+    carries the single disclaimer."""
+    from parlay_bot.discord_app import trial_board
+
     bot, home = _make_home(tmp_path)
-    now = datetime.now(UTC)
-    pooled = _live_record(
-        issued=77760, decided=77760, hits=77760, windows=8640,
-        brier=.001, incumbent=.999, baseline=.999, gain_v1=1.0,
-        updates=999999, drift=999.999)
-    pooled["first_issued"] = (now - timedelta(days=30)).isoformat()
-    regime = _live_record(
-        issued=77760, decided=77760, hits=77760, windows=8640,
-        brier=.001, incumbent=.999, baseline=.999, gain_v1=1.0,
-        updates=999999, drift=999.999)
-    regime["first_issued"] = (now - timedelta(days=30)).isoformat()
-    _patch_live_reads(
-        monkeypatch, pooled=pooled, regime=regime,
-        live=_live_record(issued=12, decided=9, hits=6, windows=11),
-        live_fast=_live_record(issued=12, decided=9, hits=5, windows=11,
-                               brier=.248, gain_v1=.003, updates=93,
-                               drift=.021))
+    rows = trial_board.fold([("okx", "BTC-okx", {
+        family: {"days": 9, "targets": 400, "forward_gain": .001}
+        for family in ("regime_v1", "regime_live_v1", "regime_live_fast_v1",
+                       "regime_wild_v1", "pooled_5m_1a10acfb6945", "cross_v1", "liq_v1")})],
+        [])
+    _patch_live_reads(monkeypatch, trials={"rows": rows, "markets": 1, "trials": 7,
+                                           "passed": 0, "stops": 0})
     monkeypatch.setattr(
         home_module, "_cycle_coverage",
         lambda *_: {"cycles": 288, "expired": 199, "issued": 100})
@@ -464,9 +455,8 @@ async def test_performance_page_uses_the_one_name_set(tmp_path, monkeypatch):
                 "regime_live_v1", "live-learning", "pooled 6-year model",
                 "price feeds", "shadow", "challenger", "settled"):
         assert old not in lowered, old
-    for new in ("coin flip", "error score", "main model", "trend-only test",
-                "trend learner", "6-year history model", "live market feeds",
-                "graded"):
+    for new in ("coin flip", "error", "main model", "trend-only", "trend learn",
+                "6-year", "exchanges live", "graded"):
         assert new in lowered, new
-    assert embed.footer.text == RESEARCH_FOOTER + " · More detail: Detailed Research"
+    assert embed.footer.text == RESEARCH_FOOTER + " · Per-model detail: Detailed Research"
     assert "Research only. No real trades." in embed.footer.text

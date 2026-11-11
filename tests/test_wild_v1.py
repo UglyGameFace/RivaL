@@ -20,11 +20,9 @@ import hashlib
 import logging
 import re
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 
 import pytest
 
-from parlay_bot.discord_app import home as home_module
 from parlay_bot.discord_app.answer_cards import rename_text
 from parlay_bot.discord_app.out_the_gate import live_lean
 from parlay_bot.perpetuals import forward_audit
@@ -538,36 +536,6 @@ def test_display_name_is_wild_only_test():
     # The bare family id inside a longer label renames the same way.
     assert rename_text("regime_wild_v1: 3 predictions") == (
         "wild-only test: 3 predictions")
-
-
-def test_one_liner_clock_and_length():
-    """The Performance-page headline carries the Route B clock (day/21,
-    targets/150) and stays under the 140-char pin even at the extreme."""
-    record = {"issued": 3, "graded": 0, "decided": 0, "hits": 0, "windows": 0,
-              "model_brier": None, "incumbent_brier": None,
-              "baseline_brier": None,
-              "first_issued": (NOW - timedelta(days=1)).isoformat()}
-    text = home_module._trial_one_liner("wild-only test", record, NOW)
-    assert text.startswith("**wild-only test:** 3 predictions made")
-    assert "· day 1/21 · 0/150 targets" in text
-    extreme = {"issued": 77760, "graded": 77760, "decided": 77760,
-               "hits": 77760, "windows": 8640, "model_brier": 0.001,
-               "incumbent_brier": 0.999, "baseline_brier": 0.999,
-               "first_issued": (NOW - timedelta(days=30)).isoformat()}
-    long_text = home_module._trial_one_liner("wild-only test", extreme, NOW)
-    assert "\n" not in long_text
-    assert len(long_text) < 140, (len(long_text), long_text)
-
-
-def test_wild_record_empty_store(tmp_path):
-    """No wild rows yet: the Performance reader reports issued 0, so no
-    field renders (Discord rejects empty field values)."""
-    store = SQLiteHotStore(tmp_path / "wild-empty.sqlite")
-    try:
-        market = SimpleNamespace(store=store)
-        assert home_module._wild_record(market, "BTC", 5) == {"issued": 0}
-    finally:
-        store.close()
 
 
 # --- Never an OTG live lean ---------------------------------------------------

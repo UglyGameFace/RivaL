@@ -591,9 +591,7 @@ def _cached_page_read(reader: Callable, market: object, asset: str, horizon: int
 
 def _page_readers() -> tuple[Callable, ...]:
     """Looked up at call time, so a patched reader is the one that runs."""
-    return (_pooled_record, _regime_record, _regime_live_record,
-            _regime_live_fast_record, _wild_record, _intelligence_report,
-            _performance_lineage)
+    return (_trial_board_record, _intelligence_report)
 
 
 def warm_page_reads(market: object) -> int:
@@ -657,55 +655,12 @@ def _pooled_record(market: object, asset: str, horizon: int) -> dict:
                                  "first_issued")}
 
 
-def _regime_record(market: object, asset: str, horizon: int) -> dict:
-    """Live graded record of the regime-gated challenger (7 days).
-
-    Same columns as the pooled trial row, measured on regime_v1's issued
-    subset only, plus the D5 selection decomposition (paired_gain,
-    selection_effect, coverage) so the page shows whether the family won
-    on the targets it chose or only by choosing easy ones.
-    """
-    from parlay_bot.perpetuals.regime_model import trial_report
-
-    return trial_report(market.store, asset=asset, horizon=horizon)
 
 
-def _regime_live_record(market: object, asset: str, horizon: int) -> dict:
-    """Live graded record of the regime live-learning challenger (30 days).
-
-    Same columns as the regime_v2 trial row, measured on
-    regime_live_v1's issued subset only, plus the D7 extras: the
-    trending-label update count, the weight drift from the warm-start
-    copy, and the paired-gain split (last 7 days vs days 8-30).
-    """
-    from parlay_bot.perpetuals.regime_live_model import BASE_FAMILY, trial_report
-
-    return trial_report(market.store, asset=asset, horizon=horizon, family=BASE_FAMILY)
 
 
-def _regime_live_fast_record(market: object, asset: str, horizon: int) -> dict:
-    """Live graded record of the fast live-learning challenger (30 days).
-
-    Same columns as _regime_live_record, for regime_live_fast_v1 (the
-    2x learning-rate family, graded separately).
-    """
-    from parlay_bot.perpetuals.regime_live_model import FAST_FAMILY, trial_report
-
-    return trial_report(market.store, asset=asset, horizon=horizon, family=FAST_FAMILY)
 
 
-def _wild_record(market: object, asset: str, horizon: int) -> dict:
-    """Live graded record of the wild-only challenger (7 days).
-
-    Same columns as the regime_v1 trial row, measured on
-    regime_wild_v1's issued subset only, plus the same D5 selection
-    decomposition (paired_gain, selection_effect, coverage) so the page
-    shows whether the family won on the targets it chose or only by
-    choosing easy ones.
-    """
-    from parlay_bot.perpetuals.wild_model import trial_report
-
-    return trial_report(market.store, asset=asset, horizon=horizon)
 
 
 MIN_SAMPLE_FOR_RATE = 20
@@ -723,67 +678,8 @@ def rate_or_too_few(n: int, rate: str, *, what: str) -> str:
     return f"too few to judge — {int(n)} {what}"
 
 
-def _trial_clock(record, now):
-    """(days, targets) for the one-line clock, from the trial record itself.
-
-    targets = distinct decided windows (the same measure the Route B
-    evaluation calls "targets": one independent observation per target
-    window). days = days since first issuance in this record's window.
-    Both are measured over the trial window — 7 days for the pooled and
-    regime_v1 rows, 30 days for the live families — so for a family older
-    than its window the day count is capped by the window. The
-    authoritative 30-day Route B clock is the one the status card and
-    the Research dashboard show per scope.
-    """
-    targets = int(record.get("windows") or 0)
-    days = 0
-    try:
-        first = datetime.fromisoformat(str(record.get("first_issued")))
-        if first.tzinfo is None:
-            first = first.replace(tzinfo=UTC)
-        days = max(1, (now - first.astimezone(UTC)).days)
-    except (TypeError, ValueError):
-        days = 0
-    return days, targets
 
 
-def _trial_one_liner(label, record, now):
-    """One family, one headline line — nothing else.
-
-    Headline: name · accuracy · Brier vs incumbent · gain · clock
-    (day, then targets). The accuracy rate shows only on 20+ decided
-    results; below that it reads "too few to judge" (audit Step 1) —
-    the counts stay. Hard cap ~120 chars, pinned by test (worst
-    case under 140): the live labels are shortened here ("trend learner",
-    "fast trend learner") because the full names would push the worst
-    case past the cap — the full names stay on the field titles above
-    the lines. Everything the old
-    detail line showed (Brier vs the simple guess, vs-regime_v1
-    head-to-head, selection, coverage, availability, trending labels
-    learned, weight drift, the 7d vs 8-30d gain split, "too early to
-    judge") now lives in Detailed Research's Trial detail field, not
-    here — see _trial_detail_line. Returns "" when the family has not
-    issued yet (renders only when issued>0, like every other trial
-    row).
-    """
-    if not isinstance(record, dict) or not int(record.get("issued") or 0):
-        return ""
-    issued = int(record["issued"])
-    graded, decided = int(record.get("graded") or 0), int(record.get("decided") or 0)
-    days, targets = _trial_clock(record, now)
-    clock = (f" · day {days}/21" if days else "") + f" · {targets:,}/150 targets"
-    if not (decided and record.get("model_brier") is not None
-            and record.get("incumbent_brier") is not None):
-        return (f"**{label}:** {issued:,} predictions made, "
-                f"{graded:,} scored so far{clock}")
-    hits = int(record.get("hits") or 0)
-    gain = float(record["incumbent_brier"]) - float(record["model_brier"])
-    rate = rate_or_too_few(decided, f"{hits / decided:.1%}", what="decided")
-    return (
-        f"**{label}:** right {hits:,} of {decided:,} ({rate})"
-        f" · Brier {float(record['model_brier']):.3f} vs incumbent "
-        f"{float(record['incumbent_brier']):.3f} · gain {gain:+.3f}{clock}"
-    )
 
 
 def _trial_detail_line(label, record):
@@ -832,16 +728,6 @@ def _trial_detail_line(label, record):
     return f"**{label}:** " + " · ".join(details)
 
 
-def _regime_live_text(record, label, now=None):
-    """One live family's trial row as a performance-page fragment.
-
-    The headline-only format (see _trial_one_liner): a single short
-    line, no detail line. Empty when the family has not issued yet
-    (renders only when issued>0, like every other trial row).
-    """
-    if not isinstance(record, dict) or not int(record.get("issued") or 0):
-        return ""
-    return "\n" + _trial_one_liner(label, record, now or datetime.now(UTC))
 
 
 # A review older than its timeframe plus this is not a call for the next candle.
@@ -856,6 +742,279 @@ def _age_words(age: timedelta) -> str:
     if hours < 48:
         return f"{hours} hours"
     return f"{hours // 24} days"
+
+
+def _trial_board_record(market: object, asset: str, horizon: int) -> dict:
+    """Every model on trial here, from the hourly promotion check (2 point reads)."""
+    from parlay_bot.discord_app import trial_board
+
+    return trial_board.read(market.store, asset=asset, horizon=horizon,
+                            retired=trial_board.retired_families())
+
+
+def _when(age_minutes: int) -> str:
+    return "just now" if age_minutes <= 0 else f"{age_minutes} min ago"
+
+
+def _scoreboard_text(coin: str, horizon: int, reports: dict, now: datetime) -> tuple[str, str]:
+    """(headline, scoreboard): the verdict, then one line per market it is graded on."""
+    def money(cents: float) -> str:
+        return f"{cents:+.1f}¢ per $1"
+
+    lines: list[str] = []
+    poly = reports.get("polymarket")
+    if not isinstance(poly, dict):
+        headline = ("**Couldn't load the Polymarket scores right now.** That doesn't mean "
+                    "zero accuracy. Press Refresh.")
+    else:
+        resolved = int(poly.get("settled_forward_contracts") or 0)
+        model, market = poly.get("forward_brier"), poly.get("market_baseline_brier")
+        if resolved and isinstance(model, (int, float)) and isinstance(market, (int, float)):
+            ahead = model < market
+            headline = ("**Ahead of Polymarket's odds so far, but not proven yet.**" if ahead
+                        else "**No edge yet: Polymarket's odds are still more accurate.**")
+            lines.append(
+                f"🎯 **vs Polymarket odds:** {'ahead' if ahead else 'behind'} · error "
+                f"{model:.3f} vs {market:.3f} · {resolved:,} contracts")
+        else:
+            headline = "**Too early to compare with Polymarket's odds.**"
+            lines.append(f"🎯 **vs Polymarket odds:** {resolved:,} contracts so far, too few")
+        learned = int(poly.get("learned_contracts") or 0)
+        if learned:
+            lines.append(f"-# {learned:,} past contracts studied (history, not live predictions)")
+        pooled = poly.get("pooled") or {}
+        if pooled.get("contracts"):
+            better = pooled["model_brier"] < pooled["market_brier"]
+            line = (f"🗄️ **6-year model vs odds:** {'ahead' if better else 'behind'} · "
+                    f"{pooled['model_brier']:.3f} vs {pooled['market_brier']:.3f} · "
+                    f"{pooled['contracts']:,} contracts")
+            if pooled.get("real_value_bets"):
+                line += (f" · its bets won {pooled['real_value_bet_wins']}/"
+                         f"{pooled['real_value_bets']}, "
+                         f"{money(pooled['real_return_per_dollar_after_fees'] * 100)} after fees")
+            elif pooled.get("value_bets"):
+                line += (f" · its bets won {pooled['value_bet_wins']}/{pooled['value_bets']}, "
+                         f"{money(pooled['value_bet_avg_return'] * 100)} before fees")
+            lines.append(line)
+        kalshi = poly.get("kalshi") or {}
+        if kalshi.get("contracts"):
+            better = kalshi["model_brier"] < kalshi["market_brier"]
+            line = (f"🟦 **vs Kalshi 15-min odds:** {'ahead' if better else 'behind'} · "
+                    f"{kalshi['model_brier']:.3f} vs {kalshi['market_brier']:.3f} · "
+                    f"{kalshi['contracts']:,} contracts")
+            if kalshi.get("value_bets"):
+                line += (f" · its bets won {kalshi['value_bet_wins']}/{kalshi['value_bets']}, "
+                         f"{money(kalshi['return_per_dollar_after_fees'] * 100)} after fees")
+            lines.append(line)
+        if int(poly.get("observed_contracts") or 0) and not int(poly.get("learned_contracts") or 0):
+            lines.append(f"⚠️ Saw {int(poly['observed_contracts']):,} contracts but couldn't "
+                         "read any of their results yet")
+
+    exchange = reports.get("exchange")
+    part = exchange.get("last_7d", {}).get(horizon) if isinstance(exchange, dict) else None
+    if not isinstance(part, dict):
+        lines.append("📈 **Up/down calls:** couldn't load right now (not zero wins). "
+                     "Press Refresh.")
+    else:
+        decided, correct = int(part.get("decided") or 0), int(part.get("correct") or 0)
+        hit = part.get("hit_rate")
+        right = (f"right **{rate_or_too_few(decided, f'{hit:.1%}', what='decided')}** "
+                 f"({correct:,} of {decided:,})" if isinstance(hit, (int, float)) and decided
+                 else "no finished results yet")
+        brier, base = part.get("brier"), part.get("baseline_brier")
+        guess = (f" · vs a simple guess: {'ahead' if brier < base else 'behind'} "
+                 f"({brier:.3f} vs {base:.3f})"
+                 if isinstance(brier, (int, float)) and isinstance(base, (int, float)) else "")
+        lines.append(f"📈 **Up/down calls:** {right}{guess}")
+        venues, settled = int(part.get("venues") or 0), int(part.get("settled") or 0)
+        lines.append(
+            f"-# {settled:,} of {int(part.get('issued') or 0):,} predictions checked · "
+            f"{venues or 'all'} exchange{'s' if venues != 1 else ''} · main model only")
+        overdue = int(part.get("overdue") or 0) if "due" in part else 0
+        if overdue:
+            lines.append(f"⚠️ **{overdue:,} should have a result by now but don't** "
+                         "(missing candle or checking is behind)")
+        problems = score_consistency_problems(part)
+        if problems:
+            _LOG.error("Performance consistency check failed for %s %s min: %s",
+                       coin, horizon, "; ".join(problems))
+            lines.append("⚠️ **These numbers don't add up** (" + "; ".join(problems)[:300]
+                         + "). Don't trust them until this is fixed.")
+    return headline, "\n".join(lines)
+
+
+def _trials_text(reports: dict) -> tuple[str, str]:
+    """(field name, value) for every model on trial here."""
+    from parlay_bot.discord_app import trial_board
+
+    board = reports.get("trials")
+    if "trials" not in reports:
+        return "🧪 Models on trial", "Trial results aren't available on this server."
+    if not isinstance(board, dict):
+        return ("🧪 Models on trial",
+                ("⚠️ Couldn't load the trial table right now. Press Refresh; "
+                 "this is a slow read, not missing results."))
+    rows = board.get("rows") or []
+    if not rows:
+        body = "No test models have scored results here yet."
+    else:
+        body = (trial_board.table(rows) + trial_board.leader_line(rows) + "\n"
+                "-# Edge = how much less error than the main model, in points (+ is "
+                f"better). To replace it: {trial_board.MIN_DAYS} days, "
+                f"{trial_board.MIN_RESULTS} results and a win after fees.")
+    body += (f"\n-# All markets: {int(board.get('trials') or 0)} on trial · "
+             f"{int(board.get('passed') or 0)} passed · "
+             f"{int(board.get('stops') or 0)} cut early for losing")
+    return f"🧪 Models on trial here ({len(rows)})", body
+
+
+def _contest_text(reports: dict) -> str | None:
+    """The Polymarket contest table, or None when there is nothing to show."""
+    from parlay_bot.discord_app import trial_board
+
+    models = reports.get("contest")
+    if not isinstance(models, list) or not models:
+        return None
+    rows = trial_board.contest_rows(models)
+    return (trial_board.contest_table(rows)
+            + "-# Edge = less error than Polymarket's own odds, in points. Fees = paper "
+            f"result per contract after Polymarket's fee. To qualify: "
+            f"{trial_board.CONTEST_CONTRACTS} contracts and a statistical pass.")
+
+
+def _health_text(coin: str, horizon: int, reports: dict, now: datetime,
+                 venues: tuple[str, ...]) -> str:
+    """Is it running, and is it learning: four short lines."""
+    parts: list[str] = []
+    cycles = reports.get("cycles")
+    heart = cycles.get("learning") if isinstance(cycles, dict) else None
+    if heart is None:
+        parts.append("⚠️ learning loop: no run recorded yet")
+    elif heart.get("status") != "recorded":
+        parts.append("learning loop: couldn't check")
+    else:
+        age = int((now - heart["checked_at"].astimezone(UTC)).total_seconds() // 60)
+        if not heart["math_ok"] or not heart["model_review_ok"]:
+            parts.append("❌ learning loop: a step failed last run")
+        elif not 0 <= age <= 16:
+            parts.append(f"⚠️ learning loop: last ran {_when(age)}")
+        else:
+            parts.append(f"✅ learning {_when(age)}")
+    cycle = cycles.get("forecast") if isinstance(cycles, dict) else None
+    if isinstance(cycle, dict) and cycle.get("status") == "recorded":
+        age = int((now - cycle["checked_at"].astimezone(UTC)).total_seconds() // 60)
+        parts.append(f"{'✅' if 0 <= age <= 10 else '⚠️'} predictions {_when(age)}")
+    elif isinstance(cycles, dict) and cycle is None:
+        parts.append("⚠️ predictions: no run recorded yet")
+    feeds = reports.get("feeds")
+    if isinstance(feeds, (list, tuple)) and venues:
+        fresh, listed = set(), set()
+        for row in feeds:
+            if row.get("asset") != coin or row.get("venue") not in venues:
+                continue
+            listed.add(row["venue"])
+            try:
+                success = datetime.fromisoformat(str(row["last_success_at"]))
+                candle = datetime.fromisoformat(str(row["last_candle_close"]))
+                if (success.tzinfo is not None and candle.tzinfo is not None
+                        and row.get("status") == "ok"
+                        and timedelta(0) <= now - success.astimezone(UTC) <= timedelta(minutes=15)
+                        and timedelta(0) <= now - candle.astimezone(UTC) <= timedelta(minutes=15)):
+                    fresh.add(row["venue"])
+            except (ValueError, TypeError, OverflowError):
+                continue
+        expected = listed or set(venues)
+        stale = sorted(expected - fresh)
+        parts.append(f"{'✅' if not stale else '⚠️'} {len(fresh)}/{len(expected)} exchanges live"
+                     + (f" (behind: {', '.join(stale)[:120]})" if stale else ""))
+    elif "feeds" in reports:
+        parts.append("feeds: couldn't check")
+    coverage = reports.get("coverage")
+    if isinstance(coverage, dict) and coverage.get("cycles"):
+        ran, skipped = min(coverage["cycles"], 288), coverage["expired"]
+        parts.append(f"{'✅' if ran >= 274 and not skipped else '⚠️'} {ran}/288 cycles in 24h"
+                     + (f", {skipped:,} predictions skipped (ran late)" if skipped else ""))
+    lines = [" · ".join(parts)]
+
+    benefit = reports.get("benefit")
+    if isinstance(benefit, dict):
+        reason = {"supported": "maybe, not proven yet",
+                  "not_improving": "no, not beating the simple guess",
+                  "insufficient": "too early to tell"}.get(benefit.get("status"), "can't confirm")
+        days = int(benefit.get("days") or 0)
+        counted = int(benefit.get("targets") or 0)
+        unit = "results" if horizon == 5 else f"separate {horizon}-min windows"
+        need = (", needs 7"
+                if benefit.get("status") == "insufficient" and days < 7 else "")
+        lines.append(f"**Getting more accurate?** {reason} ({counted:,} {unit} over "
+                     f"{days} day{'s' if days != 1 else ''}{need})")
+    elif isinstance(benefit, TimeoutError):
+        lines.append("**Getting more accurate?** still calculating; press Refresh in a few seconds")
+    else:
+        lines.append("**Getting more accurate?** couldn't check right now")
+
+    intelligence = reports.get("intelligence")
+    if isinstance(intelligence, dict):
+        report, latest = intelligence["report"], intelligence["latest"]
+        stance, direction = latest["stances"].get(horizon, ("—", "none"))
+        try:
+            age = now - datetime.fromisoformat(str(latest.get("issued_at"))).astimezone(UTC)
+        except (TypeError, ValueError):
+            age = None
+        current = age is not None and timedelta(0) <= age <= timedelta(
+            minutes=horizon + INTELLIGENCE_CALL_GRACE_MINUTES)
+        if current and stance == "follow" and direction != "none":
+            call = {"up": "says UP (price rising) for the next candle",
+                    "down": "says DOWN (price falling) for the next candle"}.get(
+                        direction.lower(), direction.upper())
+        elif current:
+            call = "makes no call for the next candle"
+        elif age is not None and age > timedelta(0):
+            call = f"no current call (last review {_age_words(age)} ago)"
+        else:
+            call = "no current call"
+        followed = int(report["followed"] or 0)
+        rate = report["followed_hit_rate"]
+        record = (rate_or_too_few(followed, f"right {rate:.0%}", what="followed")
+                  if followed and rate is not None else "none scored yet")
+        lines.append(f"**AI reviewer:** {call} · 7 days: agreed {followed} times ({record}), "
+                     f"sat out {int(report['abstained'] or 0)}")
+    elif isinstance(intelligence, Exception):
+        lines.append("**AI reviewer:** couldn't check right now")
+    elif "intelligence" in reports:
+        lines.append("**AI reviewer:** hasn't reviewed anything yet")
+    return "\n".join(lines)
+
+
+def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
+                      venues: tuple[str, ...] = ()) -> discord.Embed:
+    """Bot Performance: verdict first, then three short sections and two tables.
+
+    Built only from what the readers returned, so it is tested without
+    Discord or a database. A reader that failed shows as "couldn't load",
+    never as a zero.
+    """
+    headline, scoreboard = _scoreboard_text(coin, horizon, reports, now)
+    embed = discord.Embed(
+        title=f"📊 {ASSET_NAMES.get(coin, coin)} · {horizon}-min · Bot performance",
+        description=(f"{headline}\n-# Every score uses predictions saved before the "
+                     "result was known. Does it make money? Not proven yet."),
+        color=discord.Color.blurple(),
+    )
+    embed.add_field(name="🎯 Scoreboard (last 7 days)",
+                    value=fit_embed_field_value(rename_text(scoreboard)), inline=False)
+    name, trials = _trials_text(reports)
+    embed.add_field(name=name, value=fit_embed_field_value(trials), inline=False)
+    contest = _contest_text(reports)
+    if contest:
+        embed.add_field(name="🎲 Polymarket contest", value=fit_embed_field_value(contest),
+                        inline=False)
+    embed.add_field(name="⚙️ Running and learning",
+                    value=fit_embed_field_value(rename_text(
+                        _health_text(coin, horizon, reports, now, venues))), inline=False)
+    embed.timestamp = now
+    embed.set_footer(text=f"{RESEARCH_FOOTER} · Per-model detail: Detailed Research")
+    return embed
 
 
 def _intelligence_status(market: object, asset: str, horizon: int) -> dict | None:
@@ -895,11 +1054,6 @@ def _cycle_coverage(market: object) -> dict | None:
         return None
 
 
-def _performance_lineage(market: object, asset: str, horizon: int) -> dict:
-    """Report verified training provenance even when trend scoring times out."""
-    return ForwardAccuracyMonitor(market).learning_lineage_summary(
-        asset=asset, horizon_minutes=horizon,
-    )
 
 
 def _latest_learning_cycle(market: object) -> dict | None:
@@ -1118,6 +1272,7 @@ class GuidedHome(discord.ui.View):
         auto_hunt: AutoHuntService | None = None,
         training_status: Callable[[str, int], dict] | None = None,
         polymarket_status: Callable[[str, int], dict] | None = None,
+        contest_models: Callable[[str, int], list[dict] | None] | None = None,
         dkex_status: Callable[[], dict] | None = None,
         kalshi: KalshiCryptoBrowser | None = None,
         kalshi_status: Callable[..., dict] | None = None,
@@ -1141,6 +1296,7 @@ class GuidedHome(discord.ui.View):
         self.research_factory = research_factory
         self.training_status = training_status
         self.polymarket_status = polymarket_status
+        self.contest_models = contest_models
         self.dkex_status = dkex_status
         self.kalshi = kalshi
         self.kalshi_status = kalshi_status
@@ -1901,18 +2057,8 @@ class GuidedHome(discord.ui.View):
                     inline=False,
                 )
         elif p == "performance":
-            embed = discord.Embed(
-                title=f"📊 How RivaL is doing: {self.coin}, {self.horizon}-min predictions",
-                description=(
-                    "**Does it make money?** Not proven yet. Every score here comes from "
-                    "predictions saved *before* the result was known, so nothing can be "
-                    "edited afterwards. Your own practice trades are under Practice."
-                ),
-                color=discord.Color.blurple(),
-            )
-            # The on-demand model registry / Drive / promotion report is expensive:
-            # it belongs in Detailed Research, not in the interactive scorecard.
-            # A slow improvement query must never suppress baseline accuracy or health.
+            # Every read is bounded and independent: a slow or failed one
+            # shows as "couldn't load", never hides the others.
             readers = {}
             if self.market is not None:
                 readers["exchange"] = asyncio.wait_for(
@@ -1924,37 +2070,28 @@ class GuidedHome(discord.ui.View):
                         _cached_benefit, self.market, self.coin, self.horizon,
                     ), timeout=PERFORMANCE_READ_SECONDS,
                 )
-                for name, reader in (
-                    ("pooled", _pooled_record), ("regime", _regime_record),
-                    ("regime_live", _regime_live_record),
-                    ("regime_live_fast", _regime_live_fast_record),
-                    ("wild", _wild_record),
-                ):
-                    readers[name] = asyncio.wait_for(
-                        asyncio.to_thread(_cached_page_read, reader, self.market,
-                                          self.coin, self.horizon),
-                        timeout=PERFORMANCE_READ_SECONDS,
-                    )
+                readers["trials"] = asyncio.wait_for(
+                    asyncio.to_thread(_cached_page_read, _trial_board_record, self.market,
+                                      self.coin, self.horizon),
+                    timeout=PERFORMANCE_READ_SECONDS,
+                )
                 readers["intelligence"] = asyncio.wait_for(
                     asyncio.to_thread(
                         _intelligence_status, self.market, self.coin, self.horizon,
                     ), timeout=PERFORMANCE_READ_SECONDS,
                 )
                 readers["coverage"] = asyncio.wait_for(
-                    asyncio.to_thread(_cycle_coverage, self.market), timeout=PERFORMANCE_READ_SECONDS,
-                )
-                readers["lineage"] = asyncio.wait_for(
-                    asyncio.to_thread(
-                        _cached_page_read, _performance_lineage, self.market,
-                        self.coin, self.horizon,
-                    ), timeout=PERFORMANCE_READ_SECONDS,
+                    asyncio.to_thread(_cycle_coverage, self.market),
+                    timeout=PERFORMANCE_READ_SECONDS,
                 )
                 readers["cycles"] = asyncio.wait_for(
-                    asyncio.to_thread(_performance_cycles, self.market), timeout=PERFORMANCE_READ_SECONDS,
+                    asyncio.to_thread(_performance_cycles, self.market),
+                    timeout=PERFORMANCE_READ_SECONDS,
                 )
                 if callable(getattr(self.market, "feed_health", None)):
                     readers["feeds"] = asyncio.wait_for(
-                        asyncio.to_thread(self.market.feed_health), timeout=PERFORMANCE_READ_SECONDS,
+                        asyncio.to_thread(self.market.feed_health),
+                        timeout=PERFORMANCE_READ_SECONDS,
                     )
             if self.polymarket_status is not None:
                 readers["polymarket"] = asyncio.wait_for(
@@ -1969,464 +2106,14 @@ class GuidedHome(discord.ui.View):
             for name, result in reports.items():
                 if isinstance(result, Exception):
                     _LOG.warning("Performance %s read failed: %s", name, type(result).__name__)
-            now = datetime.now(UTC)
-
-            # 1. Contract-native comparisons; historical labels are NOT model wins.
-            poly = reports.get("polymarket")
-            def money(cents: float) -> str:
-                return (f"made {cents:.1f}¢" if cents > 0 else
-                        f"lost {-cents:.1f}¢" if cents < 0 else "broke even") + " per $1"
-
-            if not isinstance(poly, dict):
-                poly_text = ("Couldn't load these scores right now (that doesn't mean "
-                             "zero accuracy). Press Refresh.")
-            else:
-                resolved = int(poly.get("settled_forward_contracts") or 0)
-                learned = int(poly.get("learned_contracts") or 0)
-                window = int(poly.get("score_window_days") or 7)
-                model_error, market_error = (
-                    poly.get("forward_brier"), poly.get("market_baseline_brier"),
-                )
-                if (resolved and isinstance(model_error, (int, float))
-                        and isinstance(market_error, (int, float))):
-                    outcome = (
-                        "Slightly, so far, but not proven enough to trade on"
-                        if model_error < market_error else "No, not yet"
-                    )
-                    # Audit Step 8: this field is the page headline now,
-                    # so it leads with the verdict (Step 2 style: verdict
-                    # line first, ≤12 words), then the reason (the error
-                    # scores), then the sample size — the verdict would
-                    # change with a lower error score on more settled
-                    # contracts. The headline uses only numbers this
-                    # block already computes; nothing new is measured.
-                    headline = (
-                        "**Yes, so far — RivaL beats Polymarket's odds.**"
-                        if model_error < market_error else
-                        "**No, not yet — RivaL trails Polymarket's odds.**"
-                    )
-                    poly_text = (
-                        f"{headline}\n"
-                        f"**Better than Polymarket's own odds?** {outcome}. "
-                        f"(Error score: RivaL {model_error:.3f}, Polymarket "
-                        f"{market_error:.3f}; lower is better.)\n"
-                        f"**Checked:** {resolved:,} live predictions (last {window} days)"
-                    )
-                else:
-                    poly_text = (
-                        "**Not yet — can't compare with Polymarket's odds yet.**\n"
-                        f"**Checked:** {resolved:,} live predictions "
-                        "· too early to compare with Polymarket's odds")
-                observed = int(poly.get("observed_contracts") or 0)
-                pooled = poly.get("pooled") or {}
-                if pooled.get("contracts"):
-                    verdict = ("better" if pooled["model_brier"] < pooled["market_brier"]
-                               else "not better")
-                    poly_text += (
-                        f"\n**New 6-year model vs Polymarket's odds:** {verdict} on "
-                        f"{pooled['contracts']:,} contracts ({pooled['model_brier']:.3f} vs "
-                        f"{pooled['market_brier']:.3f})"
-                    )
-                    if pooled.get("real_value_bets"):
-                        poly_text += (
-                            f". When it disagreed with the odds, betting its side would "
-                            f"have won {pooled['real_value_bet_wins']} of "
-                            f"{pooled['real_value_bets']} and "
-                            f"{money(pooled['real_return_per_dollar_after_fees'] * 100)} "
-                            "after Polymarket's fee"
-                        )
-                    elif pooled.get("value_bets"):
-                        poly_text += (
-                            f". When it disagreed with the odds by 5+ points, its side won "
-                            f"{pooled['value_bet_wins']} of {pooled['value_bets']} and "
-                            f"{money(pooled['value_bet_avg_return'] * 100)} before fees"
-                        )
-                kalshi = poly.get("kalshi") or {}
-                if kalshi.get("contracts"):
-                    k_verdict = ("better" if kalshi["model_brier"] < kalshi["market_brier"]
-                                 else "not better")
-                    poly_text += (
-                        f"\n**Kalshi 15-min (also on Robinhood, Coinbase):** {k_verdict} "
-                        f"than Kalshi's odds on {kalshi['contracts']:,} contracts "
-                        f"({kalshi['model_brier']:.3f} vs {kalshi['market_brier']:.3f})")
-                    if kalshi.get("value_bets"):
-                        poly_text += (
-                            f"; betting its side when it disagreed won "
-                            f"{kalshi['value_bet_wins']} of {kalshi['value_bets']} and "
-                            f"{money(kalshi['return_per_dollar_after_fees'] * 100)} "
-                            "after Kalshi's fees")
-                labels = {"flow_v1": "Order-flow test model",
-                          "flow_v2": "Order-flow test model + OKX/Coinbase"}
-                for family, scored in (poly.get("kalshi_challengers") or {}).items():
-                    if not scored.get("contracts"):
-                        continue
-                    better = scored["model_brier"] < scored["market_brier"]
-                    poly_text += (
-                        f"\n**{labels.get(family, family)} vs Kalshi (testing only, not "
-                        f"used for calls):** {'better' if better else 'not better'} on "
-                        f"{scored['contracts']:,} contracts "
-                        f"({scored['model_brier']:.3f} vs {scored['market_brier']:.3f})")
-                    if scored.get("value_bets"):
-                        poly_text += (
-                            f"; its side won {scored['value_bet_wins']} of "
-                            f"{scored['value_bets']} and "
-                            f"{money(scored['return_per_dollar_after_fees'] * 100)} after fees")
-                poly_text += (f"\n**Past results studied:** {learned:,} (history, not live "
-                              "predictions)")
-                if observed and not learned:
-                    poly_text += (f"\n⚠️ Saw {observed:,} contracts but couldn't read any "
-                                  "of their results yet")
-            embed.add_field(name="🎯 Polymarket / Kalshi predictions",
-                            value=fit_embed_field_value(rename_text(poly_text)), inline=False)
-
-            # 2. Actual seven-day exchange scores, independent from trend queries.
-            exchange = reports.get("exchange")
-            part = (
-                exchange.get("last_7d", {}).get(self.horizon)
-                if isinstance(exchange, dict) else None
-            )
-            if not isinstance(part, dict):
-                exchange_text = ("Couldn't load the scores right now (that doesn't mean "
-                                 "zero wins). Press Refresh.")
-            else:
-                decided = int(part.get("decided") or 0)
-                correct = int(part.get("correct") or 0)
-                settled = int(part.get("settled") or 0)
-                issued = int(part.get("issued") or 0)
-                hit = part.get("hit_rate")
-                accuracy = (
-                    f"**{correct:,} of {decided:,}** "
-                    f"({rate_or_too_few(decided, f'{hit:.1%}', what='decided')})"
-                    if isinstance(hit, (int, float)) and decided else
-                    "not enough finished results to measure yet"
-                )
-                brier, baseline = part.get("brier"), part.get("baseline_brier")
-                if isinstance(brier, (int, float)) and isinstance(baseline, (int, float)):
-                    verdict = ("Slightly, so far, but not proven enough to trade on"
-                               if brier < baseline else "No, not yet")
-                    scoring = (f"**Better than a simple guess?** {verdict}. "
-                               f"(Error score: RivaL {brier:.3f}, simple guess "
-                               f"{baseline:.3f}; lower is better. The simple guess "
-                               "always uses how often the price usually rises.)")
-                else:
-                    scoring = "**Better than a simple guess?** Too early to compare fairly"
-                # Overdue results are the only preamble health signal kept:
-                # a late result is a real problem, while the waiting
-                # count, the unscored breakdown, and the "no results
-                # running late" line are routine. The timing paragraph
-                # is cut too; the coverage (scope + period) joins the
-                # Checked line, so the preamble is one short line and
-                # the 1024-char field budget goes to the trial rows.
-                # The honesty disclosures live in the embed description
-                # ("Does it make money? Not proven yet", "predictions
-                # saved before the result was known"), not in this field,
-                # and stay.
-                overdue_line = ""
-                if "due" in part:
-                    overdue = int(part.get("overdue") or 0)
-                    if overdue:
-                        overdue_line = (
-                            f"\n⚠️ **{overdue:,} should have a result by now but don't** "
-                            "(the candle is missing or checking is behind)")
-                venues = int(part.get("venues") or 0)
-                windows = int(part.get("windows") or 0)
-                scope = (
-                    f"{venues} exchange{'s' if venues != 1 else ''} × "
-                    f"{windows:,} candles"
-                    if venues and windows else "every exchange it collects"
-                )
-                period = "the last 7 days"
-                try:
-                    first = datetime.fromisoformat(str(part.get("first_issued")))
-                    if first.tzinfo is not None and now - first < timedelta(days=6, hours=12):
-                        days = max(1, round((now - first).total_seconds() / 86400))
-                        period = (f"since this model started {first:%b %d} "
-                                  f"(~{days} day{'s' if days != 1 else ''})")
-                except (TypeError, ValueError):
-                    pass
-                problems = score_consistency_problems(part)
-                if problems:
-                    _LOG.error("Performance consistency check failed for %s %s min: %s",
-                               self.coin, self.horizon, "; ".join(problems))
-                exchange_text = (
-                    f"**Called the direction right:** {accuracy}\n{scoring}\n"
-                    f"**Checked:** {settled:,} of {issued:,} predictions · "
-                    f"{scope}, {period}, current model only"
-                    f"{overdue_line}"
-                    + ("\n⚠️ **These numbers don't add up** ("
-                       + "; ".join(problems)[:300]
-                       + "). Don't trust them until this is fixed." if problems else "")
-                )
-            # Trial rows: one line per family, same format everywhere
-            # (see _trial_one_liner). regime_v2 is dead — never issued
-            # once, flag off — so it has no reader and no row here.
-            pooled = reports.get("pooled")
-            if isinstance(pooled, dict) and int(pooled.get("issued") or 0):
-                exchange_text += "\n" + _trial_one_liner(
-                    "6-year history model", pooled, now)
-            regime = reports.get("regime")
-            if isinstance(regime, dict) and int(regime.get("issued") or 0):
-                exchange_text += "\n" + _trial_one_liner("trend-only test", regime, now)
-            # A row that could not be read is not a row with nothing in it.
-            missed = [label for key, label in (
-                ("pooled", "6-year history model"), ("regime", "trend-only test"),
-                ("regime_live", "trend learner"),
-                ("regime_live_fast", "fast trend learner"), ("wild", "wild-only test"),
-            ) if isinstance(reports.get(key), Exception)]
-            if missed:
-                exchange_text += (
-                    f"\n⚠️ **Couldn't load right now:** {', '.join(missed)}. "
-                    "Press Refresh; this is a slow read, not a missing result.")
-            embed.add_field(name=f"📈 {self.coin} exchange predictions (up or down?)",
-                            value=fit_embed_field_value(rename_text(exchange_text)), inline=False)
-
-            # Regime live-learning rows get their own fields, one per
-            # family, directly after the exchange field so the reading
-            # order is unchanged. Appended last to the 1024-char exchange
-            # field they were cut mid-header on 2026-11-09 (Felix's
-            # Performance screenshot: the base row was cut at ~1015 chars
-            # and the fast row was cut entirely). One field per family
-            # keeps each headline-only row under the 1024-char field cap
-            # with room to spare — a worst-case full-form headline
-            # measures under 140 chars, two combined under 280 — so no
-            # row is ever truncated and no slice is applied here.
-            # _regime_live_text returns "" before first issuance, and
-            # Discord rejects empty field values, so a family with no
-            # text gets no field at all. The line labels are shortened
-            # ("trend learner", "fast trend learner") because the full
-            # names would push the worst-case headline past the
-            # 140-char pin; the full names stay on the field titles
-            # above the lines.
-            live_text = _regime_live_text(
-                reports.get("regime_live"), "trend learner", now)
-            if live_text:
-                embed.add_field(name="🔬 Trend learner",
-                                value=rename_text(live_text.strip()), inline=False)
-            live_fast_text = _regime_live_text(
-                reports.get("regime_live_fast"), "fast trend learner", now)
-            if live_fast_text:
-                embed.add_field(name="🔬 Fast trend learner",
-                                value=rename_text(live_fast_text.strip()), inline=False)
-            wild_text = _regime_live_text(
-                reports.get("wild"), "wild-only test", now)
-            if wild_text:
-                embed.add_field(name="🔬 Wild-only test",
-                                value=rename_text(wild_text.strip()), inline=False)
-
-
-            # 3. Live worker state is distinct from statistical learning benefit.
-            cycles = reports.get("cycles")
-            heart = cycles.get("learning") if isinstance(cycles, dict) else None
-            if heart is None:
-                engine_text = "**Learning loop:** ⚠️ no run recorded yet"
-            elif heart.get("status") != "recorded":
-                engine_text = "**Learning loop:** couldn't check right now"
-            else:
-                age = int((now - heart["checked_at"].astimezone(UTC)).total_seconds() // 60)
-                if not heart["math_ok"] or not heart["model_review_ok"]:
-                    state = "❌ a step failed on the last run"
-                elif not 0 <= age <= 16:
-                    state = "⚠️ hasn't run recently (or the clock is off)"
-                else:
-                    state = "✅ running"
-                engine_text = (
-                    f"**Learning loop:** {state}. Last run {age} min ago (runs every "
-                    f"5 min): made {heart['issued']} predictions and checked "
-                    f"{heart['settled']} results, all coins and timeframes"
-                )
-            benefit = reports.get("benefit")
-            lineage = reports.get("lineage")
-            if isinstance(benefit, dict):
-                reason = {
-                    "supported": "Maybe: it looks better, but that isn't proven yet",
-                    "not_improving": "No: it isn't beating the simple guess yet",
-                    "insufficient": "Too early to tell",
-                }.get(benefit.get("status"), "Can't confirm")
-                days = int(benefit.get("days") or 0)
-                need = ""
-                if benefit.get("status") == "insufficient" and days < 7:
-                    need = f"; needs 7 days of results, has {days}"
-                # active_learning_evidence keeps one target per whole
-                # timeframe window (15-min targets on :00/:15/:30/:45, 60-min
-                # on the hour), so overlapping predictions are not counted as
-                # independent evidence. Say so: at 15 minutes the count is a
-                # third of the 5-minute one by design, which read as data
-                # going missing.
-                counted = int(benefit.get("targets") or 0)
-                unit = ("results" if self.horizon == 5 else
-                        f"separate {self.horizon}-min windows")
-                trend_text = (
-                    f"**Getting more accurate?** {reason} "
-                    f"({counted:,} {unit} over {days} "
-                    f"day{'s' if days != 1 else ''}{need})"
-                )
-            elif isinstance(benefit, TimeoutError):
-                trend_text = ("**Getting more accurate?** Still calculating; press Refresh "
-                              "in a few seconds")
-            else:
-                trend_text = "**Getting more accurate?** Couldn't check right now"
-            if isinstance(lineage, dict) and lineage.get("lineage_proven"):
-                sample = int(lineage.get("forecasts") or lineage["lineage_proven"])
-                unknown = int(lineage.get("lineage_unknown") or 0)
-                lineage_text = (
-                    f"**Built from the 6-year history?** "
-                    f"{lineage['historically_seeded']} of the last "
-                    f"{lineage['lineage_proven']} predictions"
-                    + (f" ({unknown:,} of the latest {sample:,} have no training record)"
-                       if unknown else "")
-                    + ". The 6-year model is on trial separately (above)."
-                )
-            else:
-                lineage_text = ("**Built from the 6-year history?** Can't confirm for "
-                                "recent predictions")
-            intelligence = reports.get("intelligence")
-            if isinstance(intelligence, dict):
-                rep_ = intelligence["report"]
-                latest = intelligence["latest"]
-                stance, direction = latest["stances"].get(self.horizon, ("—", "none"))
-                followed_n = int(rep_["followed"] or 0)
-                followed_rate = rep_["followed_hit_rate"]
-                followed_outcome = (
-                    rate_or_too_few(
-                        followed_n, f"right {followed_rate:.0%}",
-                        what="followed")
-                    if followed_n and followed_rate is not None else None
-                )
-                followed = (
-                    f"went along with the model {followed_n} times "
-                    f"({followed_outcome})"
-                    if followed_outcome is not None
-                    else f"went along with the model {followed_n} times "
-                         "(none scored yet)"
-                )
-                abstained_n = int(rep_["abstained"] or 0)
-                abstained_rate = rep_["model_hit_when_abstained"]
-                abstained_outcome = (
-                    rate_or_too_few(
-                        abstained_n,
-                        f"the model was right {abstained_rate:.0%} of those",
-                        what="sat out")
-                    if abstained_n and abstained_rate is not None else None
-                )
-                abstained = (
-                    f"sat out {abstained_n} ({abstained_outcome})"
-                    if abstained_outcome is not None
-                    else f"sat out {abstained_n}"
-                )
-                # "now DOWN" read as "the service is down"; spell out that it is
-                # a price call, and that sitting out is a choice, not an outage.
-                now_call = ({"up": "says UP (price rising)",
-                             "down": "says DOWN (price falling)"}.get(direction.lower(),
-                                                                     direction.upper())
-                            if stance == "follow" and direction != "none"
-                            else "makes no call")
-                # The AI's own note is technical; it stays in Detailed Research.
-                # Only a review young enough to cover the next candle is
-                # shown as a call for it. Background reviews are off by
-                # opt-in in production (bot.py), so the
-                # stored "latest" call can be days old; it was shown as "for
-                # the next 5-min candle it says DOWN" regardless.
-                try:
-                    reviewed = datetime.fromisoformat(str(latest.get("issued_at")))
-                    age = now - reviewed.astimezone(UTC)
-                except (TypeError, ValueError):
-                    age = None
-                current = age is not None and timedelta(0) <= age <= timedelta(
-                    minutes=self.horizon + INTELLIGENCE_CALL_GRACE_MINUTES)
-                if current:
-                    call = f"for the next {self.horizon}-min candle it {now_call}"
-                elif age is not None and age > timedelta(0):
-                    call = (f"no call for the next candle; its last review was "
-                            f"{_age_words(age)} ago")
-                else:
-                    call = "no call for the next candle"
-                intel_text = (
-                    f"\n**RivaL Intelligence (an AI that reviews the model's calls):** "
-                    f"{call}. Last 7 days it {followed} and {abstained}."
-                )
-            elif isinstance(intelligence, Exception):
-                intel_text = "\n**RivaL Intelligence:** couldn't check right now"
-            else:
-                intel_text = ("\n**RivaL Intelligence:** hasn't reviewed anything yet"
-                              if "intelligence" in reports else "")
-            embed.add_field(
-                name="🧠 Is it learning?",
-                value=fit_embed_field_value(
-                    rename_text(f"{engine_text}\n{trend_text}\n{lineage_text}{intel_text}")),
-                inline=False,
-            )
-
-            # 4. Independent operations health. A green feed is never a
-            # substitute for an actual forecast-worker heartbeat.
-            feeds = reports.get("feeds")
-            if not isinstance(feeds, (list, tuple)):
-                feeds_text = "**Live market feeds:** couldn't check right now"
-            else:
-                fresh, listed = set(), set()
-                for row in feeds:
-                    if row.get("asset") != self.coin or row.get("venue") not in self.venues:
-                        continue
-                    listed.add(row["venue"])
-                    try:
-                        last_success = datetime.fromisoformat(str(row["last_success_at"]))
-                        last_candle = datetime.fromisoformat(str(row["last_candle_close"]))
-                        if (last_success.tzinfo is not None
-                            and last_candle.tzinfo is not None
-                            and row.get("status") == "ok"
-                            and timedelta(0) <= now-last_success.astimezone(UTC) <= timedelta(minutes=15)
-                            and timedelta(0) <= now-last_candle.astimezone(UTC) <= timedelta(minutes=15)):
-                            fresh.add(row["venue"])
-                    except (ValueError, TypeError, OverflowError):
-                        continue
-                # Count only exchanges that actually collect this coin; with no
-                # rows at all every configured exchange is missing, not fine.
-                expected = listed or set(self.venues)
-                stale = sorted(expected - fresh)
-                feeds_text = (
-                    f"**Live market feeds:** {'✅' if not stale else '⚠️'} {len(fresh)} of "
-                    f"{len(expected)} exchanges up to date"
-                    + (f" (behind: {', '.join(stale)[:200]})" if stale else "")
-                    if self.venues else "**Live market feeds:** not set up"
-                )
-            cycle = cycles.get("forecast") if isinstance(cycles, dict) else None
-            if cycle is None:
-                cycle_text = "**Prediction cycle:** ⚠️ no run recorded yet" if isinstance(
-                    cycles, dict,
-                ) else "**Prediction cycle:** couldn't check right now"
-            elif cycle.get("status") != "recorded":
-                cycle_text = "**Prediction cycle:** couldn't check right now"
-            else:
-                age = int((now - cycle["checked_at"].astimezone(UTC)).total_seconds() // 60)
-                status = ("✅" if 0 <= age <= 10 else
-                          "⚠️ late (or the clock is off):")
-                cycle_text = (f"**Prediction cycle:** {status} last ran {age} min ago and "
-                              f"made {cycle['issued']} predictions (all coins and timeframes)"
-                              + (f"; {cycle['expired']} skipped for running late"
-                                 if cycle.get("expired") else ""))
-            coverage = reports.get("coverage")
-            if isinstance(coverage, dict) and coverage["cycles"]:
-                ran = min(coverage["cycles"], 288)
-                missed = coverage["expired"]
-                # A green tick must mean nothing went wrong: cycles ran
-                # AND no prediction was skipped for running late. The
-                # audit's example (288 of 288 ran, 199 skipped) showed ✅.
-                healthy = ran >= 274 and not missed
-                cycle_text += (
-                    f"\n**Last 24 hours:** {'✅' if healthy else '⚠️'} {ran} of 288 "
-                    f"cycles ran ({ran / 288:.0%})"
-                    + (f"; {missed:,} predictions skipped because a cycle ran late"
-                       if missed else "")
-                    + ("" if ran >= 288 else
-                       ". Restarts and slow cycles both count against this")
-                )
-            embed.add_field(
-                name="📡 Is everything running?",
-                value=fit_embed_field_value(rename_text(f"{feeds_text}\n{cycle_text}")),
-                inline=False,
-            )
-            embed.timestamp = now
-            embed.set_footer(
-                text=f"{RESEARCH_FOOTER} · More detail: Detailed Research"
+            if self.contest_models is not None:
+                try:  # in memory, refreshed by the live board every 10 minutes
+                    reports["contest"] = self.contest_models(self.coin, self.horizon)
+                except Exception as exc:  # noqa: BLE001 - never breaks the page
+                    reports["contest"] = exc
+            embed = performance_embed(
+                self.coin, self.horizon, reports, now=datetime.now(UTC),
+                venues=self.venues,
             )
         elif p == "help":
             embed = discord.Embed(
@@ -2474,6 +2161,7 @@ class GuidedHome(discord.ui.View):
             venues=self.venues, auto_hunt=self.auto_hunt,
             training_status=self.training_status,
             polymarket_status=self.polymarket_status,
+            contest_models=self.contest_models,
             dkex_status=self.dkex_status,
             kalshi=self.kalshi,
             kalshi_status=self.kalshi_status,

@@ -794,7 +794,10 @@ class ModelLab:
                     value, fits = max(by_value.items(), key=lambda kv: statistics.mean(kv[1]))
                     learned[dim] = {"value": value, "mean": statistics.mean(fits),
                                     "designs": len(fits)}
-            best = max(scored, key=lambda s: s["fitness"], default=None)
+            # "Best" is among designs still running: a closed design is history.
+            running = {r["family"] for r in here if r["status"] in ("active", "passed")}
+            best = max((s for s in scored if s["family"] in running),
+                       key=lambda s: s["fitness"], default=None)
             out[horizon] = {
                 "tried": len(here),
                 "active": [r for r in here if r["status"] == "active"],

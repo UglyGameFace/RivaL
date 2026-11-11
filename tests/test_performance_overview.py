@@ -229,7 +229,7 @@ async def test_every_model_on_trial_is_one_row_from_the_hourly_check(tmp_path, m
         assert rows[3][0] == "cut"       # cut on every exchange it ran on
         block = value.split("```")[1].strip().splitlines()
         assert max(len(line) for line in block) <= 35   # one line per model on a phone
-        assert ("Closest: **Trend-only** (ahead on 2 of 2 exchanges, behind after fees). "
+        assert ("Closest to passing: **Trend-only** (ahead on 2 of 2 exchanges, behind after fees). "
                 "Needs 9 more days before it can be trusted.") in value
         assert "All markets: 5 on trial · 0 passed · 2 cut early for losing" in value
     finally:

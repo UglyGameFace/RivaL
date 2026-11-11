@@ -92,7 +92,7 @@ def test_the_leader_line_says_what_is_left():
     lead = TrialRow(name="Trend-only", days=12, results=96, gain=.003, ahead=7,
                     exchanges=9, stopped=0, passed=False, after_fees_bps=.4)
     assert leader_line([lead]) == (
-        "Closest: **Trend-only** (ahead on 7 of 9 exchanges, ahead after fees). "
+        "Closest to passing: **Trend-only** (ahead on 7 of 9 exchanges, ahead after fees). "
         "Needs 9 more days and 54 more results before it can be trusted.")
     done = TrialRow(name="Trend-only", days=25, results=400, gain=.003, ahead=7,
                     exchanges=9, stopped=0, passed=False, after_fees_bps=None)
@@ -147,7 +147,7 @@ def test_read_adds_each_models_hit_rate_from_the_ledger(tmp_path):
                 (now.isoformat(), json.dumps({"regime_v1": _info(12, 300, .003)})))
 
             def call(i, p, up, *, age=timedelta(hours=1), horizon=5, asset="BTC",
-                     settled=True):
+                     settled=True, venue="okx"):
                 issued = now - age
                 conn.execute(
                     """INSERT INTO rival_model_shadow_forecasts (venue,contract,quote,asset,
@@ -155,7 +155,7 @@ def test_read_adds_each_models_hit_rate_from_the_ledger(tmp_path):
                          probability_up,incumbent_up,baseline_up,training_count,
                          training_sha256,settled_at,outcome_up,model_brier,incumbent_brier,
                          baseline_brier) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                    ("okx", f"{asset}-okx", "USDT", asset, horizon, "regime_v1",
+                    (venue, f"{asset}-okx", "USDT", asset, horizon, "regime_v1",
                      (issued - timedelta(seconds=i)).isoformat(), issued.isoformat(),
                      issued.isoformat(), p, .5, .5, 0, "s" * 64,
                      issued.isoformat() if settled else None, int(up) if settled else None,
@@ -168,9 +168,14 @@ def test_read_adds_each_models_hit_rate_from_the_ledger(tmp_path):
             call(102, .7, True, age=timedelta(days=8))   # older than the 7 days
             call(103, .7, True, horizon=15)              # another timeframe
             call(104, .7, True, asset="ETH")             # another coin
+            # Nov 11 audit: an exchange the promotion check did not judge here
+            # must not mix into Right (Day, Res and Edge are okx-only).
+            for i in range(40):
+                call(200 + i, .7, True, venue="gate")
         board = trial_board.read(store, asset="BTC", horizon=5, now=now)
         row = board["rows"][0]
         assert (row.family, row.calls, row.right) == ("regime_v1", 30, 18)
+        assert board["venues"] == ["okx"]
         assert _grouped(table(board["rows"]))[0][1][3] == "60%"
     finally:
         store.close()
@@ -189,3 +194,16 @@ def test_reverted_venue_variants_never_show():
                                       "flow_v2_venue": info,
                                       "regime_v1": {"targets": 200, "days": 4}})], [])
     assert [r.name for r in rows] == ["Trend-only"]
+
+
+def test_an_edge_on_few_results_says_few_and_a_long_record_outranks_a_lucky_one():
+    from parlay_bot.discord_app.trial_board import best
+
+    lucky = TrialRow(name="Trend learn", days=3, results=41, gain=.010, ahead=1,
+                     exchanges=1, stopped=0, passed=False, after_fees_bps=None)
+    steady = TrialRow(name="6-year", days=8, results=703, gain=.003, ahead=1,
+                      exchanges=1, stopped=0, passed=False, after_fees_bps=None)
+    tiny = TrialRow(name="Fast trend", days=3, results=10, gain=.0447, ahead=1,
+                    exchanges=1, stopped=0, passed=False, after_fees_bps=None)
+    assert best([lucky, steady, tiny]) is steady
+    assert _grouped(table([tiny]))[0] == ("early", ["Fast", "trend", "3/21", "10", "—", "few"])

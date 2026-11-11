@@ -1997,11 +1997,11 @@ class GuidedHome(discord.ui.View):
             prefs = await current(
                 self.auto_hunt.store.preferences if self.auto_hunt else None
             )
-            legacy = (
-                "Legacy price-shift alerts have been retired."
-                if prefs is not None else
-                "Old alert preferences unavailable."
-            )
+            # Nov 11 audit: "Old alert preferences unavailable" confused new
+            # users; the retired price-shift alerts are only worth a line for
+            # someone who had them.
+            legacy = ("Legacy price-shift alerts have been retired."
+                      if prefs is not None else "")
 
             def status(value):
                 if value == "unknown":
@@ -2021,8 +2021,8 @@ class GuidedHome(discord.ui.View):
                     f"📡 **Live Polymarket panel:** {status(market)}\n"
                     f"🎯 **Followed exchange forecast:** {status(exchange)}\n"
                     f"🧪 **Model watch posts:** {watch_line}\n"
-                    f"-# {legacy}\n\n"
-                    "Each one updates a single message; no notification spam. "
+                    + (f"-# {legacy}\n" if legacy else "") + "\n"
+                    + "Each one updates a single message; no notification spam. "
                     "**Track Next Predictions** records RivaL's next calls for your "
                     "own scorecard. **Watch Models** opens the model picker: compare "
                     "them, then **Watch live**. **Stop All** cancels your personal "

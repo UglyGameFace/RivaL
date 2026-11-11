@@ -413,9 +413,16 @@ def why(report: dict) -> str | None:
         line = (f"Most of that comes from **{_PLAIN_CONDITION[lead[0]]} markets** "
                 f"({_pts(lead[1])} on {lead[2]:,} calls)")
         if others:
-            other = max(others, key=lambda p: p[2])
-            line += (f"; in {_PLAIN_CONDITION[other[0]]} markets it is "
-                     f"{_pts(other[1])} ({other[2]:,} calls)")
+            # Name where it does worst when it is ahead (and best when it is
+            # behind): that is where its weakness (or hope) is.
+            against = [p for p in others if (p[1] < 0) == (total >= 0)]
+            other = (min(against, key=lambda p: p[1]) if total >= 0 and against
+                     else max(against, key=lambda p: p[1]) if against
+                     else max(others, key=lambda p: p[2]))
+            word = ("but it loses in" if total >= 0 and other[1] < 0
+                    else "but it wins in" if total < 0 and other[1] > 0 else "in")
+            line += (f"; {word} {_PLAIN_CONDITION[other[0]]} markets "
+                     f"({_pts(other[1])} on {other[2]:,} calls)")
         lines.append(line + ".")
     sure = [b for b in h["bands"][2:] if b["n"] >= TOO_FEW]
     if sure:

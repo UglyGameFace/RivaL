@@ -327,7 +327,8 @@ def lineage_card(
             answer="Yes, live: the main model updates itself after every graded result.",
             reason=(
                 "It does not start from stored history. History is tried by separate "
-                "test models (see Models on trial), and none has passed yet."
+                "test models (the 6-year and boosted history models), and none has "
+                "passed yet."
             ),
             next_step=("Learning is not the same as winning: Bot Performance's "
                        "\"Getting more accurate?\" says whether it is improving."),

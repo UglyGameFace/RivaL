@@ -12,6 +12,7 @@ from typing import Any
 
 import discord
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 
 _LOG = logging.getLogger(__name__)
@@ -297,7 +298,7 @@ def coverage_embed(
         ]
         embed.add_field(
             name="Why data is unavailable",
-            value="\n".join(descriptions)[:1000], inline=False,
+            value=fit_embed_field_value("\n".join(descriptions), budget=1000), inline=False,
         )
     else:
         embed.add_field(

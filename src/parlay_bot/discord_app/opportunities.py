@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import discord
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
 from parlay_bot.discord_app.out_the_gate import (
     JUST_WATCH,
     below_line_label,
@@ -477,7 +478,7 @@ def crypto_desk_embed(
     # Polymarket first: it is where users actually place Up/Down bets.
     try:
         for name, value in polymarket_call_fields(market.store, asset=asset, now=stamp):
-            embed.add_field(name=name, value=value[:1024], inline=False)
+            embed.add_field(name=name, value=fit_embed_field_value(value), inline=False)
     except Exception:  # noqa: BLE001 - tables may not exist yet; exchange watch still shows
         logging.getLogger(__name__).info("Polymarket calls unavailable for Opportunities")
     if not watches:
@@ -506,8 +507,11 @@ def crypto_desk_embed(
         if below is not None:
             otg_lines.append(below)
         embed.add_field(
-            name=(f"👀 Leans {watch['direction']} • next {watch['horizon_minutes']} min • "
-                  f"{watch['venue']}{other}")[:256],
+            name=fit_embed_field_value(
+                f"👀 Leans {watch['direction']} • next {watch['horizon_minutes']} min • "
+                f"{watch['venue']}{other}",
+                budget=256,
+            ),
             value=(
                 f"Price at the last finished candle: **{_cash(watch['price'])}** "
                 f"({discord.utils.format_dt(watch['price_observed_at'], style='R')})\n"

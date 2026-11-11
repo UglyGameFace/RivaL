@@ -12,6 +12,8 @@ import threading
 import time
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
+
 HORIZONS = (5, 15, 60)
 BUCKETS = ((0.0, 0.30, "under 30¢"), (0.30, 0.45, "30–45¢"), (0.45, 0.55, "45–55¢"),
            (0.55, 0.70, "55–70¢"), (0.70, 1.01, "over 70¢"))
@@ -99,9 +101,11 @@ def results_text(history: dict) -> str:
             + (f" · last 24h {item['day_up']} UP / {item['day_down']} DOWN" if day else "")
             + f"\nLast {min(12, len(results))} (oldest → newest): {recent} · {_streak(results)}"
         )
-    return ("\n".join(lines)
-            + "\n🟢 UP won · 🔴 DOWN won. Past results don't predict the next one; "
-              "streaks happen by chance.")[:1024]
+    return fit_embed_field_value(
+        "\n".join(lines)
+        + "\n🟢 UP won · 🔴 DOWN won. Past results don't predict the next one; "
+          "streaks happen by chance."
+    )
 
 
 def fairness_text(history: dict) -> str:
@@ -130,6 +134,8 @@ def fairness_text(history: dict) -> str:
         "than normal chance.** With several ranges checked, one can differ by luck; "
         "Polymarket's fee (up to 1.8% at 50¢) also comes out of any gap."
     )
-    return ("\n".join(lines) + "\n" + verdict
-            + "\nPrice = Polymarket's UP share price when RivaL first saw each contract. "
-              "All timeframes combined.")[:1024]
+    return fit_embed_field_value(
+        "\n".join(lines) + "\n" + verdict
+        + "\nPrice = Polymarket's UP share price when RivaL first saw each contract. "
+          "All timeframes combined."
+    )

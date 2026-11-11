@@ -23,6 +23,7 @@ from parlay_bot.discord_app.alert_control import stop_all_notifications
 from parlay_bot.discord_app.auto_hunt import AutoHuntActions, AutoHuntService, AutoHuntStore
 from parlay_bot.discord_app.cdna_public import CDNAPersonalReader
 from parlay_bot.discord_app.data_dashboard import MarketDataDashboard
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
 from parlay_bot.discord_app.heartbeat import HealthchecksHeartbeat
 from parlay_bot.discord_app.home import (
     GuidedHome,
@@ -955,7 +956,7 @@ class RivalDiscordClient(discord.Client):
                 detail = "Host health database unverified"
             embed.add_field(
                 name="Independent host watchdog",
-                value=detail[:1024], inline=False,
+                value=fit_embed_field_value(detail), inline=False,
             )
             if self.autonomous is not None and self.stream_shadow is not None:
                 try:
@@ -972,7 +973,7 @@ class RivalDiscordClient(discord.Client):
                     statement = "Hosted end-to-end evidence could not be verified"
                 embed.add_field(
                     name="Unattended acceptance receipt",
-                    value=statement[:1024], inline=False,
+                    value=fit_embed_field_value(statement), inline=False,
                 )
             try:
                 latest = await asyncio.to_thread(
@@ -1014,7 +1015,8 @@ class RivalDiscordClient(discord.Client):
                     f"Saved finals awaiting score: {recovery['unsettled_finalized']}\n"
                     f"Started fixtures lacking final evidence: "
                     f"{recovery['started_missing_results']}\n"
-                    f"Excluded forecasts (not wins): {exclusion_text[:170]}\n"
+                    f"Excluded forecasts (not wins): "
+                    f"{fit_embed_field_value(exclusion_text, budget=170)}\n"
                     f"Last worker cycle: {last_text}"
                 )
             except Exception:  # noqa: BLE001 - preserve command ACK if DB is slow
@@ -1025,7 +1027,7 @@ class RivalDiscordClient(discord.Client):
                 )
             embed.add_field(
                 name="Hosted sports settlement recovery",
-                value=recovery_text[:1024], inline=False,
+                value=fit_embed_field_value(recovery_text), inline=False,
             )
             oracle_status = self.polybolt.status()
             oracle_text = (

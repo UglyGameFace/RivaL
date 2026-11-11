@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 
 import discord
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
 from parlay_bot.storage.hot import RelationalHotStore
 
 
@@ -96,7 +97,7 @@ def sports_discovery_embed(
             )
         embed.add_field(
             name="Live markets found",
-            value="\n".join(lines)[:1000], inline=False,
+            value=fit_embed_field_value("\n".join(lines), budget=1000), inline=False,
         )
     embed.add_field(
         name="Provider league filters",

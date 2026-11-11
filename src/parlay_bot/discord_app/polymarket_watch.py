@@ -18,6 +18,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
+
 _LOG = logging.getLogger(__name__)
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
 HORIZONS = (5, 15, 60)
@@ -596,7 +598,7 @@ class PolymarketReader:
             fee_rate=_fee_rate(market),
             up_cost=_average_cost(up_book, now=received, rate=_fee_rate(market)),
             down_cost=_average_cost(down_book, now=received, rate=_fee_rate(market)),
-            rules=(market["description"][:2000]
+            rules=(fit_embed_field_value(market["description"], budget=2000)
                    if isinstance(market.get("description"), str) else None),
         )
 

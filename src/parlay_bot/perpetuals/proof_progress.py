@@ -10,6 +10,7 @@ import json
 import math
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
 from parlay_bot.perpetuals.family_governance import (
     FRESH_FOR,
     MIN_COVERAGE,
@@ -221,5 +222,7 @@ def proof_progress_text(proof: dict) -> str:
                     part += f" ({extra})"
             parts.append(part)
         lines.append(f"{scope} {candidate['name']}: " + " · ".join(parts))
-    return ("\n".join(lines) + "\nPaper cost tests use assumed fees/slippage/funding; "
-            "real fills and real profitability are NOT verified.")[:1024]
+    return fit_embed_field_value(
+        "\n".join(lines) + "\nPaper cost tests use assumed fees/slippage/funding; "
+        "real fills and real profitability are NOT verified."
+    )

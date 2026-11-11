@@ -16,6 +16,7 @@ from typing import TypeVar
 
 import discord
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
 from parlay_bot.discord_app.opportunities import (
     ASSETS,
     recent_multi_watches,
@@ -620,7 +621,9 @@ async def signal_embed(
         )
 
     embed = discord.Embed(
-        title=f"{asset} • next {horizon_minutes} min • {verdict}"[:256],
+        title=fit_embed_field_value(
+            f"{asset} • next {horizon_minutes} min • {verdict}", budget=256,
+        ),
         description=message,
         # Only verified watches receive directional colours. Unproven leans stay amber.
         color=(discord.Color.green() if is_watch and direction == "UP"

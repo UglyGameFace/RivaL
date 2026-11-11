@@ -52,6 +52,7 @@ from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
 from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
 from parlay_bot.perpetuals.wild_model import wild_calls
 from parlay_bot.research.archive_features import live_vector as archive_live_vector
+from parlay_bot.storage import maintenance
 from parlay_bot.storage.database import database_clock
 
 _LOG = logging.getLogger(__name__)
@@ -360,16 +361,21 @@ class ForwardAccuracyMonitor:
                 _LOG.warning("RivaL pooled model prediction failed %s min", horizon)
         return calls
 
-    def _withdraw_no_trade_labels(self) -> None:
+    def _withdraw_no_trade_labels(self, now: datetime | None = None) -> None:
         """Correct outcomes graded from candles that had no trades.
 
         Earlier settlement scored a zero-trade target candle (the previous
         price repeated) as NOT UP. Those labels are withdrawn: the row stays
         settled with its observed close, but is no longer counted as a
         comparable result. Idempotent; only touches flat, zero-trade targets.
+        Settlement now grades no-trade targets correctly itself, so each
+        cycle checks only recently settled rows; the whole ledger is swept
+        once a day (storage/maintenance.py).
         """
         try:
+            maintenance.initialize(self.store)
             with self.store.connect() as conn:
+                cutoff = maintenance.correction_cutoff(conn, "forward_audit.no_trade", now)
                 result = conn.execute(
                     """UPDATE perp_forward_audit
                        SET outcome_up=NULL, model_brier=NULL, baseline_brier=NULL
@@ -383,7 +389,11 @@ class ForwardAccuracyMonitor:
                              AND c.interval_minutes=5
                              AND c.opened_at=perp_forward_audit.target_opened_at
                              AND c.trades=0)"""
+                    + ("" if cutoff is None else " AND settled_at>=?"),
+                    () if cutoff is None else (cutoff,),
                 )
+                if cutoff is None:
+                    maintenance.record_full_sweep(conn, "forward_audit.no_trade", now)
                 if result.rowcount:
                     _LOG.warning("RivaL withdrew %d forecast results graded from "
                                  "no-trade candles", result.rowcount)
@@ -793,7 +803,7 @@ class ForwardAccuracyMonitor:
         # No-trade label withdrawal lives on the settlement path only: a
         # display read must never mutate the settlement table (out-the-gate
         # display boundary). It runs here, every cycle, before new rows settle.
-        self._withdraw_no_trade_labels()
+        self._withdraw_no_trade_labels(now)
         # Recover the OLDEST genuinely settleable outcomes first. The old
         # DESC/LIMIT queue could repeatedly skip valid old forecasts after
         # downtime. Missing target candles and retrospectively imported
@@ -849,7 +859,7 @@ class ForwardAccuracyMonitor:
             raise ValueError("reconciliation limit must be positive")
         # Same settlement-path-only rule as _settle: the no-trade label
         # withdrawal never runs on a display read.
-        self._withdraw_no_trade_labels()
+        self._withdraw_no_trade_labels(now)
         with self.store.connect() as conn:
             pending = conn.execute(
                 """SELECT f.venue,f.contract,f.quote,f.asset,f.horizon_minutes,

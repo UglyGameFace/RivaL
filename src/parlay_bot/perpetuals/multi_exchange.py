@@ -28,6 +28,7 @@ from parlay_bot.perpetuals.profit_proof import (
     EXIT_GRACE,
     NOTIONAL_USDT,
 )
+from parlay_bot.storage import maintenance
 from parlay_bot.storage.hot import RelationalHotStore
 
 _LOG = logging.getLogger(__name__)
@@ -133,10 +134,14 @@ class MultiExchangeResearch:
         NOT UP label, and promotion graded from them. Withdraw them the
         same way: keep settled_at, clear the outcome and Brier scores, so
         every reader that already skips NULL outcomes skips them.
-        Idempotent; new settlements only copy outcomes in (0,1).
+        Idempotent; new settlements only copy outcomes in (0,1). It ran an
+        unbounded scan at every start; it now checks recently settled rows
+        and sweeps the whole ledger once a day (storage/maintenance.py).
         """
         try:
+            maintenance.initialize(self.store)
             with self.store.connect() as conn:
+                cutoff = maintenance.correction_cutoff(conn, "multi.no_trade")
                 result = conn.execute(
                     """UPDATE perp_multi_forward
                        SET outcome_up=NULL, challenger_brier=NULL,
@@ -150,9 +155,12 @@ class MultiExchangeResearch:
                            AND f.model_version=?
                            AND f.reference_opened_at=perp_multi_forward.reference_opened_at
                            AND f.target_opened_at=perp_multi_forward.target_opened_at
-                           AND f.settled_at IS NOT NULL AND f.outcome_up IS NULL)""",
-                    (SOURCE_MODEL,),
+                           AND f.settled_at IS NOT NULL AND f.outcome_up IS NULL)"""
+                    + ("" if cutoff is None else " AND settled_at>=?"),
+                    (SOURCE_MODEL,) if cutoff is None else (SOURCE_MODEL, cutoff),
                 )
+                if cutoff is None:
+                    maintenance.record_full_sweep(conn, "multi.no_trade")
                 if result.rowcount:
                     _LOG.warning("RivaL withdrew %d fused results copied from "
                                  "no-trade candles", result.rowcount)

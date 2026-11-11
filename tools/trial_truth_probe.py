@@ -37,6 +37,40 @@ def _independent(conn, *, asset, horizon, family, since):
             "venues": int(row["venues"] or 0)}
 
 
+def _storage(store, now) -> dict:
+    """Read-only: size and age of the prediction tables, to plan a cleanup."""
+    out = {}
+    with store.connect() as conn:
+        out["tables"] = [dict(r) for r in conn.execute(
+            """SELECT relname AS table, n_live_tup AS rows,
+                      pg_total_relation_size(relid) AS bytes
+               FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC
+               LIMIT 25""").fetchall()]
+        out["database_bytes"] = conn.execute(
+            "SELECT pg_database_size(current_database()) AS b").fetchone()["b"]
+        cuts = {f"older_{d}d": (now - timedelta(days=d)).isoformat() for d in (14, 30, 45, 60)}
+        for table, column in (("rival_model_shadow_forecasts", "issued_at"),
+                              ("perp_forward_audit", "issued_at"),
+                              ("rival_forward_model_lineage", "issued_at")):
+            row = {"oldest": conn.execute(
+                f"SELECT MIN({column}) AS m FROM {table}").fetchone()["m"]}
+            for name, cut in cuts.items():
+                row[name] = int(conn.execute(
+                    f"SELECT COUNT(*) AS n FROM {table} WHERE {column}<?", (cut,)
+                ).fetchone()["n"])
+            out[table] = row
+        out["shadow_never_settled_older_14d"] = int(conn.execute(
+            """SELECT COUNT(*) AS n FROM rival_model_shadow_forecasts
+               WHERE settled_at IS NULL AND target_opened_at<?""",
+            (cuts["older_14d"],)).fetchone()["n"])
+        out["shadow_retired_families_older_14d"] = [dict(r) for r in conn.execute(
+            """SELECT family, COUNT(*) AS n FROM rival_model_shadow_forecasts
+               WHERE issued_at<? AND (family LIKE 'flow_%' OR family LIKE 'liq_%'
+                     OR family LIKE '%_venue' OR family='regime_v2')
+               GROUP BY family ORDER BY n DESC""", (cuts["older_14d"],)).fetchall()]
+    return out
+
+
 def _timings(store, now) -> dict:
     """Seconds for the background reads that were slow (read-only)."""
     from parlay_bot.discord_app import research_alerts, trial_board
@@ -175,6 +209,9 @@ def probe() -> dict:
                 ).fetchall()]
         except Exception as exc:  # noqa: BLE001
             out["problem_hours_error"] = type(exc).__name__
+        if os.environ.get("RIVAL_PROBE_STORAGE"):
+            out["storage"] = _storage(store, now)
+            return out
         if os.environ.get("RIVAL_PROBE_PROBLEMS_ONLY"):
             out["timings"] = _timings(store, now)
             return out

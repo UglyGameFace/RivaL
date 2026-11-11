@@ -20,6 +20,8 @@ import re
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.storage.optional_reads import optional_rows
+
 MIN_DAYS = 21
 MIN_RESULTS = 150
 # Below this many results a gain is noise, not a verdict.
@@ -222,22 +224,16 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
     """
     stamp = (now or datetime.now(UTC)).astimezone(UTC)
     since = (stamp - FRESH).isoformat()
-    with store.connect() as conn:
-        try:
-            promotion = conn.execute(
-                """SELECT venue,contract,asset,horizon_minutes,evidence_json
-                   FROM rival_family_promotion WHERE evaluated_at>=?""",
-                (since,),
-            ).fetchall()
-        except Exception:  # noqa: BLE001 - table appears after the first hourly check
-            promotion = []
-        try:
-            stop_rows = conn.execute(
-                """SELECT venue,contract,horizon_minutes,family
-                   FROM rival_family_early_stop""",
-            ).fetchall()
-        except Exception:  # noqa: BLE001 - table appears after the first stop
-            stop_rows = []
+    # Each read on its own connection: on PostgreSQL a failed read (a
+    # table not created yet, a timeout) would abort a shared transaction.
+    promotion = optional_rows(
+        store, """SELECT venue,contract,asset,horizon_minutes,evidence_json
+                  FROM rival_family_promotion WHERE evaluated_at>=?""",
+        (since,), what="trial board promotion read") or []
+    stop_rows = optional_rows(
+        store, """SELECT venue,contract,horizon_minutes,family
+                  FROM rival_family_early_stop""",
+        what="trial board early-stop read") or []
     here, everywhere = [], []
     contracts = set()
     for row in promotion:

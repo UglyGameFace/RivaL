@@ -130,3 +130,52 @@ async def test_lineage_page_displays_real_boosted_delivery_proof_without_new_men
     finally:
         view.stop()
         store.close()
+
+
+def test_exact_names_from_the_hourly_check_give_the_same_evidence(learning_store):
+    """RIVAL-Y: the prefix scan read every row of the coin. With the hourly
+    check's family list the read is an index range per timeframe, and the
+    answer is identical; a family the check never scored is not counted."""
+    import json
+
+    from parlay_bot.perpetuals.family_governance import FAMILY_PROMOTION_SCHEMA
+
+    store = learning_store
+    now = datetime(2026, 10, 31, 15, tzinfo=UTC)
+    monitor = ForwardAccuracyMonitor(PerpetualMarketStore(store))
+    monitor.initialize()
+
+    def shadow(family, horizon, minutes):
+        issued = now - timedelta(minutes=minutes)
+        with store.connect() as conn:
+            conn.execute(
+                """INSERT INTO rival_model_shadow_forecasts (venue,contract,quote,asset,
+                   horizon_minutes,family,reference_opened_at,issued_at,target_opened_at,
+                   probability_up,incumbent_up,baseline_up,training_count,training_sha256,
+                   settled_at,outcome_up,model_brier,incumbent_brier,baseline_brier)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("okx", "BTC-USDT", "USDT", "BTC", horizon, family,
+                 (issued - timedelta(minutes=5)).isoformat(), issued.isoformat(),
+                 issued.isoformat(), .6, .5, .5, 0, "s" * 64, issued.isoformat(), 1,
+                 .16, .25, .25))
+
+    shadow("boosted_lightgbm_aaaaaaaaaaaa", 5, 20)
+    shadow("boosted_lightgbm_aaaaaaaaaaaa", 15, 40)
+    shadow("boosted_lightgbm_bbbbbbbbbbbb", 60, 90)
+    shadow("regime_v1", 5, 20)                      # not boosted: never counted
+    before = monitor.boosted_production_evidence(asset="BTC", now=now)   # prefix scan
+    assert (before["issued"], before["scopes_count"]) == (3, 3)
+
+    with store.connect() as conn:
+        conn.executescript(FAMILY_PROMOTION_SCHEMA)
+        conn.execute(
+            """INSERT INTO rival_family_promotion (venue,contract,quote,asset,horizon_minutes,
+                 evaluated_at,selected_family,status,reason,evidence_json)
+               VALUES ('okx','BTC-USDT','USDT','BTC',5,?,NULL,'held','t',?)""",
+            ((now - timedelta(hours=1)).isoformat(), json.dumps({
+                "boosted_lightgbm_aaaaaaaaaaaa": {}, "boosted_lightgbm_bbbbbbbbbbbb": {},
+                "regime_v1": {}})))
+    after = monitor.boosted_production_evidence(asset="BTC", now=now)
+    assert {k: after[k] for k in ("issued", "settled", "scopes_count")} == {
+        k: before[k] for k in ("issued", "settled", "scopes_count")}
+    assert sorted(s["horizon"] for s in after["scopes"]) == [5, 15, 60]

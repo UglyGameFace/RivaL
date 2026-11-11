@@ -224,6 +224,32 @@ def select_family_proof_scope(
     return scopes[hour_slot % len(scopes)] if scopes else None
 
 
+def _boosted_families(conn, asset: str, now: datetime) -> list[str] | None:
+    """Boosted families the hourly promotion check scored for this coin.
+
+    None when that check has not run for the coin yet (fresh install): the
+    caller then falls back to the prefix scan, which is correct but slow.
+    """
+    since = (now - timedelta(hours=48)).isoformat()
+    try:
+        rows = conn.execute(
+            "SELECT evidence_json FROM rival_family_promotion "
+            "WHERE asset=? AND evaluated_at>=?", (asset, since)).fetchall()
+    except Exception:  # noqa: BLE001 - no table yet: use the prefix scan
+        return None
+    if not rows:
+        return None
+    names: set[str] = set()
+    for row in rows:
+        try:
+            evidence = json.loads(row["evidence_json"] or "{}")
+        except (TypeError, ValueError):
+            continue
+        if isinstance(evidence, dict):
+            names |= {str(k) for k in evidence if str(k).startswith("boosted_")}
+    return sorted(names)
+
+
 class ForwardAccuracyMonitor:
     """Issue, settle and score immutable prospective research only."""
 
@@ -1801,8 +1827,24 @@ class ForwardAccuracyMonitor:
                    ORDER BY total DESC, reason LIMIT 8""",
                 (asset,),
             ).fetchall()
-            forecasts = conn.execute(
-                """SELECT s.venue,s.contract,s.quote,s.horizon_minutes,s.family,
+            # ``family LIKE 'boosted_%'`` cannot use the (asset, horizon,
+            # family, issued_at) index, so it read every row of the coin
+            # (8 s and a statement timeout on production, RIVAL-Y, while the
+            # owner opened "Is anything better?"). The hourly promotion check
+            # already lists every family the ledger saw in the same 30 days;
+            # with exact names each timeframe is an index range read.
+            families = _boosted_families(conn, asset, stamp)
+            if families is None:
+                match, match_params = "s.family LIKE 'boosted_%'", ()
+            else:
+                match = (f"s.family IN ({','.join('?' * len(families))})"
+                         if families else "1=0")
+                match_params = tuple(families)
+            forecasts = []
+            for horizon in (HORIZONS if families is not None else (None,)):
+                scope = "" if horizon is None else " AND s.horizon_minutes=?"
+                forecasts += conn.execute(
+                    f"""SELECT s.venue,s.contract,s.quote,s.horizon_minutes,s.family,
                           COUNT(*) AS issued,
                           SUM(CASE WHEN s.settled_at IS NOT NULL
                                    AND s.outcome_up IN (0,1)
@@ -1811,23 +1853,24 @@ class ForwardAccuracyMonitor:
                           MAX(s.issued_at) AS last_issued_at,
                           MAX(s.settled_at) AS last_settled_at
                    FROM rival_model_shadow_forecasts s
-                   WHERE s.asset=? AND s.family LIKE 'boosted_%'
+                   WHERE s.asset=?{scope} AND {match}
                      AND s.issued_at>=? AND s.issued_at<=?
                    GROUP BY s.venue,s.contract,s.quote,s.horizon_minutes,s.family""",
-                (asset,cutoff,stamp.isoformat()),
-            ).fetchall()
+                    (asset, *(() if horizon is None else (horizon,)), *match_params,
+                     cutoff, stamp.isoformat()),
+                ).fetchall()
             quotes = conn.execute(
-                """SELECT venue,contract,quote,horizon_minutes,family,
+                f"""SELECT venue,contract,quote,horizon_minutes,family,
                           COUNT(*) AS observed_entries,
                           SUM(CASE WHEN state='EXIT_QUOTED'
                                    THEN 1 ELSE 0 END) AS observed_exits,
                           SUM(CASE WHEN state='MISSED_EXIT'
                                    THEN 1 ELSE 0 END) AS missing_exits
-                   FROM rival_family_quote_shadow
-                   WHERE asset=? AND family LIKE 'boosted_%'
+                   FROM rival_family_quote_shadow s
+                   WHERE asset=? AND {match}
                     AND issued_at>=? AND issued_at<=?
                    GROUP BY venue,contract,quote,horizon_minutes,family""",
-                (asset,cutoff,stamp.isoformat()),
+                (asset, *match_params, cutoff, stamp.isoformat()),
             ).fetchall()
             selections = conn.execute(
                 """SELECT venue,contract,quote,horizon_minutes,selected_family,

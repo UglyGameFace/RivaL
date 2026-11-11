@@ -32,13 +32,18 @@ FORMULA = "digital-gbm-ewma-v2"
 JUMP = "digital-merton-moments-v1"
 PRESSURE = "digital-queue-microprice-v1"
 MODELS = (BOOK, FORMULA, JUMP, PRESSURE)
+# Contestants added after the four declared ones. They are NOT in MODELS:
+# each takes a slot from the half of the error budget reserved for later
+# identities (_test_alpha), so the declared models' tests are unchanged.
+LAG = "digital-odds-lag-logistic-v1"
+LATER_MODELS = (LAG,)
 ASSETS = ("BTC", "ETH", "SOL", "XRP")
 HORIZONS = (5, 15, 60)
 
 
 def label(model: str) -> str:
     return {BOOK: "Book logistic", FORMULA: "GBM + EWMA", JUMP: "Jump diffusion",
-            PRESSURE: "Queue pressure"}.get(model, "Pooled " + model[-8:] if model.startswith("pooled:") else model[:24])
+            PRESSURE: "Queue pressure", LAG: "Odds-lag learner"}.get(model, "Pooled " + model[-8:] if model.startswith("pooled:") else model[:24])
 
 
 def settlement_schema(notice) -> str | None:
@@ -187,7 +192,8 @@ class Contest:
             clean = {model: (float(p), sha) for model, (p, sha) in forecasts.items()
                      if math.isfinite(float(p)) and 0 <= float(p) <= 1
                      and isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha)
-                     and (model in MODELS or model.startswith("pooled:") and model.endswith("@" + sha))}
+                     and (model in MODELS or model in LATER_MODELS
+                          or model.startswith("pooled:") and model.endswith("@" + sha))}
         except (TypeError, ValueError, AttributeError):
             return False
         rate = getattr(notice, "fee_rate", None)

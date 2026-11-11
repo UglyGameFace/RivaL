@@ -73,6 +73,9 @@ class PerpetualMarketStore:
         self._forward_schema_ready = False
         self.live_model_checkpoints = None
         self.regime_live_checkpoints = None
+        # The Model Lab (model_lab.ModelLab), shared by the forecast cycle
+        # and the bot's review loop; created on first use.
+        self.model_lab = None
         self.historical_challengers = None
         self.pooled_models = None  # set by ForwardAccuracyMonitor or the bot
         # Optional, read-only evidence dependencies installed by the bot.

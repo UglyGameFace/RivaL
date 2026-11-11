@@ -61,6 +61,9 @@ def short_name(family: str) -> str:
         return "Boosted" + suffix
     if base.startswith("historical_"):
         return "History" + suffix
+    lab = re.fullmatch(r"lab_\d+m_([0-9a-f]+)", base)
+    if lab:
+        return f"Lab {lab.group(1)[:6]}"
     return (_NAMES.get(base) or base[:12]) + suffix
 
 
@@ -232,6 +235,16 @@ def table(rows: list[TrialRow]) -> str:
     return text
 
 
+def best(rows: list[TrialRow]) -> TrialRow | None:
+    """The top model here: a passed one first, else the biggest edge among
+    those ahead of the main model. None when nobody is ahead."""
+    passed = [r for r in rows if r.status == "PASSED"]
+    if passed:
+        return max(passed, key=lambda r: (r.gain or 0.0, r.results))
+    ahead = [r for r in rows if r.status == "ahead" and r.gain is not None]
+    return max(ahead, key=lambda r: (r.gain, r.results)) if ahead else None
+
+
 def leader_line(rows: list[TrialRow]) -> str:
     """The one sentence a trader wants: who is closest, and what is left."""
     passed = [r for r in rows if r.status == "PASSED"]
@@ -340,8 +353,15 @@ REVERTED_SUFFIXES = ("_venue",)
 
 
 def is_retired(family: str, retired=frozenset()) -> bool:
-    """A model that can never advance: switched off, or its issuer removed."""
-    return family in retired or family.endswith(REVERTED_SUFFIXES)
+    """A model that can never advance: switched off, its issuer removed, or a
+    Model Lab design the lab has closed."""
+    if family in retired or family.endswith(REVERTED_SUFFIXES):
+        return True
+    if family.startswith("lab_"):
+        from parlay_bot.perpetuals.model_lab import closed_families
+
+        return family in closed_families()
+    return False
 
 
 def retired_families() -> frozenset[str]:

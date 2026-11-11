@@ -397,6 +397,10 @@ class RuntimeHealthMonitor:
             # challenger keeps its record but stops raising incidents.
             if count < 50 or last_issued < in_use_since:
                 continue
+            # Model Lab designs are expected to lose often: the lab closes
+            # them itself, so a losing design is not an incident.
+            if str(family).startswith("lab_"):
+                continue
             model_score, incumbent_score = model_sum / count, incumbent_sum / count
             if model_score > incumbent_score + 0.025:
                 regression_faults[f"regression:{venue}:{contract}:{family}"] = (

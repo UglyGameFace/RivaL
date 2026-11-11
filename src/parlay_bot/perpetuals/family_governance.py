@@ -315,7 +315,20 @@ class FamilyPromotion:
                 and invalid==0
                 and all(s["qualified"] for s in cost_proofs.values())
             )
+            # Model Lab designs also clear a stricter bar for the number of
+            # designs tried on this timeframe, so a search never crowns a
+            # lucky fluke (model_lab.search_bar).
+            search=None
+            if family.startswith("lab_"):
+                from parlay_bot.perpetuals import model_lab
+                try:
+                    search=model_lab.search_bar(
+                        scored_pairs, tried=model_lab.tried_count(horizon, self.store))
+                except (ValueError,TypeError,statistics.StatisticsError):
+                    search={"passed":False,"lower":None}
+                qualified=qualified and bool(search["passed"])
             scored[family]={
+                "search_bar":search,
                 "qualified":qualified,
                 "targets":proof.targets if proof else 0,
                 "days":proof.days if proof else 0,

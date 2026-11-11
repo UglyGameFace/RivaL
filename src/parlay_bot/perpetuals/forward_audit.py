@@ -156,6 +156,11 @@ ISSUE_REGIME_LIVE_FAST_V1_CHALLENGERS = True
 # promotes them. One kill switch for issuance and learning of both;
 # existing rows keep settling either way.
 ISSUE_CROSS_V1_CHALLENGERS = True
+# The Model Lab (model_lab.py, 2026-11-11): RivaL's own search for better
+# models. Up to SLOTS_PER_HORIZON live-learning designs per timeframe; a
+# closed design is replaced by one the lab has never tried. Test-only like
+# every challenger; never serves (selected() has no lab branch).
+ISSUE_LAB_CHALLENGERS = True
 
 # The incumbent's fast settlement covers the last 2 days; a day of margin.
 SHADOW_FAST_SETTLE_WINDOW = timedelta(days=3)
@@ -352,6 +357,19 @@ class ForwardAccuracyMonitor:
                 _LOG.exception("RivaL regime_v2 model registry unavailable")
                 return None
         return current
+
+    def _model_lab(self):
+        """The shared Model Lab (one per market object), or None."""
+        lab = getattr(self.market, "model_lab", None)
+        if lab is None:
+            from parlay_bot.perpetuals.model_lab import ModelLab
+
+            lab = ModelLab(self.store)
+            try:
+                self.market.model_lab = lab
+            except AttributeError:
+                pass
+        return lab
 
     def _regime_live_checkpoints(self):
         """The per-family live learners (None if their table is unavailable)."""
@@ -984,6 +1002,7 @@ class ForwardAccuracyMonitor:
             "regime_live_unavailable": 0,
             "regime_live_fast_issued": 0, "regime_live_fast_abstained": 0,
             "regime_live_fast_unavailable": 0,
+            "lab_issued": 0,
         }
         # Reuse the same bounded, freshness-checked stream selection as
         # existing offline evaluation, without external HTTP requests.
@@ -1420,6 +1439,23 @@ class ForwardAccuracyMonitor:
                     regime_live_fast_items = live_items[regime_live_model.FAST_FAMILY]
                     stream_stops = (None if stop_map is None else stop_map.get(
                         (venue, contract, quote, horizon), frozenset()))
+                    # Model Lab designs: each learns from this stream's newly
+                    # graded labels, then makes its own call (or abstains).
+                    # CPU and a small write, before the transaction opens;
+                    # a lab failure never blocks the incumbent.
+                    lab_items: tuple = ()
+                    if ISSUE_LAB_CHALLENGERS:
+                        try:
+                            lab_items = tuple(self._model_lab().calls(
+                                candles=candles, samples=samples, features=features,
+                                incumbent_weights=tuple(tested.final_weights),
+                                venue=venue, contract=contract, quote=quote,
+                                horizon=horizon, now=stamp,
+                                stopped=stream_stops or frozenset()))
+                        except Exception:  # noqa: BLE001 - optional challenger
+                            _LOG.exception("RivaL model lab calls unavailable")
+                            lab_items = ()
+                        metrics["lab_issued"] += len(lab_items)
                     # Shadow-model fitting is CPU work on inputs already
                     # fixed at issuance: do it before the transaction opens.
                     try:
@@ -1521,7 +1557,7 @@ class ForwardAccuracyMonitor:
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
-                                    challengers=(*flow_calls, *archive_items, *gbm_items, *regime_items, *wild_items, *regime2_items, *regime_live_items, *regime_live_fast_items),
+                                    challengers=(*flow_calls, *archive_items, *gbm_items, *regime_items, *wild_items, *regime2_items, *regime_live_items, *regime_live_fast_items, *lab_items),
                                     prepared=shadow_prepared, stopped=stream_stops,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger
@@ -1674,6 +1710,12 @@ class ForwardAccuracyMonitor:
                   " ".join(f"{k}={v:.1f}s" for k, v in self.last_db_timing.items()),
                   clock.statements if clock else 0, clock.commits if clock else 0,
                   clock.checkouts if clock else 0, clock.wait_seconds if clock else 0.0)
+        if ISSUE_LAB_CHALLENGERS and getattr(self.market, "model_lab", None) is not None:
+            # One write for every lab learner that learned this cycle.
+            try:
+                self.market.model_lab.flush()
+            except Exception:  # noqa: BLE001 - kept in memory, saved next cycle
+                _LOG.exception("RivaL model lab save failed")
         self._record_cycle(stamp, metrics)
         # The table alone does not explain a bare menu: log the gate
         # breakdown so the next empty-signal report names its cause.

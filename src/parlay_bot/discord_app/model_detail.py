@@ -409,9 +409,16 @@ def model_embed(report: dict | None, *, asset: str, name: str) -> discord.Embed:
             description="This model has no recent trial results here. It may have been "
                         "retired, or the hourly check hasn't scored it yet.",
             color=discord.Color.light_grey())
+    how = HOW_IT_WORKS.get(name)
+    if how is None and name.startswith("Lab "):
+        from parlay_bot.perpetuals.model_lab import describe_family
+
+        family = next((h["family"] for h in report["horizons"].values()), "")
+        found = describe_family(family)
+        how = ("A design RivaL's Model Lab picked itself. " + found) if found else None
     embed = discord.Embed(
         title=f"🧪 {name} · {asset} · model detail",
-        description=(f"{HOW_IT_WORKS.get(name, 'A test model running beside the main model.')}"
+        description=(f"{how or 'A test model running beside the main model.'}"
                      f"\n\n{_standing(report)}"),
         color=discord.Color.blurple(),
     )

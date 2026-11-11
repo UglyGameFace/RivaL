@@ -116,8 +116,11 @@ def family_words(family: str) -> str:
     per_exchange = family.endswith("_venue")
     base = family.removesuffix("_venue")
     pooled = re.fullmatch(r"pooled_(\d+)m_[0-9a-f]+", base)
+    lab = re.fullmatch(r"lab_(\d+)m_([0-9a-f]+)", base)
     if pooled:
         name = f"6-year history model ({pooled.group(1)}-min)"
+    elif lab:
+        name = f"Model Lab design {lab.group(2)[:6]} ({lab.group(1)}-min)"
     else:
         name = _FAMILY_WORDS.get(base) or rename_text(base)
     return name + (", per exchange" if per_exchange else "")

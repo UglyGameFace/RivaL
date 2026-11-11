@@ -657,6 +657,7 @@ class RivalDiscordClient(discord.Client):
         from parlay_bot.discord_app.model_watch import ModelWatchService
         self.model_watch = ModelWatchService(self, self.store)
         self._model_watch_task: asyncio.Task[None] | None = None
+        self._model_lab_task: asyncio.Task[None] | None = None
         self._poly_research_task: asyncio.Task[None] | None = None
         # Locked test of the Up/Down price formula vs Polymarket's price.
         from parlay_bot.perpetuals.polymarket_formula_test import FormulaTest
@@ -1497,6 +1498,10 @@ class RivalDiscordClient(discord.Client):
             self._model_watch_task = asyncio.create_task(
                 self._model_watch_loop(), name="rival-live-model-watch",
             )
+        if self._model_lab_task is None and self.perp_collector is not None:
+            self._model_lab_task = asyncio.create_task(
+                self._model_lab_loop(), name="rival-model-lab",
+            )
         if (
             self.settings.rival_polybolt_enabled
             and self.polybolt.configured
@@ -2277,6 +2282,36 @@ class RivalDiscordClient(discord.Client):
             # Refresh the single DM panel every ~5s; the first model forecast
             # is immutable and no extra flip-notification DMs are sent.
             await asyncio.sleep(max(0.1, 5 - (time.monotonic() - started)))
+
+    def model_lab(self):
+        """The Model Lab the forecast cycle uses (one per market store)."""
+        market = self.perp_collector.market
+        if getattr(market, "model_lab", None) is None:
+            from parlay_bot.perpetuals.model_lab import ModelLab
+
+            market.model_lab = ModelLab(self.store)
+        return market.model_lab
+
+    async def _model_lab_loop(self) -> None:
+        """Score, close and refill the Model Lab's designs every 30 minutes."""
+        from parlay_bot.perpetuals.model_lab import REVIEW_EVERY
+
+        await self.wait_until_ready()
+        await asyncio.sleep(120)   # let startup work finish first
+        while not self.is_closed():
+            try:
+                changed = await asyncio.wait_for(
+                    asyncio.to_thread(self.model_lab().review), timeout=240)
+                if any(changed.values()):
+                    _LOG.info("RivaL model lab review opened=%d closed=%d passed=%d",
+                              len(changed["opened"]), len(changed["closed"]),
+                              len(changed["passed"]))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the lab must never stop the bot
+                _LOG.warning("RivaL model lab review failed; retrying next round",
+                             exc_info=True)
+            await asyncio.sleep(REVIEW_EVERY.total_seconds())
 
     async def _model_watch_loop(self) -> None:
         """Edit every live model watch post every 5 minutes."""
@@ -3296,6 +3331,7 @@ class RivalDiscordClient(discord.Client):
                 ("_poly_board_task", self._poly_board_loop,
                  "rival-auto-polymarket-board"),
                 ("_model_watch_task", self._model_watch_loop, "rival-live-model-watch"),
+                ("_model_lab_task", self._model_lab_loop, "rival-model-lab"),
                 ("_formula_task", self._formula_loop,
                  "rival-polymarket-formula-test"),
                 ("_polybolt_task", self.polybolt.run, "rival-read-only-chainlink-twap"),

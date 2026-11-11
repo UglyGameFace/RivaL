@@ -98,6 +98,7 @@ async def test_page_is_verdict_first_then_scoreboard_trials_and_health(tmp_path,
         fields = _fields(panel)
         assert list(fields) == [SCORE, "🎚️ Can you trust its confidence?",
                                 "🧪 Models on trial here (0)", HEALTH]
+        # Nothing on trial and no lab yet: no empty "best model" section.
         # The verdict is the first line; honesty disclosures stay.
         assert panel.description.startswith(
             "**No edge yet: Polymarket's odds are still more accurate.**")

@@ -759,6 +759,68 @@ def _trial_board_record(market: object, asset: str, horizon: int) -> dict:
                             retired=trial_board.retired_families())
 
 
+def _best_record(market: object, asset: str, horizon: int) -> dict:
+    """Per timeframe: the top model on trial for this coin, plus the Model Lab.
+
+    Reuses the cached trial board of each timeframe (small point reads).
+    """
+    from parlay_bot.discord_app import trial_board
+
+    out: dict = {"best": {}}
+    for h in (5, 15, 60):
+        try:
+            board = _cached_page_read(_trial_board_record, market, asset, h)
+            out["best"][h] = trial_board.best(board.get("rows") or [])
+        except Exception:  # noqa: BLE001 - one timeframe failing shows as unknown
+            out["best"][h] = "error"
+    lab = getattr(market, "model_lab", None)
+    if lab is not None:
+        try:
+            out["lab"] = lab.summary()
+        except Exception:  # noqa: BLE001 - the lab line is optional
+            out["lab"] = None
+    return out
+
+
+def _best_text(reports: dict) -> str | None:
+    """🏆 Best model per timeframe: one line each, then the lab in one line."""
+    from parlay_bot.discord_app import trial_board
+
+    record = reports.get("best")
+    if not isinstance(record, dict):
+        return None
+    lab = record.get("lab")
+    lab_busy = isinstance(lab, dict) and any(v["tried"] for v in lab.values())
+    if not lab_busy and not any(v not in (None, "error") for v in record["best"].values()):
+        return None   # nothing to name yet: no empty section
+    lines = []
+    for h in (5, 15, 60):
+        top = record["best"].get(h)
+        if top == "error":
+            lines.append(f"**{h}m** · couldn't load right now")
+        elif top is None:
+            lines.append(f"**{h}m** · no test model is ahead of the main model yet")
+        else:
+            proof = ("✅ passed every test" if top.status == "PASSED"
+                     else f"day {min(top.days, 99)}/{trial_board.MIN_DAYS}, not proven yet")
+            lines.append(f"**{h}m** · **{top.name}** {trial_board._pts(top.gain)} edge · {proof}")
+    if lab_busy:
+        testing = sum(len(v["active"]) for v in lab.values())
+        closed = sum(v["closed"] for v in lab.values())
+        tops = [(h, v["best"]) for h, v in lab.items()
+                if v["best"] and v["best"]["fitness"] > 0]
+        lead = ""
+        if tops:
+            h, top = max(tops, key=lambda t: t[1]["fitness"])
+            lead = (f" Its best so far: **{trial_board.short_name(top['family'])}** "
+                    f"on {h}-min.")
+        lines.append(f"🧬 Model Lab: {testing} designs testing, {closed} closed so far, "
+                     f"each loser replaced automatically.{lead}")
+    lines.append("-# Edge = less error than the main model, in points. Proven = 21 days, "
+                 "150 results and a win after fees.")
+    return "\n".join(lines)
+
+
 def _calibration_record(market: object, asset: str, horizon: int) -> dict:
     """Confidence bands and market conditions for the main model (one read)."""
     return ForwardAccuracyMonitor(market).calibration(asset=asset, horizon=horizon)
@@ -1088,6 +1150,10 @@ def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
                     value=fit_embed_field_value(_calibration_text(reports)), inline=False)
     name, trials = _trials_text(reports)
     embed.add_field(name=name, value=fit_embed_field_value(trials), inline=False)
+    leaders = _best_text(reports)
+    if leaders:
+        embed.add_field(name=f"🏆 Best model per timeframe ({coin})",
+                        value=fit_embed_field_value(leaders), inline=False)
     contest = _contest_text(reports)
     if contest:
         embed.add_field(name="🎲 Polymarket contest", value=fit_embed_field_value(contest),
@@ -1097,6 +1163,15 @@ def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
                         _health_text(coin, horizon, reports, now, venues))), inline=False)
     embed.timestamp = now
     embed.set_footer(text=f"{RESEARCH_FOOTER} · Per-model detail: Detailed Research")
+    # Discord refuses an embed over 6,000 characters (the screen would fail
+    # to load): drop the optional sections, least important first.
+    for optional in ("🎲 Polymarket contest", f"🏆 Best model per timeframe ({coin})"):
+        if len(embed) <= 5900:
+            break
+        for index, field in enumerate(embed.fields):
+            if field.name == optional:
+                embed.remove_field(index)
+                break
     return embed
 
 
@@ -2177,6 +2252,11 @@ class GuidedHome(discord.ui.View):
                 readers["trials"] = asyncio.wait_for(
                     asyncio.to_thread(_cached_page_read, _trial_board_record, self.market,
                                       self.coin, self.horizon),
+                    timeout=PERFORMANCE_READ_SECONDS,
+                )
+                readers["best"] = asyncio.wait_for(
+                    asyncio.to_thread(_cached_page_read, _best_record, self.market,
+                                      self.coin, 0),
                     timeout=PERFORMANCE_READ_SECONDS,
                 )
                 readers["intelligence"] = asyncio.wait_for(

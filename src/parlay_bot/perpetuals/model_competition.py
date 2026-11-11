@@ -430,6 +430,11 @@ class ShadowModelCompetition:
         window = "" if since is None else " AND s.target_opened_at>=?"
         params = (stamp,) if since is None else (stamp, utc(since).isoformat())
         with self.store.connect() as conn:
+            # Cross-exchange rows are issued after the per-stream loop, a few
+            # seconds after the incumbent on the same target, so the match is
+            # "incumbent issued no later than this row", not the same second.
+            # Until Nov 11 it required the same second, and no cross_v1 /
+            # cross_all_v1 row was ever graded (all ~20k unsettled).
             # Look each unsettled row's incumbent up by its primary key. As a
             # plain join, PostgreSQL hash-joined against every settled
             # incumbent forecast (a parallel full scan, 0.7-2.2 s per batch);
@@ -439,7 +444,7 @@ class ShadowModelCompetition:
                            AND f.horizon_minutes=s.horizon_minutes
                            AND f.model_version='prospective-logistic-persistent-v3'
                            AND f.reference_opened_at=s.reference_opened_at
-                           AND f.asset=s.asset AND f.issued_at=s.issued_at
+                           AND f.asset=s.asset AND f.issued_at<=s.issued_at
                            AND f.target_opened_at=s.target_opened_at
                            AND f.settled_at IS NOT NULL AND f.settled_at<=?
                            AND f.outcome_up IN (0,1)"""

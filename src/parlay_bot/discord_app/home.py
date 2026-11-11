@@ -372,10 +372,12 @@ def _performance_benefit(market: object, asset: str, horizon: int) -> dict:
 # answer; a page request that still misses waits for any run already in
 # flight instead of starting a duplicate query.
 BENEFIT_CACHE_SECONDS = 45 * 60
-# The Performance page renders in the background with an 8 s overall budget
-# (_finish_performance), so each independent reader may use most of it.
-# Production score queries take 2-7 s under load; 4 s made them fail often.
-PERFORMANCE_READ_SECONDS = 7.0
+# The Performance page renders through patient() (_finish_performance): after
+# 8 s it shows "still loading" and keeps waiting up to 45 s on the same reads.
+# A 7 s per-reader cut made a slow read show "couldn't load, press Refresh"
+# even though it finished seconds later (the Nov 11 live audit: the trial
+# table failed on every 5-min page twice in a row). 30 s fits inside 45 s.
+PERFORMANCE_READ_SECONDS = 30.0
 _BENEFIT_CACHE: dict[tuple, tuple[float, object, dict]] = {}
 _BENEFIT_INFLIGHT: dict[tuple, threading.Event] = {}
 _BENEFIT_LOCK = threading.Lock()
@@ -802,7 +804,8 @@ def _best_text(reports: dict) -> str | None:
             lines.append(f"**{h}m** · no test model is ahead of the main model yet")
         else:
             proof = ("✅ passed every test" if top.status == "PASSED"
-                     else f"day {min(top.days, 99)}/{trial_board.MIN_DAYS}, not proven yet")
+                     else f"{top.results:,} results over {top.days} day"
+                          f"{'s' if top.days != 1 else ''}, not proven yet")
             lines.append(f"**{h}m** · **{top.name}** {trial_board._pts(top.gain)} edge · {proof}")
     if lab_busy:
         testing = sum(len(v["active"]) for v in lab.values())
@@ -812,8 +815,8 @@ def _best_text(reports: dict) -> str | None:
         lead = ""
         if tops:
             h, top = max(tops, key=lambda t: t[1]["fitness"])
-            lead = (f" Its best so far: **{trial_board.short_name(top['family'])}** "
-                    f"on {h}-min.")
+            lead = (f" Leading so far: **{trial_board.short_name(top['family'])}** on "
+                    f"{h}-min (early, not proven).")
         lines.append(f"🧬 Model Lab: {testing} designs testing, {closed} closed so far, "
                      f"each loser replaced automatically.{lead}")
     lines.append("-# Edge = less error than the main model, in points. Proven = 21 days, "
@@ -1000,11 +1003,20 @@ def _trials_text(reports: dict) -> tuple[str, str]:
     if not rows:
         body = "No test models have scored results here yet."
     else:
+        from parlay_bot.discord_app.data_dashboard import VENUE_NAMES
+
+        venues = [VENUE_NAMES.get(v, v) for v in board.get("venues") or ()]
+        where = (" and ".join(venues) if 0 < len(venues) <= 3
+                 else f"{len(venues)} exchanges" if venues else "the judged exchange")
+        # Every column of a row comes from the same exchange(s), so the
+        # numbers can be read together.
         body = (trial_board.table(rows) + trial_board.leader_line(rows) + "\n"
-                f"-# Right = its up/down calls that came true, last {trial_board.HIT_DAYS} "
-                "days. Edge = how much less error than the main model, in points (+ is "
-                f"better). To replace it: {trial_board.MIN_DAYS} days, "
-                f"{trial_board.MIN_RESULTS} results and a win after fees.")
+                f"-# Scored on {where} (the hourly check rotates exchanges). Day = days of "
+                f"results, Res = graded results, Right = its up/down calls that came true "
+                f"(last {trial_board.HIT_DAYS} days), Edge = less error than the main model "
+                "in points (+ is better; \"few\" under 20 results). To replace it: "
+                f"{trial_board.MIN_DAYS} days, {trial_board.MIN_RESULTS} results and a win "
+                "after fees.")
     body += (f"\n-# All markets: {int(board.get('trials') or 0)} on trial · "
              f"{int(board.get('passed') or 0)} passed · "
              f"{int(board.get('stops') or 0)} cut early for losing")
@@ -1092,7 +1104,8 @@ def _health_text(coin: str, horizon: int, reports: dict, now: datetime,
         lines.append(f"**Getting more accurate?** {reason} ({counted:,} {unit} over "
                      f"{days} day{'s' if days != 1 else ''}{need})")
     elif isinstance(benefit, TimeoutError):
-        lines.append("**Getting more accurate?** still calculating; press Refresh in a few seconds")
+        lines.append("**Getting more accurate?** still calculating (a long check); "
+                     "press Refresh in a minute")
     else:
         lines.append("**Getting more accurate?** couldn't check right now")
 

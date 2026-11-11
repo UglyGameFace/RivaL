@@ -191,6 +191,7 @@ def test_review_fills_slots_closes_a_loser_and_replaces_it(store):
     # The lab learned something about 5-minute designs.
     summary = lab.summary()[5]
     assert summary["tried"] == SLOTS_PER_HORIZON + 1 and summary["closed"] == 1
+    assert summary["best"] is None        # a closed design is never named "best"
 
 
 def test_a_design_that_passes_route_b_keeps_running_without_a_slot(store):
@@ -269,10 +270,10 @@ def test_bot_performance_names_the_best_model_per_timeframe_and_the_lab():
                "learned": {}} for h in (5, 15, 60)}
     text = _best_text({"best": {"best": {5: ahead, 15: None, 60: "error"}, "lab": lab}})
     lines = text.splitlines()
-    assert lines[0] == "**5m** · **Trend learn** +7.1 edge · day 3/21, not proven yet"
+    assert lines[0] == "**5m** · **Trend learn** +7.1 edge · 140 results over 3 days, not proven yet"
     assert lines[1] == "**15m** · no test model is ahead of the main model yet"
     assert lines[2] == "**60m** · couldn't load right now"
     assert lines[3].startswith("🧬 Model Lab: 9 designs testing, 3 closed so far")
-    assert "**Lab 3f9a2c** on 5-min" in lines[3]
+    assert "Leading so far: **Lab 3f9a2c** on 5-min (early" in lines[3]
     assert _best_text({"best": RuntimeError("slow")}) is None
     assert _best_text({"best": {"best": {5: None, 15: None, 60: None}}}) is None

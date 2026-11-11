@@ -226,8 +226,10 @@ def table(rows: list[TrialRow]) -> str:
     for row in rows[:MAX_ROWS]:
         day = f"{min(row.days, 99)}/{MIN_DAYS}"
         rate = "—" if row.hit_rate is None else f"{row.hit_rate:.0%}"
+        # Under 20 results an edge is noise (+44.8 on 10 results): say "few".
+        edge = _pts(row.gain) if row.results >= TOO_FEW else "few"
         line = (f"{row.name[:11]:<11} {day:>5} {_tiny_count(row.results):>4} "
-                f"{rate:>5} {_pts(row.gain):>5}")
+                f"{rate:>5} {edge:>5}")
         items.append((row.status, line))
     text = grouped(f"{'Model':<11} {'Day':>5} {'Res':>4} {'Right':>5} {'Edge':>5}", items)
     if len(rows) > MAX_ROWS:
@@ -237,12 +239,15 @@ def table(rows: list[TrialRow]) -> str:
 
 def best(rows: list[TrialRow]) -> TrialRow | None:
     """The top model here: a passed one first, else the biggest edge among
-    those ahead of the main model. None when nobody is ahead."""
+    those ahead of the main model, discounted for few results (an edge on
+    41 results counts for about a fifth of one on 700) so a small lucky
+    sample does not outrank a long record. None when nobody is ahead."""
     passed = [r for r in rows if r.status == "PASSED"]
     if passed:
         return max(passed, key=lambda r: (r.gain or 0.0, r.results))
     ahead = [r for r in rows if r.status == "ahead" and r.gain is not None]
-    return max(ahead, key=lambda r: (r.gain, r.results)) if ahead else None
+    return max(ahead, key=lambda r: (r.gain * r.results / (r.results + MIN_RESULTS),
+                                     r.results)) if ahead else None
 
 
 def leader_line(rows: list[TrialRow]) -> str:
@@ -264,7 +269,7 @@ def leader_line(rows: list[TrialRow]) -> str:
     where = f"ahead on {lead.ahead} of {lead.exchanges} exchanges{fees}"
     need = (" Needs " + " and ".join(left) + " before it can be trusted."
             if left else " Waiting on the after-fees test.")
-    return f"Closest: **{lead.name}** ({where}).{need}"
+    return f"Closest to passing: **{lead.name}** ({where}).{need}"
 
 
 def read(store, *, asset: str, horizon: int, now: datetime | None = None,
@@ -301,7 +306,11 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
                   if int(r["horizon_minutes"]) == horizon
                   and (str(r["venue"]), str(r["contract"])) in contracts]
     rows = fold(here, stops_here, retired=retired)
-    rates = hit_rates(store, asset=asset, horizon=horizon, now=stamp)
+    # Right % is counted on the SAME exchanges as Day, Res and Edge (the ones
+    # the hourly promotion check judged), so one row never mixes scopes.
+    venues = sorted({venue for venue, _contract in contracts})
+    rates = (hit_rates(store, asset=asset, horizon=horizon, now=stamp, venues=venues)
+             if venues else {})
     rows = [replace(r, calls=rates.get(r.family, (0, 0))[0],
                     right=rates.get(r.family, (0, 0))[1]) for r in rows]
     total = passed = 0
@@ -313,20 +322,28 @@ def read(store, *, asset: str, horizon: int, now: datetime | None = None,
         total += len(folded)
         passed += sum(r.passed for r in folded)
     return {"rows": rows, "markets": len(by_market), "trials": total, "passed": passed,
-            "stops": len(stop_rows)}
+            "stops": len(stop_rows), "venues": venues}
 
 
 HIT_DAYS = 7
 
 
-def hit_rates(store, *, asset: str, horizon: int,
-              now: datetime | None = None) -> dict[str, tuple[int, int]]:
+def hit_rates(store, *, asset: str, horizon: int, now: datetime | None = None,
+              venues=None) -> dict[str, tuple[int, int]]:
     """family -> (graded up/down calls, calls that came true), last HIT_DAYS days.
 
     The scoreboard's own rule: graded with a 0/1 outcome, not a 50/50 call.
-    One grouped read on the (asset, horizon, family, issued_at) index.
+    One grouped read on the (asset, horizon, family, issued_at) index;
+    ``venues`` limits it to those exchanges (None: every exchange).
     """
     stamp = (now or datetime.now(UTC)).astimezone(UTC)
+    where, extra = "", ()
+    if venues is not None:
+        venues = tuple(sorted(set(venues)))
+        if not venues:
+            return {}
+        where = f" AND venue IN ({','.join('?' for _ in venues)})"
+        extra = venues
     try:
         with store.connect() as conn:
             rows = conn.execute(
@@ -337,9 +354,9 @@ def hit_rates(store, *, asset: str, horizon: int,
                    FROM rival_model_shadow_forecasts
                    WHERE asset=? AND horizon_minutes=? AND issued_at>=?
                      AND settled_at IS NOT NULL AND outcome_up IN (0,1)
-                     AND probability_up BETWEEN 0 AND 1 AND probability_up<>0.5
-                   GROUP BY family""",
-                (asset, int(horizon), (stamp - timedelta(days=HIT_DAYS)).isoformat()),
+                     AND probability_up BETWEEN 0 AND 1 AND probability_up<>0.5"""
+                + where + " GROUP BY family",
+                (asset, int(horizon), (stamp - timedelta(days=HIT_DAYS)).isoformat(), *extra),
             ).fetchall()
     except Exception:  # noqa: BLE001 - no ledger yet: no rates, never a fake zero
         return {}

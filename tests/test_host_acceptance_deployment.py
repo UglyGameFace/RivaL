@@ -68,3 +68,19 @@ def test_discloud_main_entrypoint_works_even_if_tools_directory_is_missing(tmp_p
         result = json.loads(run.stdout)
         assert result["status"] == "UNVERIFIED", (option, result)
         assert "ModuleNotFoundError" not in run.stderr
+
+
+def test_merges_that_land_together_deploy_as_one_restart():
+    """26 restarts a day on Nov 8-10; most came minutes before the next one."""
+    workflow = (ROOT / ".github/workflows/discloud-deploy.yml").read_text()
+    steps = workflow.split("    steps:\n", 1)[1]
+    wait = steps.index("run: sleep 900")
+    # Only merges wait; a manually dispatched CI run deploys at once.
+    condition = steps[:wait].rsplit("if:", 1)[1]
+    assert "workflow_run.event == 'push'" in condition
+    # The superseded-commit check runs AFTER the wait, so a newer merge
+    # during the wait makes this run skip itself.
+    assert wait < steps.index("CURRENT_MAIN_SHA") < steps.index("Superseded main CI commit")
+    # One release at a time; a queued newer run is never cancelled mid-upload.
+    assert "cancel-in-progress: false" in workflow
+    assert "timeout-minutes: 30" in workflow

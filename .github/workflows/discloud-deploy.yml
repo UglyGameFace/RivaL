@@ -15,8 +15,20 @@ jobs:
   deploy:
     if: github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
+      # Every deploy restarts the bot: it drops the in-flight 5-minute cycle,
+      # the page caches and the watchdog's warm-up, and replays startup work.
+      # Nov 8-10 had 53 deploys in 2 days (26 restarts a day); 28 of them
+      # came within 15 minutes of the next. Waiting here lets merges that
+      # land close together go out as ONE restart: a newer main commit makes
+      # this run skip itself at the current-main check below, and the run
+      # for the newest commit deploys after its own wait. A manually
+      # dispatched CI run on main (Actions > CI > Run workflow) deploys
+      # without waiting, for urgent fixes.
+      - name: Let merges that land together go out as one restart
+        if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+        run: sleep 900
       - name: Validate release source and owner credentials
         id: access
         shell: bash

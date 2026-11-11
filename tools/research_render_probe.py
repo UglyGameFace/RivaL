@@ -52,6 +52,52 @@ async def _render_home(out, store, market, venues, assets) -> None:
                 home.stop()
 
 
+async def _render_pages(out, store, market, venues, assets) -> None:
+    """Every other Home page, as GuidedHome renders it (dummy services: a
+    page that needs a live service reports the error instead)."""
+    from types import SimpleNamespace
+
+    from parlay_bot.discord_app.home import GuidedHome
+
+    dummy = SimpleNamespace()
+    for page in ("home", "crypto-desk", "hunt", "practice", "results", "advanced", "help",
+                 "sports", "live", "crypto", "forecast"):
+        home = GuidedHome(owner_id=1, location=dummy, builder=dummy, collector=None,
+                          market=market, targets=dummy, paper=dummy, quotes=dummy,
+                          profit=None, venues=venues)
+        home.coin, home.horizon = assets[0], 5
+        try:
+            home.navigate(page)
+            embed = await asyncio.wait_for(home.render(), timeout=60)
+            out[f"page/{page}"] = _dump(embed)
+            out[f"page/{page}/buttons"] = [getattr(c, "label", None) for c in home.children]
+        except Exception as exc:  # noqa: BLE001
+            out[f"page/{page}"] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+        finally:
+            home.stop()
+
+
+def _render_models(out, store, assets) -> None:
+    """Every model page and the compare card for the probed coin."""
+    from parlay_bot.discord_app.model_detail import model_embed, model_report, trial_models
+    from parlay_bot.discord_app.model_watch import compare_embed, reports_for
+
+    for asset in assets:
+        try:
+            names = trial_models(store, asset)
+            out[f"models/{asset}"] = names
+            for name in names:
+                try:
+                    out[f"model/{asset}/{name}"] = _dump(model_embed(
+                        model_report(store, asset, name), asset=asset, name=name))
+                except Exception as exc:  # noqa: BLE001
+                    out[f"model/{asset}/{name}"] = {"error": f"{type(exc).__name__}: {exc}"[:200]}
+            out[f"compare/{asset}"] = _dump(compare_embed(
+                reports_for(store, asset, names[:5]), asset=asset))
+        except Exception as exc:  # noqa: BLE001
+            out[f"models/{asset}"] = {"error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+
+
 async def _render_all() -> dict:
     from parlay_bot.config import Settings
     from parlay_bot.discord_app.opportunities import crypto_desk_embed
@@ -76,6 +122,12 @@ async def _render_all() -> dict:
                 ("2026-11-01",)).fetchall()}))
         out["venues"] = venues
         assets = tuple(a for a in os.environ.get("RIVAL_PROBE_ASSETS", "BTC").split(",") if a)
+        if os.environ.get("RIVAL_PROBE_PAGES"):
+            # A separate console call: every other page, model page and
+            # compare card (the research loop below is skipped).
+            await _render_pages(out, store, market, venues, assets)
+            _render_models(out, store, assets)
+            return out
         await _render_home(out, store, market, venues, assets)
         for asset in assets:
             for proof in (False, True):

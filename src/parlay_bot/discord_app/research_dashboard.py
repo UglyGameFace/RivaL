@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
@@ -227,6 +228,7 @@ class _SectionSelect(discord.ui.Select["ResearchDashboard"]):
         assert dashboard is not None
         dashboard.section = self.values[0]
         dashboard.detail = None
+        dashboard.model = None
         await dashboard.redraw(interaction)
 
 
@@ -546,6 +548,7 @@ class _AssetSelect(discord.ui.Select["ResearchDashboard"]):
         dashboard = self.view
         dashboard.asset = self.values[0]
         dashboard.opinion = None
+        dashboard.model = None
         dashboard.message = None
         await dashboard.redraw(interaction)
 
@@ -692,6 +695,38 @@ class _TrackVenueButton(discord.ui.Button["ResearchDashboard"]):
         await dashboard.redraw(interaction)
 
 
+class _ModelSelect(discord.ui.Select["ResearchDashboard"]):
+    """Pick any model on trial for this coin to open its own detail page."""
+
+    def __init__(self, names: list[str], selected: str | None) -> None:
+        super().__init__(
+            placeholder="🧪 Inspect a model on trial…",
+            custom_id="rival:research:model", row=4,
+            options=[discord.SelectOption(label=name, value=name, default=name == selected)
+                     for name in names[:25]],
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        dashboard.model = self.values[0]
+        dashboard.detail = None
+        await dashboard.redraw(interaction)
+
+
+class _ModelBackButton(discord.ui.Button["ResearchDashboard"]):
+    def __init__(self) -> None:
+        super().__init__(label="← Back to Is anything better?",
+                         style=discord.ButtonStyle.secondary,
+                         custom_id="rival:research:model:back", row=2)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        dashboard = self.view
+        assert dashboard is not None
+        dashboard.model = None
+        await dashboard.redraw(interaction)
+
+
 class _ScreenButton(discord.ui.Button["ResearchDashboard"]):
     def __init__(self, screen: str) -> None:
         super().__init__(
@@ -710,6 +745,7 @@ class _ScreenButton(discord.ui.Button["ResearchDashboard"]):
         dashboard.screen = self.screen
         dashboard.section = "overview"
         dashboard.detail = None
+        dashboard.model = None
         dashboard.message = None
         await dashboard.redraw(interaction)
 
@@ -931,6 +967,11 @@ class ResearchDashboard(discord.ui.View):
         # Audit Step 3: the open detail topic inside a consolidated
         # accuracy section (an old section key), else None.
         self.detail: str | None = None
+        # The model on trial whose own page is open (Is anything better?).
+        self.model: str | None = None
+        # (kind, asset[, name]) -> (monotonic time, value); shared across
+        # message generations like the history cache.
+        self._model_cache: dict[tuple, tuple[float, object]] = {}
         self.selected_venue = venues[0] if venues else ""
         # Track Next defaults to Polymarket: that is where users place bets.
         self.track_platform = "polymarket"
@@ -985,7 +1026,10 @@ class ResearchDashboard(discord.ui.View):
         self.add_item(_SectionSelect(self.screen, self.section))
         topics = self._render_topics()
         single = len(topics) == 1
-        if self.screen == "accuracy" and not single:
+        picker = self._model_picker()
+        if picker and self.model is not None:
+            self.add_item(_ModelBackButton())
+        elif self.screen == "accuracy" and not single:
             # One detail button per absorbed topic on the consolidated
             # card; the topic content itself is one tap away.
             for topic in topics:
@@ -999,14 +1043,59 @@ class ResearchDashboard(discord.ui.View):
                 self.add_item(_TrackVenueButton())
         if self.screen == "opportunities" and self.target_service is not None:
             self.add_item(_QuickTargetButton())
-        if (((self.screen == "accuracy"
-              and bool(set(topics) & {"venue", "progress"}))
-             or (self.screen == "math" and self.section == "history"))
+        if picker:
+            # Row 4: the model picker replaces the exchange picker on the
+            # "Is anything better?" card; the exchange picker stays on its
+            # own detail topic, the one that uses it.
+            names = self._cached_models()
+            if names:
+                self.add_item(_ModelSelect(names, self.model))
+        elif (((self.screen == "accuracy"
+                and bool(set(topics) & {"venue", "progress"}))
+               or (self.screen == "math" and self.section == "history"))
                 and self.venues):
             self.add_item(_VenueSelect(self.venues, self.selected_venue))
         if self.screen == "ai" or (self.screen == "math" and self.section == "ai"):
             enabled = self.market is not None and self.ai is not None and self.ai.available
             self.add_item(_AskButton(enabled))
+
+    MODEL_CACHE_SECONDS = 600
+
+    def _model_picker(self) -> bool:
+        """The model picker belongs to the "Is anything better?" card."""
+        return (self.screen == "accuracy" and self.section == "better"
+                and (self.detail is None or self.model is not None)
+                and self.market is not None)
+
+    def _cached(self, key: tuple):
+        hit = self._model_cache.get(key)
+        if hit is not None and time.monotonic() - hit[0] < self.MODEL_CACHE_SECONDS:
+            return hit[1]
+        return None
+
+    def _cached_models(self) -> list[str]:
+        return list(self._cached(("names", self.asset)) or [])
+
+    async def _load_models(self) -> None:
+        """The trial list for this coin (one point read, cached 10 minutes)."""
+        if self._cached(("names", self.asset)) is not None:
+            return
+        from parlay_bot.discord_app.model_detail import trial_models
+
+        names = await asyncio.to_thread(trial_models, self.market.store, self.asset)
+        self._model_cache[("names", self.asset)] = (time.monotonic(), names)
+        self._rebuild()
+
+    async def _model_page(self) -> discord.Embed:
+        from parlay_bot.discord_app.model_detail import model_embed, model_report
+
+        key = ("report", self.asset, self.model)
+        report = self._cached(key)
+        if report is None:
+            report = await asyncio.to_thread(
+                model_report, self.market.store, self.asset, self.model)
+            self._model_cache[key] = (time.monotonic(), report or {})
+        return model_embed(report or None, asset=self.asset, name=self.model)
 
     def _history_inventory_cached(self) -> dict:
         """Historical totals cached for 2 minutes, NEVER live feed status."""
@@ -1294,6 +1383,13 @@ class ResearchDashboard(discord.ui.View):
         # Audit Step 3: an old accuracy key lands on its consolidated
         # card; a detail topic compacts by its own field groups.
         self.section = _resolve_section(self.screen, self.section)
+        if self._model_picker():
+            try:
+                await self._load_models()
+            except Exception:  # noqa: BLE001 - the picker is optional, the card is not
+                _LOG.warning("Research model list unavailable", exc_info=True)
+            if self.model is not None:
+                return await self._model_page()
         detailed = await self._render_full()
         topics = self._render_topics()
         compact_section = topics[0] if len(topics) == 1 else self.section
@@ -2748,6 +2844,8 @@ class ResearchDashboard(discord.ui.View):
         fresh.screen = self.screen
         fresh.section = self.section
         fresh.detail = self.detail
+        fresh.model = self.model
+        fresh._model_cache = self._model_cache
         fresh.selected_venue = self.selected_venue
         fresh.track_platform = self.track_platform
         fresh.opinion = self.opinion

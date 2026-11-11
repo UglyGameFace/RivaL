@@ -23,16 +23,16 @@ RESEARCH_BUTTONS = (
 # Audit Step 3: one recovery button per absorbed detail topic, so a
 # stale tap on a detail button opens a fresh panel like every other
 # live control.
-RESEARCH_DETAIL_BUTTONS = tuple(
+RESEARCH_DETAIL_BUTTONS = (*(
     f"detail:{topic}"
     for section in ("running", "accuracy", "better", "money")
     for topic in ACCURACY_SECTIONS[section]
-)
+), "model:back")
 RESEARCH_SELECTS = ("asset", "section", "venue")
 # A view has five rows and each select fills one, so the tracker's select
 # lives in a second research fallback view (dispatch matches by custom_id
 # across every registered persistent view).
-RESEARCH_EXTRA_SELECTS = ("track-start",)
+RESEARCH_EXTRA_SELECTS = ("track-start", "model")
 DATA_BUTTONS = (
     "overview", "exchanges", "markets", "coverage",
     "refresh", "previous", "next",

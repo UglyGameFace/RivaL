@@ -114,8 +114,8 @@ async def test_lineage_page_displays_real_boosted_delivery_proof_without_new_men
         view._rebuild()
         embed = await view.render()
         fields = {field.name: str(field.value) for field in embed.fields}
-        assert "Are 6-year history models ready?" in fields
-        proof = fields["Are 6-year history models ready?"]
+        assert "Are boosted history models ready?" in fields
+        proof = fields["Are boosted history models ready?"]
         assert "**Advanced models built from history so far:** 0" in proof
         assert "No model qualifies for simulated testing yet" in proof
         # The screen states plainly that real after-cost profit is unproven.
@@ -125,8 +125,8 @@ async def test_lineage_page_displays_real_boosted_delivery_proof_without_new_men
         view.section = "technical"
         detail = await view.render()
         technical = {field.name: str(field.value) for field in detail.fields}
-        assert "None of the models built from history has passed screening" in technical["6-year history model production proof"]
-        assert "NOT VERIFIED" in technical["6-year history model production proof"]
+        assert "None of the models built from history has passed screening" in technical["Boosted history model production proof"]
+        assert "NOT VERIFIED" in technical["Boosted history model production proof"]
     finally:
         view.stop()
         store.close()

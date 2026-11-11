@@ -286,7 +286,7 @@ _TOPIC_FIELDS = {
     "method": ("How accuracy is audited",),
     "technical": ("Model training actually used",
                   # Step 2 renames "Boosted ..." to the one display name.
-                  "6-year history model production proof"),
+                  "Boosted history model production proof"),
 }
 
 

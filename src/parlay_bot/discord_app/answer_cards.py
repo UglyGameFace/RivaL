@@ -76,10 +76,13 @@ DISPLAY_NAMES: dict[str, str] = {
     "guess 0.250": "coin flip 0.250",
     "mathematical model": "main model",
     "live model": "main model",
-    "advanced models": "6-year history models",
-    "advanced model": "6-year history model",
-    "boosted model": "6-year history model",
-    "pooled 6-year model": "6-year history model",
+    # Nov 11: the boosted models built from history and the pooled 6-year
+    # model on trial are different things; both used to be renamed
+    # "6-year history model", so two pages contradicted each other.
+    "advanced models": "boosted history models",
+    "advanced model": "boosted history model",
+    "boosted model": "boosted history model",
+    "pooled 6-year model": "6-year model",
     "challenger models": "test models",
     "shadow model": "test model",
     "shadow quote": "practice trade",
@@ -92,9 +95,8 @@ DISPLAY_NAMES: dict[str, str] = {
     "baseline": "coin flip",
     "guess": "coin flip",
     "brier": "error score",
-    "pooled": "6-year history model",
-    "boosted": "6-year history model",
-    "advanced": "6-year history model",
+    "pooled": "6-year model",
+    "advanced": "boosted history model",
     "shadow": "test model",
     "family": "test model",
     "families": "test models",
@@ -316,15 +318,19 @@ def lineage_card(
     seeded = sum(int(p["historically_seeded"]) for p in seen)
     total = sum(int(p["lineage_proven"]) for p in seen)
     if not seeded:
+        # Nov 11: this used to open with "No", which read as "RivaL is not
+        # learning". It IS learning, live; it just does not start from
+        # stored history. Say both, plainly, and that learning is not winning.
         return AnswerCard(
-            question="Is it learning from history?",
-            verdict="No",
-            answer="No — the main model learns from live candles only.",
+            question="How is RivaL learning?",
+            verdict="Yes",
+            answer="Yes, live: the main model updates itself after every graded result.",
             reason=(
-                "Stored history is used only by separate test models, "
-                "and none has passed its test yet."
+                "It does not start from stored history. History is tried by separate "
+                "test models (see Models on trial), and none has passed yet."
             ),
-            next_step="Needs a test model to pass proof first.",
+            next_step=("Learning is not the same as winning: Bot Performance's "
+                       "\"Getting more accurate?\" says whether it is improving."),
             details=details,
             raw=raw,
         )
@@ -335,7 +341,7 @@ def lineage_card(
             answer="Yes — every recent prediction used history.",
             reason=(
                 f"{seeded} of the last {total} predictions started from "
-                "a verified 6-year history model."
+                "a verified history model."
             ),
             next_step="Next: check whether history-seeded calls score better.",
             details=details,
@@ -347,7 +353,7 @@ def lineage_card(
         answer=f"Yes — partly, {seeded} of {total} predictions used history.",
         reason=(
             f"{seeded} of the last {total} predictions started from "
-            "a verified 6-year history model."
+            "a verified history model."
         ),
         next_step="Next: check whether history-seeded calls score better.",
         details=details,
@@ -356,7 +362,7 @@ def lineage_card(
 
 
 def boosted_card(live_proof: dict, *, raw: str) -> AnswerCard:
-    """Answer-first card for "Are 6-year history models ready?".
+    """Answer-first card for "Are boosted history models ready?".
 
     ``live_proof`` is ``boosted_production_evidence``; ``raw`` is the
     original proof text (internal ids stay under "Raw numbers:").
@@ -391,15 +397,16 @@ def boosted_card(live_proof: dict, *, raw: str) -> AnswerCard:
             f"{int(live_proof.get('settled') or 0):,} graded in 30 days.",
         )
     else:
-        answer = "Not yet — no 6-year history model is ready."
-        reason = f"{screened} of {imported} passed screening."
+        answer = "Not yet — none of the boosted history models passed screening."
+        reason = (f"{screened} of {imported} passed screening. (The separate 6-year model "
+                  "is a different test, shown in Models on trial.)")
         details = (
             f"Holding them back: {blocker_text}.",
             f"{int(live_proof.get('issued') or 0):,} forecasts logged in 30 days.",
             f"{int(live_proof.get('settled') or 0):,} graded in 30 days.",
         )
     return AnswerCard(
-        question="Are 6-year history models ready?",
+        question="Are boosted history models ready?",
         verdict="Not yet",
         answer=answer,
         reason=reason,

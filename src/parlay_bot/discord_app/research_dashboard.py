@@ -129,7 +129,7 @@ ACCURACY_DETAIL_LABELS = {
     "calibration": "Are probabilities reliable?",
     "ledger": "Recent predictions",
     "progress": "Is any model proven better?",
-    "lineage": "Is it learning from history?",
+    "lineage": "How is RivaL learning?",
     "tracker": "Track next predictions",
     "costs": "Profit after trading fees",
     "method": "How results are checked",
@@ -167,10 +167,10 @@ _FIELD_GROUPS = {
                      "Prospective skill by market regime",
                      "Test-model detail (5-minute)", "Trial detail (5-minute)"),
         "tracker": ("Prediction tracking",),
-        "lineage": ("How is RivaL learning?", "Are 6-year history models ready?",
+        "lineage": ("How is RivaL learning?", "Are boosted history models ready?",
                     "Are advanced models ready?"),
         "technical": ("Model training actually used",
-                      "6-year history model production proof",
+                      "Boosted history model production proof",
                       "Boosted model production proof"),
         "venue": ("Why this exchange",),
         "five": ("Forward 5-minute evaluation", "Math 5m"),
@@ -194,7 +194,7 @@ _FIELD_GROUPS = {
                    "Prospective skill by market",
                    "Prospective skill by market regime",
                    "How is RivaL learning?",
-                   "Are 6-year history models ready?",
+                   "Are boosted history models ready?",
                    "Are advanced models ready?",
                    "Prediction tracking",
                    "Test-model detail (5-minute)",
@@ -479,9 +479,9 @@ def _history_headline(proofs: list[dict]) -> str:
         return "**Is it learning from history?** Cannot tell yet."
     seeded = sum(int(p["historically_seeded"]) for p in seen)
     if not seeded:
-        return ("**Is it learning from history? No.** The live model learns only from "
-                "new candles collected since it went live. Stored history is used "
-                "only by the separate models below, and none has passed its test yet.")
+        return ("**How is it learning? Live.** The main model updates itself after every "
+                "graded result. It does not start from stored history; separate test "
+                "models try that, and none has passed yet.")
     total = sum(int(p["lineage_proven"]) for p in seen)
     return (f"**Is it learning from history? Partly:** {seeded} of the last {total} "
             "predictions started from a verified historical model.")
@@ -2081,20 +2081,36 @@ class ResearchDashboard(discord.ui.View):
                     # ("Is it learning from history?"); the per-horizon
                     # training lines stay under "Raw numbers:".
                     if "lineage" in topics:
+                        # One line per timeframe: how much it has learned live
+                        # and whether history was used (the old raw block
+                        # repeated all of this a second time).
+                        def _lessons(horizon: int, proof: dict) -> str:
+                            low = proof.get("online_training_updates_low")
+                            high = proof.get("online_training_updates_high")
+                            if low is None:
+                                low = high = proof.get("latest_online_training_updates")
+                            if low is None:
+                                return f"{horizon}-min: lessons not recorded"
+                            span = (f"{int(low):,}" if high in (None, low)
+                                    else f"{int(low):,}–{int(high):,}")
+                            return f"{horizon}-min: {span} lessons per exchange so far"
+
+                        seen = [p for p in proofs if p.get("lineage_proven")]
                         detail_lines = tuple(
-                            f"{horizon}-minute: "
-                            f"{int(proof['historically_seeded'])} of "
-                            f"{int(proof['lineage_proven'])} predictions "
-                            "used history."
+                            _lessons(horizon, proof)
                             for horizon, proof in zip((5, 15, 60), proofs)
                             if proof.get("lineage_proven")
                         )
+                        if seen:
+                            used = sum(int(p["historically_seeded"]) for p in seen)
+                            last = sum(int(p["lineage_proven"]) for p in seen)
+                            detail_lines += (
+                                f"Stored history used in {used} of the last {last} predictions.",)
+                        # The per-timeframe training lines stay only when
+                        # nothing is proven yet (they say why).
                         lineage_value = lineage_card(
                             proofs, details=detail_lines,
-                            raw=(_history_headline(proofs) + "\n"
-                                 + "\n".join(plain_rows)
-                                 + "\nLive updates are training steps, "
-                                   "not prediction wins."),
+                            raw=(None if detail_lines else "\n".join(plain_rows)),
                         ).field_value()
                     else:
                         lineage_value = (

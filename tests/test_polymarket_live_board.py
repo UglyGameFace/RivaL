@@ -290,15 +290,15 @@ def test_live_market_and_model_predictions_are_clearly_separate():
         ends_at=current.closes, status="ok",
     )
     embed = live_polymarket_embed(board, model, asset="BTC", horizon=5)
-    assert "Forecast pending" in embed.title
-    assert "No current contract-specific AI call" in embed.description
+    assert "No call yet" in embed.title
+    assert "No call for this contract yet" in embed.description
     full = str(embed.to_dict())
     assert "UP $0.61" in full and "DOWN $0.45" in full
     assert "hyperliquid" not in full and "59.0%" not in full
     assert next_window.slug in full
-    assert "Next contract • forecast pending" in full
-    assert "WAIT / not issued" in full
-    assert "First model call frozen" in embed.footer.text
+    assert "⏭️ Next contract" in full
+    assert "No call yet: it gets its own call" in full
+    assert "first call is locked" in embed.footer.text
 
 
 def test_15m_model_leans_up_for_a_different_five_minute_candle_only():
@@ -323,9 +323,9 @@ def test_15m_model_leans_up_for_a_different_five_minute_candle_only():
         ends_at=current.closes, status="ok",
     )
     embed = live_polymarket_embed(board, model, asset="BTC", horizon=15)
-    assert "Forecast pending" in embed.title
+    assert "No call yet" in embed.title
     full = str(embed.to_dict())
-    assert "No current contract-specific AI call" in full
+    assert "No call for this contract yet" in full
     assert "hyperliquid" not in full and "95.0%" not in full
 
 
@@ -351,8 +351,8 @@ def test_stale_or_unavailable_model_never_becomes_directional_call():
         ),
     ):
         embed = live_polymarket_embed(board, snapshot, asset="BTC", horizon=5)
-        assert "No current contract-specific AI call" in embed.description
-        assert "Forecast pending" in embed.title
+        assert "No call for this contract yet" in embed.description
+        assert "No call yet" in embed.title
         assert "99.0%" not in str(embed.to_dict())
 
 
@@ -375,7 +375,7 @@ def test_live_polymarket_hourly_settlement_source_follows_quote_not_timeframe():
             current_quote=notice,
         )
         result = live_polymarket_embed(board, None, asset="BTC", horizon=60)
-        return next(f.value for f in result.fields if f.name == "Settlement source")
+        return next(f.value for f in result.fields if f.name == "🎯 This contract")
 
     assert "Chainlink" in picture(
         "https://data.chain.link/streams/btc-usd-twap-60s-streams"
@@ -527,11 +527,11 @@ async def test_card_keeps_frozen_call_when_quote_drops_out(tmp_path):
             refresh_note=Mock(return_value=None), status=Mock(return_value=""),
         )
         embed, _ = await service._observation("BTC", 5)
-        assert "Research DOWN" in embed.title and "unqualified" in embed.title
-        assert any("DOWN" in f.value for f in embed.fields if "model research" in f.name)
+        assert "Test call DOWN" in embed.title and "not proven" in embed.title
+        assert any("DOWN" in f.value for f in embed.fields if "not proven" in f.name)
         service.research.observe.assert_not_called()
         assert "No verified sell-side liquidity" in next(
-            f.value for f in embed.fields if "share asks" in f.name)
+            f.value for f in embed.fields if "Share prices now" in f.name)
     finally:
         hot.close()
 
@@ -577,7 +577,7 @@ async def test_one_ping_per_contract_only_for_fresh_up_down_calls(tmp_path, monk
         assert len(pings) == 1  # a second cycle never re-pings the same contract
         text = pings[0].kwargs["content"]
         assert "call issued: DOWN" in text and "41.7% UP" in text
-        assert "passed the sequential contest" in text and "Paper evidence" in text
+        assert "beat Polymarket's own price" in text and "Practice results" in text
         assert "will not flip" in text
         assert "Price check: DOWN costs" in text  # 58% DOWN vs 55¢ + fee
 
@@ -745,7 +745,7 @@ async def test_unqualified_checkpoint_forecast_is_visible_and_never_pings(tmp_pa
         assert call.model == FORMULA and call.direction == 'UP'  # forecast, despite no priced edge
         assert call.qualified_at_issue is False
         card = live_polymarket_embed(board,call,asset='BTC',horizon=5)
-        assert 'Research UP' in card.title and 'unqualified' in card.title
+        assert 'Test call UP' in card.title and 'not proven' in card.title
         assert '52.0% UP' in str(card.to_dict())
         tracker = LivePolymarketTracker(str(user.id),'BTC',5,'555','901','old')
         store.save(tracker)
@@ -760,7 +760,7 @@ async def test_unqualified_checkpoint_forecast_is_visible_and_never_pings(tmp_pa
         assert promoted.direction == 'UP' and promoted.qualified_at_issue is False
         card = live_polymarket_embed(board,promoted,asset='BTC',horizon=5,
                                      league={'champion':FORMULA,'models':[]})
-        assert 'Research UP' in card.title and 'unqualified' in card.title
+        assert 'Test call UP' in card.title and 'not proven' in card.title
         await service._ping(tracker,board,again)
         assert not channel.send.await_args_list
     finally:

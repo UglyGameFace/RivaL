@@ -220,106 +220,97 @@ def live_polymarket_embed(
     asset: str, horizon: int, ai_status: str | None = None,
     formula: dict | None = None, league: dict | None = None,
 ) -> discord.Embed:
+    """The live Polymarket panel, in plain words (Nov 11 rewrite).
+
+    Same facts as before: RivaL's first call for this contract is frozen
+    when made, live prices update on their own, a call is "proven" only for
+    the model that passed the contest, and nothing is ever guessed or
+    traded. The old wording ("contract-specific research", "frozen
+    checkpoint", "EWMA volatility") said it in technical terms.
+    """
     current = board.current if board is not None else None
     valid = matching_call(board, snapshot, asset=asset, horizon=horizon)
     direction = snapshot.direction if valid else "WAIT"
     champion = league.get("champion") if league else None
     outranked = not valid or champion != snapshot.model or snapshot.qualified_at_issue is False
-    status = (f"Research {direction} • unqualified" if outranked else f"Qualified {direction}") if valid else "Forecast pending"
-    title = f"📡 Polymarket • {asset} • {horizon} min | {status}"
+    status = ((f"Test call {direction} (not proven)" if outranked else f"Proven call {direction}")
+              if valid else "No call yet")
     embed = discord.Embed(
-        title=title,
+        title=f"📡 Polymarket • {asset} • {horizon} min | {status}",
         description=(
-            f"**Experimental contract-specific {snapshot.kind} research.** "
-            "The first model forecast is frozen; live prices update independently. "
-            "Accuracy and profitable edge are not established."
-            if valid else "**No current contract-specific AI call.** "
-            + (ai_status or "Waiting for the frozen forecast checkpoint and verified market inputs.")
+            "RivaL's first call for this contract is locked in when it's made; the "
+            "share prices below keep updating on their own. **Not proven to make money.**"
+            if valid else "**No call for this contract yet.** "
+            + (ai_status or "RivaL makes one early in the contract, once live prices "
+                            "are verified.")
         ), color=discord.Color.blurple() if valid else discord.Color.orange(),
     )
     quote = board.current_quote if board is not None else None
     embed.add_field(
-        name="💰 Polymarket share asks",
-        value=(f"UP ${quote.up_ask:.2f} • DOWN ${quote.down_ask:.2f}\n"
-               f"Source update <t:{int(quote.quote_at.timestamp())}:R>"
+        name="💰 Share prices now",
+        value=(f"UP ${quote.up_ask:.2f} • DOWN ${quote.down_ask:.2f} · updated "
+               f"<t:{int(quote.quote_at.timestamp())}:R>"
                if quote is not None else unavailable_text(
                    board.quote_unavailable_reason if board else None)),
         inline=False,
     )
     if current is not None:
         if not valid:
-            target = current.opens+timedelta(minutes=horizon*.2)
-            embed.add_field(name="Forecast status", value=(
-                f"This contract's forecast checkpoint is <t:{int(target.timestamp())}:R>. "
-                "It needs a fresh order book and model inputs at that time; "
-                "a missed checkpoint is shown as unavailable, never a guessed call."
-                if datetime.now(UTC) <= target+timedelta(seconds=20) else
-                "No frozen checkpoint forecast is available for this contract. "
-                "The next contract gets a separate attempt."
+            target = current.opens + timedelta(minutes=horizon * .2)
+            embed.add_field(name="⏳ When the call comes", value=(
+                f"<t:{int(target.timestamp())}:R>, if live prices are fresh then. "
+                "A missed moment shows as no call, never a guess."
+                if datetime.now(UTC) <= target + timedelta(seconds=20) else
+                "This contract got no call (live prices weren't verified in time). "
+                "The next contract gets its own try."
             ), inline=False)
+        source = (quote.resolution_source or "").lower() if quote is not None else ""
+        settles = ("Chainlink's price" if "chain.link" in source
+                   else "Binance's spot price (not a futures candle)" if "binance.com" in source
+                   else "the source in the contract's rules (not verified here)")
+        beat = (f"${current.price_to_beat:,.4f}" if current.price_to_beat is not None
+                else "not published yet (never estimated from another exchange)")
         embed.add_field(
-            name="🎯 Exact contract",
-            value=f"[Open verified event]({current.url}) • closes <t:{int(current.closes.timestamp())}:R>",
+            name="🎯 This contract",
+            value=(f"[Open on Polymarket]({current.url}) • closes "
+                   f"<t:{int(current.closes.timestamp())}:R>\n"
+                   f"Price to beat: {beat}\nSettles on {settles}."),
             inline=False,
         )
-        embed.add_field(
-            name="Price to beat",
-            value=f"${current.price_to_beat:,.4f}" if current.price_to_beat is not None
-            else "Not published or verified; never estimated from another exchange",
-            inline=False,
-        )
-        source = quote.resolution_source if quote is not None else None
-        if source and "chain.link" in source.lower():
-            resolution_text = (
-                "Chainlink reference from this contract's published market. "
-                "Use the exact event rules for the settlement observation."
-            )
-        elif source and "binance.com" in source.lower():
-            resolution_text = (
-                "Binance reference from this contract's published market. "
-                "Do not substitute a perpetual futures candle."
-            )
-        else:
-            resolution_text = (
-                "Exact settlement source not verified in this quote. "
-                "Open the listed contract to check its rules."
-            )
-        embed.add_field(name="Settlement source", value=resolution_text, inline=False)
-    embed.add_field(name="🏆 Alert qualification",
+    embed.add_field(name="🏆 Is any model proven here?",
                     value=league_text(league, asset=asset, horizon=horizon), inline=False)
     if valid:
-        call_label = ("🧠 First model call (frozen) • unqualified model research" if outranked
-                      else "🧠 First model call (frozen)"
-                      if snapshot.kind == "model" else f"🧠 {snapshot.kind} contract research")
-        embed.add_field(name=call_label, value=f"**{direction}** • {snapshot.thesis}", inline=False)
-        embed.add_field(name="Call timing", value=(
-            f"First issued <t:{int(snapshot.issued_at.timestamp())}:R> for this contract. "
-            "New quotes never change the first model call or its score. "
-            "WAIT is a research-only uncertainty state, not a trading instruction."
+        label = ("🧠 RivaL's call (test model, not proven)" if outranked
+                 else "🧠 RivaL's call" if snapshot.kind == "model"
+                 else f"🧠 RivaL's {snapshot.kind} call")
+        embed.add_field(name=label, value=(
+            f"**{direction}** • {snapshot.thesis}\n"
+            f"Made <t:{int(snapshot.issued_at.timestamp())}:R>; it never changes as prices "
+            "move, and it's scored on that first call. WAIT means not confident enough "
+            "to call."
         ), inline=False)
-        embed.add_field(name="Research limitation", value=snapshot.risk, inline=False)
+        embed.add_field(name="⚠️ Limits", value=snapshot.risk, inline=False)
         if ai_status:
-            embed.add_field(name="AI refresh", value=ai_status, inline=False)
+            embed.add_field(name="AI update", value=ai_status, inline=False)
     if formula is not None and current is not None and formula.get("slug") == current.slug:
         chance = formula["chance_up"]
-        embed.add_field(name="📐 Price formula checkpoint (frozen)", value=(
-            f"**{chance:.0%} UP / {1 - chance:.0%} DOWN** from {formula.get('reference_label', 'source-matched spot')} vs. the "
-            f"reference, time left and EWMA volatility "
-            f"(<t:{int(formula['at'].timestamp())}:R>). Snapshot asks: UP "
+        embed.add_field(name="📐 Price-formula check (locked)", value=(
+            f"**{chance:.0%} UP / {1 - chance:.0%} DOWN**, from "
+            f"{formula.get('reference_label', 'the matching spot price')} vs the price to "
+            f"beat, the time left and recent price swings "
+            f"(<t:{int(formula['at'].timestamp())}:R>). Prices then: UP "
             f"${formula['up_ask']:.2f} • DOWN ${formula['down_ask']:.2f}. "
-            f"{formula.get('payoff', 'Research approximation')}; strike: {formula.get('strike_source', 'unverified')}. "
-            "Testing only; no proven edge."
+            f"{formula.get('payoff', 'An approximation')}; price to beat from "
+            f"{formula.get('strike_source', 'an unverified source')}. Testing only, not proven."
         ), inline=False)
     if board is not None and board.next_window is not None:
         next_window = board.next_window
-        embed.add_field(name="⏭️ Next contract • forecast pending", value=(
-            f"[Next event]({next_window.url}) • opens <t:{int(next_window.opens.timestamp())}:R>\n"
-            "Next model call: **WAIT / not issued**. The current contract's "
-            "forecast is not reused for the next contract. A separate frozen "
-            "forecast appears here when that contract opens and its verified "
-            "order book is available."
+        embed.add_field(name="⏭️ Next contract", value=(
+            f"[Next event]({next_window.url}) • opens "
+            f"<t:{int(next_window.opens.timestamp())}:R>\n"
+            "No call yet: it gets its own call after it opens; this one is never reused."
         ), inline=False)
-    embed.set_footer(text="Live market quotes • First model call frozen • No orders")
+    embed.set_footer(text="Live prices • RivaL's first call is locked • No orders placed")
     return embed
 
 

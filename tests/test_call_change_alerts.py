@@ -158,10 +158,10 @@ def test_live_panel_labels_frozen_call_and_keeps_quotes_separate():
     embed = live_polymarket_embed(board, call, asset="BTC", horizon=5)
     fields = {field.name: field.value for field in embed.fields}
     frozen = [value for name, value in fields.items()
-              if "First model call (frozen)" in name]
+              if name.startswith("🧠 RivaL's call")]
     assert len(frozen) == 1
     assert "DOWN" in frozen[0]
-    assert "UP $0.07" in fields["💰 Polymarket share asks"]
-    assert "DOWN $0.94" in fields["💰 Polymarket share asks"]
+    assert "UP $0.07" in fields["💰 Share prices now"]
+    assert "DOWN $0.94" in fields["💰 Share prices now"]
     assert all("Call changed" not in name for name in fields)
-    assert "First model call frozen" in embed.footer.text
+    assert "first call is locked" in embed.footer.text

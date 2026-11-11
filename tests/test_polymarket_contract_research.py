@@ -130,14 +130,14 @@ def test_issued_call_only_matches_its_exact_source_window():
                         datetime.now(UTC), current.expires, "DOWN", "test:free",
                         "Exact-contract assessment", "Unvalidated", "a" * 64)
     correct = live_polymarket_embed(board, call, asset="BTC", horizon=5)
-    assert "Research DOWN" in correct.title and "unqualified" in correct.title
-    assert any("DOWN" in f.value for f in correct.fields if "unqualified" in f.name)
-    assert "Experimental" in correct.description
+    assert "Test call DOWN" in correct.title and "not proven" in correct.title
+    assert any("DOWN" in f.value for f in correct.fields if "not proven" in f.name)
+    assert "Not proven to make money" in correct.description
     assert "calibrated" not in correct.description
     for foreign in (replace(call, slug="other-market"),
                     replace(call, horizon=15), replace(call, expires=datetime.now(UTC)-timedelta(seconds=1))):
         rejected = live_polymarket_embed(board, foreign, asset="BTC", horizon=5)
-        assert "Forecast pending" in rejected.title
+        assert "No call yet" in rejected.title
         assert not any("model call" in f.name for f in rejected.fields)
 
 

@@ -19,6 +19,7 @@ from parlay_bot.perpetuals import early_stop
 from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
 from parlay_bot.research.boosted_portable import predict_portable
+from parlay_bot.storage import maintenance
 
 _LOG = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ class ShadowModelCompetition:
             # stream, so it must exist wherever the ledger does.
             conn.execute(early_stop.SCHEMA)
 
-    def _withdraw_no_trade_labels(self) -> None:
+    def _withdraw_no_trade_labels(self, now: datetime | None = None) -> None:
         """Match the incumbent ledger's no-trade correction on shadow rows.
 
         ForwardAccuracyMonitor withdrew incumbent results graded from
@@ -177,10 +178,15 @@ class ShadowModelCompetition:
         production on Nov 6, all gaussian_nb_v1 / knn21_v1). Withdraw them
         the same way: keep settled_at, clear the outcome and scores, so every
         reader that already skips NULL outcomes skips them. Idempotent; new
-        settlements only copy outcomes in (0,1).
+        settlements only copy outcomes in (0,1). A shadow row settles after
+        the main-model result it copies, so a recent withdrawal there can
+        only affect a recently settled row here: each pass checks those, and
+        the whole ledger is swept once a day (storage/maintenance.py).
         """
         try:
+            maintenance.initialize(self.store)
             with self.store.connect() as conn:
+                cutoff = maintenance.correction_cutoff(conn, "shadow.no_trade", now)
                 result = conn.execute(
                     """UPDATE rival_model_shadow_forecasts
                        SET outcome_up=NULL, model_brier=NULL,
@@ -197,7 +203,11 @@ class ShadowModelCompetition:
                            AND f.issued_at=rival_model_shadow_forecasts.issued_at
                            AND f.target_opened_at=rival_model_shadow_forecasts.target_opened_at
                            AND f.settled_at IS NOT NULL AND f.outcome_up IS NULL)"""
+                    + ("" if cutoff is None else " AND settled_at>=?"),
+                    () if cutoff is None else (cutoff,),
                 )
+                if cutoff is None:
+                    maintenance.record_full_sweep(conn, "shadow.no_trade", now)
                 if result.rowcount:
                     _LOG.warning("RivaL withdrew %d challenger results copied from "
                                  "no-trade candles", result.rowcount)
@@ -396,7 +406,7 @@ class ShadowModelCompetition:
         self.initialize()
         # Settlement path only: withdraw shadow labels copied from no-trade
         # candles before grading this cycle. Never on a render path.
-        self._withdraw_no_trade_labels()
+        self._withdraw_no_trade_labels(now)
         deadline = time.monotonic() + budget_seconds
         total = 0
         while True:

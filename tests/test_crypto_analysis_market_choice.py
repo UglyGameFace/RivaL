@@ -206,7 +206,7 @@ async def test_dashboard_shows_polymarket_outcomes_without_market_choice(tmp_pat
         assert "0 contracts so far, too few" in score
         assert pane.description.startswith("**Too early to compare with Polymarket's odds.**")
         assert "Choose a market" not in str(pane.to_dict())
-        assert len(pane.fields) == 3
+        assert len(pane.fields) == 4
 
         home.polymarket_status = None
         offline = await home.render()
@@ -246,7 +246,7 @@ async def test_polymarket_stats_do_not_require_exchange_or_drive(tmp_path):
         home.navigate("trust")
         assert home.page == "performance"
         detail = await home.render()
-        assert len(detail.fields) == 3
+        assert len(detail.fields) == 4
     finally:
         home.stop()
         await bot.zip_resolver.aclose()
@@ -312,7 +312,7 @@ async def test_exchange_performance_one_page_shows_sample_and_learning(
         assert max(x.row for x in home.children) <= 4
         pane = await home.render()
         body = str(pane.to_dict())
-        assert len(pane.fields) == 3
+        assert len(pane.fields) == 4
         assert "4,150 of 4,159 predictions checked" in body
         assert "right **49.7%** (2,063 of 4,150)" in body
         assert "(0.251 vs 0.249)" in body

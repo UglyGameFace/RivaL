@@ -1909,6 +1909,77 @@ class ForwardAccuracyMonitor:
             "status_reason": reason,
         }
 
+    # Confidence bands for the calibration check: how sure the call was
+    # (the chance it gave the side it picked) against how often it came true.
+    CALIBRATION_BANDS = ((0.50, 0.55), (0.55, 0.60), (0.60, 0.65), (0.65, 1.00))
+
+    def calibration(self, *, asset: str, horizon: int, now: datetime | None = None) -> dict:
+        """Did its 60% calls come true about 60% of the time? And where is it right?
+
+        Same rows as ``summary``'s "decided" count: the main model, issued in
+        the last 7 days, graded with a valid outcome and scores, and not a
+        50/50 call. One grouped read, by confidence band and by the market
+        condition recorded when the call was made (quiet / normal /
+        turbulent, from ``perp_forward_regimes``; "unknown" when none was).
+        """
+        if asset not in ASSETS or horizon not in HORIZONS:
+            raise ValueError("invalid asset or horizon")
+        stamp = utc(now or datetime.now(UTC))
+        start = (stamp - timedelta(days=7)).isoformat()
+        self.initialize()
+        with self.store.connect() as conn:
+            rows = conn.execute(
+                """SELECT CASE WHEN ABS(a.probability_up-0.5)<0.05 THEN 0
+                               WHEN ABS(a.probability_up-0.5)<0.10 THEN 1
+                               WHEN ABS(a.probability_up-0.5)<0.15 THEN 2
+                               ELSE 3 END AS band,
+                          COALESCE(r.regime,'unknown') AS regime,
+                          COUNT(*) AS n,
+                          SUM(CASE WHEN a.probability_up>0.5 THEN a.probability_up
+                                   ELSE 1-a.probability_up END) AS said,
+                          SUM(CASE WHEN (a.probability_up>0.5 AND a.outcome_up=1)
+                                     OR (a.probability_up<0.5 AND a.outcome_up=0)
+                                   THEN 1 ELSE 0 END) AS came_true,
+                          SUM(a.model_brier) AS model_sum,
+                          SUM(a.baseline_brier) AS baseline_sum
+                   FROM perp_forward_audit a
+                   LEFT JOIN perp_forward_regimes r
+                     ON r.venue=a.venue AND r.contract=a.contract AND r.quote=a.quote
+                    AND r.horizon_minutes=a.horizon_minutes
+                    AND r.model_version=a.model_version
+                    AND r.reference_opened_at=a.reference_opened_at
+                   WHERE a.asset=? AND a.model_version=? AND a.horizon_minutes=?
+                     AND a.issued_at>=? AND a.issued_at<=?
+                     AND a.settled_at IS NOT NULL AND a.outcome_up IN (0,1)
+                     AND a.probability_up BETWEEN 0 AND 1 AND a.probability_up<>0.5
+                     AND a.model_brier BETWEEN 0 AND 1 AND a.baseline_brier BETWEEN 0 AND 1
+                   GROUP BY 1, 2""",
+                (asset, MODEL, int(horizon), start, stamp.isoformat()),
+            ).fetchall()
+        bands = [{"low": low, "high": high, "n": 0, "said": 0.0, "came_true": 0}
+                 for low, high in self.CALIBRATION_BANDS]
+        regimes: dict[str, dict] = {}
+        for row in rows:
+            band = bands[int(row["band"])]
+            n = int(row["n"])
+            band["n"] += n
+            band["said"] += float(row["said"] or 0)
+            band["came_true"] += int(row["came_true"] or 0)
+            part = regimes.setdefault(str(row["regime"]), {
+                "n": 0, "came_true": 0, "model_sum": 0.0, "baseline_sum": 0.0})
+            part["n"] += n
+            part["came_true"] += int(row["came_true"] or 0)
+            part["model_sum"] += float(row["model_sum"] or 0)
+            part["baseline_sum"] += float(row["baseline_sum"] or 0)
+        for band in bands:
+            band["said"] = band["said"] / band["n"] if band["n"] else None
+            band["happened"] = band["came_true"] / band["n"] if band["n"] else None
+        for part in regimes.values():
+            part["hit_rate"] = part["came_true"] / part["n"]
+            part["brier"] = part["model_sum"] / part["n"]
+            part["baseline_brier"] = part["baseline_sum"] / part["n"]
+        return {"bands": bands, "regimes": regimes, "window_days": 7}
+
     def summary(self, *, asset: str, now: datetime | None = None) -> dict:
         """The 14-day scorecard, shared for SUMMARY_TTL across live readers.
 

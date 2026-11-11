@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -591,7 +592,7 @@ def _cached_page_read(reader: Callable, market: object, asset: str, horizon: int
 
 def _page_readers() -> tuple[Callable, ...]:
     """Looked up at call time, so a patched reader is the one that runs."""
-    return (_trial_board_record, _intelligence_report)
+    return (_trial_board_record, _calibration_record, _intelligence_report)
 
 
 def warm_page_reads(market: object) -> int:
@@ -750,6 +751,78 @@ def _trial_board_record(market: object, asset: str, horizon: int) -> dict:
 
     return trial_board.read(market.store, asset=asset, horizon=horizon,
                             retired=trial_board.retired_families())
+
+
+def _calibration_record(market: object, asset: str, horizon: int) -> dict:
+    """Confidence bands and market conditions for the main model (one read)."""
+    return ForwardAccuracyMonitor(market).calibration(asset=asset, horizon=horizon)
+
+
+CALIBRATION_MIN_CALLS = 20
+
+
+def _calibration_text(reports: dict) -> str:
+    """Does a 60% call come true ~60% of the time, and in which markets is it right?
+
+    A band is judged only with at least 20 calls, and "off" only when the gap
+    is bigger than sampling noise (about two standard errors), so a small
+    sample never reads as a verdict.
+    """
+    record = reports.get("calibration")
+    if not isinstance(record, dict):
+        return ("Couldn't load this right now. Press Refresh."
+                if "calibration" in reports else "Not available on this server.")
+    bands = record.get("bands") or []
+    judged = [b for b in bands if b["n"] >= CALIBRATION_MIN_CALLS]
+    if not judged:
+        return "Too few finished calls in the last 7 days to check its confidence yet."
+    lines = [f"{'It said':<8} {'Came true':>9} {'Calls':>6}"]
+    for band in bands:
+        label = (f"{band['low']:.0%}–{band['high']:.0%}" if band["high"] < 1
+                 else f"{band['low']:.0%}+")
+        true = (f"{band['happened']:.0%}" if band["n"] >= CALIBRATION_MIN_CALLS
+                else "too few")
+        lines.append(f"{label:<8} {true:>9} {band['n']:>6,}")
+    calls = sum(b["n"] for b in judged)
+    said = sum(b["said"] * b["n"] for b in judged) / calls
+    happened = sum(b["came_true"] for b in judged) / calls
+    noise = 2 * math.sqrt(max(happened * (1 - happened), 1e-9) / calls)
+    gap = happened - said
+    if abs(gap) <= noise:
+        verdict = (f"✅ **Its confidence is honest:** it says {said:.0%} on average "
+                   f"and is right {happened:.0%} (within noise).")
+    elif gap < 0:
+        verdict = (f"⚠️ **Overconfident:** it says {said:.0%} on average but is right "
+                   f"only {happened:.0%}. Treat its chances as smaller than shown.")
+    else:
+        verdict = (f"**Underconfident:** it says {said:.0%} on average and is right "
+                   f"{happened:.0%}. Its real chances are a bit better than shown.")
+    text = verdict + "\n```\n" + "\n".join(lines) + "\n```\n"
+
+    names = {"quiet": "Quiet", "normal": "Normal", "turbulent": "Turbulent"}
+    regimes = record.get("regimes") or {}
+    rows = [(names[k], regimes[k]) for k in ("quiet", "normal", "turbulent")
+            if k in regimes and regimes[k]["n"]]
+    if rows:
+        table = [f"{'Market':<9} {'Right':>6} {'Edge':>5} {'Calls':>6}"]
+        best = None
+        for name, part in rows:
+            if part["n"] >= CALIBRATION_MIN_CALLS:
+                edge = (part["baseline_brier"] - part["brier"]) * 1000
+                right, edge_text = f"{part['hit_rate']:.1%}", f"{edge:+.1f}"
+                if best is None or edge > best[1]:
+                    best = (name, edge)
+            else:
+                right, edge_text = "few", "—"
+            table.append(f"{name:<9} {right:>6} {edge_text:>5} {part['n']:>6,}")
+        text += "**Where it's right** (market calm vs wild when it called):\n"
+        text += "```\n" + "\n".join(table) + "\n```\n"
+        if best is not None and best[1] > 0:
+            text += (f"-# Best in **{best[0].lower()}** markets. Edge = less error than a "
+                     "coin flip, in points. A lead here is a clue, not proof.")
+        else:
+            text += "-# No market condition where it beats a coin flip yet."
+    return text
 
 
 def _when(age_minutes: int) -> str:
@@ -1003,6 +1076,8 @@ def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
     )
     embed.add_field(name="🎯 Scoreboard (last 7 days)",
                     value=fit_embed_field_value(rename_text(scoreboard)), inline=False)
+    embed.add_field(name="🎚️ Can you trust its confidence?",
+                    value=fit_embed_field_value(_calibration_text(reports)), inline=False)
     name, trials = _trials_text(reports)
     embed.add_field(name=name, value=fit_embed_field_value(trials), inline=False)
     contest = _contest_text(reports)
@@ -2069,6 +2144,11 @@ class GuidedHome(discord.ui.View):
                     asyncio.to_thread(
                         _cached_benefit, self.market, self.coin, self.horizon,
                     ), timeout=PERFORMANCE_READ_SECONDS,
+                )
+                readers["calibration"] = asyncio.wait_for(
+                    asyncio.to_thread(_cached_page_read, _calibration_record, self.market,
+                                      self.coin, self.horizon),
+                    timeout=PERFORMANCE_READ_SECONDS,
                 )
                 readers["trials"] = asyncio.wait_for(
                     asyncio.to_thread(_cached_page_read, _trial_board_record, self.market,

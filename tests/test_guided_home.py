@@ -456,6 +456,7 @@ async def test_advanced_tools_and_legacy_pages_do_not_duplicate_metrics(tmp_path
         assert view.title == "📊 Bitcoin · 5-min · Bot performance"
         assert [f.name for f in view.fields] == [
             "🎯 Scoreboard (last 7 days)",
+            "🎚️ Can you trust its confidence?",
             "🧪 Models on trial",
             "⚙️ Running and learning",
         ]

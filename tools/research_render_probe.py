@@ -58,7 +58,6 @@ async def _render_pages(out, store, market, venues, assets) -> None:
     from types import SimpleNamespace
 
     from parlay_bot.discord_app.home import GuidedHome
-
     from parlay_bot.discord_app.targeting import DirectionTargetStore
     from parlay_bot.perpetuals.paper_ledger import PaperLedger
 

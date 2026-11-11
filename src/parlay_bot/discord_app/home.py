@@ -1134,6 +1134,12 @@ def _health_text(coin: str, horizon: int, reports: dict, now: datetime,
                         direction.lower(), direction.upper())
         elif current:
             call = "makes no call for the next candle"
+        elif age is not None and age > timedelta(hours=1):
+            # Nov 11 audit: "no current call (last review 4 days ago)" read as
+            # broken. The automatic reviews are switched off on this server;
+            # the AI service itself still answers when asked.
+            call = (f"automatic reviews are paused (last one {_age_words(age)} ago); "
+                    "it still answers when asked")
         elif age is not None and age > timedelta(0):
             call = f"no current call (last review {_age_words(age)} ago)"
         else:

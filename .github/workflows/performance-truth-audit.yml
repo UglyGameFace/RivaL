@@ -54,54 +54,6 @@ jobs:
               with request.urlopen(req, timeout=500) as response:
                   data = json.load(response)
               return data.get("apps", {}).get("shell", {})
-          if os.environ["MODE"] in ("logs", "intelligence-logs"):
-              # intelligence-logs reads the separate RivaL-Intelligence app.
-              if os.environ["MODE"] == "intelligence-logs":
-                  if not os.environ.get("DISCLOUD_LLM_APP_ID"):
-                      raise SystemExit("DISCLOUD_LLM_APP_ID secret is not set")
-                  os.environ["DISCLOUD_APP_ID"] = os.environ["DISCLOUD_LLM_APP_ID"]
-                  os.environ["MODE"] = "logs"
-          if os.environ["MODE"] == "logs":
-              import re
-              req = request.Request(
-                  "https://api.discloud.app/v2/app/"
-                  + parse.quote(os.environ["DISCLOUD_APP_ID"], safe="") + "/logs",
-                  headers={"api-token": os.environ["DISCLOUD_TOKEN"]})
-              with request.urlopen(req, timeout=60) as response:
-                  data = json.load(response)
-              apps = data.get("apps")
-              app = apps[0] if isinstance(apps, list) else apps or {}
-              text = str((app.get("terminal") or {}).get("big") or "")
-              wanted = re.compile(os.environ.get("PATTERN") or "Bitget")
-              secret = re.compile(r"(?i)(token|secret|password|key|postgres)")
-              lines = [l for l in text.splitlines() if wanted.search(l) and not secret.search(l)]
-              print("\n".join(lines[-200:]) or "no matching lines")
-              raise SystemExit(0)
-          if os.environ["MODE"] == "trials":
-              # One coin per console call: each stays well under the API's
-              # ~100 s gateway limit.
-              merged = {}
-              only = os.environ.get("PATTERN") == "problems"
-              for asset in (("BTC",) if only else ("BTC", "ETH", "SOL", "XRP")):
-                  try:
-                      shell = run(("RIVAL_PROBE_PROBLEMS_ONLY=1 " if only else "")
-                                  + f"RIVAL_PROBE_ASSETS={asset} ")
-                  except Exception as exc:  # noqa: BLE001
-                      merged[f"error/{asset}"] = f"{type(exc).__name__}: {exc}"[:300]
-                      continue
-                  for line in str(shell.get("stdout", "")).splitlines():
-                      if line.startswith("RIVAL_TRIAL_PROBE="):
-                          report = json.loads(gzip.decompress(base64.b64decode(
-                              line.split("=", 1)[1])))
-                          boards = merged.setdefault("boards", {})
-                          boards.update(report.pop("boards", {}))
-                          merged.update(report)
-                          break
-                  else:
-                      merged[f"error/{asset}"] = str(shell.get("stderr", ""))[-800:]
-              pathlib.Path("render.json").write_text(json.dumps(merged, indent=1))
-              print(json.dumps(merged, indent=1)[:60000])
-              raise SystemExit(0)
           def run_long(prefix, marker, tag):
               """Start the probe in the background on the host and poll its
               output file: one console call is cut at ~100 s by the API
@@ -134,6 +86,55 @@ jobs:
                   if marker in str(shell.get("stdout", "")):
                       return shell
               return {"stdout": "", "stderr": f"no result after 30 min ({tag})"}
+          if os.environ["MODE"] in ("logs", "intelligence-logs"):
+              # intelligence-logs reads the separate RivaL-Intelligence app.
+              if os.environ["MODE"] == "intelligence-logs":
+                  if not os.environ.get("DISCLOUD_LLM_APP_ID"):
+                      raise SystemExit("DISCLOUD_LLM_APP_ID secret is not set")
+                  os.environ["DISCLOUD_APP_ID"] = os.environ["DISCLOUD_LLM_APP_ID"]
+                  os.environ["MODE"] = "logs"
+          if os.environ["MODE"] == "logs":
+              import re
+              req = request.Request(
+                  "https://api.discloud.app/v2/app/"
+                  + parse.quote(os.environ["DISCLOUD_APP_ID"], safe="") + "/logs",
+                  headers={"api-token": os.environ["DISCLOUD_TOKEN"]})
+              with request.urlopen(req, timeout=60) as response:
+                  data = json.load(response)
+              apps = data.get("apps")
+              app = apps[0] if isinstance(apps, list) else apps or {}
+              text = str((app.get("terminal") or {}).get("big") or "")
+              wanted = re.compile(os.environ.get("PATTERN") or "Bitget")
+              secret = re.compile(r"(?i)(token|secret|password|key|postgres)")
+              lines = [l for l in text.splitlines() if wanted.search(l) and not secret.search(l)]
+              print("\n".join(lines[-200:]) or "no matching lines")
+              raise SystemExit(0)
+          if os.environ["MODE"] == "trials":
+              # One coin per console call: each stays well under the API's
+              # ~100 s gateway limit.
+              merged = {}
+              only = os.environ.get("PATTERN") == "problems"
+              for asset in (("BTC",) if only else ("BTC", "ETH", "SOL", "XRP")):
+                  try:
+                      shell = run_long(("RIVAL_PROBE_PROBLEMS_ONLY=1 " if only else "")
+                                       + f"RIVAL_PROBE_ASSETS={asset} ",
+                                       "RIVAL_TRIAL_PROBE=", f"trials{asset}")
+                  except Exception as exc:  # noqa: BLE001
+                      merged[f"error/{asset}"] = f"{type(exc).__name__}: {exc}"[:300]
+                      continue
+                  for line in str(shell.get("stdout", "")).splitlines():
+                      if line.startswith("RIVAL_TRIAL_PROBE="):
+                          report = json.loads(gzip.decompress(base64.b64decode(
+                              line.split("=", 1)[1])))
+                          boards = merged.setdefault("boards", {})
+                          boards.update(report.pop("boards", {}))
+                          merged.update(report)
+                          break
+                  else:
+                      merged[f"error/{asset}"] = str(shell.get("stderr", ""))[-800:]
+              pathlib.Path("render.json").write_text(json.dumps(merged, indent=1))
+              print(json.dumps(merged, indent=1)[:60000])
+              raise SystemExit(0)
           if os.environ["MODE"] == "render":
               merged = {}
               # The four coins' research pages, then one call for every other

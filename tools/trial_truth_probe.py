@@ -37,6 +37,61 @@ def _independent(conn, *, asset, horizon, family, since):
             "venues": int(row["venues"] or 0)}
 
 
+def _timings(store, now) -> dict:
+    """Seconds for the background reads that were slow (read-only)."""
+    from parlay_bot.discord_app import research_alerts, trial_board
+    from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+
+    monitor = ForwardAccuracyMonitor(PerpetualMarketStore(store), read_only=True)
+    out = {}
+
+    def timed(name, fn):
+        started = time.monotonic()
+        try:
+            fn()
+            out[name] = round(time.monotonic() - started, 2)
+        except Exception as exc:  # noqa: BLE001
+            out[name] = f"{type(exc).__name__} after {time.monotonic() - started:.1f}s"
+
+    def settle_select(since):
+        window = "" if since is None else " AND s.target_opened_at>=?"
+        stamp = now.isoformat()
+        due = (now - timedelta(minutes=5)).isoformat()
+        match = """FROM perp_forward_audit f WHERE f.venue=s.venue AND f.contract=s.contract
+                   AND f.quote=s.quote AND f.horizon_minutes=s.horizon_minutes
+                   AND f.model_version='prospective-logistic-persistent-v3'
+                   AND f.reference_opened_at=s.reference_opened_at AND f.asset=s.asset
+                   AND f.issued_at=s.issued_at AND f.target_opened_at=s.target_opened_at
+                   AND f.settled_at IS NOT NULL AND f.settled_at<=? AND f.outcome_up IN (0,1)"""
+        params = (stamp, due) + (() if since is None else (since.isoformat(),))
+        with store.connect() as conn:
+            conn.execute(f"""SELECT COUNT(*) FROM (SELECT (SELECT f.settled_at {match}) AS v
+                              FROM rival_model_shadow_forecasts s
+                              WHERE s.settled_at IS NULL AND s.target_opened_at<?{window}) x
+                             WHERE x.v IS NOT NULL""", params).fetchone()
+
+    timed("settle_fast_6h", lambda: settle_select(now - timedelta(hours=6)))
+    timed("settle_14d", lambda: settle_select(now - timedelta(days=14)))
+    timed("settle_full_unbounded", lambda: settle_select(None))
+
+    def decay():
+        with store.connect() as conn:
+            research_alerts._decay_rows(conn, now)
+
+    timed("research_decay", decay)
+    timed("summary_7d", lambda: monitor._summary_uncached(asset="BTC", now=now))
+    timed("learning_evidence_5m", lambda: monitor.active_learning_evidence(
+        asset="BTC", horizon_minutes=5, now=now))
+    timed("trial_hit_rates_5m", lambda: trial_board.hit_rates(
+        store, asset="BTC", horizon=5, now=now, venues=["hyperliquid"]))
+    with store.connect() as conn:
+        out["unsettled_shadow_rows"] = dict(conn.execute(
+            """SELECT COUNT(*) AS n, MIN(target_opened_at) AS oldest
+               FROM rival_model_shadow_forecasts WHERE settled_at IS NULL""").fetchone())
+    return out
+
+
 def probe() -> dict:
     from parlay_bot.config import Settings
     from parlay_bot.discord_app import trial_board
@@ -121,6 +176,7 @@ def probe() -> dict:
         except Exception as exc:  # noqa: BLE001
             out["problem_hours_error"] = type(exc).__name__
         if os.environ.get("RIVAL_PROBE_PROBLEMS_ONLY"):
+            out["timings"] = _timings(store, now)
             return out
         retired = trial_board.retired_families()
         for asset in assets:

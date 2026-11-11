@@ -58,12 +58,18 @@ async def _render_pages(out, store, market, venues, assets) -> None:
     from types import SimpleNamespace
 
     from parlay_bot.discord_app.home import GuidedHome
+    from parlay_bot.discord_app.targeting import DirectionTargetStore
+    from parlay_bot.perpetuals.paper_ledger import PaperLedger
 
     dummy = SimpleNamespace()
+    # Real read paths for Tracking and Practice (owner 1 has no trades or
+    # follows, so these show the empty state as a new user sees it).
+    targets = SimpleNamespace(store=DirectionTargetStore(store))
+    paper = PaperLedger(store)
     for page in ("home", "crypto-desk", "hunt", "practice", "results", "advanced", "help",
-                 "sports", "live", "crypto", "forecast"):
+                 "live", "crypto", "forecast"):
         home = GuidedHome(owner_id=1, location=dummy, builder=dummy, collector=None,
-                          market=market, targets=dummy, paper=dummy, quotes=dummy,
+                          market=market, targets=targets, paper=paper, quotes=dummy,
                           profit=None, venues=venues)
         home.coin, home.horizon = assets[0], 5
         try:

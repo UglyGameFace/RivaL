@@ -153,3 +153,39 @@ async def test_the_learning_count_says_when_it_counts_whole_windows(
         assert f"(1,015 {unit} over 12 days)" in learning
     finally:
         await _close(bot, home)
+
+
+def _intel(age):
+    from datetime import UTC, datetime
+    reviewed = datetime.now(UTC) - age
+    return {"latest": {"issued_at": reviewed.isoformat(),
+                       "stances": {5: ("follow", "down"), 15: ("follow", "up")}},
+            "report": {"followed": 139, "followed_hit_rate": .52,
+                       "abstained": 2, "model_hit_when_abstained": 0.0}}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("horizon", "age_minutes", "expected"), [
+    (5, 3, "for the next 5-min candle it says DOWN (price falling)"),
+    (15, 20, "for the next 15-min candle it says UP (price rising)"),
+    (5, 40, "no call for the next candle; its last review was 40 min ago"),
+    (5, 60 * 30, "no call for the next candle; its last review was 30 hours ago"),
+    (60, 60 * 24 * 3, "no call for the next candle; its last review was 3 days ago"),
+])
+async def test_an_old_ai_review_is_not_shown_as_a_call_for_the_next_candle(
+        tmp_path, monkeypatch, horizon, age_minutes, expected):
+    from datetime import timedelta
+    bot, home = _make_home(tmp_path)
+    home.horizon = horizon
+    _patch_live_reads(monkeypatch, pooled={"issued": 0}, regime={"issued": 0},
+                      live={"issued": 0}, live_fast={"issued": 0})
+    monkeypatch.setattr(home_module, "_wild_record", lambda *_: {"issued": 0})
+    monkeypatch.setattr(home_module, "_intelligence_status",
+                        lambda *_: _intel(timedelta(minutes=age_minutes)))
+    try:
+        learning = _fields(await home.render())["🧠 Is it learning?"]
+        assert f"**RivaL Intelligence (an AI that reviews the model's calls):** {expected}." \
+            in learning
+        assert "went along with the model 139 times" in learning
+    finally:
+        await _close(bot, home)

@@ -844,6 +844,20 @@ def _regime_live_text(record, label, now=None):
     return "\n" + _trial_one_liner(label, record, now or datetime.now(UTC))
 
 
+# A review older than its timeframe plus this is not a call for the next candle.
+INTELLIGENCE_CALL_GRACE_MINUTES = 10
+
+
+def _age_words(age: timedelta) -> str:
+    minutes = int(age.total_seconds() // 60)
+    if minutes < 120:
+        return f"{minutes} min"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours} hours"
+    return f"{hours // 24} days"
+
+
 def _intelligence_status(market: object, asset: str, horizon: int) -> dict | None:
     """RivaL Intelligence's graded reviews of the models (None if never run)."""
     from parlay_bot.perpetuals.intelligence import IntelligenceLedger
@@ -2307,10 +2321,28 @@ class GuidedHome(discord.ui.View):
                             if stance == "follow" and direction != "none"
                             else "makes no call")
                 # The AI's own note is technical; it stays in Detailed Research.
+                # Only a review young enough to cover the next candle is
+                # shown as a call for it. Background reviews are off by
+                # opt-in (rival_llm_background_opt_in) in production, so the
+                # stored "latest" call can be days old; it was shown as "for
+                # the next 5-min candle it says DOWN" regardless.
+                try:
+                    reviewed = datetime.fromisoformat(str(latest.get("issued_at")))
+                    age = now - reviewed.astimezone(UTC)
+                except (TypeError, ValueError):
+                    age = None
+                current = age is not None and timedelta(0) <= age <= timedelta(
+                    minutes=self.horizon + INTELLIGENCE_CALL_GRACE_MINUTES)
+                if current:
+                    call = f"for the next {self.horizon}-min candle it {now_call}"
+                elif age is not None and age > timedelta(0):
+                    call = (f"no call for the next candle; its last review was "
+                            f"{_age_words(age)} ago")
+                else:
+                    call = "no call for the next candle"
                 intel_text = (
-                    f"\n**RivaL Intelligence (an AI that reviews the model's calls):** for "
-                    f"the next {self.horizon}-min candle it {now_call}. Last 7 days it "
-                    f"{followed} and {abstained}."
+                    f"\n**RivaL Intelligence (an AI that reviews the model's calls):** "
+                    f"{call}. Last 7 days it {followed} and {abstained}."
                 )
             elif isinstance(intelligence, Exception):
                 intel_text = "\n**RivaL Intelligence:** couldn't check right now"

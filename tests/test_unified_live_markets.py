@@ -83,16 +83,16 @@ async def test_live_desk_shows_actual_verified_market_and_switches_provider_in_p
         home.navigate("live")
         home._buttons()
         poly = await home.render()
-        assert "Research UP" in poly.title and "unqualified" in poly.title and "BTC" in poly.title
+        assert "Test call UP" in poly.title and "not proven" in poly.title and "BTC" in poly.title
         summary = "\n".join(f.value for f in poly.fields)
         assert "76000" in summary or "76,000" in summary
         assert "UP $0.61" in summary
         assert "DOWN $0.41" in summary
-        assert "Exact contract" in "\n".join(f.name for f in poly.fields)
-        assert any("UP" in f.value for f in poly.fields if "unqualified" in f.name)
+        assert "This contract" in "\n".join(f.name for f in poly.fields)
+        assert any("UP" in f.value for f in poly.fields if "not proven" in f.name)
         assert "exchange-candle lean" not in summary
         assert "Verified contract research" in summary
-        assert "experimental" in poly.description.lower()
+        assert "not proven to make money" in poly.description.lower()
         assert "Browse Kalshi" not in [
             x.label for x in home.children if hasattr(x, "label")
         ]

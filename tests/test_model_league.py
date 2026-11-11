@@ -258,5 +258,5 @@ def test_small_sample_reports_progress_without_false_qualification(learning_stor
     e = entry(learning_store, now=START+timedelta(days=1))
     assert e['champion'] is None
     text = league_text(e, asset='BTC', horizon=60)
-    assert '23/300 settled' in text and 'No fixed day wait' in text
-    assert 'Research forecasts remain visible' in text
+    assert '23/300 contracts graded' in text
+    assert 'Test calls stay visible' in text and 'alerts start only after' in text

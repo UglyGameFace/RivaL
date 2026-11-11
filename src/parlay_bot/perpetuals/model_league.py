@@ -422,20 +422,22 @@ def league(store, *, now: datetime | None = None) -> dict:
 
 
 def league_text(entry: dict | None, *, asset: str, horizon: int) -> str:
+    """Plain words (Nov 11): who, if anyone, beat Polymarket's own price."""
     champion = entry.get("champion") if entry else None
     models = entry.get("models", []) if entry else []
     if champion:
         best = next((m for m in models if m["model"] == champion), None)
-        counts = (f" {best['contracts']:,} matched contracts; {best['trades']:,} paper entries."
+        counts = (f" on {best['contracts']:,} contracts ({best['trades']:,} practice entries)"
                   if best else "")
-        return (f"**{label(champion)}** passed the sequential contest against Polymarket's price "
-                f"and the after-fee stress test on matched contracts.{counts} Paper evidence; fills are unverified.")
+        return (f"**{label(champion)}** beat Polymarket's own price{counts} and stayed ahead "
+                "after fees. Practice results; real fills aren't verified.")
     progress = max(models, key=lambda m: m["contracts"], default=None)
-    detail = (f" Best-covered candidate: {progress['contracts']:,}/{MIN_CONTRACTS} settled comparisons; "
-              f"{progress['trades']:,}/{MIN_TRADES} priced paper entries; "
-              f"{progress['coverage']:.0%} coverage (minimum {MIN_COVERAGE:.0%}). "
-              + (progress.get("blocked") or "The evidence test has not passed.") if progress else
-              " No settled checkpoint comparisons yet.")
-    return (f"**No model beats Polymarket's price here** ({asset} {horizon}m)."
-            f"{detail} Research forecasts remain visible. No fixed day wait; "
-            "alerts begin only after qualification.")
+    if progress:
+        detail = (f" Closest: {progress['contracts']:,}/{MIN_CONTRACTS} contracts graded, "
+                  f"{progress['trades']:,}/{MIN_TRADES} practice entries priced, "
+                  f"{progress['coverage']:.0%} with prices (needs {MIN_COVERAGE:.0%}). "
+                  + (progress.get("blocked") or "It hasn't passed the test yet."))
+    else:
+        detail = " No graded contracts yet."
+    return (f"**No model beats Polymarket's price here yet** ({asset} {horizon}m).{detail} "
+            "Test calls stay visible; alerts start only after a model passes.")

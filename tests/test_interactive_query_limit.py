@@ -113,3 +113,32 @@ def test_postgres_interactive_query_is_cancelled_after_limit():
             assert conn.execute("SELECT 1 AS ok").fetchone()["ok"] == 1
     finally:
         db.close()
+
+
+def test_performance_benefit_query_gets_its_own_longer_limit(monkeypatch):
+    # RIVAL-18: the 3-7 s improvement check must not inherit the 8 s cap.
+    from parlay_bot.discord_app import home
+
+    seen = {}
+
+    class FakeMonitor:
+        def __init__(self, market):
+            pass
+
+        def active_learning_evidence(self, *, asset, horizon_minutes):
+            seen["limit"] = query_scope.current_statement_timeout_ms()
+            return {"status": "insufficient"}
+
+    monkeypatch.setattr(home, "ForwardAccuracyMonitor", FakeMonitor)
+
+    def interaction():
+        query_scope.mark_interactive()
+        result = home._performance_benefit(object(), "BTC", 5)
+        return result, query_scope.current_statement_timeout_ms()
+
+    result, after = contextvars.Context().run(interaction)
+    assert result == {"status": "insufficient"}
+    assert seen["limit"] == query_scope.PERFORMANCE_STATEMENT_TIMEOUT_MS
+    assert after == query_scope.INTERACTIVE_STATEMENT_TIMEOUT_MS
+    assert (query_scope.PERFORMANCE_STATEMENT_TIMEOUT_MS / 1000
+            < home.PERFORMANCE_READ_SECONDS)

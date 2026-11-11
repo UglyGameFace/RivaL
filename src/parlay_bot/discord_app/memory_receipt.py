@@ -188,6 +188,11 @@ class MemoryReceipt:
                     "holders may be missing and sizes are lower bounds")
             # One line per rank: the problem log keeps one sample per message
             # template and shortens long text, so a single joined line was cut.
+            # Routine attribution is information, not a problem: at warning
+            # level every 2-hour sample landed on the status card as six red
+            # lines while memory was a third of the limit. Only when memory
+            # is actually tight are the holders a warning.
+            level = logging.WARNING if getattr(memory, "pressure", False) else logging.INFO
             for rank, (name, size) in enumerate(holders, start=1):
-                _LOG.warning(f"RivaL memory holder #{rank}: %s=%dMB", name, size // MIB)
+                _LOG.log(level, f"RivaL memory holder #{rank}: %s=%dMB", name, size // MIB)
         return line

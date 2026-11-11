@@ -88,12 +88,40 @@ def test_growth_step_triggers_holders_below_high_rss(monkeypatch, caplog):
     Holder.__module__ = "parlay_bot.test_fixture"
     holder = Holder()
     holder.big_cache = {i: list(range(50)) for i in range(2000)}
-    with caplog.at_level(logging.WARNING, logger="parlay_bot.discord_app.memory_receipt"):
+    with caplog.at_level(logging.INFO, logger="parlay_bot.discord_app.memory_receipt"):
         line = receipt.sample()
     assert "grew_mb=20" in line
-    assert any("Holder.big_cache" in r.getMessage() for r in caplog.records), [
-        r.getMessage() for r in caplog.records
-    ]
+    holders = [r for r in caplog.records if "Holder.big_cache" in r.getMessage()]
+    assert holders, [r.getMessage() for r in caplog.records]
+    # Attribution is information while memory is fine: it must not land on
+    # the status card as a red warning. The growth line itself still does.
+    assert {r.levelname for r in holders} == {"INFO"}
+    assert any(r.levelname == "WARNING" and "grew_mb=20" in r.getMessage()
+               for r in caplog.records)
+    del holder
+
+
+def test_holders_are_a_warning_only_when_memory_is_tight(monkeypatch, caplog):
+    class Tight(_Snap):
+        pressure = True
+
+    readings = iter([100 * 2**20, 120 * 2**20])
+    monkeypatch.setattr(memory_receipt.host_memory, "snapshot",
+                        lambda: Tight(next(readings)))
+    monkeypatch.setattr(memory_receipt, "_malloc_trim", lambda: False)
+    receipt = MemoryReceipt()
+    receipt.sample()
+
+    class Holder:
+        pass
+
+    Holder.__module__ = "parlay_bot.test_fixture"
+    holder = Holder()
+    holder.big_cache = {i: list(range(50)) for i in range(2000)}
+    with caplog.at_level(logging.INFO, logger="parlay_bot.discord_app.memory_receipt"):
+        receipt.sample()
+    holders = [r for r in caplog.records if "Holder.big_cache" in r.getMessage()]
+    assert holders and {r.levelname for r in holders} == {"WARNING"}
     del holder
 
 

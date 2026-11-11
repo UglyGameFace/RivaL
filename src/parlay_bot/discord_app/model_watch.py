@@ -73,7 +73,8 @@ def compare_embed(reports: dict[str, dict | None], *, asset: str,
             if h is None:
                 continue
             led = h["ledger"]
-            right = f"{led['right'] / led['n']:.0%}" if led["n"] >= TOO_FEW else "few"
+            right = ("?" if not h.get("ledger_ok", True)
+                     else f"{led['right'] / led['n']:.0%}" if led["n"] >= TOO_FEW else "few")
             results = f"{h['results']:,}" if h["results"] < 10_000 else f"{h['results'] // 1000}k"
             line = (f"{name[:11]:<11} {min(h['days'], 99):>2}/{MIN_DAYS} "
                     f"{results:>5} {right:>5} {_pts(h['gain']):>5} {_status(h)}")

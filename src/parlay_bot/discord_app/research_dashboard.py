@@ -57,6 +57,7 @@ from parlay_bot.perpetuals.readiness import explain_venue_readiness, forecast_re
 from parlay_bot.perpetuals.shadow_monitor import MIN_EVALUATED, ShadowLearningMonitor
 from parlay_bot.perpetuals.spike_watch import SpikeWatch
 from parlay_bot.research.source_native import VENUES, source_month_readiness
+from parlay_bot.storage.optional_reads import optional_rows
 
 if TYPE_CHECKING:
     from parlay_bot.discord_app.targeting import DirectionTargetService
@@ -1191,86 +1192,47 @@ class ResearchDashboard(discord.ui.View):
         audits = SixMonthQualityAudit(self.market).latest(
             asset=self.asset, venues=self.venues,
         )
-        recovery = None
-        with self.market.store.connect() as conn:
-            try:
-                row = conn.execute(
-                    """SELECT * FROM perp_history_recovery
-                       WHERE venue='gate' AND asset=?""",
-                    (self.asset,),
-                ).fetchone()
-            except Exception:  # noqa: BLE001 - older DB may not have this table
-                row = None
-            if row is not None:
-                recovery = dict(row)
+        recovery = self._recovery_row("gate", "*")
         return audits, recovery
+
+    # One backfill-progress read for every exchange card (was four copies).
+    # Each read has its own connection via optional_rows: an older database
+    # without the table shows "no progress", never breaks the screen.
+    _PROGRESS_COLUMNS = "status,inserted_bars,next_opened_at,empty_windows,attempted_at"
+
+    def _recovery_row(self, venue: str, columns: str | None = None) -> dict | None:
+        if self.market is None:
+            return None
+        rows = optional_rows(
+            self.market.store,
+            f"SELECT {columns or self._PROGRESS_COLUMNS} FROM perp_history_recovery "
+            "WHERE venue=? AND asset=?",
+            (venue, self.asset), what="history recovery read") or []
+        return dict(rows[0]) if rows else None
 
     def _kucoin_history_progress(self) -> dict | None:
         """Read KuCoin-specific recovery progress without fetching exchange data."""
-        if self.market is None:
-            return None
-        with self.market.store.connect() as conn:
-            try:
-                row = conn.execute(
-                    """SELECT status,inserted_bars,next_opened_at,empty_windows,
-                              attempted_at
-                       FROM perp_history_recovery
-                       WHERE venue='kucoin' AND asset=?""",
-                    (self.asset,),
-                ).fetchone()
-            except Exception:  # noqa: BLE001 - older DB may not have schema
-                return None
-        return dict(row) if row is not None else None
+        return self._recovery_row("kucoin")
 
     def _okx_history_progress(self) -> dict | None:
         """Reverse-chronological OKX six-month repair state from PostgreSQL."""
-        if self.market is None:
-            return None
-        with self.market.store.connect() as conn:
-            try:
-                row = conn.execute(
-                    """SELECT status,inserted_bars,next_opened_at,empty_windows,
-                              attempted_at
-                       FROM perp_history_recovery
-                       WHERE venue='okx' AND asset=?""",
-                    (self.asset,),
-                ).fetchone()
-            except Exception:  # noqa: BLE001 - previous DB version
-                return None
-        return dict(row) if row is not None else None
+        return self._recovery_row("okx")
+
+    def _bitget_history_progress(self) -> dict | None:
+        """One DB query, no Bitget API request or stale embedded cache."""
+        return self._recovery_row("bitget")
 
     def _all_history_progress(self) -> list[dict]:
         """Every exchange's backfill state for this coin (one DB query)."""
         if self.market is None:
             return []
-        with self.market.store.connect() as conn:
-            try:
-                rows = conn.execute(
-                    """SELECT venue,status,inserted_bars,started_from,next_opened_at,
-                              empty_windows,attempted_at
-                       FROM perp_history_recovery WHERE asset=? ORDER BY venue""",
-                    (self.asset,),
-                ).fetchall()
-            except Exception:  # noqa: BLE001 - schema upgrade pending
-                return []
+        rows = optional_rows(
+            self.market.store,
+            """SELECT venue,status,inserted_bars,started_from,next_opened_at,
+                      empty_windows,attempted_at
+               FROM perp_history_recovery WHERE asset=? ORDER BY venue""",
+            (self.asset,), what="history recovery read") or []
         return [dict(row) for row in rows]
-
-    def _bitget_history_progress(self) -> dict | None:
-        """One DB query, no Bitget API request or stale embedded cache."""
-        if self.market is None:
-            return None
-        with self.market.store.connect() as conn:
-            try:
-                row = conn.execute(
-                    """SELECT status,inserted_bars,next_opened_at,empty_windows,
-                              attempted_at
-                       FROM perp_history_recovery
-                       WHERE venue='bitget' AND asset=?""",
-                    (self.asset,),
-                ).fetchone()
-            except Exception:  # noqa: BLE001 - schema upgrade pending
-                return None
-        return dict(row) if row is not None else None
 
     def _live_feed_status(
         self,

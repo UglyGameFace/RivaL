@@ -99,8 +99,18 @@ class GoogleDriveArchiveClient:
                 headers={"Content-Type": "application/x-www-form-urlencoded"},
             )
             if response.status_code >= 400:
+                # Google's error code (never the token) says what to fix:
+                # invalid_grant = the refresh token was revoked or expired
+                # and must be re-issued; invalid_client = wrong client ID/secret.
+                reason = ""
+                try:
+                    body = response.json()
+                    if isinstance(body, dict) and isinstance(body.get("error"), str):
+                        reason = f" ({body['error'][:40]})"
+                except ValueError:
+                    pass
                 raise DriveArchiveError(
-                    f"Google OAuth refresh failed with {response.status_code}"
+                    f"Google OAuth refresh failed with {response.status_code}{reason}"
                 )
             payload = response.json()
             if not isinstance(payload, dict) or not payload.get("access_token"):

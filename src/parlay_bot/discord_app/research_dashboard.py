@@ -80,12 +80,15 @@ _SECTIONS = {
         ("recovery", "Backfill progress (technical)"),
         ("ai", "AI Review"),
     ),
+    # Cleanup (Nov 11): Bot Performance is the summary; Results holds the
+    # deep dives. "At a glance" repeated Performance and is gone (an old
+    # link opens Models on trial); the other two summary cards are now
+    # labelled as the detail sections they are.
     "accuracy": (
-        ("overview", "At a glance"),
-        ("running", "Is it running?"),
-        ("accuracy", "How accurate is it?"),
-        ("better", "Is anything better?"),
+        ("better", "Models on trial"),
         ("money", "Would it make money?"),
+        ("accuracy", "Accuracy details"),
+        ("running", "Running details"),
         ("technical", "Technical evidence"),
     ),
     "ai": (
@@ -111,6 +114,9 @@ ACCURACY_SECTIONS = {
 LEGACY_SECTION_MAP = {
     old: new for new, olds in ACCURACY_SECTIONS.items() for old in olds
 }
+# "At a glance" repeated Bot Performance: an old link or menu opens the
+# first Results section instead (cleanup, Nov 11).
+LEGACY_SECTION_MAP["overview"] = "better"
 # The old section labels, reused for detail buttons and the compact
 # description when a detail topic is open.
 ACCURACY_DETAIL_LABELS = {
@@ -418,11 +424,13 @@ def _compact_embed(full: discord.Embed, *, screen: str, section: str) -> discord
         # regime splits, trial detail), so its compact cap is one
         # higher; every other section stays at live + two detailed
         # metrics.
-        cap = 4 if section == "progress" else 3
+        # Accuracy also keeps the no-edge verdict (it was on "At a glance",
+        # which the Nov 11 cleanup removed), shortened.
+        cap = 4 if section in ("progress", "accuracy") else 3
         for prefix in _FIELD_GROUPS[screen].get(section, ()):
             if len(result.fields) >= cap:
                 break
-            add_one((prefix,))
+            add_one((prefix,), short=prefix == "Research verdict")
     if len(result.fields) == (1 if source is not None else 0):
         result.add_field(
             name="No results yet",
@@ -745,7 +753,7 @@ class _WatchLiveButton(discord.ui.Button["ResearchDashboard"]):
 
 class _ModelBackButton(discord.ui.Button["ResearchDashboard"]):
     def __init__(self) -> None:
-        super().__init__(label="← Back to Is anything better?",
+        super().__init__(label="← Back to Models on trial",
                          style=discord.ButtonStyle.secondary,
                          custom_id="rival:research:model:back", row=2)
 

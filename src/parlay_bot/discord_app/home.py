@@ -88,7 +88,7 @@ EXPLAIN = {
     "discover": "Pick Crypto or Practice. Nothing here places a real trade.",
     "crypto-desk": "Pick the app you actually use. Prediction markets (Polymarket, Kalshi, DraftKings Predictions) work differently from crypto exchanges (Binance, Hyperliquid, OKX and others), so each one gets its own predictions and its own score.",
     "live": "Get one private message about a Polymarket market that updates only when something important changes. A market's price is not a guarantee of how it ends.",
-    "hunt": "Follow a Polymarket market or an exchange prediction in your private messages. Stop All turns every personal update off.",
+    "hunt": "Everything that updates by itself: the live Polymarket panel, a followed exchange forecast, your next-predictions record and model watch posts. Stop All turns every personal update off.",
     "hunt-tools": "These old notifications were replaced. Use Notifications.",
     "kalshi": "Kalshi is a separate US prediction market with its own prices and rules, so RivaL scores it separately from Polymarket.",
     "sports": "Sportsbook odds show what a bet could pay, not whether it will win. PASS means RivaL has no pick it trusts. Choose your state to see the sportsbooks you can use.",
@@ -100,7 +100,7 @@ EXPLAIN = {
     "results": "These are your own pretend trades. They never count toward the bot's prediction record.",
     "performance": "Shows how often RivaL's saved predictions turned out right, whether it beats a simple guess, and whether everything is running. Exchange and Polymarket predictions are scored separately.",
     "help": "Crypto covers prediction markets and crypto exchanges. Sports covers sportsbook odds. DraftKings sports futures are sports bets, not crypto.",
-    "advanced": "Extra research, how much of each data service is being used, and exact-price alerts. Accuracy and learning are on Bot Performance.",
+    "advanced": "Detailed Research, Sports, Help, how much of each data service is being used, and exact-price alerts.",
     "feeds": "This screen moved: Bot Performance now shows whether price feeds and predictions are running.",
     "trust": "This screen moved to Bot Performance. Note that being busy and getting more accurate are not the same thing.",
 }
@@ -1415,16 +1415,16 @@ class GuidedHome(discord.ui.View):
         self.clear_items()
         p = self.page
         if p == "home":
+            # Cleanup (Nov 11): five tiles, one per job. Sports and Help
+            # moved to More; the live panel lives in Markets and Tracking.
             for title, action, row, emoji in (
-                ("Crypto", "crypto-desk", 0, "📈"),
-                ("Sports", "sports", 0, "🏆"),
-                ("Notifications", "hunt", 1, "🔔"),
-                ("Bot Performance", "performance", 1, "📊"),
-                ("Practice", "practice", 2, "💵"),
-                ("Live Panel", "live-poly", 2, "📡"),
+                ("Markets", "crypto-desk", 0, "📈"),
+                ("Bot Performance", "performance", 0, "📊"),
+                ("Tracking", "hunt", 1, "🔔"),
+                ("Practice", "practice", 1, "💵"),
+                ("More", "advanced", 2, "⚙️"),
             ):
-                self._add(title, action, row, emoji, action == "live")
-            self._add("Help", "help", 3, "❓")
+                self._add(title, action, row, emoji, action == "crypto-desk")
         elif p == "discover":
             self._add("Crypto", "crypto-desk", 0, "📈", True)
             self._add("Practice", "practice", 0, "💵")
@@ -1482,9 +1482,13 @@ class GuidedHome(discord.ui.View):
                 self._add("Refresh Kalshi", "kalshi-refresh", 2, "🔄", True)
             self._add("Analysis & Markets", "crypto-desk", 3, "📊")
         elif p == "hunt":
-            self._add("Choose Market", "crypto-desk", 0, "📈", True)
-            self._add("Exchange Forecast", "crypto", 0, "🎯")
-            self._add("Stop All", "stop-all", 1, "🛑")
+            # The one tracking hub: every follow / watch / track lives here.
+            self._add("Live Panel", "live-poly", 0, "📡", True)
+            self._add("Follow a Forecast", "crypto", 0, "🎯")
+            if self.research_factory is not None:
+                self._add("Track Next Predictions", "track-forward", 1, "🗒️")
+                self._add("Watch Models", "watch-models", 1, "🧪")
+            self._add("Stop All", "stop-all", 2, "🛑")
         elif p == "kalshi":
             self._add("Analysis & Markets", "crypto-desk", 0, "📊", True)
         elif p == "hunt-tools":
@@ -1507,16 +1511,18 @@ class GuidedHome(discord.ui.View):
                 self._add("Track Next Predictions", "track-forward", 3, "🎯")
             self._add("After-Cost Check", "proof", 3, "💸")
         elif p == "help":
-            self._add("Start with Sports", "sports", 0, "🏆")
-            self._add("Analyze Crypto", "crypto-desk", 0, "📈")
-            self._add("Practice Safely", "practice", 1, "💵")
-            # Exact-price targets, technical research and API limits live here
-            # now that their separate /rival-tools commands are gone.
-            self._add("Advanced Tools", "advanced", 2, "⚙️")
+            self._add("Markets", "crypto-desk", 0, "📈", True)
+            self._add("Bot Performance", "performance", 0, "📊")
+            self._add("Tracking", "hunt", 1, "🔔")
+            self._add("Practice", "practice", 1, "💵")
+            self._add("More", "advanced", 2, "⚙️")
         elif p == "advanced":
-            self._add("Bot Performance", "performance", 0, "📊", True)
-            self._add("Technical Research", "research", 1, "🧪")
-            self._add("API Usage & Limits", "api-limits", 2, "🔒")
+            # More: everything that isn't one of the five Home jobs.
+            if self.research_factory is not None:
+                self._add("Detailed Research", "research", 0, "🔬", True)
+            self._add("Sports", "sports", 0, "🏆")
+            self._add("Help", "help", 1, "❓")
+            self._add("API Usage & Limits", "api-limits", 1, "🔒")
             self._add("Manual Price Target", "target", 2, "🎯")
         if p != "home":
             self._add("Home", "home", 4, "🏠")
@@ -1898,15 +1904,25 @@ class GuidedHome(discord.ui.View):
                     return "Checking…"
                 return "ON" if value is not None else "OFF"
 
+            watcher = getattr(getattr(self.auto_hunt, "bot", None), "model_watch", None)
+            watches = await current(
+                (lambda owner: len(watcher._rows(owner))) if watcher is not None else None)
+            watch_line = ("Checking…" if watches == "unknown"
+                          else f"{watches} post{'s' if watches != 1 else ''}"
+                          if isinstance(watches, int) else "OFF")
             embed = discord.Embed(
-                title="🔔 Notifications",
+                title="🔔 Tracking",
                 description=(
-                    f"**Polymarket tracking:** {status(market)}\n"
-                    f"**Exchange forecast watch:** {status(exchange)}\n"
-                    f"{legacy}\n\n"
-                    "Tracking updates one private message. No price-change "
-                    "or Auto-Hunt notification spam. Background model training "
-                    "does not DM you. **Stop All** cancels your personal updates."
+                    "Everything that updates by itself, in one place.\n\n"
+                    f"📡 **Live Polymarket panel:** {status(market)}\n"
+                    f"🎯 **Followed exchange forecast:** {status(exchange)}\n"
+                    f"🧪 **Model watch posts:** {watch_line}\n"
+                    f"-# {legacy}\n\n"
+                    "Each one updates a single message; no notification spam. "
+                    "**Track Next Predictions** records RivaL's next calls for your "
+                    "own scorecard. **Watch Models** opens the model picker: compare "
+                    "them, then **Watch live**. **Stop All** cancels your personal "
+                    "updates (model watch posts have their own Stop button)."
                 ),
                 color=discord.Color.blurple(),
             )
@@ -2206,22 +2222,28 @@ class GuidedHome(discord.ui.View):
             embed = discord.Embed(
                 title="❓ Getting Started",
                 description=(
-                    "1. **Crypto:** live markets and RivaL's up/down predictions.\n"
-                    "2. **Sports:** choose your state and compare odds.\n"
-                    "3. **Notifications:** get updates in your messages; stop anytime.\n"
-                    "4. **Bot Performance:** how often the predictions were right.\n"
-                    "5. **Practice:** trade pretend money and track your results.\n"
-                    "**Advanced Tools:** exact-price alerts and deeper research.\n\n"
+                    "1. **Markets:** pick a coin and timeframe; RivaL's up/down call, "
+                    "the Polymarket odds and the live panel.\n"
+                    "2. **Bot Performance:** how often it's right, whether its "
+                    "confidence is honest, and every model on trial.\n"
+                    "3. **Tracking:** everything that updates by itself: the live "
+                    "panel, a followed forecast, your next-predictions record and "
+                    "model watch posts. Stop All turns your updates off.\n"
+                    "4. **Practice:** trade pretend money and track your results.\n"
+                    "5. **More:** Detailed Research, Sports, data limits and exact-price "
+                    "alerts.\n\n"
                     "**WAIT** means RivaL isn't confident enough to make a call. "
                     "No real bets are placed."
                 ), color=discord.Color.blurple(),
             )
         else:
             embed = discord.Embed(
-                title="⚙️ Advanced Tools",
-                description="Exact-price alerts, deeper research, and how much of each "
-                            "data service is being used. Accuracy and learning are on "
-                            "Bot Performance.",
+                title="⚙️ More",
+                description=("**Detailed Research:** deep dives behind Bot Performance "
+                             "(each model's own page, compare models, the money check).\n"
+                             "**Sports:** compare sportsbook odds.\n"
+                             "**Help**, **API Usage & Limits** and **Manual Price Target** "
+                             "(an alert at an exact price)."),
                 color=discord.Color.blurple(),
             )
         if self.note:
@@ -3016,7 +3038,7 @@ class GuidedHome(discord.ui.View):
                 except Exception:  # noqa: BLE001
                     _LOG.exception("Guided legacy profitability unavailable")
                     self.note = "Cannot verify profitability. NOT PROVEN."
-        elif action in ("research", "track-forward"):
+        elif action in ("research", "track-forward", "watch-models"):
             if self.research_factory is None:
                 self.note = "Advanced research is not configured."
             else:
@@ -3024,17 +3046,18 @@ class GuidedHome(discord.ui.View):
                     panel = self.research_factory(self.owner_id)
                     # Bot Performance's drill-down must open its own evidence,
                     # not send users through an unrelated Opportunities tab.
-                    if (self.page == "performance"
-                        and hasattr(panel, "screen")
-                        and hasattr(panel, "_rebuild")):
+                    if ((self.page in ("performance", "hunt") or action == "watch-models")
+                            and hasattr(panel, "screen")
+                            and hasattr(panel, "_rebuild")):
                         panel.asset = self.coin
                         panel.screen = "accuracy"
                         # Audit Step 3: the drill-down opens the same
-                        # evidence as its detail topic inside "Is anything
-                        # better?", not a standalone section.
+                        # evidence as its detail topic inside Models on
+                        # trial, not a standalone section. Watch Models opens
+                        # that card itself: its picker compares and watches.
                         panel.section = "better"
-                        panel.detail = ("tracker" if action == "track-forward"
-                                        else "lineage")
+                        panel.detail = {"track-forward": "tracker",
+                                        "watch-models": None}.get(action, "lineage")
                         panel._rebuild()
                     await interaction.followup.send(
                         embed=await panel.render(), view=panel,
@@ -3170,6 +3193,7 @@ _STALE_SAFE_PAGES = {
     # (read-only) instead of silently failing or dropping to Home.
     "track-forward": "performance",
     "research": "performance",
+    "watch-models": "hunt",
 }
 
 _STALE_NOTE = (
@@ -3198,6 +3222,10 @@ _STALE_BUTTONS_C = (
     "crypto-desk", "desk-call", "desk-track",
     "discover", "hunt-config", "cdna-auto", "cdna-quote",
     "dk-independent-ai",
+)
+# Views A-C are full (Discord's five rows). New buttons go here.
+_STALE_BUTTONS_D = (
+    "watch-models",
 )
 
 
@@ -3333,9 +3361,18 @@ class StaleGuidedMenuViewC(_StaleGuidedMenuBase):
         self.add_item(_StaleMarket())
 
 
+class StaleGuidedMenuViewD(_StaleGuidedMenuBase):
+    """Fourth slice: room for buttons added after A-C filled up."""
+
+    def __init__(self, home_factory: Callable[[int], GuidedHome]) -> None:
+        super().__init__(home_factory)
+        for action in _STALE_BUTTONS_D:
+            self.add_item(_StaleButton(action))
+
+
 def build_stale_guided_menu_views(
     home_factory: Callable[[int], GuidedHome],
-) -> tuple[StaleGuidedMenuViewA, StaleGuidedMenuViewB, StaleGuidedMenuViewC]:
+) -> tuple[_StaleGuidedMenuBase, ...]:
     """Persistent fallbacks for every guided-menu custom_id.
 
     The select-bearing B view is capped at 15 buttons plus two selects.
@@ -3346,6 +3383,7 @@ def build_stale_guided_menu_views(
         StaleGuidedMenuViewA(home_factory),
         StaleGuidedMenuViewB(home_factory),
         StaleGuidedMenuViewC(home_factory),
+        StaleGuidedMenuViewD(home_factory),
     )
 
 def install_view_dispatch_logging(client: object) -> None:

@@ -68,10 +68,10 @@ async def test_beginner_home_begins_simple_and_keeps_advanced_features(tmp_path)
         assert {c.name for c in tools.commands} == {
             "status", "research", "data", "quote", "sports", "target-proof"}
         assert home.page == "home"
-        assert set(_labels(home)) == {
-            "Crypto", "Sports", "Notifications", "Bot Performance",
-            "Practice", "Live Panel", "Help",
-        }
+        # Cleanup (Nov 11): five tiles, one per job; Sports and Help are in
+        # More, the live panel in Markets and Tracking.
+        assert _labels(home) == [
+            "Markets", "Bot Performance", "Tracking", "Practice", "More"]
         assert len(home.children) <= 25
         assert max(item.row for item in home.children) <= 4
         embed = await home.render()
@@ -278,7 +278,7 @@ async def test_actual_rival_slash_callback_opens_guided_private_home(tmp_path):
         assert sent["view"].owner_id == interaction.user.id
         assert sent["embed"].title == "RivaL | Betting Genie"
         assert "No real bets" in sent["embed"].description
-        assert "Crypto" in _labels(sent["view"])
+        assert "Markets" in _labels(sent["view"])
         sent["view"].stop()
     finally:
         await bot.zip_resolver.aclose()
@@ -383,7 +383,7 @@ async def test_menus_reach_what_the_removed_commands_did(tmp_path):
         i = _interaction()
         home.navigate("help")
         home._buttons()
-        assert "Advanced Tools" in _labels(home)
+        assert "More" in _labels(home)
         home.navigate("advanced")
         home._buttons()
         assert "Manual Price Target" in _labels(home)
@@ -435,11 +435,15 @@ async def test_advanced_tools_and_legacy_pages_do_not_duplicate_metrics(tmp_path
         home.navigate("advanced")
         home._buttons()
         labels = set(_labels(home))
-        assert {"Bot Performance", "Technical Research", "API Usage & Limits",
+        # More holds everything that isn't one of the five Home jobs. This
+        # test bot has no research panel, so Detailed Research is absent.
+        assert {"Sports", "Help", "API Usage & Limits",
                 "Manual Price Target"}.issubset(labels)
+        assert "Bot Performance" not in labels        # it's a Home tile
+        assert "Technical Research" not in labels     # one name: Detailed Research
         assert "Are My Prices Fresh?" not in labels
         assert "Is RivaL Improving?" not in labels
-        assert len((await home.render()).description) < 180
+        assert (await home.render()).title == "⚙️ More"
 
         # Old persisted buttons must work, but should not open a second report.
         home.navigate("feeds")
@@ -505,7 +509,7 @@ async def test_live_mode_and_retired_shift_toggles_do_not_restart_spam(tmp_path)
     )
     home.auto_hunt = service
     try:
-        assert "Crypto" in _labels(home)
+        assert "Markets" in _labels(home)
         interaction = _interaction()
         await home.act(interaction, "crypto-desk")
         assert home.live_source is None
@@ -516,7 +520,8 @@ async def test_live_mode_and_retired_shift_toggles_do_not_restart_spam(tmp_path)
         assert "Stop Tracking" in _labels(shown)
         await home.act(interaction, "hunt")
         settings = interaction.edit_original_response.await_args.kwargs["view"]
-        assert {"Choose Market", "Exchange Forecast", "Stop All"}.issubset(set(_labels(settings)))
+        # Tracking hub (Nov 11 cleanup): one place for every follow.
+        assert {"Live Panel", "Follow a Forecast", "Stop All"}.issubset(set(_labels(settings)))
         assert "Changes ON" not in _labels(settings)
         assert "Changes OFF" not in _labels(settings)
         # Old live-shift buttons cannot reactivate notifications after retirement.

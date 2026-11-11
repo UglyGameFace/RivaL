@@ -19,6 +19,9 @@ REGRESSION_RECHECK = timedelta(minutes=10)
 # How long the watchdog trusts a regression verdict it did not compute itself
 # (three missed rechecks). Past this the verdict is unknown, not clear.
 REGRESSION_STALE = timedelta(minutes=30)
+# Faults that often clear on the next check alert only if still open this long.
+CONFIRM_PREFIXES = ("feed:",)
+CONFIRM_AFTER = timedelta(minutes=10)
 # A challenger counts as in use if it issued a forecast this recently.
 BACKLOG_GRACE = timedelta(minutes=10)
 REGRESSION_IN_USE_WITHIN = timedelta(minutes=30)
@@ -36,6 +39,14 @@ def _age(now: datetime, value: object) -> timedelta | None:
         return None
 
 
+def _parse_stamp(value) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return None
+    return parsed.astimezone(UTC) if parsed.utcoffset() is not None else None
+
+
 class RuntimeHealthMonitor:
     """Independent watchdog. Never alters model scores or approval flags."""
 
@@ -48,6 +59,7 @@ class RuntimeHealthMonitor:
         # (computed_at, faults) from the last completed 7-day aggregate.
         self._regression_cache: tuple[datetime, dict[str, str]] | None = None
         self._regression_failed_at: datetime | None = None
+        self._escalated: set[str] = set()
         # The same aggregate per stream and horizon, for the early-stop rule.
         self._paired_scores: tuple[dict, ...] = ()
         self._paired_in_use_since: str | None = None
@@ -448,8 +460,9 @@ class RuntimeHealthMonitor:
             self.record_boot()
         with self.store.connect() as conn:
             previous = {
-                row["issue_key"]: row for row in conn.execute(
-                    "SELECT issue_key,state,occurrence_count FROM rival_runtime_health_incidents"
+                row["issue_key"]: dict(row) for row in conn.execute(
+                    "SELECT issue_key,state,occurrence_count,first_seen_at "
+                    "FROM rival_runtime_health_incidents"
                 ).fetchall()
             }
             for key, detail in sorted(faults.items()):
@@ -486,7 +499,32 @@ class RuntimeHealthMonitor:
                    ON CONFLICT(component) DO UPDATE SET checked_at=excluded.checked_at""",
                 (clock,),
             )
+        # A price feed that misses one check usually catches up on the next
+        # (RIVAL-13/14: okx/gate BTC, one pass each). Such a fault is logged
+        # as a warning when it opens and escalated to an error (a Sentry
+        # alert) only if it is still open CONFIRM_AFTER later.
+        open_since = {key: row for key, row in previous.items()}
+        escalate = []
+        for key in sorted(faults):
+            if not key.startswith(CONFIRM_PREFIXES) or key in self._escalated:
+                continue
+            row = open_since.get(key)
+            first = None
+            if row is not None and row["state"] == "OPEN":
+                first = _parse_stamp(row.get("first_seen_at"))
+            if first is not None and stamp.astimezone(UTC) - first >= CONFIRM_AFTER:
+                escalate.append(key)
+                self._escalated.add(key)
+        for key in escalate:
+            with health_alert_scope(key):
+                _LOG.error("RivaL HEALTH ALERT %s: %s (still failing after %d min)",
+                           key, faults[key], int(CONFIRM_AFTER.total_seconds() // 60))
         for status, key, detail in events:
+            if status == "OPEN" and key.startswith(CONFIRM_PREFIXES):
+                _LOG.warning("RivaL HEALTH ALERT %s: %s", key, detail)
+                continue
+            if status == "RESOLVED":
+                self._escalated.discard(key)
             if status == "OPEN":
                 if key.startswith("regression:"):
                     # A challenger losing to the incumbent by more than the

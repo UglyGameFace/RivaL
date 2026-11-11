@@ -28,6 +28,12 @@ from parlay_bot.discord_app.embed_text import (
 from parlay_bot.discord_app.kalshi_public import KalshiCryptoBrowser
 from parlay_bot.discord_app.manual_parlay import ManualParlayView
 from parlay_bot.discord_app.out_the_gate import below_line_label, lean_short
+from parlay_bot.discord_app.patient_render import (
+    FIRST_WAIT,
+    TOTAL_WAIT,
+    patient,
+    still_loading,
+)
 from parlay_bot.discord_app.polymarket_live_board import live_polymarket_embed
 from parlay_bot.discord_app.presentation import (
     parlay_embed,
@@ -2269,6 +2275,11 @@ class GuidedHome(discord.ui.View):
         async with self._redraw_lock:
             self._render_revision["value"] += 1
             revision = self._render_revision["value"]
+            # A newer press replaces a screen still finishing in the
+            # background: stop the older render (as its old time limit did).
+            pending = self._render_revision.get("slow")
+            if pending is not None and not pending.done():
+                pending.cancel()
             # Acknowledge a real Discord request quickly with a truthful
             # loading view. Slow market checks never hold the button handler
             # or block navigation; only the last generation can replace it.
@@ -2327,7 +2338,15 @@ class GuidedHome(discord.ui.View):
                 async with self._redraw_lock:
                     if self._render_revision["value"] != revision:
                         return
-                    embed = await asyncio.wait_for(self.render(), timeout=3)
+                    try:
+                        embed = await asyncio.wait_for(self.render(), timeout=6)
+                    except TimeoutError:
+                        # One slow read skips this beat; it must not end
+                        # the live card's updates for good.
+                        embed = None
+                    if embed is None:
+                        await asyncio.sleep(15)
+                        continue
                     fingerprint = str(embed.to_dict())
                     if fingerprint != previous:
                         await asyncio.wait_for(interaction.edit_original_response(
@@ -2345,7 +2364,7 @@ class GuidedHome(discord.ui.View):
     ) -> None:
         """Complete slow scorecard reads after the user can already navigate."""
         try:
-            embed = await asyncio.wait_for(self.render(), timeout=8)
+            embed = await patient(self.render, on_slow=self._slow_note(interaction, revision))
         except TimeoutError:
             _LOG.warning("Performance background render timed out")
             embed = discord.Embed(
@@ -2379,7 +2398,7 @@ class GuidedHome(discord.ui.View):
         self, interaction: discord.Interaction, revision: int,
     ) -> None:
         try:
-            embed = await asyncio.wait_for(self.render(), timeout=9)
+            embed = await patient(self.render, on_slow=self._slow_note(interaction, revision))
         except TimeoutError:
             embed = discord.Embed(
                 title="⏳ Market research still unavailable",
@@ -2415,17 +2434,37 @@ class GuidedHome(discord.ui.View):
         started = time.monotonic()
         # Do not clear live components before the next embed is ready.
         render_timed_out = False
+        task = asyncio.ensure_future(self.render())
         try:
-            embed = await asyncio.wait_for(self.render(), timeout=12)
+            embed = await asyncio.wait_for(asyncio.shield(task), timeout=FIRST_WAIT)
         except TimeoutError:
-            _LOG.warning("Guided render timed out page=%s elapsed_ms=%.0f",
-                         self.page, (time.monotonic() - started) * 1000)
-            render_timed_out = True
-            embed = discord.Embed(
-                title="⏳ Still Loading",
-                description="This screen is taking longer than expected. Try again shortly.",
-                color=discord.Color.orange(),
-            )
+            if not _background_retry and isinstance(interaction, discord.Interaction):
+                # Keep the SAME render going and fill the screen in when it
+                # lands, instead of "try again" (which made the owner press
+                # two or three times while the first read finished unseen).
+                revision = self._render_revision["value"]
+                try:
+                    await asyncio.wait_for(interaction.edit_original_response(
+                        content=None, embed=still_loading(),
+                        view=self._display_generation()), timeout=5)
+                except (TimeoutError, discord.HTTPException):
+                    _LOG.warning("Guided still-loading note failed page=%s", self.page)
+                self._render_revision["slow"] = task
+                _spawn(self._finish_slow_render(interaction, task, revision),
+                       name="rival-guided-slow-render")
+                return
+            try:
+                embed = await asyncio.wait_for(asyncio.shield(task), timeout=12 - FIRST_WAIT)
+            except TimeoutError:
+                task.cancel()
+                _LOG.warning("Guided render timed out page=%s elapsed_ms=%.0f",
+                             self.page, (time.monotonic() - started) * 1000)
+                render_timed_out = True
+                embed = discord.Embed(
+                    title="⏳ Still Loading",
+                    description="This screen is taking longer than expected. Try again shortly.",
+                    color=discord.Color.orange(),
+                )
         except (QuoteUnavailable, ValueError, ParlayBuildError) as exc:
             embed = discord.Embed(
                 title="⏳ Not Available Right Now",
@@ -2476,6 +2515,46 @@ class GuidedHome(discord.ui.View):
                 self._retry_failed_render(interaction),
                 name="rival-guided-render-retry",
             )
+
+    def _slow_note(self, interaction, revision: int):
+        """The "still loading" edit for a background finisher (newest press only)."""
+        async def note() -> None:
+            async with self._redraw_lock:
+                if self._render_revision["value"] != revision:
+                    return
+                await asyncio.wait_for(interaction.edit_original_response(
+                    embed=still_loading(), view=self._display_generation()), timeout=4)
+        return note
+
+    async def _finish_slow_render(self, interaction, task, revision: int) -> None:
+        """Wait for a render that outlived the first wait; show it if still current."""
+        try:
+            embed = await asyncio.wait_for(asyncio.shield(task), timeout=TOTAL_WAIT - FIRST_WAIT)
+        except TimeoutError:
+            task.cancel()
+            _LOG.warning("Guided render did not finish in %ds page=%s",
+                         int(TOTAL_WAIT), self.page)
+            embed = discord.Embed(
+                title="⏳ Still unavailable",
+                description="This check didn't finish in 45 seconds. Press it again "
+                            "in a minute; nothing was guessed.",
+                color=discord.Color.orange())
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - same fallbacks as the direct path
+            _LOG.exception("Guided home render failed")
+            embed = discord.Embed(
+                title="⏳ This Screen Is Unavailable",
+                description="We couldn't verify these details. Try Home or Back.",
+                color=discord.Color.orange())
+        async with self._redraw_lock:
+            if self._render_revision["value"] != revision:
+                return
+            try:
+                await asyncio.wait_for(interaction.edit_original_response(
+                    content=None, embed=embed, view=self._display_generation()), timeout=8)
+            except (TimeoutError, discord.HTTPException):
+                _LOG.warning("Guided slow render display failed page=%s", self.page)
 
     async def _retry_failed_render(
         self, interaction: discord.Interaction,

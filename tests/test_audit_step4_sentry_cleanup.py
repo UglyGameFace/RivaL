@@ -38,14 +38,20 @@ def test_regression_alert_is_a_warning_and_real_faults_stay_errors(
                              logger="parlay_bot.perpetuals.runtime_health"):
             events = monitor.publish(
                 {REGRESSION: REGRESSION_DETAIL,
+                 "learning_missing": "no valid completed learning cycle",
                  "feed:hyperliquid:BTC": "never attempted"},
                 now=monitor.started_at)
         assert events == [("OPEN", "feed:hyperliquid:BTC", "never attempted"),
+                          ("OPEN", "learning_missing", "no valid completed learning cycle"),
                           ("OPEN", REGRESSION, REGRESSION_DETAIL)]
         assert reported == [(REGRESSION, REGRESSION_DETAIL)]
         by_message = {r.message: r.levelname for r in caplog.records}
         assert by_message[f"RivaL HEALTH ALERT {REGRESSION}: {REGRESSION_DETAIL}"] == "WARNING"
-        assert by_message["RivaL HEALTH ALERT feed:hyperliquid:BTC: never attempted"] == "ERROR"
+        assert by_message[
+            "RivaL HEALTH ALERT learning_missing: no valid completed learning cycle"] == "ERROR"
+        # A feed fault is a warning until it is still failing 10 minutes on
+        # (tests/test_feed_alert_confirmation.py).
+        assert by_message["RivaL HEALTH ALERT feed:hyperliquid:BTC: never attempted"] == "WARNING"
     finally:
         store.close()
 

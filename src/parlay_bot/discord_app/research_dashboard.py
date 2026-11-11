@@ -22,6 +22,7 @@ from parlay_bot.discord_app.answer_cards import (
 )
 from parlay_bot.discord_app.home import fit_embed_field_value, rate_or_too_few
 from parlay_bot.discord_app.opportunities import crypto_desk_embed
+from parlay_bot.discord_app.patient_render import patient, still_loading
 from parlay_bot.perpetuals.ai_types import AiResearch, ResearchUnavailable
 from parlay_bot.perpetuals.analysis_evidence import InsufficientEvidence
 from parlay_bot.perpetuals.analytics import analytics_snapshot
@@ -2861,8 +2862,15 @@ class ResearchDashboard(discord.ui.View):
     ) -> None:
         """Finish a deferred research read without blocking the button handler."""
         state = self._navigation_state
+
+        async def slow() -> None:
+            # Only the newest press may say "still loading" on this message.
+            if state["revision"] == revision:
+                await asyncio.wait_for(interaction.edit_original_response(
+                    embed=still_loading(), view=fresh), timeout=5)
+
         try:
-            embed = await asyncio.wait_for(fresh.render(), timeout=10)
+            embed = await patient(fresh.render, on_slow=slow)
         except asyncio.CancelledError:
             raise
         except TimeoutError:
@@ -2873,7 +2881,7 @@ class ResearchDashboard(discord.ui.View):
             embed = discord.Embed(
                 title="⏳ Results temporarily delayed",
                 description=(
-                    "This database check did not finish in time. "
+                    "This database check did not finish in 45 seconds. "
                     "The previous results are not proof of a new trade. "
                     "Use Update live stats or choose another section."
                 ),

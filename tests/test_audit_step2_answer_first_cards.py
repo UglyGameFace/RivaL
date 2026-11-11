@@ -394,7 +394,9 @@ async def test_feed_status_only_when_it_is_the_news(monkeypatch):
         dashboard._live_feed_status = lambda: (10, 10, now, now)
         embed = await dashboard._render_full()
         assert "Live market feeds" not in [f.name for f in embed.fields]
-        dashboard.section = "overview"
+        # Healthy feeds are news on Running details (the old overview now
+        # opens Models on trial).
+        dashboard.section = "running"
         embed = await dashboard._render_full()
         assert "Live market feeds" in [f.name for f in embed.fields]
     finally:

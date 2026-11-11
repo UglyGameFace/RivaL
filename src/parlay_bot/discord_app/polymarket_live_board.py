@@ -604,9 +604,8 @@ class LivePolymarketBoardService:
                 notice = ("Tracking stopped. Your DM card is now inactive."
                           if stopped else "This is an older panel. Open /rival → Live Panel.")
             elif action == "refresh":
-                updated = await asyncio.wait_for(
-                    self.refresh_dm(user_id, channel_id, message_id), timeout=13,
-                )
+                updated = await self._patient_refresh(interaction, user_id, channel_id,
+                                                      message_id)
                 notice = ("Live panel refreshed." if updated
                           else "This is an older or inactive panel. Use /rival → Live Panel.")
             elif action in ("pings", "record") or action.startswith("market:"):
@@ -634,9 +633,8 @@ class LivePolymarketBoardService:
                         async with self._user_locks.setdefault(user_id, asyncio.Lock()):
                             moved = await asyncio.to_thread(
                                 self.store.retarget, tracker, asset, horizon)
-                        updated = moved and await asyncio.wait_for(
-                            self.refresh_dm(user_id, channel_id, message_id), timeout=13,
-                        )
+                        updated = moved and await self._patient_refresh(
+                            interaction, user_id, channel_id, message_id)
                         notice = (f"This card now tracks {asset} "
                                   f"{'1h' if horizon == 60 else f'{horizon}m'}."
                                   if updated else "Could not switch this card. Try again.")
@@ -647,6 +645,33 @@ class LivePolymarketBoardService:
                          action, user_id)
             notice = "Live panel action unavailable. The next automatic update will retry."
         await interaction.followup.send(notice, ephemeral=True)
+
+    async def _patient_refresh(self, interaction, user_id: str, channel_id: str,
+                               message_id: str) -> bool:
+        """Refresh the card; if slow, say so and keep the SAME refresh going.
+
+        A 13 s give-up left the card stale and asked for another press while
+        the first refresh's reads were still finishing.
+        """
+        task = asyncio.ensure_future(self.refresh_dm(user_id, channel_id, message_id))
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=13)
+        except TimeoutError:
+            pass
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        try:
+            await interaction.followup.send(
+                "⏳ Still updating: the card will change by itself when the check "
+                "finishes. No need to press again.", ephemeral=True)
+        except discord.HTTPException:
+            pass
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=32)
+        except TimeoutError:
+            task.cancel()
+            raise
 
     async def refresh_dm(
         self, user_id: str, channel_id: str, message_id: str,

@@ -31,6 +31,7 @@ from parlay_bot.discord_app.trial_board import (
     retired_families,
     short_name,
 )
+from parlay_bot.storage.optional_reads import optional_rows
 
 HORIZONS = (5, 15, 60)
 LEDGER_DAYS = 14
@@ -92,15 +93,10 @@ def _finite(value) -> float | None:
 def _families(store, asset: str, now: datetime) -> dict[str, dict[int, list]]:
     """name -> horizon -> [(venue, contract, family, info)], best version per name."""
     since = (now - FRESH).isoformat()
-    with store.connect() as conn:
-        try:
-            rows = conn.execute(
-                """SELECT venue,contract,horizon_minutes,evidence_json
-                   FROM rival_family_promotion WHERE asset=? AND evaluated_at>=?""",
-                (asset, since),
-            ).fetchall()
-        except Exception:  # noqa: BLE001 - table appears after the first hourly check
-            rows = []
+    rows = optional_rows(
+        store, """SELECT venue,contract,horizon_minutes,evidence_json
+                  FROM rival_family_promotion WHERE asset=? AND evaluated_at>=?""",
+        (asset, since), what="model page promotion read") or []
     retired = retired_families()
     found: dict[str, dict[int, dict[str, list]]] = {}
     for row in rows:
@@ -135,10 +131,15 @@ def trial_models(store, asset: str, now: datetime | None = None) -> list[str]:
         -max(max(i["days"] for *_, i in scopes) for scopes in found[name].values()), name))
 
 
-def _ledger(conn, *, asset: str, horizon: int, family: str, since: str, until: str):
+def _ledger(store, *, asset: str, horizon: int, family: str, since: str,
+            until: str) -> list | None:
+    """Graded calls grouped by exchange, confidence band and condition.
+
+    None when the read failed (not "no calls"): the page says so.
+    """
     from parlay_bot.perpetuals.forward_audit import MODEL
 
-    return conn.execute(
+    return optional_rows(store,
         """SELECT s.venue,
                   CASE WHEN ABS(s.probability_up-0.5)<0.05 THEN 0
                        WHEN ABS(s.probability_up-0.5)<0.10 THEN 1
@@ -166,8 +167,7 @@ def _ledger(conn, *, asset: str, horizon: int, family: str, since: str, until: s
              AND s.probability_up BETWEEN 0 AND 1 AND s.probability_up<>0.5
              AND s.model_brier BETWEEN 0 AND 1 AND s.incumbent_brier BETWEEN 0 AND 1
            GROUP BY 1,2,3""",
-        (MODEL, asset, horizon, family, since, until),
-    ).fetchall()
+        (MODEL, asset, horizon, family, since, until), what="model page ledger read")
 
 
 def _empty() -> dict:
@@ -196,63 +196,62 @@ def model_report(store, asset: str, name: str, now: datetime | None = None) -> d
         return None
     since = (stamp - timedelta(days=LEDGER_DAYS)).isoformat()
     horizons: dict[int, dict] = {}
-    with store.connect() as conn:
-        try:
-            stops = {(str(r["venue"]), str(r["contract"]), int(r["horizon_minutes"]),
-                      str(r["family"]))
-                     for r in conn.execute(
-                         "SELECT venue,contract,horizon_minutes,family "
-                         "FROM rival_family_early_stop").fetchall()}
-        except Exception:  # noqa: BLE001 - table appears after the first stop
-            stops = set()
-        for horizon in HORIZONS:
-            scopes = found.get(horizon)
-            if not scopes:
-                continue
-            family = scopes[0][2]
-            weighted = weight = 0.0
-            exchanges = []
-            fees: dict[str, list[float]] = {}
-            for venue, contract, _family, info in scopes:
-                gain, n = _finite(info.get("forward_gain")), int(info["targets"])
-                if gain is not None and n:
-                    weighted += gain * n
-                    weight += n
-                cut = (venue, contract, horizon, family) in stops
-                exchanges.append({"venue": venue, "results": n, "gain": gain,
-                                  "days": int(info["days"]), "cut": cut,
-                                  "passed": bool(info.get("qualified"))})
-                for scenario, proof in (info.get("cost_proof") or {}).items():
-                    bps = _finite((proof or {}).get("paired_gain_bps"))
-                    windows = int((proof or {}).get("windows") or 0)
-                    if bps is not None and windows:
-                        part = fees.setdefault(str(scenario), [0.0, 0])
-                        part[0] += bps * windows
-                        part[1] += windows
-            try:
-                rows = _ledger(conn, asset=asset, horizon=horizon, family=family,
-                               since=since, until=stamp.isoformat())
-            except Exception:  # noqa: BLE001 - a missing ledger is "no calls yet"
-                rows = []
-            overall, bands = _empty(), [_empty() for _ in BANDS]
-            conditions: dict[str, dict] = {}
-            for row in rows:
-                _add(overall, row)
-                _add(bands[int(row["band"])], row)
-                _add(conditions.setdefault(str(row["regime"]), _empty()), row)
-            horizons[horizon] = {
-                "family": family,
-                "days": max(e["days"] for e in exchanges),
-                "results": max(e["results"] for e in exchanges),
-                "gain": weighted / weight if weight else None,
-                "ahead": sum((e["gain"] or 0) > LEVEL_WITHIN for e in exchanges),
-                "exchanges": sorted(exchanges, key=lambda e: -e["results"]),
-                "cut": sum(e["cut"] for e in exchanges),
-                "passed": any(e["passed"] for e in exchanges),
-                "fees": {k: v[0] / v[1] for k, v in fees.items() if v[1]},
-                "fee_windows": {k: v[1] for k, v in fees.items()},
-                "ledger": overall, "bands": bands, "conditions": conditions,
-            }
+    # Every read on its own connection (see storage.optional_reads): one
+    # slow ledger read must not turn the other timeframes into "no calls".
+    stops = {(str(r["venue"]), str(r["contract"]), int(r["horizon_minutes"]),
+              str(r["family"]))
+             for r in optional_rows(
+                 store, "SELECT venue,contract,horizon_minutes,family "
+                        "FROM rival_family_early_stop",
+                 what="model page early-stop read") or []}
+    for horizon in HORIZONS:
+        scopes = found.get(horizon)
+        if not scopes:
+            continue
+        family = scopes[0][2]
+        weighted = weight = 0.0
+        exchanges = []
+        fees: dict[str, list[float]] = {}
+        for venue, contract, _family, info in scopes:
+            gain, n = _finite(info.get("forward_gain")), int(info["targets"])
+            if gain is not None and n:
+                weighted += gain * n
+                weight += n
+            cut = (venue, contract, horizon, family) in stops
+            exchanges.append({"venue": venue, "results": n, "gain": gain,
+                              "days": int(info["days"]), "cut": cut,
+                              "passed": bool(info.get("qualified"))})
+            for scenario, proof in (info.get("cost_proof") or {}).items():
+                bps = _finite((proof or {}).get("paired_gain_bps"))
+                windows = int((proof or {}).get("windows") or 0)
+                if bps is not None and windows:
+                    part = fees.setdefault(str(scenario), [0.0, 0])
+                    part[0] += bps * windows
+                    part[1] += windows
+        rows = _ledger(store, asset=asset, horizon=horizon, family=family,
+                       since=since, until=stamp.isoformat())
+        ledger_ok = rows is not None
+        rows = rows or []
+        overall, bands = _empty(), [_empty() for _ in BANDS]
+        conditions: dict[str, dict] = {}
+        for row in rows:
+            _add(overall, row)
+            _add(bands[int(row["band"])], row)
+            _add(conditions.setdefault(str(row["regime"]), _empty()), row)
+        horizons[horizon] = {
+            "family": family,
+            "days": max(e["days"] for e in exchanges),
+            "results": max(e["results"] for e in exchanges),
+            "gain": weighted / weight if weight else None,
+            "ahead": sum((e["gain"] or 0) > LEVEL_WITHIN for e in exchanges),
+            "exchanges": sorted(exchanges, key=lambda e: -e["results"]),
+            "cut": sum(e["cut"] for e in exchanges),
+            "passed": any(e["passed"] for e in exchanges),
+            "fees": {k: v[0] / v[1] for k, v in fees.items() if v[1]},
+            "fee_windows": {k: v[1] for k, v in fees.items()},
+            "ledger": overall, "ledger_ok": ledger_ok,
+            "bands": bands, "conditions": conditions,
+        }
     return {"asset": asset, "name": name, "horizons": horizons, "ledger_days": LEDGER_DAYS}
 
 
@@ -311,13 +310,15 @@ def _timeframes(report: dict) -> str:
             continue
         led = h["ledger"]
         results = f"{h['results']:,}" if h["results"] < 10_000 else f"{h['results'] // 1000}k"
-        lines.append(f"{horizon:>3}m {_rate(led['right'], led['n']):>6} "
-                     f"{_rate(led['main_right'], led['n']):>6} {_pts(h['gain']):>5} "
+        right, main = ((_rate(led["right"], led["n"]), _rate(led["main_right"], led["n"]))
+                       if h.get("ledger_ok", True) else ("?", "?"))
+        lines.append(f"{horizon:>3}m {right:>6} "
+                     f"{main:>6} {_pts(h['gain']):>5} "
                      f"{results:>5} {min(h['days'], 99):>2}/{MIN_DAYS}")
     return ("```\n" + "\n".join(lines) + "\n```\n"
             f"-# Right = its calls that came true, Main = the main model on the same "
             f"candles (last {report['ledger_days']} days). Edge = less error than the main "
-            "model, in points.")
+            "model, in points. ? = couldn't read right now, try Refresh.")
 
 
 def _exchanges(report: dict) -> tuple[str, str]:

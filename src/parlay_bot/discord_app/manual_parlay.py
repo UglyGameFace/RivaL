@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import discord
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
 from parlay_bot.parlays.manual import available_selections, quote_is_fresh, selected_slip
 
 
@@ -14,8 +15,12 @@ class _Pick(discord.ui.Select):
         options = []
         for i, row in enumerate(self.candidates):
             options.append(discord.SelectOption(
-                label=f"{row['event_name'][:55]}",
-                description=f"{row['market_name'] or row['market_id']}: {row['outcome_name'] or row['outcome_id']} @ {row['price_decimal']:.2f}"[:100],
+                label=fit_embed_field_value(row["event_name"], budget=55),
+                description=fit_embed_field_value(
+                    f"{row['market_name'] or row['market_id']}: "
+                    f"{row['outcome_name'] or row['outcome_id']} @ {row['price_decimal']:.2f}",
+                    budget=100,
+                ),
                 value=str(i),
             ))
         super().__init__(placeholder="Choose a game and pick", options=options[:25])
@@ -163,7 +168,7 @@ class ManualParlayView(discord.ui.View):
             lines.append(f"**Available:** {len({(r['provider'], r['fixture_id']) for r in fresh})} games, "
                          f"{len({r['sport_name'] for r in fresh})} sports, "
                          f"{len({r['bookmaker'] for r in fresh})} sportsbooks.")
-        return discord.Embed(title="Build Your Own Parlay", description="\n\n".join(lines)[:4000])
+        return discord.Embed(title="Build Your Own Parlay", description=fit_embed_field_value("\n\n".join(lines), budget=4000))
 
     async def redraw(self, interaction):
         self.refresh_components()
@@ -177,7 +182,7 @@ class _Filter(discord.ui.Select):
         super().__init__(
             placeholder={"sport": "1. Choose sport", "book": "2. Choose sportsbook", "game": "3. Choose game", "category": "4. Choose bet category"}[kind],
             options=[discord.SelectOption(label="All", value="__all__")]
-                    + [discord.SelectOption(label=(v[1] if kind == "game" else v)[:100], value=(v[0] if kind == "game" else v)) for v in values[:24]],
+                    + [discord.SelectOption(label=fit_embed_field_value(v[1] if kind == "game" else v, budget=100), value=(v[0] if kind == "game" else v)) for v in values[:24]],
         )
 
     async def callback(self, interaction):

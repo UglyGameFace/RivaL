@@ -11,6 +11,8 @@ import math
 import uuid
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
+
 GOALS = (25, 50, 100, 150, 300, 500)
 MODEL = "prospective-logistic-persistent-v3"
 
@@ -290,6 +292,9 @@ def tracking_text(result: dict) -> str:
         else:
             line += "\nTracking continues as the normal forecast worker runs."
         lines.append(line)
-    return ("\n".join(lines) +
-            "\n**No real trades or verified after-cost profit.** "
-            "Full promotion still requires 21 days, quote proof and stress tests.")[:1024]
+    return fit_embed_field_value(
+        "\n".join(lines) +
+        "\n**No real trades or verified after-cost profit.** "
+        "Full promotion still requires 21 days, quote proof and stress tests.",
+        budget=1024,
+    )

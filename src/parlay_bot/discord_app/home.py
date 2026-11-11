@@ -911,7 +911,8 @@ def _scoreboard_text(coin: str, horizon: int, reports: dict, now: datetime) -> t
         if problems:
             _LOG.error("Performance consistency check failed for %s %s min: %s",
                        coin, horizon, "; ".join(problems))
-            lines.append("⚠️ **These numbers don't add up** (" + "; ".join(problems)[:300]
+            lines.append("⚠️ **These numbers don't add up** (" + fit_embed_field_value(
+                "; ".join(problems), budget=300)
                          + "). Don't trust them until this is fixed.")
     return headline, "\n".join(lines)
 
@@ -999,7 +1000,7 @@ def _health_text(coin: str, horizon: int, reports: dict, now: datetime,
         expected = listed or set(venues)
         stale = sorted(expected - fresh)
         parts.append(f"{'✅' if not stale else '⚠️'} {len(fresh)}/{len(expected)} exchanges live"
-                     + (f" (behind: {', '.join(stale)[:120]})" if stale else ""))
+                     + (f" (behind: {fit_embed_field_value(', '.join(stale), budget=120)})" if stale else ""))
     elif "feeds" in reports:
         parts.append("feeds: couldn't check")
     coverage = reports.get("coverage")
@@ -1840,14 +1841,14 @@ class GuidedHome(discord.ui.View):
                                     "no forecast was substituted."
                                 )
                             embed.add_field(
-                                name=item.title[:140],
+                                name=fit_embed_field_value(item.title, budget=140),
                                 value=fit_embed_field_value(
                                     f"{item.ticker} • closes "
                                     f"{discord.utils.format_dt(item.close_time, style='R')}\n"
                                     f"YES ask: {yes} • NO ask: {no}\n"
                                     f"{quote_context}\n"
                                     f"{research_context}\n"
-                                    f"Rule: {item.rules[:140]}"
+                                    f"Rule: {fit_embed_field_value(item.rules, budget=140)}"
                                 ), inline=False,
                             )
                     except (TimeoutError, ValueError, TypeError):
@@ -1987,7 +1988,7 @@ class GuidedHome(discord.ui.View):
                     if notice:
                         embed.add_field(
                             name="Sports collection paused",
-                            value=str(notice)[:200],
+                            value=fit_embed_field_value(str(notice), budget=200),
                             inline=False,
                         )
         elif p == "slip":

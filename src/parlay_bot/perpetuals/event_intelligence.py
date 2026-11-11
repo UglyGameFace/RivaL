@@ -20,6 +20,8 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
+
 _LOG = logging.getLogger(__name__)
 SOURCES = {
     "fed_monetary": ("https://www.federalreserve.gov/feeds/press_monetary.xml", "rss"),
@@ -149,7 +151,7 @@ def _indexed_news(payload: bytes, now: datetime) -> list[dict]:
 
 def _title(raw: str) -> str:
     # Feed text is untrusted, NEVER used as instructions to the LLM or code.
-    cleaned = " ".join(raw.split())[:220]
+    cleaned = fit_embed_field_value(" ".join(raw.split()), budget=220)
     if not cleaned or any(ord(c) < 32 for c in cleaned):
         raise ValueError("invalid event title")
     return cleaned

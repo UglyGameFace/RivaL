@@ -113,10 +113,12 @@ jobs:
               # One coin per console call: each stays well under the API's
               # ~100 s gateway limit.
               merged = {}
-              only = os.environ.get("PATTERN") == "problems"
+              only = os.environ.get("PATTERN") in ("problems", "storage")
               for asset in (("BTC",) if only else ("BTC", "ETH", "SOL", "XRP")):
                   try:
-                      shell = run_long(("RIVAL_PROBE_PROBLEMS_ONLY=1 " if only else "")
+                      shell = run_long(("RIVAL_PROBE_STORAGE=1 "
+                                        if os.environ.get("PATTERN") == "storage"
+                                        else "RIVAL_PROBE_PROBLEMS_ONLY=1 " if only else "")
                                        + f"RIVAL_PROBE_ASSETS={asset} ",
                                        "RIVAL_TRIAL_PROBE=", f"trials{asset}")
                   except Exception as exc:  # noqa: BLE001
@@ -135,6 +137,7 @@ jobs:
               pathlib.Path("render.json").write_text(json.dumps(merged, indent=1))
               # Short sections first: the full dump is cut at 60k characters.
               print("TIMINGS " + json.dumps(merged.get("timings"), sort_keys=True))
+              print("STORAGE " + json.dumps(merged.get("storage"), sort_keys=True, default=str))
               print("ERRORS " + json.dumps({k: v for k, v in merged.items()
                                             if k.startswith("error")})[:2000])
               print(json.dumps(merged, indent=1)[:60000])

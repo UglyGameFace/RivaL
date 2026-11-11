@@ -9,7 +9,7 @@ import logging
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
-from parlay_bot.observability import health_alert_scope, report_model_quality
+from parlay_bot.observability import health_alert_scope
 from parlay_bot.perpetuals import shadow_score_hours
 from parlay_bot.storage.hot import RelationalHotStore
 
@@ -531,18 +531,13 @@ class RuntimeHealthMonitor:
                 self._escalated.discard(key)
             if status == "OPEN":
                 if key.startswith("regression:"):
-                    # A challenger losing to the incumbent by more than the
-                    # promotion bar is the gate working as designed (RIVAL-F:
-                    # liq_v1 phemex:ETH), not a fault in the host, the loop
-                    # or the model code. It still reaches Sentry, but as a
-                    # warning under its own fingerprint, so real faults stand
-                    # out — see observability.report_model_quality. Logging
-                    # it at error here would ALSO create a second,
-                    # error-level Sentry event via the logging integration.
-                    # The local problem log keeps WARNING+ lines, so the
-                    # alert still shows on the status card, as "Warning: ".
-                    _LOG.warning("RivaL HEALTH ALERT %s: %s", key, detail)
-                    report_model_quality(key, detail)
+                    # A test model losing to the main model is the trial
+                    # working as designed: promotion stays gated and the
+                    # early-stop rule cuts it. Owner decision (Nov 11): no
+                    # Sentry alert and no status-card warning for it. The
+                    # incident row is kept (host acceptance and the research
+                    # screens still read it); the log line is info only.
+                    _LOG.info("RivaL test model losing %s: %s", key, detail)
                 else:
                     with health_alert_scope(key):
                         _LOG.error("RivaL HEALTH ALERT %s: %s", key, detail)

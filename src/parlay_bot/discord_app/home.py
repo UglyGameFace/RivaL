@@ -2323,7 +2323,7 @@ class GuidedHome(discord.ui.View):
                 # The AI's own note is technical; it stays in Detailed Research.
                 # Only a review young enough to cover the next candle is
                 # shown as a call for it. Background reviews are off by
-                # opt-in (rival_llm_background_opt_in) in production, so the
+                # opt-in in production (bot.py), so the
                 # stored "latest" call can be days old; it was shown as "for
                 # the next 5-min candle it says DOWN" regardless.
                 try:

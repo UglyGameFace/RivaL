@@ -218,12 +218,9 @@ async def test_render_reuses_cached_exchange_and_polymarket(tmp_path, monkeypatc
         home.polymarket_status = counting_poly
         first = _fields(await home.render())
         second = _fields(await home.render())
-        exchange_name = "📈 BTC exchange predictions (up or down?)"
-        poly_name = "🎯 Polymarket / Kalshi predictions"
-        assert "Couldn't load the scores" not in first[exchange_name]
-        assert "Couldn't load these scores" not in first[poly_name]
-        assert first[exchange_name] == second[exchange_name]
-        assert first[poly_name] == second[poly_name]
+        score = "🎯 Scoreboard (last 7 days)"
+        assert "couldn't load" not in first[score].lower()
+        assert first[score] == second[score]
         assert len(exchange_calls) == 1
         assert len(poly_calls) == 1
     finally:

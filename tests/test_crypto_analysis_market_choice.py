@@ -201,15 +201,16 @@ async def test_dashboard_shows_polymarket_outcomes_without_market_choice(tmp_pat
         }
         pane = await home.render()
         fields = {x.name: x.value for x in pane.fields}
-        assert "99" in fields["🎯 Polymarket / Kalshi predictions"]
-        assert "0" in fields["🎯 Polymarket / Kalshi predictions"]
-        assert "too early to compare with Polymarket's odds" in fields["🎯 Polymarket / Kalshi predictions"]
+        score = fields["🎯 Scoreboard (last 7 days)"]
+        assert "99 past contracts studied" in score
+        assert "0 contracts so far, too few" in score
+        assert pane.description.startswith("**Too early to compare with Polymarket's odds.**")
         assert "Choose a market" not in str(pane.to_dict())
-        assert len(pane.fields) == 4
+        assert len(pane.fields) == 3
 
         home.polymarket_status = None
         offline = await home.render()
-        assert "Couldn't load these scores right now" in str(offline.to_dict())
+        assert "Couldn't load the Polymarket scores right now" in str(offline.to_dict())
         assert "0% win rate" not in str(offline.to_dict())
     finally:
         home.stop()
@@ -238,16 +239,14 @@ async def test_polymarket_stats_do_not_require_exchange_or_drive(tmp_path):
         }
         view = await home.render()
         body = str(view.to_dict())
-        assert "Past results studied:** 12 (history, not live predictions)" in body
-        assert "Checked:** 5 live predictions" in body
-        assert "0.210" in body
-        assert "0.240" in body
+        assert "12 past contracts studied (history, not live predictions)" in body
+        assert "**vs Polymarket odds:** ahead · error 0.210 vs 0.240 · 5 contracts" in body
         # A healthy empty heartbeat table means no cycle, not a failed read.
-        assert "Learning loop:** ⚠️ no run recorded yet" in body
+        assert "⚠️ learning loop: no run recorded yet" in body
         home.navigate("trust")
         assert home.page == "performance"
         detail = await home.render()
-        assert len(detail.fields) == 4
+        assert len(detail.fields) == 3
     finally:
         home.stop()
         await bot.zip_resolver.aclose()
@@ -313,15 +312,15 @@ async def test_exchange_performance_one_page_shows_sample_and_learning(
         assert max(x.row for x in home.children) <= 4
         pane = await home.render()
         body = str(pane.to_dict())
-        assert len(pane.fields) == 4
-        assert "4,159" in body and "4,150" in body
-        assert "2,063 of 4,150" in body and "49.7%" in body
-        assert "0.251" in body and "0.249" in body
-        assert "99" in body and "too early to compare with Polymarket's odds" in body
-        assert "14" in body and "Built from the 6-year history?" in body
-        assert "made 4 predictions and checked 7 results" in body
-        assert "Does it make money?** Not proven yet" in body
-        assert "Getting more accurate?** Couldn't check right now" in body
+        assert len(pane.fields) == 3
+        assert "4,150 of 4,159 predictions checked" in body
+        assert "right **49.7%** (2,063 of 4,150)" in body
+        assert "(0.251 vs 0.249)" in body
+        assert "99 past contracts studied" in body
+        assert "Too early to compare with Polymarket's odds" in body
+        assert "✅ learning just now" in body
+        assert "Does it make money? Not proven yet" in body
+        assert "Getting more accurate?** couldn't check right now" in body
         assert "practice usdt" not in body.lower()
     finally:
         home.stop()

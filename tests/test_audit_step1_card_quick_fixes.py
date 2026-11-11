@@ -29,7 +29,6 @@ from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from tests.test_performance_overview import (
     _close,
     _fields,
-    _live_record,
     _make_home,
     _patch_live_reads,
 )
@@ -179,22 +178,18 @@ def _worst_polymarket_status():
 async def test_performance_page_worst_case_fields_fit_and_tell_the_truth(
         tmp_path, monkeypatch):
     """The audit's own example: 288 of 288 cycles ran, 199 predictions
-    skipped — and Intelligence sat out 2 with the model "right 0%".
-    Old code: the 24-hour line shows ✅ and the sat-out line shows 0%.
-    New code: ⚠️ and "too few to judge". No field may reach 1024."""
+    skipped — and Intelligence agreed only twice. The 24-hour line must be
+    ⚠️, a 2-call rate is "too few to judge", and no field may reach 1024
+    even with every number at its widest."""
+    from parlay_bot.discord_app.trial_board import TrialRow
+
     bot, home = _make_home(tmp_path)
     now = datetime.now(UTC)
-    pooled = _live_record(
-        issued=77760, decided=77760, hits=77760, windows=8640,
-        brier=.001, incumbent=.999, baseline=.999, gain_v1=1.0,
-        updates=999999, drift=999.999)
-    pooled["first_issued"] = (now - timedelta(days=30)).isoformat()
-    regime = _live_record(
-        issued=77760, decided=77760, hits=77760, windows=8640,
-        brier=.001, incumbent=.999, baseline=.999, gain_v1=1.0,
-        updates=999999, drift=999.999)
-    regime["first_issued"] = (now - timedelta(days=30)).isoformat()
-    _patch_live_reads(monkeypatch, pooled=pooled, regime=regime)
+    rows = [TrialRow(name=f"Model {i:02d}", days=99, results=999999, gain=-.999,
+                     ahead=9, exchanges=9, stopped=0, passed=False, after_fees_bps=-99.9)
+            for i in range(40)]
+    _patch_live_reads(monkeypatch, trials={"rows": rows, "markets": 12, "trials": 999,
+                                           "passed": 0, "stops": 999})
     monkeypatch.setattr(
         home_module, "_performance_exchange",
         lambda *_: _worst_exchange_part(now))
@@ -210,22 +205,20 @@ async def test_performance_page_worst_case_fields_fit_and_tell_the_truth(
         })
     home.polymarket_status = lambda *_: _worst_polymarket_status()
     try:
-        fields = _fields(await home.render())
+        panel = await home.render()
+        fields = _fields(panel)
     finally:
         await _close(bot, home)
     assert max(map(len, fields.values())) < 1024, {
         name: len(value) for name, value in fields.items()}
-    # The trial rows stay: only the per-regime gain line goes, not the
-    # Performance-page trial result.
-    assert "trend-only test" in fields["📈 BTC exchange predictions (up or down?)"]
-    learning = fields["🧠 Is it learning?"]
-    assert "too few to judge — 2 followed" in learning
-    assert "too few to judge — 2 sat out" in learning
-    assert "right 0%" not in learning
-    running = fields["📡 Is everything running?"]
-    assert "⚠️ 288 of 288 cycles ran (100%)" in running
-    assert "✅ 288 of 288" not in running
-    assert "199 predictions skipped because a cycle ran late" in running
+    assert len(panel) < 6000
+    trials = next(v for k, v in fields.items() if k.startswith("🧪"))
+    assert "… and 26 more" in trials        # 14 rows shown, the rest counted
+    health = fields["⚙️ Running and learning"]
+    assert "too few to judge — 2 followed" in health
+    assert "right 0%" not in health
+    assert "⚠️ 288/288 cycles in 24h, 199 predictions skipped (ran late)" in health
+    assert "✅ 288/288" not in health
 
 
 @pytest.mark.asyncio
@@ -241,20 +234,8 @@ async def test_24h_tick_stays_green_when_nothing_was_skipped(
         fields = _fields(await home.render())
     finally:
         await _close(bot, home)
-    assert "✅ 288 of 288 cycles ran (100%)" in fields[
-        "📡 Is everything running?"]
-    assert "predictions skipped" not in fields["📡 Is everything running?"]
-
-
-def test_trial_one_liner_hides_rate_below_20():
-    small = _live_record(issued=12, decided=5, hits=3, windows=2)
-    text = home_module._trial_one_liner("regime_v1", small, datetime.now(UTC))
-    assert "too few to judge — 5 decided" in text
-    assert "%" not in text
-    assert len(text) < 140
-    scored = _live_record(issued=40, decided=25, hits=15, windows=9)
-    text = home_module._trial_one_liner("regime_v1", scored, datetime.now(UTC))
-    assert "(60.0%)" in text
+    assert "✅ 288/288 cycles in 24h" in fields["⚙️ Running and learning"]
+    assert "predictions skipped" not in fields["⚙️ Running and learning"]
 
 
 @pytest.mark.asyncio
@@ -267,9 +248,9 @@ async def test_exchange_accuracy_hides_rate_below_20(tmp_path, monkeypatch):
         fields = _fields(await home.render())
     finally:
         await _close(bot, home)
-    exchange = fields["📈 BTC exchange predictions (up or down?)"]
-    assert "too few to judge — 7 graded" in exchange
-    assert "42.9%" not in exchange
+    score = fields["🎯 Scoreboard (last 7 days)"]
+    assert "too few to judge — 7 graded" in score
+    assert "42.9%" not in score
 
     bot, home = _make_home(tmp_path)
     _patch_live_reads(monkeypatch)
@@ -281,7 +262,7 @@ async def test_exchange_accuracy_hides_rate_below_20(tmp_path, monkeypatch):
         fields = _fields(await home.render())
     finally:
         await _close(bot, home)
-    assert "(50.0%)" in fields["📈 BTC exchange predictions (up or down?)"]
+    assert "right **50.0%** (15 of 30)" in fields["🎯 Scoreboard (last 7 days)"]
 
 
 def _tracking_result(*, settled=5, correct=5, hit_rate=1.0) -> dict:

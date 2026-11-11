@@ -204,7 +204,7 @@ async def signal_embed(
         event = next(
             (e for e in event_context["events"] if e["risk_window_active"]), None,
         )
-        label = event["title"][:115] if event else "Official economic event"
+        label = fit_embed_field_value(event["title"], budget=115) if event else "Official economic event"
         if decision_out is not None:
             decision_out["event_risk"] = "official_release_window"
             decision_out["is_watch"] = False

@@ -360,7 +360,7 @@ def build_embed(facts: StatusFacts) -> tuple[discord.Embed, str, tuple[str, ...]
         checks.append(f"⚠️ **Alerts:** {len(facts.incidents)} open")
         checks += _sub([
             f"• `{i['issue_key']}` since {_ago(_parse(i.get('first_seen_at')), now)}: "
-            f"{str(i.get('detail') or '')[:120]}" for i in facts.incidents])
+            f"{fit_embed_field_value(str(i.get('detail') or ''), budget=120)}" for i in facts.incidents])
 
     if facts.feeds is None:
         checks.append("⚪ **Prices:** collection is off or couldn't be read")
@@ -496,7 +496,8 @@ def _plain(text: str) -> str:
             return words
     # Drop key=value details and the technical "[ErrorType: ...]" tail.
     words = re.sub(r"\s*\[.*", "", _KV.sub("", t)).split(" | ")[0]
-    return re.sub(r"\s+", " ", words).strip(" ;:,")[:120] or t[:120]
+    cleaned = re.sub(r"\s+", " ", words).strip(" ;:,")
+    return fit_embed_field_value(cleaned, budget=120) or fit_embed_field_value(t, budget=120)
 
 
 def _said(g) -> str:
@@ -549,15 +550,15 @@ def problem_lines(problems, *, now: datetime, boot_at: datetime, totals: dict,
     for g in states["active"]:
         lines.append(f"🔴 `{g.count}×` **{_said(g)}** ({_ago(g.last_at, now)})")
     for g in states["quiet"]:
-        lines.append(f"🟢 `{g.count}×` {_said(g)[:100]} (last {_ago(g.last_at, now)})")
+        lines.append(f"🟢 `{g.count}×` {fit_embed_field_value(_said(g), budget=100)} (last {_ago(g.last_at, now)})")
     for g in states["startup"]:
-        lines.append(f"⚪ `{g.count}×` {_said(g)[:80]} (only right after the "
+        lines.append(f"⚪ `{g.count}×` {fit_embed_field_value(_said(g), budget=80)} (only right after the "
                      f"{started} restart)")
     for g in states["recovered"]:
-        lines.append(f"✅ `{g.count}×` {_said(g)[:80]} (fixed itself; last alert "
+        lines.append(f"✅ `{g.count}×` {fit_embed_field_value(_said(g), budget=80)} (fixed itself; last alert "
                      f"{_ago(g.last_at, now)})")
     for g in states["stopped"]:
-        lines.append(f"✅ `{g.count}×` {_said(g)[:80]} (not since the {started} "
+        lines.append(f"✅ `{g.count}×` {fit_embed_field_value(_said(g), budget=80)} (not since the {started} "
                      "restart)")
     if not problems:
         lines.append("None")

@@ -823,8 +823,8 @@ class RivalDiscordClient(discord.Client):
                 )
                 for sport, names in sorted(sports.items())[:15]:
                     embed.add_field(
-                        name=sport[:80],
-                        value=", ".join(names)[:240], inline=False,
+                        name=fit_embed_field_value(sport, budget=80),
+                        value=fit_embed_field_value(", ".join(names), budget=240), inline=False,
                     )
                 if len(sports) > 15:
                     embed.set_footer(text="Additional sports omitted from compact phone view")
@@ -3404,7 +3404,7 @@ class RivalDiscordClient(discord.Client):
                             )
                             try:
                                 response = await client.post(
-                                    webhook, json={"content": message[:1900]},
+                                    webhook, json={"content": fit_embed_field_value(message, budget=1900)},
                                 )
                                 response.raise_for_status()
                             except (httpx.HTTPError, TimeoutError):

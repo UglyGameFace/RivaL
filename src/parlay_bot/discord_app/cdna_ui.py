@@ -11,6 +11,7 @@ import logging
 import discord
 
 from parlay_bot.discord_app.cdna_public import CDNAPersonalReader, CDNAUnavailable
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
 
 _LOG = logging.getLogger(__name__)
 
@@ -53,7 +54,7 @@ def cdna_coin_embed(
         embed.add_field(
             name=symbol[:100],
             value=(
-                f"{title[:110]}\\nEvent: {event[:120]}\\n{quote}\\n"
+                f"{fit_embed_field_value(title, budget=110)}\\nEvent: {fit_embed_field_value(event, budget=120)}\\n{quote}\\n"
                 "DraftKings strike/expiry/proposition matching: NOT VERIFIED."
             ),
             inline=False,
@@ -132,7 +133,7 @@ class CDNAPersonalModal(discord.ui.Modal):
                     for row in results[:6]:
                         embed.add_field(
                             name=row[0][:100],
-                            value=f"{row[1][:110]}\nEvent: {row[2][:125]}",
+                            value=f"{fit_embed_field_value(row[1], budget=110)}\nEvent: {fit_embed_field_value(row[2], budget=125)}",
                             inline=False,
                         )
                 else:
@@ -162,7 +163,7 @@ class CDNAPersonalModal(discord.ui.Modal):
                             if price.fresh else
                             "**STALE • Price withheld. NOT TRADING.**\\n"
                         )
-                        + f"Provider status: **{price.status[:35]}**\\n"
+                        + f"Provider status: **{fit_embed_field_value(price.status, budget=35)}**\\n"
                         + f"Source update: {discord.utils.format_dt(price.updated_at, style='R')}\\n"
                         + "Strike, expiry, proposition and settlement mapping to "
                           "DraftKings: **NOT VERIFIED**."

@@ -91,8 +91,8 @@ def sports_discovery_embed(
                 row.get("tournament_name") or row.get("tournament_id") or "Unspecified"
             )
             lines.append(
-                f"**{discord.utils.escape_markdown(sport[:35])} · "
-                f"{discord.utils.escape_markdown(league[:40])}** — "
+                f"**{discord.utils.escape_markdown(fit_embed_field_value(sport, budget=35))} · "
+                f"{discord.utils.escape_markdown(fit_embed_field_value(league, budget=40))}** — "
                 f"{int(row['events'])} fixtures, {int(row['books'])} books"
             )
         embed.add_field(
@@ -101,7 +101,7 @@ def sports_discovery_embed(
         )
     embed.add_field(
         name="Provider league filters",
-        value=", ".join(configured_leagues)[:900] or "Not configured",
+        value=fit_embed_field_value(", ".join(configured_leagues), budget=900) or "Not configured",
         inline=False,
     )
     embed.set_footer(

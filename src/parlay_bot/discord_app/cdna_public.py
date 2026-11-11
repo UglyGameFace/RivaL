@@ -15,6 +15,8 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
+
 _ROOT = "https://data-api.crypto.com/api/v1/predictions"
 _SYMBOL = re.compile(r"[A-Za-z0-9_.:-]{2,100}\Z")
 _MIN_INTERVAL = timedelta(seconds=12)
@@ -73,7 +75,7 @@ def parse_cdna_price(payload: object, *, requested: str, checked_at: datetime) -
     if at.tzinfo is None or at.utcoffset() is None:
         raise CDNAUnavailable("CDNA quote time has no UTC offset")
     return CDNAPrice(
-        symbol=symbol, title=title[:180], bid=bid, ask=ask,
+        symbol=symbol, title=fit_embed_field_value(title, budget=180), bid=bid, ask=ask,
         updated_at=at.astimezone(UTC), checked_at=checked_at, status=status,
     )
 
@@ -162,7 +164,8 @@ class CDNAPersonalReader:
                             and contract_title.strip()
                         ):
                             matches.append(
-                                (symbol, contract_title[:110], title[:125]),
+                                (symbol, fit_embed_field_value(contract_title, budget=110),
+                                 fit_embed_field_value(title, budget=125)),
                             )
                         if len(matches) >= 6:
                             break

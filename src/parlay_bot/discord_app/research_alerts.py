@@ -12,6 +12,7 @@ import math
 import threading
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.discord_app.embed_text import fit_embed_field_value
 from parlay_bot.perpetuals.promotion_receipts import initialize as _init_receipts
 from parlay_bot.perpetuals.research_loop import initialize as _init_experiments
 
@@ -371,7 +372,9 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
                 closed[status] += 1
                 outcome = (events[-1].get("outcome") or {}) if events else {}
                 if row["proposer"] == "scheduled" and outcome.get("blocked"):
-                    reason = str(outcome.get("reason") or "verified inputs unavailable")[:140]
+                    reason = fit_embed_field_value(
+                        str(outcome.get("reason") or "verified inputs unavailable"), budget=140
+                    )
                     alerts.append((f"research-blocked:{row['experiment_id']}",
                                    f"⛔ Scheduled research blocked · {reason}"))
         if open_count or any(closed.values()):

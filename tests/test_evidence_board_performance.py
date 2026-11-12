@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
 from evidence_board_github import read_public_intelligence
 from evidence_board_receipt import (
+    _safe_receiver_error,
     read_intelligence_host,
     read_paired_performance,
 )
@@ -64,6 +65,18 @@ class ModelScoreEvidenceTests(unittest.TestCase):
             result = read_paired_performance()
         self.assertEqual(result["status"], "unavailable")
         self.assertEqual(result["scopes"], [])
+
+    def test_safe_signed_receipt_error_never_leaks_provider_body(self) -> None:
+        raw = b'{"error":"unverified_github_identity","reason":"claim_mismatch","secret":"DO_NOT_ECHO"}'
+        label = _safe_receiver_error(403, raw)
+        self.assertEqual(
+            label, "receiver_http_403_unverified_github_identity_claim_mismatch"
+        )
+        self.assertNotIn("DO_NOT_ECHO", label)
+        self.assertEqual(
+            _safe_receiver_error(502, b'{"error":"PRIVATE_TOKEN_EXPOSED"}'),
+            "receiver_http_502",
+        )
 
     def test_unavailable_intelligence_app_is_not_reported_offline(self) -> None:
         with patch.dict("os.environ", {"DISCLOUD_LLM_APP_ID": "",

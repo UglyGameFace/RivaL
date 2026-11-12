@@ -55,8 +55,8 @@ def _ago(delta: timedelta) -> str:
 def _has_usable_fit(conn, family: str, stamp: datetime) -> bool:
     """True when an offline family has at least one usable fit imported.
 
-    The zombie check for the D18 progress line: archive_v1 / gbm_v1
-    with no usable fit have no clock to show. Usable = the queue
+    The zombie check for the D18 progress line: archive_v1 / gbm_v1 /
+    volcal_v1 with no usable fit have no clock to show. Usable = the queue
     block's predicate (gates_passed=1, trained_through past, not a
     rejected pin). Any read failure means "unknown", reported as
     False so the caller shows the collapsed line rather than a
@@ -64,7 +64,8 @@ def _has_usable_fit(conn, family: str, stamp: datetime) -> bool:
     same state from its own read.
     """
     table = {"archive_v1": "rival_archive_models",
-             "gbm_v1": "rival_gbm_models"}.get(family)
+             "gbm_v1": "rival_gbm_models",
+             "volcal_v1": "rival_volcal_models"}.get(family)
     if table is None:
         return False
     try:
@@ -301,9 +302,10 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
             alerts.append(("intelligence:unreadable",
                            "⚠️ Couldn't read RivaL Intelligence's reviews; will try again"))
 
-    # 5. flow_v3 / liq_v1 / archive_v1 / gbm_v1 promotion receipts (batch 2,
+    # 5. flow_v3 / liq_v1 / archive_v1 / gbm_v1 / volcal_v1 promotion receipts (batch 2,
     # spec §2.7; Phase 3 adds liq_v1; autonomous-loop D18 adds archive_v1,
-    # closing the Phase 2 carryover; Phase 2 of the loop adds gbm_v1): the
+    # closing the Phase 2 carryover; Phase 2 of the loop adds gbm_v1;
+    # volcal_v1 follows the same pattern): the
     # first promoted_paper write and first serve for a family + stream are
     # Discord receipts, delivered through this card (it posts to
     # rival_status_channel_id when its alert set changes). A missing
@@ -312,7 +314,7 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
         rows = conn.execute(
             """SELECT family,venue,contract,quote,horizon_minutes,kind,receipt_text
                FROM rival_family_promotion_receipts
-               WHERE family IN ('flow_v3','liq_v1','archive_v1','gbm_v1') AND recorded_at>=?
+               WHERE family IN ('flow_v3','liq_v1','archive_v1','gbm_v1','volcal_v1') AND recorded_at>=?
                ORDER BY recorded_at""",
             ((stamp - timedelta(hours=48)).isoformat(),),
         ).fetchall()
@@ -413,7 +415,7 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
     # gain belongs to the clock-leading scope (most days, ties: most
     # targets), so the gain and the clock describe the same scope.
     # Retired families (issue flag off) cannot advance a clock and are
-    # skipped. A zombie offline family (archive_v1 / gbm_v1) with no
+    # skipped. A zombie offline family (archive_v1 / gbm_v1 / volcal_v1) with no
     # usable fit and no attributable progress gets one collapsed line
     # instead of a 0/21 · 0/150 progress line.
     try:
@@ -463,7 +465,7 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
             targets = max(t for _, t, _ in scopes)
             lead = max(scopes, key=lambda s: (s[0], s[1]))
             gain = lead[2]
-            if (family in ("archive_v1", "gbm_v1") and days == 0
+            if (family in ("archive_v1", "gbm_v1", "volcal_v1") and days == 0
                     and targets == 0 and not _has_usable_fit(conn, family, stamp)):
                 alerts.append(
                     (f"shadow-progress:{family}",
@@ -491,7 +493,8 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
         from parlay_bot.perpetuals.offline_model_pins import PINS_SCHEMA
         conn.execute(PINS_SCHEMA)
         for family, table in (("archive_v1", "rival_archive_models"),
-                              ("gbm_v1", "rival_gbm_models")):
+                              ("gbm_v1", "rival_gbm_models"),
+                              ("volcal_v1", "rival_volcal_models")):
             try:
                 rows = conn.execute(
                     f"""SELECT asset, horizon_minutes, COUNT(*) AS n

@@ -79,6 +79,10 @@ HOW_IT_WORKS = {
         "against held-out data before it may run."),
     "Archive": "A model trained offline on RivaL's own verified archive of past candles.",
     "Boosted": "A gradient-boosted tree model trained offline on past candles.",
+    "VolCal": (
+        "One calibrated model per coin, trained offline on past candles with "
+        "volatility, compression, volume-surprise, and confirmed-reversal "
+        "features. Shadow-only until it earns promotion."),
     "History": "A model admitted after passing a test on past data, now tested live.",
     "Naive Bayes": "A simple statistical model trained live on past results.",
     "Nearest-21": "Finds the 21 most similar past moments and predicts what they did.",

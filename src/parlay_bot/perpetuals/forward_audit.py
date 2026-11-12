@@ -49,9 +49,11 @@ from parlay_bot.perpetuals.regime_evidence import evaluate_regimes, issue_regime
 from parlay_bot.perpetuals.regime_gate import trending_gate
 from parlay_bot.perpetuals.regime_model import regime_calls
 from parlay_bot.perpetuals.shadow_monitor import ShadowLearningMonitor
+from parlay_bot.perpetuals.volcal_model import VolcalModelSet, volcal_calls
 from parlay_bot.perpetuals.watch_evidence import day_block_watch_evidence
 from parlay_bot.perpetuals.wild_model import wild_calls
 from parlay_bot.research.archive_features import live_vector as archive_live_vector
+from parlay_bot.research.volcal_features import live_vector as volcal_live_vector
 from parlay_bot.storage import maintenance
 from parlay_bot.storage.database import database_clock
 
@@ -141,6 +143,15 @@ ISSUE_REGIME_WILD_V1_CHALLENGERS = True
 # rival-regime-live-learning-spec-20261108, D10): the switch is off, so
 # no new regime_v2 rows are issued; existing rows keep settling.
 ISSUE_REGIME_V2_CHALLENGERS = False
+# volcal_v1 shadow issuance (2026-11-11): the offline-trained VolCal
+# model issues shadow forecasts beside the incumbent once an artifact
+# is imported; it never serves until Route B promotes it. Kill switch
+# for issuance; serving is gated separately by promotion. Existing rows
+# keep settling either way. Per-coin Platt-calibrated logistic on the
+# incumbent 10 + vol/compression/volume/DC-leg features, rebuilt
+# RivaL-native from Obi-Stoned Kenobi's perp-engine ideas (his DM
+# permission, 2026-11-11); no weights or code copied from their engine.
+ISSUE_VOLCAL_V1_CHALLENGERS = True
 # regime live-learning shadow issuance (spec
 # rival-regime-live-learning-spec-20261108, D8): each live family issues
 # its own learner's call as a shadow forecast only on trending cycles
@@ -351,6 +362,19 @@ class ForwardAccuracyMonitor:
                 self.market.archive_models = current
             except Exception:  # noqa: BLE001 - optional challenger only
                 _LOG.exception("RivaL archive model registry unavailable")
+                return None
+        return current
+
+    def _volcal_models(self):
+        """The bot-wide volcal model set (None if its table is unavailable)."""
+        current = getattr(self.market, "volcal_models", None)
+        if current is None:
+            try:
+                current = VolcalModelSet(self.store)
+                current.initialize()
+                self.market.volcal_models = current
+            except Exception:  # noqa: BLE001 - optional challenger only
+                _LOG.exception("RivaL volcal model registry unavailable")
                 return None
         return current
 
@@ -1034,6 +1058,7 @@ class ForwardAccuracyMonitor:
         archive_set = self._archive_models()
         gbm_set = self._gbm_models()
         regime2_set = self._regime2_models()
+        volcal_set = self._volcal_models()
         btc_streams = {v: (c, q) for v, c, q in eligible if asset_for_contract(c) == "BTC"}
         btc_cache: dict[str, list] = {}
         # Order-flow challenger inputs: one causal snapshot per asset per cycle.
@@ -1197,6 +1222,21 @@ class ForwardAccuracyMonitor:
                     except Exception:  # noqa: BLE001 - optional challenger only
                         _LOG.exception("RivaL archive model inputs unavailable")
                     self._lap("challengers", mark)
+                # VolCal shadow calls need only this stream's own candles
+                # (no BTC rows, no Binance context). Fewer than 300
+                # contiguous bars means no vector that cycle. Each family
+                # issues under its own kill switch below.
+                volcal_vector = None
+                if ISSUE_VOLCAL_V1_CHALLENGERS and volcal_set is not None:
+                    mark = self._mark()
+                    try:
+                        coin = asset_for_contract(contract)
+                        volcal_vector = volcal_live_vector(
+                            candles, asset=coin,
+                        ) if coin is not None else None
+                    except Exception:  # noqa: BLE001 - optional challenger only
+                        _LOG.exception("RivaL volcal model inputs unavailable")
+                    self._lap("challengers", mark)
                 # Shared by this stream's three horizons AND carried to the
                 # next cycle: only the newest window is computed again.
                 stream_key = (venue, contract, quote)
@@ -1327,6 +1367,12 @@ class ForwardAccuracyMonitor:
                         gbm_items = gbm_calls(
                             gbm_set, asset=asset, horizon=horizon,
                             vector=archive_vector, now=stamp,
+                        )
+                    volcal_items = ()
+                    if volcal_vector is not None and ISSUE_VOLCAL_V1_CHALLENGERS:
+                        volcal_items = volcal_calls(
+                            volcal_set, asset=asset, horizon=horizon,
+                            vector=volcal_vector, now=stamp,
                         )
                     mark = self._mark()
                     # Store regime and model fingerprints BEFORE the target
@@ -1572,7 +1618,7 @@ class ForwardAccuracyMonitor:
                                     boosters=boosters,
                                     historical_candidates=historical_shadows,
                                     pooled=self._pooled_calls(pooled_set, horizon, pooled_vector),
-                                    challengers=(*flow_calls, *archive_items, *gbm_items, *regime_items, *wild_items, *regime2_items, *regime_live_items, *regime_live_fast_items, *lab_items),
+                                    challengers=(*flow_calls, *archive_items, *gbm_items, *volcal_items, *regime_items, *wild_items, *regime2_items, *regime_live_items, *regime_live_fast_items, *lab_items),
                                     prepared=shadow_prepared, stopped=stream_stops,
                                 )
                             except Exception:  # noqa: BLE001 - optional challenger

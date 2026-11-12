@@ -8,7 +8,7 @@ from tempfile import TemporaryDirectory
 
 from parlay_bot.archive.drive import MAX_RESEARCH_DOCUMENT_BYTES
 from parlay_bot.config import Settings
-from parlay_bot.research import archive_training, gbm_training
+from parlay_bot.research import archive_training, gbm_training, volcal_training
 from parlay_bot.research.publish import _artifact, _drive
 from parlay_bot.research.scheduled_variants import (
     RESULT_PREFIX,
@@ -110,7 +110,7 @@ async def _train_variant(drive, request: dict, *, common: dict, full: dict,
 
 async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
                                out: Path, publish: bool) -> int:
-    """Train the two ordinary families and at most one requested variant per scope.
+    """Train the three ordinary families and at most one requested variant per scope.
 
     regime_v2 is retired (spec rival-regime-live-learning-spec-20261108,
     D10): it no longer trains here; the live-learning families replace
@@ -128,7 +128,8 @@ async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
                 await _train_variant(drive, request, common=common, full=full,
                                      training=training)
         for prefix, module in (("archive-v1", archive_training),
-                               ("gbm-v1", gbm_training)):
+                               ("gbm-v1", gbm_training),
+                               ("volcal-v1", volcal_training)):
             report, model, status = _fit(module, common, training)
             report = {**report, "census": census, "training_status": status,
                       "asset": asset, "horizon_minutes": horizon, "family": module.FAMILY}

@@ -49,6 +49,7 @@ _NAMES = {
     "calib_incumbent_v1": "Calibrated",
     "archive_v1": "Archive",
     "gbm_v1": "Boosted",
+    "volcal_v1": "VolCal",
     "gaussian_nb_v1": "Naive Bayes",
     "knn21_v1": "Nearest-21",
 }

@@ -100,6 +100,7 @@ from parlay_bot.perpetuals.spike_watch import SpikeWatch
 from parlay_bot.perpetuals.stream_quotes import StreamingBookHub
 from parlay_bot.perpetuals.stream_shadow import StreamShadowLedger
 from parlay_bot.perpetuals.unattended_acceptance import unattended_acceptance_receipt
+from parlay_bot.perpetuals.volcal_model import VolcalModelSet, is_volcal_document
 from parlay_bot.providers.errors import QuotaReserveReached
 from parlay_bot.providers.oddspapi import OddsPapiClient
 from parlay_bot.providers.owner_limits import OwnerLimitStore
@@ -2529,6 +2530,15 @@ class RivalDiscordClient(discord.Client):
             market.gbm_models = GbmModelSet(self.store)
         return market.gbm_models
 
+    def _volcal_model_set(self):
+        """The same volcal model set the forecast cycle serves from."""
+        if self.perp_collector is None:
+            return None
+        market = self.perp_collector.market
+        if getattr(market, "volcal_models", None) is None:
+            market.volcal_models = VolcalModelSet(self.store)
+        return market.volcal_models
+
     def _regime2_model_set(self):
         """The same regime_v2 model set the forecast cycle serves from."""
         if self.perp_collector is None:
@@ -3193,6 +3203,28 @@ class RivalDiscordClient(discord.Client):
                                         _LOG.info("RivaL imported GBM model %s", file_id)
                             except (ValueError, UnicodeError):
                                 _LOG.warning("RivaL GBM model failed verification")
+                            continue
+                        if is_volcal_document(payload):
+                            # VolCal artifacts are verified by
+                            # volcal_training.validate(): provider hashes
+                            # (never normalized hashes), feature contract
+                            # and digest, calibration evaluated, offline
+                            # gates passed. The Drive-manifest byte
+                            # cross-check does not apply here: its
+                            # machinery only understands historical-
+                            # candidate documents, and the missing byte
+                            # check is a known Phase 2 limitation (same
+                            # as archive_v1 / gbm_v1).
+                            try:
+                                volcal = self._volcal_model_set()
+                                if volcal is not None:
+                                    added = await asyncio.to_thread(
+                                        volcal.import_document, file_id, payload,
+                                    )
+                                    if added:
+                                        _LOG.info("RivaL imported volcal model %s", file_id)
+                            except (ValueError, UnicodeError):
+                                _LOG.warning("RivaL volcal model failed verification")
                             continue
                         if is_regime2_document(payload):
                             # regime_v2 artifacts are verified by

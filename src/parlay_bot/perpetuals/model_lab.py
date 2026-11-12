@@ -581,7 +581,7 @@ def family_names(families) -> dict[str, str]:
         dimensions = [d for d in ("shape", "warm", "shrink", "l2")
                       if len({genomes[f][d] for f in same}) > 1]
         words = {"shape": {"linear": "linear", "interact": "blend"},
-                 "warm": {"main": "main start", "zero": "fresh start"},
+                 "warm": {"main": "main", "zero": "fresh"},
                  "shrink": {0.5: "half confidence", 0.75: "trimmed", 1.0: "full confidence"},
                  "l2": {0.0001: "light pull", 0.001: "medium pull", 0.01: "strong pull"}}
         for f in same:

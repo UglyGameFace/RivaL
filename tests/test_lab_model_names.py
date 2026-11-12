@@ -129,3 +129,17 @@ def test_full_phone_table_and_picker_keep_disambiguated_names_within_discord_lim
     picker = _ModelSelect(families, [])
     assert len({o.label for o in picker.options}) == 4
     assert all(len(o.label) <= 100 for o in picker.options)
+
+
+def test_similar_designs_across_all_timeframes_fit_picker_labels_without_losing_identity():
+    base = {**model_lab.SEEDS[0], "regime": "quiet",
+            "inputs": ("momentum", "volatility", "oscillators")}
+    designs = [base,
+        {**base, "shape": "linear", "warm": "zero", "l2": .01, "shrink": .5},
+        {**base, "shape": "linear", "l2": .0001, "shrink": 1.},
+        {**base, "warm": "zero", "l2": .01, "shrink": 1.}]
+    families = [_remember(g, h) for h in (5, 15, 60) for g in designs]
+    picker = _ModelSelect(families, [])
+    assert len(picker.options) == len({o.label for o in picker.options}) == 12
+    assert all(len(o.label) <= 100 for o in picker.options)
+    assert {o.value for o in picker.options} == set(families)

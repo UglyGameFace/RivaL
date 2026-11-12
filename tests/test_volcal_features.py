@@ -162,6 +162,21 @@ def test_volz_spike_and_collapse():
     assert by_name["vol_zscore"] < 0
 
 
+def test_volz_zero_volume_last_bar_matches_frame():
+    # A last bar with no trades over a nonzero median: log(0) is -inf in
+    # the frame (clipped to -2); the live twin must not raise.
+    closes = _random_walk(n=500)
+    volumes = [10.0] * 500
+    volumes[-1] = 0.0
+    candles = _candles(closes, volumes=volumes)
+    values, _ = live_vector(candles, asset="BTC")
+    by_name = dict(zip(FEATURES, values))
+    assert by_name["volz"] == pytest.approx(-2.0)
+    assert np.all(np.isfinite(values))
+    frame = _frame_from(candles)
+    assert frame["volz"].iloc[-1] == pytest.approx(by_name["volz"])
+
+
 def test_dc_leg_confirms_on_close_retrace():
     rng = np.random.default_rng(11)
     # A steady rise with small noise, then one sharp closing drop.

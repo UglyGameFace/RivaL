@@ -29,7 +29,7 @@ def _date(raw):
         stamp = raw
     elif isinstance(raw, str):
         try:
-            stamp = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            stamp = datetime.fromisoformat(raw)
         except ValueError:
             return None
     else:

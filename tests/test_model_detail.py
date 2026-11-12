@@ -138,10 +138,10 @@ def test_saved_lab_designs_keep_identity_and_old_watch_links_after_renaming(stor
     old = model_report(store, "BTC", "Lab " + families[0].rsplit("_", 1)[-1][:6])
     assert old["horizons"][5]["family"] == families[0]
     embed = model_embed(old, asset="BTC", name="Lab d91792")
-    assert "All signals" in embed.title and "momentum" in embed.description
+    assert "Price+vol+volume+RSI/MACD" in embed.title and "momentum" in embed.description
     assert "regularization" in embed.description and "lab_" not in str(embed.to_dict())
     compared = str(compare_embed(reports, asset="BTC").to_dict())
-    assert "All signals" in compared and "lab_" not in compared
+    assert "Price+vol+volume+RSI/MACD" in compared and "lab_" not in compared
 
 
 def test_the_report_compares_like_with_like(store):

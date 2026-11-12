@@ -83,6 +83,14 @@ def _reference_samples(candles, index: int, steps: int, ahead) -> tuple:
     return tuple(out)
 
 
+def _smoothed_close_probability(history, cohort, index):
+    """Shrink a conditional event rate to its same-source historical prior."""
+    base = (sum(row[index] for row in history) + 2) / (len(history) + 4)
+    candidate = (sum(row[index] for row in cohort) + 16 * base) / (
+        len(cohort) + 16)
+    return candidate, base
+
+
 def _quantile(values, p):
     sequence = sorted(values)
     at = (len(sequence)-1)*p
@@ -186,15 +194,10 @@ def empirical_paths(candles, *, horizon: int, now: datetime, memo: dict | None =
         # Predeclared smoothing against an unconditional stream baseline.
         # Both outcomes are independently scored (Brier) against the same
         # source/time labels; no selection on test results.
-        def prob(index):
-            base = (sum(row[index] for row in close_history) + 2) / (
-                len(close_history) + 4)
-            candidate = (sum(row[index] for row in close_matching)
-                         + 16 * base) / (len(close_matching) + 16)
-            return candidate, base
-
-        direction_p, direction_base = prob(5)
-        early_p, early_base = prob(6)
+        direction_p, direction_base = _smoothed_close_probability(
+            close_history, close_matching, 5)
+        early_p, early_base = _smoothed_close_probability(
+            close_history, close_matching, 6)
         size_p50 = _quantile([row[7] for row in close_matching], .5)
         size_base = _quantile([row[7] for row in close_history], .5)
         result[side] = {

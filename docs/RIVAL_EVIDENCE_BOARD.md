@@ -30,3 +30,17 @@ The public dashboard does not call GitHub's anonymous REST API to build its prim
 The same signed GitHub Actions OIDC receipt is authenticated and scrubbed again by the Cloudflare collector, then atomically replaces the public GitHub snapshot cache. A failed source read does not erase the previous verified snapshot. The site shows the capture time and explicitly calls it a snapshot rather than live status. GitHub run links remain available for job logs and artifacts that require additional permissions; missing detailed logs are not treated as nonexistent artifacts.
 
 Private RivaL Intelligence repository activity is **not** automatically exposed by the public dashboard. It requires a separate private-safe connector/privacy decision before claiming complete ecosystem coverage.
+
+## Immediate first run and RivaL Intelligence
+
+The evidence job has a path-scoped push trigger on main for its own workflow and collector files. This permits an immediate signed receipt after a verified merge, alongside the scheduled hourly run and manual dispatch. The receiver authenticates GitHub OIDC signature, expected repository, exact workflow, main ref, event and token expiry. A fork or PR identity cannot publish.
+
+RivaL Intelligence's repository is presently public. The existing ephemeral GitHub token reads a bounded public commit/PR/CI snapshot, not private inference requests, model weights, logs or secrets. The optional Discloud status API GET reads the separate Intelligence container state using existing protected secrets. An online container does not prove model inference quality, deployment SHA, or economic edge.
+
+## Real paired model score evidence
+
+The optional read-only paired-score collector reads the existing settled perp_forward_audit table over the last 24 hours, capped at 500 latest forecast rows per asset. It never initializes tables, predicts, trades, writes, or changes model selection. It scores only the existing prospective-logistic-persistent-v3 incumbent against its baseline on exact paired settled rows with issuance preceding the target, deduplicated per venue/contract/quote/horizon/target. Model and baseline Brier scores (lower is better) and their sample counts are shown with source timestamps.
+
+These are bounded observational scores, not comprehensive family rankings, execution costs, statistical significance or guaranteed profits. All previous model promotion gates remain unchanged. A performance source without eligible settled rows is explicitly unavailable, never zero. The host score module must reach the deployed bot before the publisher can obtain that optional evidence. The first publish may therefore capture GitHub/Drive/DB status but no score. Diagnose that separately.
+
+Signed receipts are saved by run ID and a bounded 72-entry evidence timeline. Charts only connect matched asset/horizon Brier observations across at least two signed snapshots. They never graph fabricated performance or combine unrelated scopes to manufacture a trend.

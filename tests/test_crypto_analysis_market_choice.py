@@ -199,19 +199,23 @@ async def test_dashboard_shows_polymarket_outcomes_without_market_choice(tmp_pat
             "forward_brier": None,
             "market_baseline_brier": None,
         }
-        pane = await home.render()
-        fields = {x.name: x.value for x in pane.fields}
+        embeds = await home.render_embeds()
+        fields = {x.name: x.value for e in embeds for x in e.fields}
         score = fields["🎯 Scoreboard (last 7 days)"]
         assert "99 past contracts studied" in score
         assert "0 contracts so far, too few" in score
-        assert pane.description.startswith("**Too early to compare with Polymarket's odds.**")
-        assert "Choose a market" not in str(pane.to_dict())
-        assert len(pane.fields) == 4
+        assert embeds[0].description.startswith(
+            "**Too early to compare with Polymarket's odds.**")
+        assert "Choose a market" not in str([e.to_dict() for e in embeds])
+        # Scoreboard + confidence on embed 1, health on embed 3; the trials
+        # are a description on embed 2 now, not a field.
+        assert len(fields) == 3
 
         home.polymarket_status = None
-        offline = await home.render()
-        assert "Couldn't load the Polymarket scores right now" in str(offline.to_dict())
-        assert "0% win rate" not in str(offline.to_dict())
+        offline = await home.render_embeds()
+        assert "Couldn't load the Polymarket scores right now" in str(
+            [e.to_dict() for e in offline])
+        assert "0% win rate" not in str([e.to_dict() for e in offline])
     finally:
         home.stop()
         await bot.zip_resolver.aclose()
@@ -237,16 +241,17 @@ async def test_polymarket_stats_do_not_require_exchange_or_drive(tmp_path):
             "forward_brier": .21,
             "market_baseline_brier": .24,
         }
-        view = await home.render()
-        body = str(view.to_dict())
+        view = await home.render_embeds()
+        body = str([e.to_dict() for e in view])
         assert "12 past contracts studied (history, not live predictions)" in body
-        assert "**vs Polymarket odds:** ahead · error 0.210 vs 0.240 · 5 contracts" in body
+        assert "🎯 **vs Polymarket odds — ahead**" in body
+        assert "Error 0.210 vs 0.240 · 5 contracts" in body
         # A healthy empty heartbeat table means no cycle, not a failed read.
         assert "⚠️ learning loop: no run recorded yet" in body
         home.navigate("trust")
         assert home.page == "performance"
-        detail = await home.render()
-        assert len(detail.fields) == 4
+        detail = await home.render_embeds()
+        assert len({x.name for e in detail for x in e.fields}) == 3
     finally:
         home.stop()
         await bot.zip_resolver.aclose()
@@ -310,11 +315,12 @@ async def test_exchange_performance_one_page_shows_sample_and_learning(
         assert "Data Health" not in _labels(home)
         assert len(home.children) <= 25
         assert max(x.row for x in home.children) <= 4
-        pane = await home.render()
-        body = str(pane.to_dict())
-        assert len(pane.fields) == 4
+        pane = await home.render_embeds()
+        body = str([e.to_dict() for e in pane])
+        fields = {x.name: x.value for e in pane for x in e.fields}
+        assert len(fields) == 3
         assert "4,150 of 4,159 predictions checked" in body
-        assert "right **49.7%** (2,063 of 4,150)" in body
+        assert "right **49.7%**" in body and "(2,063 of 4,150)" in body
         assert "(0.251 vs 0.249)" in body
         assert "99 past contracts studied" in body
         assert "Too early to compare with Polymarket's odds" in body

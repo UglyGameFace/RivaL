@@ -354,11 +354,14 @@ async def test_guided_results_uses_strict_source_matched_cost_proof(tmp_path):
         audit.report.assert_called_once_with(
             asset="BTC", horizon_minutes=5,
         )
-        embed = i.edit_original_response.await_args.kwargs["embed"]
-        assert "2/9" in str(embed.to_dict())
-        assert "-14.2 bps" in str(embed.to_dict())
-        assert "NOT_PROVEN" in str(embed.to_dict())
-        assert "Real-money profit NOT PROVEN" in str(embed.to_dict())
+        # The performance page redraws as three embeds; the proof note
+        # rides on the first one as its "What Happened" field.
+        embeds = i.edit_original_response.await_args.kwargs["embeds"]
+        assert len(embeds) == 3
+        assert "2/9" in str(embeds[0].to_dict())
+        assert "-14.2 bps" in str(embeds[0].to_dict())
+        assert "NOT_PROVEN" in str(embeds[0].to_dict())
+        assert "Real-money profit NOT PROVEN" in str(embeds[0].to_dict())
     finally:
         home.stop()
         await bot.zip_resolver.aclose()
@@ -456,15 +459,15 @@ async def test_advanced_tools_and_legacy_pages_do_not_duplicate_metrics(tmp_path
         assert "Data Health" not in _labels(home)
         assert "Profit Proof" not in _labels(home)
         assert "Home" in _labels(home)
-        view = await home.render()
-        assert view.title == "📊 Bitcoin · 5-min · Bot performance"
-        assert [f.name for f in view.fields] == [
+        embeds = await home.render_embeds()
+        assert embeds[0].title == "📊 Bitcoin · 5-min · Bot performance"
+        assert [f.name for e in embeds for f in e.fields] == [
             "🎯 Scoreboard (last 7 days)",
             "🎚️ Can you trust its confidence?",
-            "🧪 Models on trial",
             "⚙️ Running and learning",
         ]
-        assert all(len(field.value) < 1025 for field in view.fields)
+        assert "Trial results aren't available on this server." in embeds[1].description
+        assert all(len(field.value) < 1025 for e in embeds for field in e.fields)
     finally:
         home.stop()
         await bot.zip_resolver.aclose()

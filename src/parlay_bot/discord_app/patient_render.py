@@ -34,10 +34,11 @@ def still_loading(title: str = "Still loading…") -> discord.Embed:
     )
 
 
-async def patient(render: Callable[[], Awaitable[discord.Embed]], *,
+async def patient(render: Callable[[], Awaitable[discord.Embed | list[discord.Embed]]], *,
                   on_slow: Callable[[], Awaitable[None]] | None = None,
-                  first: float = FIRST_WAIT, total: float = TOTAL_WAIT) -> discord.Embed:
-    """The render's embed; TimeoutError only after ``total`` seconds."""
+                  first: float = FIRST_WAIT, total: float = TOTAL_WAIT
+                  ) -> discord.Embed | list[discord.Embed]:
+    """The render's embed(s); TimeoutError only after ``total`` seconds."""
     task = asyncio.ensure_future(render())
     try:
         return await asyncio.wait_for(asyncio.shield(task), timeout=first)

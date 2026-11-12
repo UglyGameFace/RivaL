@@ -58,17 +58,27 @@ def _reference_samples(candles, index: int, steps: int, ahead) -> tuple:
     movement = math.log(entry / float(candles[index-3].close_price))
     bars = [{"high": c.high_price, "low": c.low_price} for c in ahead]
     out = []
+    absolute_return = abs(math.log(float(ahead[-1].close_price)/entry))
+    # First confirmed CLOSE crossing. This is NOT an intrabar high/low
+    # estimate or an executable first-passage time.
+    first_close_hit = next((
+        j for j, future in enumerate(ahead, 1)
+        if abs(math.log(float(future.close_price)/entry)) >= vol
+    ), None)
+    early_move = int(first_close_hit is not None
+                     and first_close_hit <= (steps + 1)//2)
     for side in SIDES:
         flags = trace_barriers(
             entry=entry, sigma_horizon=vol, side=side, future=bars,
         )
-        if flags is None:
-            continue
         sign = 1 if side == "long" else -1
         realized = sign*math.log(float(ahead[-1].close_price)/entry)
         out.append((side, (
             utc(reference.opened_at).isoformat(),
-            bool(sign*movement >= 0), flags[0], flags[1], realized,
+            bool(sign*movement >= 0),
+            flags[0] if flags is not None else None,
+            flags[1] if flags is not None else None,
+            realized, int(realized > 0), early_move, absolute_return,
         )))
     return tuple(out)
 
@@ -114,6 +124,7 @@ def empirical_paths(candles, *, horizon: int, now: datetime, memo: dict | None =
         previous = c
     latest = len(candles)-1
     side_samples = {side: [] for side in SIDES}
+    close_samples = {side: [] for side in SIDES}
     # A step-wide grid avoids training on 12 copies of one 60m outcome.
     # Skip the first candle opening alongside the reference close: the
     # real worker issues seconds AFTER that bar opens and cannot prove
@@ -134,7 +145,11 @@ def empirical_paths(candles, *, horizon: int, now: datetime, memo: dict | None =
             if memo is not None:
                 memo[key] = samples
         for side, sample in samples:
-            side_samples[side].append(sample)
+            close_samples[side].append(sample)
+            # Intrabar TP/stop ambiguity must not train the barrier model,
+            # but it cannot erase an otherwise known closing-price label.
+            if sample[2] is not None:
+                side_samples[side].append(sample)
     if not all(len(rows) >= MIN_TRAIN for rows in side_samples.values()):
         return {}
     current_movement = math.log(
@@ -161,8 +176,27 @@ def empirical_paths(candles, *, horizon: int, now: datetime, memo: dict | None =
         signed_returns = [row[4] for row in matching]
         quantiles = [_quantile(signed_returns,p) for p in (.1,.5,.9)]
         digest = hashlib.sha256(json.dumps(
-            history,sort_keys=True,separators=(",",":"),allow_nan=False,
+            [row[:5] for row in history],
+            sort_keys=True, separators=(",",":"), allow_nan=False,
         ).encode()).hexdigest()
+        close_history = close_samples[side][-MAX_TRAIN:]
+        close_matching = [row for row in close_history if row[1] == aligned]
+        if len(close_matching) < 12:
+            close_matching = close_history
+        # Predeclared smoothing against an unconditional stream baseline.
+        # Both outcomes are independently scored (Brier) against the same
+        # source/time labels; no selection on test results.
+        def prob(index):
+            base = (sum(row[index] for row in close_history) + 2) / (
+                len(close_history) + 4)
+            candidate = (sum(row[index] for row in close_matching)
+                         + 16 * base) / (len(close_matching) + 16)
+            return candidate, base
+
+        direction_p, direction_base = prob(5)
+        early_p, early_base = prob(6)
+        size_p50 = _quantile([row[7] for row in close_matching], .5)
+        size_base = _quantile([row[7] for row in close_history], .5)
         result[side] = {
             "sigma": current_sigma,
             "tp1_probability": probabilities[0],
@@ -172,6 +206,15 @@ def empirical_paths(candles, *, horizon: int, now: datetime, memo: dict | None =
             "p10": quantiles[0], "p50": quantiles[1], "p90": quantiles[2],
             "training_count": len(history), "cohort_count": len(matching),
             "training_sha256": digest,
+            # Standalone immutable close-only targets: no same-candle fill
+            # assumption, no duplicated TP/stop evidence.
+            "direction_probability": direction_p,
+            "direction_baseline": direction_base,
+            "early_move_probability": early_p,
+            "early_move_baseline": early_base,
+            "absolute_move_p50": size_p50,
+            "absolute_move_baseline": size_base,
+            "close_target_training_count": len(close_history),
         }
     return result
 

@@ -289,6 +289,8 @@ class Contest:
         if row is None:
             return {**base, "status": "no_prospective_forecast"}
         try:
+            if hashlib.sha256(row["evidence_json"].encode()).hexdigest() != row["evidence_sha256"]:
+                return {**base, "status": "stored_market_evidence_changed"}
             raw = json.loads(row["evidence_json"])
             source = raw.get("fee_source_receipt")
             if not isinstance(source, dict):

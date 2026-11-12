@@ -522,6 +522,8 @@ class KalshiForwardResearch:
             "model": MODEL,
             "approved_model": False,
             "verified_after_cost": False,
+            "execution_evidence": self.executable_quote_evidence(
+                ticker=market.ticker, quantity=10),
         }
 
     def summary(self, *, asset: str) -> dict:

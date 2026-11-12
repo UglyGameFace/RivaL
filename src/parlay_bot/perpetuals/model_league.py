@@ -350,8 +350,25 @@ class Contest:
         if row is None:
             return None
         result = dict(row)
+        # A changed persisted cost column must not bypass the fee-source
+        # digest merely because the original proof row still exists.
+        verified = False
+        if row["cost_source_verified"]:
+            try:
+                raw = json.loads(row["evidence_json"])
+                verified = (
+                    hashlib.sha256(row["evidence_json"].encode()).hexdigest()
+                    == row["evidence_sha256"]
+                    and raw.get("up_cost") == row["up_cost"]
+                    and raw.get("down_cost") == row["down_cost"]
+                    and _verified_source_cost(
+                        raw, datetime.fromisoformat(row["issued_at"])) is not None
+                )
+            except (ValueError, TypeError, KeyError):
+                verified = False
+        result["cost_source_verified"] = int(verified)
         bet = (implied_bet(float(row["probability_up"]), row["up_cost"], row["down_cost"])
-               if row["cost_source_verified"] else None)
+               if verified else None)
         result["direction"] = bet[0] if bet else "WAIT"
         return result
 
@@ -470,7 +487,8 @@ def _rounds(store, asset, horizon, start, end):
         with store.connect() as conn:
             rows = conn.execute(
                 "SELECT r.slug,r.schema_key,r.opens_at,r.issued_at,r.expires_at,r.market_up,"
-                "r.up_cost,r.down_cost,o.direction,o.observed_at AS outcome_at,o.resolved_at,"
+                "r.up_cost,r.down_cost,r.evidence_sha256,r.evidence_json,"
+                "o.direction,o.observed_at AS outcome_at,o.resolved_at,"
                 "f.model,f.probability_up, "
                 "CASE WHEN proof.slug IS NULL THEN 0 ELSE 1 END AS source_proven "
                 "FROM (SELECT * FROM rival_poly_contest_rounds "
@@ -489,8 +507,22 @@ def _rounds(store, asset, horizon, start, end):
             return
         for _, group in groupby(rows, key=lambda r: r["slug"]):
             group = list(group)
-            row = group[0]
-            yield row, {r["model"]: float(r["probability_up"]) for r in group if r["model"] is not None}
+            row = dict(group[0])
+            if row["source_proven"]:
+                try:
+                    raw = json.loads(row["evidence_json"])
+                    row["source_proven"] = int(
+                        hashlib.sha256(row["evidence_json"].encode()).hexdigest()
+                        == row["evidence_sha256"]
+                        and raw.get("up_cost") == row["up_cost"]
+                        and raw.get("down_cost") == row["down_cost"]
+                        and _verified_source_cost(
+                            raw, datetime.fromisoformat(row["issued_at"])) is not None
+                    )
+                except (ValueError, TypeError, KeyError):
+                    row["source_proven"] = 0
+            yield row, {r["model"]: float(r["probability_up"]) for r in group
+                        if r["model"] is not None}
             cursor = row["expires_at"], row["slug"]
 
 

@@ -30,7 +30,7 @@ FAMILIES = ("gaussian_nb_v1", "knn21_v1")
 # their unquoted forecasts dragged the live quote_coverage check to ~55%.
 CHALLENGER_PREFIXES = ("boosted_", "historical_", "pooled_", "flow_", "calib_",
                        "archive_", "liq_", "gbm_", "regime_", "cross_", "lab_",
-                       "volcal_")
+                       "volcal_", "xmarket_")
 MIN_TRAIN = 80
 MAX_TRAIN = 480
 SETTLE_BATCH = 240
@@ -148,6 +148,11 @@ class ShadowModelCompetition:
                 baseline_brier DOUBLE PRECISION,
                 PRIMARY KEY (venue,contract,quote,horizon_minutes,family,reference_opened_at)
             );
+            CREATE TABLE IF NOT EXISTS rival_xmarket_diagnostics (
+                venue TEXT NOT NULL, contract TEXT NOT NULL, quote TEXT NOT NULL,
+                horizon_minutes INTEGER NOT NULL, reference_opened_at TEXT NOT NULL,
+                model_sha256 TEXT NOT NULL, diagnostics_json TEXT NOT NULL,
+                PRIMARY KEY(venue,contract,quote,horizon_minutes,reference_opened_at));
             CREATE INDEX IF NOT EXISTS idx_rival_model_shadow_unsettled
                 ON rival_model_shadow_forecasts (settled_at,target_opened_at);
             CREATE INDEX IF NOT EXISTS idx_rival_model_shadow_score
@@ -310,10 +315,12 @@ class ShadowModelCompetition:
                 name, probability_up = str(item["family"]), float(item["probability"])
                 if (not name.startswith(
                         ("pooled_", "flow_", "calib_", "archive_", "liq_", "gbm_", "regime_",
-                         "cross_", "lab_", "volcal_"))
+                         "cross_", "lab_", "volcal_", "xmarket_"))
                         or len(name) > 64
                         or not math.isfinite(probability_up) or not 0 < probability_up < 1):
                     continue
+                if name == "xmarket_v1":
+                    json.dumps(item.get("diagnostics", {}), allow_nan=False)
                 predictions[name] = probability_up
                 eligible_pooled[name] = item
             except (KeyError, TypeError, ValueError):
@@ -388,6 +395,18 @@ class ShadowModelCompetition:
                 tuple(value for row in batch for value in row),
             )
             saved += result.rowcount
+        item = eligible_pooled.get("xmarket_v1")
+        if item is not None and "xmarket_v1" in predictions:
+            diag = json.dumps(item.get("diagnostics", {}), sort_keys=True, allow_nan=False)
+            conn.execute("""INSERT INTO rival_xmarket_diagnostics
+                (venue,contract,quote,horizon_minutes,reference_opened_at,model_sha256,diagnostics_json)
+                SELECT ?,?,?,?,?,?,? WHERE EXISTS (
+                    SELECT 1 FROM rival_model_shadow_forecasts WHERE venue=? AND contract=? AND quote=?
+                    AND horizon_minutes=? AND reference_opened_at=? AND family='xmarket_v1'
+                    AND training_sha256=?) ON CONFLICT DO NOTHING""",
+                (venue, contract, quote, horizon, utc(reference_opened_at).isoformat(),
+                 item["model_sha256"], diag, venue, contract, quote, horizon,
+                 utc(reference_opened_at).isoformat(), item["model_sha256"]))
         return saved
 
     def settle(self, *, now: datetime, since: datetime | None = None,

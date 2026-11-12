@@ -6,7 +6,7 @@ receipts are read through the same functions used by the Discord scorecard.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from parlay_bot.config import Settings
@@ -121,6 +121,7 @@ def read_receipt() -> dict:
             "learning": learning,
             "forward_proof": _future_proof(store, now),
             "polymarket_contest": _contest_progress(store, now),
+            "xmarket": _xmarket_progress(store, now),
             "research_loop": _research_progress(store, settings),
             "runtime_diagnostics": _runtime_diagnostics(store, now),
             "does_not_prove_prediction_edge": True,
@@ -204,6 +205,43 @@ def _contest_progress(store, now: datetime) -> dict:
                 "scopes": [dict(r) for r in rows], "does_not_prove_prediction_edge": True}
     except Exception:  # noqa: BLE001 - absent optional tables cannot mask worker health
         return {"status": "unavailable"}
+
+
+def _xmarket_progress(store, now: datetime) -> dict:
+    """Read-only cold-start chain: captured inputs -> imported fit -> actual rows.
+
+    Inspect table names before optional reads, so a pre-upgrade host does
+    not generate missing-table errors or cause migrations from a probe.
+    """
+    needed = ("rival_xmarket_observations", "rival_xmarket_models", "rival_model_shadow_forecasts")
+    try:
+        with store.connect() as conn:
+            if store.database.backend == "postgres":
+                tables = {r["table_name"] for r in conn.execute(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() "
+                    "AND table_name IN (?,?,?)", needed).fetchall()}
+            else:
+                tables = {r["name"] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?)", needed).fetchall()}
+            if set(needed) - tables:
+                return {"status": "not_initialized", "shadow_only": True}
+            since = (now - timedelta(days=1)).isoformat()
+            inputs = conn.execute("SELECT asset,source,COUNT(*) AS points,MAX(at) AS latest_source_at "
+                "FROM rival_xmarket_observations WHERE asset IN ('BTC','ETH','SOL','XRP') "
+                "AND source IN ('polymarket','kalshi') AND at>=? GROUP BY asset,source", (since,)).fetchall()
+            fits = conn.execute("SELECT asset,horizon_minutes,COUNT(*) AS imported_artifacts "
+                "FROM rival_xmarket_models WHERE gates_passed=1 GROUP BY asset,horizon_minutes").fetchall()
+            rows = conn.execute("SELECT asset,horizon_minutes,COUNT(*) AS issued,MAX(issued_at) AS latest_at "
+                "FROM rival_model_shadow_forecasts WHERE asset IN ('BTC','ETH','SOL','XRP') "
+                "AND horizon_minutes IN (5,15,60) AND family='xmarket_v1' AND issued_at>=? "
+                "GROUP BY asset,horizon_minutes", (since,)).fetchall()
+        count = sum(int(r["issued"]) for r in rows)
+        return {"status": "shadow_issuing" if count else "waiting_for_fit" if inputs else "waiting_for_inputs",
+                "input_sources_24h": [dict(r) for r in inputs], "imported_scopes": [dict(r) for r in fits],
+                "shadow_rows_24h": count, "shadow_scopes": [dict(r) for r in rows],
+                "shadow_only": True, "does_not_prove_prediction_edge": True}
+    except Exception:  # noqa: BLE001 - optional probe never masks the worker receipt
+        return {"status": "read_unavailable", "shadow_only": True}
 
 
 def main() -> int:

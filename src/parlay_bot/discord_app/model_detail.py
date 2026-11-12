@@ -83,6 +83,10 @@ HOW_IT_WORKS = {
         "One calibrated model per coin, trained offline on past candles with "
         "volatility, compression, volume-surprise, and confirmed-reversal "
         "features. Shadow-only until it earns promotion."),
+    "XMarket": (
+        "A separate calibrated model per coin and timeframe. Tests whether native "
+        "15-minute Polymarket/Kalshi prices and exchange disagreement help predict "
+        "perpetual direction. Missing inputs abstain; all calls remain shadow research."),
     "History": "A model admitted after passing a test on past data, now tested live.",
     "Naive Bayes": "A simple statistical model trained live on past results.",
     "Nearest-21": "Finds the 21 most similar past moments and predicts what they did.",

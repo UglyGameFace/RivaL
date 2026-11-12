@@ -358,13 +358,13 @@ def test_postgres_plan_sampling_is_read_only_and_redacts_predicates():
 
 
 def test_training_execution_and_model_acceptance_are_separate(tmp_path):
-    for family in ('archive_v1', 'gbm_v1', 'volcal_v1'):
+    for family in ('archive_v1', 'gbm_v1', 'volcal_v1', 'xmarket_v1'):
         for horizon in (5, 15, 60):
             (tmp_path / f'{family}-{horizon}-report.json').write_text(json.dumps({
                 'family': family, 'asset': 'BTC', 'horizon_minutes': horizon,
                 'training_status': 'rejected', 'gate_failures': ['test_brier_gain<=0.005']}))
     result = summarize(tmp_path, asset='BTC')
-    assert result['execution_complete'] and result['accepted'] == 0 and result['rejected'] == 9
+    assert result['execution_complete'] and result['accepted'] == 0 and result['rejected'] == 12
     (tmp_path / 'volcal_v1-60-report.json').unlink()
     assert not summarize(tmp_path, asset='BTC')['execution_complete']
 
@@ -422,7 +422,7 @@ async def test_silent_connected_book_is_reconnected_and_can_recover(monkeypatch)
 async def test_unexpected_training_error_saves_report_and_finishes_other_families(tmp_path, monkeypatch):
     from parlay_bot.research import weekly_archive as module
 
-    def fit(trainer, frames, training):
+    def fit(trainer, frames, training, **variant):
         if trainer.FAMILY == 'gbm_v1':
             raise ValueError('synthetic broken feature shape')
         return {'gates_passed': False, 'gate_failures': ['no edge']}, None, 'rejected'
@@ -433,7 +433,7 @@ async def test_unexpected_training_error_saves_report_and_finishes_other_familie
         census={}, out=tmp_path, publish=False)
     assert result == 1
     reports = [json.loads(path.read_text()) for path in tmp_path.glob('*report.json')]
-    assert len(reports) == 3
+    assert len(reports) == 4
     failed = next(r for r in reports if r['family'] == 'gbm_v1')
     assert failed['training_status'] == 'error'
     assert failed['gate_failures'] == ['training_exception:ValueError']

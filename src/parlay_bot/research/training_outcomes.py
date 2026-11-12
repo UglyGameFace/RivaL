@@ -6,7 +6,7 @@ import json
 import os
 from pathlib import Path
 
-FAMILIES = ("archive_v1", "gbm_v1", "volcal_v1")
+FAMILIES = ("archive_v1", "gbm_v1", "volcal_v1", "xmarket_v1")
 
 
 def summarize(folder: Path, *, asset: str | None = None) -> dict:

@@ -78,6 +78,10 @@ def prepare(manifest_path: Path) -> ResearchPublication:
             raise HistoryImportError("research content hash or row count changed")
         manifest = _artifact(manifest_path, 1)
         identity = f"{info['source']}:{info.get('source_url')}:{history.sha256}"
+        if info.get("xmarket_contract") is not None:
+            # Equal price paths for different outcome tokens remain different
+            # source artifacts, even when their normalized NDJSON is identical.
+            identity += ":" + json.dumps(info["xmarket_contract"], sort_keys=True, separators=(",", ":"))
         batch_id = "external-research-v1-" + hashlib.sha256(
             identity.encode("utf-8")
         ).hexdigest()[:24]

@@ -106,6 +106,8 @@ def recent_watches(
             ).fetchall()
             for choice in promotions:
                 family = str(choice["selected_family"])
+                if family.startswith("xmarket_"):
+                    continue  # paper governance never enables a live XMarket call
                 checked = _utc(str(choice["evaluated_at"]))
                 if (family in FAMILIES or family.startswith(
                     CHALLENGER_PREFIXES

@@ -75,6 +75,9 @@ class KalshiUpDown:
         self._client = client
         self._ready = False
         self._start_book: dict[str, tuple] = {}
+        from parlay_bot.perpetuals.xmarket_inputs import XmarketInputs
+        self.xmarket_inputs = XmarketInputs(store)
+        self._xmarket_windows: dict[str, tuple] = {}
 
     def initialize(self) -> None:
         if self._ready:
@@ -157,6 +160,11 @@ class KalshiUpDown:
             for row in rows:
                 opens, closes = _time(row.get("open_time")), _time(row.get("close_time"))
                 ticker = str(row.get("ticker") or "")
+                if (opens and closes and opens <= clock < closes
+                        and closes - opens == timedelta(minutes=15)
+                        and re.fullmatch(r"[A-Z0-9-]{5,80}", ticker)
+                        and ticker.startswith(series + "-")):
+                    self._xmarket_windows[ticker] = (asset, opens, closes)
                 if (opens and closes and re.fullmatch(r"[A-Z0-9-]{5,80}", ticker)
                         and ticker.startswith(series + "-")
                         and opens <= clock < opens + ISSUE_WINDOW
@@ -198,6 +206,31 @@ class KalshiUpDown:
         if len(self._start_book) > 500:
             self._start_book.clear()
         return saved
+
+    async def capture_inputs(self) -> int:
+        """Optional history capture AFTER existing first forecasts/settlement.
+
+        Reuse verified listed windows and the existing public client. Keep
+        a just-closed window briefly to finish its final source candle.
+        """
+        import asyncio
+
+        clock = datetime.now(UTC)
+        self._xmarket_windows = {k: v for k, v in self._xmarket_windows.items()
+                                 if clock - timedelta(minutes=2) <= v[2]}
+        limit = asyncio.Semaphore(2)
+        async def capture(ticker, window):
+            async with limit:
+                asset, opens, closes = window
+                try:
+                    return await asyncio.wait_for(self.xmarket_inputs.capture_kalshi(
+                        asset=asset, ticker=ticker, opens=opens, closes=closes,
+                        clock=clock, get=self._get), timeout=4)
+                except Exception as exc:  # noqa: BLE001 - optional source never blocks legacy research
+                    _LOG.info("XMarket Kalshi history unavailable asset=%s error=%s",
+                              asset, type(exc).__name__)
+                    return 0
+        return sum(await asyncio.gather(*(capture(k, v) for k, v in self._xmarket_windows.items())))
 
     async def settle(self) -> int:
         """Copy Kalshi's own published results onto recorded contracts."""

@@ -1,3 +1,15 @@
+## 2026-11-12 — XMarket native-history challenger
+
+- **Objective / branch:** Implement the uploaded cross-market spec and its verified data-path corrections together. Branch `feat/xmarket-v1-challenger-20261112`, based on `main@9b9288f3`; no overlapping open PR at initial inspection.
+- **Root causes:** The named contract has 18 inputs; the PM index in the spec is a two-ask ratio; first-observation ledgers are not bar-close histories; ordinary supplemental runs do not discover native contracts; offline venue names do not prove live feeds.
+- **Changes:** Exact native-history collection in existing PM/Kalshi loops; immutable batched source observations; resumable private daily exports and bounded supplemental backfill; byte-verified weekly restore and measured fidelity; separately trained 18/15-input Platt logistic; fail-closed import, pinned artifacts, frozen shadow rows/diagnostics, family governance and detail view; explicit live/OTG/alert exclusions. Existing promotion thresholds and workflows are unchanged.
+- **Validation:** Targeted regressions passed: **219 passed, 20 PostgreSQL skips**, including PM/Kalshi, heartbeat, OTG and source-archive checks. Ruff, Python 3.11 syntax, diff and secret/conflict checks pass. Exact-head full PostgreSQL CI and release evidence are tracked in the matching PR. Full suite runs in CI per the uploaded build instructions.
+- **Production:** No real fitted XMarket artifact or issued row has been observed. The existing host receipt now measures captured inputs, imported fits and actual shadow rows separately. Missing history/fidelity remains a blocked report, not an invented fit.
+- **Issues / cleanup:** No unrelated issue or branch is closed/deleted. Retire only this feature branch after its final head is preserved. The Lab grid, unrelated source candidates, model fold, workflows and existing live models remain outside this build.
+- **Next:** Follow exact-head CI, the existing main release and the host receipt in the matching PR; record the first real fit/import/row evidence before claiming live shadow completion. Implementation contract: [XMarket](docs/XMARKET_V1.md).
+
+---
+
 ## 2026-11-12 — Runtime evidence, recovery and research continuity
 
 - **Objective / branch:** Fix the issues in the owner's status screenshot and add bounded diagnosis/recovery for unresolved and future failures. Branch `fix/runtime-evidence-recovery-20261112`, based on `main@98f34d3`; no overlapping open PRs at publication review.

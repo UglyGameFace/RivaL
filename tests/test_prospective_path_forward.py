@@ -230,3 +230,90 @@ def test_path_sample_memo_carried_across_cycles_changes_nothing():
             assert all(key[0] >= window[0].opened_at for key in memo)
             if shift >= steps:  # the grid has come round: nothing new to compute
                 assert len(memo) <= before + 1
+
+
+def test_direction_and_early_move_are_prospective_separate_heads(learning_store):
+    market=PerpetualMarketStore(learning_store)
+    market.initialize()
+    ledger=ProspectivePathLedger(learning_store)
+    ledger.initialize()
+    candles=_candles()
+    last=candles[-1]
+    issued=last.observed_at+timedelta(seconds=1)
+    with learning_store.connect() as conn:
+        assert ledger.issue(
+            conn,candles=candles,asset="BTC",horizon=15,now=issued,
+            issued_at=issued,
+        )==2
+        assert ledger.issue(
+            conn,candles=candles,asset="BTC",horizon=15,now=issued,
+            issued_at=issued,
+        )==0
+        frozen=conn.execute(
+            """SELECT side,direction_probability,early_move_probability,
+                      absolute_move_p50,state FROM rival_forward_path_targets
+               ORDER BY side"""
+        ).fetchall()
+    assert len(frozen)==2
+    assert all(row["state"]=="pending"
+               and 0<row["direction_probability"]<1
+               and 0<row["early_move_probability"]<1
+               and row["absolute_move_p50"]>=0
+               for row in frozen)
+    # The bar already in progress when the worker issued is NOT a label.
+    # Only new, source-matched, fully observed close values can grade.
+    bars=[]
+    for j in range(2,5):
+        opened=last.opened_at+timedelta(minutes=5*j)
+        price=last.close_price*1.02
+        bars.append(MarketCandle(
+            venue=last.venue,contract=last.contract,quote=last.quote,
+            interval_minutes=5,opened_at=opened,
+            closed_at=opened+timedelta(minutes=5,milliseconds=-1),
+            observed_at=opened+timedelta(minutes=5,seconds=2),
+            open_price=price,high_price=price+0.001,
+            low_price=price-0.001,close_price=price,
+            volume_base=10.0,trades=8,
+        ))
+    with learning_store.connect() as conn:
+        for bar in bars:
+            conn.execute("INSERT INTO perp_market_candles VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                         _row(bar))
+        conn.execute(
+            """UPDATE perp_market_candles SET first_observed_at=?
+               WHERE venue=? AND opened_at=?""",
+            ((issued-timedelta(seconds=1)).isoformat(),last.venue,
+             bars[0].opened_at.isoformat()),
+        )
+    now=bars[-1].observed_at+timedelta(minutes=1)
+    assert ledger.settle(now=now)=={"settled":0,"ambiguous":0}
+    with learning_store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_forward_path_targets WHERE state='settled'"
+        ).fetchone()["n"]==0
+        conn.execute(
+            """UPDATE perp_market_candles SET first_observed_at=?
+               WHERE venue=? AND opened_at=?""",
+            (bars[0].observed_at.isoformat(),last.venue,
+             bars[0].opened_at.isoformat()),
+        )
+    result=ledger.settle(now=now)
+    assert result["settled"]+result["ambiguous"]==2
+    with learning_store.connect() as conn:
+        rows=conn.execute(
+            """SELECT side,direction_positive,early_move_by_half,
+                      first_close_hit_bars,absolute_move_realized,state
+               FROM rival_forward_path_targets ORDER BY side"""
+        ).fetchall()
+    assert [r["side"] for r in rows]==["long","short"]
+    assert [r["direction_positive"] for r in rows]==[1,0]
+    assert all(r["early_move_by_half"]==1
+               and r["first_close_hit_bars"]==1
+               and r["absolute_move_realized"]==pytest.approx(math.log(1.02))
+               and r["state"]=="settled" for r in rows)
+    result=ledger.target_report(asset="BTC",horizon=15,now=now)
+    assert len(result)==2
+    assert all(v["early_close_move"]["targets"]==1
+               and v["direction"]["targets"]==1
+               and v["qualified_for_live_use"] is False
+               for v in result.values())

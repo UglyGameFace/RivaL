@@ -8,7 +8,6 @@ from datetime import UTC, datetime, timedelta
 from parlay_bot.discord_app.error_log import RecentProblems, redact
 from parlay_bot.discord_app.status_card import (
     StatusFacts,
-    StatusPostPolicy,
     assess,
     build_embed,
 )
@@ -103,20 +102,6 @@ def test_error_digest_groups_counts_and_redacts():
         "worker rival-verified-offline-candidate-import")
 
 
-def test_post_policy_posts_on_start_confirmed_change_and_daily():
-    policy = StatusPostPolicy()
-    assert policy.should_post((), NOW)
-    policy.posted((), NOW)
-    assert not policy.should_post((), NOW + timedelta(minutes=2))
-    blip = ("stream:binance",)
-    assert not policy.should_post(blip, NOW + timedelta(minutes=4))  # first sighting
-    assert not policy.should_post((), NOW + timedelta(minutes=6))    # blip cleared
-    assert not policy.should_post(blip, NOW + timedelta(minutes=8))
-    assert policy.should_post(blip, NOW + timedelta(minutes=10))     # confirmed
-    policy.posted(blip, NOW + timedelta(minutes=10))
-    assert policy.should_post(blip, NOW + timedelta(hours=34, minutes=11))  # daily
-
-
 def test_prediction_health_alerts_change_the_card_signature():
     from datetime import UTC, datetime
 
@@ -154,7 +139,7 @@ def test_open_socket_with_no_data_is_not_a_green_check():
     from parlay_bot.discord_app.status_card import _stream_line
     blocked = _stream_line("binance", {"connected": True, "updates": 0, "reconnects": 0,
                                        "fresh_assets": ()})
-    assert blocked.startswith("⚪") and "nothing received" in blocked
+    assert blocked.startswith("⚠️") and "no usable books received" in blocked
     stale = _stream_line("binance", {"connected": True, "updates": 50, "reconnects": 2,
                                      "fresh_assets": ()})
     assert stale.startswith("⚠️")
@@ -196,10 +181,10 @@ def test_error_lines_say_what_is_still_happening_and_what_has_stopped():
         "stopped", "startup", "quiet", "active"]
     lines = problem_lines([fixed, startup, quiet, live], now=now, boot_at=boot,
                           totals={"ERROR": 9, "WARNING": 3})
-    assert lines[0].startswith("🔴 1 happening now • 🟢 1 calmed down (none in the last "
-                               "hour) • ⚪ 1 only while starting up • ✅ 1 stopped")
+    assert "1 active/recent" in lines[0] and "1 seen only before this boot" in lines[0]
+    assert "0 watchdog incidents resolved" in lines[0]
     assert lines[2].startswith("🔴") and "stale quote" in lines[2]  # live problems lead
-    assert lines[-1].startswith("✅") and "deadlock" in lines[-1]
+    assert "recovery unverified" in lines[-1] and "deadlock" in lines[-1]
     assert problem_lines([], now=now, boot_at=boot, totals={})[-1] == "None"
 
 
@@ -362,11 +347,12 @@ def test_a_blocked_order_book_is_off_not_a_warning():
     facts = _facts(streams={
         "hyperliquid": {"connected": True, "updates": 50, "reconnects": 0,
                         "last_update_age_s": 2},
-        "binance": {"connected": True, "updates": 0, "reconnects": 0}})
+        "binance": {"connected": False, "updates": 0, "reconnects": 0,
+                    "blocked": True, "blocked_status": 451}})
     checks = next(f.value for f in build_embed(facts)[0].fields if f.name == "Checks")
     line = next(x for x in checks.splitlines() if "**Order books:**" in x)
     assert line.startswith("✅ **Order books:** 1 of 1 live")
-    assert "binance: connected but nothing received" in checks
+    assert "binance: access blocked (HTTP 451)" in checks
 
 
 def test_problem_detail_sits_under_its_own_check():

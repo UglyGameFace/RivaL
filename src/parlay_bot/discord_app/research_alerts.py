@@ -424,12 +424,12 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
         MIN_DAYS, MIN_WINDOWS = 21, 150
     try:
         rows = conn.execute(
-            """SELECT asset, horizon_minutes, evidence_json
+            """SELECT asset, venue, contract, quote, horizon_minutes, evidence_json
                FROM rival_family_promotion WHERE evaluated_at>=?
                ORDER BY evaluated_at DESC""",
             ((stamp - timedelta(hours=48)).isoformat(),),
         ).fetchall()
-        best: dict[tuple[str, str, int], tuple[int, int, float | None]] = {}
+        best: dict[tuple, tuple] = {}
         for row in rows:
             try:
                 families = json.loads(row["evidence_json"] or "{}")
@@ -447,24 +447,24 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
                 gain = (float(gain) if isinstance(gain, (int, float))
                         and not isinstance(gain, bool)
                         and math.isfinite(gain) else None)
-                key = (str(family), str(row["asset"]),
-                       int(row["horizon_minutes"]))
+                key = (str(family), str(row["asset"]), str(row["venue"]),
+                       str(row["contract"]), str(row["quote"]), int(row["horizon_minutes"]))
                 if key not in best:
-                    best[key] = (days, targets, gain)
+                    gates = info.get('gate_status') or {}
+                    pending = [str(k) for k, passed in gates.items() if passed is False]
+                    best[key] = (days, targets, gain, pending)
         # One retired list for every screen (was a copy of trial_board's).
         from parlay_bot.discord_app.trial_board import is_retired, retired_families
         retired = retired_families()
-        by_family: dict[str, list[tuple[int, int, float | None]]] = {}
-        for (family, asset, horizon), (days, targets, gain) in best.items():
+        by_family: dict[str, list[tuple]] = {}
+        for (family, asset, venue, contract, quote, horizon), values in best.items():
             if is_retired(family, retired):
                 continue
-            by_family.setdefault(family, []).append((days, targets, gain))
+            by_family.setdefault(family, []).append((*values, asset, venue, horizon))
         for family in sorted(by_family):
             scopes = by_family[family]
-            days = max(d for d, _, _ in scopes)
-            targets = max(t for _, t, _ in scopes)
             lead = max(scopes, key=lambda s: (s[0], s[1]))
-            gain = lead[2]
+            days, targets, gain, pending, asset, venue, horizon = lead
             if (family in ("archive_v1", "gbm_v1", "volcal_v1") and days == 0
                     and targets == 0 and not _has_usable_fit(conn, family, stamp)):
                 alerts.append(
@@ -474,7 +474,9 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
             line = (f"📊 {family}: day {days}/{MIN_DAYS} · "
                     f"{targets}/{MIN_WINDOWS} targets")
             if gain is not None:
-                line += f" · gain {gain:+.3f}"
+                line += f" · gain {gain:+.6f}"
+            line += f" · scope {asset} {horizon}m {venue}"
+            line += " · gates: " + (", ".join(pending) if pending else "full qualification unverified")
             alerts.append((f"shadow-progress:{family}", line))
     except Exception as exc:  # noqa: BLE001 - progress must never break the card
         _LOG.warning("Research alert: shadow progress unreadable (%s)",
@@ -525,18 +527,24 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
                      type(exc).__name__)
     try:
         rows = conn.execute(
-            """SELECT venue, missing_months_json, recorded_at
+            """SELECT venue, asset, requested_months, missing_months_json, recorded_at
                FROM rival_research_blocked_reports WHERE recorded_at>=?
                ORDER BY recorded_at DESC""",
             ((stamp - timedelta(days=7)).isoformat(),),
         ).fetchall()
-        latest: dict[str, dict] = {}
+        latest: dict[tuple, dict] = {}
         for row in rows:
-            if str(row["venue"]) not in latest:
-                latest[str(row["venue"])] = {
-                    "missing_months_json": row["missing_months_json"],
-                }
-        for venue, blocked in sorted(latest.items()):
+            latest.setdefault((str(row['venue']), str(row['asset'] or '')), dict(row))
+        from parlay_bot.research.source_runs import latest_runs, supersedes_legacy
+
+        for key, run in latest_runs(conn).items():
+            previous = latest.get(key)
+            if (previous is None or supersedes_legacy(run, previous)
+                    or (run['status'] != 'verified' and run['recorded_at'] >= previous['recorded_at'])):
+                latest[key] = run
+        for (venue, asset), blocked in sorted(latest.items()):
+            if blocked.get('status') == 'verified':
+                continue
             try:
                 missing = json.loads(blocked["missing_months_json"] or "[]")
             except (ValueError, TypeError):
@@ -548,14 +556,39 @@ def _checks(conn, stamp: datetime, intelligence_enabled: bool,
             from parlay_bot.discord_app.data_dashboard import VENUE_NAMES
 
             name = VENUE_NAMES.get(venue, venue)
+            name += f" {asset}" if asset else ""
             # A blocked run with no missing months was stopped for another
             # reason; "0 month(s) missing ()" read as a contradiction.
-            text = (f"⛔ Research blocked at {name}: {len(missing)} month(s) of data "
-                    f"missing ({shown})" if missing else
-                    f"⛔ Research at {name}: the last offline run made no trials "
-                    "(no missing months reported; see that run's report)")
-            alerts.append((f"research-blocked:{venue}", text))
+            reason = blocked.get('reason', '')
+            if blocked.get('status') == 'failed':
+                text = f"⛔ Research at {name}: source check failed ({reason}); recovery unverified"
+            elif reason == 'no_source_scopes_restored':
+                text = (f"⛔ Research at {name}: no source scopes restored; "
+                        f"{len(missing)} requested months unverified ({shown})")
+            elif missing:
+                text = (f"⛔ Research blocked at {name}: {len(missing)} month(s) of data "
+                        f"missing or incomplete ({shown})")
+            else:
+                text = (f"⛔ Research at {name}: legacy incomplete-source report has no "
+                        "scope/month details; recovery unverified")
+            if blocked.get('run_url'):
+                text += f" · [run report]({blocked['run_url']})"
+            alerts.append((f"research-blocked:{venue}" + (f":{asset}" if asset else ''), text))
     except Exception as exc:  # noqa: BLE001 - blockers must never break the card
         _LOG.warning("Research alert: research blockers unreadable (%s)",
                      type(exc).__name__)
+    try:
+        driver = conn.execute("""SELECT checked_at,payload_json FROM rival_runtime_diagnostics
+            WHERE component='research_loop'""").fetchone()
+        if driver:
+            state = json.loads(driver['payload_json'])
+            status = str(state.get('status', 'unknown'))
+            reason = str(state.get('reason') or status).replace('_', ' ')
+            icon = '⚠️' if status in ('failed', 'drive_unavailable') else '🔬'
+            text = f"{icon} Research driver: {reason} (checked {driver['checked_at']})"
+            if state.get('next_available_at'):
+                text += f"; next design slot {state['next_available_at']}"
+            alerts.append(('research-loop:state', text))
+    except Exception as exc:  # noqa: BLE001 - older deployments have no diagnostic table yet
+        _LOG.debug('Research driver diagnostic not yet readable (%s)', type(exc).__name__)
     return alerts

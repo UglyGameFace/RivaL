@@ -7,11 +7,11 @@ Effective November 2, 2026. RivaL Intelligence LFM3 on its own Discloud service 
 - RIVAL_LOCAL_AI_TOKEN is the private shared credential for the separate LFM3 gateway.
 - RIVAL_AI_PROVIDER=local is the default; disabled opts out. Old values such as gemini, openrouter and cloudflare are ignored for compatibility and never activate external inference. With a local token, old values still select the local LFM3 service.
 - RIVAL_LLM_HYPOTHESES_ENABLED controls optional bounded, independently verified BTC/ETH/SOL/XRP feature proposals.
-- Legacy provider API keys and provider cooldowns no longer participate in runtime configuration. Remove old secrets from Discloud environments when convenient, but do not expose or commit them. The local LFM3 budget and background opt-in DO participate (batch 2, 2026-11-06): 18 requests/day, 60 s minimum spacing, 3 per Discord requester per day (`rival_llm_daily_max`), and background LLM loops run only with `rival_llm_background_opt_in=true`.
+- Legacy provider API keys and provider cooldowns no longer participate in runtime configuration. Local LFM3 uses 60 s minimum spacing, 3 requests per Discord requester per day, and backend quarantine. `RIVAL_LLM_DAILY_MAX=0` is the default: no daily cap for the private CPU service. An explicit positive operator limit is respected. Background LLM loops require `rival_llm_background_opt_in=true`.
 
 ## Behavior
 
-Local LFM3 inference is capped at 18 requests/day with 60 s minimum spacing and 3 per Discord requester per day, enforced from the persisted quota tables before any inference runs; a cap hit returns the reason and retry time instead of running inference. There is no paid-token balance or one-hour request cooldown. The Discord client serializes inference in-process; the private CPU service admits only one inference at a time and enforces request size, generation length and timeout limits.
+Local LFM3 inference has no daily cap by default. Persisted reservations enforce minimum spacing, requester fairness, optional positive operator limits and backend quarantine before inference. Background requests wait for the actual spacing deadline outside the request lock, within a bounded retry count. Other refusals return their reason and retry time. The private CPU service still admits only one inference at a time and enforces request size, generation length and timeout limits.
 
 Only the authenticated private gateway is contacted. A busy 429 or invalid response fails closed, never calling external AI. If the local model is temporarily unavailable, the bot may return a strictly uncertain deterministic summary of independently verified data, **not** a second model. Cache identities distinguish real LFM3 inference from data-only explanations.
 
@@ -20,7 +20,7 @@ Existing PostgreSQL quota rows, old provider-specific research and historic fore
 
 ## Task-specific local inference profiles
 
-The normal `/v1/research` endpoint stays brief at **140 generation / 4096 total context tokens**, while `/v1/hypothesis` remains **136 / 4096**. Neither uses any paid-token accounting. Both modes count against the 18/day local budget.
+The normal `/v1/research` endpoint stays brief at **140 generation / 4096 total context tokens**, while `/v1/hypothesis` remains **136 / 4096**. Neither uses paid-token accounting. Both modes reserve shared local capacity and respect an explicitly configured daily limit.
 
 An explicitly requested `/v1/extended-research` call uses **384 generation / 6144 total context tokens**. It summarizes the same source-bound evidence with additional 4h observations and bounded historical bar counts, and proposes a short list of *unproven research checks*. Its suggestions cannot change trading decisions, forecast confidence, source qualification, model weights, or promotion gates. Both modes use the real deployed tokenizer to reject overfull prompts; no source evidence is silently truncated. The gateway still handles only one inference at a time.
 

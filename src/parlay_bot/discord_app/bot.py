@@ -45,7 +45,7 @@ from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from parlay_bot.discord_app.signals import signal_embed
 from parlay_bot.discord_app.sports_discovery import sports_discovery_embed
 from parlay_bot.discord_app.stale_dashboards import build_stale_dashboard_views
-from parlay_bot.discord_app.status_card import StatusFacts, StatusPostPolicy, build_embed
+from parlay_bot.discord_app.status_card import StatusFacts, build_embed
 from parlay_bot.discord_app.targeting import DirectionTargetService, DirectionTargetStore
 from parlay_bot.jurisdiction.catalog_us import verified_us_sportsbooks
 from parlay_bot.jurisdiction.onboarding import LocationOnboardingService
@@ -227,7 +227,6 @@ class RivalDiscordClient(discord.Client):
         self._records_task: asyncio.Task[None] | None = None
         self._kalshi_updown_task: asyncio.Task[None] | None = None
         self.kalshi_updown = None
-        self._status_policy = StatusPostPolicy()
         self.liquidity_last_bucket: str | None = None
         self.tree = app_commands.CommandTree(self)
         self.tree.on_error = self._on_app_command_error
@@ -249,6 +248,9 @@ class RivalDiscordClient(discord.Client):
         self._acceptance_log_task: asyncio.Future[None] | None = None
         # The 7-day challenger aggregate, run beside the watchdog pass.
         self._regression_task: asyncio.Future[None] | None = None
+        self._database_diagnostic_task: asyncio.Future | None = None
+        self._database_diagnostic_checked_at: datetime | None = None
+        self._database_diagnostic_faults: dict[str, str] = {}
         _LOG.info(
             "RivaL operational storage initialized (backend=%s)",
             self.store.database.backend,
@@ -1714,7 +1716,7 @@ class RivalDiscordClient(discord.Client):
 
     def _worker_states(self, now: datetime) -> list[dict]:
         states = []
-        for attr in self._WORKER_TASK_ATTRS + ("_heartbeat_task",):
+        for attr in self._WORKER_TASK_ATTRS:
             if attr in ("_health_task", "_sports_manual_task"):
                 continue
             task = getattr(self, attr, None)
@@ -1750,6 +1752,20 @@ class RivalDiscordClient(discord.Client):
                 "retrying next watchdog pass", exc_info=True,
             )
 
+    async def _refresh_database_diagnostics(self, now: datetime) -> None:
+        from parlay_bot.storage.diagnostics import collect_and_record, recurring_faults
+
+        self._database_diagnostic_checked_at = now
+        try:
+            report = await asyncio.to_thread(collect_and_record, self.store)
+            self._database_diagnostic_faults = recurring_faults(
+                report, now=now, boot_at=self._boot_at)
+        except Exception as exc:  # noqa: BLE001 - the independent watchdog must still publish
+            self._database_diagnostic_faults = {
+                'database_diagnostics_unavailable':
+                    f'Could not capture diagnostic evidence ({type(exc).__name__}); retry scheduled'}
+            _LOG.warning('RivaL database diagnostic collection unavailable (%s)', type(exc).__name__)
+
     def _score_test_models(self, now: datetime) -> None:
         """One scan, two verdicts: regression alerts, then early stops.
 
@@ -1759,7 +1775,10 @@ class RivalDiscordClient(discord.Client):
         """
         self.health_monitor.refresh_regressions(now=now)
         scores, in_use_since = self.health_monitor.paired_scores()
-        EarlyStop(self.store).record(scores, now=now, in_use_since=in_use_since)
+        stops = EarlyStop(self.store).record(scores, now=now, in_use_since=in_use_since)
+        from parlay_bot.storage.diagnostics import record_model_diagnostics
+
+        record_model_diagnostics(self.store, scores, stops, now=now)
 
     async def _log_acceptance_once(self, now: datetime) -> None:
         try:
@@ -1801,10 +1820,12 @@ class RivalDiscordClient(discord.Client):
         """Real runtime state only; a slow source is reported, not guessed."""
         now = datetime.now(UTC)
         incidents = feeds = None
+        watchdog_checked_at = None
         try:
             snapshot = await asyncio.wait_for(
                 asyncio.to_thread(self.health_monitor.snapshot), timeout=10)
             incidents = snapshot["issues"]
+            watchdog_checked_at = snapshot.get('checked_at')
         except Exception:  # noqa: BLE001 - shown as unreadable on the card
             _LOG.warning("RivaL status card could not read watchdog incidents")
         if self.perp_collector is not None:
@@ -1857,6 +1878,7 @@ class RivalDiscordClient(discord.Client):
             problem_totals=problem_totals,
             research=research,
             intelligence_checked=intelligence_enabled,
+            watchdog_checked_at=watchdog_checked_at, watchdog_expected=True,
         )
 
     async def _context_loop(self) -> None:
@@ -1927,12 +1949,15 @@ class RivalDiscordClient(discord.Client):
             await asyncio.sleep(3600)
 
     async def _status_loop(self) -> None:
-        """Post the status card after startup settles, on confirmed change, and daily."""
+        """Refresh one restart-safe status snapshot after startup settles."""
         await self.wait_until_ready()
         # Checks made seconds after a restart report startup noise (nothing
         # pinged yet, database busy). Let the bot settle before the first card.
         await asyncio.sleep(360)
         channel_id = self.settings.rival_status_channel_id
+        from parlay_bot.discord_app.status_publisher import StatusPublisher
+
+        publisher = StatusPublisher(self.store)
         channel = None
         while not self.is_closed():
             try:
@@ -1944,10 +1969,8 @@ class RivalDiscordClient(discord.Client):
                 except Exception as exc:  # noqa: BLE001 - counts stay in memory and retry
                     _LOG.info("RivaL problem history not saved yet (%s)", type(exc).__name__)
                 facts = await self._status_facts()
-                embed, _, signature = build_embed(facts)
-                if self._status_policy.should_post(signature, facts.now):
-                    await channel.send(embed=embed)
-                    self._status_policy.posted(signature, facts.now)
+                embed, _, _ = build_embed(facts)
+                await publisher.refresh(channel, embed, now=facts.now)
             except asyncio.CancelledError:
                 raise
             except (discord.Forbidden, discord.NotFound) as exc:
@@ -3450,6 +3473,14 @@ class RivalDiscordClient(discord.Client):
                              or self._regression_task.done())):
                     self._regression_task = asyncio.ensure_future(
                         self._refresh_regressions(now))
+                diagnostic_at = self._database_diagnostic_checked_at
+                if (now - self._boot_at >= timedelta(minutes=10)
+                        and (diagnostic_at is None or now - diagnostic_at >= timedelta(minutes=10))
+                        and (self._database_diagnostic_task is None
+                             or self._database_diagnostic_task.done())):
+                    self._database_diagnostic_task = asyncio.ensure_future(
+                        self._refresh_database_diagnostics(now))
+                faults.update(self._database_diagnostic_faults)
                 # The health check runs under 15 s waits, but a wait abandons
                 # only the wait: the thread keeps running and holds its pooled
                 # connection until a statement timeout fires. The watchdog task
@@ -3469,6 +3500,7 @@ class RivalDiscordClient(discord.Client):
                             import_checked_at=self.candidate_sync_checked_at,
                             import_status=self.candidate_sync_status,
                             regressions_inline=False,
+                            research_loop_enabled=self.settings.rival_research_loop_enabled,
                         ),
                         timeout=15,
                     )
@@ -3712,7 +3744,7 @@ class RivalDiscordClient(discord.Client):
     async def close(self) -> None:
         """Stop every worker, then release every client even if one fails."""
         tasks = []
-        for attr in self._WORKER_TASK_ATTRS:
+        for attr in self._WORKER_TASK_ATTRS + ('_database_diagnostic_task',):
             task = getattr(self, attr, None)
             if task is not None:
                 task.cancel()

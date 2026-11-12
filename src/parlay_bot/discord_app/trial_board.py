@@ -349,6 +349,19 @@ HIT_DAYS = 7
 
 def hit_rates(store, *, asset: str, horizon: int, now: datetime | None = None,
               venues=None) -> dict[str, tuple[int, int]] | None:
+    from parlay_bot.storage.read_cache import shared_reads
+
+    wall = datetime.now(UTC)
+    if now is not None and abs((now - wall).total_seconds()) > 10:
+        return _hit_rates_uncached(store, asset=asset, horizon=horizon, now=now, venues=venues)
+    venues = None if venues is None else tuple(sorted(set(venues)))
+    return shared_reads(store).read(
+        ("trial_hit_rates", asset, horizon, venues), 300,
+        lambda: _hit_rates_uncached(store, asset=asset, horizon=horizon, now=now, venues=venues))
+
+
+def _hit_rates_uncached(store, *, asset: str, horizon: int, now: datetime | None = None,
+                        venues=None) -> dict[str, tuple[int, int]] | None:
     """family -> (graded up/down calls, calls that came true), last HIT_DAYS days.
 
     The scoreboard's own rule: graded with a 0/1 outcome, not a 50/50 call.

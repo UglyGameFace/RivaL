@@ -122,10 +122,31 @@ def read_receipt() -> dict:
             "forward_proof": _future_proof(store, now),
             "polymarket_contest": _contest_progress(store, now),
             "research_loop": _research_progress(store, settings),
+            "runtime_diagnostics": _runtime_diagnostics(store, now),
             "does_not_prove_prediction_edge": True,
         }
     finally:
         store.close()
+
+
+def _runtime_diagnostics(store, now: datetime) -> dict:
+    """Existing durable aggregates only; the receipt never collects plans or writes."""
+    try:
+        with store.connect() as conn:
+            rows = conn.execute("""SELECT component,checked_at,payload_json
+                FROM rival_runtime_diagnostics
+                WHERE component IN ('database','research_loop','model_evaluation')""").fetchall()
+        result = {}
+        for row in rows:
+            result[row['component']] = {
+                'checked_at': row['checked_at'],
+                'age_seconds': max(0, int((now - datetime.fromisoformat(row['checked_at']))
+                                         .total_seconds())),
+                'evidence': json.loads(row['payload_json']),
+            }
+        return {'status': 'recorded' if result else 'not_recorded', 'components': result}
+    except Exception:  # noqa: BLE001 - old deployments have not created the table yet
+        return {'status': 'unavailable'}
 
 
 def _research_progress(store, settings) -> dict:

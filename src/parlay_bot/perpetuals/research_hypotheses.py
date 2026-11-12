@@ -468,6 +468,9 @@ def list_blocked_receipts(store, *, since: datetime | None = None) -> list[dict]
     """
     with store.connect() as conn:
         conn.execute(BLOCKED_REPORTS_SCHEMA)
+        from parlay_bot.research.source_runs import latest_runs, supersedes_legacy
+
+        runs = latest_runs(conn)
         if since is None:
             rows = conn.execute(
                 """SELECT venue, asset, requested_months,
@@ -485,6 +488,9 @@ def list_blocked_receipts(store, *, since: datetime | None = None) -> list[dict]
             ).fetchall()
     out = []
     for row in rows:
+        newer = runs.get((str(row['venue']), str(row['asset'] or '')))
+        if supersedes_legacy(newer, dict(row)):
+            continue
         try:
             missing = json.loads(row["missing_months_json"] or "[]")
         except (ValueError, TypeError):

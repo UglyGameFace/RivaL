@@ -579,7 +579,8 @@ def test_status_card_shows_shadow_progress(tmp_path):
                             horizon_minutes=15)
         alerts = dict(research_alerts(store, now=NOW))
         assert alerts["shadow-progress:archive_v1"] == (
-            "📊 archive_v1: day 8/21 · 62/150 targets · gain +0.009")
+            "📊 archive_v1: day 8/21 · 62/150 targets · gain +0.009000 · scope BTC 5m hyperliquid "
+            "· gates: full qualification unverified")
         # A qualified family shows no progress line — its promotion
         # receipt already announces it.
         assert "shadow-progress:liq_v1" not in alerts
@@ -596,7 +597,7 @@ def test_status_card_shows_blocker(tmp_path):
             now=NOW) == 1
         alerts = dict(research_alerts(store, now=NOW))
         assert alerts["research-blocked:okx"] == (
-            "⛔ Research blocked at OKX Swaps: 2 month(s) of data missing (2026-01, 2026-02)")
+            "⛔ Research blocked at OKX Swaps: 2 month(s) of data missing or incomplete (2026-01, 2026-02)")
         # Nov 11: a blocked run with nothing missing no longer reads
         # "0 month(s) missing ()".
         assert record_blocked_receipt(
@@ -604,8 +605,8 @@ def test_status_card_shows_blocker(tmp_path):
             report_sha256="b" * 64, now=NOW) == 1
         alerts = dict(research_alerts(store, now=NOW))
         assert alerts["research-blocked:dydx"] == (
-            "⛔ Research at dYdX: the last offline run made no trials "
-            "(no missing months reported; see that run's report)")
+            "⛔ Research at dYdX: legacy incomplete-source report has no scope/month "
+            "details; recovery unverified")
     finally:
         store.close()
 
@@ -660,11 +661,14 @@ def test_status_card_groups_shadow_progress_by_family(tmp_path):
             "shadow-progress:regime_v1",
         ]
         assert progress["shadow-progress:calib_incumbent_v1"] == (
-            "📊 calib_incumbent_v1: day 10/21 · 2308/150 targets · gain +0.009")
+            "📊 calib_incumbent_v1: day 10/21 · 2308/150 targets · gain +0.009000 "
+            "· scope ETH 15m hyperliquid · gates: full qualification unverified")
         assert progress["shadow-progress:gaussian_nb_v1"] == (
-            "📊 gaussian_nb_v1: day 10/21 · 2308/150 targets · gain +0.009")
+            "📊 gaussian_nb_v1: day 10/21 · 2308/150 targets · gain +0.009000 "
+            "· scope BTC 5m dydx · gates: full qualification unverified")
         assert progress["shadow-progress:regime_v1"] == (
-            "📊 regime_v1: day 1/21 · 133/150 targets · gain +0.009")
+            "📊 regime_v1: day 1/21 · 133/150 targets · gain +0.009000 "
+            "· scope BTC 5m bitget · gates: full qualification unverified")
         assert progress["shadow-progress:archive_v1"] == (
             "⏳ archive_v1: no usable artifact — clock not started")
         # No per-scope calib line survives in any alert value.

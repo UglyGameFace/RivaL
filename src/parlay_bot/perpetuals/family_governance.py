@@ -334,6 +334,21 @@ class FamilyPromotion:
                     search={"passed":False,"lower":None}
                 qualified=qualified and bool(search["passed"])
             scored[family]={
+                "gate_status": {
+                    "days": bool(proof and proof.days >= MIN_DAYS),
+                    "targets": bool(proof and proof.targets >= MIN_WINDOWS),
+                    "incumbent superiority": bool(proof and proof.status == "qualified_shadow"),
+                    "baseline superiority": bool(base_proof and
+                                                   base_proof.status == "qualified_shadow"
+                                                   and coin_proof and
+                                                   coin_proof.status == "qualified_shadow"),
+                    "calibration": calibration["status"] == "research_screen_passed",
+                    "quotes": eligible >= MIN_WINDOWS and covered >= MIN_WINDOWS
+                              and trades >= MIN_TRADES and coverage >= MIN_COVERAGE,
+                    "valid records": invalid == 0,
+                    "after-cost proof": all(s["qualified"] for s in cost_proofs.values()),
+                    "search correction": search is None or bool(search["passed"]),
+                },
                 "search_bar":search,
                 "qualified":qualified,
                 "targets":proof.targets if proof else 0,

@@ -1,3 +1,15 @@
+## 2026-11-12 — Runtime evidence, recovery and research continuity
+
+- **Objective / branch:** Fix the issues in the owner's status screenshot and add bounded diagnosis/recovery for unresolved and future failures. Branch `fix/runtime-evidence-recovery-20261112`, based on `main@98f34d3`; no overlapping open PRs at publication review.
+- **Root causes:** Startup quietness was asserted before the quiet window, 24-hour groups were confused with this boot, informational research made the card yellow, message freshness depended on signature changes, source blockers omitted run reasons and never reconciled, duplicate GBM training hid execution errors, and two acceptance calls conflicted with persisted CPU spacing. Existing expensive descriptive queries lacked shared in-flight work.
+- **Changes:** Persistent two-minute status card; accurate count/scope/gate labels; silent-book reconnect; shared descriptive reads; private structural SQL diagnostics and durable recurrence incidents; per-source run outcomes and verified recovery reconciliation; research-driver scheduling receipts; weak-scope/early-stop evidence; capacity-aware BTC/XRP inference; unmetered private daily default; one training pass with complete outcome/error reports. Existing model and after-cost gates stay authoritative.
+- **Validation:** Full local suite: **2,713 passed, 143 skipped**; final recovery/status/LLM/receipt checks: 62 passed, two PostgreSQL skips. Ruff, Python 3.11 syntax, workflow YAML/embedded shell syntax and diff checks pass. Exact-head PostgreSQL CI and hosted acceptance remain pending at this entry. Python here is 3.12; CI/production use 3.11. No production repair is claimed from local tests alone.
+- **Remaining evidence:** Real history coverage, actual query plans/waits under recurrence, per-scope early-stop verdicts and genuinely superior forward outcomes. Inspected Gate/source jobs failed OAuth; a later archive run authenticated, so current credential failure is unproven. Research with 0/36 accepted fits is negative evidence, not a pipeline crash.
+- **Issues / cleanup:** #6/#138/#151/#295/#299 remain empirical/unresolved; #347 is not declared fixed without deadlock evidence. Remove only generated install metadata and retire only this branch after its final commit is preserved. No unrelated work is discarded.
+- **Next:** Publish one cohesive PR, require full CI, follow the main release and live-learning/LFM3 receipts, then reconcile the integration record. Detailed recovery boundaries: [runtime evidence and recovery](docs/RUNTIME_EVIDENCE_RECOVERY.md).
+
+---
+
 ## 2026-11-07 — Close the autonomous perpetuals research loop
 
 - **Integration** — [PR #448](https://github.com/UglyGameFace/RivaL/pull/448) extends the existing driver, scheduled grid, and pinned archive/LightGBM challengers. [PR #449](https://github.com/UglyGameFace/RivaL/pull/449) restored main CI and the [Discloud release](https://github.com/UglyGameFace/RivaL/actions/runs/42411467968).

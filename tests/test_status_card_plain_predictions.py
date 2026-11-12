@@ -42,14 +42,17 @@ def test_the_field_leads_with_a_count_and_the_closest_three_in_plain_words():
     # 10 progress lines, but the 6-year model's versions fold per timeframe:
     # calibrated, order-flow 1 and 2, pattern A and B, liquidity, and the
     # 6-year model at 15, 5 and 60 minutes.
-    assert lines[0] == "📊 9 test models being tested. The furthest along is on day 12 of 21."
+    assert lines[0] == ("📊 9 model groups in forward testing. Longest observation: day 12 of 21. "
+                       "Examples below are ordered by observation time, not accuracy.")
     assert lines[1:1 + SHOWN_CLOSEST] == [
-        "• pattern test A: day 12 of 21, enough results, behind the main model",
-        "• pattern test B: day 12 of 21, enough results, behind the main model",
-        ("• 6-year history model (5-min): day 8 of 21, enough results, "
-         "ahead of the main model so far"),
+        ("• pattern test A [scope unspecified]: day 12 of 21, 2731 results (minimum met), "
+        "behind the main model on raw score; full gates unverified"),
+        ("• pattern test B [scope unspecified]: day 12 of 21, 2731 results (minimum met), "
+        "behind the main model on raw score; full gates unverified"),
+        ("• 6-year history model (5-min) [scope unspecified]: day 8 of 21, "
+         "1920 results (minimum met), ahead on raw score; qualification pending; full gates unverified"),
     ]
-    assert lines[1 + SHOWN_CLOSEST] == "• and 6 more, further behind"
+    assert lines[1 + SHOWN_CLOSEST] == "• 6 other groups; less observation time"
     # Every other research line is kept, as written.
     assert lines[-2:] == [NOV_10[0][1], NOV_10[-1][1]]
 
@@ -66,9 +69,10 @@ def test_a_tiny_sample_is_never_called_ahead():
          "📊 pooled_60m_798009383b39: day 2/21 · 2/150 targets · gain +0.194"),
     ])
     assert lines == [
-        "📊 1 test model being tested. The furthest along is on day 2 of 21.",
-        ("• 6-year history model (60-min): day 2 of 21, 2 of 150 results, "
-         "too few results to judge"),
+        ("📊 1 model group in forward testing. Longest observation: day 2 of 21. "
+         "Examples below are ordered by observation time, not accuracy."),
+        ("• 6-year history model (60-min) [scope unspecified]: day 2 of 21, "
+         "2 of 150 results, too few results to judge; full gates unverified"),
     ]
 
 
@@ -79,8 +83,9 @@ def test_versions_of_one_model_are_one_line_led_by_the_furthest():
         ("shadow-progress:pooled_15m_bbbbbbbbbbbb",
          "📊 pooled_15m_bbbbbbbbbbbb: day 8/21 · 649/150 targets · gain +0.0001"),
     ])
-    assert lines[1] == ("• 6-year history model (15-min) (2 versions): day 8 of 21, "
-                        "enough results, level with the main model")
+    assert lines[1] == ("• 6-year history model (15-min) (2 versions) [scope unspecified]: "
+                        "day 8 of 21, 649 results (minimum met), level with the main model; "
+                        "full gates unverified")
 
 
 def test_lines_it_cannot_read_are_kept_as_they_were():

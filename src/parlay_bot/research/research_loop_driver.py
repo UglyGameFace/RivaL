@@ -988,6 +988,30 @@ def _apply_scheduled_result(store, experiment: dict, result: tuple, *, now: date
 async def drive_research_loop_tick(store, *, drive=None,
                                    now: datetime | None = None,
                                    memory_pressure: bool = False) -> dict:
+    from parlay_bot.research.scheduled_variants import scheduling_status
+    from parlay_bot.storage.diagnostics import record_component
+
+    stamp = _stamp(now)
+    try:
+        result = await _drive_research_loop_tick(
+            store, drive=drive, now=stamp, memory_pressure=memory_pressure)
+        diagnostic = dict(result)
+        if result['status'] == 'nothing_to_advance':
+            diagnostic.update(await asyncio.to_thread(scheduling_status, store, now=stamp))
+    except Exception as exc:
+        try:
+            await asyncio.to_thread(record_component, store, 'research_loop',
+                                    {'status': 'failed', 'reason': type(exc).__name__}, now=stamp)
+        except Exception:  # noqa: BLE001 - preserve the original driver failure
+            _LOG.warning('Research failure receipt could not be persisted', exc_info=True)
+        raise
+    await asyncio.to_thread(record_component, store, 'research_loop', diagnostic, now=stamp)
+    return result
+
+
+async def _drive_research_loop_tick(store, *, drive=None,
+                                   now: datetime | None = None,
+                                   memory_pressure: bool = False) -> dict:
     """One driver tick: advance at most one experiment one stage, or open one.
 
     Async orchestrator for the bot task. Drive reads happen here (the

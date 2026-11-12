@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import traceback
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -126,6 +127,7 @@ async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
     full = _window(frames, through=through, first=None)
     common = _window(full, through=through, first="2021-01-01")
     drive = _drive(Settings()) if publish else None
+    errors = False
     try:
         if drive is not None and horizon == 5:
             request = await next_scheduled_request(drive, asset)
@@ -135,7 +137,16 @@ async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
         for prefix, module in (("archive-v1", archive_training),
                                ("gbm-v1", gbm_training),
                                ("volcal-v1", volcal_training)):
-            report, model, status = _fit(module, common, training)
+            try:
+                report, model, status = _fit(module, common, training)
+            except Exception as exc:  # noqa: BLE001 - record error, finish peers, fail the run
+                errors = True
+                status, model = "error", None
+                report = {"gates_passed": False,
+                          "gate_failures": [f"training_exception:{type(exc).__name__}"],
+                          "trace": [{"file": Path(f.filename).name, "function": f.name,
+                                     "line": f.lineno}
+                                    for f in traceback.extract_tb(exc.__traceback__)[-8:]]}
             report = {**report, "census": census, "training_status": status,
                       "asset": asset, "horizon_minutes": horizon, "family": module.FAMILY}
             await _save(drive if model is None else None,
@@ -147,4 +158,4 @@ async def train_weekly_archive(frames: dict, *, training: dict, census: dict,
     finally:
         if drive is not None:
             await drive.aclose()
-    return 0
+    return 1 if errors else 0

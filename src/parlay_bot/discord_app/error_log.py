@@ -42,6 +42,8 @@ class ProblemGroup:
     first_at: datetime
     last_at: datetime
     text: str
+    boot_count: int | None = None
+    boot_first_at: datetime | None = None
 
 
 class RecentProblems(logging.Handler):
@@ -176,6 +178,7 @@ class RecentProblems(logging.Handler):
                                        texts.get(key, ""))
         with self._mutex:
             unsaved = [(k[1:], v) for k, v in self._pending.items()]
+            current_boot = {key: (g.count, g.first_at) for key, g in self._groups.items()}
         for key, (count, last_at, text) in unsaved:
             group = merged.get(key)
             if group is None:
@@ -185,6 +188,8 @@ class RecentProblems(logging.Handler):
                 if last_at > group.last_at:
                     group.last_at, group.text = last_at, text
         groups = [g for g in merged.values() if g.last_at >= cutoff]
+        for key, group in merged.items():
+            group.boot_count, group.boot_first_at = current_boot.get(key, (0, None))
         totals = {"ERROR": 0, "WARNING": 0}
         for g in groups:
             totals["ERROR" if g.level in ("ERROR", "CRITICAL") else "WARNING"] += g.count

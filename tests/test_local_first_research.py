@@ -80,7 +80,7 @@ async def test_local_request_reserves_quota(monkeypatch):
     assert len(market.quota) == 1
     reserved = market.quota[0]
     assert reserved["model"] == module.LOCAL_MODEL
-    assert reserved["daily_max"] == 18
+    assert reserved["daily_max"] == 0
     assert reserved["cooldown_seconds"] == 60
     assert reserved["requester_id"] == 49
     assert market.saved[0]["model"] == module.LOCAL_MODEL
@@ -308,8 +308,7 @@ async def test_unavailable_hypothesis_never_invents_proposals(
 
 @pytest.mark.asyncio
 async def test_private_intelligence_reports_live_budget_and_no_external_catalog():
-    """Batch 2 §3.4: request_status reports the real persisted quota, and
-    the dashboard shows the 18/day budget instead of 'no daily budget'."""
+    """The private CPU dashboard reports usage and its real capacity policy."""
     from parlay_bot.discord_app.research_dashboard import ResearchDashboard
     ai = module.LocalFirstResearch(Market(), local_key="owner-key")
     try:
@@ -317,7 +316,7 @@ async def test_private_intelligence_reports_live_budget_and_no_external_catalog(
         assert "unmetered_local" not in status
         assert status["ready"] is True
         assert status["requests_today"] == 0
-        assert status["rival_daily_limit"] == 18
+        assert status["rival_daily_limit"] == 0
         assert status["reasons"] == ()
         assert await ai.list_advertised_models() == (module.LOCAL_MODEL,)
         dashboard = ResearchDashboard(owner_id=42, market=None, ai=ai, venues=())
@@ -328,7 +327,7 @@ async def test_private_intelligence_reports_live_budget_and_no_external_catalog(
         fields = {field.name: field.value for field in embed.fields}
         assert "Private LFM3 Intelligence" in fields
         assert "No paid tokens" in fields["Private LFM3 Intelligence"]
-        assert "0/18 requests today" in fields["Private LFM3 Intelligence"]
+        assert "0 requests today; no daily cap" in fields["Private LFM3 Intelligence"]
         assert "60 s minimum spacing" in fields["Private LFM3 Intelligence"]
         assert "OpenRouter" not in str(fields) and "Cloudflare" not in str(fields)
     finally:

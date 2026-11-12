@@ -400,57 +400,16 @@ class Contest:
             if hashlib.sha256(row["evidence_json"].encode()).hexdigest() != row["evidence_sha256"]:
                 return {**base, "status": "stored_market_evidence_changed"}
             raw = json.loads(row["evidence_json"])
-            source = raw.get("fee_source_receipt")
-            if not isinstance(source, dict):
+            if (raw.get("up_cost") != row["up_cost"]
+                    or raw.get("down_cost") != row["down_cost"]):
+                return {**base, "status": "stored_market_evidence_changed"}
+            if not isinstance(raw.get("fee_source_receipt"), dict):
                 return {**base, "status": "missing_issue_time_fee_receipt"}
-            fee_hash = source.get("receipt_sha256")
-            stripped = {k: v for k,v in source.items() if k not in (
-                "receipt_sha256", "cost_status", "actual_fills_proven")}
-            check_hash = hashlib.sha256(json.dumps(
-                stripped,sort_keys=True,separators=(",",":"),allow_nan=False,
-            ).encode()).hexdigest()
-            issued = datetime.fromisoformat(row["issued_at"])
-            received = datetime.fromisoformat(source["received_at"])
-            quoted = datetime.fromisoformat(source["quote_at"])
-            rate = source["fee_rate"]
-            if (source.get("cost_status") != "gamma_fee_and_depth_paper_only"
-                    or source.get("actual_fills_proven") is not False
-                    or not isinstance(fee_hash, str) or fee_hash != check_hash
-                    or received.utcoffset() is None or quoted.utcoffset() is None
-                    or issued.utcoffset() is None
-                    or not 0 <= (issued-received).total_seconds() <= 25
-                    or row["quote_at"] != quoted.isoformat()
-                    or source.get("slug") != row["slug"]
-                    or source.get("condition_id") != row["condition_id"]
-                    or source.get("up_token_id") == source.get("down_token_id")
-                    or not all(isinstance(source.get(k),str) and
-                               source[k].isascii() and source[k].isdecimal()
-                               and len(source[k]) > 30
-                               for k in ("up_token_id","down_token_id"))
-                    or not isinstance(rate,(float,int)) or not math.isfinite(rate)
-                    or not 0 <= rate <= 1
-                    or raw.get("fee_rate") != rate
-                    or not all(isinstance(source.get(k),str)
-                               and re.fullmatch(r"[0-9a-f]{64}",source[k])
-                               for k in ("up_book_sha256","down_book_sha256"))
-                    or source.get("shares") != 10.0):
-                return {**base,"status":"source_fee_or_token_mismatch"}
-            ua, da = float(raw["up_ask"]), float(raw["down_ask"])
-            uc, dc = row["up_cost"],row["down_cost"]
-            if (uc is None or dc is None or not
-                    (0 < ua <= float(uc) < 2 and 0 < da <= float(dc) < 2)):
-                return {**base,"status":"insufficient_matched_ask_depth_or_fee"}
-            # A read-only paper quote, *not* a traded orderbook fill.
-            quote = {
-                "source_receipt_sha256": fee_hash,
-                "up_token_id": source["up_token_id"],
-                "down_token_id": source["down_token_id"],
-                "quoted_at": row["quote_at"],"received_at":source["received_at"],
-                "up_cost_per_share": float(uc), "down_cost_per_share": float(dc),
-                "shares": 10.0, "fee_rate": rate,
-            }
+            quote = _verified_source_cost(raw, datetime.fromisoformat(row["issued_at"]))
+            if quote is None:
+                return {**base, "status": "source_fee_or_token_mismatch"}
         except (KeyError, ValueError, TypeError, OverflowError):
-            return {**base,"status":"unreadable_fee_or_book_receipt"}
+            return {**base, "status": "unreadable_fee_or_book_receipt"}
         result = {**base,**quote, "source_matched": True,
                   "status":"source_matched_outcome_pending"}
         if (row["direction"] not in ("UP","DOWN")

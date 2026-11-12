@@ -175,6 +175,7 @@ def test_three_embeds_carry_every_number_from_the_old_card():
             "Needs 13 more days before it can be trusted.") in embeds[1].description
     how = fields["How to read this table"]
     assert "Day = days of results" in how and "Res = graded results" in how
+    assert "vol = volatility" in how and "learning speed, not accuracy" in how
     assert "All markets: 115 on trial · 0 passed · 102 cut early for losing" in how
     best = fields["🏆 Best model per timeframe (BTC)"]
     assert "**5m** · **Trend learn** +7.1 edge · 140 results over 3 days, not proven yet" in best
@@ -282,5 +283,5 @@ def test_full_performance_card_uses_the_saved_lab_design_name(monkeypatch):
     reports["best"]["lab"]["15"]["best"]["family"] = family
     embeds = home_module.performance_embeds("BTC", 5, reports, now=NOW, venues=("hyperliquid",))
     lab = _all_fields(embeds)["🧬 Model Lab"]
-    assert "**All signals · steady** on 15-min" in lab
+    assert "**Price+vol+volume+RSI/MACD · steady** on 15-min" in lab
     assert "Lab " + family.rsplit("_", 1)[-1][:6] not in lab

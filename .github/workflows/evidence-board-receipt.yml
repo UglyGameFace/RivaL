@@ -31,10 +31,10 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_evidence_board_receipt.py'
       - name: Collect host, database, and private Drive evidence; publish signed summary
         env:
-          DISCLOUD_TOKEN: \${{ secrets.DISCLOUD_TOKEN }}
-          DISCLOUD_APP_ID: \${{ secrets.DISCLOUD_APP_ID }}
-          RIVAL_DRIVE_OAUTH_CLIENT_ID: \${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
-          RIVAL_DRIVE_OAUTH_CLIENT_SECRET: \${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
-          RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: \${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
-          RIVAL_DRIVE_REPORTS_FOLDER_ID: \${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
+          DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
+          DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
+          RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}
+          RIVAL_DRIVE_OAUTH_CLIENT_SECRET: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_SECRET }}
+          RIVAL_DRIVE_OAUTH_REFRESH_TOKEN: ${{ secrets.RIVAL_DRIVE_OAUTH_REFRESH_TOKEN }}
+          RIVAL_DRIVE_REPORTS_FOLDER_ID: ${{ secrets.RIVAL_DRIVE_REPORTS_FOLDER_ID }}
         run: python tools/evidence_board_receipt.py

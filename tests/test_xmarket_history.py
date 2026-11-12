@@ -79,8 +79,37 @@ def test_existing_supplement_ingest_binds_contract_and_preserves_provider_hash(t
     metadata = json.loads(publication.manifest.path.read_text())
     assert metadata["xmarket_contract"] == identity
     if source == "kalshi":
-        assert len(calls) == 2
-        assert "/series/KXBTC15M/" in calls[1]
+        assert len(calls) == 1
+        assert "/series/KXBTC15M/" in calls[0]
+
+
+def test_xmarket_kalshi_archived_contract_fallback_preserves_origin(tmp_path, monkeypatch):
+    from parlay_bot.research import supplemental_history as source
+
+    at = datetime(2026, 1, 1, 12, 5, tzinfo=UTC)
+    row = point("kalshi", at)
+    identity = {k: row[k] for k in ("asset", "contract_id", "opens_at", "closes_at")}
+    calls = []
+    monkeypatch.setattr(source.time, "sleep", lambda _: None)
+    def serve(request):
+        calls.append(request.url.path)
+        if "/series/" in request.url.path:
+            return httpx.Response(404)
+        return httpx.Response(200, json={"ticker": identity["contract_id"], "candlesticks": [{
+            "end_period_ts": int(at.timestamp()),
+            "yes_bid": {k + "_dollars": ".49" for k in ("open", "high", "low", "close")},
+            "yes_ask": {k + "_dollars": ".52" for k in ("open", "high", "low", "close")},
+            "price": None}]})
+    with httpx.Client(transport=httpx.MockTransport(serve)) as client:
+        rows, publication = collect_contract(
+            client, source="kalshi", identity=identity, root=tmp_path, now=NOW)
+    assert len(calls) == 2
+    assert "/series/KXBTC15M/" in calls[0]
+    assert "/historical/markets/" in calls[1]
+    assert len(rows) == 1
+    assert rows[0]["origin"] == "backfill"
+    assert rows[0]["price"] == .52
+    assert json.loads(publication.manifest.path.read_text())["xmarket_contract"] == identity
 
 
 @pytest.mark.asyncio
@@ -414,6 +443,7 @@ def test_backfill_never_requests_a_future_native_contract(tmp_path, monkeypatch)
         return {"markets": []}
 
     monkeypatch.setattr(module, "_json_get", provider)
+    monkeypatch.setattr(module, "kalshi_public_json", provider)
     _, _, cursor, errors = backfill(
         None, asset="BTC", bundles=[], root=tmp_path,
         before=NOW + timedelta(hours=2), max_windows=1)

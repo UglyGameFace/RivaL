@@ -37,8 +37,9 @@ from parlay_bot.perpetuals.research_loop import (
     pool_counts,
     recent_experiments,
 )
-from parlay_bot.research import archive_training, gbm_training
+from parlay_bot.research import archive_training, gbm_training, volcal_training
 from parlay_bot.research.archive_features import GROUPS
+from parlay_bot.research.volcal_features import GROUPS as VOLCAL_GROUPS
 
 # The hypothesis the deterministic grid opens under. It is deliberately
 # NOT in the LLM's HYPOTHESES enum: validate_proposal() refuses it, so
@@ -160,6 +161,85 @@ SCHEDULED_VARIANTS: tuple[dict, ...] = (
         "shadow_mode": "artifact",
         "scope": _scope("XRP"),
     },
+    {
+        # Volcal full design: the 22-feature volcal_v1 logistic (the
+        # incumbent 10 + vol/compression/volume/DC-leg groups), fitted
+        # offline by volcal_training. Shadows as volcal_v1 — an existing
+        # family, so shadow_mode is "artifact", not "new_family".
+        "variant_id": "volcal-full",
+        "variant_kind": "feature_group_off",
+        "asset": "BTC",
+        "venues": list(TRAIN_VENUES),
+        "model_shape": "volcal-offline-v1",
+        "feature_groups_off": [],
+        "train_window": "common-2021",
+        "gbm_params": None,
+        "calibration_method": CALIBRATION_METHOD,
+        "shadow_mode": "artifact",
+        "scope": _scope("BTC"),
+    },
+    {
+        # Volcal ablation: the full design without the adaptive-vol
+        # group (features 10-13). Shadows as volcal_v1.
+        "variant_id": "volcal-no-vol",
+        "variant_kind": "feature_group_off",
+        "asset": "ETH",
+        "venues": list(TRAIN_VENUES),
+        "model_shape": "volcal-offline-v1",
+        "feature_groups_off": ["vol"],
+        "train_window": "common-2021",
+        "gbm_params": None,
+        "calibration_method": CALIBRATION_METHOD,
+        "shadow_mode": "artifact",
+        "scope": _scope("ETH"),
+    },
+    {
+        # Volcal ablation: the full design without the compression
+        # group (features 14-15). Shadows as volcal_v1.
+        "variant_id": "volcal-no-compression",
+        "variant_kind": "feature_group_off",
+        "asset": "SOL",
+        "venues": list(TRAIN_VENUES),
+        "model_shape": "volcal-offline-v1",
+        "feature_groups_off": ["compression"],
+        "train_window": "common-2021",
+        "gbm_params": None,
+        "calibration_method": CALIBRATION_METHOD,
+        "shadow_mode": "artifact",
+        "scope": _scope("SOL"),
+    },
+    {
+        # Volcal ablation: the full design without the volume-surprise
+        # group (features 16-18). Shadows as volcal_v1.
+        "variant_id": "volcal-no-volume",
+        "variant_kind": "feature_group_off",
+        "asset": "XRP",
+        "venues": list(TRAIN_VENUES),
+        "model_shape": "volcal-offline-v1",
+        "feature_groups_off": ["volume"],
+        "train_window": "common-2021",
+        "gbm_params": None,
+        "calibration_method": CALIBRATION_METHOD,
+        "shadow_mode": "artifact",
+        "scope": _scope("XRP"),
+    },
+    {
+        # Volcal ablation: the full design without the DC-leg group
+        # (features 19-21). Same asset as the full design, so the
+        # DC-leg contribution reads off a same-asset pair. Shadows as
+        # volcal_v1.
+        "variant_id": "volcal-no-dc",
+        "variant_kind": "feature_group_off",
+        "asset": "BTC",
+        "venues": list(TRAIN_VENUES),
+        "model_shape": "volcal-offline-v1",
+        "feature_groups_off": ["dc"],
+        "train_window": "common-2021",
+        "gbm_params": None,
+        "calibration_method": CALIBRATION_METHOD,
+        "shadow_mode": "artifact",
+        "scope": _scope("BTC"),
+    },
 )
 
 
@@ -206,7 +286,7 @@ def _validate_grid() -> None:
                 "feature_group_off", "gbm_hyperparams", "window"):
             raise ValueError(f"unknown variant_kind for {variant_id!r}")
         if design.get("model_shape") not in (
-                "archive-offline-v1", "gbm-offline-v1"):
+                "archive-offline-v1", "gbm-offline-v1", "volcal-offline-v1"):
             raise ValueError(f"unknown model_shape for {variant_id!r}")
         if design.get("shadow_mode") not in ("artifact", "new_family"):
             raise ValueError(f"unknown shadow_mode for {variant_id!r}")
@@ -215,11 +295,24 @@ def _validate_grid() -> None:
         if list(design.get("venues") or []) != list(TRAIN_VENUES):
             raise ValueError(f"scheduled variant {variant_id!r} must train "
                              f"on {list(TRAIN_VENUES)!r}")
-        for group in design.get("feature_groups_off") or []:
-            if group not in GROUPS:
+        if design.get("model_shape") == "volcal-offline-v1":
+            # The per-venue window is archive-specific; a volcal entry
+            # naming it would be fitted as archive in _train_variant.
+            if design.get("train_window") != "common-2021":
                 raise ValueError(
-                    f"scheduled variant {variant_id!r} turns off unknown "
-                    f"feature group {group!r}")
+                    f"scheduled variant {variant_id!r} is volcal: only the "
+                    "common-2021 window is supported")
+            for group in design.get("feature_groups_off") or []:
+                if group not in VOLCAL_GROUPS or group == "candle":
+                    raise ValueError(
+                        f"scheduled variant {variant_id!r} turns off unknown "
+                        f"or non-ablatable volcal feature group {group!r}")
+        else:
+            for group in design.get("feature_groups_off") or []:
+                if group not in GROUPS:
+                    raise ValueError(
+                        f"scheduled variant {variant_id!r} turns off unknown "
+                        f"feature group {group!r}")
         if design.get("train_window") not in ("common-2021", "per-venue"):
             raise ValueError(f"unknown train_window for {variant_id!r}")
         params = design.get("gbm_params")
@@ -270,6 +363,8 @@ def screen_scheduled_artifact(payload: bytes | str) -> dict:
         module = archive_training
     elif schema == gbm_training.SCHEMA:
         module = gbm_training
+    elif schema == volcal_training.SCHEMA:
+        module = volcal_training
     else:
         return {"retrospective_screen": "insufficient",
                 "reason": f"unknown artifact schema {schema!r}"}
@@ -300,6 +395,9 @@ def scheduled_shadow_identity(design: dict, payload: bytes | str) -> dict:
     elif shape == "gbm-offline-v1":
         identity = gbm_training.artifact_identity(doc)
         family = gbm_training.FAMILY
+    elif shape == "volcal-offline-v1":
+        identity = volcal_training.artifact_identity(doc)
+        family = volcal_training.FAMILY
     else:
         raise ValueError(f"unknown model shape {shape!r}")
     scope = design.get("scope") or {}

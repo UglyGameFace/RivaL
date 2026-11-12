@@ -503,7 +503,7 @@ def _advance_screen_scheduled(loop: ResearchLoop, experiment: dict, *,
     A new-family design never enters shadow: a passing artifact holds
     at screened (see ``_hold_new_family``); a failing artifact is
     discarded by the shared screen. An artifact-mode design shadows
-    as its own family (archive_v1 / gbm_v1), so the shadow pool
+    as its own family (archive_v1 / gbm_v1 / volcal_v1), so the shadow pool
     capacity gate applies exactly as it does to LLM variants, and the
     family + scope + weights SHA are recorded for the shadow step to
     match against the pinned fit (D14).

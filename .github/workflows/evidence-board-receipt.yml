@@ -9,6 +9,8 @@ on:
 
 permissions:
   contents: read
+  actions: read
+  pull-requests: read
   id-token: write
 
 concurrency:
@@ -31,6 +33,7 @@ jobs:
         run: python -m unittest discover -s tests -p 'test_evidence_board_receipt.py'
       - name: Collect host, database, and private Drive evidence; publish signed summary
         env:
+          GITHUB_TOKEN: ${{ github.token }}
           DISCLOUD_TOKEN: ${{ secrets.DISCLOUD_TOKEN }}
           DISCLOUD_APP_ID: ${{ secrets.DISCLOUD_APP_ID }}
           RIVAL_DRIVE_OAUTH_CLIENT_ID: ${{ secrets.RIVAL_DRIVE_OAUTH_CLIENT_ID }}

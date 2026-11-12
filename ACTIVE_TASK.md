@@ -1,3 +1,14 @@
+## 2026-11-12 — XMarket production capture correction
+
+- **Objective / branch:** Complete PR #529's production verification. Branch `fix/xmarket-native-price-dedup-20261112`, based on deployed `main@09fb01e1`. Open PR #530 changes VolCal only and is independent.
+- **Verified cause:** The 12:21 UTC hosted receipt showed current Kalshi inputs for all four assets but only ten old BTC Polymarket points. Current native CLOB responses reproduced an identical final timestamp/price twice on all four assets; our strict sequence check rejected the entire response.
+- **Changes:** One shared live/historical parser collapses only identical adjacent samples before cadence calculation. Conflicting duplicates, reversed clocks, invalid prices and future points remain rejected. Raw provider hashes preserve the original response. Hosted coverage explicitly identifies missing/stale asset/provider scopes; partial inputs no longer imply family-wide fit readiness.
+- **Validation:** Replayed real BTC/ETH/SOL/XRP provider payloads through parsing and immutable SQLite insertion: ten provider points became nine unchanged unique points per asset. Targeted regressions: **61 passed, 10 PostgreSQL skips**; full-repository Ruff and diff checks pass. Full PostgreSQL CI and corrected-host capture remain pending until integration.
+- **Production / remaining:** PR #529 merged as `09fb01e13d7fd19449707935242b17114acc7467`, deployed at 08:49 UTC; independent Discloud status was ONLINE at 10:56 UTC and forecast/learning receipts were fresh at 12:21 UTC. No XMarket fit/import/shadow row exists. Manual training dispatch is not exposed by the connected tools; the browser sign-in attempt was cancelled. Existing workflow/schedule and model gates are unchanged.
+- **Cleanup / next:** Follow the correction's exact-head CI and release, confirm fresh inputs for all eight scopes, then obtain real fit/import/issued-row evidence. Retire only the correction branch after preservation; keep unrelated PRs and issues intact.
+
+---
+
 ## 2026-11-12 — XMarket native-history challenger
 
 - **Objective / branch:** Implement the uploaded cross-market spec and its verified data-path corrections together. Branch `feat/xmarket-v1-challenger-20261112`, based on `main@9b9288f3`; no overlapping open PR at initial inspection.

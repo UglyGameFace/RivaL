@@ -10,6 +10,8 @@ import pytest
 from parlay_bot.perpetuals.xmarket_inputs import (
     BUNDLE_SCHEMA,
     XmarketInputs,
+    canonical,
+    parse_points,
 )
 from parlay_bot.research.xmarket_history import (
     collect_contract,
@@ -161,15 +163,68 @@ def test_read_only_host_receipt_distinguishes_missing_capture_fit_and_rows(learn
     assert _xmarket_progress(learning_store, NOW)["status"] == "waiting_for_inputs"
     inputs.record([point("polymarket", NOW.replace(second=0, microsecond=0))])
     receipt = _xmarket_progress(learning_store, NOW)
-    assert receipt["status"] == "waiting_for_fit"
+    assert receipt["status"] == "waiting_for_inputs"
+    assert receipt["source_coverage"]["expected_scopes"] == 8
+    assert receipt["source_coverage"]["fresh_scopes"] == 1
+    assert len(receipt["source_coverage"]["missing"]) == 7
     assert receipt["shadow_rows_24h"] == 0
     assert receipt["input_sources_24h"][0]["points"] == 1
+    for asset in ("BTC", "ETH", "SOL", "XRP"):
+        inputs.record([point(source, NOW.replace(second=0, microsecond=0), asset=asset)
+                       for source in ("polymarket", "kalshi")])
+    complete = _xmarket_progress(learning_store, NOW)
+    assert complete["status"] == "waiting_for_fit"
+    assert complete["source_coverage"]["fresh_scopes"] == 8
+    stale = _xmarket_progress(learning_store, NOW + timedelta(minutes=21))
+    assert stale["status"] == "waiting_for_inputs"
+    assert len(stale["source_coverage"]["stale"]) == 8
     from tests.xmarket_fixtures import valid_doc
     XmarketModelSet(learning_store).import_document("fit", json.dumps(valid_doc()).encode())
     imported = _xmarket_progress(learning_store, NOW)
     assert imported["status"] == "imported_no_shadow_rows"
     assert imported["shadow_rows_24h"] == 0
     assert imported["imported_scopes"][0]["imported_artifacts"] == 1
+
+
+@pytest.mark.parametrize("asset", ["BTC", "ETH", "SOL", "XRP"])
+def test_pm_repeated_final_sample_keeps_native_cadence_and_original_provider_hash(asset):
+    import hashlib
+
+    at = NOW.replace(minute=5, second=0, microsecond=0) - timedelta(hours=1)
+    row = point("polymarket", at, asset=asset)
+    identity = {k: row[k] for k in
+                ("asset", "contract_id", "opens_at", "closes_at", "token_id", "slug")}
+    first = {"t": int(at.timestamp()), "p": .6}
+    last = {"t": int((at + timedelta(minutes=5)).timestamp()), "p": .7}
+    payload = {"history": [first, last, *[dict(last) for _ in range(5)]]}
+    points = parse_points("polymarket", payload, identity=identity, observed_at=NOW)
+    assert [p["price"] for p in points] == [.6, .7]
+    assert {p["fidelity_minutes"] for p in points} == {5}
+    assert {p["provider_sha256"] for p in points} == {hashlib.sha256(canonical(payload)).hexdigest()}
+    conflicting = {"history": [first, last, {**last, "p": .8}]}
+    with pytest.raises(ValueError, match="conflicting"):
+        parse_points("polymarket", conflicting, identity=identity, observed_at=NOW)
+    with pytest.raises(ValueError, match="reversed"):
+        parse_points("polymarket", {"history": [last, first]}, identity=identity, observed_at=NOW)
+    with pytest.raises(ValueError, match="price point"):
+        parse_points("polymarket", {"history": [{**first, "p": True}]},
+                     identity=identity, observed_at=NOW)
+
+
+@pytest.mark.asyncio
+async def test_pm_live_capture_records_valid_response_with_repeated_final_sample(learning_store):
+    inputs = XmarketInputs(learning_store)
+    opened = NOW.replace(minute=0, second=0, microsecond=0)
+    at = opened + timedelta(minutes=5)
+    p = point("polymarket", at)
+    notice = SimpleNamespace(horizon=15, issued=opened, expires=opened + timedelta(minutes=15),
+        asset="BTC", slug=p["slug"], condition_id=p["contract_id"], up_token_id=p["token_id"],
+        quote_at=at, up_bid=.52, up_ask=.54)
+    sample = {"t": int(at.timestamp()), "p": .61}
+    async with httpx.AsyncClient(transport=httpx.MockTransport(lambda _: httpx.Response(200,
+        json={"history": [sample, dict(sample)]}))) as client:
+        assert await inputs.capture_polymarket(notice, client, now=at + timedelta(minutes=1)) == 1
+    assert inputs.recent("BTC", at=at, now=at + timedelta(minutes=1))[0]["price"] == .61
 
 
 def test_identical_price_paths_for_different_tokens_keep_different_archive_ids(tmp_path):

@@ -177,6 +177,29 @@ def test_polymarket_history_is_retrospective_token_not_condition_price(tmp_path)
         )
 
 
+def test_polymarket_identical_duplicates_are_deduplicated_with_original_source_hash(tmp_path):
+    start = int(datetime(2026, 7, 1, tzinfo=UTC).timestamp())
+    sample = {"t": start + 40, "p": .58}
+    payload = {"history": [{"t": start + 20, "p": .42}, sample, dict(sample)]}
+    with _market_client(payload) as client:
+        result = ingest_polymarket_token(client, condition_id="0x" + "a" * 64,
+            token_id="1" * 40, start_ts=start, end_ts=start + 400,
+            fidelity=1, out_dir=tmp_path)
+    meta = json.loads(result.manifest_path.read_text())
+    original = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    assert result.records == 2
+    assert meta["source_sha256"] == hashlib.sha256(original).hexdigest()
+    assert meta["identical_price_points_deduplicated"] == 1
+    assert prepare(result.manifest_path).history.row_count == 2
+    with (
+        _market_client({"history": [sample, {**sample, "p": .7}]}) as client,
+        pytest.raises(HistoryImportError, match="conflicting"),
+    ):
+        ingest_polymarket_token(client, condition_id="0x" + "a" * 64,
+            token_id="1" * 40, start_ts=start, end_ts=start + 400,
+            fidelity=1, out_dir=tmp_path / "conflict")
+
+
 def test_kalshi_quotes_have_ohlc_and_no_made_up_book_fills(tmp_path):
     start = int(datetime(2026, 8, 1, tzinfo=UTC).timestamp())
     response = {"candlesticks": [

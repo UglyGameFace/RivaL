@@ -2139,7 +2139,20 @@ class GuidedHome(discord.ui.View):
                                 if shadow:
                                     proof = shadow.get("execution_evidence") or {}
                                     state = proof.get("status")
-                                    if state == "fee_schedule_unverified":
+                                    if state == "fee_metadata_verified_paper_estimate":
+                                        yes_fee = (proof.get("yes_paper_fee") or {}).get(
+                                            "estimated_model_fee_usd")
+                                        no_fee = (proof.get("no_paper_fee") or {}).get(
+                                            "estimated_model_fee_usd")
+                                        fees = (f"YES fee ~${yes_fee:.4f}; NO fee ~${no_fee:.4f} "
+                                                "per 10 shares. "
+                                                if yes_fee is not None and no_fee is not None
+                                                else "")
+                                        research_context += (
+                                            "\nExact event fee schedule captured. "
+                                            + fees + "Still paper only; no filled trade."
+                                        )
+                                    elif state == "fee_schedule_unverified":
                                         research_context += (
                                             "\nBook timing/depth recorded; exact "
                                             "contract fees still unverified."

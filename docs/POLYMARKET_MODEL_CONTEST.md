@@ -98,7 +98,7 @@ Only source receipts created with replayable ask-depth traces under this policy
 can enter new significance tests. Existing model weights and older research
 history remain intact.
 The prior probability and paper-cost history remains visible as research, but
-old or missing issue-time source receipts cannot count toward version 3
+old or missing issue-time source receipts cannot count toward version 4
 significance, paper profit, or a qualified call.
 Restarts preserve the policy, enrollment slots, source scopes and forecasts.
 
@@ -121,7 +121,8 @@ checked against the issued quote. The scoring reader independently replays
 the per-level five-decimal published fee formula and refuses unpriced,
 out-of-order or mismatched depth, even if the stored numeric cost exceeds
 the best ask. Full-book hashes identify what RivaL recorded but, without
-exchange signatures, do not prove what the venue served. The score and display path revalidates
+exchange signatures, do not prove what the venue served.
+The score and display path revalidates
 the saved cost columns and exact receipt before treating it as eligible. A
 changed SQL cost or fee receipt cannot manufacture an after-fee winner.
 These hashes prove RivaL's recorded data integrity, **not** exchange-signed

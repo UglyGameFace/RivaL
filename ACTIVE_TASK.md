@@ -1,3 +1,14 @@
+## 2026-11-12 — Reproducible Polymarket issue-time costs
+
+- **Objective / branch:** Complete the source-cost integrity repair after merged PR #543. Branch `fix/poly-contest-replay-source-depth-20261112`, based on `main@ce8119e`. No overlapping open PR was found when this work began.
+- **Confirmed gap:** Version 3 required matching fee metadata, receipt hashes and cost bounds, but accepted a cost merely above best ask. It could not independently replay the fee and depth used to produce the 10-share paper price; a too-low fee-inclusive cost could pass the numeric bounds.
+- **Implementation:** Freeze bounded 10-share UP/DOWN ask-fill traces and corresponding best bids in the original Gamma/CLOB receipt. Recompute the published per-level rounded fee and depth at scoring and call time; fail closed for altered, missing, partial or out-of-order traces. Version the policy to v4 without grandfathering v2/v3 significance or changing learned weights or outcomes.
+- **Validation:** Added regressions for fee omission, changed depth, incomplete and unsorted fills, and mismatched bids. Full Ruff/PostgreSQL CI and production deployment are not yet verified; do not claim the branch is integrated merely from these edits.
+- **Deployment/evidence:** PR #543 main CI passed (run 43317393915); its Discloud release run 43318178982 began after CI and requires independent completion proof. XMarket imported fitted models and real shadow rows remain unproven in the last inspected receipts.
+- **Next:** Check exact-head CI and review the PR diff, merge only when green, verify exact deployed SHA and first genuine v4 source-proven contract; measure coverage and settled forward outcomes before declaring economic superiority.
+
+---
+
 ## 2026-11-12 — Descriptive names for Lab models
 
 - **Objective / branch:** Replace opaque Lab hash labels with the actual model inputs and learning settings across Performance, model selection/details, comparisons, live watches and status cards. Branch `fix/descriptive-lab-model-names-20261112`, based on `main@c577d5a5`. PR #530 changes VolCal independently and is untouched.

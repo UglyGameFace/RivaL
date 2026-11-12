@@ -70,3 +70,25 @@ def test_cleanup_skips_tables_that_do_not_exist(tmp_path):
         assert retention.run(store, now=NOW) == {}
     finally:
         store.close()
+
+
+def test_new_path_target_rows_obey_existing_45_day_prediction_retention(tmp_path):
+    store = SQLiteHotStore(tmp_path / "path-retention.sqlite")
+    try:
+        with store.connect() as conn:
+            conn.execute(
+                "CREATE TABLE rival_forward_path_targets (issued_at TEXT NOT NULL)"
+            )
+            old = (NOW - timedelta(days=50)).isoformat()
+            recent = (NOW - timedelta(days=28)).isoformat()
+            conn.execute("INSERT INTO rival_forward_path_targets VALUES (?)", (old,))
+            conn.execute("INSERT INTO rival_forward_path_targets VALUES (?)", (recent,))
+        report = retention.run(store, now=NOW)
+        assert report["older_than_45d:rival_forward_path_targets"] == 1
+        with store.connect() as conn:
+            values = conn.execute(
+                "SELECT issued_at FROM rival_forward_path_targets"
+            ).fetchall()
+        assert [row["issued_at"] for row in values] == [recent]
+    finally:
+        store.close()

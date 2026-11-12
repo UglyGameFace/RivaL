@@ -168,6 +168,7 @@ class KalshiForwardResearch:
             # inference. Never backdate the model when the study worker lags.
             received = _iso(book_at)
             if (not 0 <= (at-book_at).total_seconds() <= 25
+                    or not isinstance(book_digest, str)
                     or re.fullmatch(r"[0-9a-f]{64}", book_digest) is None):
                 return False
         else:

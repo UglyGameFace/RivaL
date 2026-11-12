@@ -79,7 +79,7 @@ def test_cold_name_lookup_reads_validated_saved_design_without_creating_tables(l
              "active", datetime.now(UTC).isoformat()))
     model_lab.load_family_designs(learning_store, [family])
     assert trial_board.short_name(family) == "Price+vol+volume+RSI/MACD · steady"
-    assert family_words(family) == "All signals · steady (5-min)"
+    assert family_words(family) == "Price+vol+volume+RSI/MACD · steady (5-min)"
     model_lab._GENOMES.clear()
     with learning_store.connect() as conn:
         conn.execute("UPDATE rival_lab_genomes SET genome_json=? WHERE family=?",

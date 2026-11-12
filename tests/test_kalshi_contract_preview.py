@@ -41,6 +41,7 @@ def test_exact_market_preview_remains_research_only_and_immutable(tmp_path):
     untrained = forward.contract_preview(asset="BTC", market=first)
     assert untrained["candidate_yes"] is None
     assert untrained["approved_model"] is False
+    assert untrained["execution_evidence"]["status"] == "no_timestamped_book_receipt"
     assert forward.contract_preview(
         asset="BTC", market=replace(first, rules="Changed settlement rule")
     ) is None

@@ -35,9 +35,9 @@ SHA = 'a'*64
 CONDITION = '0x' + 'b'*64
 
 
-def notice(*, start=START, asset='BTC', horizon=60):
+def notice(*, start=START, asset='BTC', horizon=60, with_receipt=True):
     issued = start + timedelta(minutes=horizon*.2)
-    return PolymarketNotice(
+    market = PolymarketNotice(
         asset=asset, horizon=horizon, slug=f'{asset}-{int(start.timestamp())}',
         issued=start, expires=start+timedelta(minutes=horizon), quote_at=issued,
         up_ask=.51, down_ask=.51, up_bid=.49, down_bid=.49,
@@ -46,6 +46,26 @@ def notice(*, start=START, asset='BTC', horizon=60):
         rules='Up if the Chainlink 60-second TWAP is at or above the starting price.',
         fee_rate=.07, up_cost=.52749, down_cost=.52749,
     )
+    if not with_receipt:
+        return market
+    source = {
+        "slug": market.slug, "condition_id": market.condition_id,
+        "up_token_id": market.up_token_id, "down_token_id": market.down_token_id,
+        "quote_at": market.quote_at.isoformat(),
+        "received_at": market.quote_at.isoformat(),
+        "market_version": "v1", "fees_enabled": True,
+        "fee_schedule": {"rate": .07, "exponent": 1}, "fee_rate": .07,
+        "up_book_sha256": "c" * 64, "down_book_sha256": "d" * 64,
+        "shares": 10.0,
+    }
+    digest = hashlib.sha256(json.dumps(
+        source, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode()).hexdigest()
+    return replace(market, fee_evidence={
+        **source, "receipt_sha256": digest,
+        "cost_status": "gamma_fee_and_depth_paper_only",
+        "actual_fills_proven": False,
+    })
 
 
 def setup(store):
@@ -60,10 +80,12 @@ def setup(store):
     return contest
 
 
-def seed(store, contest, *, good=True, days=14, missing_model=False, horizon=60):
+def seed(store, contest, *, good=True, days=14, missing_model=False,
+         horizon=60, with_receipt=True):
     rng = random.Random(19)
     for i in range(days*24*60//horizon-1):
-        n = notice(start=START+timedelta(minutes=i*horizon), horizon=horizon)
+        n = notice(start=START+timedelta(minutes=i*horizon), horizon=horizon,
+                   with_receipt=with_receipt)
         p = .9 if rng.random() > .5 else .1
         y = rng.random() < p
         predictions = {BOOK: (p if good else 1-p, SHA), FORMULA: (.5, SHA)}
@@ -330,7 +352,7 @@ def test_poly_legacy_and_mismatched_fee_receipts_cannot_create_executable_proof(
     learning_store,
 ):
     c = setup(learning_store)
-    n = notice()
+    n = notice(with_receipt=False)
     assert c.capture(n, {BOOK: (.9, SHA)}, now=n.quote_at)
     assert c.economic_evidence(n.slug, BOOK)["status"] == (
         "missing_issue_time_fee_receipt")

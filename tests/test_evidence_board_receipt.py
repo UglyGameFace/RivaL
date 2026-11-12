@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
 
-from evidence_board_receipt import (  # noqa: E402
+from evidence_board_receipt import (
     _nonnegative,
     read_drive,
     summarize_host,

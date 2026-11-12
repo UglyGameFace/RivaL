@@ -21,7 +21,7 @@ ALPHA = .05
 MIN_CONTRACTS = 300
 MIN_TRADES = 150
 MIN_COVERAGE = .8
-POLICY = "sequential-betting-v2"
+POLICY = "sequential-betting-v3-source-cost-proof"
 BET_FRACTIONS = (.01, .03, .1, .3, .5, .8)
 CHECKPOINT_ELAPSED = .20
 CHECKPOINT_WIDTH = timedelta(seconds=20)
@@ -86,6 +86,83 @@ def implied_bet(p: float, up_cost: float | None, down_cost: float | None):
     return max(choices, key=lambda x: x[1], default=None)
 
 
+
+def _verified_source_cost(raw: dict, issued_at: datetime) -> dict | None:
+    """Verify a frozen, exact-token fee/book receipt before counting economics.
+
+    This is used both when the prediction is FIRST recorded and later for
+    individual read-only contract audits. Source SHA-256 proves internal
+    integrity, not a signed CLOB response or an actual exchange fill.
+    """
+    source = raw.get("fee_source_receipt")
+    if not isinstance(source, dict):
+        return None
+    try:
+        receipt_hash = source["receipt_sha256"]
+        signed = {key: value for key, value in source.items() if key not in (
+            "receipt_sha256", "cost_status", "actual_fills_proven")}
+        checked_hash = hashlib.sha256(json.dumps(
+            signed, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode()).hexdigest()
+        received = datetime.fromisoformat(source["received_at"])
+        quoted = datetime.fromisoformat(source["quote_at"])
+        utc_issue = issued_at.astimezone(UTC)
+        rate = float(source["fee_rate"])
+        yes = float(raw["up_ask"])
+        no = float(raw["down_ask"])
+        yes_cost = float(raw["up_cost"])
+        no_cost = float(raw["down_cost"])
+        fee_enabled = source["fees_enabled"]
+        fee_schedule = source["fee_schedule"]
+        token_up, token_down = source["up_token_id"], source["down_token_id"]
+        fee_terms_ok = (
+            fee_enabled is False and rate == 0.0
+            or fee_enabled is True and isinstance(fee_schedule, dict)
+            and float(fee_schedule["exponent"]) == 1.0
+            and float(fee_schedule["rate"]) == rate
+            and 0 < rate <= 1
+        )
+        if not (
+            source.get("cost_status") == "gamma_fee_and_depth_paper_only"
+            and source.get("actual_fills_proven") is False
+            and isinstance(receipt_hash, str) and receipt_hash == checked_hash
+            and received.utcoffset() is not None and quoted.utcoffset() is not None
+            and utc_issue.utcoffset() is not None
+            and 0 <= (utc_issue-received).total_seconds() <= 25
+            and 0 <= (received-quoted).total_seconds() <= 25
+            and source["quote_at"] == raw["quote_at"]
+            and source["slug"] == raw["slug"]
+            and source["condition_id"] == raw["condition_id"]
+            and token_up != token_down
+            and token_up == raw.get("up_token_id")
+            and token_down == raw.get("down_token_id")
+            and all(isinstance(token, str) and token.isascii()
+                    and token.isdecimal() and len(token) > 30
+                    for token in (token_up, token_down))
+            and all(isinstance(source.get(name), str)
+                    and re.fullmatch(r"[0-9a-f]{64}", source[name])
+                    for name in ("up_book_sha256", "down_book_sha256"))
+            and source["shares"] == 10.0
+            and isinstance(fee_enabled, bool) and fee_terms_ok
+            and math.isfinite(rate)
+            and raw.get("fee_rate") == rate
+            and all(math.isfinite(x) for x in (yes, no, yes_cost, no_cost))
+            and 0 < yes <= yes_cost < 2
+            and 0 < no <= no_cost < 2
+        ):
+            return None
+        return {
+            "source_receipt_sha256": receipt_hash,
+            "up_token_id": token_up, "down_token_id": token_down,
+            "quoted_at": source["quote_at"], "received_at": source["received_at"],
+            "up_cost_per_share": yes_cost, "down_cost_per_share": no_cost,
+            "shares": 10.0, "fee_rate": rate,
+        }
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
+
 class Contest:
     def __init__(self, store):
         self.store = store
@@ -113,6 +190,15 @@ class Contest:
                     );
                     CREATE INDEX IF NOT EXISTS idx_poly_contest_expiry
                         ON rival_poly_contest_rounds(asset,horizon,expires_at);
+                    -- Only records frozen at original issue time with exact
+                    -- fee/book/token/size provenance can enter money scoring.
+                    -- Never manufacture this row for older contest receipts.
+                    CREATE TABLE IF NOT EXISTS rival_poly_contest_cost_proof (
+                        slug TEXT PRIMARY KEY,
+                        evidence_sha256 TEXT NOT NULL,
+                        source_receipt_sha256 TEXT NOT NULL,
+                        issued_at TEXT NOT NULL
+                    );
                     CREATE TABLE IF NOT EXISTS rival_poly_contest_forecasts (
                         slug TEXT NOT NULL, model TEXT NOT NULL,
                         probability_up DOUBLE PRECISION NOT NULL,
@@ -204,13 +290,20 @@ class Contest:
             return value
         up_cost = known_cost(notice.up_cost, ua)
         down_cost = known_cost(notice.down_cost, da)
-        raw = json.dumps({"slug": notice.slug, "condition_id": notice.condition_id,
-                          "quote_at": notice.quote_at.isoformat(), "up_bid": ub, "up_ask": ua,
-                          "down_bid": db, "down_ask": da, "schema": schema,
-                          "fee_rate": rate, "up_cost": up_cost,
-                          "down_cost": down_cost, "inputs": evidence or {},
-                           "fee_source_receipt": getattr(notice, "fee_evidence", None)},
-                         sort_keys=True, separators=(",", ":"), allow_nan=False)
+        evidence_record = {
+            "slug": notice.slug, "condition_id": notice.condition_id,
+            "quote_at": notice.quote_at.isoformat(), "up_bid": ub, "up_ask": ua,
+            "down_bid": db, "down_ask": da, "schema": schema,
+            "up_token_id": getattr(notice, "up_token_id", None),
+            "down_token_id": getattr(notice, "down_token_id", None),
+            "fee_rate": rate, "up_cost": up_cost, "down_cost": down_cost,
+            "inputs": evidence or {},
+            "fee_source_receipt": getattr(notice, "fee_evidence", None),
+        }
+        verified_cost = _verified_source_cost(evidence_record, stamp)
+        raw = json.dumps(evidence_record, sort_keys=True,
+                         separators=(",", ":"), allow_nan=False)
+        evidence_sha = hashlib.sha256(raw.encode()).hexdigest()
         with self._lock, self.store.connect() as conn:
             for model in clean:
                 conn.execute("INSERT INTO rival_poly_contest_models VALUES (?,?) ON CONFLICT DO NOTHING",
@@ -221,10 +314,18 @@ class Contest:
                 (notice.slug, notice.condition_id, notice.asset, notice.horizon, schema,
                  notice.issued.isoformat(), notice.expires.isoformat(), stamp.isoformat(),
                  notice.quote_at.isoformat(), market, up_cost, down_cost,
-                 hashlib.sha256(raw.encode()).hexdigest(), raw),
+                 evidence_sha, raw),
             ).rowcount
             if not inserted:
                 return False  # no late model additions, even after a restart
+            if verified_cost is not None:
+                conn.execute(
+                    """INSERT INTO rival_poly_contest_cost_proof
+                       (slug,evidence_sha256,source_receipt_sha256,issued_at)
+                       VALUES (?,?,?,?) ON CONFLICT(slug) DO NOTHING""",
+                    (notice.slug, evidence_sha,
+                     verified_cost["source_receipt_sha256"], stamp.isoformat()),
+                )
             self._scope_slot(conn, notice, schema, stamp)
             for model, (p, sha) in clean.items():
                 self._model_slot(conn, model)
@@ -236,14 +337,38 @@ class Contest:
         self.initialize()
         with self.store.connect() as conn:
             row = conn.execute(
-                "SELECT r.*,f.model,f.probability_up FROM rival_poly_contest_rounds r "
-                "JOIN rival_poly_contest_forecasts f ON f.slug=r.slug WHERE r.slug=? AND f.model=?",
+                "SELECT r.*,f.model,f.probability_up, "
+                "CASE WHEN proof.slug IS NULL THEN 0 ELSE 1 END AS cost_source_verified "
+                "FROM rival_poly_contest_rounds r "
+                "JOIN rival_poly_contest_forecasts f ON f.slug=r.slug "
+                "LEFT JOIN rival_poly_contest_cost_proof proof ON proof.slug=r.slug "
+                "AND proof.evidence_sha256=r.evidence_sha256 "
+                "AND proof.issued_at=r.issued_at "
+                "WHERE r.slug=? AND f.model=?",
                 (slug, model),
             ).fetchone()
         if row is None:
             return None
         result = dict(row)
-        bet = implied_bet(float(row["probability_up"]), row["up_cost"], row["down_cost"])
+        # A changed persisted cost column must not bypass the fee-source
+        # digest merely because the original proof row still exists.
+        verified = False
+        if row["cost_source_verified"]:
+            try:
+                raw = json.loads(row["evidence_json"])
+                verified = (
+                    hashlib.sha256(row["evidence_json"].encode()).hexdigest()
+                    == row["evidence_sha256"]
+                    and raw.get("up_cost") == row["up_cost"]
+                    and raw.get("down_cost") == row["down_cost"]
+                    and _verified_source_cost(
+                        raw, datetime.fromisoformat(row["issued_at"])) is not None
+                )
+            except (ValueError, TypeError, KeyError):
+                verified = False
+        result["cost_source_verified"] = int(verified)
+        bet = (implied_bet(float(row["probability_up"]), row["up_cost"], row["down_cost"])
+               if verified else None)
         result["direction"] = bet[0] if bet else "WAIT"
         return result
 
@@ -292,57 +417,16 @@ class Contest:
             if hashlib.sha256(row["evidence_json"].encode()).hexdigest() != row["evidence_sha256"]:
                 return {**base, "status": "stored_market_evidence_changed"}
             raw = json.loads(row["evidence_json"])
-            source = raw.get("fee_source_receipt")
-            if not isinstance(source, dict):
+            if (raw.get("up_cost") != row["up_cost"]
+                    or raw.get("down_cost") != row["down_cost"]):
+                return {**base, "status": "stored_market_evidence_changed"}
+            if not isinstance(raw.get("fee_source_receipt"), dict):
                 return {**base, "status": "missing_issue_time_fee_receipt"}
-            fee_hash = source.get("receipt_sha256")
-            stripped = {k: v for k,v in source.items() if k not in (
-                "receipt_sha256", "cost_status", "actual_fills_proven")}
-            check_hash = hashlib.sha256(json.dumps(
-                stripped,sort_keys=True,separators=(",",":"),allow_nan=False,
-            ).encode()).hexdigest()
-            issued = datetime.fromisoformat(row["issued_at"])
-            received = datetime.fromisoformat(source["received_at"])
-            quoted = datetime.fromisoformat(source["quote_at"])
-            rate = source["fee_rate"]
-            if (source.get("cost_status") != "gamma_fee_and_depth_paper_only"
-                    or source.get("actual_fills_proven") is not False
-                    or not isinstance(fee_hash, str) or fee_hash != check_hash
-                    or received.utcoffset() is None or quoted.utcoffset() is None
-                    or issued.utcoffset() is None
-                    or not 0 <= (issued-received).total_seconds() <= 25
-                    or row["quote_at"] != quoted.isoformat()
-                    or source.get("slug") != row["slug"]
-                    or source.get("condition_id") != row["condition_id"]
-                    or source.get("up_token_id") == source.get("down_token_id")
-                    or not all(isinstance(source.get(k),str) and
-                               source[k].isascii() and source[k].isdecimal()
-                               and len(source[k]) > 30
-                               for k in ("up_token_id","down_token_id"))
-                    or not isinstance(rate,(float,int)) or not math.isfinite(rate)
-                    or not 0 <= rate <= 1
-                    or raw.get("fee_rate") != rate
-                    or not all(isinstance(source.get(k),str)
-                               and re.fullmatch(r"[0-9a-f]{64}",source[k])
-                               for k in ("up_book_sha256","down_book_sha256"))
-                    or source.get("shares") != 10.0):
-                return {**base,"status":"source_fee_or_token_mismatch"}
-            ua, da = float(raw["up_ask"]), float(raw["down_ask"])
-            uc, dc = row["up_cost"],row["down_cost"]
-            if (uc is None or dc is None or not
-                    (0 < ua <= float(uc) < 2 and 0 < da <= float(dc) < 2)):
-                return {**base,"status":"insufficient_matched_ask_depth_or_fee"}
-            # A read-only paper quote, *not* a traded orderbook fill.
-            quote = {
-                "source_receipt_sha256": fee_hash,
-                "up_token_id": source["up_token_id"],
-                "down_token_id": source["down_token_id"],
-                "quoted_at": row["quote_at"],"received_at":source["received_at"],
-                "up_cost_per_share": float(uc), "down_cost_per_share": float(dc),
-                "shares": 10.0, "fee_rate": rate,
-            }
+            quote = _verified_source_cost(raw, datetime.fromisoformat(row["issued_at"]))
+            if quote is None:
+                return {**base, "status": "source_fee_or_token_mismatch"}
         except (KeyError, ValueError, TypeError, OverflowError):
-            return {**base,"status":"unreadable_fee_or_book_receipt"}
+            return {**base, "status": "unreadable_fee_or_book_receipt"}
         result = {**base,**quote, "source_matched": True,
                   "status":"source_matched_outcome_pending"}
         if (row["direction"] not in ("UP","DOWN")
@@ -403,11 +487,17 @@ def _rounds(store, asset, horizon, start, end):
         with store.connect() as conn:
             rows = conn.execute(
                 "SELECT r.slug,r.schema_key,r.opens_at,r.issued_at,r.expires_at,r.market_up,"
-                "r.up_cost,r.down_cost,o.direction,o.observed_at AS outcome_at,o.resolved_at,"
-                "f.model,f.probability_up FROM (SELECT * FROM rival_poly_contest_rounds "
+                "r.up_cost,r.down_cost,r.evidence_sha256,r.evidence_json,"
+                "o.direction,o.observed_at AS outcome_at,o.resolved_at,"
+                "f.model,f.probability_up, "
+                "CASE WHEN proof.slug IS NULL THEN 0 ELSE 1 END AS source_proven "
+                "FROM (SELECT * FROM rival_poly_contest_rounds "
                 "WHERE asset=? AND horizon=? AND issued_at>=? AND issued_at<expires_at "
                 "AND expires_at<=? AND (expires_at>? OR (expires_at=? AND slug>?)) "
                 "ORDER BY expires_at,slug LIMIT 500) r "
+                "LEFT JOIN rival_poly_contest_cost_proof proof ON proof.slug=r.slug "
+                "AND proof.evidence_sha256=r.evidence_sha256 "
+                "AND proof.issued_at=r.issued_at "
                 "LEFT JOIN rival_polymarket_ai_outcomes o ON o.slug=r.slug AND o.condition_id=r.condition_id "
                 "LEFT JOIN rival_poly_contest_forecasts f ON f.slug=r.slug "
                 "ORDER BY r.expires_at,r.slug,f.model",
@@ -417,8 +507,22 @@ def _rounds(store, asset, horizon, start, end):
             return
         for _, group in groupby(rows, key=lambda r: r["slug"]):
             group = list(group)
-            row = group[0]
-            yield row, {r["model"]: float(r["probability_up"]) for r in group if r["model"] is not None}
+            row = dict(group[0])
+            if row["source_proven"]:
+                try:
+                    raw = json.loads(row["evidence_json"])
+                    row["source_proven"] = int(
+                        hashlib.sha256(row["evidence_json"].encode()).hexdigest()
+                        == row["evidence_sha256"]
+                        and raw.get("up_cost") == row["up_cost"]
+                        and raw.get("down_cost") == row["down_cost"]
+                        and _verified_source_cost(
+                            raw, datetime.fromisoformat(row["issued_at"])) is not None
+                    )
+                except (ValueError, TypeError, KeyError):
+                    row["source_proven"] = 0
+            yield row, {r["model"]: float(r["probability_up"]) for r in group
+                        if r["model"] is not None}
             cursor = row["expires_at"], row["slug"]
 
 
@@ -448,7 +552,8 @@ def league(store, *, now: datetime | None = None) -> dict:
                         continue
                     key = asset, horizon, schema, model
                     state = stats.setdefault(key, {
-                        "contracts": 0, "trades": 0, "priced": 0, "gain": 0., "profit": 0.,
+                        "contracts": 0, "seen": 0, "trades": 0, "priced": 0,
+                        "gain": 0., "profit": 0.,
                         "brier_logs": [0.]*len(BET_FRACTIONS), "net_logs": [0.]*len(BET_FRACTIONS),
                         "last_expiry": None, "blocked": None,
                     })
@@ -463,6 +568,13 @@ def league(store, *, now: datetime | None = None) -> dict:
                         continue
                     if state["last_expiry"] and row["opens_at"] < state["last_expiry"]:
                         state["blocked"] = "Overlapping contracts need review"
+                        continue
+                    # Missing provenance is determined BEFORE the outcome.
+                    # It never contributes to Brier significance or paper P&L.
+                    # Keep the missed contracts in the coverage denominator.
+                    state["seen"] += 1
+                    state["last_expiry"] = row["expires_at"]
+                    if not row["source_proven"]:
                         continue
                     m = float(row["market_up"])
                     if not (math.isfinite(p) and math.isfinite(m) and 0 <= p <= 1 and 0 <= m <= 1):
@@ -493,6 +605,7 @@ def league(store, *, now: datetime | None = None) -> dict:
         expected = max(1, int((stamp-since).total_seconds()/(horizon*60))-1)
         coverage = min(1., n/expected)
         cost_coverage = state["priced"]/n if n else 0.
+        source_coverage = n/state["seen"] if state["seen"] else 0.
         index = int(scope_meta["test_index"]) if scope_meta else None
         alpha = _test_alpha(model, slots, index) if index else 0.
         log_e = min(_log_capital(state["brier_logs"]), _log_capital(state["net_logs"]))
@@ -500,9 +613,14 @@ def league(store, *, now: datetime | None = None) -> dict:
             state["last_expiry"]) <= timedelta(minutes=max(120, 2*horizon)))
         valid = (not state["blocked"] and fresh and n >= MIN_CONTRACTS
                  and state["trades"] >= MIN_TRADES and coverage >= MIN_COVERAGE
-                 and cost_coverage >= MIN_COVERAGE and state["gain"] > 0 and state["profit"] > 0)
+                 and cost_coverage >= MIN_COVERAGE
+                 and source_coverage >= MIN_COVERAGE
+                 and state["gain"] > 0 and state["profit"] > 0)
         significant = bool(valid and alpha > 0 and log_e >= -math.log(alpha))
         item = {"model": model, "label": label(model), "contracts": n,
+                "observed_contracts": state["seen"],
+                "unverified_cost_contracts": state["seen"] - n,
+                "source_cost_coverage": source_coverage,
                 "trades": state["trades"], "coverage": coverage, "cost_coverage": cost_coverage,
                 "improvement": state["gain"]/n if n else 0.,
                 "net_per_contract": state["profit"]/n if n else 0.,
@@ -536,7 +654,9 @@ def league_text(entry: dict | None, *, asset: str, horizon: int) -> str:
     if progress:
         detail = (f" Closest: {progress['contracts']:,}/{MIN_CONTRACTS} contracts graded, "
                   f"{progress['trades']:,}/{MIN_TRADES} practice entries priced, "
-                  f"{progress['coverage']:.0%} with prices (needs {MIN_COVERAGE:.0%}). "
+                  f"{progress['coverage']:.0%} verified time coverage, "
+                  f"{progress['source_cost_coverage']:.0%} source-proven quotes "
+                  f"(needs {MIN_COVERAGE:.0%}). "
                   + (progress.get("blocked") or "It hasn't passed the test yet."))
     else:
         detail = " No graded contracts yet."

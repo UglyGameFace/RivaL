@@ -35,9 +35,9 @@ SHA = 'a'*64
 CONDITION = '0x' + 'b'*64
 
 
-def notice(*, start=START, asset='BTC', horizon=60):
+def notice(*, start=START, asset='BTC', horizon=60, with_receipt=True):
     issued = start + timedelta(minutes=horizon*.2)
-    return PolymarketNotice(
+    market = PolymarketNotice(
         asset=asset, horizon=horizon, slug=f'{asset}-{int(start.timestamp())}',
         issued=start, expires=start+timedelta(minutes=horizon), quote_at=issued,
         up_ask=.51, down_ask=.51, up_bid=.49, down_bid=.49,
@@ -46,6 +46,26 @@ def notice(*, start=START, asset='BTC', horizon=60):
         rules='Up if the Chainlink 60-second TWAP is at or above the starting price.',
         fee_rate=.07, up_cost=.52749, down_cost=.52749,
     )
+    if not with_receipt:
+        return market
+    source = {
+        "slug": market.slug, "condition_id": market.condition_id,
+        "up_token_id": market.up_token_id, "down_token_id": market.down_token_id,
+        "quote_at": market.quote_at.isoformat(),
+        "received_at": market.quote_at.isoformat(),
+        "market_version": "v1", "fees_enabled": True,
+        "fee_schedule": {"rate": .07, "exponent": 1}, "fee_rate": .07,
+        "up_book_sha256": "c" * 64, "down_book_sha256": "d" * 64,
+        "shares": 10.0,
+    }
+    digest = hashlib.sha256(json.dumps(
+        source, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode()).hexdigest()
+    return replace(market, fee_evidence={
+        **source, "receipt_sha256": digest,
+        "cost_status": "gamma_fee_and_depth_paper_only",
+        "actual_fills_proven": False,
+    })
 
 
 def setup(store):
@@ -60,10 +80,12 @@ def setup(store):
     return contest
 
 
-def seed(store, contest, *, good=True, days=14, missing_model=False, horizon=60):
+def seed(store, contest, *, good=True, days=14, missing_model=False,
+         horizon=60, with_receipt=True):
     rng = random.Random(19)
     for i in range(days*24*60//horizon-1):
-        n = notice(start=START+timedelta(minutes=i*horizon), horizon=horizon)
+        n = notice(start=START+timedelta(minutes=i*horizon), horizon=horizon,
+                   with_receipt=with_receipt)
         p = .9 if rng.random() > .5 else .1
         y = rng.random() < p
         predictions = {BOOK: (p if good else 1-p, SHA), FORMULA: (.5, SHA)}
@@ -330,8 +352,103 @@ def test_poly_legacy_and_mismatched_fee_receipts_cannot_create_executable_proof(
     learning_store,
 ):
     c = setup(learning_store)
-    n = notice()
+    n = notice(with_receipt=False)
     assert c.capture(n, {BOOK: (.9, SHA)}, now=n.quote_at)
     assert c.economic_evidence(n.slug, BOOK)["status"] == (
         "missing_issue_time_fee_receipt")
     assert c.economic_evidence("not-issued", BOOK)["status"] == "no_prospective_forecast"
+
+
+def test_unverified_legacy_economic_numbers_cannot_win_or_issue_a_call(learning_store):
+    """A positive statistical backtest is not proof of executable paper cost."""
+    c = setup(learning_store)
+    seed(learning_store, c, days=14, with_receipt=False)
+    result = entry(learning_store)
+    assert result["champion"] is None
+    record = next(x for x in result["models"] if x["model"] == BOOK)
+    assert record["contracts"] == 0
+    assert record["observed_contracts"] == 14 * 24 - 1
+    assert record["unverified_cost_contracts"] == record["observed_contracts"]
+    assert record["source_cost_coverage"] == 0
+    assert record["trades"] == 0
+    from parlay_bot.perpetuals.learning_health_receipt import _contest_progress
+
+    progress = _contest_progress(learning_store, NOW)
+    assert progress["captured"] == record["observed_contracts"]
+    assert progress["registered_cost_proofs"] == 0
+    assert progress["unverified_cost_contracts"] == progress["captured"]
+    assert progress["does_not_prove_executed_trades"] is True
+    old = c.call(notice().slug, BOOK)
+    assert old["cost_source_verified"] == 0
+    assert old["direction"] == "WAIT"
+    with learning_store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_poly_contest_cost_proof"
+        ).fetchone()["n"] == 0
+
+
+def test_issued_cost_provenance_rejects_tampered_stored_price(learning_store):
+    c = setup(learning_store)
+    seed(learning_store, c, days=14)
+    original = entry(learning_store)
+    assert original["champion"] == BOOK
+    original_book = next(x for x in original["models"] if x["model"] == BOOK)
+    assert original_book["unverified_cost_contracts"] == 0
+    assert original_book["source_cost_coverage"] == 1
+    from parlay_bot.perpetuals.learning_health_receipt import _contest_progress
+
+    progress = _contest_progress(learning_store, NOW)
+    assert progress["registered_cost_proofs"] == progress["captured"]
+    assert c.call(notice().slug, BOOK)["cost_source_verified"] == 1
+
+    # The stored fee-and-ask receipt stays immutable even when someone
+    # overwrites the SQL price column directly. No low-price paper advantage.
+    with learning_store.connect() as conn:
+        conn.execute(
+            "UPDATE rival_poly_contest_rounds SET up_cost=? WHERE slug=?",
+            (.01, notice().slug),
+        )
+    assert c.call(notice().slug, BOOK)["direction"] == "WAIT"
+    assert c.economic_evidence(notice().slug, BOOK)["status"] == (
+        "stored_market_evidence_changed")
+    changed = entry(learning_store)
+    row = next(x for x in changed["models"] if x["model"] == BOOK)
+    assert row["contracts"] == original_book["contracts"] - 1
+    assert row["unverified_cost_contracts"] == 1
+    assert row["source_cost_coverage"] < 1
+
+
+def test_unmatched_fee_source_hash_or_token_identity_never_enters_paper_score(
+    learning_store,
+):
+    c = setup(learning_store)
+    n = notice()
+    bad = replace(n, fee_evidence={
+        **n.fee_evidence,
+        "up_token_id": n.down_token_id,
+    })
+    assert c.capture(bad, {BOOK: (.9, SHA)}, now=bad.quote_at)
+    assert c.call(bad.slug, BOOK)["direction"] == "WAIT"
+    assert c.economic_evidence(bad.slug, BOOK)["status"] == (
+        "source_fee_or_token_mismatch")
+    with learning_store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_poly_contest_cost_proof"
+        ).fetchone()["n"] == 0
+
+
+def test_new_economic_policy_does_not_grandfather_previous_cost_only_rounds(
+    learning_store,
+):
+    c = setup(learning_store)
+    seed(learning_store, c, days=14)
+    with learning_store.connect() as conn:
+        assert conn.execute(
+            "SELECT started_at FROM rival_poly_contest_policies WHERE policy=?",
+            (POLICY,),
+        ).fetchone()["started_at"] == START.isoformat()
+        conn.execute(
+            "UPDATE rival_poly_contest_policies SET started_at=? WHERE policy=?",
+            (END.isoformat(), POLICY),
+        )
+    assert entry(learning_store)["champion"] is None

@@ -32,7 +32,7 @@ def _url_json(url: str, *, method: str = "GET", body: bytes | None = None,
             raise ValueError("provider_response_too_large")
         result = json.loads(raw)
         if not isinstance(result, dict):
-            raise ValueError("provider_response_not_object")
+            raise TypeError("provider_response_not_object")
         return result
 
 

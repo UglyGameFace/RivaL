@@ -231,6 +231,32 @@ def _check_contract_binding(binding, contract, start, end, *, token_id=None):
         raise HistoryImportError("supplemental contract identity binding mismatch")
 
 
+def polymarket_history_points(raw: dict, *, allow_boundaries: bool = False) -> list[dict]:
+    """Collapse identical adjacent provider samples without changing source prices.
+
+    CLOB's live history can repeat its final sample. Its original payload is
+    still hashed by callers; conflicting duplicates and reversed clocks remain
+    invalid rather than being sorted, overwritten or filled.
+    """
+    if (not isinstance(raw, dict) or not isinstance(raw.get("history"), list)
+            or len(raw["history"]) > _MAX_CONTRACT_POINTS):
+        raise HistoryImportError("missing or unbounded Polymarket token history")
+    points = []
+    for point in raw["history"]:
+        if (not isinstance(point, dict) or type(point.get("t")) is not int
+                or isinstance(point.get("p"), bool)):
+            raise HistoryImportError("invalid Polymarket price point")
+        instant, value = point["t"], _finite(point.get("p"))
+        if not (0 <= value <= 1 if allow_boundaries else 0 < value < 1):
+            raise HistoryImportError("invalid Polymarket contract price")
+        if points and instant <= points[-1]["t"]:
+            if instant == points[-1]["t"] and value == points[-1]["p"]:
+                continue
+            raise HistoryImportError("conflicting or reversed Polymarket price sequence")
+        points.append({"t": instant, "p": value})
+    return points
+
+
 def ingest_polymarket_token(
     client: httpx.Client, *, condition_id: str, token_id: str,
     start_ts: int, end_ts: int, fidelity: int, out_dir: Path,
@@ -244,21 +270,14 @@ def ingest_polymarket_token(
     _check_contract_binding(contract_binding, condition_id, start_ts, end_ts, token_id=token_id)
     params = {"market": token_id, "startTs": start_ts, "endTs": end_ts, "fidelity": fidelity}
     raw = _json_get(client, POLY, params, timeout=timeout_seconds)
-    if not isinstance(raw, dict) or not isinstance(raw.get("history"), list):
-        raise HistoryImportError("missing Polymarket token history")
+    points = polymarket_history_points(raw, allow_boundaries=contract_binding is not None)
     observed = []
-    previous = 0
-    for point in raw["history"]:
-        if not isinstance(point, dict) or type(point.get("t")) is not int:
-            raise HistoryImportError("invalid Polymarket price point")
+    for point in points:
         instant = point["t"]
-        value = _finite(point.get("p"))
-        if (instant < start_ts or instant > end_ts or instant <= previous
-            or not (0 <= value <= 1 if contract_binding is not None else 0 < value < 1)
-            or len(observed) >= _MAX_CONTRACT_POINTS):
+        value = point["p"]
+        if instant < start_ts or instant > end_ts:
             raise HistoryImportError("invalid Polymarket contract price sequence")
         observed.append({"at": datetime.fromtimestamp(instant, UTC).isoformat(), "price": value})
-        previous = instant
     if not observed:
         raise HistoryImportError("no Polymarket price observations in requested range")
     key = f"{condition_id[2:18]}-{token_id[:20]}-{start_ts}-{end_ts}-{fidelity}"
@@ -270,6 +289,7 @@ def ingest_polymarket_token(
             **({"xmarket_contract": contract_binding} if contract_binding is not None else {}),
             "condition_id": condition_id, "token_id": token_id,
             "fidelity_minutes": fidelity, "range_unix": [start_ts, end_ts],
+            "identical_price_points_deduplicated": len(raw["history"]) - len(points),
             "no_historical_orderbook_or_fill_evidence": True,
             "not_an_authenticated_resolution_receipt": True,
         },

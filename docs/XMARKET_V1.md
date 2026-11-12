@@ -69,6 +69,12 @@ rewriting the first observation. Observation availability is checked at
 issuance. HTTP work remains asynchronous, and database work stays off the
 Discord event loop.
 
+Polymarket can repeat the final timestamp/price in an otherwise ordered
+response. The shared live/history parser collapses only identical adjacent
+samples before measuring cadence. Conflicting duplicates, reversed clocks,
+invalid prices and future points remain rejected. Provider hashes retain
+the original response, including duplicates; no source price is altered.
+
 The existing records-export loop publishes completed UTC-day input bundles
 to the existing private Drive report folder. It exports at most three
 pending days per asset per pass and resumes older unexported days after an
@@ -153,6 +159,9 @@ captured source counts/timestamps, imported artifact scopes, actual shadow
 rows from the last 24 hours and an explicit cold-start status. An imported
 artifact without rows is not reported as shadow success. Missing tables
 are detected before optional queries; the receipt never initializes them.
+Source coverage lists all eight expected asset/provider scopes, missing
+scopes and scopes older than 20 minutes. Partial or stale capture remains
+`waiting_for_inputs`; a few BTC points cannot imply family-wide input readiness.
 
 Production completion still requires a real passing fit, verified private
 publish/import and observed immutable shadow rows. Synthetic tests, a PR,

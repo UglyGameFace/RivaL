@@ -236,9 +236,20 @@ def _xmarket_progress(store, now: datetime) -> dict:
                 "AND horizon_minutes IN (5,15,60) AND family='xmarket_v1' AND issued_at>=? "
                 "GROUP BY asset,horizon_minutes", (since,)).fetchall()
         count = sum(int(r["issued"]) for r in rows)
+        expected = {(asset, source) for asset in ("BTC", "ETH", "SOL", "XRP")
+                    for source in ("polymarket", "kalshi")}
+        present = {(r["asset"], r["source"]) for r in inputs}
+        fresh = {(r["asset"], r["source"]) for r in inputs
+                 if 0 <= (now - datetime.fromisoformat(r["latest_source_at"]))
+                 .total_seconds() <= 1200}
+        def scopes(values):
+            return [{"asset": asset, "source": source} for asset, source in sorted(values)]
         return {"status": ("shadow_issuing" if count else "imported_no_shadow_rows" if fits
-                           else "waiting_for_fit" if inputs else "waiting_for_inputs"),
+                           else "waiting_for_fit" if fresh == expected else "waiting_for_inputs"),
                 "input_sources_24h": [dict(r) for r in inputs], "imported_scopes": [dict(r) for r in fits],
+                "source_coverage": {"expected_scopes": len(expected), "present_scopes": len(present),
+                                    "fresh_scopes": len(fresh), "freshness_seconds": 1200,
+                                    "missing": scopes(expected - present), "stale": scopes(present - fresh)},
                 "shadow_rows_24h": count, "shadow_scopes": [dict(r) for r in rows],
                 "shadow_only": True, "does_not_prove_prediction_edge": True}
     except Exception:  # noqa: BLE001 - optional probe never masks the worker receipt

@@ -22,7 +22,7 @@ NOW = datetime(2026, 11, 12, 8, 0, 30, tzinfo=UTC)
 
 def point(source, at, price=.55, *, origin="live", asset="BTC"):
     opens = datetime.fromtimestamp((int(at.timestamp()) - 1) // 900 * 900, UTC)
-    condition = "0x" + hashlib.sha256(str(opens).encode()).hexdigest()
+    condition = "0x" + hashlib.sha256(f"{asset}|{opens}".encode()).hexdigest()
     return {"source": source, "asset": asset,
             "contract_id": condition if source == "polymarket" else "KX" + asset + "15M-" + opens.strftime("%y%m%d%H%M"),
             **({"token_id": "1" * 40, "slug": f"{asset.lower()}-updown-15m-{int(opens.timestamp())}"}

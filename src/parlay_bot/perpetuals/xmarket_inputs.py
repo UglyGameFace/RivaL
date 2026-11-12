@@ -13,6 +13,7 @@ import json
 import statistics
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.research.supplemental_history import polymarket_history_points
 from parlay_bot.research.xmarket_features import PRICE_SEMANTICS, timestamp, validate_sample
 
 BUNDLE_SCHEMA = "rival-xmarket-inputs-v1"
@@ -33,6 +34,8 @@ def parse_points(source: str, payload: dict, *, identity: dict, observed_at: dat
     points = payload.get("history" if source == "polymarket" else "candlesticks")
     if not isinstance(points, list) or len(points) > 100_000:
         raise ValueError("invalid native price history")
+    if source == "polymarket":
+        points = polymarket_history_points(payload, allow_boundaries=True)
     effective_fidelity = fidelity
     if source == "polymarket" and len(points) > 1:
         times = [p.get("t") for p in points]

@@ -265,16 +265,21 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90):
     # fetched history; 30+ actual timestamp pairs are required to pass.
     for source in PRICE_SEMANTICS:
         items = [(key, val) for key, val in identities.items() if key[0] == source]
+        consecutive_failures = 0
         for (src, _), identity in sorted(items, key=lambda x: x[1]["opens_at"], reverse=True)[:32]:
             try:
                 rows, publication = collect_contract(client, source=src, identity=identity, root=root, now=now)
                 history.extend(rows)
                 publications.append(publication)
+                consecutive_failures = 0
             except (httpx.HTTPError, ValueError, HistoryImportError) as exc:
-                errors.append(source_failure(source, "overlap", exc, window_close=identity["closes_at"]))
-                # One inaccessible contract must not suppress checks of the
-                # other already-captured contracts in this bounded pass.
-                continue
+                failure = source_failure(source, "overlap", exc, window_close=identity["closes_at"])
+                errors.append(failure)
+                # Try other contracts after an isolated bad identity. Don't
+                # spend 32 network timeouts on a throttled/down provider.
+                consecutive_failures += 1
+                if failure["retryable"] or consecutive_failures >= 3:
+                    break
     # Archive "through" can name an unfinished native window. Never try
     # acquiring its as-yet-unpublished history or advancing a cursor past now.
     last_closed = datetime.fromtimestamp(int(now.timestamp()) // 900 * 900, UTC)

@@ -37,10 +37,11 @@ def _date(raw):
     return stamp.astimezone(UTC) if stamp.utcoffset() is not None else None
 
 
-def _number(raw):
+def _number(raw, *, max_value=10):
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return None
-    return float(raw) if math.isfinite(float(raw)) and 0 <= raw <= 10 else None
+    return (float(raw) if math.isfinite(float(raw))
+            and 0 <= raw <= max_value else None)
 
 
 def _hash(obj):
@@ -136,7 +137,7 @@ def kalshi_taker_paper_fee(*, price: float, quantity: float, fee_type: str,
     """
     if fee_type not in KALSHI_TYPES or fee_type == "flat":
         return {"status": "unsupported_specific_fee_table", "verified_after_cost": False}
-    p, n, m = _number(price), _number(quantity), _number(multiplier)
+    p, n, m = _number(price), _number(quantity, max_value=100000), _number(multiplier)
     if (p is None or not 0 < p < 1 or n is None or n <= 0 or m is None):
         return {"status": "invalid_fee_inputs", "verified_after_cost": False}
     fee = (KALSHI_GENERAL_TAKER_COEFFICIENT * Decimal(str(n))
@@ -173,7 +174,10 @@ def polymarket_taker_paper_cost(*, side: str, token_id: str, quote_price: float,
     if (not 0 <= (issue - quote).total_seconds() <= 25
             or not 0 <= (issue - fee_at).total_seconds() <= 25):
         return {"status": "stale_fee_or_quote", "verified_after_cost": False}
-    p, d, n, rate = map(_number, (quote_price, quote_depth, shares, fee_rate))
+    p, d, n, rate = (
+        _number(quote_price), _number(quote_depth, max_value=100000),
+        _number(shares, max_value=100000), _number(fee_rate),
+    )
     if (p is None or not 0 < p < 1 or d is None or n is None or n <= 0
             or rate is None or rate > 1):
         return {"status": "invalid_quote_or_fee", "verified_after_cost": False}

@@ -258,6 +258,75 @@ async def test_optional_input_capture_failure_does_not_break_existing_formula_he
 
 
 @pytest.mark.asyncio
+async def test_completed_day_export_is_not_blocked_by_failed_records_backup(monkeypatch, caplog):
+    from parlay_bot.discord_app import bot as module
+    from parlay_bot.perpetuals import records_backup
+
+    events = []
+    class Backup:
+        def __init__(self, *args):
+            pass
+        async def run_once(self):
+            events.append("backup")
+            raise RuntimeError("synthetic records-backup failure")
+
+    client = SimpleNamespace(store=object(), research_drive=object(), closed=False)
+    async def ready():
+        return None
+    async def advance(seconds):
+        if seconds == 3600:
+            client.closed = True
+    async def publish(self, drive):
+        events.append("xmarket_export")
+        return 1
+
+    client.wait_until_ready = ready
+    client.is_closed = lambda: client.closed
+    monkeypatch.setattr(records_backup, "RecordsBackup", Backup)
+    monkeypatch.setattr(XmarketInputs, "publish_days", publish)
+    monkeypatch.setattr(module.asyncio, "sleep", advance)
+    monkeypatch.setattr(module.host_memory, "snapshot", lambda: SimpleNamespace(pressure=False))
+    await module.RivalDiscordClient._records_loop(client)
+    assert events == ["xmarket_export", "backup"]
+    assert "XMarket completed-day source exports published=1" in caplog.text
+    assert "RivaL records backup failed" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_live_receipt_identifies_pending_and_published_completed_days(learning_store):
+    from parlay_bot.perpetuals.learning_health_receipt import _xmarket_progress
+    from parlay_bot.perpetuals.model_competition import ShadowModelCompetition
+    from parlay_bot.perpetuals.xmarket_model import XmarketModelSet
+
+    inputs = XmarketInputs(learning_store)
+    inputs.initialize()
+    XmarketModelSet(learning_store).initialize()
+    ShadowModelCompetition(learning_store).initialize()
+    # A complete UTC day is eligible only after the configured 3-hour delay.
+    prior = (NOW - timedelta(days=1)).replace(hour=12, minute=5, second=0, microsecond=0)
+    latest = NOW.replace(second=0, microsecond=0)
+    inputs.record([point(source, prior) for source in ("polymarket", "kalshi")])
+    for asset in ("BTC", "ETH", "SOL", "XRP"):
+        inputs.record([point(source, latest, asset=asset)
+                       for source in ("polymarket", "kalshi")])
+    before = _xmarket_progress(learning_store, NOW)
+    assert before["status"] == "waiting_for_completed_day_export"
+    assert before["export_coverage"]["recent_completed_days_pending"] == 1
+    assert before["export_coverage"]["pending_by_asset"][0]["asset"] == "BTC"
+    assert before["export_coverage"]["published"] == []
+
+    class Drive:
+        async def ensure_research_output(self, **kwargs):
+            return SimpleNamespace(file_id="verified-test-output")
+    assert await inputs.publish_days(Drive(), now=NOW) == 1
+    after = _xmarket_progress(learning_store, NOW)
+    assert after["status"] == "waiting_for_fit"
+    assert after["export_coverage"]["recent_completed_days_pending"] == 0
+    assert after["export_coverage"]["published"][0]["latest_exported_day"] == prior.date().isoformat()
+    assert after["export_coverage"]["does_not_prove_independent_drive_restore"] is True
+
+
+@pytest.mark.asyncio
 async def test_optional_export_failure_does_not_misreport_a_successful_records_backup(monkeypatch, caplog):
     from parlay_bot.discord_app import bot as module
     from parlay_bot.perpetuals import records_backup

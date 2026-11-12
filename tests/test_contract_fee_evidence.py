@@ -78,12 +78,12 @@ def test_invalid_fee_source_and_unsupported_flat_never_prove_after_cost():
 
 
 def test_polymarket_exact_side_token_and_freshness_paper_cost():
-    args = dict(
-        side="UP", token_id="12345678901234567890123456789012",
-        quote_price=.4, quote_depth=12, shares=10, fee_rate=.07,
-        quote_received_at=NOW-timedelta(seconds=3),
-        fee_received_at=NOW-timedelta(seconds=5), issue_at=NOW,
-    )
+    args = {
+        "side": "UP", "token_id": "12345678901234567890123456789012",
+        "quote_price": .4, "quote_depth": 12, "shares": 10, "fee_rate": .07,
+        "quote_received_at": NOW-timedelta(seconds=3),
+        "fee_received_at": NOW-timedelta(seconds=5), "issue_at": NOW,
+    }
     result = polymarket_taker_paper_cost(**args)
     assert result["status"] == "same_token_paper_cost_estimate"
     assert result["estimated_cost_per_share"] == pytest.approx(.4168)

@@ -19,6 +19,7 @@ from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
 
 VERSION = "prospective-empirical-path-v1"
+TARGET_VERSION = "prospective-empirical-close-targets-v1"
 HORIZONS = (15, 60)
 SIDES = ("long", "short")
 LOOKBACK = 24
@@ -330,7 +331,7 @@ class ProspectivePathLedger:
                          close_target_training_count,state)
                        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT DO NOTHING""",
-                    (last.venue,last.contract,last.quote,asset,horizon,VERSION,side,
+                    (last.venue,last.contract,last.quote,asset,horizon,TARGET_VERSION,side,
                      utc(last.opened_at).isoformat(),issued_at.isoformat(),
                      target.isoformat(),last.close_price,sample["sigma"],
                      sample["direction_probability"],sample["direction_baseline"],
@@ -523,7 +524,7 @@ class ProspectivePathLedger:
             ).fetchall()
         scopes={}
         for row in rows:
-            key="/".join((row["venue"],row["contract"],row["quote"],row["side"]))
+            key="/".join((row["venue"],row["contract"],row["quote"],row["side"],row["model_version"]))
             scopes.setdefault(key,{}).setdefault(str(row["target_opened_at"]),[]).append(row)
         reports={}
         for key, grouped in scopes.items():

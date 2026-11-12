@@ -184,7 +184,7 @@ def test_review_fills_slots_closes_a_loser_and_replaces_it(store):
     from parlay_bot.discord_app.trial_board import is_retired, short_name
 
     assert is_retired(loser) and not is_retired(replacement[0])
-    assert short_name(loser) == "Choppy volume + RSI/MACD · fast"
+    assert short_name(loser) == "Choppy volume+RSI/MACD · fast"
     with store.connect() as conn:
         row = conn.execute("SELECT * FROM rival_lab_genomes WHERE family=?", (loser,)).fetchone()
     assert row["status"] == "closed" and row["results"] == 450 and row["fitness"] < 0

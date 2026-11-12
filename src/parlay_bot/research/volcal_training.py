@@ -260,7 +260,7 @@ def train_run(
 
         report["volatility_blend_research"] = evaluate_blend(
             frames, horizon=horizon, train_end=train_end, test_start=test_start)
-    except Exception:  # noqa: BLE001 - optional research, never a serving gate
+    except Exception:  # optional research, never a serving gate
         import logging
 
         logging.getLogger(__name__).exception(

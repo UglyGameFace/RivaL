@@ -333,6 +333,9 @@ def live_vector(candles, *, asset: str):
         volz = 0.0
     elif med96 == 0:
         volz = 2.0
+    elif vols[-1] == 0:
+        # log(0 / med96) is -inf; the frame twin clips it to -2.
+        volz = -2.0
     else:
         volz = _clamp(math.log(vols[-1] / med96), -2.0, 2.0)
     values.append(volz)

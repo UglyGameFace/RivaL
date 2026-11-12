@@ -7,6 +7,8 @@ No API keys, accounts, scraping, orders, or synthetic odds.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import math
 import re
@@ -95,6 +97,11 @@ class KalshiMarket:
     quote_source: str = "unverified"
     yes_ask_size: float | None = None
     no_ask_size: float | None = None
+    # The time the actual orderbook response was received. The model issues
+    # LATER, in its worker; never backdate a model to this timestamp.
+    book_observed_at: datetime | None = None
+    # Transport payload checksum, not an exchange-signed attestation.
+    book_receipt_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -215,10 +222,18 @@ class KalshiCryptoBrowser:
                 # 90 days out, or missing a real ask) is skipped; it must not
                 # abort the other markets or the pending settlement checks.
                 try:
-                    await asyncio.to_thread(
-                        self._forward.observe, asset=snapshot.asset,
-                        market=market, at=snapshot.checked_at,
-                    )
+                    # Issue the model at actual worker execution time,
+                    # not at the earlier catalog snapshot's timestamp. The
+                    # separate book receive clock is checked for staleness by
+                    # the research ledger; a queued worker cannot backdate a
+                    # new learned prediction.
+                    def record_one(item=market) -> bool:
+                        return self._forward.observe(
+                            asset=snapshot.asset, market=item,
+                            at=datetime.now(UTC),
+                        )
+
+                    await asyncio.to_thread(record_one)
                 except ValueError as exc:
                     _LOG.info("Kalshi market skipped ticker=%s: %s",
                               getattr(market, "ticker", "?"), exc)
@@ -258,7 +273,15 @@ class KalshiCryptoBrowser:
         def read() -> dict | None:
             # The background recorder may not have run yet. The first valid
             # quote wins, and the store's unique ticker prevents re-issuance.
-            self._forward.observe(asset=asset, market=market, at=observed_at)
+            self._forward.observe(
+                asset=asset, market=market,
+                # Real browser book observations must issue at execution
+                # time; the UI's earlier snapshot clock is NOT an issue clock.
+                # Legacy manually constructed fixtures retain their supplied
+                # timestamp but never qualify for source-timed economics.
+                at=(datetime.now(UTC) if market.book_observed_at is not None
+                    else observed_at),
+            )
             return self._forward.contract_preview(asset=asset, market=market)
 
         return await asyncio.to_thread(read)
@@ -332,13 +355,23 @@ class KalshiCryptoBrowser:
                         _ROOT + f"/markets/{market.ticker}/orderbook",
                     )
                     response.raise_for_status()
+                    received_at = datetime.now(UTC)
+                    payload = response.json()
                     yes_ask, no_ask, yes_size, no_size = parse_orderbook(
-                        response.json(),
+                        payload,
                     )
+                    # Hash the exact response. This proves internal receipt
+                    # immutability, not that Kalshi cryptographically signed
+                    # the public transport.
+                    digest = hashlib.sha256(json.dumps(
+                        payload, sort_keys=True, separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode()).hexdigest()
                     return replace(
                         market, yes_ask=yes_ask, no_ask=no_ask,
                         yes_ask_size=yes_size, no_ask_size=no_size,
-                        quote_source="orderbook",
+                        quote_source="orderbook", book_observed_at=received_at,
+                        book_receipt_sha256=digest,
                     )
                 except (httpx.HTTPError, ValueError, TypeError) as exc:
                     _LOG.info(

@@ -102,6 +102,22 @@ class KalshiForwardResearch:
                         ticker TEXT PRIMARY KEY,
                         checked_at TEXT NOT NULL
                     );
+                    -- Immutable, exact public-book receipt for NEW quotes.
+                    -- No retrospective "proof" for historical summary rows.
+                    CREATE TABLE IF NOT EXISTS rival_kalshi_quote_receipts (
+                        ticker TEXT PRIMARY KEY,
+                        series_ticker TEXT NOT NULL,
+                        issued_at TEXT NOT NULL,
+                        book_received_at TEXT NOT NULL,
+                        book_transport_sha256 TEXT NOT NULL,
+                        market_rules_sha256 TEXT NOT NULL,
+                        yes_ask DOUBLE PRECISION NOT NULL,
+                        no_ask DOUBLE PRECISION NOT NULL,
+                        yes_depth DOUBLE PRECISION NOT NULL,
+                        no_depth DOUBLE PRECISION NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_kalshi_quote_recent
+                        ON rival_kalshi_quote_receipts(series_ticker,issued_at);
                     CREATE TABLE IF NOT EXISTS rival_kalshi_shadow_weights (
                         asset TEXT NOT NULL,
                         series_ticker TEXT NOT NULL,
@@ -143,11 +159,27 @@ class KalshiForwardResearch:
             return False
         stamp = _iso(at)
         _iso(market.close_time)
+        book_at = getattr(market, "book_observed_at", None)
+        book_digest = getattr(market, "book_receipt_sha256", None)
+        if (book_at is None) != (book_digest is None):
+            return False
+        if book_at is not None:
+            # The timestamp of the response is independent of later model
+            # inference. Never backdate the model when the study worker lags.
+            received = _iso(book_at)
+            if (not 0 <= (at-book_at).total_seconds() <= 25
+                    or not isinstance(book_digest, str)
+                    or re.fullmatch(r"[0-9a-f]{64}", book_digest) is None):
+                return False
+        else:
+            received = None  # legacy/manual quotes: not execution-proven
         baseline, features = _market_features(market, at)
         payload = json.dumps({
             "ticker": market.ticker, "asset": asset, "issued_at": stamp,
             "closes": _iso(market.close_time), "yes_ask": market.yes_ask,
             "no_ask": market.no_ask, "rules": market.rules,
+            "yes_depth": market.yes_ask_size, "no_depth": market.no_ask_size,
+            "book_received_at": received, "book_transport_sha256": book_digest,
         }, sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(payload.encode()).hexdigest()
         rules_sha = hashlib.sha256(market.rules.encode()).hexdigest()
@@ -199,8 +231,21 @@ class KalshiForwardResearch:
                     """INSERT INTO rival_kalshi_book_evidence
                        (ticker,observed_at,yes_ask_depth,no_ask_depth)
                        VALUES (?,?,?,?) ON CONFLICT(ticker) DO NOTHING""",
-                    (market.ticker, stamp, market.yes_ask_size, market.no_ask_size),
+                    (market.ticker, received or stamp,
+                     market.yes_ask_size, market.no_ask_size),
                 )
+                if received is not None:
+                    conn.execute(
+                        """INSERT INTO rival_kalshi_quote_receipts
+                           (ticker,series_ticker,issued_at,book_received_at,
+                            book_transport_sha256,market_rules_sha256,
+                            yes_ask,no_ask,yes_depth,no_depth)
+                           VALUES (?,?,?,?,?,?,?,?,?,?)
+                           ON CONFLICT(ticker) DO NOTHING""",
+                        (market.ticker,series,stamp,received,book_digest,
+                         rules_sha,market.yes_ask,market.no_ask,
+                         market.yes_ask_size,market.no_ask_size),
+                    )
             return count.rowcount == 1
 
     def pending(self, *, now: datetime, limit: int = 2) -> tuple[str, ...]:
@@ -326,6 +371,95 @@ class KalshiForwardResearch:
             )
             return True
 
+    def executable_quote_evidence(self, *, ticker: str, quantity: float = 10.0) -> dict:
+        """Audit one exact contract, without claiming a fill or after-fee edge.
+
+        Real public order books provide *top level* capacity. A valid 10-share
+        first quote can demonstrate top-of-book depth, not lasting execution
+        liquidity. Fee schedule, possible event overrides and actual fills
+        remain unknown until separately source verified. Never substitute a
+        historic market-summary ask or an unrelated market's outcome.
+        """
+        if (not isinstance(quantity, (float, int)) or isinstance(quantity, bool)
+                or not math.isfinite(quantity) or quantity <= 0):
+            raise ValueError("positive requested quantity required")
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT f.ticker,f.asset,f.series_ticker,f.issued_at,
+                          f.market_rules_sha256,f.yes_ask,f.no_ask,
+                          f.result,f.settlement_evidence_sha256,
+                          b.observed_at AS book_at,
+                          b.yes_ask_depth,b.no_ask_depth,
+                          r.book_received_at,r.issued_at AS receipt_issued_at,
+                          r.book_transport_sha256,r.market_rules_sha256 AS receipt_rules,
+                          r.yes_ask AS receipt_yes_ask,r.no_ask AS receipt_no_ask,
+                          r.yes_depth AS receipt_yes_depth,
+                          r.no_depth AS receipt_no_depth
+                   FROM rival_kalshi_forward f
+                   LEFT JOIN rival_kalshi_book_evidence b ON b.ticker=f.ticker
+                   LEFT JOIN rival_kalshi_quote_receipts r ON r.ticker=f.ticker
+                   WHERE f.ticker=?""", (ticker,),
+            ).fetchone()
+        default = {
+            "ticker": ticker, "quantity": quantity,
+            "verified_after_cost": False, "executed_trade": False,
+            "fee_schedule_verified": False, "exchange_signed_book": False,
+            "research_only": True,
+        }
+        if row is None:
+            return {**default, "status": "contract_not_observed"}
+        if row["book_received_at"] is None:
+            return {**default, "status": "no_timestamped_book_receipt"}
+        try:
+            issued = datetime.fromisoformat(row["issued_at"])
+            received = datetime.fromisoformat(row["book_received_at"])
+            delay = (issued-received).total_seconds()
+            sha = row["book_transport_sha256"]
+            matching = (
+                0 <= delay <= 25
+                and row["receipt_issued_at"] == row["issued_at"]
+                and row["book_at"] == row["book_received_at"]
+                and row["receipt_rules"] == row["market_rules_sha256"]
+                and row["receipt_yes_ask"] == row["yes_ask"]
+                and row["receipt_no_ask"] == row["no_ask"]
+                and row["receipt_yes_depth"] == row["yes_ask_depth"]
+                and row["receipt_no_depth"] == row["no_ask_depth"]
+                and isinstance(sha, str)
+                and re.fullmatch(r"[0-9a-f]{64}", sha) is not None
+                and issued.utcoffset() is not None
+                and received.utcoffset() is not None
+            )
+        except (TypeError, ValueError):
+            matching = False
+        if not matching:
+            return {**default, "status": "book_source_mismatch"}
+        depth_yes = float(row["yes_ask_depth"])
+        depth_no = float(row["no_ask_depth"])
+        enough_yes = depth_yes >= quantity
+        enough_no = depth_no >= quantity
+        return {
+            **default, "status": (
+                "fee_schedule_unverified" if enough_yes or enough_no
+                else "insufficient_top_book_depth"),
+            "venue": "kalshi", "asset": row["asset"],
+            "series_ticker": row["series_ticker"],
+            "yes_ask": float(row["yes_ask"]), "no_ask": float(row["no_ask"]),
+            "yes_depth": depth_yes, "no_depth": depth_no,
+            "yes_side_depth_sufficient": enough_yes,
+            "no_side_depth_sufficient": enough_no,
+            "book_received_at": row["book_received_at"],
+            "model_issued_at": row["issued_at"],
+            "book_transport_sha256": row["book_transport_sha256"],
+            "market_rules_sha256": row["market_rules_sha256"],
+            "settlement_receipt_present": (
+                row["result"] in ("yes", "no")
+                and isinstance(row["settlement_evidence_sha256"], str)),
+            "fee_blocker": (
+                "Official series/event fee type and multiplier, including "
+                "overrides, have not been captured for this exact contract."),
+        }
+
     def contract_preview(self, *, asset: str, market) -> dict | None:
         """Read only the already-frozen candidate for this exact Kalshi contract.
 
@@ -388,6 +522,8 @@ class KalshiForwardResearch:
             "model": MODEL,
             "approved_model": False,
             "verified_after_cost": False,
+            "execution_evidence": self.executable_quote_evidence(
+                ticker=market.ticker, quantity=10),
         }
 
     def summary(self, *, asset: str) -> dict:

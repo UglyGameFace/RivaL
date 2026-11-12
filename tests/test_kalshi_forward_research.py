@@ -1,4 +1,5 @@
 """Kalshi learns only from its own first market quotes and official YES/NO receipts."""
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -351,3 +352,65 @@ def test_one_ineligible_market_does_not_abort_the_batch():
     asyncio.run(browser._study(snapshot))
     assert observed == ["OPEN"]  # the next market is still studied
     assert settled == ["DUE"]  # and pending settlements still run
+
+
+def test_exact_book_receipt_and_depth_proof_fail_closed_without_exchange_fees(tmp_path):
+    ledger=KalshiForwardResearch(SQLiteHotStore(tmp_path / "book-receipt.sqlite"))
+    start=datetime(2026, 8, 1, tzinfo=UTC)
+    m=replace(market(700,start),book_observed_at=start-timedelta(seconds=5),
+              book_receipt_sha256="a"*64,yes_ask_size=15.,no_ask_size=6.)
+    assert ledger.observe(asset="BTC",market=m,at=start)
+    proof=ledger.executable_quote_evidence(ticker=m.ticker,quantity=10)
+    assert proof["status"]=="fee_schedule_unverified"
+    assert proof["yes_side_depth_sufficient"] is True
+    assert proof["no_side_depth_sufficient"] is False
+    assert proof["book_received_at"]==(start-timedelta(seconds=5)).isoformat()
+    assert proof["model_issued_at"]==start.isoformat()
+    assert proof["book_transport_sha256"]=="a"*64
+    assert proof["verified_after_cost"] is False
+    assert proof["executed_trade"] is False
+    assert proof["settlement_receipt_present"] is False
+    # Never rewrite the original quote receipt when a fresher one arrives.
+    revised=replace(m,book_observed_at=start+timedelta(seconds=2),
+                    book_receipt_sha256="b"*64,yes_ask=.33)
+    assert not ledger.observe(asset="BTC",market=revised,
+                              at=start+timedelta(seconds=3))
+    assert ledger.executable_quote_evidence(
+        ticker=m.ticker,quantity=10)["book_transport_sha256"]=="a"*64
+    assert ledger.settle(
+        ticker=m.ticker,payload=receipt(m,"yes",start+timedelta(minutes=20)),
+        checked_at=start+timedelta(minutes=21))
+    assert ledger.executable_quote_evidence(
+        ticker=m.ticker,quantity=10)["settlement_receipt_present"] is True
+    assert ledger.executable_quote_evidence(
+        ticker=m.ticker,quantity=18)["status"]=="insufficient_top_book_depth"
+    with pytest.raises(ValueError):
+        ledger.executable_quote_evidence(ticker=m.ticker,quantity=0)
+
+
+def test_invalid_book_clock_or_source_hash_never_issues_kalshi_forecast(tmp_path):
+    ledger=KalshiForwardResearch(SQLiteHotStore(tmp_path / "clock-reject.sqlite"))
+    stamp=datetime(2026, 8, 1, tzinfo=UTC)
+    base=market(701,stamp)
+    for m in (
+        replace(base,book_observed_at=stamp-timedelta(seconds=26),
+                book_receipt_sha256="a"*64),
+        replace(base,book_observed_at=stamp+timedelta(seconds=1),
+                book_receipt_sha256="a"*64),
+        replace(base,book_observed_at=stamp,book_receipt_sha256="not_a_hash"),
+        replace(base,book_observed_at=stamp,book_receipt_sha256=None),
+        replace(base,book_observed_at=None,book_receipt_sha256="b"*64),
+    ):
+        assert ledger.observe(asset="BTC",market=m,at=stamp) is False
+    assert ledger.summary(asset="BTC")["observed"]==0
+    assert ledger.executable_quote_evidence(
+        ticker=base.ticker)["status"]=="contract_not_observed"
+
+
+def test_legacy_untimestamped_quote_is_never_claimed_as_book_proof(tmp_path):
+    ledger=KalshiForwardResearch(SQLiteHotStore(tmp_path / "legacy-book.sqlite"))
+    stamp=datetime(2026, 8, 1, tzinfo=UTC)
+    m=market(702,stamp)
+    assert ledger.observe(asset="BTC",market=m,at=stamp)
+    assert ledger.executable_quote_evidence(
+        ticker=m.ticker)["status"]=="no_timestamped_book_receipt"

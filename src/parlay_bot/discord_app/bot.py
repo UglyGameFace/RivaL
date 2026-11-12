@@ -1949,8 +1949,11 @@ class RivalDiscordClient(discord.Client):
                     await asyncio.wait_for(backup.run_once(), timeout=1800)
                     if self.research_drive is not None:
                         from parlay_bot.perpetuals.xmarket_inputs import XmarketInputs
-                        await asyncio.wait_for(XmarketInputs(self.store).publish_days(
-                            self.research_drive), timeout=180)
+                        try:
+                            await asyncio.wait_for(XmarketInputs(self.store).publish_days(
+                                self.research_drive), timeout=180)
+                        except Exception as exc:  # noqa: BLE001 - keep the completed records backup healthy
+                            _LOG.warning("XMarket input export deferred error=%s", type(exc).__name__)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - backup must never affect the bot

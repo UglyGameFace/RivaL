@@ -198,3 +198,34 @@ async def test_optional_input_capture_failure_does_not_break_existing_formula_he
         raise ValueError("synthetic source failure")
     monkeypatch.setattr(RivalDiscordClient, "_capture_xmarket_history", broken_capture)
     assert await _run_one_pass(monkeypatch, _client([_notice("BTC", 5)])) == [HEARTBEAT_SLUG]
+
+
+@pytest.mark.asyncio
+async def test_optional_export_failure_does_not_misreport_a_successful_records_backup(monkeypatch, caplog):
+    from parlay_bot.discord_app import bot as module
+    from parlay_bot.perpetuals import records_backup
+
+    saved = []
+    class Backup:
+        def __init__(self, *args):
+            pass
+        async def run_once(self):
+            saved.append(True)
+    client = SimpleNamespace(store=object(), research_drive=object(), closed=False)
+    async def ready():
+        return None
+    async def advance(seconds):
+        if seconds == 3600:
+            client.closed = True
+    async def unavailable(self, drive):
+        raise ValueError("synthetic optional export failure")
+    client.wait_until_ready = ready
+    client.is_closed = lambda: client.closed
+    monkeypatch.setattr(records_backup, "RecordsBackup", Backup)
+    monkeypatch.setattr(XmarketInputs, "publish_days", unavailable)
+    monkeypatch.setattr(module.asyncio, "sleep", advance)
+    monkeypatch.setattr(module.host_memory, "snapshot", lambda: SimpleNamespace(pressure=False))
+    await module.RivalDiscordClient._records_loop(client)
+    assert saved == [True]
+    assert "XMarket input export deferred" in caplog.text
+    assert "RivaL records backup failed" not in caplog.text

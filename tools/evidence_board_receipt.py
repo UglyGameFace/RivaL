@@ -305,6 +305,49 @@ def read_drive() -> dict:
     return out
 
 
+def _safe_receiver_error(code: int, raw: bytes) -> str:
+    """Only fixed labels from our own receiver; never echo raw HTTP bodies."""
+    allowed = {
+        "unverified_github_identity", "invalid_receipt",
+        "authorization_required", "payload_too_large",
+        "not_found_or_method_denied",
+    }
+    reasons = {
+        "claim_mismatch", "signature_mismatch", "unsupported_signature",
+        "signing_key_unknown", "issuer_keys_unavailable",
+        "invalid_token", "malformed_token", "invalid_schema",
+        "invalid_capture_timestamp", "invalid_receipt",
+    }
+    label = f"receiver_http_{int(code)}"
+    try:
+        body = json.loads(raw[:1500])
+        if isinstance(body, dict):
+            kind = body.get("error")
+            reason = body.get("reason")
+            if kind in allowed:
+                label += f"_{kind}"
+            if reason in reasons:
+                label += f"_{reason}"
+    except (ValueError, TypeError):
+        pass
+    return label
+
+
+def _submit_signed_receipt(payload: dict, jwt: str) -> dict:
+    try:
+        return _url_json(
+            INGEST_URL, method="POST",
+            body=json.dumps(payload, separators=(",", ":")).encode(),
+            headers={"Authorization": "Bearer " + jwt,
+                     "Content-Type": "application/json"},
+            timeout=20, limit=15000,
+        )
+    except error.HTTPError as exc:
+        # The receiver has a strictly bounded, allowlisted error vocabulary.
+        # Never print the HTTP URL, token, provider body, or raw exception.
+        raise ValueError(_safe_receiver_error(exc.code, exc.read(1500))) from None
+
+
 def _github_oidc() -> str:
     url = os.getenv("ACTIONS_ID_TOKEN_REQUEST_URL", "")
     token = os.getenv("ACTIONS_ID_TOKEN_REQUEST_TOKEN", "")
@@ -356,12 +399,11 @@ def publish() -> int:
         "github": github, "intelligence": intelligence,
         "intelligence_host": intelligence_host, "performance": performance,
     }
-    jwt = _github_oidc()
-    result = _url_json(
-        INGEST_URL, method="POST", body=json.dumps(payload, separators=(",", ":")).encode(),
-        headers={"Authorization": "Bearer " + jwt, "Content-Type": "application/json"},
-        timeout=20, limit=15000,
-    )
+    try:
+        jwt = _github_oidc()
+    except error.HTTPError as exc:
+        raise ValueError(f"oidc_provider_http_{int(exc.code)}") from None
+    result = _submit_signed_receipt(payload, jwt)
     if result.get("status") not in ("accepted", "stale_ignored"):
         raise ValueError("receipt_not_accepted")
     # The only logged output is a bounded status. Never print provider output.
@@ -380,5 +422,8 @@ if __name__ == "__main__":
     try:
         sys.exit(publish())
     except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError) as exc:
-        print("Evidence-board publication unavailable:", type(exc).__name__)
+        name = str(exc) if (isinstance(exc, ValueError)
+                            and str(exc).startswith(("oidc_provider_http_",
+                                                     "receiver_http_"))) else type(exc).__name__
+        print("Evidence-board publication unavailable:", name)
         sys.exit(1)

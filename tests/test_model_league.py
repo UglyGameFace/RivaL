@@ -371,6 +371,13 @@ def test_unverified_legacy_economic_numbers_cannot_win_or_issue_a_call(learning_
     assert record["unverified_cost_contracts"] == record["observed_contracts"]
     assert record["source_cost_coverage"] == 0
     assert record["trades"] == 0
+    from parlay_bot.perpetuals.learning_health_receipt import _contest_progress
+
+    progress = _contest_progress(learning_store, NOW)
+    assert progress["captured"] == record["observed_contracts"]
+    assert progress["registered_cost_proofs"] == 0
+    assert progress["unverified_cost_contracts"] == progress["captured"]
+    assert progress["does_not_prove_executed_trades"] is True
     old = c.call(notice().slug, BOOK)
     assert old["cost_source_verified"] == 0
     assert old["direction"] == "WAIT"
@@ -388,6 +395,10 @@ def test_issued_cost_provenance_rejects_tampered_stored_price(learning_store):
     original_book = next(x for x in original["models"] if x["model"] == BOOK)
     assert original_book["unverified_cost_contracts"] == 0
     assert original_book["source_cost_coverage"] == 1
+    from parlay_bot.perpetuals.learning_health_receipt import _contest_progress
+
+    progress = _contest_progress(learning_store, NOW)
+    assert progress["registered_cost_proofs"] == progress["captured"]
     assert c.call(notice().slug, BOOK)["cost_source_verified"] == 1
 
     # The stored fee-and-ask receipt stays immutable even when someone

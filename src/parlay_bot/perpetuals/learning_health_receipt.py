@@ -122,16 +122,21 @@ def _actual_learning_progress(store, now: datetime) -> dict:
                 ((now - timedelta(hours=6)).isoformat(), now.isoformat()),
             ).fetchall()
             # The Lab has its own persisted online learner checkpoint.
-            # Missing optional lab tables are reported separately below;
-            # they must not invalidate an authoritative main-model proof.
-            try:
-                lab = conn.execute(
-                    """SELECT updates,trained_at
-                       FROM rival_lab_learners
-                       ORDER BY trained_at DESC LIMIT 100"""
-                ).fetchall()
-            except Exception:  # noqa: BLE001 - optional Lab status only
-                lab = None
+            # Check table existence before an optional read: a missing-table
+            # error would abort PostgreSQL's current transaction.
+            if store.database.backend == "postgres":
+                exists = conn.execute(
+                    "SELECT to_regclass('rival_lab_learners') AS name"
+                ).fetchone()
+            else:
+                exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name='rival_lab_learners'"
+                ).fetchone()
+            lab = (conn.execute(
+                """SELECT updates,trained_at FROM rival_lab_learners
+                   ORDER BY trained_at DESC LIMIT 100"""
+            ).fetchall() if exists and exists["name"] else None)
     except Exception:  # noqa: BLE001 - old/unavailable lineage table
         return {"status": "read_unavailable", "proves_improvement": False}
 
@@ -148,7 +153,7 @@ def _actual_learning_progress(store, now: datetime) -> dict:
                 and head["weights_sha256"] != row["weights_sha256"]):
             changed.add(key)
     snapshots = list(newest.values())
-    lab_status = ({"status": "read_unavailable"} if lab is None
+    lab_status = ({"status": "not_initialized"} if lab is None
                   else {"status": "recorded" if lab else "no_saved_learners",
                         "sampled_streams": len(lab),
                         "streams_with_training_updates":

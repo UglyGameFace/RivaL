@@ -19,6 +19,7 @@ from parlay_bot.perpetuals.fusion import utc
 from parlay_bot.perpetuals.governance import score_paired_forward
 
 VERSION = "prospective-empirical-path-v1"
+TARGET_VERSION = "prospective-empirical-close-targets-v1"
 HORIZONS = (15, 60)
 SIDES = ("long", "short")
 LOOKBACK = 24
@@ -58,19 +59,37 @@ def _reference_samples(candles, index: int, steps: int, ahead) -> tuple:
     movement = math.log(entry / float(candles[index-3].close_price))
     bars = [{"high": c.high_price, "low": c.low_price} for c in ahead]
     out = []
+    absolute_return = abs(math.log(float(ahead[-1].close_price)/entry))
+    # First confirmed CLOSE crossing. This is NOT an intrabar high/low
+    # estimate or an executable first-passage time.
+    first_close_hit = next((
+        j for j, future in enumerate(ahead, 1)
+        if abs(math.log(float(future.close_price)/entry)) >= vol
+    ), None)
+    early_move = int(first_close_hit is not None
+                     and first_close_hit <= (steps + 1)//2)
     for side in SIDES:
         flags = trace_barriers(
             entry=entry, sigma_horizon=vol, side=side, future=bars,
         )
-        if flags is None:
-            continue
         sign = 1 if side == "long" else -1
         realized = sign*math.log(float(ahead[-1].close_price)/entry)
         out.append((side, (
             utc(reference.opened_at).isoformat(),
-            bool(sign*movement >= 0), flags[0], flags[1], realized,
+            bool(sign*movement >= 0),
+            flags[0] if flags is not None else None,
+            flags[1] if flags is not None else None,
+            realized, int(realized > 0), early_move, absolute_return,
         )))
     return tuple(out)
+
+
+def _smoothed_close_probability(history, cohort, index):
+    """Shrink a conditional event rate to its same-source historical prior."""
+    base = (sum(row[index] for row in history) + 2) / (len(history) + 4)
+    candidate = (sum(row[index] for row in cohort) + 16 * base) / (
+        len(cohort) + 16)
+    return candidate, base
 
 
 def _quantile(values, p):
@@ -114,6 +133,7 @@ def empirical_paths(candles, *, horizon: int, now: datetime, memo: dict | None =
         previous = c
     latest = len(candles)-1
     side_samples = {side: [] for side in SIDES}
+    close_samples = {side: [] for side in SIDES}
     # A step-wide grid avoids training on 12 copies of one 60m outcome.
     # Skip the first candle opening alongside the reference close: the
     # real worker issues seconds AFTER that bar opens and cannot prove
@@ -134,7 +154,11 @@ def empirical_paths(candles, *, horizon: int, now: datetime, memo: dict | None =
             if memo is not None:
                 memo[key] = samples
         for side, sample in samples:
-            side_samples[side].append(sample)
+            close_samples[side].append(sample)
+            # Intrabar TP/stop ambiguity must not train the barrier model,
+            # but it cannot erase an otherwise known closing-price label.
+            if sample[2] is not None:
+                side_samples[side].append(sample)
     if not all(len(rows) >= MIN_TRAIN for rows in side_samples.values()):
         return {}
     current_movement = math.log(
@@ -161,8 +185,22 @@ def empirical_paths(candles, *, horizon: int, now: datetime, memo: dict | None =
         signed_returns = [row[4] for row in matching]
         quantiles = [_quantile(signed_returns,p) for p in (.1,.5,.9)]
         digest = hashlib.sha256(json.dumps(
-            history,sort_keys=True,separators=(",",":"),allow_nan=False,
+            [row[:5] for row in history],
+            sort_keys=True, separators=(",",":"), allow_nan=False,
         ).encode()).hexdigest()
+        close_history = close_samples[side][-MAX_TRAIN:]
+        close_matching = [row for row in close_history if row[1] == aligned]
+        if len(close_matching) < 12:
+            close_matching = close_history
+        # Predeclared smoothing against an unconditional stream baseline.
+        # Both outcomes are independently scored (Brier) against the same
+        # source/time labels; no selection on test results.
+        direction_p, direction_base = _smoothed_close_probability(
+            close_history, close_matching, 5)
+        early_p, early_base = _smoothed_close_probability(
+            close_history, close_matching, 6)
+        size_p50 = _quantile([row[7] for row in close_matching], .5)
+        size_base = _quantile([row[7] for row in close_history], .5)
         result[side] = {
             "sigma": current_sigma,
             "tp1_probability": probabilities[0],
@@ -172,6 +210,19 @@ def empirical_paths(candles, *, horizon: int, now: datetime, memo: dict | None =
             "p10": quantiles[0], "p50": quantiles[1], "p90": quantiles[2],
             "training_count": len(history), "cohort_count": len(matching),
             "training_sha256": digest,
+            # Standalone immutable close-only targets: no same-candle fill
+            # assumption, no duplicated TP/stop evidence.
+            "direction_probability": direction_p,
+            "direction_baseline": direction_base,
+            "early_move_probability": early_p,
+            "early_move_baseline": early_base,
+            "absolute_move_p50": size_p50,
+            "absolute_move_baseline": size_base,
+            "close_target_training_count": len(close_history),
+            "close_target_training_sha256": hashlib.sha256(json.dumps(
+                close_history, sort_keys=True, separators=(",",":"),
+                allow_nan=False,
+            ).encode()).hexdigest(),
         }
     return result
 
@@ -207,6 +258,31 @@ class ProspectivePathLedger:
                 ON rival_forward_paths(state,target_opened_at);
             CREATE INDEX IF NOT EXISTS idx_rival_forward_paths_score
                 ON rival_forward_paths(asset,horizon_minutes,side,issued_at);
+            CREATE TABLE IF NOT EXISTS rival_forward_path_targets (
+                venue TEXT NOT NULL,contract TEXT NOT NULL,quote TEXT NOT NULL,
+                asset TEXT NOT NULL,horizon_minutes INTEGER NOT NULL,
+                model_version TEXT NOT NULL,side TEXT NOT NULL,
+                reference_opened_at TEXT NOT NULL,issued_at TEXT NOT NULL,
+                target_opened_at TEXT NOT NULL,reference_close DOUBLE PRECISION NOT NULL,
+                sigma_horizon DOUBLE PRECISION NOT NULL,
+                direction_probability DOUBLE PRECISION NOT NULL,
+                direction_baseline DOUBLE PRECISION NOT NULL,
+                early_move_probability DOUBLE PRECISION NOT NULL,
+                early_move_baseline DOUBLE PRECISION NOT NULL,
+                absolute_move_p50 DOUBLE PRECISION NOT NULL,
+                absolute_move_baseline DOUBLE PRECISION NOT NULL,
+                close_target_training_count INTEGER NOT NULL,
+                close_target_training_sha256 TEXT NOT NULL,
+                state TEXT NOT NULL,settled_at TEXT,
+                direction_positive INTEGER,early_move_by_half INTEGER,
+                absolute_move_realized DOUBLE PRECISION,
+                first_close_hit_bars INTEGER,
+                PRIMARY KEY(venue,contract,quote,horizon_minutes,side,reference_opened_at)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rival_path_targets_pending
+                ON rival_forward_path_targets(state,target_opened_at);
+            CREATE INDEX IF NOT EXISTS idx_rival_path_targets_score
+                ON rival_forward_path_targets(asset,horizon_minutes,side,issued_at);
             """)
 
     def issue(self, conn, *, candles, asset, horizon, now, issued_at, options=None):
@@ -246,6 +322,29 @@ class ProspectivePathLedger:
                  sample["training_count"],sample["cohort_count"],
                  sample["training_sha256"],"pending"),
             )
+            if result.rowcount == 1:
+                # Only issue a companion task for a genuinely NEW prospect.
+                # No hindsight backfill for previously issued path forecasts.
+                conn.execute(
+                    """INSERT INTO rival_forward_path_targets (
+                         venue,contract,quote,asset,horizon_minutes,
+                         model_version,side,reference_opened_at,issued_at,
+                         target_opened_at,reference_close,sigma_horizon,
+                         direction_probability,direction_baseline,
+                         early_move_probability,early_move_baseline,
+                         absolute_move_p50,absolute_move_baseline,
+                         close_target_training_count,close_target_training_sha256,state)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT DO NOTHING""",
+                    (last.venue,last.contract,last.quote,asset,horizon,TARGET_VERSION,side,
+                     utc(last.opened_at).isoformat(),issued_at.isoformat(),
+                     target.isoformat(),last.close_price,sample["sigma"],
+                     sample["direction_probability"],sample["direction_baseline"],
+                     sample["early_move_probability"],sample["early_move_baseline"],
+                     sample["absolute_move_p50"],sample["absolute_move_baseline"],
+                     sample["close_target_training_count"],
+                     sample["close_target_training_sha256"],"pending"),
+                )
             count+=int(result.rowcount==1)
         return count
 
@@ -312,6 +411,20 @@ class ProspectivePathLedger:
                 except (ValueError,TypeError,OverflowError,ZeroDivisionError):
                     continue
                 state="ambiguous" if result is None else "settled"
+                # Closing-price labels are independent of TP/stop intrabar
+                # ordering. Every future close still must have passed the
+                # immutable exact-source/first-observation checks above.
+                entry=float(p["reference_close"])
+                sigma=float(p["sigma_horizon"])
+                closes=[float(b["close_price"]) for b in bars]
+                if not all(math.isfinite(v) and v > 0 for v in closes):
+                    continue
+                first_close_hit=next((
+                    j for j, close in enumerate(closes, 1)
+                    if abs(math.log(close/entry)) >= sigma
+                ), None)
+                early=int(first_close_hit is not None
+                          and first_close_hit <= (steps+1)//2)
                 updated=conn.execute(
                     """UPDATE rival_forward_paths SET
                        state=?,settled_at=?,tp1_before_stop=?,
@@ -325,6 +438,21 @@ class ProspectivePathLedger:
                      p["horizon_minutes"],p["side"],p["reference_opened_at"]),
                 )
                 if updated.rowcount==1:
+                    # No late/backfilled forecast insertion: UPDATE is limited
+                    # to rows frozen at issuance. Ambiguous OHLC is allowed
+                    # for independent closing-price labels only.
+                    conn.execute(
+                        """UPDATE rival_forward_path_targets SET
+                             state='settled',settled_at=?,
+                             direction_positive=?,early_move_by_half=?,
+                             absolute_move_realized=?,first_close_hit_bars=?
+                           WHERE venue=? AND contract=? AND quote=?
+                             AND horizon_minutes=? AND side=?
+                             AND reference_opened_at=? AND state='pending'""",
+                        (stamp.isoformat(),int(signed>0),early,abs(signed),
+                         first_close_hit,p["venue"],p["contract"],p["quote"],
+                         p["horizon_minutes"],p["side"],p["reference_opened_at"]),
+                    )
                     scored+=int(state=="settled")
                     ambiguous+=int(state=="ambiguous")
         return {"settled":scored,"ambiguous":ambiguous}
@@ -377,5 +505,91 @@ class ProspectivePathLedger:
                                          for x in comparisons.values()),
                 "live_approved":False,
                 "after_cost_qualified":False,
+            }
+        return reports
+
+    def target_report(self, *, asset, horizon, now=None) -> dict:
+        """Independent close-only scores, not proof of an executable edge.
+
+        Direction and early-move are paired Brier comparisons against
+        source-specific historical baselines. Move size uses paired absolute
+        error. Correlated long/short and overlapping targets are reported
+        separately; these rows cannot approve a live model or simulated fill.
+        """
+        stamp=utc(now or datetime.now(UTC))
+        self.initialize()
+        with self.store.connect() as conn:
+            rows=conn.execute(
+                """SELECT * FROM rival_forward_path_targets
+                   WHERE asset=? AND horizon_minutes=?
+                     AND issued_at>=? AND settled_at<=?
+                     AND state='settled'
+                   ORDER BY target_opened_at DESC LIMIT 8000""",
+                (asset,horizon,(stamp-timedelta(days=28)).isoformat(),
+                 stamp.isoformat()),
+            ).fetchall()
+        scopes={}
+        for row in rows:
+            key="/".join((row["venue"],row["contract"],row["quote"],row["side"],row["model_version"]))
+            scopes.setdefault(key,{}).setdefault(str(row["target_opened_at"]),[]).append(row)
+        reports={}
+        for key, grouped in scopes.items():
+            direction=[]
+            timing=[]
+            size=[]
+            for target, group in sorted(grouped.items()):
+                # Only one eligible prospect per exact model/source/target.
+                # Do not count duplicates as independent supporting evidence.
+                if len(group)!=1:
+                    continue
+                row=group[0]
+                if row["direction_positive"] not in (0,1) or row["early_move_by_half"] not in (0,1):
+                    continue
+                y=int(row["direction_positive"])
+                early=int(row["early_move_by_half"])
+                d=float(row["direction_probability"])
+                db=float(row["direction_baseline"])
+                t=float(row["early_move_probability"])
+                tb=float(row["early_move_baseline"])
+                estimate=float(row["absolute_move_p50"])
+                baseline=float(row["absolute_move_baseline"])
+                actual=float(row["absolute_move_realized"])
+                if (not all(math.isfinite(x) for x in (d,db,t,tb,estimate,baseline,actual))
+                        or not all(0<x<1 for x in (d,db,t,tb))
+                        or min(estimate,baseline,actual)<0):
+                    continue
+                direction.append((target,(d-y)**2,(db-y)**2))
+                timing.append((target,(t-early)**2,(tb-early)**2))
+                size.append((abs(estimate-actual),abs(baseline-actual)))
+            d_proof=score_paired_forward(direction)
+            t_proof=score_paired_forward(timing)
+            reports[key]={
+                "direction": {
+                    "targets":d_proof.targets,"days":d_proof.days,
+                    "model_brier":d_proof.model_brier,
+                    "baseline_brier":d_proof.baseline_brier,
+                    "paired_gain":d_proof.paired_gain,
+                    "research_screen":d_proof.status,"reason":d_proof.reason,
+                },
+                "early_close_move": {
+                    "definition": "first close >= prior one-sigma move by half horizon",
+                    "targets":t_proof.targets,"days":t_proof.days,
+                    "model_brier":t_proof.model_brier,
+                    "baseline_brier":t_proof.baseline_brier,
+                    "paired_gain":t_proof.paired_gain,
+                    "research_screen":t_proof.status,"reason":t_proof.reason,
+                },
+                "absolute_terminal_move": {
+                    "targets":len(size),
+                    "model_mean_abs_error":(
+                        sum(x[0] for x in size)/len(size) if size else None),
+                    "baseline_mean_abs_error":(
+                        sum(x[1] for x in size)/len(size) if size else None),
+                },
+                "independent_of_intrabar_tp_stop_order": True,
+                "correlated_with_other_sides_and_horizons": True,
+                "qualified_for_live_use": False,
+                "after_cost_qualified": False,
+                "execution_quote_proven": False,
             }
         return reports

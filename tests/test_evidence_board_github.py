@@ -76,9 +76,11 @@ class GithubSnapshotTests(unittest.TestCase):
         self.assertIn("fetched_at", snap)
 
     def test_schema_failure_does_not_mark_a_snapshot_verified(self) -> None:
-        with patch("evidence_board_github._github_json", side_effect=[[], {}]):
-            with self.assertRaises(TypeError):
-                read_github_snapshot("short-lived-token")
+        with (
+            patch("evidence_board_github._github_json", side_effect=[[], {}]),
+            self.assertRaises(TypeError),
+        ):
+            read_github_snapshot("short-lived-token")
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from datetime import UTC, datetime, timedelta
 
 import discord
@@ -107,20 +108,27 @@ def _families(store, asset: str, now: datetime) -> dict[str, dict[int, list]]:
                   FROM rival_family_promotion WHERE asset=? AND evaluated_at>=?""",
         (asset, since), what="model page promotion read") or []
     retired = retired_families()
-    found: dict[str, dict[int, dict[str, list]]] = {}
+    from parlay_bot.perpetuals.model_lab import load_family_designs
+
+    parsed = []
     for row in rows:
         try:
             evidence = json.loads(row["evidence_json"] or "{}")
         except (TypeError, ValueError):
             continue
-        if not isinstance(evidence, dict):
-            continue
+        if isinstance(evidence, dict):
+            parsed.append((row, evidence))
+    load_family_designs(store, {f for _, evidence in parsed for f in evidence
+                               if str(f).startswith("lab_")})
+    found: dict[str, dict[int, dict[str, list]]] = {}
+    for row, evidence in parsed:
         for family, info in evidence.items():
             if (is_retired(family, retired) or not isinstance(info, dict)
                     or not isinstance(info.get("targets"), int)
                     or not isinstance(info.get("days"), int)):
                 continue
-            found.setdefault(short_name(family), {}).setdefault(
+            key = family if family.startswith("lab_") else short_name(family)
+            found.setdefault(key, {}).setdefault(
                 int(row["horizon_minutes"]), {}).setdefault(family, []).append(
                     (str(row["venue"]), str(row["contract"]), family, info))
     out: dict[str, dict[int, list]] = {}
@@ -200,7 +208,15 @@ def model_report(store, asset: str, name: str, now: datetime | None = None) -> d
     timeframe (14 days, on the (asset,horizon,family,issued_at) index).
     """
     stamp = (now or datetime.now(UTC)).astimezone(UTC)
-    found = _families(store, asset, stamp).get(name)
+    models = _families(store, asset, stamp)
+    found = models.get(name)
+    if found is None:
+        legacy = re.fullmatch(r"Lab ([0-9a-f]{6,10})", name)
+        matches = [key for key in models if legacy and key.startswith("lab_")
+                   and key.rsplit("_", 1)[-1].startswith(legacy.group(1))]
+        if len(matches) == 1:
+            name = matches[0]
+            found = models[name]
     if not found:
         return None
     since = (stamp - timedelta(days=LEDGER_DAYS)).isoformat()
@@ -261,7 +277,11 @@ def model_report(store, asset: str, name: str, now: datetime | None = None) -> d
             "ledger": overall, "ledger_ok": ledger_ok,
             "bands": bands, "conditions": conditions,
         }
-    return {"asset": asset, "name": name, "horizons": horizons, "ledger_days": LEDGER_DAYS}
+    from parlay_bot.perpetuals.model_lab import family_names
+
+    labels = family_names([f for f in models if f.startswith("lab_")])
+    return {"asset": asset, "name": labels.get(name, name),
+            "horizons": horizons, "ledger_days": LEDGER_DAYS}
 
 
 # --- page -------------------------------------------------------------------
@@ -475,6 +495,8 @@ def _checklist(report: dict) -> str:
 
 
 def model_embed(report: dict | None, *, asset: str, name: str) -> discord.Embed:
+    name = (report or {}).get("name") or (short_name(name)
+        if name.startswith(("lab_", "Lab ")) else name)
     if report is None or not report["horizons"]:
         return discord.Embed(
             title=f"🧪 {name} · {asset}",
@@ -482,7 +504,7 @@ def model_embed(report: dict | None, *, asset: str, name: str) -> discord.Embed:
                         "retired, or the hourly check hasn't scored it yet.",
             color=discord.Color.light_grey())
     how = HOW_IT_WORKS.get(name)
-    if how is None and name.startswith("Lab "):
+    if how is None:
         from parlay_bot.perpetuals.model_lab import describe_family
 
         family = next((h["family"] for h in report["horizons"].values()), "")

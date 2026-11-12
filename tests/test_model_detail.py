@@ -117,6 +117,33 @@ def test_the_picker_lists_every_model_on_trial_for_the_coin(store):
     assert trial_models(store, "ETH") == ["Cross-exch"]
 
 
+def test_saved_lab_designs_keep_identity_and_old_watch_links_after_renaming(store, monkeypatch):
+    from parlay_bot.discord_app.model_watch import compare_embed
+    from parlay_bot.perpetuals import model_lab
+
+    monkeypatch.setattr(model_lab, "_GENOMES", {})
+    designs = [dict(model_lab.SEEDS[0]), {**model_lab.SEEDS[0], "l2": .01}]
+    families = [model_lab.family_of(g, 5) for g in designs]
+    with store.connect() as conn:
+        conn.execute(model_lab.GENOME_SCHEMA)
+        for family, genome in zip(families, designs):
+            conn.execute("INSERT INTO rival_lab_genomes "
+                "(family,horizon_minutes,genome_json,status,opened_at) VALUES (?,?,?,?,?)",
+                (family, 5, json.dumps(model_lab.canonical(genome, 5)), "active", NOW.isoformat()))
+    _promotion(store, "okx", 5, {families[0]: _info(2, 101, .003),
+                                  families[1]: _info(1, 55, -.002)})
+    assert set(trial_models(store, "BTC")) == set(families)
+    reports = {f: model_report(store, "BTC", f) for f in families}
+    assert [reports[f]["horizons"][5]["results"] for f in families] == [101, 55]
+    old = model_report(store, "BTC", "Lab " + families[0].rsplit("_", 1)[-1][:6])
+    assert old["horizons"][5]["family"] == families[0]
+    embed = model_embed(old, asset="BTC", name="Lab d91792")
+    assert "All signals" in embed.title and "momentum" in embed.description
+    assert "regularization" in embed.description and "lab_" not in str(embed.to_dict())
+    compared = str(compare_embed(reports, asset="BTC").to_dict())
+    assert "All signals" in compared and "lab_" not in compared
+
+
 def test_the_report_compares_like_with_like(store):
     _seed(store)
     report = model_report(store, "BTC", "Trend-only")

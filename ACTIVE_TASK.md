@@ -1,3 +1,14 @@
+## 2026-11-12 — Descriptive names for Lab models
+
+- **Objective / branch:** Replace opaque Lab hash labels with the actual model inputs and learning settings across Performance, model selection/details, comparisons, live watches and status cards. Branch `fix/descriptive-lab-model-names-20261112`, based on `main@c577d5a5`. PR #530 changes VolCal independently and is untouched.
+- **Cause:** The UI displayed six digest characters even though `rival_lab_genomes` already records each design. The old folding/picker paths also used display text as identity, so friendly names alone could combine distinct models' scores.
+- **Changes:** Read validated saved design metadata without writes or new tables; derive meaningful signal/speed/regime names, with settings to distinguish similar designs. Keep Lab family IDs internal to selection and evidence. Preserve old Lab-prefix watch links. Wrap descriptive names above unchanged phone-width metrics; leave other model names and learning/promotion logic intact.
+- **Validation:** **88 targeted tests passed, one PostgreSQL skip**; full-repository Ruff and diff checks pass. Tests cover the four exact screenshot designs, cold saved-metadata lookup, corrupt/missing metadata, distinct evidence, old watch links, selection/comparison labels and Discord field/phone limits. AST comparison confirms the only modified pre-existing Lab function is its description formatter; model math, identities, review and gates are unchanged. Full PostgreSQL CI and deployment remain pending until integration.
+- **Parallel XMarket evidence:** The first new-code training run `43224850573` completed all four assets and published all 12 XMarket reports. Every scope was blocked by unverified prediction-market fidelity/aggregation: zero matched comparison bars for both providers, against the existing 30-bar minimum. Kalshi backfill errors are also recorded. No fitted/imported XMarket model or shadow row is established. Next verify live-sample exports against independent history before fitting; this naming work does not reset that state.
+- **Cleanup / next:** Merge on exact-head CI green, follow the existing main release, verify host health, then retire this branch after preservation. Refresh Performance or existing live watches to render the new names; no Discord screen is claimed observed from tests alone.
+
+---
+
 ## 2026-11-12 — XMarket production capture correction
 
 - **Objective / branch:** Complete PR #529's production verification. Branch `fix/xmarket-native-price-dedup-20261112`, based on deployed `main@09fb01e1`. Open PR #530 changes VolCal only and is independent.

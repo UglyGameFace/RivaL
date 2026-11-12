@@ -123,7 +123,9 @@ def family_words(family: str) -> str:
     if pooled:
         name = f"6-year history model ({pooled.group(1)}-min)"
     elif lab:
-        name = f"Model Lab design {lab.group(2)[:6]} ({lab.group(1)}-min)"
+        from parlay_bot.perpetuals.model_lab import family_name
+
+        name = f"{family_name(base)} ({lab.group(1)}-min)"
     else:
         name = _FAMILY_WORDS.get(base) or rename_text(base)
     return name + (", per exchange" if per_exchange else "")
@@ -159,9 +161,14 @@ def prediction_lines(research) -> list[str]:
             others.append(text)
     if not progress:
         return list(others)
+    from parlay_bot.perpetuals.model_lab import family_names
+
+    lab_names = family_names([m["family"] for m in progress if m["family"].startswith("lab_")])
     groups: dict[str, list] = {}
     for match in progress:
-        groups.setdefault(family_words(match["family"]), []).append(match)
+        family = match["family"]
+        key = family if family.startswith("lab_") else family_words(family)
+        groups.setdefault(key, []).append(match)
     leaders = sorted(
         ((name, len(matches), max(matches, key=lambda m: (int(m["days"]),
                                                           int(m["targets"]))))
@@ -179,7 +186,9 @@ def prediction_lines(research) -> list[str]:
         targets, needed = int(lead["targets"]), int(lead["min_targets"])
         results = (f"{targets} results (minimum met)" if targets >= needed
                    else f"{targets} of {needed} results")
-        label = name + (f" ({versions} versions)" if versions > 1 else "")
+        label = (lab_names[name] + " (" + name.split("_")[1].removesuffix("m") + "-min)"
+                 if name.startswith("lab_") else name)
+        label += f" ({versions} versions)" if versions > 1 else ""
         scope = f" [{lead['scope'].strip()}]" if lead['scope'] else " [scope unspecified]"
         gates = f"; still needs: {lead['gates']}" if lead['gates'] else "; full gates unverified"
         lines.append(f"• {label}{scope}: day {lead['days']} of {lead['min_days']}, "

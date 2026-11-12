@@ -724,7 +724,14 @@ class _ModelSelect(discord.ui.Select["ResearchDashboard"]):
     """Pick any model on trial for this coin to open its own detail page."""
 
     def __init__(self, names: list[str], selected: list[str]) -> None:
-        options = [discord.SelectOption(label=name, value=name, default=name in selected)
+        from parlay_bot.perpetuals.model_lab import family_names, family_settings
+
+        labels = family_names([name for name in names if name.startswith("lab_")])
+        options = [discord.SelectOption(
+            label=labels.get(name, name),
+            value=name, default=name in selected,
+            description=(name.split("_")[1] + " · " + (family_settings(name) or "Design unavailable"))[:100]
+                        if name.startswith("lab_") else None)
                    for name in names[:25]]
         super().__init__(
             placeholder="🧪 Inspect one model, or pick up to 5 to compare…",

@@ -28,6 +28,8 @@ from parlay_bot.discord_app.trial_board import (
     TOO_FEW,
     _tiny_count,
     grouped,
+    model_line,
+    short_name,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -65,6 +67,12 @@ def compare_embed(reports: dict[str, dict | None], *, asset: str,
     """Up to five models side by side, one table per timeframe that has data."""
     stamp = (now or datetime.now(UTC)).astimezone(UTC)
     names = list(reports)
+    from parlay_bot.perpetuals.model_lab import family_names
+
+    lab_names = family_names([name for name in reports if name.startswith("lab_")])
+    labels = {name: (report or {}).get("name") or lab_names.get(name)
+              or (short_name(name) if name.startswith("Lab ") else name)
+              for name, report in reports.items()}
     embed = discord.Embed(
         title=f"{'📡 Live watch' if live else '🧪 Compare'} · {asset} · {len(names)} models",
         description=("Each model next to the others, scored like the main model on the "
@@ -72,7 +80,7 @@ def compare_embed(reports: dict[str, dict | None], *, asset: str,
                      "(+ is better)."),
         color=discord.Color.blurple(),
     )
-    missing = [name for name, report in reports.items() if not report or not report["horizons"]]
+    missing = [labels[name] for name, report in reports.items() if not report or not report["horizons"]]
     for horizon in HORIZONS:
         rows = []
         for name, report in reports.items():
@@ -83,9 +91,9 @@ def compare_embed(reports: dict[str, dict | None], *, asset: str,
             right = ("?" if not h.get("ledger_ok", True)
                      else f"{led['right'] / led['n']:.0%}" if led["n"] >= TOO_FEW else "few")
             day = f"{min(h['days'], 99)}/{MIN_DAYS}"
-            line = (f"{name[:11]:<11} {day:>5} {_tiny_count(h['results']):>4} "
-                    f"{right:>5} {_pts(h['gain']):>5}")
-            rows.append((name, h, line))
+            line = model_line(labels[name], day, _tiny_count(h["results"]), right, _pts(h["gain"]),
+                              expanded=str(h.get("family", "")).startswith("lab_"))
+            rows.append((labels[name], h, line))
         if not rows:
             continue
         # Same phone-width layout as Bot Performance: grouped by status.
@@ -206,7 +214,11 @@ class ModelWatchService:
                      json.dumps(names), now, now))
 
         await asyncio.to_thread(save)
-        return (f"📡 Live watch posted: {', '.join(names)} on {asset}, updating every "
+        from parlay_bot.perpetuals.model_lab import family_names
+
+        lab_labels = family_names([n for n in names if n.startswith("lab_")])
+        labels = [lab_labels.get(n, n) for n in names]
+        return (f"📡 Live watch posted: {', '.join(labels)} on {asset}, updating every "
                 f"{REFRESH_SECONDS // 60} minutes.")
 
     async def _edit(self, row: dict) -> bool:

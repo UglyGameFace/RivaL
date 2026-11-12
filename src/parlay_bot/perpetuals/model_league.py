@@ -21,7 +21,7 @@ ALPHA = .05
 MIN_CONTRACTS = 300
 MIN_TRADES = 150
 MIN_COVERAGE = .8
-POLICY = "sequential-betting-v2"
+POLICY = "sequential-betting-v3-source-cost-proof"
 BET_FRACTIONS = (.01, .03, .1, .3, .5, .8)
 CHECKPOINT_ELAPSED = .20
 CHECKPOINT_WIDTH = timedelta(seconds=20)
@@ -84,6 +84,83 @@ def implied_bet(p: float, up_cost: float | None, down_cost: float | None):
                if cost is not None and math.isfinite(cost) and 0 < cost < 1
                and chance-cost >= EDGE]
     return max(choices, key=lambda x: x[1], default=None)
+
+
+
+def _verified_source_cost(raw: dict, issued_at: datetime) -> dict | None:
+    """Verify a frozen, exact-token fee/book receipt before counting economics.
+
+    This is used both when the prediction is FIRST recorded and later for
+    individual read-only contract audits. Source SHA-256 proves internal
+    integrity, not a signed CLOB response or an actual exchange fill.
+    """
+    source = raw.get("fee_source_receipt")
+    if not isinstance(source, dict):
+        return None
+    try:
+        receipt_hash = source["receipt_sha256"]
+        signed = {key: value for key, value in source.items() if key not in (
+            "receipt_sha256", "cost_status", "actual_fills_proven")}
+        checked_hash = hashlib.sha256(json.dumps(
+            signed, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode()).hexdigest()
+        received = datetime.fromisoformat(source["received_at"])
+        quoted = datetime.fromisoformat(source["quote_at"])
+        utc_issue = issued_at.astimezone(UTC)
+        rate = float(source["fee_rate"])
+        yes = float(raw["up_ask"])
+        no = float(raw["down_ask"])
+        yes_cost = float(raw["up_cost"])
+        no_cost = float(raw["down_cost"])
+        fee_enabled = source["fees_enabled"]
+        fee_schedule = source["fee_schedule"]
+        token_up, token_down = source["up_token_id"], source["down_token_id"]
+        fee_terms_ok = (
+            fee_enabled is False and rate == 0.0
+            or fee_enabled is True and isinstance(fee_schedule, dict)
+            and float(fee_schedule["exponent"]) == 1.0
+            and float(fee_schedule["rate"]) == rate
+            and 0 < rate <= 1
+        )
+        if not (
+            source.get("cost_status") == "gamma_fee_and_depth_paper_only"
+            and source.get("actual_fills_proven") is False
+            and isinstance(receipt_hash, str) and receipt_hash == checked_hash
+            and received.utcoffset() is not None and quoted.utcoffset() is not None
+            and utc_issue.utcoffset() is not None
+            and 0 <= (utc_issue-received).total_seconds() <= 25
+            and 0 <= (received-quoted).total_seconds() <= 25
+            and source["quote_at"] == raw["quote_at"]
+            and source["slug"] == raw["slug"]
+            and source["condition_id"] == raw["condition_id"]
+            and token_up != token_down
+            and token_up == raw.get("up_token_id")
+            and token_down == raw.get("down_token_id")
+            and all(isinstance(token, str) and token.isascii()
+                    and token.isdecimal() and len(token) > 30
+                    for token in (token_up, token_down))
+            and all(isinstance(source.get(name), str)
+                    and re.fullmatch(r"[0-9a-f]{64}", source[name])
+                    for name in ("up_book_sha256", "down_book_sha256"))
+            and source["shares"] == 10.0
+            and isinstance(fee_enabled, bool) and fee_terms_ok
+            and math.isfinite(rate)
+            and raw.get("fee_rate") == rate
+            and all(math.isfinite(x) for x in (yes, no, yes_cost, no_cost))
+            and 0 < yes <= yes_cost < 2
+            and 0 < no <= no_cost < 2
+        ):
+            return None
+        return {
+            "source_receipt_sha256": receipt_hash,
+            "up_token_id": token_up, "down_token_id": token_down,
+            "quoted_at": source["quote_at"], "received_at": source["received_at"],
+            "up_cost_per_share": yes_cost, "down_cost_per_share": no_cost,
+            "shares": 10.0, "fee_rate": rate,
+        }
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
 
 
 class Contest:

@@ -219,6 +219,10 @@ def empirical_paths(candles, *, horizon: int, now: datetime, memo: dict | None =
             "absolute_move_p50": size_p50,
             "absolute_move_baseline": size_base,
             "close_target_training_count": len(close_history),
+            "close_target_training_sha256": hashlib.sha256(json.dumps(
+                close_history, sort_keys=True, separators=(",",":"),
+                allow_nan=False,
+            ).encode()).hexdigest(),
         }
     return result
 
@@ -268,6 +272,7 @@ class ProspectivePathLedger:
                 absolute_move_p50 DOUBLE PRECISION NOT NULL,
                 absolute_move_baseline DOUBLE PRECISION NOT NULL,
                 close_target_training_count INTEGER NOT NULL,
+                close_target_training_sha256 TEXT NOT NULL,
                 state TEXT NOT NULL,settled_at TEXT,
                 direction_positive INTEGER,early_move_by_half INTEGER,
                 absolute_move_realized DOUBLE PRECISION,
@@ -328,8 +333,8 @@ class ProspectivePathLedger:
                          direction_probability,direction_baseline,
                          early_move_probability,early_move_baseline,
                          absolute_move_p50,absolute_move_baseline,
-                         close_target_training_count,state)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                         close_target_training_count,close_target_training_sha256,state)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                        ON CONFLICT DO NOTHING""",
                     (last.venue,last.contract,last.quote,asset,horizon,TARGET_VERSION,side,
                      utc(last.opened_at).isoformat(),issued_at.isoformat(),
@@ -337,7 +342,8 @@ class ProspectivePathLedger:
                      sample["direction_probability"],sample["direction_baseline"],
                      sample["early_move_probability"],sample["early_move_baseline"],
                      sample["absolute_move_p50"],sample["absolute_move_baseline"],
-                     sample["close_target_training_count"],"pending"),
+                     sample["close_target_training_count"],
+                     sample["close_target_training_sha256"],"pending"),
                 )
             count+=int(result.rowcount==1)
         return count

@@ -249,7 +249,7 @@ def _path_target_progress(store, now: datetime) -> dict:
             "after_cost_qualified": False,
             "shadow_only": True,
         }
-    except Exception:  # optional observational receipt
+    except Exception:  # noqa: BLE001 - optional observational receipt
         return {"status": "read_unavailable", "shadow_only": True}
 
 

@@ -165,3 +165,114 @@ def test_legacy_market_summary_cannot_create_new_kalshi_evidence(tmp_path):
     assert not forward.observe(asset="BTC", market=one_sided, at=at)
     assert forward.summary(asset="BTC")["observed"] == 0
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_series_event_fee_receipts_bind_exact_first_book(tmp_path):
+    """Public fee metadata + both change endpoints precede issuance."""
+    store = SQLiteHotStore(tmp_path / "fee-auto.sqlite")
+    forward = KalshiForwardResearch(store)
+    called = []
+
+    def respond(req: httpx.Request) -> httpx.Response:
+        called.append((req.url.path, dict(req.url.params)))
+        if req.url.path.endswith("/series/fee_changes"):
+            assert req.url.params["series_ticker"] == "KXBTC15M"
+            return httpx.Response(
+                200, json={"series_fee_change_arr": [], "cursor": ""})
+        if req.url.path.endswith("/events/fee_changes"):
+            assert req.url.params["event_ticker"] == "KXBTC15M-EVENT"
+            return httpx.Response(200, json={"event_fee_changes": [], "cursor": ""})
+        if req.url.path.endswith("/events/KXBTC15M-EVENT"):
+            return httpx.Response(200, json={"event": {
+                "event_ticker": "KXBTC15M-EVENT",
+                "series_ticker": "KXBTC15M",
+                "fee_type_override": "quadratic_with_maker_fees",
+                "fee_multiplier_override": 0.5,
+            }})
+        if req.url.path.endswith("/series"):
+            return httpx.Response(200, json={"series": [{
+                "ticker": "KXBTC15M", "title": "Bitcoin",
+                "category": "Crypto", "fee_type": "quadratic",
+                "fee_multiplier": 1.0,
+            }]})
+        if req.url.path.endswith("/markets"):
+            return httpx.Response(200, json={"markets": [{
+                "ticker": "KXBTC15M-EVENT-ABCDE",
+                "event_ticker": "KXBTC15M-EVENT",
+                "title": "BTC quote and fees", "status": "open",
+                "close_time": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
+                "rules_primary": "Official Kalshi contract-specific rule",
+                "yes_ask_dollars": "0.02", "no_ask_dollars": "0.02",
+            }]})
+        if req.url.path.endswith("/orderbook"):
+            return httpx.Response(200, json=_book())
+        raise AssertionError(req.url.path)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        browser = KalshiCryptoBrowser(client=client, forward=forward)
+        try:
+            result = await browser.browse("BTC")
+            assert len(result.markets) == 1
+            m = result.markets[0]
+            assert m.fee_evidence["status"] == "fee_metadata_verified"
+            assert m.fee_evidence["fee_type"] == "quadratic_with_maker_fees"
+            assert m.fee_evidence["fee_multiplier"] == .5
+            assert m.fee_evidence["source"]["level"] == "event_override"
+            if browser._study_tasks:
+                await __import__("asyncio").gather(*browser._study_tasks)
+            proof = forward.executable_quote_evidence(
+                ticker=m.ticker, quantity=10)
+            assert proof["status"] == "fee_metadata_verified_paper_estimate"
+            assert proof["fee_schedule_verified"] is True
+            assert proof["fee_type"] == "quadratic_with_maker_fees"
+            assert proof["fee_multiplier"] == .5
+            assert proof["yes_paper_fee"]["estimated_model_fee_usd"] > 0
+            assert proof["no_paper_fee"]["estimated_model_fee_usd"] > 0
+            assert not proof["verified_after_cost"]
+            assert not proof["executed_trade"]
+            assert any(path.endswith("/events/fee_changes") for path, _ in called)
+            assert any(path.endswith("/series/fee_changes") for path, _ in called)
+        finally:
+            await browser.aclose()
+            store.close()
+
+
+@pytest.mark.asyncio
+async def test_missing_exact_event_fee_never_falls_back_to_series_as_proven(tmp_path):
+    """Real series fee alone is not exact-event economic evidence."""
+    store = SQLiteHotStore(tmp_path / "missing-event.sqlite")
+    forward = KalshiForwardResearch(store)
+
+    def respond(req: httpx.Request) -> httpx.Response:
+        if req.url.path.endswith("/series"):
+            return httpx.Response(200, json={"series": [{
+                "ticker": "KXBTC15M", "title": "Bitcoin",
+                "category": "Crypto", "fee_type": "quadratic",
+                "fee_multiplier": 1.0,
+            }]})
+        if req.url.path.endswith("/markets"):
+            return httpx.Response(200, json={"markets": [{
+                "ticker": "KXBTC15M-EVENT-FAIL",
+                "event_ticker": "KXBTC15M-EVENT",
+                "title": "BTC fee-source outage", "status": "open",
+                "close_time": (datetime.now(UTC) + timedelta(minutes=15)).isoformat(),
+                "rules_primary": "Source specific",
+            }]})
+        if req.url.path.endswith("/orderbook"):
+            return httpx.Response(200, json=_book())
+        return httpx.Response(503, json={"error": "temporarily unavailable"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+        browser = KalshiCryptoBrowser(client=client, forward=forward)
+        try:
+            market = (await browser.browse("BTC")).markets[0]
+            assert market.fee_evidence is None
+            if browser._study_tasks:
+                await __import__("asyncio").gather(*browser._study_tasks)
+            receipt = forward.executable_quote_evidence(ticker=market.ticker)
+            assert receipt["status"] == "fee_schedule_unverified"
+            assert not receipt["fee_schedule_verified"]
+        finally:
+            await browser.aclose()
+            store.close()

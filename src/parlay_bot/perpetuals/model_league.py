@@ -208,7 +208,8 @@ class Contest:
                           "quote_at": notice.quote_at.isoformat(), "up_bid": ub, "up_ask": ua,
                           "down_bid": db, "down_ask": da, "schema": schema,
                           "fee_rate": rate, "up_cost": up_cost,
-                          "down_cost": down_cost, "inputs": evidence or {}},
+                          "down_cost": down_cost, "inputs": evidence or {},
+                           "fee_source_receipt": getattr(notice, "fee_evidence", None)},
                          sort_keys=True, separators=(",", ":"), allow_nan=False)
         with self._lock, self.store.connect() as conn:
             for model in clean:
@@ -261,6 +262,106 @@ class Contest:
         if result is not None:
             result["qualified_at_issue"] = bool(row["qualified"])
         return result
+
+
+    def economic_evidence(self, slug: str, model: str) -> dict:
+        """Read-only, exact-token paper-cost and terminal-outcome audit.
+
+        Unverified legacy round receipts remain in existing statistical
+        contests but cannot become new source-proven economic evidence.
+        Never reconstruct an old source book/fee snapshot from current data.
+        """
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT r.*,f.probability_up,o.direction,o.observed_at AS outcome_at,
+                          o.resolved_at
+                   FROM rival_poly_contest_rounds r
+                   JOIN rival_poly_contest_forecasts f ON r.slug=f.slug
+                   LEFT JOIN rival_polymarket_ai_outcomes o
+                     ON o.slug=r.slug AND o.condition_id=r.condition_id
+                   WHERE r.slug=? AND f.model=?""",
+                (slug,model),
+            ).fetchone()
+        base = {"slug": slug, "model": model, "venue": "polymarket",
+                "source_matched": False, "executed": False,
+                "verified_after_cost_edge": False, "promotion_eligible": False}
+        if row is None:
+            return {**base, "status": "no_prospective_forecast"}
+        try:
+            if hashlib.sha256(row["evidence_json"].encode()).hexdigest() != row["evidence_sha256"]:
+                return {**base, "status": "stored_market_evidence_changed"}
+            raw = json.loads(row["evidence_json"])
+            source = raw.get("fee_source_receipt")
+            if not isinstance(source, dict):
+                return {**base, "status": "missing_issue_time_fee_receipt"}
+            fee_hash = source.get("receipt_sha256")
+            stripped = {k: v for k,v in source.items() if k not in (
+                "receipt_sha256", "cost_status", "actual_fills_proven")}
+            check_hash = hashlib.sha256(json.dumps(
+                stripped,sort_keys=True,separators=(",",":"),allow_nan=False,
+            ).encode()).hexdigest()
+            issued = datetime.fromisoformat(row["issued_at"])
+            received = datetime.fromisoformat(source["received_at"])
+            quoted = datetime.fromisoformat(source["quote_at"])
+            rate = source["fee_rate"]
+            if (source.get("cost_status") != "gamma_fee_and_depth_paper_only"
+                    or source.get("actual_fills_proven") is not False
+                    or not isinstance(fee_hash, str) or fee_hash != check_hash
+                    or received.utcoffset() is None or quoted.utcoffset() is None
+                    or issued.utcoffset() is None
+                    or not 0 <= (issued-received).total_seconds() <= 25
+                    or row["quote_at"] != quoted.isoformat()
+                    or source.get("slug") != row["slug"]
+                    or source.get("condition_id") != row["condition_id"]
+                    or source.get("up_token_id") == source.get("down_token_id")
+                    or not all(isinstance(source.get(k),str) and
+                               source[k].isascii() and source[k].isdecimal()
+                               and len(source[k]) > 30
+                               for k in ("up_token_id","down_token_id"))
+                    or not isinstance(rate,(float,int)) or not math.isfinite(rate)
+                    or not 0 <= rate <= 1
+                    or raw.get("fee_rate") != rate
+                    or not all(isinstance(source.get(k),str)
+                               and re.fullmatch(r"[0-9a-f]{64}",source[k])
+                               for k in ("up_book_sha256","down_book_sha256"))
+                    or source.get("shares") != 10.0):
+                return {**base,"status":"source_fee_or_token_mismatch"}
+            ua, da = float(raw["up_ask"]), float(raw["down_ask"])
+            uc, dc = row["up_cost"],row["down_cost"]
+            if (uc is None or dc is None or not
+                    (0 < ua <= float(uc) < 2 and 0 < da <= float(dc) < 2)):
+                return {**base,"status":"insufficient_matched_ask_depth_or_fee"}
+            # A read-only paper quote, *not* a traded orderbook fill.
+            quote = {
+                "source_receipt_sha256": fee_hash,
+                "up_token_id": source["up_token_id"],
+                "down_token_id": source["down_token_id"],
+                "quoted_at": row["quote_at"],"received_at":source["received_at"],
+                "up_cost_per_share": float(uc), "down_cost_per_share": float(dc),
+                "shares": 10.0, "fee_rate": rate,
+            }
+        except (KeyError, ValueError, TypeError, OverflowError):
+            return {**base,"status":"unreadable_fee_or_book_receipt"}
+        result = {**base,**quote, "source_matched": True,
+                  "status":"source_matched_outcome_pending"}
+        if (row["direction"] not in ("UP","DOWN")
+                or row["resolved_at"] is None or row["outcome_at"] is None
+                or row["resolved_at"] < row["expires_at"]
+                or row["outcome_at"] < row["resolved_at"]):
+            return result
+        p=float(row["probability_up"])
+        bet=implied_bet(p, row["up_cost"],row["down_cost"])
+        if bet is None:
+            return {**result, "status": "source_matched_no_paper_trade",
+                    "official_outcome": row["direction"]}
+        side,_,cost=bet
+        net=float(side==row["direction"])-cost-STRESS
+        return {**result, "status":"source_matched_paper_outcome",
+                "side":side, "official_outcome":row["direction"],
+                "net_after_model_fee_and_stress_per_share":net,
+                "estimated_fee_and_slippage_only":True}
+
 
 
 def _log_capital(logs: list[float]) -> float:

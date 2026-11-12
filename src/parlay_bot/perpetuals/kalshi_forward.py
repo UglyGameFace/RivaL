@@ -13,6 +13,7 @@ import re
 import threading
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals.contract_fee_evidence import kalshi_taker_paper_fee
 from parlay_bot.research.probability_evidence import binary_outcome_evidence
 
 MODEL = "kalshi-online-logit-shadow-v1"
@@ -118,6 +119,21 @@ class KalshiForwardResearch:
                     );
                     CREATE INDEX IF NOT EXISTS idx_kalshi_quote_recent
                         ON rival_kalshi_quote_receipts(series_ticker,issued_at);
+                    -- Only NEW, official, same-event and prior-to-issue fee
+                    -- metadata can be bound to a frozen research forecast.
+                    CREATE TABLE IF NOT EXISTS rival_kalshi_fee_receipts (
+                        ticker TEXT PRIMARY KEY,
+                        series_ticker TEXT NOT NULL,
+                        event_ticker TEXT NOT NULL,
+                        received_at TEXT NOT NULL,
+                        issued_at TEXT NOT NULL,
+                        fee_type TEXT NOT NULL,
+                        fee_multiplier DOUBLE PRECISION NOT NULL,
+                        fee_receipt_sha256 TEXT NOT NULL,
+                        market_rules_sha256 TEXT NOT NULL,
+                        book_receipt_sha256 TEXT NOT NULL,
+                        source_json TEXT NOT NULL
+                    );
                     CREATE TABLE IF NOT EXISTS rival_kalshi_shadow_weights (
                         asset TEXT NOT NULL,
                         series_ticker TEXT NOT NULL,
@@ -246,6 +262,40 @@ class KalshiForwardResearch:
                          rules_sha,market.yes_ask,market.no_ask,
                          market.yes_ask_size,market.no_ask_size),
                     )
+            if count.rowcount == 1 and received is not None:
+                fee = getattr(market, "fee_evidence", None)
+                event = getattr(market, "event_ticker", None)
+                if (isinstance(fee, dict)
+                        and fee.get("status") == "fee_metadata_verified"
+                        and isinstance(event, str)
+                        and isinstance(fee.get("source"), dict)
+                        and fee["source"].get("event_ticker") == event
+                        and fee["source"].get("series_ticker") == series):
+                    from parlay_bot.perpetuals.contract_fee_evidence import _date
+
+                    checked = _date(fee["source"].get("received_at"))
+                    digest = fee.get("receipt_sha256")
+                    ft, mult = fee.get("fee_type"), fee.get("fee_multiplier")
+                    if (checked is not None
+                            and 0 <= (at-checked).total_seconds() <= 25
+                            and isinstance(digest, str)
+                            and re.fullmatch(r"[0-9a-f]{64}", digest)
+                            and ft in ("quadratic", "quadratic_with_maker_fees",
+                                       "quadratic_with_combo_maker_fees")
+                            and isinstance(mult, (float, int))
+                            and not isinstance(mult, bool)
+                            and math.isfinite(mult) and 0 <= mult <= 10):
+                        conn.execute(
+                            """INSERT INTO rival_kalshi_fee_receipts
+                               (ticker,series_ticker,event_ticker,received_at,
+                                issued_at,fee_type,fee_multiplier,fee_receipt_sha256,
+                                market_rules_sha256,book_receipt_sha256,source_json)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                               ON CONFLICT(ticker) DO NOTHING""",
+                            (market.ticker,series,event,checked.isoformat(),stamp,
+                             ft,mult,digest,rules_sha,book_digest,
+                             json.dumps(fee["source"],sort_keys=True)),
+                        )
             return count.rowcount == 1
 
     def pending(self, *, now: datetime, limit: int = 2) -> tuple[str, ...]:
@@ -395,10 +445,19 @@ class KalshiForwardResearch:
                           r.book_transport_sha256,r.market_rules_sha256 AS receipt_rules,
                           r.yes_ask AS receipt_yes_ask,r.no_ask AS receipt_no_ask,
                           r.yes_depth AS receipt_yes_depth,
-                          r.no_depth AS receipt_no_depth
+                          r.no_depth AS receipt_no_depth,
+                          x.event_ticker AS fee_event_ticker,
+                          x.series_ticker AS fee_series_ticker,
+                          x.received_at AS fee_received_at,
+                          x.issued_at AS fee_issued_at,
+                          x.fee_type,x.fee_multiplier,x.fee_receipt_sha256,
+                          x.market_rules_sha256 AS fee_rules,
+                          x.book_receipt_sha256 AS fee_book_hash,
+                          x.source_json AS fee_source_json
                    FROM rival_kalshi_forward f
                    LEFT JOIN rival_kalshi_book_evidence b ON b.ticker=f.ticker
                    LEFT JOIN rival_kalshi_quote_receipts r ON r.ticker=f.ticker
+                   LEFT JOIN rival_kalshi_fee_receipts x ON x.ticker=f.ticker
                    WHERE f.ticker=?""", (ticker,),
             ).fetchone()
         default = {
@@ -438,10 +497,56 @@ class KalshiForwardResearch:
         depth_no = float(row["no_ask_depth"])
         enough_yes = depth_yes >= quantity
         enough_no = depth_no >= quantity
+        fee_verified = False
+        fee_results = {}
+        if row["fee_received_at"] is not None:
+            try:
+                fee_at = datetime.fromisoformat(row["fee_received_at"])
+                src = json.loads(row["fee_source_json"])
+                from parlay_bot.perpetuals.contract_fee_evidence import _hash
+
+                fee_verified = (
+                    fee_at.utcoffset() is not None
+                    and 0 <= (issued-fee_at).total_seconds() <= 25
+                    and row["fee_issued_at"] == row["issued_at"]
+                    and row["fee_series_ticker"] == row["series_ticker"]
+                    and row["fee_rules"] == row["market_rules_sha256"]
+                    and row["fee_book_hash"] == row["book_transport_sha256"]
+                    and isinstance(src, dict)
+                    and src.get("fee_type") == row["fee_type"]
+                    and src.get("event_ticker") == row["fee_event_ticker"]
+                    and src.get("series_ticker") == row["series_ticker"]
+                    and src.get("fee_multiplier") == row["fee_multiplier"]
+                    and _hash(src) == row["fee_receipt_sha256"]
+                )
+                if fee_verified:
+                    fee_results = {
+                        "fee_type": row["fee_type"],
+                        "fee_multiplier": row["fee_multiplier"],
+                        "fee_evidence_received_at": row["fee_received_at"],
+                        "fee_receipt_sha256": row["fee_receipt_sha256"],
+                        "fee_event_ticker": row["fee_event_ticker"],
+                    }
+                    if enough_yes:
+                        fee_results["yes_paper_fee"] = kalshi_taker_paper_fee(
+                            price=float(row["yes_ask"]), quantity=quantity,
+                            fee_type=row["fee_type"],
+                            multiplier=float(row["fee_multiplier"]))
+                    if enough_no:
+                        fee_results["no_paper_fee"] = kalshi_taker_paper_fee(
+                            price=float(row["no_ask"]), quantity=quantity,
+                            fee_type=row["fee_type"],
+                            multiplier=float(row["fee_multiplier"]))
+            except (TypeError, ValueError, OverflowError):
+                fee_verified = False
+        status = ("insufficient_top_book_depth" if not (enough_yes or enough_no)
+                  else "fee_source_mismatch" if row["fee_received_at"] and not fee_verified
+                  else "fee_metadata_verified_paper_estimate" if fee_verified
+                  else "fee_schedule_unverified")
         return {
-            **default, "status": (
-                "fee_schedule_unverified" if enough_yes or enough_no
-                else "insufficient_top_book_depth"),
+            **default, "status": status,
+            "fee_schedule_verified": fee_verified,
+            **fee_results,
             "venue": "kalshi", "asset": row["asset"],
             "series_ticker": row["series_ticker"],
             "yes_ask": float(row["yes_ask"]), "no_ask": float(row["no_ask"]),
@@ -456,8 +561,10 @@ class KalshiForwardResearch:
                 row["result"] in ("yes", "no")
                 and isinstance(row["settlement_evidence_sha256"], str)),
             "fee_blocker": (
-                "Official series/event fee type and multiplier, including "
-                "overrides, have not been captured for this exact contract."),
+                "Model fee estimated, but account rounding, fee waivers, actual "
+                "fills and rebates are not verified." if fee_verified else
+                "Official series/event fee type, multiplier or scheduled "
+                "changes are missing for this exact first quote."),
         }
 
     def contract_preview(self, *, asset: str, market) -> dict | None:

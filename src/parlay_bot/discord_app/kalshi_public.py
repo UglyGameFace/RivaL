@@ -17,6 +17,8 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
+from parlay_bot.perpetuals.contract_fee_evidence import resolve_kalshi_fee
+
 _LOG = logging.getLogger(__name__)
 _ROOT = "https://external-api.kalshi.com/trade-api/v2"
 _SYMBOLS = {
@@ -102,6 +104,8 @@ class KalshiMarket:
     book_observed_at: datetime | None = None
     # Transport payload checksum, not an exchange-signed attestation.
     book_receipt_sha256: str | None = None
+    event_ticker: str | None = None
+    fee_evidence: dict | None = None
 
 
 @dataclass(frozen=True)
@@ -142,6 +146,10 @@ def parse_markets(
                 else "Rules not verified"
             ),
             series_ticker=series_ticker,
+            event_ticker=(row.get("event_ticker")
+                          if isinstance(row.get("event_ticker"), str)
+                          and re.fullmatch(r"[A-Z0-9-]{2,110}", row["event_ticker"])
+                          else None),
             quote_source="market_summary",
         ))
     return tuple(entries)
@@ -312,7 +320,12 @@ class KalshiCryptoBrowser:
                         await asyncio.sleep(_DISCOVERY_RETRY_DELAYS[attempt])
                 assert resp is not None
                 resp.raise_for_status()
-                series = matching_series(resp.json(), asset=asset)
+                series_payload = resp.json()
+                series = matching_series(series_payload, asset=asset)
+                fee_series = {
+                    x["ticker"]: x for x in series_payload.get("series", [])
+                    if isinstance(x, dict) and x.get("ticker") in series
+                }
                 # No market listing means no invented venue / timeframe match.
                 async def get_markets(ticker: str) -> tuple[KalshiMarket, ...]:
                     response = await self._client.get(
@@ -384,8 +397,57 @@ class KalshiCryptoBrowser:
                         quote_source="unavailable",
                     )
 
+            async def verify_fees(market: KalshiMarket) -> dict | None:
+                # Fee metadata must come from this market's OWN series/event.
+                # A receipt obtained after a forecast cannot be retroactively
+                # used to lower the reported cost at issuance.
+                series_row = fee_series.get(market.series_ticker)
+                event = market.event_ticker
+                if (series_row is None or not event
+                        or not market.ticker.startswith(event + "-")):
+                    return None
+                try:
+                    urls = (
+                        (_ROOT + f"/events/{event}", None),
+                        (_ROOT + "/series/fee_changes",
+                         {"series_ticker": market.series_ticker}),
+                        (_ROOT + "/events/fee_changes",
+                         {"event_ticker": event, "limit": 1000}),
+                    )
+                    fetched = await asyncio.gather(*(
+                        self._client.get(url, params=params)
+                        for url, params in urls
+                    ))
+                    for response in fetched:
+                        response.raise_for_status()
+                    event_payload, series_changes, event_changes = (
+                        response.json() for response in fetched
+                    )
+                    return resolve_kalshi_fee(
+                        series=series_row,
+                        event=event_payload.get("event"),
+                        series_changes=series_changes,
+                        event_changes=event_changes,
+                        series_ticker=market.series_ticker,
+                        event_ticker=event, received_at=datetime.now(UTC),
+                        expires_at=market.close_time,
+                    )
+                except (httpx.HTTPError, TypeError, ValueError, KeyError) as exc:
+                    _LOG.info(
+                        "Kalshi fee metadata unavailable ticker=%s reason=%s",
+                        market.ticker, type(exc).__name__,
+                    )
+                    return None
+
+            async def verify_market(market: KalshiMarket) -> KalshiMarket:
+                # Fetch book and independent fee receipts concurrently; a
+                # missing fee feed NEVER substitutes a synthetic quote.
+                book, fee = await asyncio.gather(
+                    verify_book(market), verify_fees(market))
+                return replace(book, fee_evidence=fee)
+
             markets = tuple(await asyncio.gather(
-                *(verify_book(market) for market in listed),
+                *(verify_market(market) for market in listed),
             ))
             observed_at = datetime.now(UTC)
             snapshot = KalshiSnapshot(

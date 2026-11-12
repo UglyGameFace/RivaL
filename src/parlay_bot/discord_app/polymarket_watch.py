@@ -80,6 +80,9 @@ class PolymarketNotice:
     # Ten-share depth-weighted costs, including per-level rounded taker fees.
     up_cost: float | None = None
     down_cost: float | None = None
+    # Immutable Gamma fee metadata + source-book identity. A transport
+    # checksum is NOT an exchange signature or executed order.
+    fee_evidence: dict | None = None
 
     @property
     def venue(self) -> str:
@@ -585,6 +588,36 @@ class PolymarketReader:
         quoted = min(_book_time(up_book, now=received), _book_time(down_book, now=received))
         if window.closes <= received:
             raise MarketUnavailable("window_not_open")
+        # Preserve exact Gamma fee metadata and both token-specific books
+        # at the same read. Gamma's schedule is official public metadata;
+        # the hash proves RivaL did not later rewrite this snapshot. It is
+        # not a CLOB fee attestation or proof of an actual filled order.
+        fee_parts = {
+            "slug": slug, "condition_id": condition,
+            "up_token_id": tokens[0], "down_token_id": tokens[1],
+            "quote_at": quoted.isoformat(), "received_at": received.isoformat(),
+            "market_version": market.get("version"),
+            "fees_enabled": market.get("feesEnabled"),
+            "fee_schedule": market.get("feeSchedule"),
+            "fee_rate": _fee_rate(market),
+            "up_book_sha256": hashlib.sha256(json.dumps(
+                up_book, sort_keys=True, separators=(",", ":"), allow_nan=False,
+            ).encode()).hexdigest(),
+            "down_book_sha256": hashlib.sha256(json.dumps(
+                down_book, sort_keys=True, separators=(",", ":"), allow_nan=False,
+            ).encode()).hexdigest(),
+            "shares": REFERENCE_SHARES,
+        }
+        fee_evidence = {
+            **fee_parts,
+            "receipt_sha256": hashlib.sha256(json.dumps(
+                fee_parts, sort_keys=True, separators=(",", ":"), allow_nan=False,
+            ).encode()).hexdigest(),
+            "cost_status": (
+                "fee_schedule_unverified" if _fee_rate(market) is None
+                else "gamma_fee_and_depth_paper_only"),
+            "actual_fills_proven": False,
+        }
         return PolymarketNotice(
             asset=asset, horizon=horizon, issued=start, expires=window.closes,
             slug=slug, up_ask=_best_ask(up_book, now=received),
@@ -595,7 +628,7 @@ class PolymarketReader:
             resolution_source=market.get("resolutionSource") or event.get("resolutionSource"),
             price_to_beat=window.price_to_beat,
             up_bid=_best_bid(up_book), down_bid=_best_bid(down_book),
-            fee_rate=_fee_rate(market),
+            fee_rate=_fee_rate(market), fee_evidence=fee_evidence,
             up_cost=_average_cost(up_book, now=received, rate=_fee_rate(market)),
             down_cost=_average_cost(down_book, now=received, rate=_fee_rate(market)),
             rules=(fit_embed_field_value(market["description"], budget=2000)

@@ -1,6 +1,8 @@
 """Matched evidence, fixed tests, no grandfathering, and SQLite/Postgres parity."""
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import random
 from dataclasses import replace
@@ -260,3 +262,76 @@ def test_small_sample_reports_progress_without_false_qualification(learning_stor
     text = league_text(e, asset='BTC', horizon=60)
     assert '23/300 contracts graded' in text
     assert 'Test calls stay visible' in text and 'alerts start only after' in text
+
+
+
+def test_exact_poly_fee_economics_only_uses_frozen_prospective_source(learning_store):
+    c = setup(learning_store)
+    n = notice()
+    source = {
+        "slug": n.slug,
+        "condition_id": n.condition_id,
+        "up_token_id": n.up_token_id,
+        "down_token_id": n.down_token_id,
+        "quote_at": n.quote_at.isoformat(),
+        "received_at": n.quote_at.isoformat(),
+        "market_version": "v1",
+        "fees_enabled": True,
+        "fee_schedule": {"rate": 0.07, "exponent": 1},
+        "fee_rate": .07,
+        "up_book_sha256": "a"*64,
+        "down_book_sha256": "b"*64,
+        "shares": 10.0,
+    }
+    digest = hashlib.sha256(json.dumps(
+        source, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    ).encode()).hexdigest()
+    n = replace(n, fee_evidence={
+        **source, "receipt_sha256": digest,
+        "cost_status": "gamma_fee_and_depth_paper_only",
+        "actual_fills_proven": False,
+    })
+    assert c.capture(n, {BOOK: (.9, SHA)}, now=n.quote_at)
+    pending = c.economic_evidence(n.slug, BOOK)
+    assert pending["status"] == "source_matched_outcome_pending"
+    assert pending["source_matched"] is True
+    assert pending["shares"] == 10
+    assert pending["executed"] is False
+    assert pending["verified_after_cost_edge"] is False
+    with learning_store.connect() as conn:
+        conn.execute(
+            "INSERT INTO rival_polymarket_ai_outcomes VALUES (?,?,?,?,?,?,?)",
+            (n.slug, n.condition_id, "UP", n.expires.isoformat(),
+             (n.expires+timedelta(minutes=1)).isoformat(), SHA, '{}'),
+        )
+    scored = c.economic_evidence(n.slug, BOOK)
+    assert scored["status"] == "source_matched_paper_outcome"
+    assert scored["official_outcome"] == "UP"
+    assert scored["side"] == "UP"
+    assert scored["net_after_model_fee_and_stress_per_share"] == pytest.approx(
+        1-.52749-.01)
+    assert scored["promotion_eligible"] is False
+    assert scored["verified_after_cost_edge"] is False
+    assert not c.capture(
+        replace(n, fee_evidence={**n.fee_evidence, "receipt_sha256":"c"*64}),
+        {BOOK: (.9, SHA)}, now=n.quote_at,
+    )
+    # Tampering with stored bytes cannot retroactively alter a cost score.
+    with learning_store.connect() as conn:
+        conn.execute(
+            "UPDATE rival_poly_contest_rounds SET evidence_json=? WHERE slug=?",
+            ('{}',n.slug),
+        )
+    assert c.economic_evidence(n.slug, BOOK)["status"] == (
+        "stored_market_evidence_changed")
+
+
+def test_poly_legacy_and_mismatched_fee_receipts_cannot_create_executable_proof(
+    learning_store,
+):
+    c = setup(learning_store)
+    n = notice()
+    assert c.capture(n, {BOOK: (.9, SHA)}, now=n.quote_at)
+    assert c.economic_evidence(n.slug, BOOK)["status"] == (
+        "missing_issue_time_fee_receipt")
+    assert c.economic_evidence("not-issued", BOOK)["status"] == "no_prospective_forecast"

@@ -14,6 +14,7 @@ from evidence_board_receipt import (
     read_intelligence_host,
     read_paired_performance,
 )
+
 from parlay_bot.perpetuals.evidence_score_receipt import (
     MODEL,
     summarize_rows,

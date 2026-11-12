@@ -185,77 +185,90 @@ class PerpetualMarketCollector:
                                 break  # Do not keep querying a blocked venue.
                 return name, outcomes
 
-            # All network work completes before DB writes. Different venues
-            # overlap, but not the requests to the same venue.
-            gathered = await asyncio.gather(*(
-                fetch_venue(name, provider)
+            # Save completed providers while other independent network reads
+            # are still pending. Never write concurrently to the shared store.
+            # Slow/blocked venues formerly held back EVERY successful venue's
+            # candles until asyncio.gather completed.
+            tasks = [
+                asyncio.create_task(fetch_venue(name, provider))
                 for name, provider in self.providers.items()
                 if self._pauses.get(
                     name, datetime.min.replace(tzinfo=UTC),
                 ) <= started
-            ))
-            for name, outcomes in gathered:
-                for asset, batch, fetch_error in outcomes:
-                    try:
-                        if fetch_error is not None:
-                            raise fetch_error
-                        assert batch is not None
-                        # Settlement rule: keep completed candles that
-                        # closed at least CANDLE_SETTLEMENT_MARGIN before
-                        # the batch was observed. The previous one-bar
-                        # holdback systematically expired every 5m
-                        # forecast: holding the newest completed candle
-                        # pushed the forecast target one interval back,
-                        # so issued_at always landed past target_open +
-                        # 5min for horizon 5 (expired=27, issued=27 per
-                        # cycle: all 5m expired, only 15m issued).
-                        # Unfinished candles (closed_at in the future)
-                        # never pass the margin, and neither does a
-                        # just-closed single candle: it is held one
-                        # cycle, then qualifies. Any later revision is
-                        # caught by per-bar conflict isolation in ingest.
-                        batch = _retain_settled_candles(batch)
-                        result = await asyncio.to_thread(self.market.ingest, batch)
-                        await asyncio.to_thread(
-                            self.market.record_feed_health,
-                            venue=name, asset=asset, status="ok",
-                            attempted_at=datetime.now(UTC),
-                            new_candles=result.inserted_candles,
-                            total_candles=len(batch.candles),
-                            last_candle_close=max(
-                                candle.closed_at for candle in batch.candles
-                            ),
-                        )
-                        _LOG.info(
-                            "RivaL perp collection OK venue=%s asset=%s bars=%d new=%d",
-                            name, asset, len(batch.candles), result.inserted_candles,
-                        )
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as error:  # noqa: BLE001 - independent feeds
-                        kind = _failure_kind(error)
+            ]
+            try:
+                for completed in asyncio.as_completed(tasks):
+                    name, outcomes = await completed
+                    for asset, batch, fetch_error in outcomes:
                         try:
+                            if fetch_error is not None:
+                                raise fetch_error
+                            assert batch is not None
+                            # Settlement rule: keep completed candles that
+                            # closed at least CANDLE_SETTLEMENT_MARGIN before
+                            # the batch was observed. The previous one-bar
+                            # holdback systematically expired every 5m
+                            # forecast: holding the newest completed candle
+                            # pushed the forecast target one interval back,
+                            # so issued_at always landed past target_open +
+                            # 5min for horizon 5 (expired=27, issued=27 per
+                            # cycle: all 5m expired, only 15m issued).
+                            # Unfinished candles (closed_at in the future)
+                            # never pass the margin, and neither does a
+                            # just-closed single candle: it is held one
+                            # cycle, then qualifies. Any later revision is
+                            # caught by per-bar conflict isolation in ingest.
+                            batch = _retain_settled_candles(batch)
+                            result = await asyncio.to_thread(self.market.ingest, batch)
                             await asyncio.to_thread(
                                 self.market.record_feed_health,
-                                venue=name, asset=asset, status=kind,
+                                venue=name, asset=asset, status="ok",
                                 attempted_at=datetime.now(UTC),
-                                new_candles=0, total_candles=0,
+                                new_candles=result.inserted_candles,
+                                total_candles=len(batch.candles),
+                                last_candle_close=max(
+                                    candle.closed_at for candle in batch.candles
+                                ),
                             )
-                        except Exception:  # noqa: BLE001 - preserve other feeds
-                            _LOG.exception(
-                                "RivaL source health persistence failed venue=%s asset=%s",
-                                name, asset,
+                            _LOG.info(
+                                "RivaL perp collection OK venue=%s asset=%s bars=%d new=%d",
+                                name, asset, len(batch.candles), result.inserted_candles,
                             )
-                        _LOG.warning(
-                            "RivaL perp collection FAILED venue=%s asset=%s reason=%s error=%s",
-                            name, asset, kind, type(error).__name__,
-                        )
-                        if kind in _PAUSES:
-                            self._pauses[name] = datetime.now(UTC) + _PAUSES[kind]
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as error:  # noqa: BLE001 - independent feeds
+                            kind = _failure_kind(error)
+                            try:
+                                await asyncio.to_thread(
+                                    self.market.record_feed_health,
+                                    venue=name, asset=asset, status=kind,
+                                    attempted_at=datetime.now(UTC),
+                                    new_candles=0, total_candles=0,
+                                )
+                            except Exception:  # noqa: BLE001 - preserve other feeds
+                                _LOG.exception(
+                                    "RivaL source health persistence failed venue=%s asset=%s",
+                                    name, asset,
+                                )
                             _LOG.warning(
-                                "RivaL perp venue=%s paused reason=%s",
-                                name, kind,
+                                "RivaL perp collection FAILED venue=%s asset=%s reason=%s error=%s",
+                                name, asset, kind, type(error).__name__,
                             )
+                            if kind in _PAUSES:
+                                self._pauses[name] = datetime.now(UTC) + _PAUSES[kind]
+                                _LOG.warning(
+                                    "RivaL perp venue=%s paused reason=%s",
+                                    name, kind,
+                                )
+
+            finally:
+                # Parent cancellation must not leak provider tasks into the
+                # next collection. Keep the old fail-closed cancellation rule.
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
 
     async def aclose(self) -> None:
         for provider in self.providers.values():

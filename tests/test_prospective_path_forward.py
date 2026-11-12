@@ -12,6 +12,7 @@ from parlay_bot.perpetuals.hyperliquid import MarketCandle
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.path_forward import (
     HORIZONS,
+    TARGET_VERSION,
     ProspectivePathLedger,
     empirical_paths,
 )
@@ -251,11 +252,12 @@ def test_direction_and_early_move_are_prospective_separate_heads(learning_store)
         )==0
         frozen=conn.execute(
             """SELECT side,direction_probability,early_move_probability,
-                      absolute_move_p50,state FROM rival_forward_path_targets
+                      absolute_move_p50,model_version,state FROM rival_forward_path_targets
                ORDER BY side"""
         ).fetchall()
     assert len(frozen)==2
     assert all(row["state"]=="pending"
+               and row["model_version"]==TARGET_VERSION
                and 0<row["direction_probability"]<1
                and 0<row["early_move_probability"]<1
                and row["absolute_move_p50"]>=0

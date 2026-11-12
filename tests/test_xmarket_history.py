@@ -14,9 +14,11 @@ from parlay_bot.perpetuals.xmarket_inputs import (
     parse_points,
 )
 from parlay_bot.research.xmarket_history import (
+    backfill,
     collect_contract,
     combine,
     compare_history,
+    source_failure,
     validate_bundle,
     weekly_inputs,
 )
@@ -284,3 +286,95 @@ async def test_optional_export_failure_does_not_misreport_a_successful_records_b
     assert saved == [True]
     assert "XMarket input export deferred" in caplog.text
     assert "RivaL records backup failed" not in caplog.text
+
+
+def test_fidelity_reports_why_a_provider_cannot_be_verified():
+    at = NOW.replace(second=0, microsecond=0)
+    live = [point(source, at - timedelta(minutes=i))
+            for source in ("polymarket", "kalshi") for i in range(300)]
+    no_export = compare_history([], [{**p, "origin": "backfill"} for p in live])
+    assert all(c["blocked_reason"] == "no_prospective_export"
+               and c["live_feature_bars"] == 0 and c["history_feature_bars"] == 60
+               for c in no_export.values())
+    no_history = compare_history(live, [])
+    assert all(c["blocked_reason"] == "no_independent_history"
+               and c["live_feature_bars"] == 60 and c["history_feature_bars"] == 0
+               for c in no_history.values())
+    original = compare_history(live, [{**p, "origin": "backfill"} for p in live])
+    assert all(c["blocked_reason"] is None and c["paired_points"] == 60
+               and c["status"] == "verified" for c in original.values())
+
+
+def test_source_failure_reports_actionable_non_secret_http_cause():
+    from parlay_bot.research.free_history import HistoryImportError
+
+    request = httpx.Request("GET", "https://example.invalid/path?token=PRIVATE")
+    response = httpx.Response(429, request=request, text="PRIVATE")
+    cause = httpx.HTTPStatusError("PRIVATE", request=request, response=response)
+    wrapped = HistoryImportError("PRIVATE")
+    wrapped.__cause__ = cause
+    record = source_failure("kalshi", "backfill", wrapped, window_close=NOW)
+    assert record == {
+        "source": "kalshi", "stage": "backfill", "error": "HistoryImportError",
+        "failure_code": "http_429", "retryable": True,
+        "window_close": NOW.isoformat(),
+    }
+    assert "PRIVATE" not in json.dumps(record)
+    invalid = source_failure("polymarket", "overlap", ValueError("PRIVATE"))
+    assert invalid["failure_code"] == "contract_identity_or_schema"
+    assert invalid["retryable"] is False
+
+
+def test_backfill_never_requests_a_future_native_contract(tmp_path, monkeypatch):
+    from parlay_bot.research import xmarket_history as module
+    from parlay_bot.research.free_history import HistoryImportError
+
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    monkeypatch.setattr(module, "datetime", FrozenDateTime)
+    calls = []
+
+    def provider(client, url, params, **kwargs):
+        calls.append((url, params))
+        if "/events/slug/" in url:
+            raise HistoryImportError("not available")
+        return {"markets": []}
+
+    monkeypatch.setattr(module, "_json_get", provider)
+    _, _, cursor, errors = backfill(
+        None, asset="BTC", bundles=[], root=tmp_path,
+        before=NOW + timedelta(hours=2), max_windows=1)
+    expected = datetime.fromtimestamp(int(NOW.timestamp()) // 900 * 900, UTC)
+    assert cursor == expected
+    assert len(calls) == 3  # One PM lookup and the bounded live/archive Kalshi pair
+    assert {e["source"] for e in errors} == {"polymarket", "kalshi"}
+    assert all(e["window_close"] == expected.isoformat() for e in errors)
+
+
+def test_one_failed_overlap_contract_does_not_hide_other_contracts(tmp_path, monkeypatch):
+    from parlay_bot.research import xmarket_history as module
+    from parlay_bot.research.free_history import HistoryImportError
+
+    at = NOW.replace(second=0, microsecond=0)
+    rows = [point("polymarket", at - timedelta(minutes=i)) for i in (0, 15)]
+    bundle = {"schema": BUNDLE_SCHEMA, "asset": "BTC", "samples": rows}
+    calls = []
+
+    def collect(client, *, source, identity, root, now, fidelity=1):
+        calls.append(identity["contract_id"])
+        if len(calls) == 1:
+            raise HistoryImportError("first contract unavailable")
+        return [{**rows[1], "origin": "backfill"}], SimpleNamespace()
+
+    monkeypatch.setattr(module, "collect_contract", collect)
+    history, publications, _, errors = backfill(
+        None, asset="BTC", bundles=[bundle], root=tmp_path,
+        before=NOW, max_windows=0)
+    assert len(calls) == 2
+    assert len(history) == 1 and len(publications) == 1
+    assert len(errors) == 1
+    assert errors[0]["stage"] == "overlap"
+    assert errors[0]["failure_code"] == "history_integrity"

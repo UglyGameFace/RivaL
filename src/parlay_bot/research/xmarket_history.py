@@ -270,13 +270,13 @@ def _archived_kalshi_windows(client, *, series: str, max_pages: int = 24) -> dic
         response = kalshi_public_json(client, KALSHI + "/historical/markets", params,
             timeout=8, rate_limit_retries=2, pace_seconds=0.35)
         if not isinstance(response, dict) or not isinstance(response.get("markets"), list):
-            raise ValueError("malformed Kalshi historical market page")
+            raise HistoryImportError("malformed Kalshi historical market page")
         markets = response["markets"]
         if len(markets) > 1000:
             raise ValueError("unbounded Kalshi historical market page")
         for row in markets:
             if not isinstance(row, dict):
-                raise ValueError("invalid Kalshi historical market")
+                raise HistoryImportError("invalid Kalshi historical market")
             ticker = row.get("ticker")
             if not isinstance(ticker, str) or not ticker.startswith(series + "-"):
                 raise ValueError("historical Kalshi series identity mismatch")
@@ -355,7 +355,7 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90):
             live = kalshi_public_json(client, KALSHI + "/markets", params,
                 timeout=8, rate_limit_retries=2, pace_seconds=0.35)
             if not isinstance(live, dict) or not isinstance(live.get("markets"), list):
-                raise ValueError("malformed Kalshi current market page")
+                raise HistoryImportError("malformed Kalshi current market page")
             markets = live["markets"]
             if not markets:
                 if historical_kalshi is None:

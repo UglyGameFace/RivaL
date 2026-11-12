@@ -227,9 +227,9 @@ class KalshiCryptoBrowser:
                     # separate book receive clock is checked for staleness by
                     # the research ledger; a queued worker cannot backdate a
                     # new learned prediction.
-                    def record_one() -> bool:
+                    def record_one(item=market) -> bool:
                         return self._forward.observe(
-                            asset=snapshot.asset, market=market,
+                            asset=snapshot.asset, market=item,
                             at=datetime.now(UTC),
                         )
 

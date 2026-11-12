@@ -12,8 +12,8 @@ from parlay_bot.perpetuals.hyperliquid import MarketCandle
 from parlay_bot.perpetuals.market_store import PerpetualMarketStore
 from parlay_bot.perpetuals.path_forward import (
     HORIZONS,
-    TARGET_VERSION,
     ProspectivePathLedger,
+    TARGET_VERSION,
     empirical_paths,
 )
 

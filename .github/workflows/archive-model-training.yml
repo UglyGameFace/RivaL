@@ -11,10 +11,13 @@ name: RivaL archive model weekly training
 # The GBM trains as a step in this same workflow (no separate workflow
 # file): same restored bytes, same --train-end / --test-start /
 # --trained-through, same manifests dir, per-horizon + per-step failure
-# isolation. Never on every push: weekly retrain + manual dispatch only.
+# isolation. Never on every push: weekly retrain + one-off post-export + manual dispatch only.
 on:
   schedule:
     - cron: "30 7 * * 0"
+    # One-off post-export XMarket verification run: Nov 13 2026 15:17 UTC.
+    # The date gate below rejects this annual cron on any other year/date.
+    - cron: "17 15 13 11 *"
   workflow_dispatch:
     inputs:
       publish:
@@ -34,18 +37,25 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  # One-off pause: skip the Nov 15, 2026 scheduled run only.
-  # Manual dispatches and subsequent weekly schedules remain enabled.
+  # Date-lock the one-time post-export run without modifying manual dispatch
+  # or the existing Nov 15 weekly-run exclusion.
   schedule_guard:
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.check.outputs.should_run }}
     steps:
-      - name: Check one-time schedule exclusion
+      - name: Check scheduled date gates
         id: check
         shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_CRON: ${{ github.event.schedule }}
         run: |
-          if [[ "${{ github.event_name }}" == "schedule" && "$(date -u +%F)" == "2026-11-15" ]]; then
+          today="$(date -u +%F)"
+          if [[ "$EVENT_NAME" == "schedule" && "$EVENT_CRON" == "17 15 13 11 *" && "$today" != "2026-11-13" ]]; then
+            echo "One-time XMarket post-export run is expired; skip without training."
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          elif [[ "$EVENT_NAME" == "schedule" && "$EVENT_CRON" == "30 7 * * 0" && "$today" == "2026-11-15" ]]; then
             echo "Skipping the 2026-11-15 scheduled archive training."
             echo "should_run=false" >> "$GITHUB_OUTPUT"
           else

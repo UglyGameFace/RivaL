@@ -49,6 +49,10 @@ from parlay_bot.perpetuals.markets import ASSET_NAMES
 from parlay_bot.perpetuals.markets import ASSETS as RESEARCH_ASSETS
 from parlay_bot.perpetuals.markets import HORIZONS as RESEARCH_HORIZONS
 from parlay_bot.providers.owner_limits import OwnerLimitStore
+from parlay_bot.storage.query_scope import (
+    PERFORMANCE_STATEMENT_TIMEOUT_MS,
+    statement_timeout,
+)
 
 if TYPE_CHECKING:
     from parlay_bot.collectors.current import CurrentBoardCollector
@@ -361,10 +365,17 @@ def score_consistency_problems(part: dict) -> list[str]:
 
 
 def _performance_benefit(market: object, asset: str, horizon: int) -> dict:
-    """Score improvement independently of the faster historical-lineage query."""
-    return ForwardAccuracyMonitor(market).active_learning_evidence(
-        asset=asset, horizon_minutes=horizon,
-    )
+    """Score improvement independently of the faster historical-lineage query.
+
+    The query takes 3-7 s, so the 8 s interactive statement cap killed it
+    on a cold cache (RIVAL-18). The bound is set here, inside the worker
+    thread, because the page's reader tasks are created by gather() outside
+    any block in the render path.
+    """
+    with statement_timeout(PERFORMANCE_STATEMENT_TIMEOUT_MS):
+        return ForwardAccuracyMonitor(market).active_learning_evidence(
+            asset=asset, horizon_minutes=horizon,
+        )
 
 
 # The improvement query takes 3-7 s in production, longer than the page's

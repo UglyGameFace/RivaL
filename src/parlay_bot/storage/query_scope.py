@@ -22,10 +22,19 @@ from contextlib import contextmanager
 # shape). It is the largest value that still does that: the 12 s GuidedHome
 # redraw and the 10 s signal wait are total budgets for sequences of
 # individually capped reads (largest single-statement budgets on the
-# interaction path are the 8 s tracking starts and the 7 s Performance
-# readers), and the 11 s CDNA lookup is HTTP, not a statement — so no
+# interaction path are the 8 s tracking starts; the Performance page's
+# improvement check runs under its own PERFORMANCE_STATEMENT_TIMEOUT_MS
+# scope), and the 11 s CDNA lookup is HTTP, not a statement — so no
 # interaction-path query that could still serve its caller is killed by it.
 INTERACTIVE_STATEMENT_TIMEOUT_MS = 8_000
+
+# 28 s: the Performance page waits up to 30 s per reader (patient render,
+# PERFORMANCE_READ_SECONDS in discord_app.home). The 14-day improvement
+# check takes 3-7 s and ran past the 8 s interactive cap on a cold cache
+# right after a restart (RIVAL-18). 28 s lets it finish while still
+# aborting before the page abandons the read, so a parked statement never
+# holds a pooled connection after its caller has given up.
+PERFORMANCE_STATEMENT_TIMEOUT_MS = 28_000
 
 # 12 s: under every 15 s wait on the watchdog health-check path (inspect,
 # settlement repair, publish), so a parked statement aborts before the wait

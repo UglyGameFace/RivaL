@@ -83,12 +83,23 @@ async def test_public_best_bid_overrides_misleading_market_summary_and_is_learne
             assert market.quote_source == "orderbook"
             assert (market.yes_ask, market.no_ask) == (0.54, 0.62)
             assert (market.yes_ask_size, market.no_ask_size) == (17, 11)
+            assert market.book_observed_at is not None
+            assert len(market.book_receipt_sha256) == 64
+            assert result.checked_at >= market.book_observed_at
             if browser._study_tasks:
                 await __import__("asyncio").gather(*browser._study_tasks)
             preview = forward.contract_preview(asset="BTC", market=market)
             assert preview is not None
             assert preview["baseline_yes"] == pytest.approx(0.54 / 1.16)
             assert not preview["approved_model"]
+            proof = forward.executable_quote_evidence(
+                ticker=market.ticker, quantity=10)
+            assert proof["status"] == "fee_schedule_unverified"
+            assert proof["book_transport_sha256"] == market.book_receipt_sha256
+            assert proof["book_received_at"] == market.book_observed_at.isoformat()
+            assert proof["yes_side_depth_sufficient"]
+            assert proof["no_side_depth_sufficient"]
+            assert not proof["verified_after_cost"]
             with store.connect() as db:
                 row = db.execute(
                     "SELECT yes_ask,no_ask FROM rival_kalshi_forward WHERE ticker=?",

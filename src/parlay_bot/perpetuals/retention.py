@@ -40,6 +40,7 @@ AGED_TABLES = (
     ("perp_forward_audit", "issued_at"),
     ("rival_forward_model_lineage", "issued_at"),
     ("perp_forward_regimes", "issued_at"),
+    ("rival_forward_path_targets", "issued_at"),
 )
 
 

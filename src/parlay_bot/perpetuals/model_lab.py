@@ -549,7 +549,14 @@ def _design_name(genome: dict | None) -> str:
 
 def family_name(family: str) -> str:
     """The actual signal inputs and learning speed, without opaque design IDs."""
-    return _design_name(_GENOMES.get(str(family)))
+    key = str(family)
+    legacy = re.fullmatch(r"Lab ([0-9a-f]{6,10})", key)
+    if legacy:
+        candidates = [f for f in _GENOMES if f.rsplit("_", 1)[-1].startswith(legacy.group(1))]
+        if len(candidates) != 1:
+            return "Design unavailable"
+        key = candidates[0]
+    return _design_name(_GENOMES.get(key))
 
 
 def family_settings(family: str) -> str | None:

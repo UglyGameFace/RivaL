@@ -495,7 +495,8 @@ def _checklist(report: dict) -> str:
 
 
 def model_embed(report: dict | None, *, asset: str, name: str) -> discord.Embed:
-    name = (report or {}).get("name") or (short_name(name) if name.startswith("lab_") else name)
+    name = (report or {}).get("name") or (short_name(name)
+        if name.startswith(("lab_", "Lab ")) else name)
     if report is None or not report["horizons"]:
         return discord.Embed(
             title=f"🧪 {name} · {asset}",

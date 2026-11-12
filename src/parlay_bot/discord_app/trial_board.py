@@ -68,7 +68,7 @@ def short_name(family: str) -> str:
     if base.startswith("historical_"):
         return "History" + suffix
     lab = re.fullmatch(r"lab_\d+m_([0-9a-f]+)", base)
-    if lab:
+    if lab or re.fullmatch(r"Lab [0-9a-f]{6,10}", base):
         from parlay_bot.perpetuals.model_lab import family_name
 
         return family_name(base) + suffix

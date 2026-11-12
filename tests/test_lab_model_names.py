@@ -96,6 +96,19 @@ def test_missing_designs_never_collapse_or_expose_hashes():
     assert all(r.name == "Design unavailable" for r in rows)
 
 
+def test_retired_legacy_watch_names_still_describe_the_saved_design():
+    from parlay_bot.discord_app.model_detail import model_embed
+    from parlay_bot.discord_app.model_watch import compare_embed
+
+    _remember(model_lab.SEEDS[0])
+    old = "Lab d91792"
+    assert trial_board.short_name(old) == "All signals · steady"
+    assert "All signals" in model_embed(None, asset="BTC", name=old).title
+    text = str(compare_embed({old: None}, asset="BTC").to_dict())
+    assert "All signals" in text and old not in text
+    assert trial_board.short_name("Lab 000000") == "Design unavailable"
+
+
 def test_full_phone_table_and_picker_keep_disambiguated_names_within_discord_limits():
     base = {**model_lab.SEEDS[0], "regime": "quiet",
             "inputs": ("momentum", "volatility", "oscillators")}

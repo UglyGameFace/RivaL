@@ -29,6 +29,7 @@ from parlay_bot.discord_app.trial_board import (
     _tiny_count,
     grouped,
     model_line,
+    short_name,
 )
 
 _LOG = logging.getLogger(__name__)
@@ -69,7 +70,8 @@ def compare_embed(reports: dict[str, dict | None], *, asset: str,
     from parlay_bot.perpetuals.model_lab import family_names
 
     lab_names = family_names([name for name in reports if name.startswith("lab_")])
-    labels = {name: (report or {}).get("name") or lab_names.get(name) or name
+    labels = {name: (report or {}).get("name") or lab_names.get(name)
+              or (short_name(name) if name.startswith("Lab ") else name)
               for name, report in reports.items()}
     embed = discord.Embed(
         title=f"{'📡 Live watch' if live else '🧪 Compare'} · {asset} · {len(names)} models",

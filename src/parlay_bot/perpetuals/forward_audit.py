@@ -638,6 +638,11 @@ class ForwardAccuracyMonitor:
                     ON perp_forward_audit (settled_at,target_opened_at);
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_asset_horizon
                     ON perp_forward_audit (asset,horizon_minutes,issued_at);
+                CREATE INDEX IF NOT EXISTS idx_perp_forward_score_recent
+                    ON perp_forward_audit (asset,model_version,issued_at,horizon_minutes);
+                CREATE INDEX IF NOT EXISTS idx_perp_forward_intel_target
+                    ON perp_forward_audit
+                       (asset,horizon_minutes,target_opened_at,model_version,issued_at);
                 CREATE INDEX IF NOT EXISTS idx_perp_forward_asset_issued
                     ON perp_forward_audit (asset,issued_at)
                     WHERE settled_at IS NULL;

@@ -79,7 +79,14 @@ The existing records-export loop publishes completed UTC-day input bundles
 to the existing private Drive report folder. It exports at most three
 pending days per asset per pass and resumes older unexported days after an
 interruption. Content-addressed uploads survive a crash between upload
-and recording the export receipt.
+and recording the export receipt. **This export now runs independently before
+the larger records-backup job**: a failed, slow or timed-out ordinary records
+backup cannot suppress the prospective native-source publication in that
+cycle. The original memory-pressure guard still avoids running either export
+under pressure, and failed exports retry on the existing hourly cycle.
+The read-only host receipt separately reports uploaded completed days and
+the recent eligible-day backlog; an upload acknowledgment is not proof that
+the archive trainer later restored and compared that file.
 
 The existing weekly archive entry point restores these byte-verified
 bundles. It independently queries native history for recent captured

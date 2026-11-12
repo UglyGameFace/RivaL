@@ -192,12 +192,23 @@ def _count(n: int) -> str:
 # status instead (rows arrive sorted by status already).
 PHONE_WIDTH = 34
 GROUP_LABELS = {
-    "PASSED": "✅ passed every test",
-    "ahead": "▲ ahead of the main model",
-    "level": "= level with the main model",
-    "early": "⏳ too early to judge",
-    "behind": "▼ behind the main model",
-    "cut": "✂ cut for losing",
+    "PASSED": "✅ Passed every test",
+    "ahead": "▲ Ahead of the main model",
+    "level": "= Level with the main model",
+    "early": "⏳ Too early to judge",
+    "behind": "▼ Behind the main model",
+    "cut": "✂ Cut for losing",
+}
+# The contest is judged against Polymarket's own odds, not the main model,
+# so its headings say so (the old shared labels read "behind the main
+# model" on a contest table, which was never what the rows meant).
+CONTEST_GROUP_LABELS = {
+    "PASSED": "✅ Passed every test",
+    "ahead": "▲ Ahead of Polymarket's odds",
+    "level": "= Level with Polymarket's odds",
+    "early": "⏳ Too early to judge",
+    "behind": "▼ Behind Polymarket's odds",
+    "cut": "✂ Cut for losing",
 }
 
 
@@ -212,12 +223,14 @@ def _tiny_count(n: int) -> str:
     return f"{min(n // 1_000_000, 999)}M"
 
 
-def grouped(header: str, items: list[tuple[str, str]]) -> str:
+def grouped(header: str, items: list[tuple[str, str]], *,
+            labels: dict[str, str] | None = None) -> str:
     """A code block: the header, then each status heading and its lines."""
+    labels = GROUP_LABELS if labels is None else labels
     lines, current = [header], None
     for status, line in items:
         if status != current:
-            lines.append(GROUP_LABELS.get(status, status))
+            lines.append(labels.get(status, status))
             current = status
         lines.append(line)
     return "```\n" + "\n".join(lines) + "\n```\n"
@@ -441,4 +454,5 @@ def contest_table(rows: list[dict]) -> str:
         line = (f"{name[:11]:<11} {_tiny_count(done):>4} "
                 f"{_pts(_finite(m.get('improvement'))):>5} {fees[:6]:>6}")
         items.append((m["status"], line))
-    return grouped(f"{'Model':<11} {'Done':>4} {'Edge':>5} {'Fees':>6}", items)
+    return grouped(f"{'Model':<11} {'Done':>4} {'Edge':>5} {'Fees':>6}", items,
+                   labels=CONTEST_GROUP_LABELS)

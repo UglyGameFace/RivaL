@@ -7,9 +7,10 @@ from parlay_bot.discord_app.trial_board import TrialRow, fold, leader_line, shor
 
 def _grouped(text: str) -> list[tuple[str, list[str]]]:
     """(status, row words) per model line of a grouped phone table."""
-    from parlay_bot.discord_app.trial_board import GROUP_LABELS
+    from parlay_bot.discord_app.trial_board import CONTEST_GROUP_LABELS, GROUP_LABELS
 
     label_to_status = {v: k for k, v in GROUP_LABELS.items()}
+    label_to_status.update({v: k for k, v in CONTEST_GROUP_LABELS.items()})
     lines = text.split("```")[1].strip().splitlines()[1:]
     out, status = [], None
     for line in lines:

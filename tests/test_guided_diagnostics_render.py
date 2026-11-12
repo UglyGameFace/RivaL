@@ -14,6 +14,14 @@ def _fields(embed) -> dict[str, str]:
     return {field.name: field.value for field in embed.fields}
 
 
+def _all_fields(embeds) -> dict[str, str]:
+    """Every field of a three-embed page, in send order."""
+    out = {}
+    for embed in embeds:
+        out.update(_fields(embed))
+    return out
+
+
 @pytest.mark.asyncio
 async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) -> None:
     bot = _client(tmp_path)
@@ -29,9 +37,9 @@ async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) ->
     home.navigate("feeds")  # Old link now opens the one-page scorecard.
     try:
         assert home.page == "performance"
-        embed = await home.render()
-        fields = _fields(embed)
-        assert len(fields) == 4
+        embeds = await home.render_embeds()
+        fields = _all_fields(embeds)
+        assert len(fields) == 3
         health = fields["⚙️ Running and learning"]
         assert "⚠️ 0/1 exchanges live (behind: hyperliquid)" in health
         assert "⚠️ predictions: no run recorded yet" in health
@@ -39,8 +47,8 @@ async def test_legacy_feed_link_shows_real_cycle_health_on_one_page(tmp_path) ->
         from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
 
         ForwardAccuracyMonitor(market).run_once()
-        recorded = await home.render()
-        after = _fields(recorded)["⚙️ Running and learning"]
+        recorded = await home.render_embeds()
+        after = _all_fields(recorded)["⚙️ Running and learning"]
         assert "✅ predictions just now" in after
         assert "no run recorded" not in after.split("**")[0].replace("learning loop", "")
     finally:
@@ -120,11 +128,11 @@ async def test_feed_read_failure_does_not_hide_recorded_cycle(tmp_path, monkeypa
 
     monkeypatch.setattr(market, "feed_health", broken_feed)
     try:
-        embed = await home.render()
-        status = _fields(embed)["⚙️ Running and learning"]
+        embeds = await home.render_embeds()
+        status = _all_fields(embeds)["⚙️ Running and learning"]
         assert "feeds: couldn't check" in status
         assert "✅ predictions just now" in status
-        assert len(embed.fields) == 4
+        assert len(_all_fields(embeds)) == 3
     finally:
         home.stop()
         await bot.zip_resolver.aclose()

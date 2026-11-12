@@ -812,29 +812,36 @@ def _best_record(market: object, asset: str, horizon: int) -> dict:
     return out
 
 
-def _best_text(reports: dict) -> str | None:
-    """🏆 Best model per timeframe: one line each, then the lab in one line."""
+def _best_sections(reports: dict) -> tuple[str | None, str | None]:
+    """(timeframe leaders, Model Lab): each None when it has nothing to say.
+
+    The footnote defining Edge/Proven rides with the Lab when the lab is
+    running, else under the leaders, so it is never lost and never doubled.
+    """
     from parlay_bot.discord_app import trial_board
 
     record = reports.get("best")
     if not isinstance(record, dict):
-        return None
+        return None, None
     lab = record.get("lab")
     lab_busy = isinstance(lab, dict) and any(v["tried"] for v in lab.values())
     if not lab_busy and not any(v not in (None, "error") for v in record["best"].values()):
-        return None   # nothing to name yet: no empty section
-    lines = []
+        return None, None   # nothing to name yet: no empty section
+    leaders = []
     for h in (5, 15, 60):
         top = record["best"].get(h)
         if top == "error":
-            lines.append(f"**{h}m** · couldn't load right now")
+            leaders.append(f"**{h}m** · couldn't load right now")
         elif top is None:
-            lines.append(f"**{h}m** · no test model is ahead of the main model yet")
+            leaders.append(f"**{h}m** · no test model is ahead of the main model yet")
         else:
             proof = ("✅ passed every test" if top.status == "PASSED"
                      else f"{top.results:,} results over {top.days} day"
                           f"{'s' if top.days != 1 else ''}, not proven yet")
-            lines.append(f"**{h}m** · **{top.name}** {trial_board._pts(top.gain)} edge · {proof}")
+            leaders.append(f"**{h}m** · **{top.name}** {trial_board._pts(top.gain)} edge · {proof}")
+    footnote = ("-# Edge = less error than the main model, in points. Proven = 21 days, "
+                "150 results and a win after fees.")
+    lab_text = None
     if lab_busy:
         testing = sum(len(v["active"]) for v in lab.values())
         closed = sum(v["closed"] for v in lab.values())
@@ -845,11 +852,18 @@ def _best_text(reports: dict) -> str | None:
             h, top = max(tops, key=lambda t: t[1]["fitness"])
             lead = (f" Leading so far (all coins): **{trial_board.short_name(top['family'])}** "
                     f"on {h}-min (early, not proven).")
-        lines.append(f"🧬 Model Lab: {testing} designs testing, {closed} closed so far, "
-                     f"each loser replaced automatically.{lead}")
-    lines.append("-# Edge = less error than the main model, in points. Proven = 21 days, "
-                 "150 results and a win after fees.")
-    return "\n".join(lines)
+        lab_text = (f"🧬 Model Lab: {testing} designs testing, {closed} closed so far, "
+                    f"each loser replaced automatically.{lead}\n{footnote}")
+        return ("\n".join(leaders) if leaders else None), lab_text
+    return ("\n".join(leaders + [footnote]) if leaders else None), None
+
+
+def _best_text(reports: dict) -> str | None:
+    """🏆 Best model per timeframe: one line each, then the lab in one line."""
+    leaders, lab = _best_sections(reports)
+    if leaders is None and lab is None:
+        return None
+    return "\n".join(part for part in (leaders, lab) if part is not None)
 
 
 def _calibration_record(market: object, asset: str, horizon: int) -> dict:
@@ -860,8 +874,9 @@ def _calibration_record(market: object, asset: str, horizon: int) -> dict:
 CALIBRATION_MIN_CALLS = 20
 
 
-def _calibration_text(reports: dict) -> str:
-    """Does a 60% call come true ~60% of the time, and in which markets is it right?
+def _calibration_sections(reports: dict) -> tuple[str, str]:
+    """(confidence bands, market conditions): the second is "" when there is
+    nothing to show, so the page can put each in its own field.
 
     A band is judged only with at least 20 calls, and "off" only when the gap
     is bigger than sampling noise (about two standard errors), so a small
@@ -869,12 +884,12 @@ def _calibration_text(reports: dict) -> str:
     """
     record = reports.get("calibration")
     if not isinstance(record, dict):
-        return ("Couldn't load this right now. Press Refresh."
-                if "calibration" in reports else "Not available on this server.")
+        return (("Couldn't load this right now. Press Refresh."
+                 if "calibration" in reports else "Not available on this server."), "")
     bands = record.get("bands") or []
     judged = [b for b in bands if b["n"] >= CALIBRATION_MIN_CALLS]
     if not judged:
-        return "Too few finished calls in the last 7 days to check its confidence yet."
+        return ("Too few finished calls in the last 7 days to check its confidence yet.", "")
     lines = [f"{'It said':<8} {'Came true':>9} {'Calls':>6}"]
     for band in bands:
         label = (f"{band['low']:.0%}–{band['high']:.0%}" if band["high"] < 1
@@ -896,32 +911,39 @@ def _calibration_text(reports: dict) -> str:
     else:
         verdict = (f"**Underconfident:** it says {said:.0%} on average and is right "
                    f"{happened:.0%}. Its real chances are a bit better than shown.")
-    text = verdict + "\n```\n" + "\n".join(lines) + "\n```\n"
+    confidence = verdict + "\n```\n" + "\n".join(lines) + "\n```\n"
 
     names = {"quiet": "Quiet", "normal": "Normal", "turbulent": "Turbulent"}
     regimes = record.get("regimes") or {}
     rows = [(names[k], regimes[k]) for k in ("quiet", "normal", "turbulent")
             if k in regimes and regimes[k]["n"]]
-    if rows:
-        table = [f"{'Market':<9} {'Right':>6} {'Edge':>5} {'Calls':>6}"]
-        best = None
-        for name, part in rows:
-            if part["n"] >= CALIBRATION_MIN_CALLS:
-                edge = (part["baseline_brier"] - part["brier"]) * 1000
-                right, edge_text = f"{part['hit_rate']:.1%}", f"{edge:+.1f}"
-                if best is None or edge > best[1]:
-                    best = (name, edge)
-            else:
-                right, edge_text = "few", "—"
-            table.append(f"{name:<9} {right:>6} {edge_text:>5} {part['n']:>6,}")
-        text += "**Where it's right** (market calm vs wild when it called):\n"
-        text += "```\n" + "\n".join(table) + "\n```\n"
-        if best is not None and best[1] > 0:
-            text += (f"-# Best in **{best[0].lower()}** markets. Edge = less error than a "
-                     "coin flip, in points. A lead here is a clue, not proof.")
+    if not rows:
+        return confidence, ""
+    table = [f"{'Market':<9} {'Right':>6} {'Edge':>5} {'Calls':>6}"]
+    best = None
+    for name, part in rows:
+        if part["n"] >= CALIBRATION_MIN_CALLS:
+            edge = (part["baseline_brier"] - part["brier"]) * 1000
+            right, edge_text = f"{part['hit_rate']:.1%}", f"{edge:+.1f}"
+            if best is None or edge > best[1]:
+                best = (name, edge)
         else:
-            text += "-# No market condition where it beats a coin flip yet."
-    return text
+            right, edge_text = "few", "—"
+        table.append(f"{name:<9} {right:>6} {edge_text:>5} {part['n']:>6,}")
+    conditions = "**Where it's right** (market calm vs wild when it called):\n"
+    conditions += "```\n" + "\n".join(table) + "\n```\n"
+    if best is not None and best[1] > 0:
+        conditions += (f"-# Best in **{best[0].lower()}** markets. Edge = less error than a "
+                       "coin flip, in points. A lead here is a clue, not proof.")
+    else:
+        conditions += "-# No market condition where it beats a coin flip yet."
+    return confidence, conditions
+
+
+def _calibration_text(reports: dict) -> str:
+    """Does a 60% call come true ~60% of the time, and in which markets is it right?"""
+    confidence, conditions = _calibration_sections(reports)
+    return confidence + conditions
 
 
 def _when(age_minutes: int) -> str:
@@ -945,9 +967,12 @@ def _scoreboard_text(coin: str, horizon: int, reports: dict, now: datetime) -> t
             ahead = model < market
             headline = ("**Ahead of Polymarket's odds so far, but not proven yet.**" if ahead
                         else "**No edge yet: Polymarket's odds are still more accurate.**")
+            # One fact per line, label first: the verdict on its own line,
+            # then the numbers, so a phone never has to parse four facts
+            # out of one bullet.
             lines.append(
-                f"🎯 **vs Polymarket odds:** {'ahead' if ahead else 'behind'} · error "
-                f"{model:.3f} vs {market:.3f} · {resolved:,} contracts")
+                f"🎯 **vs Polymarket odds — {'ahead' if ahead else 'behind'}**\n"
+                f"Error {model:.3f} vs {market:.3f} · {resolved:,} contracts")
         else:
             headline = "**Too early to compare with Polymarket's odds.**"
             lines.append(f"🎯 **vs Polymarket odds:** {resolved:,} contracts so far, too few")
@@ -957,25 +982,25 @@ def _scoreboard_text(coin: str, horizon: int, reports: dict, now: datetime) -> t
         pooled = poly.get("pooled") or {}
         if pooled.get("contracts"):
             better = pooled["model_brier"] < pooled["market_brier"]
-            line = (f"🗄️ **6-year model vs odds:** {'ahead' if better else 'behind'} · "
+            line = (f"🗄️ **6-year model vs odds — {'ahead' if better else 'behind'}**\n"
                     f"{pooled['model_brier']:.3f} vs {pooled['market_brier']:.3f} · "
                     f"{pooled['contracts']:,} contracts")
             if pooled.get("real_value_bets"):
-                line += (f" · its bets won {pooled['real_value_bet_wins']}/"
+                line += (f"\nIts bets won {pooled['real_value_bet_wins']}/"
                          f"{pooled['real_value_bets']}, "
                          f"{money(pooled['real_return_per_dollar_after_fees'] * 100)} after fees")
             elif pooled.get("value_bets"):
-                line += (f" · its bets won {pooled['value_bet_wins']}/{pooled['value_bets']}, "
+                line += (f"\nIts bets won {pooled['value_bet_wins']}/{pooled['value_bets']}, "
                          f"{money(pooled['value_bet_avg_return'] * 100)} before fees")
             lines.append(line)
         kalshi = poly.get("kalshi") or {}
         if kalshi.get("contracts"):
             better = kalshi["model_brier"] < kalshi["market_brier"]
-            line = (f"🟦 **vs Kalshi 15-min odds:** {'ahead' if better else 'behind'} · "
+            line = (f"🟦 **vs Kalshi 15-min odds — {'ahead' if better else 'behind'}**\n"
                     f"{kalshi['model_brier']:.3f} vs {kalshi['market_brier']:.3f} · "
                     f"{kalshi['contracts']:,} contracts")
             if kalshi.get("value_bets"):
-                line += (f" · its bets won {kalshi['value_bet_wins']}/{kalshi['value_bets']}, "
+                line += (f"\nIts bets won {kalshi['value_bet_wins']}/{kalshi['value_bets']}, "
                          f"{money(kalshi['return_per_dollar_after_fees'] * 100)} after fees")
             lines.append(line)
         if int(poly.get("observed_contracts") or 0) and not int(poly.get("learned_contracts") or 0):
@@ -990,14 +1015,16 @@ def _scoreboard_text(coin: str, horizon: int, reports: dict, now: datetime) -> t
     else:
         decided, correct = int(part.get("decided") or 0), int(part.get("correct") or 0)
         hit = part.get("hit_rate")
-        right = (f"right **{rate_or_too_few(decided, f'{hit:.1%}', what='decided')}** "
-                 f"({correct:,} of {decided:,})" if isinstance(hit, (int, float)) and decided
-                 else "no finished results yet")
         brier, base = part.get("brier"), part.get("baseline_brier")
         guess = (f" · vs a simple guess: {'ahead' if brier < base else 'behind'} "
                  f"({brier:.3f} vs {base:.3f})"
                  if isinstance(brier, (int, float)) and isinstance(base, (int, float)) else "")
-        lines.append(f"📈 **Up/down calls:** {right}{guess}")
+        if isinstance(hit, (int, float)) and decided:
+            right = f"right **{rate_or_too_few(decided, f'{hit:.1%}', what='decided')}**"
+            lines.append(f"📈 **Up/down calls** — {right}\n"
+                         f"({correct:,} of {decided:,}){guess}")
+        else:
+            lines.append("📈 **Up/down calls** — no finished results yet")
         venues, settled = int(part.get("venues") or 0), int(part.get("settled") or 0)
         lines.append(
             f"-# {settled:,} of {int(part.get('issued') or 0):,} predictions checked · "
@@ -1016,41 +1043,90 @@ def _scoreboard_text(coin: str, horizon: int, reports: dict, now: datetime) -> t
     return headline, "\n".join(lines)
 
 
-def _trials_text(reports: dict) -> tuple[str, str]:
-    """(field name, value) for every model on trial here."""
+def _trials_sections(reports: dict) -> dict:
+    """Trial table split for the three-embed page.
+
+    Keys: name (field name), leader (closest-to-passing line), table (the
+    grouped code block), missing (the partial-read note, attached to the
+    table), how_to_read (definitions + all-markets line), count (rows, or
+    None when the read itself is unavailable). ``_trials_text`` joins them
+    exactly as the single-embed page did.
+    """
     from parlay_bot.discord_app import trial_board
 
     board = reports.get("trials")
     if "trials" not in reports:
-        return "🧪 Models on trial", "Trial results aren't available on this server."
+        return {"name": "🧪 Models on trial",
+                "leader": "Trial results aren't available on this server.",
+                "table": "", "missing": "", "how_to_read": "", "count": None}
     if not isinstance(board, dict):
-        return ("🧪 Models on trial",
-                ("⚠️ Couldn't load the trial table right now. Press Refresh; "
-                 "this is a slow read, not missing results."))
+        return {"name": "🧪 Models on trial",
+                "leader": ("⚠️ Couldn't load the trial table right now. Press Refresh; "
+                           "this is a slow read, not missing results."),
+                "table": "", "missing": "", "how_to_read": "", "count": None}
     rows = board.get("rows") or []
+    all_markets = (f"-# All markets: {int(board.get('trials') or 0)} on trial · "
+                   f"{int(board.get('passed') or 0)} passed · "
+                   f"{int(board.get('stops') or 0)} cut early for losing")
     if not rows:
-        body = "No test models have scored results here yet."
-    else:
-        from parlay_bot.discord_app.data_dashboard import VENUE_NAMES
+        return {"name": "🧪 Models on trial here (0)",
+                "leader": "No test models have scored results here yet.",
+                "table": "", "missing": "", "how_to_read": all_markets, "count": 0}
+    from parlay_bot.discord_app.data_dashboard import VENUE_NAMES
 
-        venues = [VENUE_NAMES.get(v, v) for v in board.get("venues") or ()]
-        where = (" and ".join(venues) if 0 < len(venues) <= 3
-                 else f"{len(venues)} exchanges" if venues else "the judged exchange")
-        # Every column of a row comes from the same exchange(s), so the
-        # numbers can be read together.
-        missing = ("\n-# Right % couldn't load this time (not zero); it fills in on "
-                   "its own." if board.get("partial") else "")
-        body = (trial_board.table(rows) + trial_board.leader_line(rows) + missing + "\n"
-                f"-# Scored on {where} (the hourly check rotates exchanges). Day = days of "
-                f"results, Res = graded results, Right = its up/down calls that came true "
-                f"(last {trial_board.HIT_DAYS} days), Edge = less error than the main model "
-                "in points (+ is better; \"few\" under 20 results). To replace it: "
-                f"{trial_board.MIN_DAYS} days, {trial_board.MIN_RESULTS} results and a win "
-                "after fees.")
-    body += (f"\n-# All markets: {int(board.get('trials') or 0)} on trial · "
-             f"{int(board.get('passed') or 0)} passed · "
-             f"{int(board.get('stops') or 0)} cut early for losing")
-    return f"🧪 Models on trial here ({len(rows)})", body
+    venues = [VENUE_NAMES.get(v, v) for v in board.get("venues") or ()]
+    where = (" and ".join(venues) if 0 < len(venues) <= 3
+             else f"{len(venues)} exchanges" if venues else "the judged exchange")
+    # Every column of a row comes from the same exchange(s), so the
+    # numbers can be read together.
+    missing = ("\n-# Right % couldn't load this time (not zero); it fills in on "
+               "its own." if board.get("partial") else "")
+    how_to_read = (f"-# Scored on {where} (the hourly check rotates exchanges). Day = days of "
+                   f"results, Res = graded results, Right = its up/down calls that came true "
+                   f"(last {trial_board.HIT_DAYS} days), Edge = less error than the main model "
+                   "in points (+ is better; \"few\" under 20 results). To replace it: "
+                   f"{trial_board.MIN_DAYS} days, {trial_board.MIN_RESULTS} results and a win "
+                   f"after fees.\n{all_markets}")
+    return {"name": f"🧪 Models on trial here ({len(rows)})",
+            "leader": trial_board.leader_line(rows),
+            "table": trial_board.table(rows),
+            "missing": missing, "how_to_read": how_to_read, "count": len(rows)}
+
+
+def _trials_text(reports: dict) -> tuple[str, str]:
+    """(field name, value) for every model on trial here."""
+    sections = _trials_sections(reports)
+    if not sections["table"]:
+        body = sections["leader"]
+        if sections["how_to_read"]:
+            body += "\n" + sections["how_to_read"]
+        return sections["name"], body
+    body = (sections["table"] + sections["leader"] + sections["missing"] + "\n"
+            + sections["how_to_read"])
+    return sections["name"], body
+
+
+def _contest_verdict(rows: list[dict]) -> str:
+    """One plain line on where the contest stands vs Polymarket's own odds."""
+    ahead = sum(1 for r in rows if r["status"] in ("ahead", "PASSED"))
+    level = sum(1 for r in rows if r["status"] == "level")
+    behind = sum(1 for r in rows if r["status"] == "behind")
+    early = sum(1 for r in rows if r["status"] == "early")
+    total = len(rows)
+    if behind == total:
+        return f"▼ **All {total} are behind Polymarket's own odds.**"
+    if ahead == total:
+        return f"▲ **All {total} are ahead of Polymarket's own odds.**"
+    parts = []
+    if ahead:
+        parts.append(f"▲ {ahead} ahead")
+    if level:
+        parts.append(f"= {level} level")
+    if behind:
+        parts.append(f"▼ {behind} behind")
+    if early:
+        parts.append(f"⏳ {early} too early")
+    return "**Polymarket contest:** " + " · ".join(parts) + " — vs Polymarket's own odds."
 
 
 def _contest_text(reports: dict) -> str | None:
@@ -1061,7 +1137,7 @@ def _contest_text(reports: dict) -> str | None:
     if not isinstance(models, list) or not models:
         return None
     rows = trial_board.contest_rows(models)
-    return (trial_board.contest_table(rows)
+    return (_contest_verdict(rows) + "\n" + trial_board.contest_table(rows)
             + "-# Edge = less error than Polymarket's own odds, in points. Fees = paper "
             f"result per contract after Polymarket's fee. To qualify: "
             f"{trial_board.CONTEST_CONTRACTS} contracts and a statistical pass.")
@@ -1195,25 +1271,35 @@ def _last_good(name: str, coin: str, horizon: int):
     return screen_snapshots.last(saved_name, coin, horizon if fixed is None else fixed)
 
 
-def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
-                      venues: tuple[str, ...] = ()) -> discord.Embed:
-    """Bot Performance: verdict first, then three short sections and two tables.
+def _add_field(embed: discord.Embed, stale: dict, name: str, value: str,
+               sources: tuple[str, ...]) -> None:
+    """Add a section, marking it ⏳ OLD COPY when built from a saved copy."""
+    ages = [stale[s] for s in sources if s in stale]
+    if ages:
+        when = _age_words(max(max(ages), timedelta(minutes=1)))
+        name = f"{name} · ⏳ OLD COPY"
+        value = f"**⏳ Old copy from {when} ago, not live.**\n{value}"
+    embed.add_field(name=name, value=fit_embed_field_value(value), inline=False)
+
+
+def performance_embeds(coin: str, horizon: int, reports: dict, *, now: datetime,
+                       venues: tuple[str, ...] = ()) -> list[discord.Embed]:
+    """Bot Performance as three embeds in one message, nothing removed.
+
+    1. The main model: verdict first, then the scoreboard (one fact per
+       line, label first), whether its confidence can be trusted, and where
+       it is right. 2. Models on trial: the closest to passing, the table
+       grouped by plain status headings, how to read it, the best model per
+       timeframe, and the Model Lab. 3. The Polymarket contest and whether
+       the bot is running and learning.
 
     Built only from what the readers returned, so it is tested without
     Discord or a database. A reader that failed shows as "couldn't load",
-    never as a zero.
+    never as a zero. Only Discord-embed primitives are used (titles,
+    fields, bold, code blocks for tables).
     """
     headline, scoreboard = _scoreboard_text(coin, horizon, reports, now)
     stale = reports.get("_stale") or {}
-
-    def field(name: str, value: str, sources: tuple[str, ...]) -> None:
-        """A section built from an older saved copy says so in its title and first line."""
-        ages = [stale[s] for s in sources if s in stale]
-        if ages:
-            when = _age_words(max(max(ages), timedelta(minutes=1)))
-            name = f"{name} · ⏳ OLD COPY"
-            value = f"**⏳ Old copy from {when} ago, not live.**\n{value}"
-        embed.add_field(name=name, value=fit_embed_field_value(value), inline=False)
 
     warning = ""
     if stale:
@@ -1221,36 +1307,83 @@ def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
         warning = ("**⚠️ NOT ALL LIVE: sections marked ⏳ OLD COPY are the last good check "
                    f"(up to {when} old). The database was busy; press Refresh in a "
                    "minute for live numbers.**\n")
-    embed = discord.Embed(
+    first = discord.Embed(
         title=f"📊 {ASSET_NAMES.get(coin, coin)} · {horizon}-min · Bot performance",
         description=(f"{warning}{headline}\n-# Every score uses predictions saved before the "
                      "result was known. Does it make money? Not proven yet."),
         color=discord.Color.orange() if stale else discord.Color.blurple(),
     )
-    field("🎯 Scoreboard (last 7 days)", rename_text(scoreboard), ("exchange", "polymarket"))
-    field("🎚️ Can you trust its confidence?", _calibration_text(reports), ("calibration",))
-    name, trials = _trials_text(reports)
-    field(name, trials, ("trials",))
-    leaders = _best_text(reports)
+    _add_field(first, stale, "🎯 Scoreboard (last 7 days)", rename_text(scoreboard),
+               ("exchange", "polymarket"))
+    confidence, conditions = _calibration_sections(reports)
+    _add_field(first, stale, "🎚️ Can you trust its confidence?", confidence,
+               ("calibration",))
+    if conditions:
+        _add_field(first, stale, "📊 Where it's right", conditions, ("calibration",))
+
+    trials = _trials_sections(reports)
+    asset = ASSET_NAMES.get(coin, coin)
+    second = discord.Embed(
+        title=(f"🧪 Models on trial here ({trials['count']}) — {asset} · {horizon}-min"
+               if trials["count"] is not None
+               else f"🧪 Models on trial — {asset} · {horizon}-min"),
+        description=trials["leader"],
+        color=(discord.Color.orange()
+               if any(s in stale for s in ("trials", "best")) else discord.Color.blurple()),
+    )
+    if trials["table"]:
+        _add_field(second, stale, trials["name"],
+                   trials["table"] + trials["missing"], ("trials",))
+        _add_field(second, stale, "How to read this table", trials["how_to_read"],
+                   ("trials",))
+    elif trials["how_to_read"]:
+        second.description = f"{trials['leader']}\n{trials['how_to_read']}"
+    leaders, lab = _best_sections(reports)
     if leaders:
-        field(f"🏆 Best model per timeframe ({coin})", leaders, ("best",))
+        _add_field(second, stale, f"🏆 Best model per timeframe ({coin})", leaders,
+                   ("best",))
+    if lab:
+        _add_field(second, stale, "🧬 Model Lab", lab, ("best",))
+
     contest = _contest_text(reports)
+    third = discord.Embed(
+        title="🎲 Polymarket contest" if contest else "⚙️ Running and learning",
+        color=discord.Color.orange() if "benefit" in stale else discord.Color.blurple(),
+    )
     if contest:
-        field("🎲 Polymarket contest", contest, ())
-    field("⚙️ Running and learning",
-          rename_text(_health_text(coin, horizon, reports, now, venues)), ("benefit",))
-    embed.timestamp = now
-    embed.set_footer(text=f"{RESEARCH_FOOTER} · Per-model detail: Detailed Research")
-    # Discord refuses an embed over 6,000 characters (the screen would fail
-    # to load): drop the optional sections, least important first.
-    for optional in ("🎲 Polymarket contest", f"🏆 Best model per timeframe ({coin})"):
-        if len(embed) <= 5900:
+        _add_field(third, stale, "🎲 Polymarket contest", contest, ())
+    _add_field(third, stale, "⚙️ Running and learning",
+               rename_text(_health_text(coin, horizon, reports, now, venues)),
+               ("benefit",))
+    third.timestamp = now
+    third.set_footer(text=f"{RESEARCH_FOOTER} · Per-model detail: Detailed Research")
+
+    embeds = [first, second, third]
+    # Discord caps a message's embeds at 6,000 characters combined: drop
+    # the optional sections, least important first, as the single-embed
+    # page did.
+    for embed, optional in ((third, "🎲 Polymarket contest"),
+                            (second, f"🏆 Best model per timeframe ({coin})"),
+                            (second, "🧬 Model Lab")):
+        if sum(len(e) for e in embeds) <= 5900:
             break
         for index, f in enumerate(embed.fields):
             if f.name.startswith(optional):
                 embed.remove_field(index)
                 break
-    return embed
+    if not any(f.name.startswith("🎲 Polymarket contest") for f in third.fields):
+        third.title = "⚙️ Running and learning"
+    return embeds
+
+
+def performance_embed(coin: str, horizon: int, reports: dict, *, now: datetime,
+                      venues: tuple[str, ...] = ()) -> discord.Embed:
+    """Bot Performance: verdict first, then three short sections and two tables.
+
+    Kept for callers that read the first embed only; the page itself sends
+    all three via :func:`performance_embeds`.
+    """
+    return performance_embeds(coin, horizon, reports, now=now, venues=venues)[0]
 
 
 def _intelligence_status(market: object, asset: str, horizon: int) -> dict | None:
@@ -2309,79 +2442,9 @@ class GuidedHome(discord.ui.View):
                     inline=False,
                 )
         elif p == "performance":
-            # Every read is bounded and independent: a slow or failed one
-            # shows as "couldn't load", never hides the others.
-            readers = {}
-            if self.market is not None:
-                readers["exchange"] = asyncio.wait_for(
-                    asyncio.to_thread(_cached_exchange, self.market, self.coin),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
-                readers["benefit"] = asyncio.wait_for(
-                    asyncio.to_thread(
-                        _cached_benefit, self.market, self.coin, self.horizon,
-                    ), timeout=PERFORMANCE_READ_SECONDS,
-                )
-                readers["calibration"] = asyncio.wait_for(
-                    asyncio.to_thread(_cached_page_read, _calibration_record, self.market,
-                                      self.coin, self.horizon),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
-                readers["trials"] = asyncio.wait_for(
-                    asyncio.to_thread(_cached_page_read, _trial_board_record, self.market,
-                                      self.coin, self.horizon),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
-                readers["best"] = asyncio.wait_for(
-                    asyncio.to_thread(_cached_page_read, _best_record, self.market,
-                                      self.coin, 0),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
-                readers["intelligence"] = asyncio.wait_for(
-                    asyncio.to_thread(
-                        _intelligence_status, self.market, self.coin, self.horizon,
-                    ), timeout=PERFORMANCE_READ_SECONDS,
-                )
-                readers["coverage"] = asyncio.wait_for(
-                    asyncio.to_thread(_cycle_coverage, self.market),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
-                readers["cycles"] = asyncio.wait_for(
-                    asyncio.to_thread(_performance_cycles, self.market),
-                    timeout=PERFORMANCE_READ_SECONDS,
-                )
-                if callable(getattr(self.market, "feed_health", None)):
-                    readers["feeds"] = asyncio.wait_for(
-                        asyncio.to_thread(self.market.feed_health),
-                        timeout=PERFORMANCE_READ_SECONDS,
-                    )
-            if self.polymarket_status is not None:
-                readers["polymarket"] = asyncio.wait_for(
-                    asyncio.to_thread(
-                        _cached_polymarket_status, self.polymarket_status,
-                        self.coin, self.horizon,
-                    ), timeout=PERFORMANCE_READ_SECONDS,
-                )
-            reports = dict(zip(
-                readers, await asyncio.gather(*readers.values(), return_exceptions=True),
-            ))
-            stale = {}
-            for name, result in list(reports.items()):
-                if isinstance(result, Exception):
-                    _LOG.warning("Performance %s read failed: %s", name, type(result).__name__)
-                    saved = _last_good(name, self.coin, self.horizon)
-                    if saved is not None:
-                        reports[name], stale[name] = saved
-            if stale:
-                reports["_stale"] = stale
-            if self.contest_models is not None:
-                try:  # in memory, refreshed by the live board every 10 minutes
-                    reports["contest"] = self.contest_models(self.coin, self.horizon)
-                except Exception as exc:  # noqa: BLE001 - never breaks the page
-                    reports["contest"] = exc
             embed = performance_embed(
-                self.coin, self.horizon, reports, now=datetime.now(UTC),
-                venues=self.venues,
+                self.coin, self.horizon, await self._performance_reports(),
+                now=datetime.now(UTC), venues=self.venues,
             )
         elif p == "help":
             embed = discord.Embed(
@@ -2418,6 +2481,95 @@ class GuidedHome(discord.ui.View):
         if p != "performance":  # Performance sets its own footer above
             embed.set_footer(text="Research only • No real trades • Predictions can be wrong")
         return embed
+
+    async def _performance_reports(self) -> dict:
+        """The Performance page's reads, each bounded and independent.
+
+        A slow or failed read shows as "couldn't load" (or the last good
+        copy, marked ⏳ OLD COPY), never hides the other sections.
+        """
+        readers = {}
+        if self.market is not None:
+            readers["exchange"] = asyncio.wait_for(
+                asyncio.to_thread(_cached_exchange, self.market, self.coin),
+                timeout=PERFORMANCE_READ_SECONDS,
+            )
+            readers["benefit"] = asyncio.wait_for(
+                asyncio.to_thread(
+                    _cached_benefit, self.market, self.coin, self.horizon,
+                ), timeout=PERFORMANCE_READ_SECONDS,
+            )
+            readers["calibration"] = asyncio.wait_for(
+                asyncio.to_thread(_cached_page_read, _calibration_record, self.market,
+                                  self.coin, self.horizon),
+                timeout=PERFORMANCE_READ_SECONDS,
+            )
+            readers["trials"] = asyncio.wait_for(
+                asyncio.to_thread(_cached_page_read, _trial_board_record, self.market,
+                                  self.coin, self.horizon),
+                timeout=PERFORMANCE_READ_SECONDS,
+            )
+            readers["best"] = asyncio.wait_for(
+                asyncio.to_thread(_cached_page_read, _best_record, self.market,
+                                  self.coin, 0),
+                timeout=PERFORMANCE_READ_SECONDS,
+            )
+            readers["intelligence"] = asyncio.wait_for(
+                asyncio.to_thread(
+                    _intelligence_status, self.market, self.coin, self.horizon,
+                ), timeout=PERFORMANCE_READ_SECONDS,
+            )
+            readers["coverage"] = asyncio.wait_for(
+                asyncio.to_thread(_cycle_coverage, self.market),
+                timeout=PERFORMANCE_READ_SECONDS,
+            )
+            readers["cycles"] = asyncio.wait_for(
+                asyncio.to_thread(_performance_cycles, self.market),
+                timeout=PERFORMANCE_READ_SECONDS,
+            )
+            if callable(getattr(self.market, "feed_health", None)):
+                readers["feeds"] = asyncio.wait_for(
+                    asyncio.to_thread(self.market.feed_health),
+                    timeout=PERFORMANCE_READ_SECONDS,
+                )
+        if self.polymarket_status is not None:
+            readers["polymarket"] = asyncio.wait_for(
+                asyncio.to_thread(
+                    _cached_polymarket_status, self.polymarket_status,
+                    self.coin, self.horizon,
+                ), timeout=PERFORMANCE_READ_SECONDS,
+            )
+        reports = dict(zip(
+            readers, await asyncio.gather(*readers.values(), return_exceptions=True),
+        ))
+        stale = {}
+        for name, result in list(reports.items()):
+            if isinstance(result, Exception):
+                _LOG.warning("Performance %s read failed: %s", name, type(result).__name__)
+                saved = _last_good(name, self.coin, self.horizon)
+                if saved is not None:
+                    reports[name], stale[name] = saved
+        if stale:
+            reports["_stale"] = stale
+        if self.contest_models is not None:
+            try:  # in memory, refreshed by the live board every 10 minutes
+                reports["contest"] = self.contest_models(self.coin, self.horizon)
+            except Exception as exc:  # noqa: BLE001 - never breaks the page
+                reports["contest"] = exc
+        return reports
+
+    async def render_embeds(self) -> list[discord.Embed]:
+        """Every embed for this page: one, except Performance which sends three."""
+        if self.page != "performance":
+            return [await self.render()]
+        reports = await self._performance_reports()
+        embeds = performance_embeds(self.coin, self.horizon, reports,
+                                    now=datetime.now(UTC), venues=self.venues)
+        if self.note:
+            embeds[0].add_field(name="What Happened",
+                                value=fit_embed_field_value(self.note, budget=1000),
+                                inline=False)
+        return embeds
 
     def _display_generation(self) -> GuidedHome:
         """Create the replacement buttons without detaching the displayed ones.
@@ -2552,7 +2704,7 @@ class GuidedHome(discord.ui.View):
     ) -> None:
         """Complete slow scorecard reads after the user can already navigate."""
         try:
-            embed = await patient(self.render, on_slow=self._slow_note(interaction, revision))
+            embeds = await patient(self.render_embeds, on_slow=self._slow_note(interaction, revision))
         except TimeoutError:
             _LOG.warning("Performance background render timed out")
             embed = discord.Embed(
@@ -2563,6 +2715,7 @@ class GuidedHome(discord.ui.View):
                 ),
                 color=discord.Color.orange(),
             )
+            embeds = [embed]
         except Exception:  # noqa: BLE001
             _LOG.exception("Performance background render failed")
             embed = discord.Embed(
@@ -2570,13 +2723,14 @@ class GuidedHome(discord.ui.View):
                 description="The evidence could not be read. No accuracy was inferred.",
                 color=discord.Color.orange(),
             )
+            embeds = [embed]
         async with self._redraw_lock:
             if self._render_revision["value"] != revision:
                 return
             try:
                 await asyncio.wait_for(
                     interaction.edit_original_response(
-                        embed=embed, view=self._display_generation(),
+                        embeds=embeds, view=self._display_generation(),
                     ), timeout=4,
                 )
             except (discord.HTTPException, TimeoutError):
@@ -2622,7 +2776,9 @@ class GuidedHome(discord.ui.View):
         started = time.monotonic()
         # Do not clear live components before the next embed is ready.
         render_timed_out = False
-        task = asyncio.ensure_future(self.render())
+        # Performance sends three embeds; every other page sends one.
+        task = asyncio.ensure_future(
+            self.render_embeds() if self.page == "performance" else self.render())
         try:
             embed = await asyncio.wait_for(asyncio.shield(task), timeout=FIRST_WAIT)
         except TimeoutError:
@@ -2669,10 +2825,11 @@ class GuidedHome(discord.ui.View):
         _LOG.info("Guided render page=%s elapsed_ms=%.0f",
                   self.page, (time.monotonic() - started) * 1000)
         edit_failed = False
+        send = ({"embeds": embed} if isinstance(embed, list) else {"embed": embed})
         try:
             await asyncio.wait_for(
                 interaction.edit_original_response(
-                    content=None, embed=embed, view=self._display_generation(),
+                    content=None, view=self._display_generation(), **send,
                 ),
                 timeout=8,
             )
@@ -2738,9 +2895,10 @@ class GuidedHome(discord.ui.View):
         async with self._redraw_lock:
             if self._render_revision["value"] != revision:
                 return
+            send = ({"embeds": embed} if isinstance(embed, list) else {"embed": embed})
             try:
                 await asyncio.wait_for(interaction.edit_original_response(
-                    content=None, embed=embed, view=self._display_generation()), timeout=8)
+                    content=None, view=self._display_generation(), **send), timeout=8)
             except (TimeoutError, discord.HTTPException):
                 _LOG.warning("Guided slow render display failed page=%s", self.page)
 

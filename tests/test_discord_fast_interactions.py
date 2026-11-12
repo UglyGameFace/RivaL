@@ -274,9 +274,9 @@ async def test_performance_menu_shows_loading_before_blocked_database(monkeypatc
     async def slow_render():
         started.set()
         await release.wait()
-        return discord.Embed(title="Measured performance")
+        return [discord.Embed(title="Measured performance")]
 
-    home.render = slow_render
+    home.render_embeds = slow_render
     try:
         await asyncio.wait_for(home.redraw(interaction), timeout=0.5)
         assert "Loading BTC performance" in (
@@ -287,8 +287,8 @@ async def test_performance_menu_shows_loading_before_blocked_database(monkeypatc
         await asyncio.sleep(0.1)
         assert interaction.edit_original_response.await_count == 2
         assert interaction.edit_original_response.await_args.kwargs[
-            "embed"
-        ].title == "Measured performance"
+            "embeds"
+        ][0].title == "Measured performance"
     finally:
         release.set()
         home.stop()

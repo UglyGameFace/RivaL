@@ -2,8 +2,9 @@
 
 The verdict against Polymarket's own odds is the first line of the page
 (the embed description), at most 12 words, and the comparison it rests on
-(error scores and the number of contracts) is the first line of the
-scoreboard. The after-fees evidence stays on the scoreboard below it.
+(error scores and the number of contracts) is the line right under the
+scoreboard's label line. The after-fees evidence stays on the scoreboard
+below it.
 """
 from __future__ import annotations
 
@@ -23,8 +24,9 @@ async def test_headline_verdict_first_when_trailing_polymarket(tmp_path):
     try:
         panel = await home.render()
         assert _headline(panel) == "**No edge yet: Polymarket's odds are still more accurate.**"
-        assert _fields(panel)[SCORE].split("\n")[0] == (
-            "🎯 **vs Polymarket odds:** behind · error 0.239 vs 0.222 · 300 contracts")
+        lines = _fields(panel)[SCORE].split("\n")
+        assert lines[0] == "🎯 **vs Polymarket odds — behind**"
+        assert lines[1] == "Error 0.239 vs 0.222 · 300 contracts"
     finally:
         await _close(bot, home)
 
@@ -39,7 +41,9 @@ async def test_headline_verdict_first_when_beating_polymarket(tmp_path):
     try:
         panel = await home.render()
         assert _headline(panel) == "**Ahead of Polymarket's odds so far, but not proven yet.**"
-        assert "**vs Polymarket odds:** ahead · error 0.210 vs 0.222" in _fields(panel)[SCORE]
+        score = _fields(panel)[SCORE]
+        assert "🎯 **vs Polymarket odds — ahead**" in score
+        assert "Error 0.210 vs 0.222" in score
     finally:
         await _close(bot, home)
 
@@ -86,8 +90,9 @@ async def test_after_fees_line_stays_on_the_scoreboard(tmp_path):
     }
     try:
         score = _fields(await home.render())[SCORE]
-        assert ("**6-year model vs odds:** behind · 0.252 vs 0.229 · 815 contracts · "
-                "its bets won 3/10, -12.5¢ per $1 after fees") in score
+        assert "🗄️ **6-year model vs odds — behind**" in score
+        assert "0.252 vs 0.229 · 815 contracts" in score
+        assert "Its bets won 3/10, -12.5¢ per $1 after fees" in score
     finally:
         await _close(bot, home)
 

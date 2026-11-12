@@ -20,8 +20,8 @@ from parlay_bot.discord_app.home import (
 )
 from tests.test_performance_overview import (
     HEALTH,
+    _all_fields,
     _close,
-    _fields,
     _make_home,
     _patch_live_reads,
 )
@@ -112,9 +112,9 @@ async def test_a_trial_read_that_fails_is_shown_not_dropped(tmp_path, monkeypatc
     _patch_live_reads(monkeypatch)
     monkeypatch.setattr(home_module, "_trial_board_record", slow)
     try:
-        fields = _fields(await home.render())
+        embeds = await home.render_embeds()
         assert ("⚠️ Couldn't load the trial table right now. Press Refresh"
-                in fields["🧪 Models on trial"])
+                in embeds[1].description)
     finally:
         await _close(bot, home)
 
@@ -125,7 +125,10 @@ async def test_nothing_is_flagged_when_every_read_worked(tmp_path, monkeypatch):
     home.horizon = 15
     _patch_live_reads(monkeypatch)
     try:
-        page = "\n".join(_fields(await home.render()).values())
+        embeds = await home.render_embeds()
+        page = "\n".join(
+            [*(e.description or "" for e in embeds),
+             *_all_fields(embeds).values()])
         assert "Couldn't load" not in page and "couldn't check" not in page
     finally:
         await _close(bot, home)
@@ -143,7 +146,8 @@ async def test_the_learning_count_says_when_it_counts_whole_windows(
     monkeypatch.setattr(home_module, "_performance_benefit", lambda *_: {
         "status": "not_improving", "targets": 1015, "days": 12})
     try:
-        assert f"(1,015 {unit} over 12 days)" in _fields(await home.render())[HEALTH]
+        assert f"(1,015 {unit} over 12 days)" in _all_fields(
+            await home.render_embeds())[HEALTH]
     finally:
         await _close(bot, home)
 
@@ -174,7 +178,7 @@ async def test_an_old_ai_review_is_not_shown_as_a_call_for_the_next_candle(
     monkeypatch.setattr(home_module, "_intelligence_status",
                         lambda *_: _intel(timedelta(minutes=age_minutes)))
     try:
-        health = _fields(await home.render())[HEALTH]
+        health = _all_fields(await home.render_embeds())[HEALTH]
         assert f"**AI reviewer:** {expected}" in health
         assert "agreed 139 times (right 52%), sat out 2" in health
     finally:

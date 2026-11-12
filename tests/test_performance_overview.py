@@ -26,6 +26,14 @@ def _fields(embed) -> dict[str, str]:
     return {field.name: field.value for field in embed.fields}
 
 
+def _all_fields(embeds) -> dict[str, str]:
+    """Every field of a three-embed page, in send order."""
+    out = {}
+    for embed in embeds:
+        out.update(_fields(embed))
+    return out
+
+
 def _make_home(tmp_path):
     bot = _client(tmp_path)
     home = _home(bot)
@@ -80,10 +88,6 @@ SCORE = "🎯 Scoreboard (last 7 days)"
 HEALTH = "⚙️ Running and learning"
 
 
-def _trials_field(fields):
-    return next(v for k, v in fields.items() if k.startswith("🧪 Models on trial"))
-
-
 @pytest.mark.asyncio
 async def test_page_is_verdict_first_then_scoreboard_trials_and_health(tmp_path, monkeypatch):
     bot, home = _make_home(tmp_path)
@@ -94,18 +98,25 @@ async def test_page_is_verdict_first_then_scoreboard_trials_and_health(tmp_path,
     home.training_status = heavy_training
     _patch_live_reads(monkeypatch)
     try:
-        panel = await home.render()
-        fields = _fields(panel)
-        assert list(fields) == [SCORE, "🎚️ Can you trust its confidence?",
-                                "🧪 Models on trial here (0)", HEALTH]
+        embeds = await home.render_embeds()
+        assert len(embeds) == 3
+        assert embeds[0].title == "📊 Bitcoin · 5-min · Bot performance"
+        assert embeds[1].title == "🧪 Models on trial here (0) — Bitcoin · 5-min"
+        assert embeds[2].title == "⚙️ Running and learning"   # no contest in this fixture
+        fields = _all_fields(embeds)
+        assert list(fields) == [SCORE, "🎚️ Can you trust its confidence?", HEALTH]
         # Nothing on trial and no lab yet: no empty "best model" section.
         # The verdict is the first line; honesty disclosures stay.
-        assert panel.description.startswith(
+        assert embeds[0].description.startswith(
             "**No edge yet: Polymarket's odds are still more accurate.**")
-        assert "predictions saved before the result was known" in panel.description
-        assert "Does it make money? Not proven yet" in panel.description
+        assert "predictions saved before the result was known" in embeds[0].description
+        assert "Does it make money? Not proven yet" in embeds[0].description
         score = fields[SCORE]
-        assert "**vs Polymarket odds:** behind · error 0.239 vs 0.222 · 300 contracts" in score
+        # One fact per line, label first: the verdict and the numbers are
+        # separate lines now, not four facts in one bullet.
+        assert "🎯 **vs Polymarket odds — behind**" in score
+        assert "Error 0.239 vs 0.222 · 300 contracts" in score
+        assert "402 past contracts studied (history, not live predictions)" in score
         # 7 decided is under 20: the rate is withheld, the counts stay.
         assert "too few to judge — 7 graded" in score and "(3 of 7)" in score
         # The fixture's 7 decided vs 6 scored is caught, never shown as fine.
@@ -116,8 +127,11 @@ async def test_page_is_verdict_first_then_scoreboard_trials_and_health(tmp_path,
         assert "✅ learning just now" in health and "✅ predictions just now" in health
         assert "✅ 1/1 exchanges live" in health
         assert "**Getting more accurate?** too early to tell" in health
-        assert "No test models have scored results here yet." in _trials_field(fields)
+        assert "No test models have scored results here yet." in embeds[1].description
+        assert "All markets: 0 on trial · 0 passed · 0 cut early for losing" in embeds[1].description
         assert max(map(len, fields.values())) < 1024
+        assert all(len(e) <= 6000 for e in embeds)
+        assert sum(len(e) for e in embeds) <= 5900
     finally:
         await _close(bot, home)
 
@@ -141,15 +155,16 @@ async def test_slow_or_broken_reads_say_so_and_hide_nothing_else(tmp_path, monke
 
     home.market.feed_health = bad_feeds
     try:
-        fields = _fields(await home.render())
+        embeds = await home.render_embeds()
+        fields = _all_fields(embeds)
         assert "vs a coin flip: behind" in fields[SCORE]
-        assert "**vs Polymarket odds:** behind" in fields[SCORE]
+        assert "**vs Polymarket odds — behind**" in fields[SCORE]
         health = fields[HEALTH]
         assert "**Getting more accurate?** couldn't check right now" in health
         assert "learning loop: couldn't check" in health
         assert "feeds: couldn't check" in health
         assert "✅ predictions just now" in health
-        assert "Couldn't load the trial table right now" in fields["🧪 Models on trial"]
+        assert "Couldn't load the trial table right now" in embeds[1].description
     finally:
         await _close(bot, home)
 
@@ -161,7 +176,7 @@ async def test_a_timed_out_improvement_check_says_it_is_still_calculating(tmp_pa
     monkeypatch.setattr(home_module, "_performance_benefit", lambda *_:
                         (_ for _ in ()).throw(TimeoutError("independent score unavailable")))
     try:
-        assert "still calculating" in _fields(await home.render())[HEALTH]
+        assert "still calculating" in _all_fields(await home.render_embeds())[HEALTH]
     finally:
         await _close(bot, home)
 
@@ -215,8 +230,10 @@ async def test_every_model_on_trial_is_one_row_from_the_hourly_check(tmp_path, m
                 (venue, f"BTC-{venue}", "USDT", 5, "liq_v1", datetime.now(UTC).isoformat(),
                  "test", 581, 11, .34, .26, .06, .05))
     try:
-        fields = _fields(await home.render())
-        name, value = next((k, v) for k, v in fields.items() if k.startswith("🧪"))
+        embeds = await home.render_embeds()
+        fields = _all_fields(embeds)
+        name, value = next((k, v) for k, v in fields.items()
+                           if k.startswith("🧪 Models on trial here"))
         assert name == "🧪 Models on trial here (4)"
         from tests.test_trial_board import _grouped
 
@@ -229,9 +246,16 @@ async def test_every_model_on_trial_is_one_row_from_the_hourly_check(tmp_path, m
         assert rows[3][0] == "cut"       # cut on every exchange it ran on
         block = value.split("```")[1].strip().splitlines()
         assert max(len(line) for line in block) <= 35   # one line per model on a phone
+        # Plain group headings, not bare symbols, above each status.
+        assert "▲ Ahead of the main model" in value
+        assert "⏳ Too early to judge" in value
+        assert "✂ Cut for losing" in value
+        # The leader line lives in the trials embed's description now, and
+        # the all-markets count in the how-to-read field under the table.
         assert ("Closest to passing: **Trend-only** (ahead on 2 of 2 exchanges, behind after fees). "
-                "Needs 9 more days before it can be trusted.") in value
-        assert "All markets: 5 on trial · 0 passed · 2 cut early for losing" in value
+                "Needs 9 more days before it can be trusted.") in embeds[1].description
+        assert "All markets: 5 on trial · 0 passed · 2 cut early for losing" in fields[
+            "How to read this table"]
     finally:
         await _close(bot, home)
 
@@ -248,7 +272,7 @@ async def test_polymarket_contest_table_shows_only_when_scores_exist(tmp_path, m
     _patch_live_reads(monkeypatch)
     try:
         home.contest_models = lambda *_: None        # league not computed yet
-        assert "🎲 Polymarket contest" not in _fields(await home.render())
+        assert "🎲 Polymarket contest" not in _all_fields(await home.render_embeds())
         home.contest_models = lambda *_: [
             {"model": "digital-gbm-ewma-v1", "label": "GBM + EWMA", "contracts": 412,
              "trades": 160, "improvement": -.0012, "net_per_contract": -.004,
@@ -257,11 +281,13 @@ async def test_polymarket_contest_table_shows_only_when_scores_exist(tmp_path, m
              "contracts": 12, "trades": 0, "improvement": 0., "net_per_contract": 0.,
              "significant": False},
         ]
-        contest = _fields(await home.render())["🎲 Polymarket contest"]
+        contest = _all_fields(await home.render_embeds())["🎲 Polymarket contest"]
         from tests.test_trial_board import _grouped
 
         assert _grouped(contest) == [("early", ["Odds-lag", "12", "+0.0", "—"]),
                                      ("behind", ["Formula", "412", "-1.2", "-0.4¢"])]
+        # The verdict line says plainly where the contest stands.
+        assert "▼ 1 behind" in contest and "⏳ 1 too early" in contest
         assert "300 contracts and a statistical pass" in contest
     finally:
         await _close(bot, home)

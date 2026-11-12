@@ -41,8 +41,8 @@ from tests.test_audit_step1_card_quick_fixes import (
     _analytics_details,
 )
 from tests.test_performance_overview import (
+    _all_fields,
     _close,
-    _fields,
     _make_home,
     _patch_live_reads,
 )
@@ -451,11 +451,11 @@ async def test_performance_page_uses_the_one_name_set(tmp_path, monkeypatch):
         home_module, "_cycle_coverage",
         lambda *_: {"cycles": 288, "expired": 199, "issued": 100})
     try:
-        embed = await home.render()
-        fields = _fields(embed)
+        embeds = await home.render_embeds()
+        fields = _all_fields(embeds)
     finally:
         await _close(bot, home)
-    page = "\n".join([embed.description or "", *fields.values()])
+    page = "\n".join([*(e.description or "" for e in embeds), *fields.values()])
     lowered = page.lower()
     for old in ("simple guess", "brier", "incumbent", "regime_v1",
                 "regime_live_v1", "live-learning", "pooled 6-year model",
@@ -464,5 +464,5 @@ async def test_performance_page_uses_the_one_name_set(tmp_path, monkeypatch):
     for new in ("coin flip", "error", "main model", "trend-only", "trend learn",
                 "6-year", "exchanges live", "graded"):
         assert new in lowered, new
-    assert embed.footer.text == RESEARCH_FOOTER + " · Per-model detail: Detailed Research"
-    assert "Research only. No real trades." in embed.footer.text
+    assert embeds[2].footer.text == RESEARCH_FOOTER + " · Per-model detail: Detailed Research"
+    assert "Research only. No real trades." in embeds[2].footer.text

@@ -27,8 +27,8 @@ from parlay_bot.discord_app import home as home_module
 from parlay_bot.discord_app import research_dashboard as rd_module
 from parlay_bot.discord_app.research_dashboard import ResearchDashboard
 from tests.test_performance_overview import (
+    _all_fields,
     _close,
-    _fields,
     _make_home,
     _patch_live_reads,
 )
@@ -205,13 +205,14 @@ async def test_performance_page_worst_case_fields_fit_and_tell_the_truth(
         })
     home.polymarket_status = lambda *_: _worst_polymarket_status()
     try:
-        panel = await home.render()
-        fields = _fields(panel)
+        embeds = await home.render_embeds()
+        fields = _all_fields(embeds)
     finally:
         await _close(bot, home)
     assert max(map(len, fields.values())) < 1024, {
         name: len(value) for name, value in fields.items()}
-    assert len(panel) < 6000
+    assert all(len(e) < 6000 for e in embeds)
+    assert sum(len(e) for e in embeds) <= 5900
     trials = next(v for k, v in fields.items() if k.startswith("🧪"))
     assert "… and 26 more" in trials        # 14 rows shown, the rest counted
     health = fields["⚙️ Running and learning"]
@@ -231,7 +232,7 @@ async def test_24h_tick_stays_green_when_nothing_was_skipped(
         home_module, "_cycle_coverage",
         lambda *_: {"cycles": 288, "expired": 0, "issued": 100})
     try:
-        fields = _fields(await home.render())
+        fields = _all_fields(await home.render_embeds())
     finally:
         await _close(bot, home)
     assert "✅ 288/288 cycles in 24h" in fields["⚙️ Running and learning"]
@@ -245,7 +246,7 @@ async def test_exchange_accuracy_hides_rate_below_20(tmp_path, monkeypatch):
     bot, home = _make_home(tmp_path)
     _patch_live_reads(monkeypatch)
     try:
-        fields = _fields(await home.render())
+        fields = _all_fields(await home.render_embeds())
     finally:
         await _close(bot, home)
     score = fields["🎯 Scoreboard (last 7 days)"]
@@ -259,10 +260,11 @@ async def test_exchange_accuracy_hides_rate_below_20(tmp_path, monkeypatch):
                         "issued": 40, "settled": 30, "scored": 30,
                         "brier": .24, "baseline_brier": .25}}})
     try:
-        fields = _fields(await home.render())
+        fields = _all_fields(await home.render_embeds())
     finally:
         await _close(bot, home)
-    assert "right **50.0%** (15 of 30)" in fields["🎯 Scoreboard (last 7 days)"]
+    score = fields["🎯 Scoreboard (last 7 days)"]
+    assert "right **50.0%**" in score and "(15 of 30)" in score
 
 
 def _tracking_result(*, settled=5, correct=5, hit_rate=1.0) -> dict:

@@ -94,7 +94,12 @@ def test_train_run_passes_gates_on_learnable_signal():
     result = _run(_frames(rho=0.5), horizon=5)
     assert result["publish_kind"] == "model"
     assert result["report"]["gates_passed"] is True
+    # The 6k-bar legacy fixture cannot support an exact 30-day baseline.
+    # Research must say so, without changing a passing live artifact.
+    assert result["report"]["volatility_blend_research"]["status"] == (
+        "missing_contiguous_30d_source_history")
     doc = volcal_training.validate(result["artifact"])
+    assert "volatility_blend_research" not in doc
     assert doc["family"] == "volcal_v1"
     assert doc["horizon_minutes"] == 5
     assert len(doc["weights"]) == 23

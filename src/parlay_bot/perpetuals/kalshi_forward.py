@@ -13,6 +13,7 @@ import re
 import threading
 from datetime import UTC, datetime, timedelta
 
+from parlay_bot.perpetuals.contract_fee_evidence import kalshi_taker_paper_fee
 from parlay_bot.research.probability_evidence import binary_outcome_evidence
 
 MODEL = "kalshi-online-logit-shadow-v1"
@@ -118,6 +119,21 @@ class KalshiForwardResearch:
                     );
                     CREATE INDEX IF NOT EXISTS idx_kalshi_quote_recent
                         ON rival_kalshi_quote_receipts(series_ticker,issued_at);
+                    -- Only NEW, official, same-event and prior-to-issue fee
+                    -- metadata can be bound to a frozen research forecast.
+                    CREATE TABLE IF NOT EXISTS rival_kalshi_fee_receipts (
+                        ticker TEXT PRIMARY KEY,
+                        series_ticker TEXT NOT NULL,
+                        event_ticker TEXT NOT NULL,
+                        received_at TEXT NOT NULL,
+                        issued_at TEXT NOT NULL,
+                        fee_type TEXT NOT NULL,
+                        fee_multiplier DOUBLE PRECISION NOT NULL,
+                        fee_receipt_sha256 TEXT NOT NULL,
+                        market_rules_sha256 TEXT NOT NULL,
+                        book_receipt_sha256 TEXT NOT NULL,
+                        source_json TEXT NOT NULL
+                    );
                     CREATE TABLE IF NOT EXISTS rival_kalshi_shadow_weights (
                         asset TEXT NOT NULL,
                         series_ticker TEXT NOT NULL,
@@ -246,6 +262,40 @@ class KalshiForwardResearch:
                          rules_sha,market.yes_ask,market.no_ask,
                          market.yes_ask_size,market.no_ask_size),
                     )
+            if count.rowcount == 1 and received is not None:
+                fee = getattr(market, "fee_evidence", None)
+                event = getattr(market, "event_ticker", None)
+                if (isinstance(fee, dict)
+                        and fee.get("status") == "fee_metadata_verified"
+                        and isinstance(event, str)
+                        and isinstance(fee.get("source"), dict)
+                        and fee["source"].get("event_ticker") == event
+                        and fee["source"].get("series_ticker") == series):
+                    from parlay_bot.perpetuals.contract_fee_evidence import _date
+
+                    checked = _date(fee["source"].get("received_at"))
+                    digest = fee.get("receipt_sha256")
+                    ft, mult = fee.get("fee_type"), fee.get("fee_multiplier")
+                    if (checked is not None
+                            and 0 <= (at-checked).total_seconds() <= 25
+                            and isinstance(digest, str)
+                            and re.fullmatch(r"[0-9a-f]{64}", digest)
+                            and ft in ("quadratic", "quadratic_with_maker_fees",
+                                       "quadratic_with_combo_maker_fees")
+                            and isinstance(mult, (float, int))
+                            and not isinstance(mult, bool)
+                            and math.isfinite(mult) and 0 <= mult <= 10):
+                        conn.execute(
+                            """INSERT INTO rival_kalshi_fee_receipts
+                               (ticker,series_ticker,event_ticker,received_at,
+                                issued_at,fee_type,fee_multiplier,fee_receipt_sha256,
+                                market_rules_sha256,book_receipt_sha256,source_json)
+                               VALUES (?,?,?,?,?,?,?,?,?,?,?)
+                               ON CONFLICT(ticker) DO NOTHING""",
+                            (market.ticker,series,event,checked.isoformat(),stamp,
+                             ft,mult,digest,rules_sha,book_digest,
+                             json.dumps(fee["source"],sort_keys=True)),
+                        )
             return count.rowcount == 1
 
     def pending(self, *, now: datetime, limit: int = 2) -> tuple[str, ...]:

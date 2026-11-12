@@ -403,7 +403,8 @@ class KalshiCryptoBrowser:
                 # used to lower the reported cost at issuance.
                 series_row = fee_series.get(market.series_ticker)
                 event = market.event_ticker
-                if series_row is None or not event:
+                if (series_row is None or not event
+                        or not market.ticker.startswith(event + "-")):
                     return None
                 try:
                     urls = (

@@ -59,6 +59,7 @@ from parlay_bot.research.volcal_features import (
     FEATURE_DIGEST,
     FEATURE_SOURCES,
     FEATURES,
+    GROUPS,
     MODEL_VERSION,
     frame_new_features,
 )
@@ -93,10 +94,21 @@ def _volcal_frame(candles, archive_frame):
     return frame[list(FEATURES)]
 
 
-def _check_groups_off(groups) -> None:
-    """volcal_v1 has no ablatable feature groups; reject any request."""
-    if groups:
+def _masked_features(groups) -> tuple[str, ...]:
+    """Feature names for the ablatable volcal groups (mirror of
+    archive_training._masked_features). Only the four new groups are
+    ablatable: the base candle group is the incumbent's 10 features,
+    shared by every volcal design, and is never turned off."""
+    if not isinstance(groups, (list, tuple)) or any(
+        group not in ("vol", "compression", "volume", "dc") for group in groups
+    ):
         raise ValueError("unsupported volcal feature ablation")
+    return tuple(FEATURES[i] for group in groups for i in GROUPS[group])
+
+
+def _check_groups_off(groups) -> None:
+    """Reject any ablation outside the four new volcal groups."""
+    _masked_features(groups)
 
 
 def train_run(
@@ -130,7 +142,7 @@ def train_run(
         raise ValueError(f"unsupported asset: {asset!r}")
     if horizon not in HORIZONS:
         raise ValueError(f"unsupported horizon: {horizon!r}")
-    _check_groups_off(groups_off)
+    masked_features = _masked_features(groups_off)
     parts, coverage_frames = [], {}
     for key, (k, f) in frames.items():
         part = _volcal_frame(k, f)
@@ -143,6 +155,12 @@ def train_run(
     data = pd.concat(parts).sort_index()
     # No optional groups in volcal: every feature must be present.
     data = data.dropna(subset=["y", *FEATURES])
+    if masked_features:
+        # Ablation (scheduled-grid feature_group_off): the masked
+        # groups standardise to 0 via _standardize_apply's NaN -> 0
+        # rule, exactly like archive_training. Masking after the drop
+        # keeps the full design's training bit-identical.
+        data[list(masked_features)] = float("nan")
     if len(data) < 300:
         raise TrainingDataUnavailable(f"not enough labelled rows: {len(data)}")
     train_mask, val_mask, test_mask = chronological_splits(
@@ -387,6 +405,11 @@ def probability(doc: dict, vector) -> float:
     mean = np.array(doc["standardizer"]["mean"], dtype=float)
     std = np.array(doc["standardizer"]["std"], dtype=float)
     values = np.array(vector, dtype=float)
+    # An ablated artifact never reads its masked groups: NaN them
+    # before standardising, exactly like archive_training.probability
+    # (their fitted weights are 0 by construction, this is the guard).
+    for name in _masked_features(doc.get("feature_groups_off", ())):
+        values[FEATURES.index(name)] = float("nan")
     x = _standardize_apply(values, mean, std)
     raw = _sigmoid(float(np.hstack([[1.0], x]) @ np.array(doc["weights"], dtype=float)))
     calibration = doc["calibration"]

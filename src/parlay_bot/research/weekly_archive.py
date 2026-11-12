@@ -89,6 +89,11 @@ async def _train_variant(drive, request: dict, *, common: dict, full: dict,
             model, status = None, "blocked"
     elif design["gbm_params"] is not None:
         report, model, status = _fit(gbm_training, common, training, params=design["gbm_params"])
+    elif design["model_shape"] == "volcal-offline-v1":
+        report, model, status = _fit(
+            volcal_training, common, training,
+            groups_off=tuple(design["feature_groups_off"]),
+        )
     else:
         report, model, status = _fit(
             archive_training, common, training, groups_off=tuple(design["feature_groups_off"]),

@@ -26,7 +26,7 @@ from parlay_bot.perpetuals.research_loop import (
     get_experiment,
     list_findings,
 )
-from parlay_bot.research import archive_training, gbm_training
+from parlay_bot.research import archive_training, gbm_training, volcal_training
 from parlay_bot.research.archive_features import (
     FEATURE_CONTRACT,
     FEATURE_DIGEST,
@@ -46,7 +46,18 @@ from parlay_bot.research.scheduled_variants import (
     design_sha256,
     lookup_variant,
     open_scheduled_variant,
+    scheduled_request,
+    scheduled_shadow_identity,
     screen_scheduled_artifact,
+)
+from parlay_bot.research.volcal_features import (
+    FEATURE_DIGEST as VOLCAL_FEATURE_DIGEST,
+)
+from parlay_bot.research.volcal_features import (
+    FEATURES as VOLCAL_FEATURES,
+)
+from parlay_bot.research.volcal_features import (
+    GROUPS as VOLCAL_GROUPS,
 )
 from parlay_bot.storage.hot import SQLiteHotStore
 
@@ -110,12 +121,47 @@ def _gbm_doc(design_sha, *, asset: str = "ETH"):
     }
 
 
+def _volcal_doc(design_sha, *, asset: str = "BTC", groups_off=()):
+    """A structurally valid volcal artifact doc for a scheduled design."""
+    doc = {
+        "schema": volcal_training.SCHEMA,
+        "family": volcal_training.FAMILY,
+        "model_version": volcal_training.MODEL_VERSION,
+        "asset": asset,
+        "horizon_minutes": 5,
+        "feature_contract": "volcal-candle-vol-v1",
+        "features": list(VOLCAL_FEATURES),
+        "feature_digest": VOLCAL_FEATURE_DIGEST,
+        "weights": [0.01] * (len(VOLCAL_FEATURES) + 1),
+        "standardizer": {"mean": [0.0] * len(VOLCAL_FEATURES),
+                         "std": [1.0] * len(VOLCAL_FEATURES)},
+        "calibration": {"status": "evaluated", "a": 1.0, "b": 0.0},
+        "provenance": dict(PROV),
+        "gates_passed": True,
+        "trained_through": "2025-03-01T23:55:00+00:00",
+        "training_rows": 1000,
+        "evaluation_status": "held-out evaluated",
+        "scheduled_design_sha256": design_sha,
+    }
+    if groups_off:
+        doc["feature_groups_off"] = list(groups_off)
+    doc["weights_sha256"] = volcal_training.artifact_identity(doc)[
+        "weights_sha256"]
+    return doc
+
+
 def _trial_indices(design: dict) -> list[int]:
-    """Feature indices the variant keeps: all 32 minus its groups off."""
+    """Feature indices the variant keeps: all features minus its groups off."""
+    if design.get("model_shape") == "volcal-offline-v1":
+        groups = VOLCAL_GROUPS
+        total = len(VOLCAL_FEATURES)
+    else:
+        groups = GROUPS
+        total = len(FEATURES)
     off = set()
     for group in design.get("feature_groups_off") or []:
-        off.update(GROUPS[group])
-    return [i for i in range(len(FEATURES)) if i not in off]
+        off.update(groups[group])
+    return [i for i in range(total) if i not in off]
 
 
 def _passing_trial(design_sha, *, design, asset: str = "BTC"):
@@ -227,9 +273,11 @@ def test_grid_enumerates_deterministically():
     assert [d["variant_id"] for d in SCHEDULED_VARIANTS] == [
         "archive-premium-off", "gbm-trees-150", "archive-tape-off",
         "archive-window-per-venue",
+        "volcal-full", "volcal-no-vol", "volcal-no-compression",
+        "volcal-no-volume", "volcal-no-dc",
     ]
     hashes = [design_sha256(d) for d in SCHEDULED_VARIANTS]
-    assert len(set(hashes)) == 4
+    assert len(set(hashes)) == 9
     assert hashes == [design_sha256(d) for d in SCHEDULED_VARIANTS]
     # The design hash is the proposal SHA the loop joins on.
     for design in SCHEDULED_VARIANTS:
@@ -237,10 +285,16 @@ def test_grid_enumerates_deterministically():
     assert lookup_variant("f" * 64) is None
     # GBM params are a valid override of the pooled PARAMS keys.
     assert set(SCHEDULED_VARIANTS[1]["gbm_params"]) <= set(POOLED_PARAMS)
-    # Every groups-off name is a real archive feature group.
+    # Every groups-off name is a real feature group for its own model
+    # shape: archive groups for archive designs, volcal groups for
+    # volcal designs (the base candle group is never ablatable).
     for design in SCHEDULED_VARIANTS:
-        for group in design["feature_groups_off"]:
-            assert group in GROUPS
+        if design["model_shape"] == "volcal-offline-v1":
+            for group in design["feature_groups_off"]:
+                assert group in VOLCAL_GROUPS and group != "candle"
+        else:
+            for group in design["feature_groups_off"]:
+                assert group in GROUPS
 
 
 def test_open_scheduled_variant_opens_grid_in_order_and_caps_weekly(tmp_path):
@@ -545,6 +599,10 @@ def test_screen_scheduled_artifact():
     assert screen_scheduled_artifact(
         json.dumps(_gbm_doc(gbm_sha)).encode()) == {
             "retrospective_screen": "passed"}
+    volcal_sha = design_sha256(SCHEDULED_VARIANTS[4])
+    assert screen_scheduled_artifact(
+        json.dumps(_volcal_doc(volcal_sha)).encode()) == {
+            "retrospective_screen": "passed"}
     assert screen_scheduled_artifact(b"not json") == {
         "retrospective_screen": "insufficient",
         "reason": "artifact payload is not JSON"}
@@ -559,6 +617,114 @@ def test_screen_scheduled_artifact():
     stale["trained_through"] = "2999-01-01T00:00:00+00:00"
     assert screen_scheduled_artifact(
         json.dumps(stale).encode())["retrospective_screen"] == "insufficient"
+
+
+def test_volcal_grid_entries_resolve_to_volcal_training():
+    """Every volcal grid entry loads, parses, and resolves to the real
+    volcal feature/training code — no placeholders, no new family."""
+    from parlay_bot.research.volcal_features import GROUPS as VGROUPS
+
+    volcal_entries = [d for d in SCHEDULED_VARIANTS
+                      if d["model_shape"] == "volcal-offline-v1"]
+    assert [d["variant_id"] for d in volcal_entries] == [
+        "volcal-full", "volcal-no-vol", "volcal-no-compression",
+        "volcal-no-volume", "volcal-no-dc",
+    ]
+    for design in volcal_entries:
+        sha = design_sha256(design)
+        assert lookup_variant(sha) is design
+        assert design["variant_kind"] == "feature_group_off"
+        assert design["train_window"] == "common-2021"
+        assert design["gbm_params"] is None
+        assert design["shadow_mode"] == "artifact"
+        for group in design["feature_groups_off"]:
+            assert group in VGROUPS and group != "candle"
+        # The training module accepts exactly these ablations.
+        volcal_training._check_groups_off(design["feature_groups_off"])
+        doc = _volcal_doc(sha, asset=design["asset"],
+                          groups_off=design["feature_groups_off"])
+        assert screen_scheduled_artifact(
+            json.dumps(doc).encode()) == {"retrospective_screen": "passed"}
+        identity = scheduled_shadow_identity(design, json.dumps(doc).encode())
+        assert identity["family"] == "volcal_v1"
+        assert identity["asset"] == design["asset"]
+        assert identity["weights_sha256"] == doc["weights_sha256"]
+
+
+def test_volcal_scheduled_variant_closes_discarded_end_to_end(tmp_path):
+    store = _store(tmp_path)
+    try:
+        design = SCHEDULED_VARIANTS[4]  # volcal-full
+        sha = design_sha256(design)
+        exp = create_experiment(
+            store, proposer="scheduled", hypothesis=SCHEDULED_HYPOTHESIS,
+            design=copy.deepcopy(design), proposal_sha256=sha, now=NOW,
+        )
+        doc = _volcal_doc(sha)
+        _drive_scheduled_to_shadow(
+            store, design_sha=sha,
+            trial=_passing_trial(sha, design=design),
+            artifact_payload=json.dumps(doc).encode())
+        # No promotion row exists and the 30-day lookback expires:
+        # discarded with a finding, never silently.
+        out = advance_one(store, now=NOW + timedelta(days=31))
+        assert out["status"] == "advanced" and out["to"] == "discarded", out
+        findings = list_findings(store, exp["experiment_id"])
+        assert len(findings) == 1
+        assert findings[0]["kind"] == "negative_result"
+        assert findings[0]["recorded_by"] == "system"
+    finally:
+        store.close()
+
+
+async def test_weekly_archive_trains_volcal_scheduled_variant(tmp_path, monkeypatch):
+    """The weekly job routes a volcal grid design to volcal_training
+    (not archive): the result doc is a volcal_v1 artifact/report
+    carrying the design SHA and a scheduled trial status."""
+    from parlay_bot.research import weekly_archive
+    from tests.test_archive_model import _frames, _splits
+
+    drive = _FakeDrive()
+    monkeypatch.setattr(weekly_archive, "_drive", lambda _: drive)
+    store = _store(tmp_path)
+    try:
+        design = SCHEDULED_VARIANTS[4]  # volcal-full
+        sha = design_sha256(design)
+        exp = create_experiment(
+            store, proposer="scheduled", hypothesis=SCHEDULED_HYPOTHESIS,
+            design=copy.deepcopy(design), proposal_sha256=sha, now=NOW,
+        )
+        request = scheduled_request(exp)
+        train_end, test_start, trained_through = _splits()
+        frames = _frames()
+        training = {
+            "asset": "BTC", "horizon": 5, "train_end": train_end,
+            "test_start": test_start, "trained_through": trained_through,
+            "provenance": PROV, "code_version": "test",
+        }
+        common = weekly_archive._window(
+            frames, through=trained_through, first="2021-01-01")
+        full = weekly_archive._window(
+            frames, through=trained_through, first=None)
+        await weekly_archive._train_variant(
+            drive, request, common=common, full=full, training=training,
+        )
+        name = f"scheduled-result-{exp['experiment_id']}.json"
+        kind = next(
+            (k for k in ("model", "report") if name in drive.files[k]),
+            None,
+        )
+        assert kind is not None
+        doc = json.loads(drive.files[kind][name])
+        assert doc["family"] == "volcal_v1"
+        assert doc["scheduled_design_sha256"] == sha
+        assert doc["scheduled_trial"]["status"] in (
+            "passed", "rejected", "blocked")
+        if doc["scheduled_trial"]["status"] == "passed":
+            assert kind == "model"
+            volcal_training.validate(doc)
+    finally:
+        store.close()
 
 
 def test_candidate_handoff_accepts_scheduled_design_sha():

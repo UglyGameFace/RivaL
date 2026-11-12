@@ -118,9 +118,39 @@ def test_train_run_rejects_small_splits():
         _run(frames, horizon=5)
 
 
-def test_train_run_rejects_feature_ablation():
+def test_train_run_rejects_unknown_feature_ablation():
     with pytest.raises(ValueError):
         _run(_frames(), horizon=5, groups_off=("premium",))
+    with pytest.raises(ValueError):
+        _run(_frames(), horizon=5, groups_off=("candle",))
+
+
+def test_train_run_supports_volcal_group_ablation():
+    """Each new volcal group ablates like archive's premium/tape: the
+    masked weights fit to exactly 0, the report records the group, and
+    serving ignores the masked features whatever values they carry."""
+    from parlay_bot.research.volcal_features import GROUPS
+
+    full = _run(_frames(rho=0.5), horizon=5)
+    assert full["publish_kind"] == "model"
+    for group in ("vol", "compression", "volume", "dc"):
+        result = _run(_frames(rho=0.5), horizon=5, groups_off=(group,))
+        assert result["report"]["feature_groups_off"] == [group]
+        assert result["publish_kind"] == "model"
+        doc = volcal_training.validate(result["artifact"])
+        masked = [doc["weights"][1 + i] for i in GROUPS[group]]
+        assert masked == [0.0] * len(masked)
+        # The ablation changed the fit — unless the fixture gives the
+        # group nothing to learn (constant volume makes the full fit's
+        # volume weights 0 too, so that ablation is a no-op here).
+        if any(full["artifact"]["weights"][1 + i] != 0.0
+               for i in GROUPS[group]):
+            assert doc["weights"] != full["artifact"]["weights"]
+        probe = [0.5] * 22
+        base = volcal_training.probability(doc, probe)
+        for i in GROUPS[group]:
+            probe[i] = 1000.0
+        assert volcal_training.probability(doc, probe) == base
 
 
 def test_validate_rejects_bad_artifacts():

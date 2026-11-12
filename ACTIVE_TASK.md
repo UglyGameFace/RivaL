@@ -1,3 +1,13 @@
+## 2026-11-12 — XMarket completed-day export reliability and receipt
+
+- **Objective / branch:** Remove the records-backup dependency from completed-day XMarket proof publication; expose missing export evidence without weakening fidelity or model gates. Branch `fix/xmarket-day-export-first-receipts-20261112` based on deployed-candidate `main@45e887f`. No overlapping open PR at inspection.
+- **Root evidence:** The Nov 12 archive run 43240481123 produced independent history (BTC: PM 129 eligible bars, Kalshi 126 in the 5m report), but zero live exported bars and zero exact-source pairs; both sources showed `no_prospective_export`. Kalshi also returned a retryable HTTP 429. RivaL source capture itself was fresh for 8/8 input scopes at 22:31 UTC.
+- **Repair:** The hourly host records loop now attempts the idempotent completed-day Drive export **before** its long ordinary records-backup job, in a separately isolated failure path. Memory-pressure protections remain. Read-only live receipts add bounded recent pending completed days and confirmed Drive upload-day rows, explicitly not claiming independent Drive restore. Added regressions for a failed ordinary backup and pending vs published source-day receipts.
+- **Validation / deployment:** Local synthetic tests establish intended behavior only. Exact-head Ruff and complete GitHub PostgreSQL CI, merge, main release upload, and hosted readback are required; this branch does not manufacture model fits or shadow outcomes.
+- **Research next:** Confirm the Nov 12 completed-day bundle is uploaded on Nov 13 after the 3-hour day-close buffer. The scheduled Nov 13 15:17 UTC archive training must independently restore it, reach at least 30 matching native bars per source with >=80% overlap and <=5% mismatches, and only then attempt existing chronological fit/validation/test gates. Even quality-verified early input days may leave training split rows insufficient; no retroactive proof, order execution, or threshold relaxation.
+
+---
+
 ## 2026-11-12 — Reproducible Polymarket issue-time costs
 
 - **Objective / branch:** Complete the source-cost integrity repair after merged PR #543. Branch `fix/poly-contest-replay-source-depth-20261112`, based on `main@ce8119e`. No overlapping open PR was found when this work began.

@@ -346,16 +346,17 @@ def _xmarket_progress(store, now: datetime) -> dict:
     Inspect table names before optional reads, so a pre-upgrade host does
     not generate missing-table errors or cause migrations from a probe.
     """
-    needed = ("rival_xmarket_observations", "rival_xmarket_models", "rival_model_shadow_forecasts")
+    needed = ("rival_xmarket_observations", "rival_xmarket_models",
+              "rival_model_shadow_forecasts", "rival_xmarket_exports")
     try:
         with store.connect() as conn:
             if store.database.backend == "postgres":
                 tables = {r["table_name"] for r in conn.execute(
                     "SELECT table_name FROM information_schema.tables WHERE table_schema=current_schema() "
-                    "AND table_name IN (?,?,?)", needed).fetchall()}
+                    "AND table_name IN (?,?,?,?)", needed).fetchall()}
             else:
                 tables = {r["name"] for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?)", needed).fetchall()}
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name IN (?,?,?,?)", needed).fetchall()}
             if set(needed) - tables:
                 return {"status": "not_initialized", "shadow_only": True}
             since = (now - timedelta(days=1)).isoformat()
@@ -368,6 +369,24 @@ def _xmarket_progress(store, now: datetime) -> dict:
                 "FROM rival_model_shadow_forecasts WHERE asset IN ('BTC','ETH','SOL','XRP') "
                 "AND horizon_minutes IN (5,15,60) AND family='xmarket_v1' AND issued_at>=? "
                 "GROUP BY asset,horizon_minutes", (since,)).fetchall()
+            exports = conn.execute(
+                "SELECT asset,COUNT(*) AS exported_days,MAX(day) AS latest_exported_day "
+                "FROM rival_xmarket_exports WHERE asset IN ('BTC','ETH','SOL','XRP') "
+                "GROUP BY asset").fetchall()
+            # Mirror XmarketInputs._pending_days' three-hour day-close cutoff.
+            # Scan only a bounded recent window in the read-only host receipt.
+            cutoff = (now - timedelta(hours=3)).replace(
+                hour=0, minute=0, second=0, microsecond=0).isoformat()
+            lookback = (now - timedelta(days=3)).replace(
+                hour=0, minute=0, second=0, microsecond=0).isoformat()
+            pending = conn.execute(
+                "SELECT i.asset,COUNT(DISTINCT SUBSTR(i.at,1,10)) AS days "
+                "FROM rival_xmarket_observations i "
+                "LEFT JOIN rival_xmarket_exports e "
+                "ON e.asset=i.asset AND e.day=SUBSTR(i.at,1,10) "
+                "WHERE i.asset IN ('BTC','ETH','SOL','XRP') "
+                "AND i.at>=? AND i.at<? AND e.day IS NULL GROUP BY i.asset",
+                (lookback, cutoff)).fetchall()
         count = sum(int(r["issued"]) for r in rows)
         expected = {(asset, source) for asset in ("BTC", "ETH", "SOL", "XRP")
                     for source in ("polymarket", "kalshi")}
@@ -377,13 +396,21 @@ def _xmarket_progress(store, now: datetime) -> dict:
                  .total_seconds() <= 1200}
         def scopes(values):
             return [{"asset": asset, "source": source} for asset, source in sorted(values)]
+        pending_days = sum(int(r["days"]) for r in pending)
         return {"status": ("shadow_issuing" if count else "imported_no_shadow_rows" if fits
+                           else "waiting_for_completed_day_export" if fresh == expected and pending_days
                            else "waiting_for_fit" if fresh == expected else "waiting_for_inputs"),
                 "input_sources_24h": [dict(r) for r in inputs], "imported_scopes": [dict(r) for r in fits],
                 "source_coverage": {"expected_scopes": len(expected), "present_scopes": len(present),
                                     "fresh_scopes": len(fresh), "freshness_seconds": 1200,
                                     "missing": scopes(expected - present), "stale": scopes(present - fresh)},
                 "shadow_rows_24h": count, "shadow_scopes": [dict(r) for r in rows],
+                "export_coverage": {"published": [dict(r) for r in exports],
+                                    "recent_completed_days_pending": pending_days,
+                                    "pending_by_asset": [dict(r) for r in pending],
+                                    "recent_window_days": 3,
+                                    "eligible_before": cutoff,
+                                    "does_not_prove_independent_drive_restore": True},
                 "shadow_only": True, "does_not_prove_prediction_edge": True}
     except Exception:  # noqa: BLE001 - optional probe never masks the worker receipt
         return {"status": "read_unavailable", "shadow_only": True}

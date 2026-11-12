@@ -1944,16 +1944,26 @@ class RivalDiscordClient(discord.Client):
         backup = RecordsBackup(self.store, self.research_drive,
                                Path(tempfile.gettempdir()) / "rival-records")
         while not self.is_closed():
+            # XMarket's completed-day proof must NOT depend on a successful
+            # full records backup. A slow/failed backup otherwise suppresses
+            # the only prospective Drive export before archive training.
+            if self.research_drive is not None:
+                try:
+                    if host_memory.snapshot().pressure:
+                        _LOG.info("XMarket input export deferred: host memory pressure")
+                    else:
+                        from parlay_bot.perpetuals.xmarket_inputs import XmarketInputs
+                        published = await asyncio.wait_for(XmarketInputs(self.store).publish_days(
+                            self.research_drive), timeout=180)
+                        if published:
+                            _LOG.info("XMarket completed-day source exports published=%d", published)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:  # noqa: BLE001 - optional export cannot affect records backup
+                    _LOG.warning("XMarket input export deferred error=%s", type(exc).__name__)
             try:
                 if not host_memory.snapshot().pressure:
                     await asyncio.wait_for(backup.run_once(), timeout=1800)
-                    if self.research_drive is not None:
-                        from parlay_bot.perpetuals.xmarket_inputs import XmarketInputs
-                        try:
-                            await asyncio.wait_for(XmarketInputs(self.store).publish_days(
-                                self.research_drive), timeout=180)
-                        except Exception as exc:  # noqa: BLE001 - keep the completed records backup healthy
-                            _LOG.warning("XMarket input export deferred error=%s", type(exc).__name__)
             except asyncio.CancelledError:
                 raise
             except Exception:  # noqa: BLE001 - backup must never affect the bot

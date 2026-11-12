@@ -56,6 +56,7 @@ def test_causal_source_matched_training_and_conservative_first_passage():
             assert item["absolute_move_p50"]>=0
             assert item["absolute_move_baseline"]>=0
             assert item["close_target_training_count"]>=item["training_count"]
+            assert len(item["close_target_training_sha256"])==64
             for kind in ("direction", "early_move"):
                 assert 0<item[f"{kind}_probability"]<1
                 assert 0<item[f"{kind}_baseline"]<1
@@ -252,12 +253,13 @@ def test_direction_and_early_move_are_prospective_separate_heads(learning_store)
         )==0
         frozen=conn.execute(
             """SELECT side,direction_probability,early_move_probability,
-                      absolute_move_p50,model_version,state FROM rival_forward_path_targets
+                      absolute_move_p50,model_version,close_target_training_sha256,state FROM rival_forward_path_targets
                ORDER BY side"""
         ).fetchall()
     assert len(frozen)==2
     assert all(row["state"]=="pending"
                and row["model_version"]==TARGET_VERSION
+               and len(row["close_target_training_sha256"])==64
                and 0<row["direction_probability"]<1
                and 0<row["early_move_probability"]<1
                and row["absolute_move_p50"]>=0

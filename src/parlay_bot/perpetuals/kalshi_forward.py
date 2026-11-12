@@ -370,6 +370,95 @@ class KalshiForwardResearch:
             )
             return True
 
+    def executable_quote_evidence(self, *, ticker: str, quantity: float = 10.0) -> dict:
+        """Audit one exact contract, without claiming a fill or after-fee edge.
+
+        Real public order books provide *top level* capacity. A valid 10-share
+        first quote can demonstrate top-of-book depth, not lasting execution
+        liquidity. Fee schedule, possible event overrides and actual fills
+        remain unknown until separately source verified. Never substitute a
+        historic market-summary ask or an unrelated market's outcome.
+        """
+        if (not isinstance(quantity, (float, int)) or isinstance(quantity, bool)
+                or not math.isfinite(quantity) or quantity <= 0):
+            raise ValueError("positive requested quantity required")
+        self.initialize()
+        with self.store.connect() as conn:
+            row = conn.execute(
+                """SELECT f.ticker,f.asset,f.series_ticker,f.issued_at,
+                          f.market_rules_sha256,f.yes_ask,f.no_ask,
+                          f.result,f.settlement_evidence_sha256,
+                          b.observed_at AS book_at,
+                          b.yes_ask_depth,b.no_ask_depth,
+                          r.book_received_at,r.issued_at AS receipt_issued_at,
+                          r.book_transport_sha256,r.market_rules_sha256 AS receipt_rules,
+                          r.yes_ask AS receipt_yes_ask,r.no_ask AS receipt_no_ask,
+                          r.yes_depth AS receipt_yes_depth,
+                          r.no_depth AS receipt_no_depth
+                   FROM rival_kalshi_forward f
+                   LEFT JOIN rival_kalshi_book_evidence b ON b.ticker=f.ticker
+                   LEFT JOIN rival_kalshi_quote_receipts r ON r.ticker=f.ticker
+                   WHERE f.ticker=?""", (ticker,),
+            ).fetchone()
+        default = {
+            "ticker": ticker, "quantity": quantity,
+            "verified_after_cost": False, "executed_trade": False,
+            "fee_schedule_verified": False, "exchange_signed_book": False,
+            "research_only": True,
+        }
+        if row is None:
+            return {**default, "status": "contract_not_observed"}
+        if row["book_received_at"] is None:
+            return {**default, "status": "no_timestamped_book_receipt"}
+        try:
+            issued = datetime.fromisoformat(row["issued_at"])
+            received = datetime.fromisoformat(row["book_received_at"])
+            delay = (issued-received).total_seconds()
+            sha = row["book_transport_sha256"]
+            matching = (
+                0 <= delay <= 25
+                and row["receipt_issued_at"] == row["issued_at"]
+                and row["book_at"] == row["book_received_at"]
+                and row["receipt_rules"] == row["market_rules_sha256"]
+                and row["receipt_yes_ask"] == row["yes_ask"]
+                and row["receipt_no_ask"] == row["no_ask"]
+                and row["receipt_yes_depth"] == row["yes_ask_depth"]
+                and row["receipt_no_depth"] == row["no_ask_depth"]
+                and isinstance(sha, str)
+                and re.fullmatch(r"[0-9a-f]{64}", sha) is not None
+                and issued.utcoffset() is not None
+                and received.utcoffset() is not None
+            )
+        except (TypeError, ValueError):
+            matching = False
+        if not matching:
+            return {**default, "status": "book_source_mismatch"}
+        depth_yes = float(row["yes_ask_depth"])
+        depth_no = float(row["no_ask_depth"])
+        enough_yes = depth_yes >= quantity
+        enough_no = depth_no >= quantity
+        return {
+            **default, "status": (
+                "fee_schedule_unverified" if enough_yes or enough_no
+                else "insufficient_top_book_depth"),
+            "venue": "kalshi", "asset": row["asset"],
+            "series_ticker": row["series_ticker"],
+            "yes_ask": float(row["yes_ask"]), "no_ask": float(row["no_ask"]),
+            "yes_depth": depth_yes, "no_depth": depth_no,
+            "yes_side_depth_sufficient": enough_yes,
+            "no_side_depth_sufficient": enough_no,
+            "book_received_at": row["book_received_at"],
+            "model_issued_at": row["issued_at"],
+            "book_transport_sha256": row["book_transport_sha256"],
+            "market_rules_sha256": row["market_rules_sha256"],
+            "settlement_receipt_present": (
+                row["result"] in ("yes", "no")
+                and isinstance(row["settlement_evidence_sha256"], str)),
+            "fee_blocker": (
+                "Official series/event fee type and multiplier, including "
+                "overrides, have not been captured for this exact contract."),
+        }
+
     def contract_preview(self, *, asset: str, market) -> dict | None:
         """Read only the already-frozen candidate for this exact Kalshi contract.
 

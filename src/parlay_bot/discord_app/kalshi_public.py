@@ -7,6 +7,8 @@ No API keys, accounts, scraping, orders, or synthetic odds.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import logging
 import math
 import re
@@ -95,6 +97,11 @@ class KalshiMarket:
     quote_source: str = "unverified"
     yes_ask_size: float | None = None
     no_ask_size: float | None = None
+    # The time the actual orderbook response was received. The model issues
+    # LATER, in its worker; never backdate a model to this timestamp.
+    book_observed_at: datetime | None = None
+    # Transport payload checksum, not an exchange-signed attestation.
+    book_receipt_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -332,13 +339,23 @@ class KalshiCryptoBrowser:
                         _ROOT + f"/markets/{market.ticker}/orderbook",
                     )
                     response.raise_for_status()
+                    received_at = datetime.now(UTC)
+                    payload = response.json()
                     yes_ask, no_ask, yes_size, no_size = parse_orderbook(
-                        response.json(),
+                        payload,
                     )
+                    # Hash the exact response. This proves internal receipt
+                    # immutability, not that Kalshi cryptographically signed
+                    # the public transport.
+                    digest = hashlib.sha256(json.dumps(
+                        payload, sort_keys=True, separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode()).hexdigest()
                     return replace(
                         market, yes_ask=yes_ask, no_ask=no_ask,
                         yes_ask_size=yes_size, no_ask_size=no_size,
-                        quote_source="orderbook",
+                        quote_source="orderbook", book_observed_at=received_at,
+                        book_receipt_sha256=digest,
                     )
                 except (httpx.HTTPError, ValueError, TypeError) as exc:
                     _LOG.info(

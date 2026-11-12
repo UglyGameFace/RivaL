@@ -163,6 +163,12 @@ class FamilyPromotion:
             pinned_shas["regime_v2"] = (_doc or {}).get("_sha256")
         except Exception:  # noqa: BLE001 - no pin means no attributable rows
             pinned_shas["regime_v2"] = None
+        try:
+            from parlay_bot.perpetuals.volcal_model import VolcalModelSet
+            _doc = VolcalModelSet(self.store).active(asset, horizon, now=stamp)
+            pinned_shas["volcal_v1"] = (_doc or {}).get("_sha256")
+        except Exception:  # noqa: BLE001 - no pin means no attributable rows
+            pinned_shas["volcal_v1"] = None
         # Distinct immutable boosted artifacts compete only on their own
         # source-specific future records, never as one pooled model family.
         observed_families = sorted({
@@ -369,6 +375,13 @@ class FamilyPromotion:
                     self.store, asset, horizon)
             except Exception:  # noqa: BLE001 - a missing state row records as no artifact
                 scored["gbm_v1"]["artifact"] = None
+        if "volcal_v1" in scored:
+            try:
+                from parlay_bot.perpetuals.volcal_model import artifact_identity
+                scored["volcal_v1"]["artifact"] = artifact_identity(
+                    self.store, asset, horizon)
+            except Exception:  # noqa: BLE001 - a missing state row records as no artifact
+                scored["volcal_v1"]["artifact"] = None
         if "liq_v1" in scored:
             try:
                 from parlay_bot.perpetuals.liquidity_challenger_v1 import (
@@ -489,6 +502,25 @@ class FamilyPromotion:
                     now=stamp)
             except Exception:  # noqa: BLE001 - a receipt must never block governance
                 _LOG.exception("RivaL archive_v1 promotion receipt unavailable")
+        # First promoted_paper write for volcal_v1: same pattern, same
+        # dedupe (one receipt per family/scope/kind, ON CONFLICT DO NOTHING).
+        if selected == "volcal_v1" and not (
+                previous and previous["status"] == "promoted_paper"
+                and previous["selected_family"] == "volcal_v1"):
+            try:
+                from parlay_bot.perpetuals.promotion_receipts import (
+                    record_promotion_receipt,
+                )
+                from parlay_bot.perpetuals.volcal_model import calibration_status
+                record_promotion_receipt(
+                    self.store, family="volcal_v1", venue=venue, contract=contract,
+                    quote=quote, horizon=horizon, kind="promoted",
+                    evidence={**scored["volcal_v1"],
+                              "evaluated_at": stamp.isoformat()},
+                    calibration=calibration_status(self.store, asset, horizon),
+                    now=stamp)
+            except Exception:  # noqa: BLE001 - a receipt must never block governance
+                _LOG.exception("RivaL volcal_v1 promotion receipt unavailable")
         # First promoted_paper write for liq_v1: same pattern, same
         # dedupe (one receipt per family/scope/kind, ON CONFLICT DO NOTHING).
         if selected == "liq_v1" and not (
@@ -609,7 +641,7 @@ class FamilyPromotion:
         # fit whose evidence is exhausted without a promotion is rejected.
         # The next queued fit is admitted on the next reload
         # (offline_model_pins).
-        for _family in ("archive_v1", "gbm_v1", "regime_v2"):
+        for _family in ("archive_v1", "gbm_v1", "regime_v2", "volcal_v1"):
             try:
                 from parlay_bot.perpetuals import offline_model_pins
                 offline_model_pins.resolve_pin(
@@ -717,6 +749,20 @@ class FamilyPromotion:
             try:
                 from parlay_bot.perpetuals.gbm_model import artifact_identity
                 recorded = json.loads(row["evidence_json"])["gbm_v1"]["artifact"]
+                current = artifact_identity(self.store, asset, horizon)
+            except (ValueError, TypeError, KeyError, AttributeError):
+                return None
+            return selected if _pinned_identity_matches(recorded, current) else None
+        if selected == "volcal_v1":
+            # Same D14 pin check as archive_v1/gbm_v1, on the volcal
+            # artifact: the served family must be the pinned artifact
+            # that earned promotion -- exact weights-SHA match, same
+            # feature digest, trained-through and graded count (under that
+            # artifact's hash) monotone. A queued fit never inherits the
+            # promotion; a rejected pin advances the queue.
+            try:
+                from parlay_bot.perpetuals.volcal_model import artifact_identity
+                recorded = json.loads(row["evidence_json"])["volcal_v1"]["artifact"]
                 current = artifact_identity(self.store, asset, horizon)
             except (ValueError, TypeError, KeyError, AttributeError):
                 return None

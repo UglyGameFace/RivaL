@@ -22,3 +22,11 @@ The GitHub schedule runs hourly on main, or via a manual dispatch. It requests a
 Run: python -m unittest discover -s tests -p test_evidence_board_receipt.py
 
 Before calling the connection continuous, merge the source PR with explicit deployment awareness, manually dispatch the evidence job, and verify an OIDC-accepted receipt with the same GitHub run ID on the dashboard. An unmerged PR and seeded snapshot do not establish an automatic future feed.
+
+## GitHub reliability and refresh
+
+The public dashboard does not call GitHub's anonymous REST API to build its primary PR/CI view. Anonymous GitHub requests can return HTTP 403 after rate limits, so retrying from a browser was not a meaningful repair. The evidence workflow uses the ephemeral built-in `GITHUB_TOKEN` with **read-only** `actions:read` and `pull-requests:read` permissions. It gathers a bounded, allowlisted snapshot of public RivaL PR merge records and recent Actions runs. No PR bodies, private Intelligence repository metadata, user emails, logs, or secrets are published.
+
+The same signed GitHub Actions OIDC receipt is authenticated and scrubbed again by the Cloudflare collector, then atomically replaces the public GitHub snapshot cache. A failed source read does not erase the previous verified snapshot. The site shows the capture time and explicitly calls it a snapshot rather than live status. GitHub run links remain available for job logs and artifacts that require additional permissions; missing detailed logs are not treated as nonexistent artifacts.
+
+Private RivaL Intelligence repository activity is **not** automatically exposed by the public dashboard. It requires a separate private-safe connector/privacy decision before claiming complete ecosystem coverage.

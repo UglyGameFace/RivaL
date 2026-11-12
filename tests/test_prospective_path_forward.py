@@ -52,6 +52,12 @@ def test_causal_source_matched_training_and_conservative_first_passage():
             assert item["cohort_count"]>=12
             assert 0<item["tp2_probability"]<=item["tp1_probability"]<1
             assert item["p10"]<=item["p50"]<=item["p90"]
+            assert item["absolute_move_p50"]>=0
+            assert item["absolute_move_baseline"]>=0
+            assert item["close_target_training_count"]>=item["training_count"]
+            for kind in ("direction", "early_move"):
+                assert 0<item[f"{kind}_probability"]<1
+                assert 0<item[f"{kind}_baseline"]<1
             assert len(item["training_sha256"])==64
     future=replace(candles[-1],observed_at=now+timedelta(minutes=15))
     with pytest.raises(ValueError,match="future"):
@@ -123,6 +129,9 @@ def test_real_forward_settlement_rejects_backfill_and_duplicate_predictions(lear
     later=future[-1].observed_at+timedelta(minutes=1)
     assert ledger.settle(now=later)=={"settled":0,"ambiguous":0}
     with hot.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_forward_path_targets WHERE state='settled'"
+        ).fetchone()["n"] == 0
         conn.execute(
             """UPDATE perp_market_candles SET first_observed_at=?
                WHERE venue='hyperliquid' AND opened_at=?""",
@@ -130,6 +139,14 @@ def test_real_forward_settlement_rejects_backfill_and_duplicate_predictions(lear
         )
     assert ledger.settle(now=later)=={"settled":2,"ambiguous":0}
     assert ledger.settle(now=later)=={"settled":0,"ambiguous":0}
+    task_scores=ledger.target_report(asset="BTC",horizon=15,now=later)
+    assert len(task_scores)==2
+    for report in task_scores.values():
+        assert report["direction"]["targets"]==1
+        assert report["early_close_move"]["targets"]==1
+        assert report["absolute_terminal_move"]["targets"]==1
+        assert report["qualified_for_live_use"] is False
+        assert report["after_cost_qualified"] is False
     summary=ledger.report(asset="BTC",horizon=15,now=later)
     assert len(summary)==2
     assert all(not value["qualified_research"]
@@ -175,7 +192,18 @@ def test_same_bar_tp_and_stop_are_ambiguous_not_model_wins(learning_store):
     now=last.opened_at+timedelta(minutes=26)
     assert ledger.settle(now=now)=={"settled":0,"ambiguous":2}
     assert ledger.report(asset="BTC",horizon=15,now=now)=={}
+    # OHLC cannot establish which barrier hit first, but the observed CLOSE
+    # still establishes a direction/size/timing target independently.
+    task_scores=ledger.target_report(asset="BTC",horizon=15,now=now)
+    assert len(task_scores)==2
+    assert all(v["early_close_move"]["targets"]==1 for v in task_scores.values())
     with hot.connect() as conn:
+        target_rows=conn.execute(
+            """SELECT state,direction_positive,absolute_move_realized
+               FROM rival_forward_path_targets"""
+        ).fetchall()
+        assert all(t["state"]=="settled" and t["absolute_move_realized"]==0
+                   for t in target_rows)
         rows=conn.execute(
             "SELECT state,tp1_before_stop,tp2_before_stop FROM rival_forward_paths",
         ).fetchall()

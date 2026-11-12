@@ -471,10 +471,15 @@ def _rounds(store, asset, horizon, start, end):
             rows = conn.execute(
                 "SELECT r.slug,r.schema_key,r.opens_at,r.issued_at,r.expires_at,r.market_up,"
                 "r.up_cost,r.down_cost,o.direction,o.observed_at AS outcome_at,o.resolved_at,"
-                "f.model,f.probability_up FROM (SELECT * FROM rival_poly_contest_rounds "
+                "f.model,f.probability_up, "
+                "CASE WHEN proof.slug IS NULL THEN 0 ELSE 1 END AS source_proven "
+                "FROM (SELECT * FROM rival_poly_contest_rounds "
                 "WHERE asset=? AND horizon=? AND issued_at>=? AND issued_at<expires_at "
                 "AND expires_at<=? AND (expires_at>? OR (expires_at=? AND slug>?)) "
                 "ORDER BY expires_at,slug LIMIT 500) r "
+                "LEFT JOIN rival_poly_contest_cost_proof proof ON proof.slug=r.slug "
+                "AND proof.evidence_sha256=r.evidence_sha256 "
+                "AND proof.issued_at=r.issued_at "
                 "LEFT JOIN rival_polymarket_ai_outcomes o ON o.slug=r.slug AND o.condition_id=r.condition_id "
                 "LEFT JOIN rival_poly_contest_forecasts f ON f.slug=r.slug "
                 "ORDER BY r.expires_at,r.slug,f.model",
@@ -515,7 +520,8 @@ def league(store, *, now: datetime | None = None) -> dict:
                         continue
                     key = asset, horizon, schema, model
                     state = stats.setdefault(key, {
-                        "contracts": 0, "trades": 0, "priced": 0, "gain": 0., "profit": 0.,
+                        "contracts": 0, "seen": 0, "trades": 0, "priced": 0,
+                        "gain": 0., "profit": 0.,
                         "brier_logs": [0.]*len(BET_FRACTIONS), "net_logs": [0.]*len(BET_FRACTIONS),
                         "last_expiry": None, "blocked": None,
                     })
@@ -530,6 +536,13 @@ def league(store, *, now: datetime | None = None) -> dict:
                         continue
                     if state["last_expiry"] and row["opens_at"] < state["last_expiry"]:
                         state["blocked"] = "Overlapping contracts need review"
+                        continue
+                    # Missing provenance is determined BEFORE the outcome.
+                    # It never contributes to Brier significance or paper P&L.
+                    # Keep the missed contracts in the coverage denominator.
+                    state["seen"] += 1
+                    state["last_expiry"] = row["expires_at"]
+                    if not row["source_proven"]:
                         continue
                     m = float(row["market_up"])
                     if not (math.isfinite(p) and math.isfinite(m) and 0 <= p <= 1 and 0 <= m <= 1):
@@ -560,6 +573,7 @@ def league(store, *, now: datetime | None = None) -> dict:
         expected = max(1, int((stamp-since).total_seconds()/(horizon*60))-1)
         coverage = min(1., n/expected)
         cost_coverage = state["priced"]/n if n else 0.
+        source_coverage = n/state["seen"] if state["seen"] else 0.
         index = int(scope_meta["test_index"]) if scope_meta else None
         alpha = _test_alpha(model, slots, index) if index else 0.
         log_e = min(_log_capital(state["brier_logs"]), _log_capital(state["net_logs"]))
@@ -567,9 +581,14 @@ def league(store, *, now: datetime | None = None) -> dict:
             state["last_expiry"]) <= timedelta(minutes=max(120, 2*horizon)))
         valid = (not state["blocked"] and fresh and n >= MIN_CONTRACTS
                  and state["trades"] >= MIN_TRADES and coverage >= MIN_COVERAGE
-                 and cost_coverage >= MIN_COVERAGE and state["gain"] > 0 and state["profit"] > 0)
+                 and cost_coverage >= MIN_COVERAGE
+                 and source_coverage >= MIN_COVERAGE
+                 and state["gain"] > 0 and state["profit"] > 0)
         significant = bool(valid and alpha > 0 and log_e >= -math.log(alpha))
         item = {"model": model, "label": label(model), "contracts": n,
+                "observed_contracts": state["seen"],
+                "unverified_cost_contracts": state["seen"] - n,
+                "source_cost_coverage": source_coverage,
                 "trades": state["trades"], "coverage": coverage, "cost_coverage": cost_coverage,
                 "improvement": state["gain"]/n if n else 0.,
                 "net_per_contract": state["profit"]/n if n else 0.,
@@ -603,7 +622,9 @@ def league_text(entry: dict | None, *, asset: str, horizon: int) -> str:
     if progress:
         detail = (f" Closest: {progress['contracts']:,}/{MIN_CONTRACTS} contracts graded, "
                   f"{progress['trades']:,}/{MIN_TRADES} practice entries priced, "
-                  f"{progress['coverage']:.0%} with prices (needs {MIN_COVERAGE:.0%}). "
+                  f"{progress['coverage']:.0%} verified time coverage, "
+                  f"{progress['source_cost_coverage']:.0%} source-proven quotes "
+                  f"(needs {MIN_COVERAGE:.0%}). "
                   + (progress.get("blocked") or "It hasn't passed the test yet."))
     else:
         detail = " No graded contracts yet."

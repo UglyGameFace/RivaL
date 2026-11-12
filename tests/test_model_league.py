@@ -357,3 +357,87 @@ def test_poly_legacy_and_mismatched_fee_receipts_cannot_create_executable_proof(
     assert c.economic_evidence(n.slug, BOOK)["status"] == (
         "missing_issue_time_fee_receipt")
     assert c.economic_evidence("not-issued", BOOK)["status"] == "no_prospective_forecast"
+
+
+def test_unverified_legacy_economic_numbers_cannot_win_or_issue_a_call(learning_store):
+    """A positive statistical backtest is not proof of executable paper cost."""
+    c = setup(learning_store)
+    seed(learning_store, c, days=14, with_receipt=False)
+    result = entry(learning_store)
+    assert result["champion"] is None
+    record = next(x for x in result["models"] if x["model"] == BOOK)
+    assert record["contracts"] == 0
+    assert record["observed_contracts"] == 14 * 24 - 1
+    assert record["unverified_cost_contracts"] == record["observed_contracts"]
+    assert record["source_cost_coverage"] == 0
+    assert record["trades"] == 0
+    old = c.call(notice().slug, BOOK)
+    assert old["cost_source_verified"] == 0
+    assert old["direction"] == "WAIT"
+    with learning_store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_poly_contest_cost_proof"
+        ).fetchone()["n"] == 0
+
+
+def test_issued_cost_provenance_rejects_tampered_stored_price(learning_store):
+    c = setup(learning_store)
+    seed(learning_store, c, days=14)
+    original = entry(learning_store)
+    assert original["champion"] == BOOK
+    original_book = next(x for x in original["models"] if x["model"] == BOOK)
+    assert original_book["unverified_cost_contracts"] == 0
+    assert original_book["source_cost_coverage"] == 1
+    assert c.call(notice().slug, BOOK)["cost_source_verified"] == 1
+
+    # The stored fee-and-ask receipt stays immutable even when someone
+    # overwrites the SQL price column directly. No low-price paper advantage.
+    with learning_store.connect() as conn:
+        conn.execute(
+            "UPDATE rival_poly_contest_rounds SET up_cost=? WHERE slug=?",
+            (.01, notice().slug),
+        )
+    assert c.call(notice().slug, BOOK)["direction"] == "WAIT"
+    assert c.economic_evidence(notice().slug, BOOK)["status"] == (
+        "stored_market_evidence_changed")
+    changed = entry(learning_store)
+    row = next(x for x in changed["models"] if x["model"] == BOOK)
+    assert row["contracts"] == original_book["contracts"] - 1
+    assert row["unverified_cost_contracts"] == 1
+    assert row["source_cost_coverage"] < 1
+
+
+def test_unmatched_fee_source_hash_or_token_identity_never_enters_paper_score(
+    learning_store,
+):
+    c = setup(learning_store)
+    n = notice()
+    bad = replace(n, fee_evidence={
+        **n.fee_evidence,
+        "up_token_id": n.down_token_id,
+    })
+    assert c.capture(bad, {BOOK: (.9, SHA)}, now=bad.quote_at)
+    assert c.call(bad.slug, BOOK)["direction"] == "WAIT"
+    assert c.economic_evidence(bad.slug, BOOK)["status"] == (
+        "source_fee_or_token_mismatch")
+    with learning_store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_poly_contest_cost_proof"
+        ).fetchone()["n"] == 0
+
+
+def test_new_economic_policy_does_not_grandfather_previous_cost_only_rounds(
+    learning_store,
+):
+    c = setup(learning_store)
+    seed(learning_store, c, days=14)
+    with learning_store.connect() as conn:
+        assert conn.execute(
+            "SELECT started_at FROM rival_poly_contest_policies WHERE policy=?",
+            (POLICY,),
+        ).fetchone()["started_at"] == START.isoformat()
+        conn.execute(
+            "UPDATE rival_poly_contest_policies SET started_at=? WHERE policy=?",
+            (END.isoformat(), POLICY),
+        )
+    assert entry(learning_store)["champion"] is None

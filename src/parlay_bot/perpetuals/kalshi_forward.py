@@ -102,6 +102,22 @@ class KalshiForwardResearch:
                         ticker TEXT PRIMARY KEY,
                         checked_at TEXT NOT NULL
                     );
+                    -- Immutable, exact public-book receipt for NEW quotes.
+                    -- No retrospective "proof" for historical summary rows.
+                    CREATE TABLE IF NOT EXISTS rival_kalshi_quote_receipts (
+                        ticker TEXT PRIMARY KEY,
+                        series_ticker TEXT NOT NULL,
+                        issued_at TEXT NOT NULL,
+                        book_received_at TEXT NOT NULL,
+                        book_transport_sha256 TEXT NOT NULL,
+                        market_rules_sha256 TEXT NOT NULL,
+                        yes_ask DOUBLE PRECISION NOT NULL,
+                        no_ask DOUBLE PRECISION NOT NULL,
+                        yes_depth DOUBLE PRECISION NOT NULL,
+                        no_depth DOUBLE PRECISION NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_kalshi_quote_recent
+                        ON rival_kalshi_quote_receipts(series_ticker,issued_at);
                     CREATE TABLE IF NOT EXISTS rival_kalshi_shadow_weights (
                         asset TEXT NOT NULL,
                         series_ticker TEXT NOT NULL,
@@ -143,11 +159,26 @@ class KalshiForwardResearch:
             return False
         stamp = _iso(at)
         _iso(market.close_time)
+        book_at = getattr(market, "book_observed_at", None)
+        book_digest = getattr(market, "book_receipt_sha256", None)
+        if (book_at is None) != (book_digest is None):
+            return False
+        if book_at is not None:
+            # The timestamp of the response is independent of later model
+            # inference. Never backdate the model when the study worker lags.
+            received = _iso(book_at)
+            if (not 0 <= (at-book_at).total_seconds() <= 25
+                    or re.fullmatch(r"[0-9a-f]{64}", book_digest) is None):
+                return False
+        else:
+            received = None  # legacy/manual quotes: not execution-proven
         baseline, features = _market_features(market, at)
         payload = json.dumps({
             "ticker": market.ticker, "asset": asset, "issued_at": stamp,
             "closes": _iso(market.close_time), "yes_ask": market.yes_ask,
             "no_ask": market.no_ask, "rules": market.rules,
+            "yes_depth": market.yes_ask_size, "no_depth": market.no_ask_size,
+            "book_received_at": received, "book_transport_sha256": book_digest,
         }, sort_keys=True, separators=(",", ":"))
         digest = hashlib.sha256(payload.encode()).hexdigest()
         rules_sha = hashlib.sha256(market.rules.encode()).hexdigest()
@@ -199,8 +230,21 @@ class KalshiForwardResearch:
                     """INSERT INTO rival_kalshi_book_evidence
                        (ticker,observed_at,yes_ask_depth,no_ask_depth)
                        VALUES (?,?,?,?) ON CONFLICT(ticker) DO NOTHING""",
-                    (market.ticker, stamp, market.yes_ask_size, market.no_ask_size),
+                    (market.ticker, received or stamp,
+                     market.yes_ask_size, market.no_ask_size),
                 )
+                if received is not None:
+                    conn.execute(
+                        """INSERT INTO rival_kalshi_quote_receipts
+                           (ticker,series_ticker,issued_at,book_received_at,
+                            book_transport_sha256,market_rules_sha256,
+                            yes_ask,no_ask,yes_depth,no_depth)
+                           VALUES (?,?,?,?,?,?,?,?,?,?)
+                           ON CONFLICT(ticker) DO NOTHING""",
+                        (market.ticker,series,stamp,received,book_digest,
+                         rules_sha,market.yes_ask,market.no_ask,
+                         market.yes_ask_size,market.no_ask_size),
+                    )
             return count.rowcount == 1
 
     def pending(self, *, now: datetime, limit: int = 2) -> tuple[str, ...]:

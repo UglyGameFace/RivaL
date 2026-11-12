@@ -182,7 +182,8 @@ def test_three_embeds_carry_every_number_from_the_old_card():
     assert "**60m** · **6-year** +23.4 edge · 171 results over 8 days, not proven yet" in best
     lab = fields["🧬 Model Lab"]
     assert "12 designs testing, 0 closed so far" in lab
-    assert "**Lab 2e87c2** on 15-min (early, not proven)" in lab
+    assert "**Design unavailable** on 15-min (early, not proven)" in lab
+    assert "Lab 2e87c2" not in lab
 
     # Embed 3: the contest verdict, all six rows, then health.
     contest = fields["🎲 Polymarket contest"]
@@ -269,3 +270,17 @@ async def test_render_embeds_still_sends_one_embed_for_other_pages(tmp_path, mon
         assert len(embeds) == 1 and embeds[0].title == "❓ Getting Started"
     finally:
         await _close(bot, home)
+
+
+def test_full_performance_card_uses_the_saved_lab_design_name(monkeypatch):
+    from parlay_bot.perpetuals import model_lab
+
+    family = model_lab.family_of(model_lab.SEEDS[0], 15)
+    monkeypatch.setattr(model_lab, "_GENOMES", {
+        family: model_lab.canonical(model_lab.SEEDS[0], 15)})
+    reports = _reports()
+    reports["best"]["lab"]["15"]["best"]["family"] = family
+    embeds = home_module.performance_embeds("BTC", 5, reports, now=NOW, venues=("hyperliquid",))
+    lab = _all_fields(embeds)["🧬 Model Lab"]
+    assert "**All signals · steady** on 15-min" in lab
+    assert "Lab " + family.rsplit("_", 1)[-1][:6] not in lab

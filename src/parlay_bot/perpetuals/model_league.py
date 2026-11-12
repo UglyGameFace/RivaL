@@ -190,6 +190,15 @@ class Contest:
                     );
                     CREATE INDEX IF NOT EXISTS idx_poly_contest_expiry
                         ON rival_poly_contest_rounds(asset,horizon,expires_at);
+                    -- Only records frozen at original issue time with exact
+                    -- fee/book/token/size provenance can enter money scoring.
+                    -- Never manufacture this row for older contest receipts.
+                    CREATE TABLE IF NOT EXISTS rival_poly_contest_cost_proof (
+                        slug TEXT PRIMARY KEY,
+                        evidence_sha256 TEXT NOT NULL,
+                        source_receipt_sha256 TEXT NOT NULL,
+                        issued_at TEXT NOT NULL
+                    );
                     CREATE TABLE IF NOT EXISTS rival_poly_contest_forecasts (
                         slug TEXT NOT NULL, model TEXT NOT NULL,
                         probability_up DOUBLE PRECISION NOT NULL,
@@ -281,13 +290,20 @@ class Contest:
             return value
         up_cost = known_cost(notice.up_cost, ua)
         down_cost = known_cost(notice.down_cost, da)
-        raw = json.dumps({"slug": notice.slug, "condition_id": notice.condition_id,
-                          "quote_at": notice.quote_at.isoformat(), "up_bid": ub, "up_ask": ua,
-                          "down_bid": db, "down_ask": da, "schema": schema,
-                          "fee_rate": rate, "up_cost": up_cost,
-                          "down_cost": down_cost, "inputs": evidence or {},
-                           "fee_source_receipt": getattr(notice, "fee_evidence", None)},
-                         sort_keys=True, separators=(",", ":"), allow_nan=False)
+        evidence_record = {
+            "slug": notice.slug, "condition_id": notice.condition_id,
+            "quote_at": notice.quote_at.isoformat(), "up_bid": ub, "up_ask": ua,
+            "down_bid": db, "down_ask": da, "schema": schema,
+            "up_token_id": getattr(notice, "up_token_id", None),
+            "down_token_id": getattr(notice, "down_token_id", None),
+            "fee_rate": rate, "up_cost": up_cost, "down_cost": down_cost,
+            "inputs": evidence or {},
+            "fee_source_receipt": getattr(notice, "fee_evidence", None),
+        }
+        verified_cost = _verified_source_cost(evidence_record, stamp)
+        raw = json.dumps(evidence_record, sort_keys=True,
+                         separators=(",", ":"), allow_nan=False)
+        evidence_sha = hashlib.sha256(raw.encode()).hexdigest()
         with self._lock, self.store.connect() as conn:
             for model in clean:
                 conn.execute("INSERT INTO rival_poly_contest_models VALUES (?,?) ON CONFLICT DO NOTHING",
@@ -298,10 +314,18 @@ class Contest:
                 (notice.slug, notice.condition_id, notice.asset, notice.horizon, schema,
                  notice.issued.isoformat(), notice.expires.isoformat(), stamp.isoformat(),
                  notice.quote_at.isoformat(), market, up_cost, down_cost,
-                 hashlib.sha256(raw.encode()).hexdigest(), raw),
+                 evidence_sha, raw),
             ).rowcount
             if not inserted:
                 return False  # no late model additions, even after a restart
+            if verified_cost is not None:
+                conn.execute(
+                    """INSERT INTO rival_poly_contest_cost_proof
+                       (slug,evidence_sha256,source_receipt_sha256,issued_at)
+                       VALUES (?,?,?,?) ON CONFLICT(slug) DO NOTHING""",
+                    (notice.slug, evidence_sha,
+                     verified_cost["source_receipt_sha256"], stamp.isoformat()),
+                )
             self._scope_slot(conn, notice, schema, stamp)
             for model, (p, sha) in clean.items():
                 self._model_slot(conn, model)
@@ -313,14 +337,21 @@ class Contest:
         self.initialize()
         with self.store.connect() as conn:
             row = conn.execute(
-                "SELECT r.*,f.model,f.probability_up FROM rival_poly_contest_rounds r "
-                "JOIN rival_poly_contest_forecasts f ON f.slug=r.slug WHERE r.slug=? AND f.model=?",
+                "SELECT r.*,f.model,f.probability_up, "
+                "CASE WHEN proof.slug IS NULL THEN 0 ELSE 1 END AS cost_source_verified "
+                "FROM rival_poly_contest_rounds r "
+                "JOIN rival_poly_contest_forecasts f ON f.slug=r.slug "
+                "LEFT JOIN rival_poly_contest_cost_proof proof ON proof.slug=r.slug "
+                "AND proof.evidence_sha256=r.evidence_sha256 "
+                "AND proof.issued_at=r.issued_at "
+                "WHERE r.slug=? AND f.model=?",
                 (slug, model),
             ).fetchone()
         if row is None:
             return None
         result = dict(row)
-        bet = implied_bet(float(row["probability_up"]), row["up_cost"], row["down_cost"])
+        bet = (implied_bet(float(row["probability_up"]), row["up_cost"], row["down_cost"])
+               if row["cost_source_verified"] else None)
         result["direction"] = bet[0] if bet else "WAIT"
         return result
 

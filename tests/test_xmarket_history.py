@@ -164,6 +164,12 @@ def test_read_only_host_receipt_distinguishes_missing_capture_fit_and_rows(learn
     assert receipt["status"] == "waiting_for_fit"
     assert receipt["shadow_rows_24h"] == 0
     assert receipt["input_sources_24h"][0]["points"] == 1
+    from tests.xmarket_fixtures import valid_doc
+    XmarketModelSet(learning_store).import_document("fit", json.dumps(valid_doc()).encode())
+    imported = _xmarket_progress(learning_store, NOW)
+    assert imported["status"] == "imported_no_shadow_rows"
+    assert imported["shadow_rows_24h"] == 0
+    assert imported["imported_scopes"][0]["imported_artifacts"] == 1
 
 
 def test_identical_price_paths_for_different_tokens_keep_different_archive_ids(tmp_path):

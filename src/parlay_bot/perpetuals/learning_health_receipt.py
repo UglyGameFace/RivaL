@@ -236,7 +236,8 @@ def _xmarket_progress(store, now: datetime) -> dict:
                 "AND horizon_minutes IN (5,15,60) AND family='xmarket_v1' AND issued_at>=? "
                 "GROUP BY asset,horizon_minutes", (since,)).fetchall()
         count = sum(int(r["issued"]) for r in rows)
-        return {"status": "shadow_issuing" if count else "waiting_for_fit" if inputs else "waiting_for_inputs",
+        return {"status": ("shadow_issuing" if count else "imported_no_shadow_rows" if fits
+                           else "waiting_for_fit" if inputs else "waiting_for_inputs"),
                 "input_sources_24h": [dict(r) for r in inputs], "imported_scopes": [dict(r) for r in fits],
                 "shadow_rows_24h": count, "shadow_scopes": [dict(r) for r in rows],
                 "shadow_only": True, "does_not_prove_prediction_edge": True}

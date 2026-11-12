@@ -157,3 +157,10 @@ are detected before optional queries; the receipt never initializes them.
 Production completion still requires a real passing fit, verified private
 publish/import and observed immutable shadow rows. Synthetic tests, a PR,
 a merge or a successful restart do not prove those events or a trading edge.
+
+Public API probes on November 12 verified native-history reads for BTC,
+ETH, SOL and XRP on both providers, including distinct provider/normalized
+hashes. One sampled closed native window returned 15 one-minute points per
+source. This is schema/access evidence for sampled contracts, not a full
+history census, an independent live-host fidelity comparison or a fitted
+model. Temporary provider failures preserve the incomplete backfill cursor.

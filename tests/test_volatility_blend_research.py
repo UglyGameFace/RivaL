@@ -9,7 +9,6 @@ import pytest
 
 from parlay_bot.research.volatility_blend_research import CANDIDATES, evaluate_blend
 
-
 START = datetime(2026, 8, 1, tzinfo=UTC)
 VALIDATION = START + timedelta(days=40)
 TEST = START + timedelta(days=68)
@@ -58,7 +57,7 @@ def test_blend_selects_without_seeing_test_period_prices():
     frame = _frames()
     old = evaluate_blend(frame, horizon=60, train_end=VALIDATION, test_start=TEST)
     new_frame = {k: (v[0].copy(), v[1]) for k, v in frame.items()}
-    for k, (candles, _) in new_frame.items():
+    for candles, _ in new_frame.values():
         candles.loc[candles.index >= TEST, "close"] *= 1.45
     new = evaluate_blend(new_frame, horizon=60, train_end=VALIDATION, test_start=TEST)
     assert new["selected_weights_24h_7d_30d"] == old["selected_weights_24h_7d_30d"]

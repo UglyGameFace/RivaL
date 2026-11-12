@@ -14,13 +14,16 @@ from datetime import UTC, datetime
 from urllib import error, parse, request
 
 from discloud_learning_cycle_receipt import CMD, parse_receipt
-from evidence_board_github import read_github_snapshot
+from evidence_board_github import read_github_snapshot, read_public_intelligence
 
 ASSETS = {"BTC", "ETH", "SOL", "XRP"}
 HORIZONS = {5, 15, 60}
 REPORT_NAME = re.compile(r"xmarket-v1-(BTC|ETH|SOL|XRP)-(5|15|60)m-report\.json")
 INGEST_URL = "https://rival-evidence-collector.staytrippynlw.workers.dev/ingest"
 AUDIENCE = "https://rival-evidence-collector.staytrippynlw.workers.dev"
+PAIR_MARKER = "RIVAL_PAIRED_SCORE_RECEIPT="
+PAIR_CMD = ("python -c 'import sys;sys.path.insert(0,\"src\");"
+            "from parlay_bot.perpetuals.evidence_score_receipt import main;main()'")
 
 
 def _url_json(url: str, *, method: str = "GET", body: bytes | None = None,
@@ -112,6 +115,56 @@ def read_host() -> dict | None:
     )
     stdout = raw.get("apps", {}).get("shell", {}).get("stdout", "")
     return parse_receipt(str(stdout))
+
+
+def _read_host_console(command: str) -> dict | None:
+    token, app_id = os.getenv("DISCLOUD_TOKEN"), os.getenv("DISCLOUD_APP_ID")
+    if not token or not app_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", app_id):
+        return None
+    url = "https://api.discloud.app/v2/app/" + parse.quote(app_id, safe="") + "/console"
+    response = _url_json(
+        url, method="PUT", body=json.dumps({"command": command}).encode("utf-8"),
+        headers={"api-token": token, "Content-Type": "application/json"},
+        timeout=110, limit=3_000_000,
+    )
+    apps = response.get("apps")
+    shell = apps.get("shell") if isinstance(apps, dict) else None
+    return shell if isinstance(shell, dict) else None
+
+
+def read_paired_performance() -> dict:
+    """Read only a bounded report; no host-side scripts, migrations or writes."""
+    unavailable = {"status": "unavailable", "scopes": []}
+    shell = _read_host_console(PAIR_CMD)
+    if not shell:
+        return unavailable
+    for line in reversed(str(shell.get("stdout", "")).splitlines()):
+        if line.startswith(PAIR_MARKER):
+            parsed = json.loads(line[len(PAIR_MARKER):])
+            if isinstance(parsed, dict) and parsed.get("status") in (
+                "observed", "partial", "unavailable", "no_pairs"
+            ) and isinstance(parsed.get("scopes"), list):
+                return parsed
+    return unavailable
+
+
+def read_intelligence_host() -> dict:
+    """Discloud application status only; 'online' does not prove AI inference."""
+    app_id = os.getenv("DISCLOUD_LLM_APP_ID", "")
+    token = os.getenv("DISCLOUD_TOKEN", "")
+    result = {"status": "unavailable", "inference_verified": False}
+    if not token or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", app_id):
+        return result
+    url = "https://api.discloud.app/v2/app/" + parse.quote(app_id, safe="") + "/status"
+    response = _url_json(url, headers={"api-token": token}, timeout=18, limit=60_000)
+    info = response.get("apps")
+    if (response.get("status") != "ok" or not isinstance(info, dict)
+            or str(info.get("id", "")) != app_id):
+        return result
+    normalized = str(info.get("container", "")).strip().lower()
+    if normalized in ("online", "offline"):
+        result["status"] = normalized
+    return result
 
 
 def _oauth_access_token() -> str:
@@ -284,11 +337,24 @@ def publish() -> int:
     except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
         github = {"status": "unavailable", "fetched_at": None,
                   "prs": [], "runs": []}
+    try:
+        intelligence = read_public_intelligence(os.getenv("GITHUB_TOKEN", ""))
+    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
+        intelligence = {"status": "unavailable", "prs": [], "runs": []}
+    try:
+        intelligence_host = read_intelligence_host()
+    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
+        intelligence_host = {"status": "unavailable", "inference_verified": False}
+    try:
+        performance = read_paired_performance()
+    except (error.URLError, OSError, TimeoutError, ValueError, KeyError, TypeError):
+        performance = {"status": "unavailable", "scopes": []}
     now = datetime.now(UTC).isoformat()
     payload = {
         "schema_version": 1, "captured_at": now,
         "host": host, "database": db, "drive": drive,
-        "github": github,
+        "github": github, "intelligence": intelligence,
+        "intelligence_host": intelligence_host, "performance": performance,
     }
     jwt = _github_oidc()
     result = _url_json(
@@ -303,7 +369,8 @@ def publish() -> int:
         "publication": result["status"], "host": host["status"],
         "database": db["status"], "drive": drive["status"],
         "drive_scopes": drive["reports_considered"],
-        "github": github["status"],
+        "github": github["status"], "intelligence": intelligence["status"],
+        "performance": performance["status"],
         "source": "read-only", "no_trades_or_db_writes": True,
     }, sort_keys=True))
     return 0

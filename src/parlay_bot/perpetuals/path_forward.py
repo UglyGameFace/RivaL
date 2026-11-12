@@ -401,6 +401,20 @@ class ProspectivePathLedger:
                 except (ValueError,TypeError,OverflowError,ZeroDivisionError):
                     continue
                 state="ambiguous" if result is None else "settled"
+                # Closing-price labels are independent of TP/stop intrabar
+                # ordering. Every future close still must have passed the
+                # immutable exact-source/first-observation checks above.
+                entry=float(p["reference_close"])
+                sigma=float(p["sigma_horizon"])
+                closes=[float(b["close_price"]) for b in bars]
+                if not all(math.isfinite(v) and v > 0 for v in closes):
+                    continue
+                first_close_hit=next((
+                    j for j, close in enumerate(closes, 1)
+                    if abs(math.log(close/entry)) >= sigma
+                ), None)
+                early=int(first_close_hit is not None
+                          and first_close_hit <= (steps+1)//2)
                 updated=conn.execute(
                     """UPDATE rival_forward_paths SET
                        state=?,settled_at=?,tp1_before_stop=?,
@@ -414,6 +428,21 @@ class ProspectivePathLedger:
                      p["horizon_minutes"],p["side"],p["reference_opened_at"]),
                 )
                 if updated.rowcount==1:
+                    # No late/backfilled forecast insertion: UPDATE is limited
+                    # to rows frozen at issuance. Ambiguous OHLC is allowed
+                    # for independent closing-price labels only.
+                    conn.execute(
+                        """UPDATE rival_forward_path_targets SET
+                             state='settled',settled_at=?,
+                             direction_positive=?,early_move_by_half=?,
+                             absolute_move_realized=?,first_close_hit_bars=?
+                           WHERE venue=? AND contract=? AND quote=?
+                             AND horizon_minutes=? AND side=?
+                             AND reference_opened_at=? AND state='pending'""",
+                        (stamp.isoformat(),int(signed>0),early,abs(signed),
+                         first_close_hit,p["venue"],p["contract"],p["quote"],
+                         p["horizon_minutes"],p["side"],p["reference_opened_at"]),
+                    )
                     scored+=int(state=="settled")
                     ambiguous+=int(state=="ambiguous")
         return {"settled":scored,"ambiguous":ambiguous}

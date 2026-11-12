@@ -352,3 +352,29 @@ def test_backfill_never_requests_a_future_native_contract(tmp_path, monkeypatch)
     assert len(calls) == 3  # One PM lookup and the bounded live/archive Kalshi pair
     assert {e["source"] for e in errors} == {"polymarket", "kalshi"}
     assert all(e["window_close"] == expected.isoformat() for e in errors)
+
+
+def test_one_failed_overlap_contract_does_not_hide_other_contracts(tmp_path, monkeypatch):
+    from parlay_bot.research import xmarket_history as module
+    from parlay_bot.research.free_history import HistoryImportError
+
+    at = NOW.replace(second=0, microsecond=0)
+    rows = [point("polymarket", at - timedelta(minutes=i)) for i in (0, 15)]
+    bundle = {"schema": BUNDLE_SCHEMA, "asset": "BTC", "samples": rows}
+    calls = []
+
+    def collect(client, *, source, identity, root, now, fidelity=1):
+        calls.append(identity["contract_id"])
+        if len(calls) == 1:
+            raise HistoryImportError("first contract unavailable")
+        return [{**rows[1], "origin": "backfill"}], SimpleNamespace()
+
+    monkeypatch.setattr(module, "collect_contract", collect)
+    history, publications, _, errors = backfill(
+        None, asset="BTC", bundles=[bundle], root=tmp_path,
+        before=NOW, max_windows=0)
+    assert len(calls) == 2
+    assert len(history) == 1 and len(publications) == 1
+    assert len(errors) == 1
+    assert errors[0]["stage"] == "overlap"
+    assert errors[0]["failure_code"] == "history_integrity"

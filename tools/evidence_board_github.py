@@ -98,10 +98,10 @@ def read_github_snapshot(token: str) -> dict:
         return {"status": "unavailable", "fetched_at": None, "prs": [], "runs": []}
     pulls = _github_json(
         "/pulls?" + parse.urlencode({
-            "state": "all", "sort": "updated", "direction": "desc", "per_page": "35"
+            "state": "all", "sort": "updated", "direction": "desc", "per_page": "25"
         }), token
     )
-    result = _github_json("/actions/runs?per_page=60", token)
+    result = _github_json("/actions/runs?per_page=45", token)
     if not isinstance(pulls, list) or not isinstance(result, dict):
         raise TypeError("github_response_schema_invalid")
     raw_runs = result.get("workflow_runs")
@@ -128,6 +128,6 @@ def read_github_snapshot(token: str) -> dict:
     return {
         "status": "verified",
         "fetched_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
-        "prs": sorted(by_number.values(), key=lambda x: x["number"], reverse=True)[:52],
-        "runs": clean_runs[:60],
+        "prs": sorted(by_number.values(), key=lambda x: x["number"], reverse=True)[:40],
+        "runs": clean_runs[:45],
     }

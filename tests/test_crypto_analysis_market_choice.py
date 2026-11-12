@@ -247,7 +247,7 @@ async def test_polymarket_stats_do_not_require_exchange_or_drive(tmp_path):
         assert "🎯 **vs Polymarket odds — ahead**" in body
         assert "Error 0.210 vs 0.240 · 5 contracts" in body
         # A healthy empty heartbeat table means no cycle, not a failed read.
-        assert "⚠️ learning loop: no run recorded yet" in body
+        assert "⚠️ grading/review: no run recorded yet" in body
         home.navigate("trust")
         assert home.page == "performance"
         detail = await home.render_embeds()

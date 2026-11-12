@@ -31,6 +31,7 @@ from parlay_bot.research.supplemental_history import (
     _json_get,
     ingest_kalshi_contract,
     ingest_polymarket_token,
+    kalshi_public_json,
 )
 from parlay_bot.research.xmarket_features import (
     PRICE_SEMANTICS,
@@ -231,7 +232,8 @@ def collect_contract(client, *, source, identity, root, now, fidelity=1):
     else:
         item = ingest_kalshi_contract(client, ticker=identity["contract_id"], start_ts=start,
             end_ts=end, period_minutes=1, out_dir=root, series_ticker="KX" + identity["asset"] + "15M",
-            contract_binding=identity, timeout_seconds=8)
+            contract_binding=identity, timeout_seconds=8, prefer_live=True,
+            rate_limit_retries=2, pace_seconds=0.35)
         payload = {"candlesticks": [{"end_period_ts": int(timestamp(r["at"]).timestamp()),
                     "yes_ask": r["yes_ask"], "yes_bid": r["yes_bid"]}
                    for r in (json.loads(l) for l in item.data_path.read_bytes().splitlines())]}
@@ -305,9 +307,11 @@ def backfill(client, *, asset, bundles, root, before, max_windows=96, days=90):
             series = "KX" + asset + "15M"
             params = {"series_ticker": series, "min_close_ts": int(cursor.timestamp()) - 1,
                       "max_close_ts": int(cursor.timestamp()) + 1, "limit": 10}
-            markets = _json_get(client, KALSHI + "/markets", params, timeout=8).get("markets", [])
+            markets = kalshi_public_json(client, KALSHI + "/markets", params,
+                timeout=8, rate_limit_retries=2, pace_seconds=0.35).get("markets", [])
             if not markets:
-                markets = _json_get(client, KALSHI + "/historical/markets", params, timeout=8).get("markets", [])
+                markets = kalshi_public_json(client, KALSHI + "/historical/markets", params,
+                    timeout=8, rate_limit_retries=2, pace_seconds=0.35).get("markets", [])
             candidates = [m for m in markets if isinstance(m.get("ticker"), str)
                           and m["ticker"].startswith(series + "-")
                           and timestamp(m["open_time"]) == opened

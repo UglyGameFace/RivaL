@@ -94,7 +94,13 @@ contracts to measure fidelity. It also discovers and backfills a bounded
 96 earlier native windows per asset/pass, with a saved cursor over a
 90-day maximum lookback. An incomplete window keeps its cursor for retry.
 XMarket's Kalshi overlap and backfill requests now prefer the live candlestick
-tier first, falling back to the archived tier **only on a source 404**;
+tier first, falling back to the archived tier **only on a source 404**.
+Historical contract discovery uses the supported `series_ticker` and
+bounded cursor pagination once per asset/pass, caching exact open/close
+window identities; Kalshi's historical markets API does **not** support
+the live endpoint's min/max close-time filters. An incomplete pagination
+walk or an ambiguous native window blocks acquisition rather than becoming
+a verified history gap.
 the ordinary supplemental importer keeps its original archived-first default.
 The XMarket path paces public Kalshi calls and makes at most two bounded
 HTTP 429 retries with exponential backoff (honoring only a bounded Retry-After).

@@ -206,3 +206,71 @@ def test_contest_receipt_reads_real_new_policy_rows_without_writing(learning_sto
     with learning_store.connect() as conn:
         assert conn.execute('SELECT COUNT(*) AS n FROM rival_poly_contest_rounds').fetchone()['n'] == 1
     assert host._contest_progress(object(), START)['status'] == 'unavailable'
+
+
+def test_actual_learning_receipt_requires_changed_weights_and_new_labels(learning_store):
+    """A healthy cycle heartbeat alone must not be mistaken for weight updates."""
+    from parlay_bot.perpetuals.forward_audit import MODEL, ForwardAccuracyMonitor
+    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+    from parlay_bot.perpetuals.model_lab import LEARNER_SCHEMA
+
+    store = learning_store
+    ForwardAccuracyMonitor(PerpetualMarketStore(store)).initialize()
+    now = datetime(2026, 11, 12, 16, 0, tzinfo=UTC)
+    with store.connect() as conn:
+        conn.execute(LEARNER_SCHEMA)
+        conn.execute(
+            "INSERT INTO rival_lab_learners "
+            "(venue,contract,quote,horizon_minutes,family,weights_json,cursor,updates,trained_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            ("hyperliquid", "BTC", "USDC", 5, "lab_5m_test",
+             "[0.1,0.2]", None, 47, (now-timedelta(minutes=7)).isoformat()),
+        )
+        for minutes, updates, digest in ((30, 80, "a"), (10, 84, "b")):
+            stamp = now - timedelta(minutes=minutes)
+            conn.execute(
+                """INSERT INTO rival_forward_model_lineage (
+                     venue,contract,quote,horizon_minutes,model_version,
+                     reference_opened_at,issued_at,weights_sha256,
+                     feature_sha256,training_labels,historical_training_labels,
+                     online_training_updates,historical_seed_sha256)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ("hyperliquid", "BTC", "USDC", 5, MODEL,
+                 (stamp-timedelta(minutes=5)).isoformat(), stamp.isoformat(),
+                 digest*64, "c"*64, updates, 0, updates, None),
+            )
+    result = host._actual_learning_progress(store, now)
+    assert result["status"] == "weight_updates_observed"
+    assert result["sampled_forecasts"] == 2
+    assert result["streams_with_before_after"] == 1
+    assert result["streams_with_verified_weight_updates"] == 1
+    assert result["latest_online_training_updates"] == 84
+    assert result["sampled_historically_seeded_forecasts"] == 0
+    assert result["lab"]["streams_with_training_updates"] == 1
+    assert result["proves_improvement"] is False
+    assert result["proves_profitable_edge"] is False
+
+    # Counter alone isn't enough. Persisted probabilities can stay unchanged.
+    with store.connect() as conn:
+        conn.execute(
+            "UPDATE rival_forward_model_lineage SET weights_sha256=? "
+            "WHERE online_training_updates=84",
+            ("a"*64,),
+        )
+    assert host._actual_learning_progress(store, now)["status"] == (
+        "no_recent_weight_change_proven")
+
+
+def test_actual_learning_receipt_reports_absent_lineage_without_inventing_progress(
+    learning_store,
+):
+    from parlay_bot.perpetuals.forward_audit import ForwardAccuracyMonitor
+    from parlay_bot.perpetuals.market_store import PerpetualMarketStore
+
+    ForwardAccuracyMonitor(PerpetualMarketStore(learning_store)).initialize()
+    result = host._actual_learning_progress(
+        learning_store, datetime(2026, 11, 12, 16, tzinfo=UTC))
+    assert result["status"] == "no_lineage"
+    assert result["lab"]["status"] == "not_initialized"
+    assert result["streams_with_verified_weight_updates"] == 0
+    assert result["proves_improvement"] is False

@@ -194,7 +194,7 @@ def test_three_embeds_carry_every_number_from_the_old_card():
         assert name in contest
     assert "To qualify: 300 contracts and a statistical pass" in contest
     health = fields["⚙️ Running and learning"]
-    assert "✅ learning just now" in health and "✅ predictions just now" in health
+    assert "✅ grading/review just now" in health and "✅ predictions just now" in health
     assert "✅ 1/1 exchanges live" in health
     assert "⚠️ 279/288 cycles in 24h, 458 predictions skipped (ran late)" in health
     assert ("**Getting more accurate?** no, not beating the coin flip "

@@ -99,6 +99,84 @@ def _future_proof(store, now: datetime) -> dict:
         }
 
 
+
+def _actual_learning_progress(store, now: datetime) -> dict:
+    """Check stored *changes*, not whether the job heartbeat said 'learning'.
+
+    A lineage record proves which weights actually issued a forecast. A
+    growing per-stream training counter AND changed weight digest across
+    two observed forecasts is stronger evidence that the online learner
+    updated. It still does not demonstrate better out-of-sample accuracy.
+    Query the existing issued-at index and bound the comparison to recent
+    records; never fit a model or write data from this monitoring job.
+    """
+    try:
+        with store.connect() as conn:
+            rows = conn.execute(
+                """SELECT venue,contract,quote,horizon_minutes,issued_at,
+                          online_training_updates,weights_sha256,
+                          historical_seed_sha256
+                   FROM rival_forward_model_lineage
+                   WHERE issued_at>=? AND issued_at<=?
+                   ORDER BY issued_at DESC LIMIT 400""",
+                ((now - timedelta(hours=6)).isoformat(), now.isoformat()),
+            ).fetchall()
+            # The Lab has its own persisted online learner checkpoint.
+            # Check table existence before an optional read: a missing-table
+            # error would abort PostgreSQL's current transaction.
+            if store.database.backend == "postgres":
+                exists = conn.execute(
+                    "SELECT to_regclass('rival_lab_learners') AS name"
+                ).fetchone()
+            else:
+                exists = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name='rival_lab_learners'"
+                ).fetchone()
+            lab = (conn.execute(
+                """SELECT updates,trained_at FROM rival_lab_learners
+                   ORDER BY trained_at DESC LIMIT 100"""
+            ).fetchall() if exists and exists["name"] else None)
+    except Exception:  # noqa: BLE001 - old/unavailable lineage table
+        return {"status": "read_unavailable", "proves_improvement": False}
+
+    newest: dict[tuple, object] = {}
+    compared: set[tuple] = set()
+    changed: set[tuple] = set()
+    for row in rows:  # latest first, for each unique model stream
+        key = (row["venue"], row["contract"], row["quote"], int(row["horizon_minutes"]))
+        head = newest.setdefault(key, row)
+        if head is row:
+            continue
+        compared.add(key)
+        if (int(head["online_training_updates"]) > int(row["online_training_updates"])
+                and head["weights_sha256"] != row["weights_sha256"]):
+            changed.add(key)
+    snapshots = list(newest.values())
+    lab_status = ({"status": "not_initialized"} if lab is None
+                  else {"status": "recorded" if lab else "no_saved_learners",
+                        "sampled_streams": len(lab),
+                        "streams_with_training_updates":
+                        sum(int(row["updates"]) > 0 for row in lab),
+                        "latest_checkpoint_at": lab[0]["trained_at"] if lab else None})
+    return {
+        "status": ("weight_updates_observed" if changed else
+                   "no_recent_weight_change_proven" if compared else
+                   "insufficient_comparable_snapshots" if rows else "no_lineage"),
+        "sampled_forecasts": len(rows),
+        "sampled_model_streams": len(newest),
+        "streams_with_before_after": len(compared),
+        "streams_with_verified_weight_updates": len(changed),
+        "sampled_historically_seeded_forecasts":
+            sum(bool(row["historical_seed_sha256"]) for row in rows),
+        "latest_online_training_updates":
+            max((int(row["online_training_updates"]) for row in snapshots), default=None),
+        "lab": lab_status,
+        "proves_improvement": False,
+        "proves_profitable_edge": False,
+    }
+
+
 def read_receipt() -> dict:
     settings = Settings()
     if settings.rival_storage_backend != "postgres" or settings.rival_database_url is None:
@@ -119,6 +197,7 @@ def read_receipt() -> dict:
             "outcome": "verified" if both_fresh else "unverified",
             "forecast": forecast,
             "learning": learning,
+            "actual_learning": _actual_learning_progress(store, now),
             "forward_proof": _future_proof(store, now),
             "polymarket_contest": _contest_progress(store, now),
             "xmarket": _xmarket_progress(store, now),

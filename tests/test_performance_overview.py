@@ -124,7 +124,7 @@ async def test_page_is_verdict_first_then_scoreboard_trials_and_health(tmp_path,
         assert "vs a coin flip: behind (0.310 vs 0.240)" in score
         assert "7 of 8 predictions checked" in score and "main model only" in score
         health = fields[HEALTH]
-        assert "✅ learning just now" in health and "✅ predictions just now" in health
+        assert "✅ grading/review just now" in health and "✅ predictions just now" in health
         assert "✅ 1/1 exchanges live" in health
         assert "**Getting more accurate?** too early to tell" in health
         assert "No test models have scored results here yet." in embeds[1].description
@@ -161,7 +161,7 @@ async def test_slow_or_broken_reads_say_so_and_hide_nothing_else(tmp_path, monke
         assert "**vs Polymarket odds — behind**" in fields[SCORE]
         health = fields[HEALTH]
         assert "**Getting more accurate?** couldn't check right now" in health
-        assert "learning loop: couldn't check" in health
+        assert "grading/review: couldn't check" in health
         assert "feeds: couldn't check" in health
         assert "✅ predictions just now" in health
         assert "Couldn't load the trial table right now" in embeds[1].description

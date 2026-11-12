@@ -227,3 +227,45 @@ async def test_hung_public_exchange_times_out_without_blocking_other_venues(
     finally:
         await collector.aclose()
         store.close()
+
+
+@pytest.mark.asyncio
+async def test_successful_venue_persists_before_slow_venue_finishes(tmp_path, monkeypatch):
+    """Healthy candle rows must not wait for the slowest provider's network."""
+    from threading import Event
+
+    persisted = Event()
+
+    class AfterFastPersist(DummyProvider):
+        async def collect(self, *, assets, interval_minutes, bars):
+            while not persisted.is_set():
+                await asyncio.sleep(0.01)
+            return await super().collect(
+                assets=assets, interval_minutes=interval_minutes, bars=bars,
+            )
+
+    store = SQLiteHotStore(tmp_path / "ordered-persist.sqlite")
+    collector = PerpetualMarketCollector(
+        store=store, assets=("BTC",), bars=2,
+        providers={"hyperliquid": DummyProvider("hyperliquid"),
+                   "dydx": AfterFastPersist("dydx")},
+    )
+    ingest = collector.market.ingest
+
+    def observe_ingest(batch):
+        result = ingest(batch)
+        if batch.candles[0].venue == "hyperliquid":
+            persisted.set()
+        return result
+
+    monkeypatch.setattr(collector.market, "ingest", observe_ingest)
+    try:
+        # The old gather-before-persist path timed out here: the second
+        # provider was waiting for a successful first-source DB commit.
+        await asyncio.wait_for(collector.collect_once(), timeout=2)
+        assert persisted.is_set()
+        assert all(r["status"] == "ok" for r in collector.market.feed_health())
+        assert len(collector.market.feed_health()) == 2
+    finally:
+        await collector.aclose()
+        store.close()

@@ -36,8 +36,8 @@ def test_screenshot_models_have_names_based_on_their_actual_inputs_and_speed():
     families = [_remember(g) for g in (main, slow, volume, trend)]
     assert [f.rsplit("_", 1)[-1][:6] for f in families] == ["d91792", "7350e7", "24a17f", "b8a8b1"]
     assert [trial_board.short_name(f) for f in families] == [
-        "All signals · steady", "All signals · slow", "Price + volume · steady",
-        "Trend price + volatility · fast"]
+        "Price+vol+volume+RSI/MACD · steady", "Price+vol+volume+RSI/MACD · slow", "Price+volume · steady",
+        "Trend price+vol · fast"]
     text = trial_board.table(trial_board.fold([
         ("hyperliquid", "BTC", {f: _info(n) for f, n in zip(families, (215, 152, 134, 19))})], []))
     assert all(trial_board.short_name(f) in text for f in families)
@@ -78,8 +78,8 @@ def test_cold_name_lookup_reads_validated_saved_design_without_creating_tables(l
             (family, 5, json.dumps(model_lab.canonical(model_lab.SEEDS[0], 5)),
              "active", datetime.now(UTC).isoformat()))
     model_lab.load_family_designs(learning_store, [family])
-    assert trial_board.short_name(family) == "All signals · steady"
-    assert family_words(family) == "All signals · steady (5-min)"
+    assert trial_board.short_name(family) == "Price+vol+volume+RSI/MACD · steady"
+    assert family_words(family) == "Price+vol+volume+RSI/MACD · steady (5-min)"
     model_lab._GENOMES.clear()
     with learning_store.connect() as conn:
         conn.execute("UPDATE rival_lab_genomes SET genome_json=? WHERE family=?",
@@ -102,10 +102,10 @@ def test_retired_legacy_watch_names_still_describe_the_saved_design():
 
     _remember(model_lab.SEEDS[0])
     old = "Lab d91792"
-    assert trial_board.short_name(old) == "All signals · steady"
-    assert "All signals" in model_embed(None, asset="BTC", name=old).title
+    assert trial_board.short_name(old) == "Price+vol+volume+RSI/MACD · steady"
+    assert "Price+vol+volume+RSI/MACD" in model_embed(None, asset="BTC", name=old).title
     text = str(compare_embed({old: None}, asset="BTC").to_dict())
-    assert "All signals" in text and old not in text
+    assert "Price+vol+volume+RSI/MACD" in text and old not in text
     assert trial_board.short_name("Lab 000000") == "Design unavailable"
 
 
@@ -143,3 +143,22 @@ def test_similar_designs_across_all_timeframes_fit_picker_labels_without_losing_
     assert len(picker.options) == len({o.label for o in picker.options}) == 12
     assert all(len(o.label) <= 100 for o in picker.options)
     assert {o.value for o in picker.options} == set(families)
+
+
+def test_lab_names_reveal_every_enabled_group_and_keep_their_learning_speed():
+    full = _remember(model_lab.SEEDS[0])
+    assert trial_board.short_name(full) == "Price+vol+volume+RSI/MACD · steady"
+    assert len(trial_board.short_name(full)) <= trial_board.PHONE_WIDTH
+    assert "volatility (range and ATR)" in model_lab.describe_family(full)
+    assert "RSI, MACD and Bollinger bands" in model_lab.describe_family(full)
+    for subset, expected in (
+        (("momentum",), "Price"),
+        (("volatility",), "Vol"),
+        (("volume",), "Volume"),
+        (("oscillators",), "RSI/MACD"),
+        (("momentum", "volume"), "Price+volume"),
+    ):
+        genome = {**model_lab.SEEDS[0], "inputs": subset}
+        family = _remember(genome)
+        assert trial_board.short_name(family).startswith(expected + " · ")
+        assert "All signals" not in trial_board.short_name(family)

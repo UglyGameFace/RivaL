@@ -537,10 +537,12 @@ def load_family_designs(store, families) -> None:
 def _design_name(genome: dict | None) -> str:
     if not genome:
         return "Design unavailable"
-    groups = {"momentum": "price", "volatility": "volatility", "volume": "volume",
+    # State what the learner reads, including for the full 10-input design.
+    # Keep the widest common label within the 34-column Discord phone table.
+    # "vol" = volatility (range/ATR); RSI/MACD includes Bollinger here.
+    groups = {"momentum": "price", "volatility": "vol", "volume": "volume",
               "oscillators": "RSI/MACD"}
-    basis = ("all signals" if tuple(genome["inputs"]) == GROUP_ORDER
-             else " + ".join(groups[g] for g in genome["inputs"]))
+    basis = "+".join(groups[g] for g in genome["inputs"])
     regime = {"any": "", "trend": "trend ", "quiet": "choppy "}[genome["regime"]]
     title = regime + basis
     speed = {0.01: "slow", 0.025: "steady", 0.05: "fast", 0.1: "rapid"}[genome["lr"]]

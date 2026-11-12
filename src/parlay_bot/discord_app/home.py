@@ -1086,7 +1086,9 @@ def _trials_sections(reports: dict) -> dict:
                    f"(last {trial_board.HIT_DAYS} days), Edge = less error than the main model "
                    "in points (+ is better; \"few\" under 20 results). To replace it: "
                    f"{trial_board.MIN_DAYS} days, {trial_board.MIN_RESULTS} results and a win "
-                   f"after fees.\n{all_markets}")
+                   "after fees.\n-# Lab: vol = volatility; RSI/MACD includes Bollinger. "
+                   "Slow/steady/fast/rapid = learning speed, not accuracy.\n"
+                   f"{all_markets}")
     return {"name": f"🧪 Models on trial here ({len(rows)})",
             "leader": trial_board.leader_line(rows),
             "table": trial_board.table(rows),

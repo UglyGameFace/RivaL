@@ -222,10 +222,18 @@ class KalshiCryptoBrowser:
                 # 90 days out, or missing a real ask) is skipped; it must not
                 # abort the other markets or the pending settlement checks.
                 try:
-                    await asyncio.to_thread(
-                        self._forward.observe, asset=snapshot.asset,
-                        market=market, at=snapshot.checked_at,
-                    )
+                    # Issue the model at actual worker execution time,
+                    # not at the earlier catalog snapshot's timestamp. The
+                    # separate book receive clock is checked for staleness by
+                    # the research ledger; a queued worker cannot backdate a
+                    # new learned prediction.
+                    def record_one() -> bool:
+                        return self._forward.observe(
+                            asset=snapshot.asset, market=market,
+                            at=datetime.now(UTC),
+                        )
+
+                    await asyncio.to_thread(record_one)
                 except ValueError as exc:
                     _LOG.info("Kalshi market skipped ticker=%s: %s",
                               getattr(market, "ticker", "?"), exc)

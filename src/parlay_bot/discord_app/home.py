@@ -1147,22 +1147,22 @@ def _contest_text(reports: dict) -> str | None:
 
 def _health_text(coin: str, horizon: int, reports: dict, now: datetime,
                  venues: tuple[str, ...]) -> str:
-    """Is it running, and is it learning: four short lines."""
+    """Separate live grading activity from verified adaptive-weight changes."""
     parts: list[str] = []
     cycles = reports.get("cycles")
     heart = cycles.get("learning") if isinstance(cycles, dict) else None
     if heart is None:
-        parts.append("⚠️ learning loop: no run recorded yet")
+        parts.append("⚠️ grading/review: no run recorded yet")
     elif heart.get("status") != "recorded":
-        parts.append("learning loop: couldn't check")
+        parts.append("grading/review: couldn't check")
     else:
         age = int((now - heart["checked_at"].astimezone(UTC)).total_seconds() // 60)
         if not heart["math_ok"] or not heart["model_review_ok"]:
-            parts.append("❌ learning loop: a step failed last run")
+            parts.append("❌ grading/review: a step failed last run")
         elif not 0 <= age <= 16:
-            parts.append(f"⚠️ learning loop: last ran {_when(age)}")
+            parts.append(f"⚠️ grading/review: last ran {_when(age)}")
         else:
-            parts.append(f"✅ learning {_when(age)}")
+            parts.append(f"✅ grading/review {_when(age)}")
     cycle = cycles.get("forecast") if isinstance(cycles, dict) else None
     if isinstance(cycle, dict) and cycle.get("status") == "recorded":
         age = int((now - cycle["checked_at"].astimezone(UTC)).total_seconds() // 60)

@@ -44,7 +44,7 @@ def notice(*, start=START, asset='BTC', horizon=60, with_receipt=True):
         condition_id=CONDITION, up_token_id='1'*60, down_token_id='2'*60,
         resolution_source=f'https://data.chain.link/streams/{asset.lower()}-usd-twap-60s-streams',
         rules='Up if the Chainlink 60-second TWAP is at or above the starting price.',
-        fee_rate=.07, up_cost=.52749, down_cost=.52749,
+        fee_rate=.07, up_cost=.527493, down_cost=.527493,
     )
     if not with_receipt:
         return market
@@ -57,6 +57,8 @@ def notice(*, start=START, asset='BTC', horizon=60, with_receipt=True):
         "fee_schedule": {"rate": .07, "exponent": 1}, "fee_rate": .07,
         "up_book_sha256": "c" * 64, "down_book_sha256": "d" * 64,
         "shares": 10.0,
+        "up_best_bid": .49, "down_best_bid": .49,
+        "up_ask_fills": [[.51, 10.0]], "down_ask_fills": [[.51, 10.0]],
     }
     digest = hashlib.sha256(json.dumps(
         source, sort_keys=True, separators=(",", ":"), allow_nan=False,
@@ -147,7 +149,7 @@ def test_common_snapshot_is_immutable_even_on_restart(learning_store):
     with learning_store.connect() as conn:
         row = conn.execute('SELECT * FROM rival_poly_contest_rounds WHERE slug=?', (n.slug,)).fetchone()
     assert row['market_up'] == .5
-    assert row['up_cost'] == .52749
+    assert row['up_cost'] == .527493
     assert row['issued_at'] == n.quote_at.isoformat()
 
 
@@ -206,7 +208,7 @@ def test_missing_fees_and_late_enrollment_cannot_qualify(learning_store):
         conn.execute('UPDATE rival_poly_contest_rounds SET up_cost=NULL,down_cost=NULL')
     assert entry(learning_store)['champion'] is None
     with learning_store.connect() as conn:
-        conn.execute('UPDATE rival_poly_contest_rounds SET up_cost=.52749,down_cost=.52749')
+        conn.execute('UPDATE rival_poly_contest_rounds SET up_cost=.527493,down_cost=.527493')
         conn.execute('UPDATE rival_poly_contest_models SET enrolled_at=? WHERE model=?',
                      ((END).isoformat(), BOOK))
     assert entry(learning_store)['champion'] is None
@@ -304,6 +306,8 @@ def test_exact_poly_fee_economics_only_uses_frozen_prospective_source(learning_s
         "up_book_sha256": "a"*64,
         "down_book_sha256": "b"*64,
         "shares": 10.0,
+        "up_best_bid": .49, "down_best_bid": .49,
+        "up_ask_fills": [[.51, 10.0]], "down_ask_fills": [[.51, 10.0]],
     }
     digest = hashlib.sha256(json.dumps(
         source, sort_keys=True, separators=(",", ":"), allow_nan=False,
@@ -331,7 +335,7 @@ def test_exact_poly_fee_economics_only_uses_frozen_prospective_source(learning_s
     assert scored["official_outcome"] == "UP"
     assert scored["side"] == "UP"
     assert scored["net_after_model_fee_and_stress_per_share"] == pytest.approx(
-        1-.52749-.01)
+        1-.527493-.01)
     assert scored["promotion_eligible"] is False
     assert scored["verified_after_cost_edge"] is False
     assert not c.capture(
@@ -434,6 +438,42 @@ def test_unmatched_fee_source_hash_or_token_identity_never_enters_paper_score(
     with learning_store.connect() as conn:
         assert conn.execute(
             "SELECT COUNT(*) AS n FROM rival_poly_contest_cost_proof"
+        ).fetchone()["n"] == 0
+
+
+@pytest.mark.parametrize("alter", [
+    "understated_fee", "wrong_depth", "partial_depth", "out_of_order", "wrong_bid",
+])
+def test_claimed_book_hash_cannot_hide_wrong_ask_fee_or_depth(learning_store, alter):
+    """A plausible hash and a positive stored cost aren't a replayable quote."""
+    c = setup(learning_store)
+    n = notice()
+    if alter == "understated_fee":
+        # Old validation allowed any cost above the best ask, including
+        # omitting the nonzero official fee entirely.
+        n = replace(n, up_cost=.51)
+    else:
+        source = dict(n.fee_evidence)
+        if alter == "wrong_depth":
+            source["up_ask_fills"] = [[.50, 10.0]]
+        elif alter == "partial_depth":
+            source["up_ask_fills"] = [[.51, 9.0]]
+        elif alter == "out_of_order":
+            source["up_ask_fills"] = [[.51, 5.0], [.49, 5.0]]
+        else:
+            source["up_best_bid"] = .48
+        parts = {k: v for k, v in source.items() if k not in (
+            "receipt_sha256", "cost_status", "actual_fills_proven")}
+        source["receipt_sha256"] = hashlib.sha256(json.dumps(
+            parts, sort_keys=True, separators=(",", ":"), allow_nan=False,
+        ).encode()).hexdigest()
+        n = replace(n, fee_evidence=source)
+    assert c.capture(n, {BOOK: (.9, SHA)}, now=n.quote_at)
+    assert c.call(n.slug, BOOK)["direction"] == "WAIT"
+    assert c.economic_evidence(n.slug, BOOK)["source_matched"] is False
+    with learning_store.connect() as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) AS n FROM rival_poly_contest_cost_proof",
         ).fetchone()["n"] == 0
 
 

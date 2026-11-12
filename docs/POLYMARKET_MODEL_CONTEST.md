@@ -87,15 +87,18 @@ The jump challenger uses an explicitly approximate averaging-weight duration
 has already accrued, the formula abstains without its observed path. Unknown
 or conflicting settlement rules abstain.
 
-## Continuous qualification policy (sequential-betting-v3-source-cost-proof)
+## Continuous qualification policy (sequential-betting-v4-replayed-book-cost)
 
 There is no 28-day batch, 21-day minimum, future calendar anchor, or mandatory
 48-hour settlement delay. A versioned policy start is saved once when this
 version initializes on the host. Only forecasts issued after that start can
 qualify; old outcomes are never reused to select a more favorable new test.
-**Version 3 is deliberately not a retroactive promotion of version 2.**
+**Version 4 does not retroactively promote version 2 or version 3.**
+Only source receipts created with replayable ask-depth traces under this policy
+can enter new significance tests. Existing model weights and older research
+history remain intact.
 The prior probability and paper-cost history remains visible as research, but
-old or missing issue-time source receipts cannot count toward version 3
+old or missing issue-time source receipts cannot count toward version 4
 significance, paper profit, or a qualified call.
 Restarts preserve the policy, enrollment slots, source scopes and forecasts.
 
@@ -112,7 +115,14 @@ at 60m. Weaker evidence can take longer or never qualify. No synthetic or older
 legacy calls count toward these minimums. A cost-source record is inserted
 atomically only for a new first issue with a matching condition, paired token
 IDs, book hashes, Gamma fee schedule, 10-share paper costs, issue and source
-clocks, and a checked receipt digest. The score and display path revalidates
+clocks, and a checked receipt digest. Additionally, the exact 10-share
+ask-level fills and contemporaneous best bids are frozen in that receipt and
+checked against the issued quote. The scoring reader independently replays
+the per-level five-decimal published fee formula and refuses unpriced,
+out-of-order or mismatched depth, even if the stored numeric cost exceeds
+the best ask. Full-book hashes identify what RivaL recorded but, without
+exchange signatures, do not prove what the venue served.
+The score and display path revalidates
 the saved cost columns and exact receipt before treating it as eligible. A
 changed SQL cost or fee receipt cannot manufacture an after-fee winner.
 These hashes prove RivaL's recorded data integrity, **not** exchange-signed

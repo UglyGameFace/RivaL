@@ -21,7 +21,7 @@ ALPHA = .05
 MIN_CONTRACTS = 300
 MIN_TRADES = 150
 MIN_COVERAGE = .8
-POLICY = "sequential-betting-v3-source-cost-proof"
+POLICY = "sequential-betting-v4-replayed-book-cost"
 BET_FRACTIONS = (.01, .03, .1, .3, .5, .8)
 CHECKPOINT_ELAPSED = .20
 CHECKPOINT_WIDTH = timedelta(seconds=20)
@@ -87,6 +87,43 @@ def implied_bet(p: float, up_cost: float | None, down_cost: float | None):
 
 
 
+def _replay_ask_fills(fills: object, rate: float) -> tuple[float, float] | None:
+    """Reprice the frozen ten-share ask trace using the published per-level fee.
+
+    The independent replay rejects missing depth, scrambled prices, extra
+    fills and optimistic source costs. The transport checksum is not a venue
+    signature; this checks RivaL's original cost calculation instead.
+    """
+    if not isinstance(fills, list) or not 1 <= len(fills) <= 256:
+        return None
+    if not math.isfinite(rate) or not 0 <= rate <= 1:
+        return None
+    remaining, total, previous = 10.0, 0.0, 0.0
+    first = None
+    for level in fills:
+        if not isinstance(level, list) or len(level) != 2:
+            return None
+        try:
+            if any(isinstance(v, bool) for v in level):
+                return None
+            price, amount = map(float, level)
+        except (ValueError, TypeError, OverflowError):
+            return None
+        if (not math.isfinite(price) or not math.isfinite(amount)
+                or not previous <= price < 1 or price <= 0
+                or not 0 < amount <= remaining + 1e-9):
+            return None
+        if first is None:
+            first = price
+        # Same 5-decimal fee rounding as _average_cost at issue.
+        total += amount * price + round(amount * (rate * price * (1 - price)), 5)
+        remaining -= amount
+        previous = price
+    if abs(remaining) > 1e-8:
+        return None
+    return first, total / 10.0
+
+
 def _verified_source_cost(raw: dict, issued_at: datetime) -> dict | None:
     """Verify a frozen, exact-token fee/book receipt before counting economics.
 
@@ -115,6 +152,8 @@ def _verified_source_cost(raw: dict, issued_at: datetime) -> dict | None:
         fee_enabled = source["fees_enabled"]
         fee_schedule = source["fee_schedule"]
         token_up, token_down = source["up_token_id"], source["down_token_id"]
+        up_replayed = _replay_ask_fills(source.get("up_ask_fills"), rate)
+        down_replayed = _replay_ask_fills(source.get("down_ask_fills"), rate)
         fee_terms_ok = (
             fee_enabled is False and rate == 0.0
             or fee_enabled is True and isinstance(fee_schedule, dict)
@@ -146,9 +185,15 @@ def _verified_source_cost(raw: dict, issued_at: datetime) -> dict | None:
             and isinstance(fee_enabled, bool) and fee_terms_ok
             and math.isfinite(rate)
             and raw.get("fee_rate") == rate
+            and up_replayed is not None and down_replayed is not None
+            and raw.get("up_bid") == source.get("up_best_bid")
+            and raw.get("down_bid") == source.get("down_best_bid")
             and all(math.isfinite(x) for x in (yes, no, yes_cost, no_cost))
             and 0 < yes <= yes_cost < 2
             and 0 < no <= no_cost < 2
+            and up_replayed[0] == yes and down_replayed[0] == no
+            and math.isclose(up_replayed[1], yes_cost, rel_tol=0, abs_tol=1e-9)
+            and math.isclose(down_replayed[1], no_cost, rel_tol=0, abs_tol=1e-9)
         ):
             return None
         return {

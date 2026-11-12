@@ -225,6 +225,25 @@ def _average_cost(book: dict, *, now: datetime, rate: float | None) -> float | N
     return None
 
 
+def _filled_ask_trace(book: dict, *, now: datetime) -> list[list[float]] | None:
+    """Bounded 10-share ask fills, frozen at issue for independent cost replay.
+
+    Keep only prices and shares consumed. A full-book transport hash remains
+    available separately, but is not an exchange signature.
+    """
+    remaining = REFERENCE_SHARES
+    fills: list[list[float]] = []
+    for price, size in _ask_levels(book, now=now):
+        if len(fills) >= 256:
+            return None  # enormous/fragmented books cannot earn a proof
+        taken = min(size, remaining)
+        fills.append([price, taken])
+        remaining -= taken
+        if remaining <= 1e-9:
+            return fills
+    return None
+
+
 def _average_ask(
     book: dict, *, now: datetime, shares: float = REFERENCE_SHARES,
 ) -> float | None:
@@ -607,6 +626,12 @@ class PolymarketReader:
                 down_book, sort_keys=True, separators=(",", ":"), allow_nan=False,
             ).encode()).hexdigest(),
             "shares": REFERENCE_SHARES,
+            # Frozen depth actually used for the 10-share fee calculation.
+            # A bare source-book hash alone cannot replay quoted costs.
+            "up_ask_fills": _filled_ask_trace(up_book, now=received),
+            "down_ask_fills": _filled_ask_trace(down_book, now=received),
+            "up_best_bid": _best_bid(up_book),
+            "down_best_bid": _best_bid(down_book),
         }
         fee_evidence = {
             **fee_parts,
@@ -615,7 +640,10 @@ class PolymarketReader:
             ).encode()).hexdigest(),
             "cost_status": (
                 "fee_schedule_unverified" if _fee_rate(market) is None
-                else "gamma_fee_and_depth_paper_only"),
+                else "book_trace_unverified" if (
+                    fee_parts["up_ask_fills"] is None or fee_parts["down_ask_fills"] is None
+                    or fee_parts["up_best_bid"] is None or fee_parts["down_best_bid"] is None
+                ) else "gamma_fee_and_depth_paper_only"),
             "actual_fills_proven": False,
         }
         return PolymarketNotice(

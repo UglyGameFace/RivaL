@@ -199,6 +199,7 @@ def read_receipt() -> dict:
             "learning": learning,
             "actual_learning": _actual_learning_progress(store, now),
             "forward_proof": _future_proof(store, now),
+            "path_targets": _path_target_progress(store, now),
             "polymarket_contest": _contest_progress(store, now),
             "xmarket": _xmarket_progress(store, now),
             "research_loop": _research_progress(store, settings),
@@ -207,6 +208,49 @@ def read_receipt() -> dict:
         }
     finally:
         store.close()
+
+
+
+def _path_target_progress(store, now: datetime) -> dict:
+    """Bounded read-only check of independently scored path target heads.
+
+    Never initialize a table or infer successful model performance from a
+    settlement count. Some hosts may not have restarted with the new schema.
+    """
+    name = "rival_forward_path_targets"
+    try:
+        with store.connect() as conn:
+            if store.database.backend == "postgres":
+                exists = conn.execute(
+                    "SELECT to_regclass(?) AS name", (name,),
+                ).fetchone()["name"]
+            else:
+                row = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+                    (name,),
+                ).fetchone()
+                exists = row["name"] if row else None
+            if not exists:
+                return {"status": "not_initialized", "shadow_only": True}
+            rows = conn.execute(
+                """SELECT horizon_minutes,COUNT(*) AS settled,
+                          COUNT(DISTINCT venue || ':' || contract || ':' || quote)
+                              AS source_scopes,MAX(settled_at) AS latest_settled_at
+                   FROM rival_forward_path_targets
+                   WHERE state='settled' AND target_opened_at>=?
+                   GROUP BY horizon_minutes ORDER BY horizon_minutes""",
+                ((now-timedelta(days=1)).isoformat(),),
+            ).fetchall()
+        return {
+            "status": "observed" if rows else "waiting_for_forward_outcomes",
+            "horizons": [dict(row) for row in rows],
+            "settled_close_targets_24h": sum(int(row["settled"]) for row in rows),
+            "does_not_prove_prediction_edge": True,
+            "after_cost_qualified": False,
+            "shadow_only": True,
+        }
+    except Exception:  # noqa: BLE001 - optional observational receipt
+        return {"status": "read_unavailable", "shadow_only": True}
 
 
 def _runtime_diagnostics(store, now: datetime) -> dict:

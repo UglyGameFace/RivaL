@@ -3740,11 +3740,14 @@ class RivalDiscordClient(discord.Client):
         "_heartbeat_task", "_status_task", "_benefit_task", "_intelligence_task",
         "_loop_watch_task", "_memory_task",
     )
+    _AUXILIARY_TASK_ATTRS = (
+        '_database_diagnostic_task', '_regression_task', '_acceptance_log_task',
+    )
 
     async def close(self) -> None:
         """Stop every worker, then release every client even if one fails."""
         tasks = []
-        for attr in self._WORKER_TASK_ATTRS + ('_database_diagnostic_task',):
+        for attr in self._WORKER_TASK_ATTRS + self._AUXILIARY_TASK_ATTRS:
             task = getattr(self, attr, None)
             if task is not None:
                 task.cancel()

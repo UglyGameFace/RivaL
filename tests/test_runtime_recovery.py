@@ -317,6 +317,32 @@ def test_recurring_sql_records_are_bounded_and_do_not_expose_private_values():
     assert recurring_faults(report, now=NOW, boot_at=NOW-timedelta(hours=1))
 
 
+def test_deadlock_graph_keeps_sqlstate_and_owners_without_server_sql():
+    error = RuntimeError('private exception message')
+    error.sqlstate = '40P01'
+    error.diag = SimpleNamespace(message_detail=(
+        'Process 101 waits for ShareLock on transaction 303; blocked by process 202.\n'
+        'Process 202 waits for ShareLock on transaction 304; blocked by process 101.\n'
+        "Process 101: UPDATE private_table SET token='secret-binding'"))
+    diagnostics = QueryDiagnostics(lambda: [
+        {'pid': 101, 'owner': 'forward.issue:55', 'operation': 'UPDATE'},
+        {'pid': 202, 'owner': 'collector.save:66', 'operation': 'UPDATE'}])
+    evidence = diagnostics.error_evidence(error)
+    diagnostics.observe(owner='forward.issue:55', label='forward#12345678',
+                        sql='UPDATE private_table SET token=?', params=('secret-binding',),
+                        seconds=.5, error='DeadlockDetected', error_evidence=evidence)
+    group = diagnostics.snapshot()['groups'][0]
+    assert group['sqlstates'] == {'40P01': 1}
+    graph = group['lock_evidence'][0]
+    assert {(e['pid'], e['blocked_by_pid']) for e in graph['deadlock_edges']} == {
+        (101, 202), (202, 101)}
+    assert graph['pool_owners_at_error'][1]['owner'] == 'collector.save:66'
+    assert diagnostics.snapshot()['latest_lock_failures_this_boot'][0]['sqlstate'] == '40P01'
+    encoded = json.dumps(group)
+    assert all(value not in encoded for value in ('secret-binding', 'private_table',
+                                                  'private exception', 'token='))
+
+
 @pytest.mark.skipif(not os.getenv('RIVAL_TEST_DATABASE_URL'), reason='PostgreSQL integration')
 def test_postgres_plan_sampling_is_read_only_and_redacts_predicates():
     store = PostgresHotStore(os.environ['RIVAL_TEST_DATABASE_URL'])

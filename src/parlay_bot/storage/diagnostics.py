@@ -8,6 +8,7 @@ not execute the captured statement. Sampling runs beside the watchdog.
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections import Counter, OrderedDict, deque
@@ -32,21 +33,45 @@ def structural_plan(plan: dict) -> list[dict]:
 
 
 class QueryDiagnostics:
-    def __init__(self) -> None:
+    def __init__(self, peer_snapshot=None) -> None:
         self.lock = threading.Lock()
         self.events: OrderedDict[tuple, deque] = OrderedDict()
         self.plans: OrderedDict[tuple, tuple] = OrderedDict()
         self.last_plan: dict[tuple, float] = {}
+        self.peer_snapshot = peer_snapshot
+        self.lock_failures: deque = deque(maxlen=8)
+
+    def error_evidence(self, exc: Exception) -> dict:
+        """Retain SQLSTATE and lock edges, never the server's statement prose."""
+        state = getattr(exc, 'sqlstate', None)
+        evidence = {'sqlstate': state} if isinstance(state, str) and re.fullmatch(
+            r'[A-Z0-9]{5}', state) else {}
+        if state == '40P01':
+            detail = str(getattr(getattr(exc, 'diag', None), 'message_detail', '') or '')[:16000]
+            edges = re.findall(
+                r'Process (\d+) waits for ([A-Za-z]+) on (transaction|relation) (\d+); '
+                r'blocked by process (\d+)', detail, flags=re.IGNORECASE)
+            evidence['deadlock_edges'] = [
+                {'pid': int(pid), 'mode': mode, 'object_kind': kind,
+                 'object_id': int(identity), 'blocked_by_pid': int(blocker)}
+                for pid, mode, kind, identity, blocker in edges[:12]]
+            if self.peer_snapshot is not None:
+                evidence['pool_owners_at_error'] = self.peer_snapshot()
+        return evidence
 
     def observe(self, *, owner: str, label: str, sql: str, params,
-                seconds: float, error: str | None) -> None:
+                seconds: float, error: str | None, error_evidence: dict | None = None) -> None:
         if 'diagnostics.' in owner or (seconds < 2 and error is None):
             return
         now = time.monotonic()
         key = (owner.split(':', 1)[0], label)
         with self.lock:
+            if (error_evidence or {}).get('sqlstate') == '40P01':
+                self.lock_failures.append({
+                    'observed_at': datetime.now(UTC).isoformat(), 'owner': key[0],
+                    'statement': label, **error_evidence})
             events = self.events.pop(key, deque(maxlen=128))
-            events.append((now, seconds, error))
+            events.append((now, seconds, error, error_evidence or {}))
             self.events[key] = events
             if (sql.lstrip().upper().startswith(('SELECT ', 'WITH '))
                     and now - self.last_plan.get(key, -WINDOW) >= WINDOW):
@@ -69,9 +94,15 @@ class QueryDiagnostics:
                                    'slow_count': sum(e[1] >= 2 for e in recent),
                                    'error_count': sum(e[2] is not None for e in recent),
                                    'error_classes': dict(Counter(e[2] for e in recent if e[2])),
+                                   'sqlstates': dict(Counter(e[3]['sqlstate'] for e in recent
+                                                            if e[3].get('sqlstate'))),
+                                   'lock_evidence': [e[3] for e in recent
+                                                     if e[3].get('sqlstate') == '40P01'][-8:],
                                    'max_seconds': round(max(e[1] for e in recent), 3),
                                    'last_age_seconds': round(now - recent[-1][0], 1)})
-        return {'window_seconds': WINDOW, 'groups': groups}
+            lock_failures = list(self.lock_failures)
+        return {'window_seconds': WINDOW, 'groups': groups,
+                'latest_lock_failures_this_boot': lock_failures}
 
     def collect(self, store) -> dict:
         snapshot = self.snapshot()

@@ -87,22 +87,36 @@ The jump challenger uses an explicitly approximate averaging-weight duration
 has already accrued, the formula abstains without its observed path. Unknown
 or conflicting settlement rules abstain.
 
-## Continuous qualification policy (sequential-betting-v2)
+## Continuous qualification policy (sequential-betting-v3-source-cost-proof)
 
 There is no 28-day batch, 21-day minimum, future calendar anchor, or mandatory
 48-hour settlement delay. A versioned policy start is saved once when this
 version initializes on the host. Only forecasts issued after that start can
 qualify; old outcomes are never reused to select a more favorable new test.
+**Version 3 is deliberately not a retroactive promotion of version 2.**
+The prior probability and paper-cost history remains visible as research, but
+old or missing issue-time source receipts cannot count toward version 3
+significance, paper profit, or a qualified call.
 Restarts preserve the policy, enrollment slots, source scopes and forecasts.
 
 Requirements remain at least 300 matched resolved contracts, 150 predetermined
 priced paper entries, 80% forecast coverage over expected contract windows,
-80% known fee/depth coverage, positive Brier improvement, positive stressed net
-paper payout, and both statistical tests passing. These are sample requirements,
+80% known fee/depth coverage, **80% frozen source-proven cost coverage**,
+positive Brier improvement, positive stressed net paper payout, and both
+statistical tests passing. Only the exact-contract source-proven subset enters
+the Brier and economic betting processes. Missing fee/book provenance is
+counted against coverage and never evaluated by hindsight. These are sample requirements,
 not a promise that a model will qualify at a particular time. For continuous
 coverage, 300 contracts take about 25 hours at 5m, 75 hours at 15m, and 12.5 days
 at 60m. Weaker evidence can take longer or never qualify. No synthetic or older
-legacy calls count toward these minimums.
+legacy calls count toward these minimums. A cost-source record is inserted
+atomically only for a new first issue with a matching condition, paired token
+IDs, book hashes, Gamma fee schedule, 10-share paper costs, issue and source
+clocks, and a checked receipt digest. The score and display path revalidates
+the saved cost columns and exact receipt before treating it as eligible. A
+changed SQL cost or fee receipt cannot manufacture an after-fee winner.
+These hashes prove RivaL's recorded data integrity, **not** exchange-signed
+books, actual fills, or account-specific rounding.
 
 Each model is paired with the exact market snapshot for every contract on which
 that model issued a forecast. An absent new challenger cannot retroactively

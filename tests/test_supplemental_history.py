@@ -264,10 +264,12 @@ def test_kalshi_public_retry_exhaustion_preserves_typed_429(monkeypatch):
     def reject(request):
         calls.append(request.url.path)
         return httpx.Response(429)
-    with httpx.Client(transport=httpx.MockTransport(reject)) as client:
-        with pytest.raises(HistoryImportError) as error:
-            module.kalshi_public_json(client, module.KALSHI + "/markets", {},
-                                      rate_limit_retries=2)
+    with (
+        httpx.Client(transport=httpx.MockTransport(reject)) as client,
+        pytest.raises(HistoryImportError) as error,
+    ):
+        module.kalshi_public_json(client, module.KALSHI + "/markets", {},
+                                  rate_limit_retries=2)
     assert len(calls) == 3
     assert slept == [1, 2]
     assert isinstance(error.value.__cause__, httpx.HTTPStatusError)
